@@ -3,21 +3,25 @@ use crate::core::agent::Agent;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Dashboard,
-    Execution,
+    AgentDetail,
     History,
     Costs,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Dashboard, Tab::Execution, Tab::History, Tab::Costs];
+    pub const ALL: [Tab; 4] = [Tab::Dashboard, Tab::AgentDetail, Tab::History, Tab::Costs];
 
     pub fn title(self) -> &'static str {
         match self {
-            Tab::Dashboard => "Dashboard",
-            Tab::Execution => "Execution",
+            Tab::Dashboard => "Agents",
+            Tab::AgentDetail => "Detail",
             Tab::History => "History",
             Tab::Costs => "Costs",
         }
+    }
+
+    pub fn index(self) -> usize {
+        Tab::ALL.iter().position(|&t| t == self).unwrap_or(0)
     }
 }
 
@@ -46,20 +50,140 @@ pub struct CostEntry {
     pub total_tokens_out: i64,
 }
 
+/// Command palette state
+pub struct CommandPalette {
+    pub visible: bool,
+    pub input: String,
+    pub filtered: Vec<PaletteCommand>,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct PaletteCommand {
+    pub name: String,
+    pub description: String,
+    pub action: PaletteAction,
+}
+
+#[derive(Debug, Clone)]
+pub enum PaletteAction {
+    SwitchTab(Tab),
+    Refresh,
+    Quit,
+    NewAgent,
+}
+
+impl CommandPalette {
+    pub fn new() -> Self {
+        Self {
+            visible: false,
+            input: String::new(),
+            filtered: Self::all_commands(),
+            selected: 0,
+        }
+    }
+
+    fn all_commands() -> Vec<PaletteCommand> {
+        vec![
+            PaletteCommand {
+                name: "agents".to_string(),
+                description: "Switch to Agents dashboard".to_string(),
+                action: PaletteAction::SwitchTab(Tab::Dashboard),
+            },
+            PaletteCommand {
+                name: "detail".to_string(),
+                description: "View selected agent detail".to_string(),
+                action: PaletteAction::SwitchTab(Tab::AgentDetail),
+            },
+            PaletteCommand {
+                name: "history".to_string(),
+                description: "View execution history".to_string(),
+                action: PaletteAction::SwitchTab(Tab::History),
+            },
+            PaletteCommand {
+                name: "costs".to_string(),
+                description: "View cost tracking".to_string(),
+                action: PaletteAction::SwitchTab(Tab::Costs),
+            },
+            PaletteCommand {
+                name: "refresh".to_string(),
+                description: "Reload agents and data".to_string(),
+                action: PaletteAction::Refresh,
+            },
+            PaletteCommand {
+                name: "new".to_string(),
+                description: "Create a new agent (run swarm new)".to_string(),
+                action: PaletteAction::NewAgent,
+            },
+            PaletteCommand {
+                name: "quit".to_string(),
+                description: "Exit the application".to_string(),
+                action: PaletteAction::Quit,
+            },
+        ]
+    }
+
+    pub fn open(&mut self) {
+        self.visible = true;
+        self.input.clear();
+        self.filtered = Self::all_commands();
+        self.selected = 0;
+    }
+
+    pub fn close(&mut self) {
+        self.visible = false;
+        self.input.clear();
+    }
+
+    pub fn update_filter(&mut self) {
+        let query = self.input.to_lowercase();
+        self.filtered = Self::all_commands()
+            .into_iter()
+            .filter(|cmd| {
+                cmd.name.contains(&query) || cmd.description.to_lowercase().contains(&query)
+            })
+            .collect();
+        if self.selected >= self.filtered.len() {
+            self.selected = 0;
+        }
+    }
+
+    pub fn select_next(&mut self) {
+        if !self.filtered.is_empty() {
+            self.selected = (self.selected + 1) % self.filtered.len();
+        }
+    }
+
+    pub fn select_prev(&mut self) {
+        if !self.filtered.is_empty() {
+            self.selected = if self.selected == 0 {
+                self.filtered.len() - 1
+            } else {
+                self.selected - 1
+            };
+        }
+    }
+
+    pub fn execute(&self) -> Option<PaletteAction> {
+        self.filtered.get(self.selected).map(|c| c.action.clone())
+    }
+}
+
 pub struct App {
     pub current_tab: Tab,
     pub tab_index: usize,
     // Dashboard
     pub agents: Vec<Agent>,
     pub selected_agent: usize,
-    // Execution
-    pub exec_output: Vec<String>,
-    pub exec_running: bool,
     // History
     pub history: Vec<RunEntry>,
     pub selected_history: usize,
     // Costs
     pub costs: Vec<CostEntry>,
+    // Command palette
+    pub palette: CommandPalette,
+    // Status message (bottom bar)
+    pub status_msg: Option<String>,
 }
 
 impl App {
@@ -69,11 +193,11 @@ impl App {
             tab_index: 0,
             agents: Vec::new(),
             selected_agent: 0,
-            exec_output: Vec::new(),
-            exec_running: false,
             history: Vec::new(),
             selected_history: 0,
             costs: Vec::new(),
+            palette: CommandPalette::new(),
+            status_msg: None,
         }
     }
 
@@ -91,14 +215,23 @@ impl App {
         self.current_tab = Tab::ALL[self.tab_index];
     }
 
+    pub fn switch_tab(&mut self, tab: Tab) {
+        self.current_tab = tab;
+        self.tab_index = tab.index();
+    }
+
     pub fn load_agents(&mut self) {
         let agents_dir = std::path::Path::new("agents");
         match Agent::load_all(agents_dir) {
             Ok(agents) => self.agents = agents,
             Err(e) => {
-                self.exec_output.push(format!("Failed to load agents: {e}"));
+                self.status_msg = Some(format!("Failed to load agents: {e}"));
             }
         }
+    }
+
+    pub fn selected_agent(&self) -> Option<&Agent> {
+        self.agents.get(self.selected_agent)
     }
 
     pub fn select_next(&mut self) {

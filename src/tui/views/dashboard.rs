@@ -11,7 +11,11 @@ use crate::tui::app::{App, Tab};
 pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(3), // Tab bar
+            Constraint::Min(0),    // Content
+            Constraint::Length(1), // Shortcuts bar
+        ])
         .split(frame.area());
 
     // Tab bar
@@ -37,20 +41,23 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Content area — dispatch to the right view
     match app.current_tab {
-        Tab::Dashboard => render_dashboard(frame, app, chunks[1]),
-        Tab::Execution => super::execution::render(frame, app, chunks[1]),
+        Tab::Dashboard => render_agent_list(frame, app, chunks[1]),
+        Tab::AgentDetail => super::agent_detail::render(frame, app, chunks[1]),
         Tab::History => super::history::render(frame, app, chunks[1]),
         Tab::Costs => super::costs::render(frame, app, chunks[1]),
     };
+
+    // Shortcuts bar
+    super::shortcuts::render(frame, app, chunks[2]);
 }
 
-fn render_dashboard(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     if app.agents.is_empty() {
         let msg = Paragraph::new(
             "No agents found. Create one with: swarm new my-agent\n\n\
-             Press 'q' to quit, Tab to switch views, j/k to navigate",
+             Press ':' to open command palette",
         )
-        .block(Block::default().borders(Borders::ALL).title(" Dashboard "));
+        .block(Block::default().borders(Borders::ALL).title(" Agents "));
         frame.render_widget(msg, area);
         return;
     }
@@ -98,7 +105,7 @@ fn render_dashboard(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" Dashboard — {} agents ", app.agents.len())),
+            .title(format!(" Agents — {} loaded ", app.agents.len())),
     );
 
     frame.render_widget(table, area);

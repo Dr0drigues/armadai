@@ -38,6 +38,56 @@ swarm new my-tool --template cli-generic
 
 Then edit `agents/my-tool.md` to set the `command` and `args` fields.
 
+### planning
+
+Sprint and project planning agent. Produces structured plans.
+
+```bash
+swarm new sprint-planner --template planning --stack rust
+```
+
+### security-review
+
+Security audit specialist. Identifies vulnerabilities (OWASP, CVE).
+
+```bash
+swarm new sec-reviewer --template security-review --stack typescript
+```
+
+### debug
+
+Debugging assistant with systematic root cause analysis.
+
+```bash
+swarm new my-debugger --template debug --stack rust
+```
+
+### tech-debt
+
+Technical debt analyzer. Identifies and prioritizes refactoring opportunities.
+
+```bash
+swarm new debt-scanner --template tech-debt --stack java
+```
+
+### tdd-red / tdd-green / tdd-refactor
+
+TDD cycle agents — use them in a pipeline:
+
+```bash
+swarm new failing-tests --template tdd-red --stack rust
+swarm new make-pass --template tdd-green --stack rust
+swarm new clean-up --template tdd-refactor --stack rust
+```
+
+### tech-writer
+
+Documentation writer. Produces clear, structured docs.
+
+```bash
+swarm new doc-writer --template tech-writer --stack rust
+```
+
 ## Placeholders
 
 Templates use `{{placeholder}}` syntax for customizable values:

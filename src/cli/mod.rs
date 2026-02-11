@@ -8,7 +8,7 @@ mod run;
 mod up;
 mod validate;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "swarm", about = "AI agent fleet orchestrator", version)]
@@ -92,6 +92,12 @@ pub enum Command {
     Up,
     /// Stop infrastructure services (Docker Compose)
     Down,
+    /// Generate shell completion scripts
+    Completion {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
@@ -113,5 +119,9 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Tui => crate::tui::run().await,
         Command::Up => up::start().await,
         Command::Down => up::stop().await,
+        Command::Completion { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "swarm", &mut std::io::stdout());
+            Ok(())
+        }
     }
 }

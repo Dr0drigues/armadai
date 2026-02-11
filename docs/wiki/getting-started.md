@@ -72,6 +72,31 @@ For production use, see the [Providers](providers.md) page for SOPS + age encryp
 swarm run my-assistant "Explain the builder pattern in Rust"
 ```
 
+## Shell Completion
+
+Set up auto-completion for your shell:
+
+```bash
+# Bash
+swarm completion bash > ~/.local/share/bash-completion/completions/swarm
+
+# Zsh
+swarm completion zsh > ~/.zfunc/_swarm
+
+# Fish
+swarm completion fish > ~/.config/fish/completions/swarm.fish
+```
+
+## TUI Dashboard
+
+Browse and manage your agent fleet visually:
+
+```bash
+swarm tui
+```
+
+Use `Tab`/`Shift+Tab` to switch views, `j`/`k` to navigate, `Enter` to view agent details, `:` to open the command palette, and `q` to quit.
+
 ## Next Steps
 
 - [Agent Format](agent-format.md) — full reference for agent Markdown files
