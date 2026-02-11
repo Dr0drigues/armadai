@@ -35,6 +35,12 @@ pub enum Command {
         /// Template to use
         #[arg(long, short, default_value = "basic")]
         template: String,
+        /// Tech stack (replaces {{stack}} placeholder)
+        #[arg(long, short)]
+        stack: Option<String>,
+        /// Agent description (replaces {{description}} placeholder)
+        #[arg(long, short)]
+        description: Option<String>,
     },
     /// List available agents
     List {
@@ -90,7 +96,12 @@ pub enum Command {
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Run { agent, input, pipe } => run::execute(agent, input, pipe).await,
-        Command::New { name, template } => new::execute(name, template).await,
+        Command::New {
+            name,
+            template,
+            stack,
+            description,
+        } => new::execute(name, template, stack, description).await,
         Command::List { tags, stack } => list::execute(tags, stack).await,
         Command::Inspect { agent } => inspect::execute(agent).await,
         Command::Validate { agent } => validate::execute(agent).await,
