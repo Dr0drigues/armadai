@@ -125,9 +125,9 @@ struct RunMetrics {
 
 #[cfg(feature = "storage")]
 async fn record_run(metrics: &RunMetrics, input: &str, output: &str) {
-    use crate::storage::{init_embedded, queries};
+    use crate::storage::{init_db, queries};
 
-    let db = match init_embedded().await {
+    let db = match init_db().await {
         Ok(db) => db,
         Err(e) => {
             tracing::warn!("Failed to init storage: {e}");
