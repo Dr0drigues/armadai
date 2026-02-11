@@ -48,6 +48,9 @@ pub fn parse_agent_file(path: &Path) -> anyhow::Result<Agent> {
             Event::SoftBreak | Event::HardBreak => {
                 current_text.push('\n');
             }
+            Event::End(TagEnd::Item | TagEnd::Paragraph) => {
+                current_text.push('\n');
+            }
             _ => {}
         }
     }
@@ -93,4 +96,161 @@ pub fn parse_agent_file(path: &Path) -> anyhow::Result<Agent> {
         pipeline,
         context,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_temp_agent(content: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::with_suffix(".md").unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    #[test]
+    fn parse_basic_agent() {
+        let f = write_temp_agent(
+            r#"# Test Agent
+
+## Metadata
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- temperature: 0.5
+- tags: [dev, test]
+- stacks: [rust]
+
+## System Prompt
+
+You are a test agent.
+
+## Instructions
+
+Do the thing.
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        assert_eq!(agent.name, "Test Agent");
+        assert_eq!(agent.metadata.provider, "anthropic");
+        assert_eq!(
+            agent.metadata.model.as_deref(),
+            Some("claude-sonnet-4-5-20250929")
+        );
+        assert!((agent.metadata.temperature - 0.5).abs() < f32::EPSILON);
+        assert_eq!(agent.metadata.tags, vec!["dev", "test"]);
+        assert_eq!(agent.metadata.stacks, vec!["rust"]);
+        assert_eq!(agent.system_prompt, "You are a test agent.");
+        assert_eq!(agent.instructions.as_deref(), Some("Do the thing."));
+        assert!(agent.output_format.is_none());
+        assert!(agent.pipeline.is_none());
+    }
+
+    #[test]
+    fn parse_cli_agent() {
+        let f = write_temp_agent(
+            r#"# CLI Agent
+
+## Metadata
+- provider: cli
+- command: echo
+- args: [hello, world]
+- timeout: 60
+
+## System Prompt
+
+You are a cli wrapper.
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        assert_eq!(agent.name, "CLI Agent");
+        assert_eq!(agent.metadata.provider, "cli");
+        assert_eq!(agent.metadata.command.as_deref(), Some("echo"));
+        assert_eq!(
+            agent.metadata.args.as_deref(),
+            Some(&["hello".to_string(), "world".to_string()][..])
+        );
+        assert_eq!(agent.metadata.timeout, Some(60));
+    }
+
+    #[test]
+    fn parse_missing_title_fails() {
+        let f = write_temp_agent(
+            r#"## Metadata
+- provider: anthropic
+
+## System Prompt
+
+test
+"#,
+        );
+        assert!(parse_agent_file(f.path()).is_err());
+    }
+
+    #[test]
+    fn parse_missing_metadata_fails() {
+        let f = write_temp_agent(
+            r#"# Agent
+
+## System Prompt
+
+test
+"#,
+        );
+        assert!(parse_agent_file(f.path()).is_err());
+    }
+
+    #[test]
+    fn parse_missing_system_prompt_fails() {
+        let f = write_temp_agent(
+            r#"# Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+"#,
+        );
+        assert!(parse_agent_file(f.path()).is_err());
+    }
+
+    #[test]
+    fn parse_agent_with_pipeline() {
+        let f = write_temp_agent(
+            r#"# Pipeline Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## System Prompt
+
+test
+
+## Pipeline
+- agent-b
+- agent-c
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        let pipeline = agent.pipeline.unwrap();
+        assert_eq!(pipeline.next, vec!["agent-b", "agent-c"]);
+    }
+
+    #[test]
+    fn parse_real_agent_files() {
+        let agents_dir = Path::new("agents");
+        if !agents_dir.exists() {
+            return;
+        }
+        let agents = crate::core::agent::Agent::load_all(agents_dir).unwrap();
+        assert!(
+            !agents.is_empty(),
+            "Should parse at least one agent from agents/"
+        );
+        for agent in &agents {
+            assert!(!agent.name.is_empty());
+            assert!(!agent.metadata.provider.is_empty());
+            assert!(!agent.system_prompt.is_empty());
+        }
+    }
 }
