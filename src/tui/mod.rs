@@ -25,14 +25,14 @@ pub async fn run() -> Result<()> {
             views::dashboard::render(frame, &app);
         })?;
 
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Tab => app.next_tab(),
-                    KeyCode::BackTab => app.prev_tab(),
-                    _ => {}
-                }
+        if let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Char('q') => break,
+                KeyCode::Tab => app.next_tab(),
+                KeyCode::BackTab => app.prev_tab(),
+                _ => {}
             }
         }
     }

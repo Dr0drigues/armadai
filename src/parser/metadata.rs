@@ -67,6 +67,7 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
 }
 
 /// Validate metadata fields for consistency.
+#[allow(dead_code)]
 pub fn validate_metadata(metadata: &AgentMetadata) -> anyhow::Result<()> {
     match metadata.provider.as_str() {
         "cli" => {

@@ -47,16 +47,14 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
 
     // Header
     println!(
-        "  {:<name_w$}  {:<provider_w$}  {:<model_w$}  {}  {}",
-        "NAME", "PROVIDER", "MODEL", "TAGS", "STACKS",
+        "  {:<name_w$}  {:<provider_w$}  {:<model_w$}  TAGS  STACKS",
+        "NAME", "PROVIDER", "MODEL",
     );
     println!(
-        "  {:<name_w$}  {:<provider_w$}  {:<model_w$}  {}  {}",
+        "  {:<name_w$}  {:<provider_w$}  {:<model_w$}  ----  ------",
         "-".repeat(name_w),
         "-".repeat(provider_w),
         "-".repeat(model_w),
-        "----",
-        "------",
     );
 
     // Rows
