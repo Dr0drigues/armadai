@@ -5,16 +5,17 @@
 # 2. Passes all tests (test)
 # 3. Has no lint warnings (clippy with -D warnings)
 # 4. Follows formatting conventions (rustfmt)
+# 5. Commit messages follow Conventional Commits (on PRs)
 #
-# Runs on: every push to master, every pull request
+# Runs on: every push to master/develop, every pull request
 
 name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, develop]
   pull_request:
-    branches: [master]
+    branches: [master, develop]
 
 env:
   CARGO_TERM_COLOR: always
@@ -59,3 +60,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
+
+  commits:
+    name: Conventional Commits
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install commitizen
+      - name: Check PR commits
+        run: |
+          cz check --rev-range origin/${{ github.base_ref }}..HEAD
