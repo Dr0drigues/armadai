@@ -79,6 +79,7 @@ pub enum Command {
         action: config::ConfigAction,
     },
     /// Launch the TUI dashboard
+    #[cfg(feature = "tui")]
     Tui,
     /// Start infrastructure services (Docker Compose)
     Up,
@@ -99,6 +100,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             todo!("costs command")
         }
         Command::Config { action } => config::execute(action).await,
+        #[cfg(feature = "tui")]
         Command::Tui => crate::tui::run().await,
         Command::Up => up::start().await,
         Command::Down => up::stop().await,
