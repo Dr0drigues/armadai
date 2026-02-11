@@ -1,0 +1,29 @@
+# Provider configurations (non-sensitive)
+# API keys go in providers.sops.yaml (encrypted)
+
+providers:
+  anthropic:
+    base_url: https://api.anthropic.com/v1
+    models:
+      - claude-opus-4-6
+      - claude-sonnet-4-5-20250929
+      - claude-haiku-4-5-20251001
+
+  openai:
+    base_url: https://api.openai.com/v1
+    models:
+      - gpt-4o
+      - gpt-4o-mini
+      - o1
+      - o3-mini
+
+  google:
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    models:
+      - gemini-2.0-flash
+      - gemini-2.0-pro
+
+  proxy:
+    # LiteLLM or OpenRouter endpoint (when using `swarm up`)
+    base_url: http://localhost:4000/v1
+    models: []
