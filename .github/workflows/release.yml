@@ -71,7 +71,7 @@ jobs:
           cp target/${{ matrix.target }}/release/swarm dist/${{ matrix.artifact }}
           chmod +x dist/${{ matrix.artifact }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
