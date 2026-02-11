@@ -3,6 +3,7 @@ pub mod agent;
 pub mod context;
 #[allow(dead_code)]
 pub mod coordinator;
+pub mod fleet;
 #[allow(dead_code)]
 pub mod pipeline;
 #[allow(dead_code)]
