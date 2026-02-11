@@ -77,7 +77,9 @@ jobs:
         with:
           shared-key: ci-cargo-release
           save-if: ${{ github.ref == 'refs/heads/develop' }}
-      - run: cargo build --release
+      # Build with storage (kv-mem) but without kv-rocksdb to skip C++ compilation.
+      # RocksDB is only compiled in the release workflow (on tags).
+      - run: cargo build --release --no-default-features --features tui,storage
 
   commits:
     name: Conventional Commits
