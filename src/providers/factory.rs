@@ -61,6 +61,19 @@ fn find_tool(name: &str) -> Option<&'static ToolDef> {
         .map(|(_, def)| def)
 }
 
+/// Map a unified tool name to its API backend name.
+/// Returns the backend directly for explicit API providers.
+/// e.g. "claude" → "anthropic", "gemini" → "google", "anthropic" → "anthropic"
+pub fn api_backend_for_tool(name: &str) -> Option<&'static str> {
+    match name {
+        "anthropic" => Some("anthropic"),
+        "openai" => Some("openai"),
+        "google" => Some("google"),
+        "proxy" => Some("proxy"),
+        _ => find_tool(name).map(|t| t.api_backend),
+    }
+}
+
 /// Check if a CLI command is available on the system.
 fn cli_available(command: &str) -> bool {
     std::process::Command::new("which")

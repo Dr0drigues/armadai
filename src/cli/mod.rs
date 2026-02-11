@@ -1,9 +1,10 @@
 mod config;
 mod costs;
+mod fleet;
 mod history;
 mod inspect;
 mod list;
-mod new;
+pub(crate) mod new;
 mod run;
 mod up;
 mod validate;
@@ -59,15 +60,17 @@ pub enum Command {
         long_about = "Create a new agent from a template.\n\n\
             Available templates: basic, dev-review, dev-test, cli-generic, planning, \
             security-review, debug, tech-debt, tdd-red, tdd-green, tdd-refactor, tech-writer.\n\
-            The new agent is created at agents/<name>.md.",
+            The new agent is created at agents/<name>.md.\n\n\
+            Use --interactive (-i) for a guided step-by-step creation wizard.",
         after_help = "Examples:\n  \
             swarm new my-assistant\n  \
             swarm new reviewer --template dev-review --stack rust\n  \
-            swarm new scanner --template security-review -d \"audit OWASP top 10\""
+            swarm new scanner --template security-review -d \"audit OWASP top 10\"\n  \
+            swarm new -i"
     )]
     New {
-        /// Agent name
-        name: String,
+        /// Agent name (optional in interactive mode)
+        name: Option<String>,
         /// Template to use
         #[arg(long, short, default_value = "basic")]
         template: String,
@@ -77,6 +80,9 @@ pub enum Command {
         /// Agent description (replaces {{description}} placeholder)
         #[arg(long, short)]
         description: Option<String>,
+        /// Interactive creation wizard
+        #[arg(long, short = 'i')]
+        interactive: bool,
     },
     /// List available agents
     #[command(after_help = "Examples:\n  \
@@ -178,6 +184,18 @@ pub enum Command {
     #[command(long_about = "Stop infrastructure services (Docker Compose).\n\n\
         Stops and removes the containers started by 'swarm up'.")]
     Down,
+    /// Manage agent fleets
+    #[command(
+        subcommand,
+        long_about = "Manage agent fleets.\n\n\
+            Create named groups of agents and link them to project directories via swarm.yaml.",
+        after_help = "Examples:\n  \
+            swarm fleet create my-fleet --all\n  \
+            swarm fleet link my-fleet\n  \
+            swarm fleet list\n  \
+            swarm fleet show my-fleet"
+    )]
+    Fleet(fleet::FleetAction),
     /// Generate shell completion scripts
     #[command(after_help = "Examples:\n  \
         swarm completion bash > ~/.local/share/bash-completion/completions/swarm\n  \
@@ -198,7 +216,8 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             template,
             stack,
             description,
-        } => new::execute(name, template, stack, description).await,
+            interactive,
+        } => new::execute(name, template, stack, description, interactive).await,
         Command::List { tags, stack } => list::execute(tags, stack).await,
         Command::Inspect { agent } => inspect::execute(agent).await,
         Command::Validate { agent } => validate::execute(agent).await,
@@ -209,6 +228,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Tui => crate::tui::run().await,
         #[cfg(feature = "web")]
         Command::Web { port } => crate::web::serve(port).await,
+        Command::Fleet(action) => fleet::execute(action).await,
         Command::Up => up::start().await,
         Command::Down => up::stop().await,
         Command::Completion { shell } => {
