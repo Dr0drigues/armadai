@@ -37,7 +37,7 @@ surrealdb = { version = "2", features = ["kv-mem", "kv-rocksdb"] }
 pulldown-cmark = "0.12"
 
 # Encryption
-age = "0.10"
+age = "0.11"
 
 # Logging
 tracing = "0.1"
