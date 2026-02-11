@@ -92,11 +92,9 @@ pub enum Command {
         stack: Option<String>,
     },
     /// Inspect an agent's parsed configuration
-    #[command(
-        long_about = "Inspect an agent's parsed configuration.\n\n\
+    #[command(long_about = "Inspect an agent's parsed configuration.\n\n\
             Displays the fully parsed agent definition: metadata, system prompt, \
-            instructions, output format, and pipeline configuration."
-    )]
+            instructions, output format, and pipeline configuration.")]
     Inspect {
         /// Agent name
         agent: String,
@@ -152,12 +150,10 @@ pub enum Command {
     },
     /// Launch the TUI dashboard
     #[cfg(feature = "tui")]
-    #[command(
-        long_about = "Launch the TUI dashboard.\n\n\
+    #[command(long_about = "Launch the TUI dashboard.\n\n\
             Interactive terminal interface for browsing agents, viewing history and costs. \
             Use Tab/Shift+Tab or 1-4 to switch views, j/k to navigate, Enter for details, \
-            : or Ctrl+P for command palette, q to quit."
-    )]
+            : or Ctrl+P for command palette, q to quit.")]
     Tui,
     /// Launch the web UI
     #[cfg(feature = "web")]
