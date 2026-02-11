@@ -1,0 +1,94 @@
+# Release — Cross-platform binary builds on git tag
+#
+# Builds optimized binaries for:
+# - Linux x86_64 (GNU)
+# - Linux aarch64 (GNU, for ARM servers/Raspberry Pi)
+# - macOS x86_64 (Intel Macs)
+# - macOS aarch64 (Apple Silicon)
+#
+# Creates a GitHub Release with all binaries attached.
+# Trigger: push a semver tag like v0.1.0
+#
+# Usage:
+#   git tag v0.1.0
+#   git push origin v0.1.0
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: swarm-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: swarm-linux-aarch64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact: swarm-macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact: swarm-macos-aarch64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/swarm dist/${{ matrix.artifact }}
+          chmod +x dist/${{ matrix.artifact }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*/swarm-*
