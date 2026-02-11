@@ -54,10 +54,7 @@ pub fn init_sops(config_dir: &Path) -> anyhow::Result<()> {
 "#
     );
 
-    let sops_path = config_dir
-        .parent()
-        .unwrap_or(config_dir)
-        .join(".sops.yaml");
+    let sops_path = config_dir.parent().unwrap_or(config_dir).join(".sops.yaml");
     std::fs::write(&sops_path, sops_config)?;
     println!("SOPS config written to: {}", sops_path.display());
 
