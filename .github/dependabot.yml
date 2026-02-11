@@ -1,0 +1,30 @@
+# Dependabot — Automated dependency updates
+#
+# Checks weekly for:
+# - Cargo dependency updates (Rust crates)
+# - GitHub Actions version updates
+#
+# Opens PRs automatically when updates are available.
+# Combined with CI, this ensures updates don't break anything.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - rust
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci

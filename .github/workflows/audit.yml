@@ -1,0 +1,31 @@
+# Security Audit — Dependency vulnerability scanning
+#
+# Scans Cargo dependencies for known security vulnerabilities
+# using cargo-audit (RustSec Advisory Database).
+#
+# Catches issues like:
+# - CVEs in transitive dependencies
+# - Yanked crates still in use
+# - Unmaintained dependencies
+#
+# Runs on: every push to master, every PR, and daily at 06:00 UTC
+
+name: Security Audit
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "0 6 * * *"
+
+jobs:
+  audit:
+    name: Audit Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
