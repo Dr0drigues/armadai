@@ -16,9 +16,7 @@ pub async fn start() -> anyhow::Result<()> {
 
 pub async fn stop() -> anyhow::Result<()> {
     tracing::info!("Stopping infrastructure services...");
-    let status = Command::new("docker")
-        .args(["compose", "down"])
-        .status()?;
+    let status = Command::new("docker").args(["compose", "down"]).status()?;
 
     if status.success() {
         println!("Infrastructure services stopped.");

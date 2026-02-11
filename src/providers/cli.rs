@@ -83,9 +83,9 @@ impl Provider for CliProvider {
         let lines = tokio::io::AsyncBufReadExt::lines(reader);
         let stream = tokio_stream::wrappers::LinesStream::new(lines);
 
-        Ok(Box::pin(stream.map(|line: Result<String, std::io::Error>| {
-            line.map_err(|e| anyhow::anyhow!(e))
-        })))
+        Ok(Box::pin(stream.map(
+            |line: Result<String, std::io::Error>| line.map_err(|e| anyhow::anyhow!(e)),
+        )))
     }
 
     fn metadata(&self) -> ProviderMetadata {

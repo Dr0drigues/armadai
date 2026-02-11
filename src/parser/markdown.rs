@@ -79,10 +79,17 @@ pub fn parse_agent_file(path: &Path) -> anyhow::Result<Agent> {
     let context = sections.get("context").cloned();
 
     let pipeline = sections.get("pipeline").map(|raw| {
-        let next: Vec<String> = raw.lines().filter_map(|l| {
-            let trimmed = l.trim().trim_start_matches('-').trim();
-            if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
-        }).collect();
+        let next: Vec<String> = raw
+            .lines()
+            .filter_map(|l| {
+                let trimmed = l.trim().trim_start_matches('-').trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .collect();
         PipelineConfig { next }
     });
 

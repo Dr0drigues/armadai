@@ -21,7 +21,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         .collect();
 
     let tabs = Tabs::new(titles)
-        .block(Block::default().borders(Borders::ALL).title(" swarm-festai "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" swarm-festai "),
+        )
         .select(app.tab_index)
         .style(Style::default().fg(Color::White))
         .highlight_style(
@@ -33,8 +37,10 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Content area
     let content = match app.current_tab {
-        Tab::Dashboard => Paragraph::new("Agent fleet dashboard — press 'q' to quit, Tab to switch")
-            .block(Block::default().borders(Borders::ALL).title(" Dashboard ")),
+        Tab::Dashboard => {
+            Paragraph::new("Agent fleet dashboard — press 'q' to quit, Tab to switch")
+                .block(Block::default().borders(Borders::ALL).title(" Dashboard "))
+        }
         Tab::Execution => Paragraph::new("Execution view — streaming output will appear here")
             .block(Block::default().borders(Borders::ALL).title(" Execution ")),
         Tab::History => Paragraph::new("Execution history")

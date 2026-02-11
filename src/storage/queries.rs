@@ -33,7 +33,9 @@ pub async fn get_history(
 ) -> anyhow::Result<Vec<RunRecord>> {
     let query = match agent {
         Some(name) => {
-            format!("SELECT * FROM runs WHERE agent = '{name}' ORDER BY created_at DESC LIMIT {limit}")
+            format!(
+                "SELECT * FROM runs WHERE agent = '{name}' ORDER BY created_at DESC LIMIT {limit}"
+            )
         }
         None => {
             format!("SELECT * FROM runs ORDER BY created_at DESC LIMIT {limit}")
