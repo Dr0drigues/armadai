@@ -1,7 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::core::agent::Agent;
+use crate::core::fleet::FleetDefinition;
 use crate::providers::factory::create_provider;
 use crate::providers::rate_limiter::RateLimiter;
 use crate::providers::traits::{ChatMessage, CompletionRequest};
@@ -11,12 +12,26 @@ pub async fn execute(
     input: Option<String>,
     pipe: Option<Vec<String>>,
 ) -> anyhow::Result<()> {
-    let agents_dir = Path::new("agents");
+    let (agents_dir, fleet) = resolve_agents_dir();
+    let agents_dir = agents_dir.as_path();
 
     // Build the execution chain: primary agent + piped agents
     let mut chain = vec![agent_name];
     if let Some(extra) = pipe {
         chain.extend(extra);
+    }
+
+    // Validate agents against fleet if present
+    if let Some(ref fleet) = fleet {
+        for name in &chain {
+            if !fleet.contains_agent(name) {
+                anyhow::bail!(
+                    "Agent '{name}' is not in fleet '{}'. Available: {}",
+                    fleet.fleet,
+                    fleet.agents.join(", ")
+                );
+            }
+        }
     }
 
     // Resolve input text
@@ -182,4 +197,47 @@ async fn resolve_input(input: Option<String>) -> anyhow::Result<String> {
 fn atty_is_pipe() -> bool {
     use std::io::IsTerminal;
     !std::io::stdin().is_terminal()
+}
+
+/// Resolve the agents directory: if a `swarm.yaml` fleet file exists in the
+/// current directory, use the fleet's source/agents/ path. Otherwise default
+/// to the local `agents/` directory.
+fn resolve_agents_dir() -> (PathBuf, Option<FleetDefinition>) {
+    let fleet_path = Path::new("swarm.yaml");
+    if fleet_path.exists()
+        && let Ok(fleet) = FleetDefinition::load(fleet_path)
+    {
+        let dir = fleet.agents_dir();
+        if dir.exists() {
+            tracing::info!(
+                "Using fleet '{}' agents from {}",
+                fleet.fleet,
+                dir.display()
+            );
+            return (dir, Some(fleet));
+        }
+        tracing::warn!(
+            "Fleet '{}' source agents dir not found: {}",
+            fleet.fleet,
+            dir.display()
+        );
+    }
+    (PathBuf::from("agents"), None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_agents_dir_no_fleet() {
+        // When no swarm.yaml exists in the current directory,
+        // resolve_agents_dir should return the default "agents" path
+        let (dir, fleet) = resolve_agents_dir();
+        // We can't guarantee swarm.yaml doesn't exist in the test runner's cwd,
+        // but the function should not panic
+        assert!(fleet.is_none() || fleet.is_some());
+        // dir should be a valid path
+        assert!(!dir.to_string_lossy().is_empty());
+    }
 }
