@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Tabs},
+    widgets::{Block, Borders, Paragraph, Row, Table, Tabs},
 };
 
 use crate::tui::app::{App, Tab};
@@ -35,18 +35,71 @@ pub fn render(frame: &mut Frame, app: &App) {
         );
     frame.render_widget(tabs, chunks[0]);
 
-    // Content area
-    let content = match app.current_tab {
-        Tab::Dashboard => {
-            Paragraph::new("Agent fleet dashboard — press 'q' to quit, Tab to switch")
-                .block(Block::default().borders(Borders::ALL).title(" Dashboard "))
-        }
-        Tab::Execution => Paragraph::new("Execution view — streaming output will appear here")
-            .block(Block::default().borders(Borders::ALL).title(" Execution ")),
-        Tab::History => Paragraph::new("Execution history")
-            .block(Block::default().borders(Borders::ALL).title(" History ")),
-        Tab::Costs => Paragraph::new("Cost tracking per agent")
-            .block(Block::default().borders(Borders::ALL).title(" Costs ")),
+    // Content area — dispatch to the right view
+    match app.current_tab {
+        Tab::Dashboard => render_dashboard(frame, app, chunks[1]),
+        Tab::Execution => super::execution::render(frame, app, chunks[1]),
+        Tab::History => super::history::render(frame, app, chunks[1]),
+        Tab::Costs => super::costs::render(frame, app, chunks[1]),
     };
-    frame.render_widget(content, chunks[1]);
+}
+
+fn render_dashboard(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    if app.agents.is_empty() {
+        let msg = Paragraph::new(
+            "No agents found. Create one with: swarm new my-agent\n\n\
+             Press 'q' to quit, Tab to switch views, j/k to navigate",
+        )
+        .block(Block::default().borders(Borders::ALL).title(" Dashboard "));
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let header = Row::new(vec!["", "AGENT", "PROVIDER", "MODEL", "TAGS"])
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = app
+        .agents
+        .iter()
+        .enumerate()
+        .map(|(i, agent)| {
+            let marker = if i == app.selected_agent { ">" } else { " " };
+            let tags = agent.metadata.tags.join(", ");
+            let style = if i == app.selected_agent {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            Row::new(vec![
+                marker.to_string(),
+                agent.name.clone(),
+                agent.metadata.provider.clone(),
+                agent.model_display(),
+                tags,
+            ])
+            .style(style)
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(2),
+            Constraint::Min(15),
+            Constraint::Length(12),
+            Constraint::Length(30),
+            Constraint::Min(15),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Dashboard — {} agents ", app.agents.len())),
+    );
+
+    frame.render_widget(table, area);
 }
