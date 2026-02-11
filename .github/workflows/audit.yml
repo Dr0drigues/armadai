@@ -14,9 +14,9 @@ name: Security Audit
 
 on:
   push:
-    branches: [master]
+    branches: [master, develop]
   pull_request:
-    branches: [master]
+    branches: [master, develop]
   schedule:
     - cron: "0 6 * * *"
 

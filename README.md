@@ -170,6 +170,16 @@ HOST MACHINE
 
 ## Development
 
+### Setup
+
+```bash
+git clone https://github.com/Dr0drigues/swarm-festai.git
+cd swarm-festai
+git config core.hooksPath .githooks    # Enable commit message validation
+```
+
+### Build & Test
+
 ```bash
 cargo build              # Build
 cargo test               # Run tests
@@ -177,6 +187,30 @@ cargo clippy             # Lint
 cargo fmt                # Format
 RUST_LOG=debug cargo run  # Run with debug logs
 ```
+
+### Git Flow
+
+| Branch | Purpose |
+|---|---|
+| `master` | Production releases only |
+| `develop` | Integration branch (default) |
+| `feature/*` | New features (branch from `develop`) |
+| `release/*` | Release preparation (branch from `develop`, merge to `master` + `develop`) |
+| `hotfix/*` | Emergency fixes (branch from `master`, merge to `master` + `develop`) |
+
+### Commits
+
+This project enforces [Conventional Commits](https://www.conventionalcommits.org/).
+A git hook validates messages automatically. Use `cz commit` for an interactive prompt.
+
+```
+feat: add agent validation command
+fix(parser): handle empty metadata section
+docs: update README with new CLI commands
+refactor(providers): extract common HTTP logic
+```
+
+Changelogs are generated automatically via `cz bump`.
 
 ## License
 
