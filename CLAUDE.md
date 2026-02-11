@@ -53,7 +53,7 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`. Sever
 - `providers/` — `Provider` trait (in `traits.rs`) with `complete()` and `stream()` methods. Factory (`factory.rs`) constructs the right provider from agent metadata. Implementations: `api/anthropic.rs` (full), `cli.rs` (full), openai/google/proxy (stubs).
 - `core/` — Domain types: `Agent`, `AgentMetadata`, `Task`, `SharedContext`, `Coordinator`, `Pipeline`.
 - `storage/` — SurrealDB wrapper. `schema.rs` defines tables (`runs`, `agent_stats`), `queries.rs` has CRUD operations.
-- `tui/` — Ratatui-based terminal UI. `app.rs` holds state, `views/` renders tabs (Dashboard/Execution/History/Costs), `widgets/` provides reusable components.
+- `tui/` — Ratatui-based terminal UI. `app.rs` holds state (incl. command palette), `views/` renders tabs (Agents/Detail/History/Costs + shortcuts bar + command palette overlay), `widgets/` provides reusable components.
 - `secrets/` — SOPS + age encrypted secrets loader.
 
 **Provider trait** (`providers/traits.rs`):

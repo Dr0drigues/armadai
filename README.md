@@ -19,11 +19,10 @@ swarm tui
 
 - **Markdown-based agents** — one `.md` file = one agent. Human-readable, git-friendly.
 - **Multi-provider** — API (Anthropic, OpenAI, Google), CLI tools (claude, aider, any CLI), proxies (LiteLLM, OpenRouter)
-- **Hub & spoke orchestration** — a coordinator agent dispatches tasks to specialists
 - **Pipeline mode** — chain agents sequentially (output A becomes input B)
-- **TUI dashboard** — real-time monitoring with streaming output, history, and cost tracking
+- **TUI dashboard** — fleet management with agent browser, detail view, history, costs, and command palette
+- **Shell completion** — auto-complete for bash, zsh, fish, powershell, elvish
 - **Cost tracking** — per-agent, per-run cost monitoring stored in SurrealDB
-- **SOPS + age encryption** — API keys encrypted at rest, diff-friendly
 
 ## Quick Start
 
@@ -85,14 +84,15 @@ swarm run my-assistant "Explain how async/await works in Rust"
 | `swarm new --template <tpl> <name>` | Create an agent from a template | Done |
 | `swarm inspect <agent>` | Show parsed agent config | Done |
 | `swarm validate [agent]` | Dry-run validation (no API calls) | Done |
-| `swarm run <agent> [input]` | Run an agent | Planned |
-| `swarm run --pipe <a> <b> [input]` | Chain agents in a pipeline | Planned |
-| `swarm history [--agent a]` | View execution history | Planned |
+| `swarm run <agent> [input]` | Run an agent | Done |
+| `swarm run --pipe <a> <b> [input]` | Chain agents in a pipeline | Done |
+| `swarm history [--agent a]` | View execution history | Done |
 | `swarm history --replay <id>` | Replay a past execution | Planned |
-| `swarm costs [--agent a] [--from d]` | View cost tracking | Planned |
+| `swarm costs [--agent a] [--from d]` | View cost tracking | Done |
 | `swarm config providers` | Manage provider configs | Planned |
 | `swarm config secrets init` | Initialize SOPS + age | Planned |
-| `swarm tui` | Launch the TUI dashboard | Planned |
+| `swarm tui` | Launch the TUI dashboard | Done |
+| `swarm completion <shell>` | Generate shell completions | Done |
 | `swarm up / down` | Start/stop infra (Docker Compose) | Done |
 
 ## Agent Format
@@ -161,6 +161,14 @@ You are a versatile development assistant.
 | `dev-review` | Code review specialist |
 | `dev-test` | Test generation specialist |
 | `cli-generic` | Wrapper for any CLI tool |
+| `planning` | Sprint/project planning agent |
+| `security-review` | Security audit specialist |
+| `debug` | Debugging assistant |
+| `tech-debt` | Technical debt analyzer |
+| `tdd-red` | TDD red phase (write failing tests) |
+| `tdd-green` | TDD green phase (make tests pass) |
+| `tdd-refactor` | TDD refactor phase |
+| `tech-writer` | Documentation writer |
 
 Create an agent from a template:
 
@@ -168,6 +176,44 @@ Create an agent from a template:
 swarm new my-reviewer --template dev-review --stack rust
 swarm new my-tool --template cli-generic
 ```
+
+## Shell Completion
+
+Generate completion scripts for your shell:
+
+```bash
+# Bash
+swarm completion bash > ~/.local/share/bash-completion/completions/swarm
+
+# Zsh
+swarm completion zsh > ~/.zfunc/_swarm
+
+# Fish
+swarm completion fish > ~/.config/fish/completions/swarm.fish
+```
+
+## TUI Dashboard
+
+Launch with `swarm tui`. The dashboard provides fleet management views:
+
+| Tab | Description |
+|---|---|
+| **Agents** | Browse all loaded agents with provider, model, and tags |
+| **Detail** | View selected agent's full configuration (metadata, prompt, instructions) |
+| **History** | Execution history with tokens, costs, and duration |
+| **Costs** | Aggregated cost summary per agent |
+
+### Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `Tab` / `Shift+Tab` | Switch tabs |
+| `1-4` | Jump to tab directly |
+| `j/k` or arrows | Navigate lists |
+| `Enter` | View agent detail |
+| `:` or `Ctrl+P` | Open command palette |
+| `r` | Refresh data |
+| `q` / `Esc` | Quit |
 
 ## Architecture
 
@@ -195,6 +241,7 @@ Heavy dependencies are gated behind optional feature flags for faster compilatio
 | `tui` | Yes | TUI dashboard (ratatui + crossterm) |
 | `storage` | Yes* | SurrealDB with in-memory backend |
 | `storage-rocksdb` | Yes | SurrealDB with persistent RocksDB backend |
+| `providers-api` | Yes | HTTP API providers (Anthropic, OpenAI, Google) |
 
 \* Implied by `storage-rocksdb`.
 
