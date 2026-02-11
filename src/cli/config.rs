@@ -4,9 +4,12 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum ConfigAction {
-    /// Manage provider configurations
+    /// Show provider status, API keys, and environment variables
     Providers,
     /// Initialize or manage secrets (SOPS + age)
+    #[command(long_about = "Initialize or manage secrets (SOPS + age).\n\n\
+            Uses age for key generation and SOPS for encrypting provider API keys. \
+            Secrets are stored in config/providers.sops.yaml.")]
     Secrets {
         #[command(subcommand)]
         action: SecretsAction,
@@ -15,9 +18,9 @@ pub enum ConfigAction {
 
 #[derive(Subcommand)]
 pub enum SecretsAction {
-    /// Initialize SOPS + age encryption for this project
+    /// Generate an age key and .sops.yaml, create encrypted secrets template
     Init,
-    /// Rotate the age encryption key
+    /// Decrypt secrets, generate a new age key, and re-encrypt
     Rotate,
 }
 
