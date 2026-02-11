@@ -79,22 +79,21 @@ swarm run my-assistant "Explain how async/await works in Rust"
 
 ## Usage
 
-```
-swarm run <agent> [input]           Run an agent
-swarm run --pipe <a> <b> [input]    Chain agents in a pipeline
-swarm new --template <tpl> <name>   Create an agent from a template
-swarm list [--tags t] [--stack s]   List available agents
-swarm inspect <agent>               Show parsed agent config
-swarm validate [agent]              Dry-run validation (no API calls)
-swarm history [--agent a]           View execution history
-swarm history --replay <id>         Replay a past execution
-swarm costs [--agent a] [--from d]  View cost tracking
-swarm config providers              Manage provider configs
-swarm config secrets init           Initialize SOPS + age
-swarm tui                           Launch the TUI dashboard
-swarm up                            Start infra (Docker Compose)
-swarm down                          Stop infra
-```
+| Command | Description | Status |
+|---|---|---|
+| `swarm list [--tags t] [--stack s]` | List available agents | Done |
+| `swarm new --template <tpl> <name>` | Create an agent from a template | Done |
+| `swarm inspect <agent>` | Show parsed agent config | Done |
+| `swarm validate [agent]` | Dry-run validation (no API calls) | Done |
+| `swarm run <agent> [input]` | Run an agent | Planned |
+| `swarm run --pipe <a> <b> [input]` | Chain agents in a pipeline | Planned |
+| `swarm history [--agent a]` | View execution history | Planned |
+| `swarm history --replay <id>` | Replay a past execution | Planned |
+| `swarm costs [--agent a] [--from d]` | View cost tracking | Planned |
+| `swarm config providers` | Manage provider configs | Planned |
+| `swarm config secrets init` | Initialize SOPS + age | Planned |
+| `swarm tui` | Launch the TUI dashboard | Planned |
+| `swarm up / down` | Start/stop infra (Docker Compose) | Done |
 
 ## Agent Format
 
@@ -126,6 +125,18 @@ You are an expert code reviewer...
 Structured review: bugs, security, performance, style.
 ```
 
+### Available sections
+
+| Section | Required | Description |
+|---|---|---|
+| `# Title` (H1) | Yes | Agent name |
+| `## Metadata` | Yes | Provider, model, temperature, tags, stacks, etc. |
+| `## System Prompt` | Yes | System prompt sent to the model |
+| `## Instructions` | No | Step-by-step execution instructions |
+| `## Output Format` | No | Expected output format description |
+| `## Pipeline` | No | List of agents to chain after this one |
+| `## Context` | No | Additional context injected at runtime |
+
 ### Using CLI tools as providers
 
 ```markdown
@@ -140,6 +151,22 @@ Structured review: bugs, security, performance, style.
 ## System Prompt
 
 You are a versatile development assistant.
+```
+
+## Templates
+
+| Template | Description |
+|---|---|
+| `basic` | General-purpose agent |
+| `dev-review` | Code review specialist |
+| `dev-test` | Test generation specialist |
+| `cli-generic` | Wrapper for any CLI tool |
+
+Create an agent from a template:
+
+```bash
+swarm new my-reviewer --template dev-review --stack rust
+swarm new my-tool --template cli-generic
 ```
 
 ## Architecture
@@ -159,14 +186,28 @@ HOST MACHINE
     └── litellm     :4000
 ```
 
-## Templates
+### Cargo Feature Flags
 
-| Template | Description |
-|---|---|
-| `basic` | General-purpose agent |
-| `dev-review` | Code review specialist |
-| `dev-test` | Test generation specialist |
-| `cli-generic` | Wrapper for any CLI tool |
+Heavy dependencies are gated behind optional feature flags for faster compilation:
+
+| Feature | Default | Description |
+|---|---|---|
+| `tui` | Yes | TUI dashboard (ratatui + crossterm) |
+| `storage` | Yes* | SurrealDB with in-memory backend |
+| `storage-rocksdb` | Yes | SurrealDB with persistent RocksDB backend |
+
+\* Implied by `storage-rocksdb`.
+
+```bash
+# Full build (all features)
+cargo build --release
+
+# Lightweight build (no SurrealDB, no TUI)
+cargo build --release --no-default-features
+
+# CLI + storage (no TUI)
+cargo build --release --no-default-features --features storage
+```
 
 ## Development
 
@@ -211,6 +252,15 @@ refactor(providers): extract common HTTP logic
 ```
 
 Changelogs are generated automatically via `cz bump`.
+
+## Wiki
+
+Detailed documentation is available in [`docs/wiki/`](docs/wiki/):
+
+- [Getting Started](docs/wiki/getting-started.md) — installation, first agent, first run
+- [Agent Format](docs/wiki/agent-format.md) — complete reference for agent Markdown files
+- [Providers](docs/wiki/providers.md) — configuring API, CLI, and proxy providers
+- [Templates](docs/wiki/templates.md) — using and creating agent templates
 
 ## License
 
