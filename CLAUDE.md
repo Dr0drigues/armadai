@@ -40,7 +40,7 @@ Heavy optional dependencies are gated behind feature flags to keep CI fast (~1mi
 | `web` | axum, tower-http | Web UI dashboard |
 | `providers-api` | reqwest | HTTP-based LLM providers |
 
-Default features: `tui`, `storage-rocksdb`, `providers-api`. CI build uses `--no-default-features --features tui,storage` to skip RocksDB.
+Default features: `tui`, `web`, `storage-rocksdb`, `providers-api`. CI build uses `--no-default-features --features tui,storage` to skip RocksDB.
 
 Code that depends on optional features must use `#[cfg(feature = "...")]`. Several modules in `main.rs` use `#[allow(dead_code)]` because they are scaffolded but not fully wired yet.
 

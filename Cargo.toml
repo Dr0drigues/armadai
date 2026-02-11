@@ -10,7 +10,7 @@ name = "swarm"
 path = "src/main.rs"
 
 [features]
-default = ["tui", "storage-rocksdb", "providers-api"]
+default = ["tui", "web", "storage-rocksdb", "providers-api"]
 tui = ["dep:ratatui", "dep:crossterm"]
 web = ["dep:axum", "dep:tower-http"]
 storage = ["dep:surrealdb"]
