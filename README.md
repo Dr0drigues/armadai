@@ -97,6 +97,7 @@ swarm run my-assistant "Explain how async/await works in Rust"
 | `swarm config secrets init` | Initialize SOPS + age encryption | Done |
 | `swarm config secrets rotate` | Rotate age encryption key | Done |
 | `swarm tui` | Launch the TUI dashboard | Done |
+| `swarm web [--port N]` | Launch the web UI | Done |
 | `swarm completion <shell>` | Generate shell completions | Done |
 | `swarm up / down` | Start/stop infra (Docker Compose) | Done |
 
@@ -235,6 +236,21 @@ Launch with `swarm tui`. The dashboard provides fleet management views:
 | `r` | Refresh data |
 | `q` / `Esc` | Quit |
 
+## Web UI
+
+Launch with `swarm web` (default port 3000):
+
+```bash
+swarm web              # http://localhost:3000
+swarm web --port 8080  # custom port
+```
+
+The web UI provides a read-only dashboard for your agent fleet:
+
+- **Agents** — browse all loaded agents, click to view full configuration
+- **History** — execution history with tokens, costs, and duration
+- **Costs** — aggregated cost summary per agent
+
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.
@@ -242,7 +258,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.
 ```
 HOST MACHINE
 ├── swarm (native binary)
-│   ├── CLI + TUI
+│   ├── CLI + TUI + Web UI
 │   ├── Providers (API / CLI / Proxy)
 │   ├── SurrealDB (embedded)
 │   └── SOPS + age secrets
@@ -259,6 +275,7 @@ Heavy dependencies are gated behind optional feature flags for faster compilatio
 | Feature | Default | Description |
 |---|---|---|
 | `tui` | Yes | TUI dashboard (ratatui + crossterm) |
+| `web` | No | Web UI dashboard (axum + tower-http) |
 | `storage` | Yes* | SurrealDB with in-memory backend |
 | `storage-rocksdb` | Yes | SurrealDB with persistent RocksDB backend |
 | `providers-api` | Yes | HTTP API providers (Anthropic, OpenAI, Google) |

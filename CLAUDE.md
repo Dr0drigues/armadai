@@ -37,6 +37,7 @@ Heavy optional dependencies are gated behind feature flags to keep CI fast (~1mi
 | `tui` | ratatui, crossterm | TUI dashboard |
 | `storage` | surrealdb (in-memory) | Embedded DB |
 | `storage-rocksdb` | surrealdb + RocksDB | Persistent storage (C++ build) |
+| `web` | axum, tower-http | Web UI dashboard |
 | `providers-api` | reqwest | HTTP-based LLM providers |
 
 Default features: `tui`, `storage-rocksdb`, `providers-api`. CI build uses `--no-default-features --features tui,storage` to skip RocksDB.
@@ -54,6 +55,7 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`. Sever
 - `core/` — Domain types: `Agent`, `AgentMetadata`, `Task`, `SharedContext`, `Coordinator`, `Pipeline`.
 - `storage/` — SurrealDB wrapper. `schema.rs` defines tables (`runs`, `agent_stats`), `queries.rs` has CRUD operations.
 - `tui/` — Ratatui-based terminal UI. `app.rs` holds state (incl. command palette), `views/` renders tabs (Agents/Detail/History/Costs + shortcuts bar + command palette overlay), `widgets/` provides reusable components.
+- `web/` — Axum-based web UI. Embedded single-page HTML app with JSON API endpoints (`/api/agents`, `/api/history`, `/api/costs`).
 - `secrets/` — SOPS + age encrypted secrets loader.
 
 **Provider trait** (`providers/traits.rs`):
