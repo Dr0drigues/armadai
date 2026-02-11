@@ -45,21 +45,25 @@ The binary is at `target/release/swarm`.
 ### Configure providers
 
 ```bash
-# Initialize secret management
-swarm config secrets init
+# Option A: Encrypted secrets (recommended)
+swarm config secrets init       # Generates age key + .sops.yaml
+sops config/providers.sops.yaml # Edit encrypted API keys
 
-# Edit your API keys (encrypted)
-sops config/providers.sops.yaml
-```
+# Option B: Environment variables
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
 
-Or for quick testing, create `config/providers.secret.yaml` (unencrypted, gitignored):
-
-```yaml
+# Option C: Plain file (quick testing, gitignored)
+cat > config/providers.secret.yaml << 'EOF'
 providers:
   anthropic:
     api_key: sk-ant-...
   openai:
     api_key: sk-...
+EOF
+
+# Check provider status
+swarm config providers
 ```
 
 ### Create your first agent
@@ -89,8 +93,9 @@ swarm run my-assistant "Explain how async/await works in Rust"
 | `swarm history [--agent a]` | View execution history | Done |
 | `swarm history --replay <id>` | Replay a past execution | Planned |
 | `swarm costs [--agent a] [--from d]` | View cost tracking | Done |
-| `swarm config providers` | Manage provider configs | Planned |
-| `swarm config secrets init` | Initialize SOPS + age | Planned |
+| `swarm config providers` | Show provider configs and secrets status | Done |
+| `swarm config secrets init` | Initialize SOPS + age encryption | Done |
+| `swarm config secrets rotate` | Rotate age encryption key | Done |
 | `swarm tui` | Launch the TUI dashboard | Done |
 | `swarm completion <shell>` | Generate shell completions | Done |
 | `swarm up / down` | Start/stop infra (Docker Compose) | Done |
