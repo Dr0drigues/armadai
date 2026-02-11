@@ -4,4 +4,5 @@ pub mod cli;
 pub mod factory;
 #[cfg(feature = "providers-api")]
 pub mod proxy;
+pub mod rate_limiter;
 pub mod traits;
