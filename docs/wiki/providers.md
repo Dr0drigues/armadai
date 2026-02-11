@@ -1,10 +1,42 @@
 # Providers
 
-swarm-festai supports three types of providers for executing agents.
+swarm-festai supports three types of providers for executing agents, plus **unified tool names** that auto-detect the best backend.
+
+## Unified Tool Names (Recommended)
+
+Use a tool name directly as the provider. swarm auto-detects whether the CLI tool is installed and falls back to the API if not.
+
+| Provider | CLI tool | API fallback | Default CLI args |
+|---|---|---|---|
+| `claude` | `claude` | Anthropic API | `-p --output-format text` |
+| `gemini` | `gemini` | Google API | `-p` |
+| `gpt` | `gpt` | OpenAI API | (none) |
+| `aider` | `aider` | OpenAI API | `--message` |
+
+### Example
+
+```markdown
+## Metadata
+- provider: claude
+- model: claude-sonnet-4-5-20250929
+- timeout: 120
+- tags: [dev, review]
+```
+
+If `claude` CLI is installed, the agent runs via CLI. Otherwise, it uses the Anthropic API (requires `ANTHROPIC_API_KEY`).
+
+You can override the CLI args:
+
+```markdown
+## Metadata
+- provider: claude
+- args: [-p, --model, opus, --output-format, json]
+- timeout: 600
+```
 
 ## API Providers
 
-Direct HTTP calls to LLM APIs.
+Direct HTTP calls to LLM APIs. Use these when you want explicit API control.
 
 ### Anthropic
 
@@ -52,22 +84,6 @@ Execute any command-line tool as an agent. The input is passed as the last argum
 
 ### Examples
 
-**Claude Code:**
-```markdown
-- provider: cli
-- command: claude
-- args: ["-p"]
-- timeout: 600
-```
-
-**aider:**
-```markdown
-- provider: cli
-- command: aider
-- args: ["--message"]
-- timeout: 300
-```
-
 **Custom script:**
 ```markdown
 - provider: cli
@@ -75,6 +91,8 @@ Execute any command-line tool as an agent. The input is passed as the last argum
 - args: ["--format", "json"]
 - timeout: 60
 ```
+
+> **Note:** For standard tools (claude, gemini, gpt, aider), prefer using the unified tool name (`provider: claude`) instead of `provider: cli` + `command: claude`. The unified names auto-detect CLI availability and provide sensible defaults.
 
 ## Proxy Provider
 

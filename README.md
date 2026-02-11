@@ -18,7 +18,7 @@ swarm tui
 ### Key Features
 
 - **Markdown-based agents** — one `.md` file = one agent. Human-readable, git-friendly.
-- **Multi-provider** — API (Anthropic, OpenAI, Google), CLI tools (claude, aider, any CLI), proxies (LiteLLM, OpenRouter)
+- **Multi-provider** — unified tool names (`claude`, `gemini`, `gpt`, `aider`) auto-detect CLI vs API; explicit API/CLI/proxy modes also supported
 - **Pipeline mode** — chain agents sequentially (output A becomes input B)
 - **TUI dashboard** — fleet management with agent browser, detail view, history, costs, and command palette
 - **Shell completion** — auto-complete for bash, zsh, fish, powershell, elvish
@@ -103,7 +103,7 @@ Each agent is a Markdown file in `agents/`:
 # Code Reviewer
 
 ## Metadata
-- provider: anthropic
+- provider: claude
 - model: claude-sonnet-4-5-20250929
 - temperature: 0.3
 - max_tokens: 4096
@@ -125,6 +125,19 @@ You are an expert code reviewer...
 Structured review: bugs, security, performance, style.
 ```
 
+### Provider names
+
+Use unified tool names — swarm auto-detects CLI tool vs API:
+
+| Provider | CLI tool detected | CLI not found |
+|---|---|---|
+| `claude` | Uses `claude` CLI | Falls back to Anthropic API |
+| `gemini` | Uses `gemini` CLI | Falls back to Google API |
+| `gpt` | Uses `gpt` CLI | Falls back to OpenAI API |
+| `aider` | Uses `aider` CLI | Falls back to OpenAI API |
+
+You can also use explicit providers: `anthropic`, `openai`, `google`, `cli`, `proxy`.
+
 ### Available sections
 
 | Section | Required | Description |
@@ -137,16 +150,18 @@ Structured review: bugs, security, performance, style.
 | `## Pipeline` | No | List of agents to chain after this one |
 | `## Context` | No | Additional context injected at runtime |
 
-### Using CLI tools as providers
+### Using explicit CLI provider
+
+For custom scripts or tools not in the known list:
 
 ```markdown
-# Claude Code Agent
+# Custom Tool Agent
 
 ## Metadata
 - provider: cli
-- command: claude
-- args: ["-p", "--model", "sonnet", "--output-format", "json"]
-- timeout: 300
+- command: ./scripts/my-tool.sh
+- args: ["--format", "json"]
+- timeout: 60
 
 ## System Prompt
 
