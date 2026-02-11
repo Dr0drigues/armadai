@@ -16,6 +16,7 @@ Thumbs.db
 
 # Secrets — NEVER commit unencrypted secrets
 config/age-key.txt
+config/age-key.txt.bak
 config/providers.secret.yaml
 
 # Storage

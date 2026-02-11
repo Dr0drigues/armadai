@@ -116,9 +116,20 @@ This starts LiteLLM on port 4000 (configured in `docker-compose.yml`).
 
 ## Secret Management
 
-API keys are stored in `config/providers.sops.yaml` (encrypted) or `config/providers.secret.yaml` (unencrypted, gitignored).
+API keys can be provided in three ways (checked in order):
 
-### Quick setup (unencrypted)
+1. **Environment variables** — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`
+2. **Encrypted file** — `config/providers.sops.yaml` (SOPS + age)
+3. **Plain file** — `config/providers.secret.yaml` (gitignored)
+
+### Quick setup (environment variables)
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-your-key
+export OPENAI_API_KEY=sk-your-key
+```
+
+### Quick setup (plain file, gitignored)
 
 ```yaml
 # config/providers.secret.yaml
@@ -133,15 +144,39 @@ providers:
 
 ### Production setup (SOPS + age)
 
+Prerequisites: [SOPS](https://github.com/getsops/sops) and [age](https://github.com/FiloSottile/age).
+
 ```bash
-# Initialize encryption
+# Initialize encryption (generates age key + .sops.yaml + template)
 swarm config secrets init
 
-# Edit encrypted file
+# Set the key file in your shell profile
+export SOPS_AGE_KEY_FILE=config/age-key.txt
+
+# Edit encrypted secrets
 sops config/providers.sops.yaml
 ```
 
-See the [SOPS documentation](https://github.com/getsops/sops) for details on the encryption workflow.
+The `init` command:
+1. Generates an age key pair at `config/age-key.txt`
+2. Creates `.sops.yaml` with the public key
+3. Creates and encrypts a template `config/providers.sops.yaml`
+
+### Key rotation
+
+```bash
+swarm config secrets rotate
+```
+
+This decrypts current secrets, generates a new age key, re-encrypts with the new key, and backs up the old key.
+
+### Check provider status
+
+```bash
+swarm config providers
+```
+
+Shows configured providers, secrets status (encrypted/unencrypted/missing), and environment variable status.
 
 ## Provider Configuration
 
