@@ -1,4 +1,5 @@
 mod config;
+mod costs;
 mod history;
 mod inspect;
 mod list;
@@ -106,10 +107,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Inspect { agent } => inspect::execute(agent).await,
         Command::Validate { agent } => validate::execute(agent).await,
         Command::History { agent, replay } => history::execute(agent, replay).await,
-        Command::Costs { agent, from } => {
-            let _ = (agent, from);
-            todo!("costs command")
-        }
+        Command::Costs { agent, from } => costs::execute(agent, from).await,
         Command::Config { action } => config::execute(action).await,
         #[cfg(feature = "tui")]
         Command::Tui => crate::tui::run().await,
