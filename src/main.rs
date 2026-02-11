@@ -10,6 +10,8 @@ mod secrets;
 mod storage;
 #[cfg(feature = "tui")]
 mod tui;
+#[cfg(feature = "web")]
+mod web;
 
 use clap::Parser;
 
