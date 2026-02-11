@@ -9,7 +9,10 @@
 #
 # Runs on: every push to master/develop, every pull request
 #
-# Cache strategy:
+# Performance strategy:
+# - Heavy optional deps (surrealdb+rocksdb, ratatui) are behind feature flags
+# - clippy/test run with `--no-default-features --features tui` (skips RocksDB C++ build)
+# - build --release compiles with all default features (full binary)
 # - Swatinem/rust-cache caches ~/.cargo and target/ between runs
 # - Cache is shared across clippy/test/build via shared-key
 # - Cache is only saved on develop pushes (save-if), PRs read from it
@@ -50,7 +53,7 @@ jobs:
         with:
           shared-key: ci-cargo
           save-if: ${{ github.ref == 'refs/heads/develop' }}
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --no-default-features --features tui -- -D warnings
 
   test:
     name: Test
@@ -62,7 +65,7 @@ jobs:
         with:
           shared-key: ci-cargo
           save-if: ${{ github.ref == 'refs/heads/develop' }}
-      - run: cargo test --all
+      - run: cargo test --no-default-features --features tui
 
   build:
     name: Build
@@ -74,7 +77,9 @@ jobs:
         with:
           shared-key: ci-cargo-release
           save-if: ${{ github.ref == 'refs/heads/develop' }}
-      - run: cargo build --release
+      # Build with storage (kv-mem) but without kv-rocksdb to skip C++ compilation.
+      # RocksDB is only compiled in the release workflow (on tags).
+      - run: cargo build --release --no-default-features --features tui,storage
 
   commits:
     name: Conventional Commits
@@ -87,7 +92,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: pip
       - run: pip install commitizen
       - name: Check PR commits
         run: |
