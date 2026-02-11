@@ -94,6 +94,32 @@ impl Agent {
         Ok(())
     }
 
+    /// Find an agent .md file by name (stem) in the agents directory tree.
+    pub fn find_file(agents_dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+        let direct = agents_dir.join(format!("{name}.md"));
+        if direct.exists() {
+            return Some(direct);
+        }
+        Self::find_file_in_dir(agents_dir, name)
+    }
+
+    fn find_file_in_dir(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()? {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = Self::find_file_in_dir(&path, name) {
+                    return Some(found);
+                }
+            } else if path.file_stem().is_some_and(|s| s == name)
+                && path.extension().is_some_and(|e| e == "md")
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+
     /// Display string for the model/command column.
     pub fn model_display(&self) -> String {
         if let Some(ref model) = self.metadata.model {
