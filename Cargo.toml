@@ -34,7 +34,7 @@ serde_yml = "0.0.12"
 surrealdb = { version = "2", features = ["kv-mem", "kv-rocksdb"] }
 
 # Markdown parsing
-pulldown-cmark = "0.12"
+pulldown-cmark = "0.13"
 
 # Encryption
 age = "0.10"
