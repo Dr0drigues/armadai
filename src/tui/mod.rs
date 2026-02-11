@@ -4,12 +4,13 @@ pub mod widgets;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::prelude::*;
-use tokio_stream::StreamExt;
+
+use app::PaletteAction;
 
 pub async fn run() -> Result<()> {
     // Setup terminal
@@ -23,65 +24,84 @@ pub async fn run() -> Result<()> {
     app.load_agents();
     load_storage_data(&mut app).await;
 
-    // Channel for streaming execution output
-    let (exec_tx, mut exec_rx) = tokio::sync::mpsc::channel::<String>(256);
-
     loop {
         terminal.draw(|frame| {
             views::dashboard::render(frame, &app);
+            // Overlay command palette if visible
+            views::palette::render(frame, &app);
         })?;
 
-        // Drain any pending streaming tokens
-        while let Ok(token) = exec_rx.try_recv() {
-            app.exec_output.push(token);
-        }
-
-        // Poll for keyboard events with a short timeout (for streaming responsiveness)
-        if crossterm::event::poll(std::time::Duration::from_millis(50))?
+        if crossterm::event::poll(std::time::Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
         {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
+
+            // Command palette mode
+            if app.palette.visible {
+                match key.code {
+                    KeyCode::Esc => app.palette.close(),
+                    KeyCode::Enter => {
+                        if let Some(action) = app.palette.execute() {
+                            app.palette.close();
+                            match action {
+                                PaletteAction::SwitchTab(tab) => app.switch_tab(tab),
+                                PaletteAction::Refresh => {
+                                    app.load_agents();
+                                    load_storage_data(&mut app).await;
+                                }
+                                PaletteAction::Quit => break,
+                                PaletteAction::NewAgent => {
+                                    app.status_msg =
+                                        Some("Run 'swarm new <name>' from terminal".to_string());
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Up => app.palette.select_prev(),
+                    KeyCode::Down => app.palette.select_next(),
+                    KeyCode::Backspace => {
+                        app.palette.input.pop();
+                        app.palette.update_filter();
+                    }
+                    KeyCode::Char(c) => {
+                        app.palette.input.push(c);
+                        app.palette.update_filter();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // Normal mode
             match key.code {
-                KeyCode::Char('q') => break,
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char(':') | KeyCode::Char('p')
+                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    app.palette.open();
+                }
+                KeyCode::Char(':') => app.palette.open(),
                 KeyCode::Tab => app.next_tab(),
                 KeyCode::BackTab => app.prev_tab(),
                 KeyCode::Char('j') | KeyCode::Down => app.select_next(),
                 KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
                 KeyCode::Char('r') => {
-                    // Refresh data
                     app.load_agents();
                     load_storage_data(&mut app).await;
+                    app.status_msg = Some("Refreshed".to_string());
                 }
                 KeyCode::Enter => {
-                    // Launch execution of selected agent
-                    if !app.exec_running
-                        && let Some(agent) = app.agents.get(app.selected_agent).cloned()
-                    {
-                        app.exec_output.clear();
-                        app.exec_running = true;
-                        app.current_tab = app::Tab::Execution;
-                        app.tab_index = 1;
-
-                        let tx = exec_tx.clone();
-                        tokio::spawn(async move {
-                            run_agent_streaming(agent, tx).await;
-                        });
+                    if app.current_tab == app::Tab::Dashboard && app.selected_agent().is_some() {
+                        app.switch_tab(app::Tab::AgentDetail);
                     }
                 }
+                KeyCode::Char('1') => app.switch_tab(app::Tab::Dashboard),
+                KeyCode::Char('2') => app.switch_tab(app::Tab::AgentDetail),
+                KeyCode::Char('3') => app.switch_tab(app::Tab::History),
+                KeyCode::Char('4') => app.switch_tab(app::Tab::Costs),
                 _ => {}
-            }
-        }
-
-        // Check if execution finished
-        if app.exec_running && exec_rx.is_empty() {
-            // Small heuristic: if the channel is empty and the task has had time to start,
-            // check again after next poll cycle. Execution complete is signaled by
-            // "[DONE]" token.
-            if app.exec_output.last().is_some_and(|s| s.contains("[DONE]")) {
-                app.exec_running = false;
-                load_storage_data(&mut app).await;
             }
         }
     }
@@ -91,79 +111,6 @@ pub async fn run() -> Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
-}
-
-async fn run_agent_streaming(
-    agent: crate::core::agent::Agent,
-    tx: tokio::sync::mpsc::Sender<String>,
-) {
-    use crate::providers::factory::create_provider;
-    use crate::providers::traits::{ChatMessage, CompletionRequest};
-
-    let _ = tx.send(format!("Running agent: {}\n\n", agent.name)).await;
-
-    let provider = match create_provider(&agent) {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = tx.send(format!("Error: {e}\n[DONE]")).await;
-            return;
-        }
-    };
-
-    let model = agent
-        .metadata
-        .model
-        .clone()
-        .or_else(|| agent.metadata.command.clone())
-        .unwrap_or_else(|| "default".to_string());
-
-    let request = CompletionRequest {
-        model,
-        system_prompt: agent.system_prompt.clone(),
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: "Hello! Introduce yourself briefly.".to_string(),
-        }],
-        temperature: agent.metadata.temperature,
-        max_tokens: agent.metadata.max_tokens,
-    };
-
-    // Try streaming first, fall back to complete
-    match provider.stream(request.clone()).await {
-        Ok(mut stream) => {
-            while let Some(result) = stream.next().await {
-                match result {
-                    Ok(token) => {
-                        if tx.send(token).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx.send(format!("\nStream error: {e}")).await;
-                        break;
-                    }
-                }
-            }
-            let _ = tx.send("\n\n[DONE]".to_string()).await;
-        }
-        Err(_) => {
-            // Fallback to complete
-            match provider.complete(request).await {
-                Ok(response) => {
-                    let _ = tx.send(response.content).await;
-                    let _ = tx
-                        .send(format!(
-                            "\n\n[tokens: {}/{}, cost: ${:.6}]\n[DONE]",
-                            response.tokens_in, response.tokens_out, response.cost
-                        ))
-                        .await;
-                }
-                Err(e) => {
-                    let _ = tx.send(format!("Error: {e}\n[DONE]")).await;
-                }
-            }
-        }
-    }
 }
 
 #[cfg(feature = "storage")]
