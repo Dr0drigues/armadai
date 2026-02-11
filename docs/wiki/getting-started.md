@@ -97,6 +97,21 @@ swarm tui
 
 Use `Tab`/`Shift+Tab` to switch views, `j`/`k` to navigate, `Enter` to view agent details, `:` to open the command palette, and `q` to quit.
 
+## Web UI
+
+For a browser-based dashboard:
+
+```bash
+swarm web              # http://localhost:3000
+swarm web --port 8080  # custom port
+```
+
+Browse agents, view execution history, and track costs from your browser. Requires the `web` feature flag (not enabled by default):
+
+```bash
+cargo build --release --features web
+```
+
 ## Next Steps
 
 - [Agent Format](agent-format.md) — full reference for agent Markdown files

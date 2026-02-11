@@ -12,6 +12,7 @@ path = "src/main.rs"
 [features]
 default = ["tui", "storage-rocksdb", "providers-api"]
 tui = ["dep:ratatui", "dep:crossterm"]
+web = ["dep:axum", "dep:tower-http"]
 storage = ["dep:surrealdb"]
 storage-rocksdb = ["storage", "surrealdb/kv-rocksdb"]
 providers-api = ["dep:reqwest"]
@@ -30,8 +31,12 @@ clap_complete = "4"
 ratatui = { version = "0.30", optional = true }
 crossterm = { version = "0.29", optional = true }
 
-# HTTP (optional — enable with `providers-api` feature)
+# HTTP client (optional — enable with `providers-api` feature)
 reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
+
+# HTTP server (optional — enable with `web` feature)
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

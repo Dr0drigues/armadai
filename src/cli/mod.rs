@@ -88,6 +88,13 @@ pub enum Command {
     /// Launch the TUI dashboard
     #[cfg(feature = "tui")]
     Tui,
+    /// Launch the web UI
+    #[cfg(feature = "web")]
+    Web {
+        /// Port to listen on
+        #[arg(long, short, default_value = "3000")]
+        port: u16,
+    },
     /// Start infrastructure services (Docker Compose)
     Up,
     /// Stop infrastructure services (Docker Compose)
@@ -117,6 +124,8 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Config { action } => config::execute(action).await,
         #[cfg(feature = "tui")]
         Command::Tui => crate::tui::run().await,
+        #[cfg(feature = "web")]
+        Command::Web { port } => crate::web::serve(port).await,
         Command::Up => up::start().await,
         Command::Down => up::stop().await,
         Command::Completion { shell } => {
