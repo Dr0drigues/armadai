@@ -275,7 +275,7 @@ Heavy dependencies are gated behind optional feature flags for faster compilatio
 | Feature | Default | Description |
 |---|---|---|
 | `tui` | Yes | TUI dashboard (ratatui + crossterm) |
-| `web` | No | Web UI dashboard (axum + tower-http) |
+| `web` | Yes | Web UI dashboard (axum + tower-http) |
 | `storage` | Yes* | SurrealDB with in-memory backend |
 | `storage-rocksdb` | Yes | SurrealDB with persistent RocksDB backend |
 | `providers-api` | Yes | HTTP API providers (Anthropic, OpenAI, Google) |

@@ -106,11 +106,7 @@ swarm web              # http://localhost:3000
 swarm web --port 8080  # custom port
 ```
 
-Browse agents, view execution history, and track costs from your browser. Requires the `web` feature flag (not enabled by default):
-
-```bash
-cargo build --release --features web
-```
+Browse agents, view execution history, and track costs from your browser. The `web` feature is enabled by default.
 
 ## Next Steps
 
