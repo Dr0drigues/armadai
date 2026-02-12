@@ -10,11 +10,11 @@ cd swarm-festai
 cargo build --release
 ```
 
-The binary is at `target/release/swarm`. Add it to your `PATH`:
+The binary is at `target/release/armadai`. Add it to your `PATH`:
 
 ```bash
 # Option 1: symlink
-ln -s $(pwd)/target/release/swarm ~/.local/bin/swarm
+ln -s $(pwd)/target/release/armadai ~/.local/bin/armadai
 
 # Option 2: cargo install
 cargo install --path .
@@ -33,7 +33,7 @@ cargo install --path .
 Create your first agent from a template:
 
 ```bash
-swarm new my-assistant --template basic --description "general-purpose coding assistant"
+armadai new my-assistant --template basic --description "general-purpose coding assistant"
 ```
 
 This creates `agents/my-assistant.md`. Open it and customize the system prompt to your needs.
@@ -42,13 +42,13 @@ This creates `agents/my-assistant.md`. Open it and customize the system prompt t
 
 ```bash
 # List all available agents
-swarm list
+armadai list
 
 # Validate all agent configurations
-swarm validate
+armadai validate
 
 # Inspect a specific agent
-swarm inspect my-assistant
+armadai inspect my-assistant
 ```
 
 ## Configure Providers
@@ -69,7 +69,7 @@ For production use, see the [Providers](providers.md) page for SOPS + age encryp
 ## Run an Agent
 
 ```bash
-swarm run my-assistant "Explain the builder pattern in Rust"
+armadai run my-assistant "Explain the builder pattern in Rust"
 ```
 
 ## Shell Completion
@@ -78,13 +78,13 @@ Set up auto-completion for your shell:
 
 ```bash
 # Bash
-swarm completion bash > ~/.local/share/bash-completion/completions/swarm
+armadai completion bash > ~/.local/share/bash-completion/completions/armadai
 
 # Zsh
-swarm completion zsh > ~/.zfunc/_swarm
+armadai completion zsh > ~/.zfunc/_armadai
 
 # Fish
-swarm completion fish > ~/.config/fish/completions/swarm.fish
+armadai completion fish > ~/.config/fish/completions/armadai.fish
 ```
 
 ## TUI Dashboard
@@ -92,7 +92,7 @@ swarm completion fish > ~/.config/fish/completions/swarm.fish
 Browse and manage your agent fleet visually:
 
 ```bash
-swarm tui
+armadai tui
 ```
 
 Use `Tab`/`Shift+Tab` to switch views, `j`/`k` to navigate, `Enter` to view agent details, `:` to open the command palette, and `q` to quit.
@@ -102,8 +102,8 @@ Use `Tab`/`Shift+Tab` to switch views, `j`/`k` to navigate, `Enter` to view agen
 For a browser-based dashboard:
 
 ```bash
-swarm web              # http://localhost:3000
-swarm web --port 8080  # custom port
+armadai web              # http://localhost:3000
+armadai web --port 8080  # custom port
 ```
 
 Browse agents, view execution history, and track costs from your browser. The `web` feature is enabled by default.

@@ -10,7 +10,7 @@ use crate::tui::app::App;
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.history.is_empty() {
         let msg =
-            Paragraph::new("No execution history. Run an agent first: swarm run <agent> <input>")
+            Paragraph::new("No execution history. Run an agent first: armadai run <agent> <input>")
                 .block(Block::default().borders(Borders::ALL).title(" History "));
         frame.render_widget(msg, area);
         return;

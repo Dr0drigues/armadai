@@ -9,7 +9,7 @@ Templates are Markdown files in the `templates/` directory that serve as startin
 General-purpose agent with Anthropic provider.
 
 ```bash
-swarm new my-agent --template basic --description "what this agent does"
+armadai new my-agent --template basic --description "what this agent does"
 ```
 
 ### dev-review
@@ -17,7 +17,7 @@ swarm new my-agent --template basic --description "what this agent does"
 Code review specialist. Produces structured reviews with severity levels.
 
 ```bash
-swarm new rust-reviewer --template dev-review --stack rust
+armadai new rust-reviewer --template dev-review --stack rust
 ```
 
 ### dev-test
@@ -25,7 +25,7 @@ swarm new rust-reviewer --template dev-review --stack rust
 Test generation specialist. Writes unit tests for given code.
 
 ```bash
-swarm new test-gen --template dev-test --stack typescript
+armadai new test-gen --template dev-test --stack typescript
 ```
 
 ### cli-generic
@@ -33,7 +33,7 @@ swarm new test-gen --template dev-test --stack typescript
 Wrapper for any CLI tool (claude, aider, custom scripts).
 
 ```bash
-swarm new my-tool --template cli-generic
+armadai new my-tool --template cli-generic
 ```
 
 Then edit `agents/my-tool.md` to set the `command` and `args` fields.
@@ -43,7 +43,7 @@ Then edit `agents/my-tool.md` to set the `command` and `args` fields.
 Sprint and project planning agent. Produces structured plans.
 
 ```bash
-swarm new sprint-planner --template planning --stack rust
+armadai new sprint-planner --template planning --stack rust
 ```
 
 ### security-review
@@ -51,7 +51,7 @@ swarm new sprint-planner --template planning --stack rust
 Security audit specialist. Identifies vulnerabilities (OWASP, CVE).
 
 ```bash
-swarm new sec-reviewer --template security-review --stack typescript
+armadai new sec-reviewer --template security-review --stack typescript
 ```
 
 ### debug
@@ -59,7 +59,7 @@ swarm new sec-reviewer --template security-review --stack typescript
 Debugging assistant with systematic root cause analysis.
 
 ```bash
-swarm new my-debugger --template debug --stack rust
+armadai new my-debugger --template debug --stack rust
 ```
 
 ### tech-debt
@@ -67,7 +67,7 @@ swarm new my-debugger --template debug --stack rust
 Technical debt analyzer. Identifies and prioritizes refactoring opportunities.
 
 ```bash
-swarm new debt-scanner --template tech-debt --stack java
+armadai new debt-scanner --template tech-debt --stack java
 ```
 
 ### tdd-red / tdd-green / tdd-refactor
@@ -75,9 +75,9 @@ swarm new debt-scanner --template tech-debt --stack java
 TDD cycle agents — use them in a pipeline:
 
 ```bash
-swarm new failing-tests --template tdd-red --stack rust
-swarm new make-pass --template tdd-green --stack rust
-swarm new clean-up --template tdd-refactor --stack rust
+armadai new failing-tests --template tdd-red --stack rust
+armadai new make-pass --template tdd-green --stack rust
+armadai new clean-up --template tdd-refactor --stack rust
 ```
 
 ### tech-writer
@@ -85,7 +85,7 @@ swarm new clean-up --template tdd-refactor --stack rust
 Documentation writer. Produces clear, structured docs.
 
 ```bash
-swarm new doc-writer --template tech-writer --stack rust
+armadai new doc-writer --template tech-writer --stack rust
 ```
 
 ## Placeholders

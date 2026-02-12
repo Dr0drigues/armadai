@@ -1,12 +1,13 @@
 [package]
-name = "swarm-festai"
+name = "armadai"
 version = "0.1.0"
 edition = "2024"
-description = "AI agent fleet orchestrator - define, manage and run specialized agents from Markdown files"
+description = "ArmadAI — AI agent fleet orchestrator. Define, manage and run specialized agents from Markdown files."
 license = "MIT"
+repository = "https://github.com/Dr0drigues/swarm-festai"
 
 [[bin]]
-name = "swarm"
+name = "armadai"
 path = "src/main.rs"
 
 [features]

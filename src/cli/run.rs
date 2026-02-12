@@ -183,11 +183,11 @@ async fn resolve_input(input: Option<String>) -> anyhow::Result<String> {
                 let mut buf = String::new();
                 std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
                 if buf.is_empty() {
-                    anyhow::bail!("No input provided. Usage: swarm run <agent> <input>");
+                    anyhow::bail!("No input provided. Usage: armadai run <agent> <input>");
                 }
                 Ok(buf)
             } else {
-                anyhow::bail!("No input provided. Usage: swarm run <agent> \"<input>\"");
+                anyhow::bail!("No input provided. Usage: armadai run <agent> \"<input>\"");
             }
         }
     }
@@ -199,11 +199,11 @@ fn atty_is_pipe() -> bool {
     !std::io::stdin().is_terminal()
 }
 
-/// Resolve the agents directory: if a `swarm.yaml` fleet file exists in the
+/// Resolve the agents directory: if a `armadai.yaml` fleet file exists in the
 /// current directory, use the fleet's source/agents/ path. Otherwise default
 /// to the local `agents/` directory.
 fn resolve_agents_dir() -> (PathBuf, Option<FleetDefinition>) {
-    let fleet_path = Path::new("swarm.yaml");
+    let fleet_path = Path::new("armadai.yaml");
     if fleet_path.exists()
         && let Ok(fleet) = FleetDefinition::load(fleet_path)
     {
@@ -231,10 +231,10 @@ mod tests {
 
     #[test]
     fn test_resolve_agents_dir_no_fleet() {
-        // When no swarm.yaml exists in the current directory,
+        // When no armadai.yaml exists in the current directory,
         // resolve_agents_dir should return the default "agents" path
         let (dir, fleet) = resolve_agents_dir();
-        // We can't guarantee swarm.yaml doesn't exist in the test runner's cwd,
+        // We can't guarantee armadai.yaml doesn't exist in the test runner's cwd,
         // but the function should not panic
         assert!(fleet.is_none() || fleet.is_some());
         // dir should be a valid path

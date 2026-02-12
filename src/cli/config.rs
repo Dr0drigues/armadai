@@ -78,7 +78,7 @@ async fn show_providers() -> anyhow::Result<()> {
         }
     } else if plain_path.exists() {
         println!(
-            "Secrets: unencrypted at {} (consider running: swarm config secrets init)",
+            "Secrets: unencrypted at {} (consider running: armadai config secrets init)",
             plain_path.display()
         );
         match crate::secrets::load_secrets(config_dir) {
@@ -99,7 +99,7 @@ async fn show_providers() -> anyhow::Result<()> {
         }
     } else {
         println!("No secrets file found. Create one:");
-        println!("  Option A: swarm config secrets init  (encrypted with SOPS + age)");
+        println!("  Option A: armadai config secrets init  (encrypted with SOPS + age)");
         println!("  Option B: Create config/providers.secret.yaml manually (unencrypted)");
     }
 
@@ -187,14 +187,14 @@ async fn secrets_rotate() -> anyhow::Result<()> {
 
     if !key_path.exists() {
         anyhow::bail!(
-            "No age key found at {}. Run 'swarm config secrets init' first.",
+            "No age key found at {}. Run 'armadai config secrets init' first.",
             key_path.display()
         );
     }
 
     if !sops_path.exists() {
         anyhow::bail!(
-            "No encrypted secrets file found at {}. Run 'swarm config secrets init' first.",
+            "No encrypted secrets file found at {}. Run 'armadai config secrets init' first.",
             sops_path.display()
         );
     }

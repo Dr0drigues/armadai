@@ -1,11 +1,11 @@
-# Swarm Agent Creation Guide
+# ArmadAI Agent Creation Guide
 
 > Universal prompt for any AI assistant (Claude Code, Gemini CLI, Cursor, Copilot, etc.)
-> to help users create valid swarm agent files.
+> to help users create valid ArmadAI agent files.
 
-## What is a Swarm Agent?
+## What is an ArmadAI Agent?
 
-A swarm agent is a Markdown file (`.md`) that defines an AI-powered specialist. Each agent has a role, a provider, and a system prompt. Agents live in the `agents/` directory and can be run with `swarm run <name> "<input>"`.
+An ArmadAI agent is a Markdown file (`.md`) that defines an AI-powered specialist. Each agent has a role, a provider, and a system prompt. Agents live in the `agents/` directory and can be run with `armadai run <name> "<input>"`.
 
 ## Agent File Format
 
@@ -45,7 +45,7 @@ A swarm agent is a Markdown file (`.md`) that defines an AI-powered specialist. 
 | `openai` | API only | `model` field, `OPENAI_API_KEY` env var |
 | `google` | API only | `model` field, `GOOGLE_API_KEY` env var |
 | `cli` | CLI only | `command` field (e.g. `command: claude`) |
-| `proxy` | API proxy | `model` field, proxy running via `swarm up` |
+| `proxy` | API proxy | `model` field, proxy running via `armadai up` |
 
 ## Known Models
 
@@ -65,7 +65,7 @@ Range: 0.0 (deterministic) to 2.0 (maximum randomness).
 
 ## Creation Flow
 
-When helping a user create a swarm agent, ask these questions in order:
+When helping a user create an ArmadAI agent, ask these questions in order:
 
 1. **Name**: What should the agent be called? (slug format: `my-agent-name`)
 2. **Provider**: Which LLM provider? (claude, gemini, gpt, anthropic, openai, google, cli, proxy)
@@ -82,7 +82,7 @@ When helping a user create a swarm agent, ask these questions in order:
 
 - Use kebab-case: `code-reviewer`, `test-writer`, `doc-generator`
 - Only letters, digits, and hyphens
-- The filename becomes the agent ID: `agents/code-reviewer.md` → `swarm run code-reviewer`
+- The filename becomes the agent ID: `agents/code-reviewer.md` → `armadai run code-reviewer`
 - The H1 heading is the display name: `# Code Reviewer`
 
 ## Complete Example
@@ -127,7 +127,7 @@ Each item: severity, location, description, suggested fix.
 After creating the file, validate it:
 
 ```bash
-swarm validate <agent-name>
+armadai validate <agent-name>
 ```
 
 This checks:
@@ -139,11 +139,11 @@ This checks:
 
 ```bash
 # Direct input
-swarm run code-reviewer "Review this function: fn add(a: i32, b: i32) -> i32 { a + b }"
+armadai run code-reviewer "Review this function: fn add(a: i32, b: i32) -> i32 { a + b }"
 
 # File input
-swarm run code-reviewer @src/main.rs
+armadai run code-reviewer @src/main.rs
 
 # Pipeline (chain agents)
-swarm run --pipe code-reviewer test-writer src/lib.rs
+armadai run --pipe code-reviewer test-writer src/lib.rs
 ```

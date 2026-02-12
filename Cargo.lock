@@ -192,6 +192,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "armadai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "crossterm",
+ "dialoguer",
+ "pulldown-cmark",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yml",
+ "surrealdb",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4793,35 +4822,6 @@ dependencies = [
  "quick_cache 0.6.18",
  "revision 0.10.0",
  "vart 0.9.3",
-]
-
-[[package]]
-name = "swarm-festai"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "clap_complete",
- "crossterm",
- "dialoguer",
- "pulldown-cmark",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yml",
- "surrealdb",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

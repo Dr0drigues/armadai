@@ -24,6 +24,6 @@ providers:
       - gemini-2.0-pro
 
   proxy:
-    # LiteLLM or OpenRouter endpoint (when using `swarm up`)
+    # LiteLLM or OpenRouter endpoint (when using `armadai up`)
     base_url: http://localhost:4000/v1
     models: []

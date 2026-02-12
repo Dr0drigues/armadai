@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// A fleet definition linking a named group of agents to a source directory.
-/// Serialized as `swarm.yaml` in project directories.
+/// Serialized as `armadai.yaml` in project directories.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FleetDefinition {
     /// Fleet name
     pub fleet: String,
     /// Agent names (file stems without .md)
     pub agents: Vec<String>,
-    /// Absolute path to the swarm-festai source directory
+    /// Absolute path to the ArmadAI source directory
     pub source: PathBuf,
 }
 
@@ -52,7 +52,7 @@ mod tests {
         let fleet = FleetDefinition {
             fleet: "test-fleet".to_string(),
             agents: vec!["code-reviewer".to_string(), "test-writer".to_string()],
-            source: PathBuf::from("/home/user/swarm-festai"),
+            source: PathBuf::from("/home/user/armadai"),
         };
 
         let yaml = serde_yml::to_string(&fleet).unwrap();
@@ -60,7 +60,7 @@ mod tests {
 
         assert_eq!(parsed.fleet, "test-fleet");
         assert_eq!(parsed.agents.len(), 2);
-        assert_eq!(parsed.source, PathBuf::from("/home/user/swarm-festai"));
+        assert_eq!(parsed.source, PathBuf::from("/home/user/armadai"));
     }
 
     #[test]
@@ -79,12 +79,12 @@ mod tests {
     #[test]
     fn test_fleet_load_save_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("swarm.yaml");
+        let path = dir.path().join("armadai.yaml");
 
         let fleet = FleetDefinition {
             fleet: "my-fleet".to_string(),
             agents: vec!["agent-a".to_string(), "agent-b".to_string()],
-            source: PathBuf::from("/opt/swarm"),
+            source: PathBuf::from("/opt/armadai"),
         };
 
         fleet.save(&path).unwrap();
@@ -92,6 +92,6 @@ mod tests {
 
         assert_eq!(loaded.fleet, "my-fleet");
         assert_eq!(loaded.agents, vec!["agent-a", "agent-b"]);
-        assert_eq!(loaded.source, PathBuf::from("/opt/swarm"));
+        assert_eq!(loaded.source, PathBuf::from("/opt/armadai"));
     }
 }

@@ -1,8 +1,8 @@
-# Architecture - swarm-festai
+# Architecture - ArmadAI
 
 ## Vision
 
-swarm-festai est un orchestrateur d'agents IA en ligne de commande. Il permet de
+ArmadAI est un orchestrateur d'agents IA en ligne de commande. Il permet de
 définir, gérer et exécuter une flotte d'agents spécialisés, chacun configuré via un
 simple fichier Markdown. L'outil est agnostique vis-à-vis des modèles (Claude, GPT,
 Gemini...) et des modes d'exécution (API HTTP, proxy, CLI tools).
@@ -30,7 +30,7 @@ Gemini...) et des modes d'exécution (API HTTP, proxy, CLI tools).
 ```
 ┌─ HOST MACHINE ─────────────────────────────────────────────┐
 │                                                             │
-│  swarm (binaire natif Rust)                                │
+│  armadai (binaire natif Rust)                              │
 │  ├── CLI (clap)            commandes : run, new, list...   │
 │  ├── TUI (ratatui)         monitoring, interaction, logs   │
 │  ├── Core                  parsing .md, orchestration      │
@@ -48,7 +48,7 @@ Gemini...) et des modes d'exécution (API HTTP, proxy, CLI tools).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Le binaire `swarm` tourne toujours nativement sur la machine hôte**, jamais dans Docker.
+**Le binaire `armadai` tourne toujours nativement sur la machine hôte**, jamais dans Docker.
 Cela garantit :
 - L'accès direct au terminal (TUI)
 - L'accès aux CLI tools installés sur la machine (claude, aider, etc.)
@@ -206,7 +206,7 @@ Exécute la tâche demandée en utilisant tes outils disponibles.
 ## Structure du projet
 
 ```
-swarm-festai/
+armadai/
 ├── agents/                      # Définitions d'agents
 │   ├── _coordinator.md          # Agent hub (orchestrateur)
 │   └── examples/                # Exemples fournis
@@ -226,14 +226,14 @@ swarm-festai/
 │   ├── main.rs                  # Point d'entrée, setup tokio
 │   ├── cli/                     # Commandes CLI (clap)
 │   │   ├── mod.rs
-│   │   ├── run.rs               # swarm run <agent> [input]
-│   │   ├── new.rs               # swarm new --template <tpl> <name>
-│   │   ├── list.rs              # swarm list [--tags ...] [--stack ...]
-│   │   ├── inspect.rs           # swarm inspect <agent>
-│   │   ├── history.rs           # swarm history [--agent ...] [--replay id]
-│   │   ├── up.rs                # swarm up (lance docker-compose)
-│   │   ├── config.rs            # swarm config (gestion providers/settings)
-│   │   └── validate.rs          # swarm validate [agent] (dry-run)
+│   │   ├── run.rs               # armadai run <agent> [input]
+│   │   ├── new.rs               # armadai new --template <tpl> <name>
+│   │   ├── list.rs              # armadai list [--tags ...] [--stack ...]
+│   │   ├── inspect.rs           # armadai inspect <agent>
+│   │   ├── history.rs           # armadai history [--agent ...] [--replay id]
+│   │   ├── up.rs                # armadai up (lance docker-compose)
+│   │   ├── config.rs            # armadai config (gestion providers/settings)
+│   │   └── validate.rs          # armadai validate [agent] (dry-run)
 │   ├── tui/                     # Interface TUI
 │   │   ├── mod.rs
 │   │   ├── app.rs               # État global de l'app TUI
@@ -314,20 +314,20 @@ swarm-festai/
 ## Commandes CLI
 
 ```
-swarm run <agent> [input]        # Exécuter un agent avec un input
-swarm run --pipe <a> <b> [input] # Pipeline : chaîner des agents
-swarm new --template <tpl> <nom> # Créer un agent depuis un template
-swarm list [--tags t] [--stack s]# Lister les agents disponibles
-swarm inspect <agent>            # Afficher la config parsée d'un agent
-swarm validate [agent]           # Dry-run : valider sans appel API
-swarm history [--agent a]        # Historique des exécutions
-swarm history --replay <id>      # Rejouer une exécution passée
-swarm costs [--agent a] [--from] # Consulter les coûts
-swarm config providers           # Gérer les providers
-swarm config secrets init        # Initialiser SOPS + age
-swarm tui                        # Lancer l'interface TUI
-swarm up                         # Lancer l'infra Docker (optionnel)
-swarm down                       # Arrêter l'infra Docker
+armadai run <agent> [input]        # Exécuter un agent avec un input
+armadai run --pipe <a> <b> [input] # Pipeline : chaîner des agents
+armadai new --template <tpl> <nom> # Créer un agent depuis un template
+armadai list [--tags t] [--stack s]# Lister les agents disponibles
+armadai inspect <agent>            # Afficher la config parsée d'un agent
+armadai validate [agent]           # Dry-run : valider sans appel API
+armadai history [--agent a]        # Historique des exécutions
+armadai history --replay <id>      # Rejouer une exécution passée
+armadai costs [--agent a] [--from] # Consulter les coûts
+armadai config providers           # Gérer les providers
+armadai config secrets init        # Initialiser SOPS + age
+armadai tui                        # Lancer l'interface TUI
+armadai up                         # Lancer l'infra Docker (optionnel)
+armadai down                       # Arrêter l'infra Docker
 ```
 
 ---
@@ -336,7 +336,7 @@ swarm down                       # Arrêter l'infra Docker
 
 | #  | Feature                  | Description                                                          |
 | -- | ------------------------ | -------------------------------------------------------------------- |
-| 1  | Scaffolding rapide       | `swarm new --template` pour créer des agents en une commande         |
+| 1  | Scaffolding rapide       | `armadai new --template` pour créer des agents en une commande         |
 | 3  | Dry-run mode             | Validation de la config agent sans appel API                         |
 | 4  | Cost tracking            | Suivi des coûts par agent/exécution dans SurrealDB                   |
 | 5  | Streaming TUI            | Affichage temps réel des réponses dans la TUI                        |
@@ -373,9 +373,9 @@ config/
 ```
 
 Workflow :
-1. `swarm config secrets init` → génère une clé age, configure `.sops.yaml`
+1. `armadai config secrets init` → génère une clé age, configure `.sops.yaml`
 2. Les clés API sont stockées dans `providers.sops.yaml` (chiffré)
-3. Au runtime, `swarm` déchiffre en mémoire via la clé age locale
+3. Au runtime, `armadai` déchiffre en mémoire via la clé age locale
 4. Le fichier chiffré est committé dans git (safe), la clé age ne l'est pas
 
 ---
@@ -383,12 +383,12 @@ Workflow :
 ## Stockage (SurrealDB)
 
 ### Mode embarqué (défaut)
-- Base locale dans `~/.swarm/data/` ou `./data/`
+- Base locale dans `~/.config/armadai/data/` ou `./data/`
 - Zéro configuration, démarrage instantané
 - Idéal pour usage single-user
 
 ### Mode serveur (Docker)
-- `swarm up` lance SurrealDB via docker-compose
+- `armadai up` lance SurrealDB via docker-compose
 - Connexion via `ws://localhost:8000`
 - Pour usage multi-instance ou persistance réseau
 
@@ -423,7 +423,7 @@ DEFINE FIELD last_run    ON agent_stats TYPE datetime;
 ## Docker Compose (optionnel)
 
 ```yaml
-# Lancé via `swarm up`, arrêté via `swarm down`
+# Lancé via `armadai up`, arrêté via `armadai down`
 services:
   surrealdb:
     image: surrealdb/surrealdb:latest
@@ -431,7 +431,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - swarm-data:/data
+      - armadai-data:/data
 
   litellm:  # Optionnel : proxy multi-providers
     image: ghcr.io/berriai/litellm:main-latest
@@ -443,5 +443,5 @@ services:
       - proxy
 
 volumes:
-  swarm-data:
+  armadai-data:
 ```

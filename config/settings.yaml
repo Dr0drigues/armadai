@@ -1,4 +1,4 @@
-# swarm-festai global settings
+# ArmadAI global settings
 
 # Default agents directory (relative to project root)
 agents_dir: agents
@@ -12,7 +12,7 @@ storage:
   mode: embedded
   # Path for persistent embedded storage (RocksDB)
   # Use ":memory:" for in-memory only
-  path: "data/swarm.db"
+  path: "data/armadai.db"
 
 # Default provider when not specified in agent metadata
 defaults:
@@ -40,4 +40,4 @@ logging:
   level: info
   # "stdout", "file", or "both"
   output: stdout
-  file_path: "logs/swarm.log"
+  file_path: "logs/armadai.log"
