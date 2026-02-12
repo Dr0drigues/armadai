@@ -290,10 +290,15 @@ pub enum Command {
         long_about = "Manage composable skills.\n\n\
             Skills follow the SKILL.md open standard — structured knowledge with \
             scripts, references and assets. Each skill lives in a directory \
-            containing a SKILL.md file.",
+            containing a SKILL.md file.\n\n\
+            Discover and install skills from GitHub repos with sync/search/add.",
         after_help = "Examples:\n  \
             armadai skills list\n  \
-            armadai skills show docker-compose"
+            armadai skills show docker-compose\n  \
+            armadai skills sync\n  \
+            armadai skills search \"testing\"\n  \
+            armadai skills add anthropics/skills/webapp-testing\n  \
+            armadai skills info webapp-testing"
     )]
     Skills(skills::SkillsAction),
     /// Self-update to the latest release

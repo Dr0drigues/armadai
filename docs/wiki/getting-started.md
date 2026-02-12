@@ -160,6 +160,24 @@ armadai registry search "security review"
 armadai registry add official/security
 ```
 
+## Discover Skills
+
+Browse and install skills from GitHub repos:
+
+```bash
+# Sync remote skill sources
+armadai skills sync
+
+# Search for skills
+armadai skills search "testing"
+
+# Install a skill
+armadai skills add anthropics/skills/webapp-testing
+
+# List installed skills
+armadai skills list
+```
+
 ## Next Steps
 
 - [Agent Format](agent-format.md) — full reference for agent Markdown files
