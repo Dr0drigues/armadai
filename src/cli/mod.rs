@@ -4,6 +4,7 @@ mod fleet;
 mod history;
 mod init;
 mod inspect;
+mod link;
 mod list;
 pub(crate) mod new;
 mod run;
@@ -198,6 +199,35 @@ pub enum Command {
             armadai fleet show my-fleet"
     )]
     Fleet(fleet::FleetAction),
+    /// Generate native config files for AI assistants
+    #[command(
+        long_about = "Generate native config files for AI assistants.\n\n\
+            Reads armadai.yaml and generates target-specific configuration files \
+            (e.g. .claude/agents/*.md for Claude Code, .github/agents/*.agent.md \
+            for GitHub Copilot). One source format, any target.",
+        after_help = "Examples:\n  \
+            armadai link --target claude\n  \
+            armadai link --target copilot --dry-run\n  \
+            armadai link --target claude --agents code-reviewer test-writer\n  \
+            armadai link --target claude --output .claude/agents --force"
+    )]
+    Link {
+        /// Target AI assistant (claude, copilot)
+        #[arg(long, short)]
+        target: Option<String>,
+        /// Preview generated files without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Overwrite existing files without confirmation
+        #[arg(long)]
+        force: bool,
+        /// Output directory (overrides config and defaults)
+        #[arg(long, short)]
+        output: Option<std::path::PathBuf>,
+        /// Only link specific agents (by name)
+        #[arg(long, num_args = 1..)]
+        agents: Option<Vec<String>>,
+    },
     /// Initialize ArmadAI configuration
     #[command(
         long_about = "Initialize ArmadAI configuration.\n\n\
@@ -254,6 +284,13 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         #[cfg(feature = "web")]
         Command::Web { port } => crate::web::serve(port).await,
         Command::Fleet(action) => fleet::execute(action).await,
+        Command::Link {
+            target,
+            dry_run,
+            force,
+            output,
+            agents,
+        } => link::execute(target, dry_run, force, output, agents).await,
         Command::Init { force, project } => init::execute(force, project).await,
         Command::Update => update::execute().await,
         Command::Up => up::start().await,
