@@ -7,7 +7,9 @@ mod inspect;
 mod link;
 mod list;
 pub(crate) mod new;
+mod prompts;
 mod run;
+mod skills;
 mod up;
 mod update;
 mod validate;
@@ -247,6 +249,30 @@ pub enum Command {
         #[arg(long)]
         project: bool,
     },
+    /// Manage composable prompts
+    #[command(
+        subcommand,
+        long_about = "Manage composable prompt fragments.\n\n\
+            Prompts are reusable Markdown files with optional YAML frontmatter \
+            (name, description, apply_to). They compose with agents via the \
+            apply_to field or explicit project config references.",
+        after_help = "Examples:\n  \
+            armadai prompts list\n  \
+            armadai prompts show rust-conventions"
+    )]
+    Prompts(prompts::PromptsAction),
+    /// Manage composable skills
+    #[command(
+        subcommand,
+        long_about = "Manage composable skills.\n\n\
+            Skills follow the SKILL.md open standard — structured knowledge with \
+            scripts, references and assets. Each skill lives in a directory \
+            containing a SKILL.md file.",
+        after_help = "Examples:\n  \
+            armadai skills list\n  \
+            armadai skills show docker-compose"
+    )]
+    Skills(skills::SkillsAction),
     /// Self-update to the latest release
     #[command(long_about = "Self-update to the latest release.\n\n\
             Downloads the latest binary from GitHub Releases and replaces the current one.")]
@@ -284,6 +310,8 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         #[cfg(feature = "web")]
         Command::Web { port } => crate::web::serve(port).await,
         Command::Fleet(action) => fleet::execute(action).await,
+        Command::Prompts(action) => prompts::execute(action).await,
+        Command::Skills(action) => skills::execute(action).await,
         Command::Link {
             target,
             dry_run,
