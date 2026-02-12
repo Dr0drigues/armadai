@@ -35,8 +35,25 @@ armadai tui
 ### Install
 
 ```bash
-git clone https://github.com/Dr0drigues/swarm-festai.git
-cd swarm-festai
+# One-liner (downloads the latest release binary)
+curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+```
+
+Options: `INSTALL_DIR=~/.local/bin` (default), `VERSION=v0.1.0` (default: latest).
+
+```bash
+# Custom install directory
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+
+# Specific version
+VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+```
+
+### Install from source
+
+```bash
+git clone https://github.com/Dr0drigues/armadai.git
+cd armadai
 cargo build --release
 ```
 
