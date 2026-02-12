@@ -160,7 +160,7 @@ async fn run_single_agent(
 
     // 7. Record in storage (if available)
     #[cfg(feature = "storage")]
-    record_run(&metrics, input, &response.content).await;
+    record_run(&metrics, input, &response.content);
 
     Ok((response.content, metrics))
 }
@@ -177,10 +177,10 @@ struct RunMetrics {
 }
 
 #[cfg(feature = "storage")]
-async fn record_run(metrics: &RunMetrics, input: &str, output: &str) {
+fn record_run(metrics: &RunMetrics, input: &str, output: &str) {
     use crate::storage::{init_db, queries};
 
-    let db = match init_db().await {
+    let db = match init_db() {
         Ok(db) => db,
         Err(e) => {
             tracing::warn!("Failed to init storage: {e}");
@@ -201,7 +201,7 @@ async fn record_run(metrics: &RunMetrics, input: &str, output: &str) {
         status: "success".to_string(),
     };
 
-    if let Err(e) = queries::insert_run(&db, record).await {
+    if let Err(e) = queries::insert_run(&db, record) {
         tracing::warn!("Failed to record run: {e}");
     }
 }

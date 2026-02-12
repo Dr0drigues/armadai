@@ -2,7 +2,7 @@
 #
 # Builds optimized binaries for:
 # - Linux x86_64 (GNU)
-# - Linux aarch64 (GNU, for ARM servers/Raspberry Pi)
+# - Linux aarch64 (GNU, via cross-rs)
 # - macOS x86_64 (Intel Macs)
 # - macOS aarch64 (Apple Silicon)
 # - Windows x86_64 (MSVC)
@@ -34,18 +34,23 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: armadai-linux-x86_64
+            use_cross: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: armadai-linux-aarch64
+            use_cross: true
           - target: x86_64-apple-darwin
             os: macos-latest
             artifact: armadai-macos-x86_64
+            use_cross: false
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: armadai-macos-aarch64
+            use_cross: false
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact: armadai-windows-x86_64.exe
+            use_cross: false
 
     steps:
       - uses: actions/checkout@v6
@@ -54,22 +59,16 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools (Linux aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
-          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+        run: ${{ matrix.use_cross && 'cross' || 'cargo' }} build --release --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'

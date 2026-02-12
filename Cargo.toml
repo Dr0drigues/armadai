@@ -1,6 +1,6 @@
 [package]
 name = "armadai"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "ArmadAI — AI agent fleet orchestrator. Define, manage and run specialized agents from Markdown files."
 license = "MIT"
@@ -11,11 +11,10 @@ name = "armadai"
 path = "src/main.rs"
 
 [features]
-default = ["tui", "web", "storage-rocksdb", "providers-api"]
+default = ["tui", "web", "storage", "providers-api"]
 tui = ["dep:ratatui", "dep:crossterm"]
 web = ["dep:axum", "dep:tower-http"]
-storage = ["dep:surrealdb"]
-storage-rocksdb = ["storage", "surrealdb/kv-rocksdb"]
+storage = ["dep:rusqlite"]
 providers-api = ["dep:reqwest"]
 
 [dependencies]
@@ -45,8 +44,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 
-# Database (optional — enable with `storage` or `storage-rocksdb` feature)
-surrealdb = { version = "2", features = ["kv-mem"], optional = true }
+# Database (optional — enable with `storage` feature)
+rusqlite = { version = "0.34", features = ["bundled"], optional = true }
 
 # Markdown parsing
 pulldown-cmark = "0.13"
