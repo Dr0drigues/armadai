@@ -165,7 +165,7 @@ async fn interactive_create() -> anyhow::Result<()> {
     let provider = providers[provider_idx];
 
     // 4. Model (filtered by provider)
-    let model = prompt_model(provider)?;
+    let model = prompt_model(provider).await?;
 
     // 5. Temperature
     let temp_presets = [
@@ -306,16 +306,34 @@ async fn interactive_create() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Prompt for model based on provider. Tries to load from config/providers.yaml.
-fn prompt_model(provider: &str) -> anyhow::Result<Option<String>> {
+/// Prompt for model based on provider.
+/// Tries models.dev registry first (with cache), falls back to providers.yaml.
+async fn prompt_model(provider: &str) -> anyhow::Result<Option<String>> {
     // CLI provider doesn't need a model
     if provider == "cli" {
         return Ok(None);
     }
 
     let backend = api_backend_for_tool(provider).unwrap_or(provider);
-    let models = load_provider_models(backend);
 
+    // Try models.dev registry (online fetch with cache)
+    #[cfg(feature = "providers-api")]
+    if let Some(entries) = crate::model_registry::fetch::load_models_online(backend).await
+        && !entries.is_empty()
+    {
+        return prompt_from_registry_entries(&entries);
+    }
+
+    // Try models.dev cache only (no network)
+    #[cfg(not(feature = "providers-api"))]
+    if let Some(entries) = crate::model_registry::fetch::load_models(backend)
+        && !entries.is_empty()
+    {
+        return prompt_from_registry_entries(&entries);
+    }
+
+    // Fallback to providers.yaml
+    let models = load_provider_models(backend);
     if models.is_empty() {
         let model: String = Input::new()
             .with_prompt("Model name")
@@ -340,6 +358,30 @@ fn prompt_model(provider: &str) -> anyhow::Result<Option<String>> {
         Ok(Some(model))
     } else {
         Ok(Some(items[idx].clone()))
+    }
+}
+
+/// Display models from the registry with enriched labels (context window, cost).
+fn prompt_from_registry_entries(
+    entries: &[crate::model_registry::ModelEntry],
+) -> anyhow::Result<Option<String>> {
+    let labels: Vec<String> = entries.iter().map(|e| e.display_label()).collect();
+    let mut items = labels;
+    items.push("(custom)".to_string());
+
+    let idx = Select::new()
+        .with_prompt("Model")
+        .items(&items)
+        .default(0)
+        .interact()?;
+
+    if idx == items.len() - 1 {
+        let model: String = Input::new()
+            .with_prompt("Custom model name")
+            .interact_text()?;
+        Ok(Some(model))
+    } else {
+        Ok(Some(entries[idx].id.clone()))
     }
 }
 

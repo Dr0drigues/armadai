@@ -10,20 +10,21 @@ managing and executing specialized AI agents configured via Markdown files.
 ## Build & Test
 
 ```bash
-# Build
+# Build (all features)
 cargo build
 
-# Run tests
-cargo test
+# Run tests (with API providers)
+cargo test --no-default-features --features tui,providers-api
+
+# Run clippy (both modes — CI and full)
+cargo clippy --all-targets --no-default-features --features tui -- -D warnings
+cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
 
 # Run with debug logging
 RUST_LOG=armadai=debug cargo run -- <command>
 
-# Run clippy
-cargo clippy -- -D warnings
-
 # Format code
-cargo fmt
+cargo fmt -- --check
 ```
 
 ## Code Style
@@ -49,9 +50,12 @@ See ARCHITECTURE.md for full details. Key modules:
 - `src/parser/` — Markdown agent file parsing
 - `src/parser/frontmatter.rs` — Generic YAML frontmatter extraction
 - `src/providers/` — LLM provider abstraction (API, CLI, proxy)
-- `src/linker/` — Generate native config for AI CLIs (Claude Code, Copilot, etc.)
+- `src/linker/` — Generate native config for AI CLIs (Claude Code, Copilot, Gemini, etc.)
 - `src/registry/` — Community agent registry integration (awesome-copilot)
-- `src/storage/` — SurrealDB persistence layer
+- `src/skills_registry/` — GitHub-based skills discovery and installation
+- `src/model_registry/` — Dynamic model catalog from models.dev (fetch, cache, enriched selection)
+- `src/storage/` — SQLite persistence layer (rusqlite)
+- `src/web/` — Axum-based web UI dashboard
 - `src/secrets/` — SOPS + age secret management
 
 ## Testing
