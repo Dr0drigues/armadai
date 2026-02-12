@@ -3,6 +3,10 @@ use std::path::PathBuf;
 use super::{LinkAgent, Linker, OutputFile, slugify};
 
 /// Generates Claude Code sub-agent files (`.claude/agents/{slug}.md`).
+///
+/// Each file includes a YAML frontmatter block with `name`, `description`,
+/// and optional `model` fields, followed by the agent's system prompt as
+/// the Markdown body.
 pub struct ClaudeLinker;
 
 impl Linker for ClaudeLinker {
@@ -24,6 +28,19 @@ fn generate_file(agent: &LinkAgent) -> OutputFile {
     let path = PathBuf::from(".claude/agents").join(format!("{slug}.md"));
 
     let mut content = String::new();
+
+    // YAML frontmatter required by Claude Code
+    content.push_str("---\n");
+    content.push_str(&format!("name: {slug}\n"));
+
+    let description = agent
+        .description
+        .as_deref()
+        .or_else(|| agent.system_prompt.lines().find(|l| !l.trim().is_empty()))
+        .unwrap_or(&agent.name);
+    // Escape YAML string
+    content.push_str(&format!("description: \"{}\"\n", yaml_escape(description)));
+    content.push_str("---\n\n");
 
     // System prompt (main content)
     content.push_str(&agent.system_prompt);
@@ -55,6 +72,11 @@ fn generate_file(agent: &LinkAgent) -> OutputFile {
     }
 
     OutputFile { path, content }
+}
+
+/// Escape a string for use as a YAML double-quoted value.
+fn yaml_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Ensure there are two newlines (blank line) before a new section.
@@ -95,7 +117,14 @@ mod tests {
             files[0].path,
             PathBuf::from(".claude/agents/code-reviewer.md")
         );
-        assert_eq!(files[0].content, "You are a code reviewer.\n");
+        assert!(files[0].content.starts_with("---\n"));
+        assert!(files[0].content.contains("name: code-reviewer\n"));
+        assert!(
+            files[0]
+                .content
+                .contains("description: \"You are a code reviewer.\"")
+        );
+        assert!(files[0].content.contains("---\n\nYou are a code reviewer."));
     }
 
     #[test]
@@ -115,6 +144,7 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, PathBuf::from(".claude/agents/test-agent.md"));
+        assert!(files[0].content.contains("name: test-agent\n"));
         assert!(files[0].content.contains("You are a test agent."));
         assert!(
             files[0]
@@ -148,5 +178,20 @@ mod tests {
     fn test_default_output_dir() {
         let linker = ClaudeLinker;
         assert_eq!(linker.default_output_dir(), ".claude/agents");
+    }
+
+    #[test]
+    fn test_frontmatter_escaping() {
+        let linker = ClaudeLinker;
+        let agents = vec![make_agent(
+            "Escaper",
+            "Agent with \"quotes\" and \\backslash.",
+        )];
+        let files = linker.generate(&agents, &[]);
+        assert!(
+            files[0]
+                .content
+                .contains(r#"description: "Agent with \"quotes\" and \\backslash.""#)
+        );
     }
 }
