@@ -11,5 +11,6 @@ pub mod pipeline;
 pub mod project;
 pub mod prompt;
 pub mod skill;
+pub mod starter;
 #[allow(dead_code)]
 pub mod task;

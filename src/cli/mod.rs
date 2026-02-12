@@ -239,15 +239,20 @@ pub enum Command {
         after_help = "Examples:\n  \
             armadai init\n  \
             armadai init --force\n  \
-            armadai init --project"
+            armadai init --project\n  \
+            armadai init --pack rust-dev\n  \
+            armadai init --pack fullstack --force"
     )]
     Init {
         /// Overwrite existing config files
         #[arg(long)]
         force: bool,
         /// Create a project-local armadai.yaml instead
-        #[arg(long)]
+        #[arg(long, conflicts_with = "pack")]
         project: bool,
+        /// Install a starter pack (e.g. rust-dev, fullstack)
+        #[arg(long)]
+        pack: Option<String>,
     },
     /// Manage composable prompts
     #[command(
@@ -319,7 +324,11 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             output,
             agents,
         } => link::execute(target, dry_run, force, output, agents).await,
-        Command::Init { force, project } => init::execute(force, project).await,
+        Command::Init {
+            force,
+            project,
+            pack,
+        } => init::execute(force, project, pack).await,
         Command::Update => update::execute().await,
         Command::Up => up::start().await,
         Command::Down => up::stop().await,
