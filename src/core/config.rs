@@ -46,6 +46,10 @@ pub fn registry_cache_dir() -> PathBuf {
     config_dir().join("registry")
 }
 
+pub fn skills_registry_dir() -> PathBuf {
+    config_dir().join("skills-registry")
+}
+
 pub fn config_file_path() -> PathBuf {
     config_dir().join("config.yaml")
 }

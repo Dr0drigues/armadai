@@ -289,6 +289,11 @@ armadai/
 │   │   ├── cache.rs           # Index JSON, scanning fichiers
 │   │   ├── search.rs          # Recherche multi-mots-clés avec scoring
 │   │   └── convert.rs         # Conversion Copilot → ArmadAI
+│   ├── skills_registry/       # Découverte de skills GitHub
+│   │   ├── mod.rs
+│   │   ├── sync.rs            # Clone/pull de repos de skills
+│   │   ├── cache.rs           # Index JSON des SKILL.md découverts
+│   │   └── search.rs          # Recherche multi-mots-clés avec scoring
 │   ├── storage/                 # Couche persistance
 │   │   ├── mod.rs
 │   │   ├── embedded.rs          # SurrealDB mode embarqué
@@ -358,6 +363,7 @@ armadai link --target <t>            # Générer configs natives (claude, copilo
 armadai registry sync/search/list/add # Registre communautaire
 armadai prompts list/show            # Fragments de prompts composables
 armadai skills list/show             # Skills (standard SKILL.md)
+armadai skills sync/search/add/info  # Registre de skills GitHub
 armadai init --pack <name>           # Installer un starter pack
 armadai update                       # Mise à jour automatique
 armadai completion <shell>           # Générer les completions shell
@@ -380,7 +386,8 @@ Toute la résolution de chemins et la configuration utilisateur passe par `core/
 ├── prompts/             # Fragments de prompts composables
 ├── skills/              # Skills des agents
 ├── fleets/              # Définitions de flottes
-└── registry/            # Cache du registre awesome-copilot
+├── registry/            # Cache du registre awesome-copilot
+└── skills-registry/     # Cache du registre de skills GitHub
 ```
 
 ### Résolution XDG

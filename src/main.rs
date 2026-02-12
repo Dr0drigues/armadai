@@ -7,6 +7,7 @@ mod providers;
 mod registry;
 #[allow(dead_code)]
 mod secrets;
+mod skills_registry;
 #[cfg(feature = "storage")]
 mod storage;
 #[cfg(feature = "tui")]

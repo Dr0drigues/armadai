@@ -85,6 +85,7 @@ The registry works offline after the initial sync. Run `armadai registry sync` w
 
 ## See Also
 
+- [Skills & Prompts](skills-prompts.md) — skills discovery and installation from GitHub repos
 - [Getting Started](getting-started.md) — installation and first steps
 - [Starter Packs](starter-packs.md) — curated agent bundles
 - [Link Command](link.md) — generating config for AI CLIs

@@ -60,6 +60,7 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`.
 - `parser/frontmatter.rs` — Generic YAML frontmatter extraction reused by prompts and skills.
 - `linker/` — Generates native config files for target AI CLIs. Trait `Linker` with one implementation per CLI (claude, copilot, cursor, aider, codex, gemini, windsurf, cline).
 - `registry/` — awesome-copilot integration. Sync, search, convert agents from the community catalog.
+- `skills_registry/` — GitHub-based skills discovery. Sync repos, build search index, install skills (`sync.rs`, `cache.rs`, `search.rs`).
 - `storage/` — SQLite wrapper (via rusqlite). `schema.rs` defines the `runs` table, `queries.rs` has CRUD operations.
 - `tui/` — Ratatui-based terminal UI. `app.rs` holds state (incl. command palette), `views/` renders tabs (Agents/Detail/History/Costs + shortcuts bar + command palette overlay), `widgets/` provides reusable components.
 - `web/` — Axum-based web UI. Embedded single-page HTML app with JSON API endpoints (`/api/agents`, `/api/history`, `/api/costs`).

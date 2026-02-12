@@ -82,6 +82,50 @@ skills:
   - path: ./scripts/deploy             # Project-local skill directory
 ```
 
+## Skills Registry
+
+Discover and install skills from GitHub repos without copying files manually.
+
+### Sync remote sources
+
+```bash
+armadai skills sync
+```
+
+Clones or updates the default skill sources (shallow clone) and builds a local search index at `~/.config/armadai/skills-registry/`.
+
+### Search skills
+
+```bash
+armadai skills search "testing"
+armadai skills search "docker compose"
+```
+
+Multi-keyword AND search with weighted scoring (name > description > tags > source repo).
+
+### Install a skill
+
+```bash
+# Install a specific skill from a repo
+armadai skills add anthropics/skills/webapp-testing
+
+# If the repo has only one skill, the skill name is optional
+armadai skills add owner/repo
+
+# Overwrite an existing skill
+armadai skills add anthropics/skills/webapp-testing --force
+```
+
+The skill directory (SKILL.md + scripts/ + references/ + assets/) is copied to `~/.config/armadai/skills/<skill-name>/`.
+
+### Show skill info
+
+```bash
+armadai skills info webapp-testing
+```
+
+Displays metadata from the registry index and the SKILL.md content.
+
 ## How Prompts are Linked
 
 When running `armadai link`, prompts are included in the generated config:
@@ -96,4 +140,5 @@ When running `armadai link`, prompts are included in the generated config:
 
 - [Agent Format](agent-format.md) — agent Markdown file reference
 - [Link Command](link.md) — generating config for AI CLIs
-- [Registry](registry.md) — community agents and prompts
+- [Registry](registry.md) — community agents
+- [Getting Started](getting-started.md) — installation and first steps
