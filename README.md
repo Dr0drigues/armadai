@@ -387,8 +387,21 @@ Detailed documentation is available in [`docs/wiki/`](docs/wiki/):
 - [Providers](docs/wiki/providers.md) — configuring API, CLI, and proxy providers
 - [Templates](docs/wiki/templates.md) — using and creating agent templates
 - [Starter Packs](docs/wiki/starter-packs.md) — curated agent bundles
+- [Link Command](docs/wiki/link.md) — generating native configs for AI CLI tools
+- [Skills & Prompts](docs/wiki/skills-prompts.md) — composable prompt fragments and skills
 - [Registry](docs/wiki/registry.md) — browsing and importing community agents
 
 ## License
 
-MIT
+[PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/)
+
+**Free to use for:**
+- Personal use, research, experimentation, and testing
+- Educational institutions and public research organizations
+- Charitable organizations and government institutions
+- Hobby projects and personal study
+
+**Commercial use:**
+For commercial licensing, please contact the maintainer.
+
+See the [LICENSE](./LICENSE) file for full terms.
