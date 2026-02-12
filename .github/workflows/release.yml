@@ -5,6 +5,7 @@
 # - Linux aarch64 (GNU, for ARM servers/Raspberry Pi)
 # - macOS x86_64 (Intel Macs)
 # - macOS aarch64 (Apple Silicon)
+# - Windows x86_64 (MSVC)
 #
 # Creates a GitHub Release with all binaries attached.
 # Trigger: push a semver tag like v0.1.0
@@ -42,6 +43,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: armadai-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: armadai-windows-x86_64.exe
 
     steps:
       - uses: actions/checkout@v6
@@ -65,11 +69,19 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
-      - name: Package
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/armadai dist/${{ matrix.artifact }}
           chmod +x dist/${{ matrix.artifact }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target/${{ matrix.target }}/release/armadai.exe" "dist/${{ matrix.artifact }}"
 
       - uses: actions/upload-artifact@v6
         with:
