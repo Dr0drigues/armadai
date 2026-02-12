@@ -2,11 +2,34 @@
 
 ## Installation
 
+### Quick install (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+```
+
+This downloads the latest release binary for your platform (Linux/macOS, x86_64/aarch64) and installs it to `~/.local/bin/`.
+
+**Options** (via environment variables):
+
+| Variable | Default | Description |
+|---|---|---|
+| `INSTALL_DIR` | `~/.local/bin` | Where to install the binary |
+| `VERSION` | latest | Specific version to install (e.g. `v0.1.0`) |
+
+```bash
+# Custom install directory
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+
+# Specific version
+VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+```
+
 ### From source
 
 ```bash
-git clone https://github.com/Dr0drigues/swarm-festai.git
-cd swarm-festai
+git clone https://github.com/Dr0drigues/armadai.git
+cd armadai
 cargo build --release
 ```
 
