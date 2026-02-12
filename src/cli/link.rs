@@ -53,7 +53,7 @@ pub async fn execute(
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "No link target specified. Use --target or set link.target in armadai.yaml.\n\
-                 Supported targets: claude, copilot"
+                 Supported targets: claude, copilot, gemini"
             )
         })?;
 

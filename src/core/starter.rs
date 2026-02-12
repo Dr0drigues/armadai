@@ -114,10 +114,11 @@ impl StarterPack {
 
 /// Discover available starter packs from the embedded `starters/` directory.
 pub fn starters_dir() -> PathBuf {
-    // Look relative to the binary's cargo manifest dir for dev, or alongside the binary
     let candidates = [
-        // Dev: project root starters/
+        // Dev: relative to CWD
         PathBuf::from("starters"),
+        // Dev: relative to project root at compile time
+        PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/starters")),
         // Installed: next to binary
         std::env::current_exe()
             .ok()

@@ -249,7 +249,7 @@ pub enum Command {
         #[arg(long)]
         force: bool,
         /// Create a project-local armadai.yaml instead
-        #[arg(long, conflicts_with = "pack")]
+        #[arg(long)]
         project: bool,
         /// Install a starter pack (e.g. rust-dev, fullstack)
         #[arg(long)]

@@ -1,8 +1,10 @@
 mod claude;
 mod copilot;
+mod gemini;
 
 pub use claude::ClaudeLinker;
 pub use copilot::CopilotLinker;
+pub use gemini::GeminiLinker;
 
 use std::path::PathBuf;
 
@@ -40,7 +42,10 @@ pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
     match target {
         "claude" => Ok(Box::new(ClaudeLinker)),
         "copilot" => Ok(Box::new(CopilotLinker)),
-        _ => anyhow::bail!("Unknown link target: '{target}'. Supported targets: claude, copilot"),
+        "gemini" => Ok(Box::new(GeminiLinker)),
+        _ => anyhow::bail!(
+            "Unknown link target: '{target}'. Supported targets: claude, copilot, gemini"
+        ),
     }
 }
 
@@ -122,6 +127,11 @@ mod tests {
     #[test]
     fn test_create_linker_copilot() {
         assert!(create_linker("copilot").is_ok());
+    }
+
+    #[test]
+    fn test_create_linker_gemini() {
+        assert!(create_linker("gemini").is_ok());
     }
 
     #[test]
