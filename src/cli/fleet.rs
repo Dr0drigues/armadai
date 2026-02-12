@@ -6,7 +6,7 @@ use dialoguer::MultiSelect;
 use crate::core::agent::Agent;
 use crate::core::fleet::FleetDefinition;
 
-const FLEET_FILENAME: &str = "swarm.yaml";
+const FLEET_FILENAME: &str = "armadai.yaml";
 
 #[derive(Subcommand)]
 pub enum FleetAction {
@@ -28,13 +28,13 @@ pub enum FleetAction {
     },
     /// Link a fleet to a project directory
     #[command(
-        long_about = "Create a swarm.yaml in the target directory, linking it to a fleet.\n\n\
+        long_about = "Create a armadai.yaml in the target directory, linking it to a fleet.\n\n\
             By default links to the current directory (--local). Use --global to store in \
-            ~/.config/swarm/fleets/ or --path for a specific directory.",
+            ~/.config/armadai/fleets/ or --path for a specific directory.",
         after_help = "Examples:\n  \
-            swarm fleet link my-fleet\n  \
-            swarm fleet link my-fleet --global\n  \
-            swarm fleet link my-fleet --path /projects/web-app"
+            armadai fleet link my-fleet\n  \
+            armadai fleet link my-fleet --global\n  \
+            armadai fleet link my-fleet --path /projects/web-app"
     )]
     Link {
         /// Fleet name
@@ -42,7 +42,7 @@ pub enum FleetAction {
         /// Link in current directory (default)
         #[arg(long, default_value_t = true)]
         local: bool,
-        /// Link in global config (~/.config/swarm/fleets/)
+        /// Link in global config (~/.config/armadai/fleets/)
         #[arg(long)]
         global: bool,
         /// Link in a specific directory
@@ -132,7 +132,7 @@ async fn create_fleet(
         anyhow::bail!("No agents matched the criteria");
     }
 
-    // Resolve source directory (current working directory assumed to be the swarm-festai root)
+    // Resolve source directory (current working directory assumed to be the armadai-festai root)
     let source = std::env::current_dir()?;
 
     let fleet = FleetDefinition {
@@ -154,12 +154,12 @@ async fn create_fleet(
         println!("  - {a}");
     }
     println!("\nSaved to: {}", fleet_path.display());
-    println!("Link it to a project: swarm fleet link {name}");
+    println!("Link it to a project: armadai fleet link {name}");
 
     Ok(())
 }
 
-/// Link a fleet to a directory by creating swarm.yaml.
+/// Link a fleet to a directory by creating armadai.yaml.
 fn link_fleet(name: &str, global: bool, path: Option<&Path>) -> anyhow::Result<()> {
     // Load fleet definition
     let fleet_path = global_fleet_path(name);
@@ -173,7 +173,7 @@ fn link_fleet(name: &str, global: bool, path: Option<&Path>) -> anyhow::Result<(
                 return Ok(());
             }
         }
-        anyhow::bail!("Fleet '{name}' not found. Create it first: swarm fleet create {name}");
+        anyhow::bail!("Fleet '{name}' not found. Create it first: armadai fleet create {name}");
     }
 
     let fleet = FleetDefinition::load(&fleet_path)?;
@@ -237,7 +237,7 @@ fn list_fleets() -> anyhow::Result<()> {
 
     if !found {
         println!("No fleets found.");
-        println!("Create one: swarm fleet create <name>");
+        println!("Create one: armadai fleet create <name>");
     }
 
     Ok(())
@@ -304,7 +304,7 @@ fn global_fleet_dir() -> PathBuf {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             PathBuf::from(home).join(".config")
         });
-    config_base.join("swarm").join("fleets")
+    config_base.join("armadai").join("fleets")
 }
 
 /// Get the path for a specific fleet's global config file.

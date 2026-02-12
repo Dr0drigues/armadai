@@ -10,7 +10,7 @@ pub type Database = Surreal<Db>;
 /// Initialize an embedded in-memory SurrealDB instance.
 pub async fn init_embedded() -> anyhow::Result<Database> {
     let db = Surreal::new::<Mem>(()).await?;
-    db.use_ns("swarm").use_db("main").await?;
+    db.use_ns("armadai").use_db("main").await?;
     schema::apply(&db).await?;
     Ok(db)
 }
@@ -20,7 +20,7 @@ pub async fn init_embedded() -> anyhow::Result<Database> {
 pub async fn init_db() -> anyhow::Result<Database> {
     #[cfg(feature = "storage-rocksdb")]
     {
-        let path = "data/swarm.db";
+        let path = "data/armadai.db";
         if let Some(parent) = std::path::Path::new(path).parent() {
             std::fs::create_dir_all(parent)?;
         }

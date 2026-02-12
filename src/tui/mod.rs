@@ -54,7 +54,7 @@ pub async fn run() -> Result<()> {
                                 PaletteAction::Quit => break,
                                 PaletteAction::NewAgent => {
                                     app.status_msg =
-                                        Some("Run 'swarm new <name>' from terminal".to_string());
+                                        Some("Run 'armadai new <name>' from terminal".to_string());
                                 }
                             }
                         }

@@ -141,10 +141,10 @@ Validate agent configurations without making API calls:
 
 ```bash
 # Validate all agents
-swarm validate
+armadai validate
 
 # Validate a specific agent
-swarm validate code-reviewer
+armadai validate code-reviewer
 ```
 
 Validation checks:

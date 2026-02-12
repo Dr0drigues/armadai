@@ -1,10 +1,10 @@
 # Providers
 
-swarm-festai supports three types of providers for executing agents, plus **unified tool names** that auto-detect the best backend.
+ArmadAI supports three types of providers for executing agents, plus **unified tool names** that auto-detect the best backend.
 
 ## Unified Tool Names (Recommended)
 
-Use a tool name directly as the provider. swarm auto-detects whether the CLI tool is installed and falls back to the API if not.
+Use a tool name directly as the provider. ArmadAI auto-detects whether the CLI tool is installed and falls back to the API if not.
 
 | Provider | CLI tool | API fallback | Default CLI args |
 |---|---|---|---|
@@ -109,7 +109,7 @@ Route requests through an OpenAI-compatible proxy like LiteLLM or OpenRouter.
 Start the proxy with Docker Compose:
 
 ```bash
-swarm up
+armadai up
 ```
 
 This starts LiteLLM on port 4000 (configured in `docker-compose.yml`).
@@ -148,7 +148,7 @@ Prerequisites: [SOPS](https://github.com/getsops/sops) and [age](https://github.
 
 ```bash
 # Initialize encryption (generates age key + .sops.yaml + template)
-swarm config secrets init
+armadai config secrets init
 
 # Set the key file in your shell profile
 export SOPS_AGE_KEY_FILE=config/age-key.txt
@@ -165,7 +165,7 @@ The `init` command:
 ### Key rotation
 
 ```bash
-swarm config secrets rotate
+armadai config secrets rotate
 ```
 
 This decrypts current secrets, generates a new age key, re-encrypts with the new key, and backs up the old key.
@@ -173,7 +173,7 @@ This decrypts current secrets, generates a new age key, re-encrypts with the new
 ### Check provider status
 
 ```bash
-swarm config providers
+armadai config providers
 ```
 
 Shows configured providers, secrets status (encrypted/unencrypted/missing), and environment variable status.

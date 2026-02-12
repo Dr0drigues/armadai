@@ -112,7 +112,7 @@ impl CommandPalette {
             },
             PaletteCommand {
                 name: "new".to_string(),
-                description: "Create a new agent (run swarm new)".to_string(),
+                description: "Create a new agent (run armadai new)".to_string(),
                 action: PaletteAction::NewAgent,
             },
             PaletteCommand {
