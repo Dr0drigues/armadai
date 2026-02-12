@@ -1,10 +1,12 @@
 use std::path::Path;
 
 use crate::core::agent::Agent;
+use crate::core::config::AppPaths;
 use crate::parser;
 
 pub async fn execute(agent_name: Option<String>) -> anyhow::Result<()> {
-    let agents_dir = Path::new("agents");
+    let paths = AppPaths::resolve();
+    let agents_dir = paths.agents_dir.as_path();
 
     match agent_name {
         Some(name) => validate_one(agents_dir, &name),

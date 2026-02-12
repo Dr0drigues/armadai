@@ -24,6 +24,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    core::config::check_migration_hint();
+
     let args = cli::Cli::parse();
     cli::handle(args).await
 }

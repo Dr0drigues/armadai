@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::core::agent::Agent;
+use crate::core::config::AppPaths;
 use crate::core::fleet::FleetDefinition;
 use crate::providers::factory::create_provider;
 use crate::providers::rate_limiter::RateLimiter;
@@ -222,7 +223,7 @@ fn resolve_agents_dir() -> (PathBuf, Option<FleetDefinition>) {
             dir.display()
         );
     }
-    (PathBuf::from("agents"), None)
+    (AppPaths::resolve().agents_dir, None)
 }
 
 #[cfg(test)]
