@@ -1,10 +1,20 @@
 use crate::core::config;
+use crate::core::starter::{StarterPack, list_available_packs, starters_dir};
 
-pub async fn execute(force: bool, project: bool) -> anyhow::Result<()> {
+pub async fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Result<()> {
     if project {
         return init_project();
     }
-    init_global(force)
+
+    // Always init global config first
+    init_global(force)?;
+
+    // Install starter pack if requested
+    if let Some(pack_name) = pack {
+        install_pack(&pack_name, force)?;
+    }
+
+    Ok(())
 }
 
 /// Create the global config directory and default files.
@@ -31,6 +41,41 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     println!("  prompts:   {}", config::user_prompts_dir().display());
     println!("  skills:    {}", config::user_skills_dir().display());
     println!("  registry:  {}", config::registry_cache_dir().display());
+
+    Ok(())
+}
+
+/// Install a starter pack by name.
+fn install_pack(name: &str, force: bool) -> anyhow::Result<()> {
+    let dir = starters_dir();
+    let pack_dir = dir.join(name);
+
+    if !pack_dir.is_dir() {
+        let available = list_available_packs();
+        if available.is_empty() {
+            anyhow::bail!(
+                "Starter pack '{name}' not found. No packs available in {}",
+                dir.display()
+            );
+        } else {
+            anyhow::bail!(
+                "Starter pack '{name}' not found. Available packs: {}",
+                available.join(", ")
+            );
+        }
+    }
+
+    let pack = StarterPack::load(&pack_dir)?;
+    println!(
+        "\nInstalling starter pack: {} — {}",
+        pack.name, pack.description
+    );
+
+    let (agents, prompts) = pack.install(&pack_dir, force)?;
+    println!(
+        "\nPack '{}' installed: {} agent(s), {} prompt(s)",
+        pack.name, agents, prompts
+    );
 
     Ok(())
 }

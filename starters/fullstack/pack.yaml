@@ -1,0 +1,10 @@
+name: fullstack
+description: General-purpose agent pack — code review, testing, documentation, and CLI examples
+agents:
+  - code-reviewer
+  - test-writer
+  - doc-generator
+  - claude-cli-reviewer
+  - echo-reviewer
+  - gemini-reviewer
+prompts: []

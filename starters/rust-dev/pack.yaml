@@ -1,0 +1,8 @@
+name: rust-dev
+description: Rust development agent pack — code review, test writing, and debugging
+agents:
+  - code-reviewer
+  - test-writer
+  - debug
+prompts:
+  - rust-conventions
