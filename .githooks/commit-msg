@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Validate commit message follows conventional commits format.
+# Installed via: git config core.hooksPath .githooks
+
+commit_msg_file="$1"
+commit_msg=$(cat "$commit_msg_file")
+
+# Allow merge commits
+if echo "$commit_msg" | grep -qE "^Merge "; then
+  exit 0
+fi
+
+# Validate with commitizen
+if command -v cz &> /dev/null; then
+  cz check --commit-msg-file "$commit_msg_file"
+  exit $?
+fi
+
+# Fallback: regex validation if cz is not installed
+pattern="^(feat|fix|refactor|docs|test|chore|ci|perf|style|build|revert)(\(.+\))?!?: .+"
+if ! echo "$commit_msg" | head -1 | grep -qE "$pattern"; then
+  echo ""
+  echo "ERROR: Commit message does not follow Conventional Commits format."
+  echo ""
+  echo "  Expected: <type>(<scope>): <description>"
+  echo "  Types:    feat, fix, refactor, docs, test, chore, ci, perf, style, build, revert"
+  echo ""
+  echo "  Examples:"
+  echo "    feat: add agent validation command"
+  echo "    fix(parser): handle empty metadata section"
+  echo "    docs: update README with new CLI commands"
+  echo ""
+  echo "  Your message: $(head -1 "$commit_msg_file")"
+  echo ""
+  exit 1
+fi

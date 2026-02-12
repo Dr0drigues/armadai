@@ -1,6 +1,8 @@
+#[cfg(feature = "providers-api")]
 pub mod api;
 pub mod cli;
+pub mod factory;
+#[cfg(feature = "providers-api")]
 pub mod proxy;
+pub mod rate_limiter;
 pub mod traits;
-
-pub use traits::{CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream};

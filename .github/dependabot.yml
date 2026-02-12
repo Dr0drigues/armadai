@@ -11,6 +11,7 @@ version: 2
 updates:
   - package-ecosystem: cargo
     directory: "/"
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday
@@ -18,9 +19,12 @@ updates:
     labels:
       - dependencies
       - rust
+    commit-message:
+      prefix: "build(deps)"
 
   - package-ecosystem: github-actions
     directory: "/"
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday
@@ -28,3 +32,5 @@ updates:
     labels:
       - dependencies
       - ci
+    commit-message:
+      prefix: "ci(deps)"

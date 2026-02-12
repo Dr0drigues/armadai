@@ -1,0 +1,14 @@
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+version_provider = "cargo"
+tag_format = "v$version"
+update_changelog_on_bump = true
+changelog_file = "CHANGELOG.md"
+changelog_incremental = true
+annotated_tag = true
+bump_message = "release: v$new_version"
+major_version_zero = true
+
+[tool.commitizen.customize]
+schema_pattern = "^(feat|fix|refactor|docs|test|chore|ci|perf|style|build|revert)(\\(.+\\))?!?: .+"
