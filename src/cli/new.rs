@@ -2,6 +2,7 @@ use std::path::Path;
 
 use dialoguer::{Confirm, Input, Select};
 
+use crate::core::config::AppPaths;
 use crate::providers::factory::api_backend_for_tool;
 
 pub async fn execute(
@@ -27,8 +28,9 @@ fn template_create(
     stack: Option<&str>,
     description: Option<&str>,
 ) -> anyhow::Result<()> {
-    let templates_dir = Path::new("templates");
-    let agents_dir = Path::new("agents");
+    let paths = AppPaths::resolve();
+    let templates_dir = &paths.templates_dir;
+    let agents_dir = &paths.agents_dir;
 
     // Load template
     let template_path = templates_dir.join(format!("{template}.md"));
@@ -97,8 +99,9 @@ fn template_create(
 
 /// Interactive agent creation wizard
 async fn interactive_create() -> anyhow::Result<()> {
-    let templates_dir = Path::new("templates");
-    let agents_dir = Path::new("agents");
+    let paths = AppPaths::resolve();
+    let templates_dir = &paths.templates_dir;
+    let agents_dir = &paths.agents_dir;
 
     println!("🧙 ArmadAI Agent Creation Wizard\n");
 
@@ -340,28 +343,13 @@ fn prompt_model(provider: &str) -> anyhow::Result<Option<String>> {
     }
 }
 
-/// Load model list from config/providers.yaml for a given API backend.
+/// Load model list for a given API backend from providers config.
 fn load_provider_models(backend: &str) -> Vec<String> {
-    let path = Path::new("config/providers.yaml");
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_yml::from_str::<serde_yml::Value>(&content) else {
-        return Vec::new();
-    };
-    let Some(providers) = value.get("providers") else {
-        return Vec::new();
-    };
-    let Some(provider) = providers.get(backend) else {
-        return Vec::new();
-    };
-    let Some(models) = provider.get("models").and_then(|m| m.as_sequence()) else {
-        return Vec::new();
-    };
-    models
-        .iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect()
+    let cfg = crate::core::config::load_providers_config();
+    cfg.providers
+        .get(backend)
+        .map(|p| p.models.clone())
+        .unwrap_or_default()
 }
 
 /// Overwrite the ## Metadata section in a template with user choices.

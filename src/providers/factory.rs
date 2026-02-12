@@ -200,8 +200,8 @@ fn get_api_key(env_var: &str, provider_name: &str) -> anyhow::Result<String> {
         return Ok(key);
     }
 
-    let config_dir = std::path::Path::new("config");
-    if let Ok(secrets) = crate::secrets::load_secrets(config_dir)
+    let config_dir = crate::core::config::AppPaths::resolve().config_dir;
+    if let Ok(secrets) = crate::secrets::load_secrets(&config_dir)
         && let Some(creds) = secrets.providers.get(provider_name)
     {
         return Ok(creds.api_key.clone());

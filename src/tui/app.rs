@@ -221,8 +221,8 @@ impl App {
     }
 
     pub fn load_agents(&mut self) {
-        let agents_dir = std::path::Path::new("agents");
-        match Agent::load_all(agents_dir) {
+        let agents_dir = crate::core::config::AppPaths::resolve().agents_dir;
+        match Agent::load_all(&agents_dir) {
             Ok(agents) => self.agents = agents,
             Err(e) => {
                 self.status_msg = Some(format!("Failed to load agents: {e}"));

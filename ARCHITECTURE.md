@@ -231,6 +231,7 @@ armadai/
 │   │   ├── list.rs              # armadai list [--tags ...] [--stack ...]
 │   │   ├── inspect.rs           # armadai inspect <agent>
 │   │   ├── history.rs           # armadai history [--agent ...] [--replay id]
+│   │   ├── init.rs              # armadai init (bootstrap config)
 │   │   ├── up.rs                # armadai up (lance docker-compose)
 │   │   ├── config.rs            # armadai config (gestion providers/settings)
 │   │   └── validate.rs          # armadai validate [agent] (dry-run)
@@ -249,6 +250,7 @@ armadai/
 │   ├── core/                    # Domaine métier
 │   │   ├── mod.rs
 │   │   ├── agent.rs             # Struct Agent, chargement depuis .md
+│   │   ├── config.rs            # Config centralisée, résolution XDG, AppPaths
 │   │   ├── coordinator.rs       # Hub & spoke : décomposition et dispatch
 │   │   ├── pipeline.rs          # Mode pipeline : chaînage séquentiel
 │   │   ├── task.rs              # Définition d'une tâche + résultat
@@ -325,10 +327,50 @@ armadai history --replay <id>      # Rejouer une exécution passée
 armadai costs [--agent a] [--from] # Consulter les coûts
 armadai config providers           # Gérer les providers
 armadai config secrets init        # Initialiser SOPS + age
+armadai init                       # Initialiser ~/.config/armadai/
+armadai init --force               # Écraser les fichiers existants
+armadai init --project             # Créer armadai.yaml local
 armadai tui                        # Lancer l'interface TUI
 armadai up                         # Lancer l'infra Docker (optionnel)
 armadai down                       # Arrêter l'infra Docker
 ```
+
+---
+
+## Configuration centralisée
+
+Toute la résolution de chemins et la configuration utilisateur passe par `core/config.rs`.
+
+### Répertoire utilisateur
+
+```
+~/.config/armadai/
+├── config.yaml          # Defaults (provider, model, storage, rate limits, costs, logging)
+├── providers.yaml       # Endpoints et modèles disponibles (non sensible)
+├── agents/              # Bibliothèque d'agents globale
+├── prompts/             # Fragments de prompts composables
+├── skills/              # Skills des agents
+├── fleets/              # Définitions de flottes
+└── registry/            # Cache du registre awesome-copilot
+```
+
+### Résolution XDG
+
+1. `$ARMADAI_CONFIG_DIR` (override explicite)
+2. `$XDG_CONFIG_HOME/armadai`
+3. `$HOME/.config/armadai`
+
+### Résolution des chemins (AppPaths)
+
+Pour `agents/`, `templates/`, `config/` :
+1. Répertoire projet-local (s'il existe dans le cwd)
+2. Fallback vers le répertoire global `~/.config/armadai/`
+
+### Couches de configuration
+
+1. Defaults Rust (impl `Default`)
+2. `~/.config/armadai/config.yaml` (désérialisation serde avec `#[serde(default)]`)
+3. Variables d'environnement : `ARMADAI_PROVIDER`, `ARMADAI_MODEL`, `ARMADAI_TEMPERATURE`
 
 ---
 
