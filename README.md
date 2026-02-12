@@ -22,14 +22,14 @@ armadai tui
 - **Pipeline mode** — chain agents sequentially (output A becomes input B)
 - **TUI dashboard** — fleet management with agent browser, detail view, history, costs, and command palette
 - **Shell completion** — auto-complete for bash, zsh, fish, powershell, elvish
-- **Cost tracking** — per-agent, per-run cost monitoring stored in SurrealDB
+- **Cost tracking** — per-agent, per-run cost monitoring stored in SQLite
 
 ## Quick Start
 
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (1.86+)
-- [Docker](https://docs.docker.com/get-docker/) (optional, for SurrealDB server / LiteLLM proxy)
+- [Docker](https://docs.docker.com/get-docker/) (optional, for LiteLLM proxy)
 - [SOPS](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age) (optional, for secret management)
 
 ### Install
@@ -302,11 +302,10 @@ HOST MACHINE
 ├── armadai (native binary)
 │   ├── CLI + TUI + Web UI
 │   ├── Providers (API / CLI / Proxy)
-│   ├── SurrealDB (embedded)
+│   ├── SQLite (embedded storage)
 │   └── SOPS + age secrets
 │
 └── docker-compose (optional)
-    ├── surrealdb   :8000
     └── litellm     :4000
 ```
 
@@ -318,17 +317,14 @@ Heavy dependencies are gated behind optional feature flags for faster compilatio
 |---|---|---|
 | `tui` | Yes | TUI dashboard (ratatui + crossterm) |
 | `web` | Yes | Web UI dashboard (axum + tower-http) |
-| `storage` | Yes* | SurrealDB with in-memory backend |
-| `storage-rocksdb` | Yes | SurrealDB with persistent RocksDB backend |
+| `storage` | Yes | SQLite persistence (rusqlite bundled) |
 | `providers-api` | Yes | HTTP API providers (Anthropic, OpenAI, Google) |
-
-\* Implied by `storage-rocksdb`.
 
 ```bash
 # Full build (all features)
 cargo build --release
 
-# Lightweight build (no SurrealDB, no TUI)
+# Lightweight build (no storage, no TUI)
 cargo build --release --no-default-features
 
 # CLI + storage (no TUI)

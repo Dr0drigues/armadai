@@ -1,6 +1,7 @@
 mod cli;
 mod core;
 mod linker;
+mod model_registry;
 mod parser;
 #[allow(dead_code)]
 mod providers;

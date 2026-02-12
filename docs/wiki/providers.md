@@ -34,6 +34,18 @@ You can override the CLI args:
 - timeout: 600
 ```
 
+## Model Selection
+
+When using `armadai new -i` (interactive wizard), the model selection step fetches available models from the [models.dev](https://models.dev) registry with enriched metadata (context window size, input/output cost per MTok). Results are cached locally for 24 hours. If the registry is unreachable, the wizard falls back to the static model list in `providers.yaml`.
+
+```
+? Model
+> Claude Sonnet 4.5 — 200K ctx — $3.00/$15.00
+  Claude Haiku 4.5 — 200K ctx — $0.80/$4.00
+  Claude Opus 4 — 200K ctx — $15.00/$75.00
+  (custom)
+```
+
 ## API Providers
 
 Direct HTTP calls to LLM APIs. Use these when you want explicit API control.
