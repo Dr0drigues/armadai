@@ -4,6 +4,7 @@ use std::time::Instant;
 use crate::core::agent::Agent;
 use crate::core::config::AppPaths;
 use crate::core::fleet::FleetDefinition;
+use crate::core::project::{self, AgentRef, ProjectConfig};
 use crate::providers::factory::create_provider;
 use crate::providers::rate_limiter::RateLimiter;
 use crate::providers::traits::{ChatMessage, CompletionRequest};
@@ -13,26 +14,12 @@ pub async fn execute(
     input: Option<String>,
     pipe: Option<Vec<String>>,
 ) -> anyhow::Result<()> {
-    let (agents_dir, fleet) = resolve_agents_dir();
-    let agents_dir = agents_dir.as_path();
+    let resolution = resolve_agents_dir();
 
     // Build the execution chain: primary agent + piped agents
     let mut chain = vec![agent_name];
     if let Some(extra) = pipe {
         chain.extend(extra);
-    }
-
-    // Validate agents against fleet if present
-    if let Some(ref fleet) = fleet {
-        for name in &chain {
-            if !fleet.contains_agent(name) {
-                anyhow::bail!(
-                    "Agent '{name}' is not in fleet '{}'. Available: {}",
-                    fleet.fleet,
-                    fleet.agents.join(", ")
-                );
-            }
-        }
     }
 
     // Resolve input text
@@ -43,7 +30,8 @@ pub async fn execute(
             eprintln!("--- [{}/{} {}] ---", i + 1, chain.len(), name);
         }
 
-        let (output, _) = run_single_agent(agents_dir, name, &current_input).await?;
+        let agent_path = resolve_agent_path(&resolution, name)?;
+        let (output, _) = run_single_agent(&agent_path, name, &current_input).await?;
         current_input = output;
     }
 
@@ -53,16 +41,65 @@ pub async fn execute(
     Ok(())
 }
 
+/// Result of resolving the agents directory / project config.
+enum AgentResolution {
+    /// New-format project config with walk-up root
+    Project {
+        root: PathBuf,
+        config: ProjectConfig,
+    },
+    /// Legacy fleet format
+    Fleet(FleetDefinition),
+    /// No project config found — use default paths
+    Default(PathBuf),
+}
+
+/// Resolve a single agent name to a file path using the resolution context.
+fn resolve_agent_path(resolution: &AgentResolution, agent_name: &str) -> anyhow::Result<PathBuf> {
+    match resolution {
+        AgentResolution::Project { root, config } => {
+            // If the agent is declared in the project config, resolve it
+            if let Some(agent_ref) = config.agents.iter().find(|r| match r {
+                AgentRef::Named { name } => name == agent_name,
+                AgentRef::Path { path } => path.file_stem().is_some_and(|s| s == agent_name),
+                AgentRef::Registry { registry } => registry.ends_with(agent_name),
+            }) {
+                return project::resolve_agent(agent_ref, root);
+            }
+
+            // Not declared in config — try resolving as Named anyway
+            let fallback_ref = AgentRef::Named {
+                name: agent_name.to_string(),
+            };
+            project::resolve_agent(&fallback_ref, root)
+        }
+        AgentResolution::Fleet(fleet) => {
+            if !fleet.contains_agent(agent_name) {
+                anyhow::bail!(
+                    "Agent '{agent_name}' is not in fleet '{}'. Available: {}",
+                    fleet.fleet,
+                    fleet.agents.join(", ")
+                );
+            }
+            let agents_dir = fleet.agents_dir();
+            Agent::find_file(&agents_dir, agent_name).ok_or_else(|| {
+                anyhow::anyhow!("Agent '{agent_name}' not found in {}", agents_dir.display())
+            })
+        }
+        AgentResolution::Default(agents_dir) => Agent::find_file(agents_dir, agent_name)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Agent '{agent_name}' not found in {}", agents_dir.display())
+            }),
+    }
+}
+
 async fn run_single_agent(
-    agents_dir: &Path,
+    agent_path: &Path,
     agent_name: &str,
     input: &str,
 ) -> anyhow::Result<(String, RunMetrics)> {
     // 1. Load agent
-    let agent_path = Agent::find_file(agents_dir, agent_name).ok_or_else(|| {
-        anyhow::anyhow!("Agent '{agent_name}' not found in {}", agents_dir.display())
-    })?;
-    let agent = crate::parser::parse_agent_file(&agent_path)?;
+    let agent = crate::parser::parse_agent_file(agent_path)?;
 
     // 2. Create provider
     let provider = create_provider(&agent)?;
@@ -200,10 +237,22 @@ fn atty_is_pipe() -> bool {
     !std::io::stdin().is_terminal()
 }
 
-/// Resolve the agents directory: if a `armadai.yaml` fleet file exists in the
-/// current directory, use the fleet's source/agents/ path. Otherwise default
-/// to the local `agents/` directory.
-fn resolve_agents_dir() -> (PathBuf, Option<FleetDefinition>) {
+/// Resolve agent source: walk up for `armadai.yaml`, detect format,
+/// and return the appropriate resolution strategy.
+fn resolve_agents_dir() -> AgentResolution {
+    // 1. Walk-up search for project config (new or legacy format)
+    if let Some((root, config)) = project::find_project_config()
+        && !config.agents.is_empty()
+    {
+        tracing::info!(
+            "Using project config from {} ({} agent(s))",
+            root.display(),
+            config.agents.len()
+        );
+        return AgentResolution::Project { root, config };
+    }
+
+    // 2. Check for legacy fleet file in cwd
     let fleet_path = Path::new("armadai.yaml");
     if fleet_path.exists()
         && let Ok(fleet) = FleetDefinition::load(fleet_path)
@@ -215,7 +264,7 @@ fn resolve_agents_dir() -> (PathBuf, Option<FleetDefinition>) {
                 fleet.fleet,
                 dir.display()
             );
-            return (dir, Some(fleet));
+            return AgentResolution::Fleet(fleet);
         }
         tracing::warn!(
             "Fleet '{}' source agents dir not found: {}",
@@ -223,7 +272,9 @@ fn resolve_agents_dir() -> (PathBuf, Option<FleetDefinition>) {
             dir.display()
         );
     }
-    (AppPaths::resolve().agents_dir, None)
+
+    // 3. Default fallback
+    AgentResolution::Default(AppPaths::resolve().agents_dir)
 }
 
 #[cfg(test)]
@@ -231,14 +282,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_resolve_agents_dir_no_fleet() {
-        // When no armadai.yaml exists in the current directory,
-        // resolve_agents_dir should return the default "agents" path
-        let (dir, fleet) = resolve_agents_dir();
-        // We can't guarantee armadai.yaml doesn't exist in the test runner's cwd,
-        // but the function should not panic
-        assert!(fleet.is_none() || fleet.is_some());
-        // dir should be a valid path
-        assert!(!dir.to_string_lossy().is_empty());
+    fn test_resolve_agents_dir_returns_valid_resolution() {
+        // resolve_agents_dir should not panic regardless of cwd state
+        let resolution = resolve_agents_dir();
+        match resolution {
+            AgentResolution::Project { root, config } => {
+                assert!(!root.to_string_lossy().is_empty());
+                assert!(!config.agents.is_empty());
+            }
+            AgentResolution::Fleet(fleet) => {
+                assert!(!fleet.fleet.is_empty());
+            }
+            AgentResolution::Default(dir) => {
+                assert!(!dir.to_string_lossy().is_empty());
+            }
+        }
     }
 }
