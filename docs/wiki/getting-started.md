@@ -166,4 +166,6 @@ armadai registry add official/security
 - [Providers](providers.md) — configure API, CLI, and proxy providers
 - [Templates](templates.md) — available templates and how to create your own
 - [Starter Packs](starter-packs.md) — curated agent bundles for quick setup
+- [Link Command](link.md) — generating native configs for AI CLI tools
+- [Skills & Prompts](skills-prompts.md) — composable prompt fragments and skills
 - [Registry](registry.md) — browsing and importing community agents
