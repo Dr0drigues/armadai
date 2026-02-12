@@ -3,7 +3,7 @@ pub async fn execute(agent: Option<String>, replay: Option<String>) -> anyhow::R
     {
         use crate::storage::{init_db, queries};
 
-        let db = init_db().await?;
+        let db = init_db()?;
 
         // Replay mode: re-run an agent with the same input
         if let Some(ref _id) = replay {
@@ -11,7 +11,7 @@ pub async fn execute(agent: Option<String>, replay: Option<String>) -> anyhow::R
             anyhow::bail!("Replay is not yet implemented");
         }
 
-        let records = queries::get_history(&db, agent.as_deref(), 50).await?;
+        let records = queries::get_history(&db, agent.as_deref(), 50)?;
 
         if records.is_empty() {
             println!("No execution records found.");

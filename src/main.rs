@@ -8,7 +8,6 @@ mod registry;
 #[allow(dead_code)]
 mod secrets;
 #[cfg(feature = "storage")]
-#[allow(dead_code)]
 mod storage;
 #[cfg(feature = "tui")]
 mod tui;
