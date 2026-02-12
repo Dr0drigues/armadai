@@ -47,6 +47,18 @@ pub async fn execute(
         }
     }
 
+    // 3b. Extract coordinator if configured
+    let coordinator = config
+        .link
+        .as_ref()
+        .and_then(|l| l.coordinator.as_deref())
+        .and_then(|name| {
+            let idx = link_agents
+                .iter()
+                .position(|a| a.name.eq_ignore_ascii_case(name))?;
+            Some(link_agents.remove(idx))
+        });
+
     // 4. Determine target
     let target_name = target
         .or_else(|| config.link.as_ref().and_then(|l| l.target.clone()))
@@ -74,7 +86,7 @@ pub async fn execute(
 
     // 7. Generate files
     let sources = &config.sources;
-    let files = linker.generate(&link_agents, sources);
+    let files = linker.generate(&link_agents, coordinator.as_ref(), sources);
 
     if files.is_empty() {
         println!("No files to generate.");

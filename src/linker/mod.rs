@@ -36,7 +36,12 @@ pub struct OutputFile {
 pub trait Linker: Send + Sync {
     fn name(&self) -> &str;
     fn default_output_dir(&self) -> &str;
-    fn generate(&self, agents: &[LinkAgent], sources: &[String]) -> Vec<OutputFile>;
+    fn generate(
+        &self,
+        agents: &[LinkAgent],
+        coordinator: Option<&LinkAgent>,
+        sources: &[String],
+    ) -> Vec<OutputFile>;
 }
 
 /// Create a linker for the given target name.

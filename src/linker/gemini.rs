@@ -8,6 +8,10 @@ use super::{LinkAgent, Linker, OutputFile, slugify};
 /// - `agents/{slug}.md` — one sub-agent file per agent (with YAML frontmatter)
 /// - `AGENTS.md` — coordinator context document
 /// - `settings.json` — Gemini CLI settings with contextFileName and enableAgents
+///
+/// When a coordinator is provided, its prompt is used in AGENTS.md instead of
+/// the generic "team coordinator" text. The coordinator is excluded from
+/// individual agent files.
 pub struct GeminiLinker;
 
 impl Linker for GeminiLinker {
@@ -19,8 +23,13 @@ impl Linker for GeminiLinker {
         ".gemini"
     }
 
-    fn generate(&self, agents: &[LinkAgent], _sources: &[String]) -> Vec<OutputFile> {
-        if agents.is_empty() {
+    fn generate(
+        &self,
+        agents: &[LinkAgent],
+        coordinator: Option<&LinkAgent>,
+        _sources: &[String],
+    ) -> Vec<OutputFile> {
+        if agents.is_empty() && coordinator.is_none() {
             return Vec::new();
         }
 
@@ -32,7 +41,7 @@ impl Linker for GeminiLinker {
         }
 
         // AGENTS.md — coordinator context document
-        files.push(generate_agents_md(agents));
+        files.push(generate_agents_md(agents, coordinator));
 
         // settings.json — enable agents + set context file
         files.push(OutputFile {
@@ -100,10 +109,43 @@ fn generate_agent_file(agent: &LinkAgent) -> OutputFile {
 }
 
 /// Generate the `AGENTS.md` coordinator context document.
-fn generate_agents_md(agents: &[LinkAgent]) -> OutputFile {
+fn generate_agents_md(agents: &[LinkAgent], coordinator: Option<&LinkAgent>) -> OutputFile {
     let mut content = String::new();
 
-    if agents.len() == 1 {
+    if let Some(coord) = coordinator {
+        // Use coordinator's prompt as the main content
+        content.push_str(&coord.system_prompt);
+
+        if let Some(ref instructions) = coord.instructions {
+            ensure_blank_line(&mut content);
+            content.push_str(instructions);
+        }
+
+        if !agents.is_empty() {
+            ensure_blank_line(&mut content);
+            content.push_str("## Team\n\n");
+            content.push_str("| Agent | File | Description |\n");
+            content.push_str("|-------|------|-------------|\n");
+
+            for agent in agents {
+                let slug = slugify(&agent.name);
+                let desc = agent
+                    .description
+                    .as_deref()
+                    .or_else(|| agent.system_prompt.lines().find(|l| !l.trim().is_empty()))
+                    .unwrap_or("");
+                let desc_truncated = if desc.len() > 80 {
+                    format!("{}...", &desc[..77])
+                } else {
+                    desc.to_string()
+                };
+                content.push_str(&format!(
+                    "| {} | [agents/{slug}.md](agents/{slug}.md) | {} |\n",
+                    agent.name, desc_truncated
+                ));
+            }
+        }
+    } else if agents.len() == 1 {
         let slug = slugify(&agents[0].name);
         content.push_str(&format!("# {}\n\n", agents[0].name));
         content.push_str(&format!(
@@ -190,7 +232,7 @@ mod tests {
     fn test_generate_single_agent() {
         let linker = GeminiLinker;
         let agents = vec![make_agent("Code Reviewer", "You review code for bugs.")];
-        let files = linker.generate(&agents, &[]);
+        let files = linker.generate(&agents, None, &[]);
 
         // agent file + AGENTS.md + settings.json
         assert_eq!(files.len(), 3);
@@ -240,7 +282,7 @@ mod tests {
             model: Some("gemini-2.5-pro".to_string()),
             temperature: 0.3,
         }];
-        let files = linker.generate(&agents, &[]);
+        let files = linker.generate(&agents, None, &[]);
 
         let agent_file = files
             .iter()
@@ -269,7 +311,7 @@ mod tests {
             make_agent("Code Reviewer", "You review code."),
             make_agent("Test Writer", "You write tests."),
         ];
-        let files = linker.generate(&agents, &[]);
+        let files = linker.generate(&agents, None, &[]);
 
         // 2 agent files + AGENTS.md + settings.json
         assert_eq!(files.len(), 4);
@@ -308,7 +350,7 @@ mod tests {
     #[test]
     fn test_generate_empty_agents() {
         let linker = GeminiLinker;
-        let files = linker.generate(&[], &[]);
+        let files = linker.generate(&[], None, &[]);
         assert!(files.is_empty());
     }
 
@@ -322,7 +364,7 @@ mod tests {
     fn test_settings_json_content() {
         let linker = GeminiLinker;
         let agents = vec![make_agent("Agent", "Prompt.")];
-        let files = linker.generate(&agents, &[]);
+        let files = linker.generate(&agents, None, &[]);
 
         let settings = files
             .iter()
@@ -334,5 +376,65 @@ mod tests {
                 .content
                 .contains("\"contextFileName\": \"AGENTS.md\"")
         );
+    }
+
+    #[test]
+    fn test_generate_with_coordinator() {
+        let linker = GeminiLinker;
+        let coordinator = make_agent("Capitaine", "You are the captain of the crew.");
+        let agents = vec![
+            make_agent("Vigie", "You watch from the mast."),
+            make_agent("Charpentier", "You repair the hull."),
+        ];
+        let files = linker.generate(&agents, Some(&coordinator), &[]);
+
+        // 2 agent files + AGENTS.md + settings.json
+        assert_eq!(files.len(), 4);
+
+        let agents_md = files
+            .iter()
+            .find(|f| f.path.ends_with("AGENTS.md"))
+            .unwrap();
+        // Should contain coordinator's prompt, not generic text
+        assert!(
+            agents_md
+                .content
+                .contains("You are the captain of the crew.")
+        );
+        assert!(!agents_md.content.contains("team coordinator"));
+        // Should have the team roster
+        assert!(agents_md.content.contains("## Team"));
+        assert!(agents_md.content.contains("agents/vigie.md"));
+        assert!(agents_md.content.contains("agents/charpentier.md"));
+
+        // No agent file for the coordinator
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.path.to_string_lossy().contains("capitaine"))
+        );
+    }
+
+    #[test]
+    fn test_generate_coordinator_with_instructions() {
+        let coordinator = LinkAgent {
+            name: "Leader".to_string(),
+            system_prompt: "You lead the team.".to_string(),
+            instructions: Some("Always be kind.".to_string()),
+            output_format: None,
+            context: None,
+            description: Some("You lead the team.".to_string()),
+            tags: vec![],
+            stacks: vec![],
+            model: None,
+            temperature: 0.7,
+        };
+        let agents = vec![make_agent("Worker", "You do the work.")];
+
+        let file = generate_agents_md(&agents, Some(&coordinator));
+        assert!(file.content.contains("You lead the team."));
+        assert!(file.content.contains("Always be kind."));
+        assert!(file.content.contains("## Team"));
+        assert!(file.content.contains("agents/worker.md"));
     }
 }

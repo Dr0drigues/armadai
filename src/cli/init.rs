@@ -146,8 +146,9 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
         anyhow::bail!("armadai.yaml already exists in current directory");
     }
 
-    // Detect provider from the pack's agent files
+    // Detect provider and coordinator from the pack's agent files
     let link_target = detect_pack_provider(pack_name);
+    let coordinator_name = detect_pack_coordinator(pack, pack_name);
 
     let mut content = String::from(
         "# ArmadAI project configuration\n\
@@ -177,6 +178,13 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
         content.push_str(&format!(
             "\n# Linker configuration\nlink:\n  target: {target}\n"
         ));
+        if let Some(ref coord) = coordinator_name {
+            content.push_str(&format!("  coordinator: {coord}\n"));
+        }
+    } else if let Some(ref coord) = coordinator_name {
+        content.push_str(&format!(
+            "\n# Linker configuration\nlink:\n  coordinator: {coord}\n"
+        ));
     }
 
     std::fs::write(path, &content)?;
@@ -184,6 +192,38 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
     println!("  Run `armadai link` to generate target config files.");
 
     Ok(())
+}
+
+/// Detect a coordinator agent from a pack by scanning agent files for a
+/// `tags: [... coordinator ...]` metadata entry.
+fn detect_pack_coordinator(pack: &StarterPack, pack_name: &str) -> Option<String> {
+    let dir = starters_dir();
+    let agents_dir = dir.join(pack_name).join("agents");
+    if !agents_dir.is_dir() {
+        return None;
+    }
+
+    for agent_name in &pack.agents {
+        let filename = if agent_name.ends_with(".md") {
+            agent_name.clone()
+        } else {
+            format!("{agent_name}.md")
+        };
+        let path = agents_dir.join(&filename);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines() {
+                let trimmed = line.trim().trim_start_matches("- ");
+                if let Some(tags_value) = trimmed.strip_prefix("tags:") {
+                    let tags_lower = tags_value.to_lowercase();
+                    if tags_lower.contains("coordinator") {
+                        return Some(agent_name.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Try to detect the primary provider used by a pack's agents.
