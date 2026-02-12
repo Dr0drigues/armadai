@@ -7,25 +7,26 @@ mod list;
 pub(crate) mod new;
 mod run;
 mod up;
+mod update;
 mod validate;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "swarm",
+    name = "armadai",
     about = "AI agent fleet orchestrator",
     long_about = "AI agent fleet orchestrator — define, manage and run specialized agents from Markdown files.\n\n\
         Each agent is a .md file in agents/ with metadata, system prompt, and optional instructions.\n\
         Supports any LLM provider (Claude, GPT, Gemini) via CLI tools or API.",
     version,
     after_help = "Examples:\n  \
-        swarm new my-agent --template dev-review --stack rust\n  \
-        swarm run my-agent \"Review this code for bugs\"\n  \
-        swarm run --pipe reviewer writer src/main.rs\n  \
-        swarm list --tags dev --stack rust\n  \
-        swarm tui\n  \
-        swarm web --port 8080\n\n\
+        armadai new my-agent --template dev-review --stack rust\n  \
+        armadai run my-agent \"Review this code for bugs\"\n  \
+        armadai run --pipe reviewer writer src/main.rs\n  \
+        armadai list --tags dev --stack rust\n  \
+        armadai tui\n  \
+        armadai web --port 8080\n\n\
         Documentation: https://github.com/Dr0drigues/swarm-festai"
 )]
 pub struct Cli {
@@ -42,9 +43,9 @@ pub enum Command {
             configured provider, and prints the response. Use --pipe to chain multiple \
             agents sequentially (output of one becomes input of the next).",
         after_help = "Examples:\n  \
-            swarm run code-reviewer \"Review this function\"\n  \
-            swarm run summarizer @long-document.txt\n  \
-            swarm run --pipe reviewer writer src/main.rs"
+            armadai run code-reviewer \"Review this function\"\n  \
+            armadai run summarizer @long-document.txt\n  \
+            armadai run --pipe reviewer writer src/main.rs"
     )]
     Run {
         /// Agent name (filename without .md)
@@ -63,10 +64,10 @@ pub enum Command {
             The new agent is created at agents/<name>.md.\n\n\
             Use --interactive (-i) for a guided step-by-step creation wizard.",
         after_help = "Examples:\n  \
-            swarm new my-assistant\n  \
-            swarm new reviewer --template dev-review --stack rust\n  \
-            swarm new scanner --template security-review -d \"audit OWASP top 10\"\n  \
-            swarm new -i"
+            armadai new my-assistant\n  \
+            armadai new reviewer --template dev-review --stack rust\n  \
+            armadai new scanner --template security-review -d \"audit OWASP top 10\"\n  \
+            armadai new -i"
     )]
     New {
         /// Agent name (optional in interactive mode)
@@ -86,9 +87,9 @@ pub enum Command {
     },
     /// List available agents
     #[command(after_help = "Examples:\n  \
-        swarm list\n  \
-        swarm list --tags dev review\n  \
-        swarm list --stack rust")]
+        armadai list\n  \
+        armadai list --tags dev review\n  \
+        armadai list --stack rust")]
     List {
         /// Filter by tags
         #[arg(long)]
@@ -117,9 +118,9 @@ pub enum Command {
     },
     /// View execution history
     #[command(after_help = "Examples:\n  \
-        swarm history\n  \
-        swarm history --agent code-reviewer\n  \
-        swarm history --replay abc123")]
+        armadai history\n  \
+        armadai history --agent code-reviewer\n  \
+        armadai history --replay abc123")]
     History {
         /// Filter by agent name
         #[arg(long)]
@@ -130,9 +131,9 @@ pub enum Command {
     },
     /// View cost tracking
     #[command(after_help = "Examples:\n  \
-        swarm costs\n  \
-        swarm costs --agent code-reviewer\n  \
-        swarm costs --from 2025-01-01")]
+        armadai costs\n  \
+        armadai costs --agent code-reviewer\n  \
+        armadai costs --from 2025-01-01")]
     Costs {
         /// Filter by agent name
         #[arg(long)]
@@ -146,9 +147,9 @@ pub enum Command {
         long_about = "Manage providers and secrets.\n\n\
             Configure API keys, view provider status, and manage SOPS + age encryption.",
         after_help = "Examples:\n  \
-            swarm config providers\n  \
-            swarm config secrets init\n  \
-            swarm config secrets rotate"
+            armadai config providers\n  \
+            armadai config secrets init\n  \
+            armadai config secrets rotate"
     )]
     Config {
         #[command(subcommand)]
@@ -168,8 +169,8 @@ pub enum Command {
             Starts an HTTP server with a browser-based dashboard for browsing agents, \
             viewing execution history, and tracking costs.",
         after_help = "Examples:\n  \
-            swarm web\n  \
-            swarm web --port 8080"
+            armadai web\n  \
+            armadai web --port 8080"
     )]
     Web {
         /// Port to listen on
@@ -182,25 +183,29 @@ pub enum Command {
     Up,
     /// Stop infrastructure services (Docker Compose)
     #[command(long_about = "Stop infrastructure services (Docker Compose).\n\n\
-        Stops and removes the containers started by 'swarm up'.")]
+        Stops and removes the containers started by 'armadai up'.")]
     Down,
     /// Manage agent fleets
     #[command(
         subcommand,
         long_about = "Manage agent fleets.\n\n\
-            Create named groups of agents and link them to project directories via swarm.yaml.",
+            Create named groups of agents and link them to project directories via armadai.yaml.",
         after_help = "Examples:\n  \
-            swarm fleet create my-fleet --all\n  \
-            swarm fleet link my-fleet\n  \
-            swarm fleet list\n  \
-            swarm fleet show my-fleet"
+            armadai fleet create my-fleet --all\n  \
+            armadai fleet link my-fleet\n  \
+            armadai fleet list\n  \
+            armadai fleet show my-fleet"
     )]
     Fleet(fleet::FleetAction),
+    /// Self-update to the latest release
+    #[command(long_about = "Self-update to the latest release.\n\n\
+            Downloads the latest binary from GitHub Releases and replaces the current one.")]
+    Update,
     /// Generate shell completion scripts
     #[command(after_help = "Examples:\n  \
-        swarm completion bash > ~/.local/share/bash-completion/completions/swarm\n  \
-        swarm completion zsh > ~/.zfunc/_swarm\n  \
-        swarm completion fish > ~/.config/fish/completions/swarm.fish")]
+        armadai completion bash > ~/.local/share/bash-completion/completions/armadai\n  \
+        armadai completion zsh > ~/.zfunc/_armadai\n  \
+        armadai completion fish > ~/.config/fish/completions/armadai.fish")]
     Completion {
         /// Shell to generate completions for
         #[arg(value_enum)]
@@ -229,10 +234,16 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         #[cfg(feature = "web")]
         Command::Web { port } => crate::web::serve(port).await,
         Command::Fleet(action) => fleet::execute(action).await,
+        Command::Update => update::execute().await,
         Command::Up => up::start().await,
         Command::Down => up::stop().await,
         Command::Completion { shell } => {
-            clap_complete::generate(shell, &mut Cli::command(), "swarm", &mut std::io::stdout());
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "armadai",
+                &mut std::io::stdout(),
+            );
             Ok(())
         }
     }

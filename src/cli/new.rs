@@ -100,7 +100,7 @@ async fn interactive_create() -> anyhow::Result<()> {
     let templates_dir = Path::new("templates");
     let agents_dir = Path::new("agents");
 
-    println!("🧙 Swarm Agent Creation Wizard\n");
+    println!("🧙 ArmadAI Agent Creation Wizard\n");
 
     // 1. Agent name
     let name: String = Input::new()

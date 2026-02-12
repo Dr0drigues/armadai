@@ -25,11 +25,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         .collect();
 
     let tabs = Tabs::new(titles)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" swarm-festai "),
-        )
+        .block(Block::default().borders(Borders::ALL).title(" ArmadAI "))
         .select(app.tab_index)
         .style(Style::default().fg(Color::White))
         .highlight_style(
@@ -54,7 +50,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     if app.agents.is_empty() {
         let msg = Paragraph::new(
-            "No agents found. Create one with: swarm new my-agent\n\n\
+            "No agents found. Create one with: armadai new my-agent\n\n\
              Press ':' to open command palette",
         )
         .block(Block::default().borders(Borders::ALL).title(" Agents "));

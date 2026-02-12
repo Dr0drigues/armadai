@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-swarm-festai is an AI agent fleet orchestrator written in Rust (edition 2024). Agents are defined as Markdown files and executed against any LLM provider (API or CLI tool). The binary is named `swarm`.
+ArmadAI is an AI agent fleet orchestrator written in Rust (edition 2024). Agents are defined as Markdown files and executed against any LLM provider (API or CLI tool). The binary is named `armadai`.
 
 ## Build & Test Commands
 
@@ -53,6 +53,12 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`. Sever
 - `parser/` — Converts Markdown agent files into `Agent` struct. Required sections: H1 (name), `## Metadata`, `## System Prompt`.
 - `providers/` — `Provider` trait (in `traits.rs`) with `complete()` and `stream()` methods. Factory (`factory.rs`) constructs the right provider from agent metadata. Implementations: `api/anthropic.rs` (full), `cli.rs` (full), openai/google/proxy (stubs).
 - `core/` — Domain types: `Agent`, `AgentMetadata`, `Task`, `SharedContext`, `Coordinator`, `Pipeline`.
+- `core/project.rs` — Project config (`armadai.yaml`) with agent/prompt/skill resolution.
+- `core/prompt.rs` — Composable prompt fragments with YAML frontmatter.
+- `core/skill.rs` — Skills following the Agent Skills open standard (SKILL.md).
+- `core/fleet.rs` — Fleet definitions linking agent groups to source directories.
+- `linker/` — Generates native config files for target AI CLIs. Trait `Linker` with one implementation per CLI (claude, copilot, cursor, aider, codex, gemini, windsurf, cline).
+- `registry/` — awesome-copilot integration. Sync, search, convert agents from the community catalog.
 - `storage/` — SurrealDB wrapper. `schema.rs` defines tables (`runs`, `agent_stats`), `queries.rs` has CRUD operations.
 - `tui/` — Ratatui-based terminal UI. `app.rs` holds state (incl. command palette), `views/` renders tabs (Agents/Detail/History/Costs + shortcuts bar + command palette overlay), `widgets/` provides reusable components.
 - `web/` — Axum-based web UI. Embedded single-page HTML app with JSON API endpoints (`/api/agents`, `/api/history`, `/api/costs`).
@@ -67,7 +73,9 @@ trait Provider: Send + Sync {
 }
 ```
 
-**Agent definition** lives in `agents/*.md`. Templates in `templates/*.md` use `{{name}}`, `{{stack}}`, `{{description}}` placeholders.
+**Agent definition** lives in `~/.config/armadai/agents/` (user library) or project-local paths. Templates in `templates/*.md` use `{{name}}`, `{{stack}}`, `{{description}}` placeholders.
+
+**Config** lives in `~/.config/armadai/` (user) and `armadai.yaml` (project).
 
 ## Git Conventions
 

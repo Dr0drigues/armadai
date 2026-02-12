@@ -1,4 +1,4 @@
-# swarm-festai
+# ArmadAI
 
 AI agent fleet orchestrator — define, manage and run specialized agents from Markdown files.
 
@@ -7,12 +7,12 @@ AI agent fleet orchestrator — define, manage and run specialized agents from M
 
 ## Overview
 
-swarm-festai lets you build a fleet of specialized AI agents, each configured with a simple Markdown file. It works with any LLM provider (Claude, GPT, Gemini) and any CLI tool (Claude Code, aider, etc.) through a unified interface.
+ArmadAI lets you build a fleet of specialized AI agents, each configured with a simple Markdown file. It works with any LLM provider (Claude, GPT, Gemini) and any CLI tool (Claude Code, aider, etc.) through a unified interface.
 
 ```
-swarm run code-reviewer "Review this PR for security issues"
-swarm run --pipe code-reviewer test-writer "src/main.rs"
-swarm tui
+armadai run code-reviewer "Review this PR for security issues"
+armadai run --pipe code-reviewer test-writer "src/main.rs"
+armadai tui
 ```
 
 ### Key Features
@@ -40,13 +40,13 @@ cd swarm-festai
 cargo build --release
 ```
 
-The binary is at `target/release/swarm`.
+The binary is at `target/release/armadai`.
 
 ### Configure providers
 
 ```bash
 # Option A: Encrypted secrets (recommended)
-swarm config secrets init       # Generates age key + .sops.yaml
+armadai config secrets init       # Generates age key + .sops.yaml
 sops config/providers.sops.yaml # Edit encrypted API keys
 
 # Option B: Environment variables
@@ -63,13 +63,13 @@ providers:
 EOF
 
 # Check provider status
-swarm config providers
+armadai config providers
 ```
 
 ### Create your first agent
 
 ```bash
-swarm new --template basic my-assistant
+armadai new --template basic my-assistant
 ```
 
 This creates `agents/my-assistant.md` — edit it to customize the system prompt, model, and behavior.
@@ -77,29 +77,29 @@ This creates `agents/my-assistant.md` — edit it to customize the system prompt
 ### Run an agent
 
 ```bash
-swarm run my-assistant "Explain how async/await works in Rust"
+armadai run my-assistant "Explain how async/await works in Rust"
 ```
 
 ## Usage
 
 | Command | Description | Status |
 |---|---|---|
-| `swarm list [--tags t] [--stack s]` | List available agents | Done |
-| `swarm new --template <tpl> <name>` | Create an agent from a template | Done |
-| `swarm inspect <agent>` | Show parsed agent config | Done |
-| `swarm validate [agent]` | Dry-run validation (no API calls) | Done |
-| `swarm run <agent> [input]` | Run an agent | Done |
-| `swarm run --pipe <a> <b> [input]` | Chain agents in a pipeline | Done |
-| `swarm history [--agent a]` | View execution history | Done |
-| `swarm history --replay <id>` | Replay a past execution | Planned |
-| `swarm costs [--agent a] [--from d]` | View cost tracking | Done |
-| `swarm config providers` | Show provider configs and secrets status | Done |
-| `swarm config secrets init` | Initialize SOPS + age encryption | Done |
-| `swarm config secrets rotate` | Rotate age encryption key | Done |
-| `swarm tui` | Launch the TUI dashboard | Done |
-| `swarm web [--port N]` | Launch the web UI | Done |
-| `swarm completion <shell>` | Generate shell completions | Done |
-| `swarm up / down` | Start/stop infra (Docker Compose) | Done |
+| `armadai list [--tags t] [--stack s]` | List available agents | Done |
+| `armadai new --template <tpl> <name>` | Create an agent from a template | Done |
+| `armadai inspect <agent>` | Show parsed agent config | Done |
+| `armadai validate [agent]` | Dry-run validation (no API calls) | Done |
+| `armadai run <agent> [input]` | Run an agent | Done |
+| `armadai run --pipe <a> <b> [input]` | Chain agents in a pipeline | Done |
+| `armadai history [--agent a]` | View execution history | Done |
+| `armadai history --replay <id>` | Replay a past execution | Planned |
+| `armadai costs [--agent a] [--from d]` | View cost tracking | Done |
+| `armadai config providers` | Show provider configs and secrets status | Done |
+| `armadai config secrets init` | Initialize SOPS + age encryption | Done |
+| `armadai config secrets rotate` | Rotate age encryption key | Done |
+| `armadai tui` | Launch the TUI dashboard | Done |
+| `armadai web [--port N]` | Launch the web UI | Done |
+| `armadai completion <shell>` | Generate shell completions | Done |
+| `armadai up / down` | Start/stop infra (Docker Compose) | Done |
 
 ## Agent Format
 
@@ -133,7 +133,7 @@ Structured review: bugs, security, performance, style.
 
 ### Provider names
 
-Use unified tool names — swarm auto-detects CLI tool vs API:
+Use unified tool names — ArmadAI auto-detects CLI tool vs API:
 
 | Provider | CLI tool detected | CLI not found |
 |---|---|---|
@@ -194,8 +194,8 @@ You are a versatile development assistant.
 Create an agent from a template:
 
 ```bash
-swarm new my-reviewer --template dev-review --stack rust
-swarm new my-tool --template cli-generic
+armadai new my-reviewer --template dev-review --stack rust
+armadai new my-tool --template cli-generic
 ```
 
 ## Shell Completion
@@ -204,18 +204,18 @@ Generate completion scripts for your shell:
 
 ```bash
 # Bash
-swarm completion bash > ~/.local/share/bash-completion/completions/swarm
+armadai completion bash > ~/.local/share/bash-completion/completions/armadai
 
 # Zsh
-swarm completion zsh > ~/.zfunc/_swarm
+armadai completion zsh > ~/.zfunc/_armadai
 
 # Fish
-swarm completion fish > ~/.config/fish/completions/swarm.fish
+armadai completion fish > ~/.config/fish/completions/armadai.fish
 ```
 
 ## TUI Dashboard
 
-Launch with `swarm tui`. The dashboard provides fleet management views:
+Launch with `armadai tui`. The dashboard provides fleet management views:
 
 | Tab | Description |
 |---|---|
@@ -238,11 +238,11 @@ Launch with `swarm tui`. The dashboard provides fleet management views:
 
 ## Web UI
 
-Launch with `swarm web` (default port 3000):
+Launch with `armadai web` (default port 3000):
 
 ```bash
-swarm web              # http://localhost:3000
-swarm web --port 8080  # custom port
+armadai web              # http://localhost:3000
+armadai web --port 8080  # custom port
 ```
 
 The web UI provides a read-only dashboard for your agent fleet:
@@ -257,7 +257,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.
 
 ```
 HOST MACHINE
-├── swarm (native binary)
+├── armadai (native binary)
 │   ├── CLI + TUI + Web UI
 │   ├── Providers (API / CLI / Proxy)
 │   ├── SurrealDB (embedded)

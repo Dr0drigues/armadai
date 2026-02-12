@@ -8,7 +8,7 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
 
     if agents.is_empty() {
         println!("No agents found in {}/", agents_dir.display());
-        println!("Create one with: swarm new --template basic <name>");
+        println!("Create one with: armadai new --template basic <name>");
         return Ok(());
     }
 

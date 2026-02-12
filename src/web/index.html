@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>swarm-festai</title>
+<title>ArmadAI</title>
 <style>
   :root { --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --green: #3fb950; --yellow: #d29922; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -43,7 +43,7 @@
 </head>
 <body>
 <header>
-  <h1><span>swarm</span>-festai</h1>
+  <h1><span>Armad</span>AI</h1>
   <nav>
     <button class="active" onclick="showTab('agents')">Agents</button>
     <button onclick="showTab('history')">History</button>
@@ -74,7 +74,7 @@ async function loadAgents() {
   const res = await fetch('/api/agents');
   const agents = await res.json();
   const el = document.getElementById('agents');
-  if (!agents.length) { el.innerHTML = '<div class="empty">No agents found. Create one with: swarm new my-agent</div>'; return; }
+  if (!agents.length) { el.innerHTML = '<div class="empty">No agents found. Create one with: armadai new my-agent</div>'; return; }
   el.innerHTML = `
     <div class="card-header">${agents.length} agents loaded</div>
     <table>
