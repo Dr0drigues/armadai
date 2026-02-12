@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
 
+use include_dir::{Dir, include_dir};
 use serde::Deserialize;
 
 use super::config::{user_agents_dir, user_prompts_dir};
+
+static EMBEDDED_STARTERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/starters");
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -112,7 +115,13 @@ impl StarterPack {
     }
 }
 
-/// Discover available starter packs from the embedded `starters/` directory.
+/// Discover available starter packs directory.
+///
+/// Resolution order:
+/// 1. `./starters` relative to CWD (dev)
+/// 2. `CARGO_MANIFEST_DIR/starters` (dev, compile-time path)
+/// 3. Next to the binary (packaged installs)
+/// 4. `~/.config/armadai/starters/` — extracted from embedded data on first use
 pub fn starters_dir() -> PathBuf {
     let candidates = [
         // Dev: relative to CWD
@@ -132,7 +141,12 @@ pub fn starters_dir() -> PathBuf {
         }
     }
 
-    PathBuf::from("starters")
+    // Fallback: extract embedded starters to config dir
+    let config_starters = super::config::config_dir().join("starters");
+    if !config_starters.is_dir() {
+        let _ = EMBEDDED_STARTERS.extract(&config_starters);
+    }
+    config_starters
 }
 
 /// List all available starter pack names.
