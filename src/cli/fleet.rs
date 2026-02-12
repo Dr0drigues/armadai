@@ -4,6 +4,7 @@ use clap::Subcommand;
 use dialoguer::MultiSelect;
 
 use crate::core::agent::Agent;
+use crate::core::config;
 use crate::core::fleet::FleetDefinition;
 
 const FLEET_FILENAME: &str = "armadai.yaml";
@@ -81,7 +82,8 @@ async fn create_fleet(
     tags: Option<&[String]>,
     all: bool,
 ) -> anyhow::Result<()> {
-    let agents_dir = Path::new("agents");
+    let paths = config::AppPaths::resolve();
+    let agents_dir = &paths.agents_dir;
     let available = Agent::load_all(agents_dir)?;
 
     if available.is_empty() {
@@ -298,13 +300,7 @@ fn print_fleet_detail(fleet: &FleetDefinition) -> anyhow::Result<()> {
 
 /// Get the global fleet config directory.
 fn global_fleet_dir() -> PathBuf {
-    let config_base = std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".config")
-        });
-    config_base.join("armadai").join("fleets")
+    config::user_fleets_dir()
 }
 
 /// Get the path for a specific fleet's global config file.

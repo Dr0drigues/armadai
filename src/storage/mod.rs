@@ -20,11 +20,12 @@ pub async fn init_embedded() -> anyhow::Result<Database> {
 pub async fn init_db() -> anyhow::Result<Database> {
     #[cfg(feature = "storage-rocksdb")]
     {
-        let path = "data/armadai.db";
-        if let Some(parent) = std::path::Path::new(path).parent() {
+        let config = crate::core::config::load_user_config();
+        let path = config.storage.path;
+        if let Some(parent) = std::path::Path::new(&path).parent() {
             std::fs::create_dir_all(parent)?;
         }
-        return embedded::init_persistent(path).await;
+        return embedded::init_persistent(&path).await;
     }
     #[cfg(not(feature = "storage-rocksdb"))]
     {

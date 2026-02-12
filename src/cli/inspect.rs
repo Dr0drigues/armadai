@@ -1,10 +1,10 @@
-use std::path::Path;
-
 use crate::core::agent::Agent;
+use crate::core::config::AppPaths;
 use crate::parser::parse_agent_file;
 
 pub async fn execute(agent_name: String) -> anyhow::Result<()> {
-    let agents_dir = Path::new("agents");
+    let paths = AppPaths::resolve();
+    let agents_dir = &paths.agents_dir;
 
     let path = Agent::find_file(agents_dir, &agent_name).ok_or_else(|| {
         anyhow::anyhow!(

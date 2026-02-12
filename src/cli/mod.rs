@@ -2,6 +2,7 @@ mod config;
 mod costs;
 mod fleet;
 mod history;
+mod init;
 mod inspect;
 mod list;
 pub(crate) mod new;
@@ -197,6 +198,25 @@ pub enum Command {
             armadai fleet show my-fleet"
     )]
     Fleet(fleet::FleetAction),
+    /// Initialize ArmadAI configuration
+    #[command(
+        long_about = "Initialize ArmadAI configuration.\n\n\
+            Creates ~/.config/armadai/ with default config.yaml, providers.yaml, \
+            and subdirectories (agents/, prompts/, skills/, fleets/, registry/).\n\n\
+            Use --project to create a minimal armadai.yaml in the current directory.",
+        after_help = "Examples:\n  \
+            armadai init\n  \
+            armadai init --force\n  \
+            armadai init --project"
+    )]
+    Init {
+        /// Overwrite existing config files
+        #[arg(long)]
+        force: bool,
+        /// Create a project-local armadai.yaml instead
+        #[arg(long)]
+        project: bool,
+    },
     /// Self-update to the latest release
     #[command(long_about = "Self-update to the latest release.\n\n\
             Downloads the latest binary from GitHub Releases and replaces the current one.")]
@@ -234,6 +254,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         #[cfg(feature = "web")]
         Command::Web { port } => crate::web::serve(port).await,
         Command::Fleet(action) => fleet::execute(action).await,
+        Command::Init { force, project } => init::execute(force, project).await,
         Command::Update => update::execute().await,
         Command::Up => up::start().await,
         Command::Down => up::stop().await,

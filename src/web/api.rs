@@ -57,8 +57,8 @@ pub struct ErrorResponse {
 }
 
 fn load_agents() -> Vec<Agent> {
-    let agents_dir = std::path::Path::new("agents");
-    Agent::load_all(agents_dir).unwrap_or_default()
+    let agents_dir = crate::core::config::AppPaths::resolve().agents_dir;
+    Agent::load_all(&agents_dir).unwrap_or_default()
 }
 
 pub async fn list_agents() -> Json<Vec<AgentSummary>> {

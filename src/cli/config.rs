@@ -2,6 +2,8 @@ use std::path::Path;
 
 use clap::Subcommand;
 
+use crate::core::config as app_config;
+
 #[derive(Subcommand)]
 pub enum ConfigAction {
     /// Show provider status, API keys, and environment variables
@@ -36,7 +38,7 @@ pub async fn execute(action: ConfigAction) -> anyhow::Result<()> {
 
 /// Show configured providers and their status.
 async fn show_providers() -> anyhow::Result<()> {
-    let config_dir = Path::new("config");
+    let config_dir = app_config::AppPaths::resolve().config_dir;
 
     // Show provider config
     let config_path = config_dir.join("providers.yaml");
@@ -60,7 +62,7 @@ async fn show_providers() -> anyhow::Result<()> {
     if sops_path.exists() {
         println!("Secrets: encrypted (SOPS) at {}", sops_path.display());
         // Try to list provider names from decrypted content
-        match crate::secrets::load_secrets(config_dir) {
+        match crate::secrets::load_secrets(&config_dir) {
             Ok(secrets) => {
                 let names: Vec<&String> = secrets.providers.keys().collect();
                 println!(
@@ -81,7 +83,7 @@ async fn show_providers() -> anyhow::Result<()> {
             "Secrets: unencrypted at {} (consider running: armadai config secrets init)",
             plain_path.display()
         );
-        match crate::secrets::load_secrets(config_dir) {
+        match crate::secrets::load_secrets(&config_dir) {
             Ok(secrets) => {
                 let names: Vec<&String> = secrets.providers.keys().collect();
                 println!(
@@ -123,11 +125,11 @@ async fn show_providers() -> anyhow::Result<()> {
 
 /// Initialize SOPS + age encryption.
 async fn secrets_init() -> anyhow::Result<()> {
-    let config_dir = Path::new("config");
-    std::fs::create_dir_all(config_dir)?;
+    let config_dir = app_config::AppPaths::resolve().config_dir;
+    std::fs::create_dir_all(&config_dir)?;
 
     // Run init_sops which generates age key + .sops.yaml
-    crate::secrets::sops::init_sops(config_dir)?;
+    crate::secrets::sops::init_sops(&config_dir)?;
 
     // Create template providers.sops.yaml if it doesn't exist
     let sops_path = config_dir.join("providers.sops.yaml");
@@ -181,7 +183,7 @@ providers:
 
 /// Rotate the age encryption key.
 async fn secrets_rotate() -> anyhow::Result<()> {
-    let config_dir = Path::new("config");
+    let config_dir = app_config::AppPaths::resolve().config_dir;
     let key_path = config_dir.join("age-key.txt");
     let sops_path = config_dir.join("providers.sops.yaml");
 
