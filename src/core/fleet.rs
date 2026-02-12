@@ -18,13 +18,13 @@ impl FleetDefinition {
     /// Load a fleet definition from a YAML file.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        let def: FleetDefinition = serde_yml::from_str(&content)?;
+        let def: FleetDefinition = serde_yaml_ng::from_str(&content)?;
         Ok(def)
     }
 
     /// Save the fleet definition to a YAML file.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let content = serde_yml::to_string(self)?;
+        let content = serde_yaml_ng::to_string(self)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -55,8 +55,8 @@ mod tests {
             source: PathBuf::from("/home/user/armadai"),
         };
 
-        let yaml = serde_yml::to_string(&fleet).unwrap();
-        let parsed: FleetDefinition = serde_yml::from_str(&yaml).unwrap();
+        let yaml = serde_yaml_ng::to_string(&fleet).unwrap();
+        let parsed: FleetDefinition = serde_yaml_ng::from_str(&yaml).unwrap();
 
         assert_eq!(parsed.fleet, "test-fleet");
         assert_eq!(parsed.agents.len(), 2);

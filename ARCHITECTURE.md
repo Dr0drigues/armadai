@@ -208,11 +208,15 @@ Exécute la tâche demandée en utilisant tes outils disponibles.
 ```
 armadai/
 ├── agents/                      # Définitions d'agents
-│   ├── _coordinator.md          # Agent hub (orchestrateur)
-│   └── examples/                # Exemples fournis
-│       ├── code-reviewer.md
-│       ├── test-writer.md
-│       └── doc-generator.md
+│   └── _coordinator.md          # Agent hub (orchestrateur)
+├── starters/                    # Packs d'agents pré-configurés
+│   ├── rust-dev/
+│   │   ├── pack.yaml
+│   │   ├── agents/
+│   │   └── prompts/
+│   └── fullstack/
+│       ├── pack.yaml
+│       └── agents/
 ├── templates/                   # Templates pour scaffolding
 │   ├── basic.md
 │   ├── dev-review.md
@@ -254,11 +258,17 @@ armadai/
 │   │   ├── coordinator.rs       # Hub & spoke : décomposition et dispatch
 │   │   ├── pipeline.rs          # Mode pipeline : chaînage séquentiel
 │   │   ├── task.rs              # Définition d'une tâche + résultat
-│   │   └── context.rs           # Gestion du contexte partagé entre agents
+│   │   ├── context.rs           # Gestion du contexte partagé entre agents
+│   │   ├── project.rs          # Config projet (armadai.yaml), résolution agents/prompts/skills
+│   │   ├── fleet.rs            # Définitions de flottes, liaison projets-agents
+│   │   ├── prompt.rs           # Fragments de prompts composables (YAML frontmatter)
+│   │   ├── skill.rs            # Skills (standard SKILL.md)
+│   │   └── starter.rs          # Starter packs (installation de bundles)
 │   ├── parser/                  # Parsing Markdown → Agent
 │   │   ├── mod.rs
 │   │   ├── markdown.rs          # Parsing headings, sections, metadata
-│   │   └── metadata.rs          # Parsing de la section Metadata (YAML-like)
+│   │   ├── metadata.rs          # Parsing de la section Metadata (YAML-like)
+│   │   └── frontmatter.rs      # Extraction YAML frontmatter générique
 │   ├── providers/               # Abstraction LLM
 │   │   ├── mod.rs
 │   │   ├── traits.rs            # Provider trait + types communs
@@ -269,6 +279,16 @@ armadai/
 │   │   │   └── google.rs
 │   │   ├── proxy.rs             # LiteLLM / OpenRouter
 │   │   └── cli.rs               # CliProvider générique (spawn process)
+│   ├── linker/                # Génération de configs natives
+│   │   ├── mod.rs             # Trait Linker + dispatch
+│   │   ├── claude.rs          # .claude/agents/*.md
+│   │   └── copilot.rs         # .github/agents/*.agent.md
+│   ├── registry/              # Intégration awesome-copilot
+│   │   ├── mod.rs
+│   │   ├── sync.rs            # Clone/pull du repo registry
+│   │   ├── cache.rs           # Index JSON, scanning fichiers
+│   │   ├── search.rs          # Recherche multi-mots-clés avec scoring
+│   │   └── convert.rs         # Conversion Copilot → ArmadAI
 │   ├── storage/                 # Couche persistance
 │   │   ├── mod.rs
 │   │   ├── embedded.rs          # SurrealDB mode embarqué
@@ -333,6 +353,15 @@ armadai init --project             # Créer armadai.yaml local
 armadai tui                        # Lancer l'interface TUI
 armadai up                         # Lancer l'infra Docker (optionnel)
 armadai down                       # Arrêter l'infra Docker
+armadai fleet create/link/list/show  # Gérer les flottes d'agents
+armadai link --target <t>            # Générer configs natives (claude, copilot...)
+armadai registry sync/search/list/add # Registre communautaire
+armadai prompts list/show            # Fragments de prompts composables
+armadai skills list/show             # Skills (standard SKILL.md)
+armadai init --pack <name>           # Installer un starter pack
+armadai update                       # Mise à jour automatique
+armadai completion <shell>           # Générer les completions shell
+armadai web [--port N]               # Lancer l'interface web
 ```
 
 ---

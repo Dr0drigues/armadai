@@ -180,7 +180,7 @@ impl Default for LoggingConfig {
 pub fn load_user_config() -> UserConfig {
     let path = config_file_path();
     match std::fs::read_to_string(&path) {
-        Ok(content) => serde_yml::from_str(&content).unwrap_or_default(),
+        Ok(content) => serde_yaml_ng::from_str(&content).unwrap_or_default(),
         Err(_) => UserConfig::default(),
     }
 }
@@ -223,14 +223,14 @@ pub fn load_providers_config() -> ProvidersConfig {
     // Try global config first
     let global_path = providers_file_path();
     if let Ok(content) = std::fs::read_to_string(&global_path)
-        && let Ok(cfg) = serde_yml::from_str(&content)
+        && let Ok(cfg) = serde_yaml_ng::from_str(&content)
     {
         return cfg;
     }
     // Fallback to project-local
     let local_path = Path::new("config/providers.yaml");
     if let Ok(content) = std::fs::read_to_string(local_path)
-        && let Ok(cfg) = serde_yml::from_str(&content)
+        && let Ok(cfg) = serde_yaml_ng::from_str(&content)
     {
         return cfg;
     }
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn test_partial_deserialize() {
         let yaml = "defaults:\n  provider: openai\n";
-        let cfg: UserConfig = serde_yml::from_str(yaml).unwrap();
+        let cfg: UserConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.defaults.provider, "openai");
         // Other fields keep defaults
         assert_eq!(cfg.defaults.max_tokens, 4096);
@@ -388,7 +388,7 @@ mod tests {
     #[test]
     fn test_empty_deserialize() {
         let yaml = "";
-        let cfg: UserConfig = serde_yml::from_str(yaml).unwrap_or_default();
+        let cfg: UserConfig = serde_yaml_ng::from_str(yaml).unwrap_or_default();
         assert_eq!(cfg.defaults.provider, "anthropic");
     }
 
@@ -420,7 +420,7 @@ providers:
     models:
       - gpt-4o
 "#;
-        let cfg: ProvidersConfig = serde_yml::from_str(yaml).unwrap();
+        let cfg: ProvidersConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.providers.len(), 2);
         assert!(cfg.providers.contains_key("anthropic"));
         let anthropic = &cfg.providers["anthropic"];

@@ -57,6 +57,8 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`. Sever
 - `core/prompt.rs` — Composable prompt fragments with YAML frontmatter.
 - `core/skill.rs` — Skills following the Agent Skills open standard (SKILL.md).
 - `core/fleet.rs` — Fleet definitions linking agent groups to source directories.
+- `core/starter.rs` — Starter packs: curated agent bundles installed via `armadai init --pack`.
+- `parser/frontmatter.rs` — Generic YAML frontmatter extraction reused by prompts and skills.
 - `linker/` — Generates native config files for target AI CLIs. Trait `Linker` with one implementation per CLI (claude, copilot, cursor, aider, codex, gemini, windsurf, cline).
 - `registry/` — awesome-copilot integration. Sync, search, convert agents from the community catalog.
 - `storage/` — SurrealDB wrapper. `schema.rs` defines tables (`runs`, `agent_stats`), `queries.rs` has CRUD operations.

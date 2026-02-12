@@ -30,7 +30,7 @@ impl StarterPack {
             anyhow::bail!("No pack.yaml found in {}", dir.display());
         }
         let content = std::fs::read_to_string(&pack_file)?;
-        let pack: StarterPack = serde_yml::from_str(&content)?;
+        let pack: StarterPack = serde_yaml_ng::from_str(&content)?;
         Ok(pack)
     }
 

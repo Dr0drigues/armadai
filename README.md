@@ -96,6 +96,14 @@ armadai run my-assistant "Explain how async/await works in Rust"
 | `armadai config providers` | Show provider configs and secrets status | Done |
 | `armadai config secrets init` | Initialize SOPS + age encryption | Done |
 | `armadai config secrets rotate` | Rotate age encryption key | Done |
+| `armadai init [--force] [--project]` | Initialize ArmadAI configuration | Done |
+| `armadai init --pack <name>` | Install a starter pack (rust-dev, fullstack) | Done |
+| `armadai fleet create/link/list/show` | Manage agent fleets | Done |
+| `armadai link --target <t> [--dry-run]` | Generate native AI assistant configs | Done |
+| `armadai registry sync/search/list/add` | Browse and import community agents | Done |
+| `armadai prompts list/show` | Manage composable prompts | Done |
+| `armadai skills list/show` | Manage composable skills | Done |
+| `armadai update` | Self-update to latest release | Done |
 | `armadai tui` | Launch the TUI dashboard | Done |
 | `armadai web [--port N]` | Launch the web UI | Done |
 | `armadai completion <shell>` | Generate shell completions | Done |
@@ -197,6 +205,22 @@ Create an agent from a template:
 armadai new my-reviewer --template dev-review --stack rust
 armadai new my-tool --template cli-generic
 ```
+
+## Starter Packs
+
+Install curated bundles of agents and prompts:
+
+```bash
+armadai init --pack rust-dev      # Code reviewer, test writer, debug agent + Rust conventions
+armadai init --pack fullstack     # Full stack of 6 agents for web development
+```
+
+Available packs:
+
+| Pack | Agents | Description |
+|---|---|---|
+| `rust-dev` | code-reviewer, test-writer, debug | Rust development essentials + conventions prompt |
+| `fullstack` | code-reviewer, test-writer, doc-generator, planning-agent, security-reviewer, tech-debt-analyzer | Full stack web development |
 
 ## Shell Completion
 
@@ -345,6 +369,8 @@ Detailed documentation is available in [`docs/wiki/`](docs/wiki/):
 - [Agent Format](docs/wiki/agent-format.md) — complete reference for agent Markdown files
 - [Providers](docs/wiki/providers.md) — configuring API, CLI, and proxy providers
 - [Templates](docs/wiki/templates.md) — using and creating agent templates
+- [Starter Packs](docs/wiki/starter-packs.md) — curated agent bundles
+- [Registry](docs/wiki/registry.md) — browsing and importing community agents
 
 ## License
 

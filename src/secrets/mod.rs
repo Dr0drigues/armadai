@@ -26,7 +26,7 @@ pub fn load_secrets(config_dir: &Path) -> anyhow::Result<ProviderSecrets> {
     let plain_path = config_dir.join("providers.secret.yaml");
     if plain_path.exists() {
         let content = std::fs::read_to_string(&plain_path)?;
-        let secrets: ProviderSecrets = serde_yml::from_str(&content)?;
+        let secrets: ProviderSecrets = serde_yaml_ng::from_str(&content)?;
         tracing::warn!("Loaded secrets from unencrypted file — consider using SOPS + age");
         return Ok(secrets);
     }

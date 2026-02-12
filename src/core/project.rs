@@ -86,13 +86,13 @@ impl ProjectConfig {
 
         // Detect format: if there's a `fleet:` key, it's the old format
         let probe: FormatProbe =
-            serde_yml::from_str(&content).unwrap_or(FormatProbe { fleet: None });
+            serde_yaml_ng::from_str(&content).unwrap_or(FormatProbe { fleet: None });
 
         if probe.fleet.is_some() {
-            let fleet: FleetDefinition = serde_yml::from_str(&content)?;
+            let fleet: FleetDefinition = serde_yaml_ng::from_str(&content)?;
             Ok(Self::from_legacy_fleet(&fleet))
         } else {
-            let config: ProjectConfig = serde_yml::from_str(&content)?;
+            let config: ProjectConfig = serde_yaml_ng::from_str(&content)?;
             Ok(config)
         }
     }
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn test_agent_ref_named() {
         let yaml = "- name: code-reviewer\n";
-        let refs: Vec<AgentRef> = serde_yml::from_str(yaml).unwrap();
+        let refs: Vec<AgentRef> = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             refs[0],
             AgentRef::Named {
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn test_agent_ref_registry() {
         let yaml = "- registry: official/security\n";
-        let refs: Vec<AgentRef> = serde_yml::from_str(yaml).unwrap();
+        let refs: Vec<AgentRef> = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             refs[0],
             AgentRef::Registry {
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn test_agent_ref_path() {
         let yaml = "- path: .armadai/agents/team.md\n";
-        let refs: Vec<AgentRef> = serde_yml::from_str(yaml).unwrap();
+        let refs: Vec<AgentRef> = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             refs[0],
             AgentRef::Path {
@@ -434,7 +434,7 @@ link:
     copilot:
       output: .github/agents/
 "#;
-        let config: ProjectConfig = serde_yml::from_str(yaml).unwrap();
+        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
 
         assert_eq!(config.agents.len(), 3);
         assert_eq!(
@@ -482,7 +482,7 @@ link:
     #[test]
     fn test_partial_config_deserialize() {
         let yaml = "agents:\n  - name: my-agent\n";
-        let config: ProjectConfig = serde_yml::from_str(yaml).unwrap();
+        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.agents.len(), 1);
         assert!(config.prompts.is_empty());
         assert!(config.skills.is_empty());
@@ -493,7 +493,7 @@ link:
     #[test]
     fn test_empty_config_deserialize() {
         let yaml = "";
-        let config: ProjectConfig = serde_yml::from_str(yaml).unwrap_or_default();
+        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap_or_default();
         assert!(config.agents.is_empty());
         assert!(config.prompts.is_empty());
     }
