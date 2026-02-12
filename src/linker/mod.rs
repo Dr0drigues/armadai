@@ -1,10 +1,12 @@
 mod claude;
 mod copilot;
 mod gemini;
+mod opencode;
 
 pub use claude::ClaudeLinker;
 pub use copilot::CopilotLinker;
 pub use gemini::GeminiLinker;
+pub use opencode::OpencodeLinker;
 
 use std::path::PathBuf;
 
@@ -50,8 +52,9 @@ pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
         "claude" => Ok(Box::new(ClaudeLinker)),
         "copilot" => Ok(Box::new(CopilotLinker)),
         "gemini" => Ok(Box::new(GeminiLinker)),
+        "opencode" => Ok(Box::new(OpencodeLinker)),
         _ => anyhow::bail!(
-            "Unknown link target: '{target}'. Supported targets: claude, copilot, gemini"
+            "Unknown link target: '{target}'. Supported targets: claude, copilot, gemini, opencode"
         ),
     }
 }
@@ -141,6 +144,11 @@ mod tests {
     #[test]
     fn test_create_linker_gemini() {
         assert!(create_linker("gemini").is_ok());
+    }
+
+    #[test]
+    fn test_create_linker_opencode() {
+        assert!(create_linker("opencode").is_ok());
     }
 
     #[test]
