@@ -245,7 +245,7 @@ async fn secrets_rotate() -> anyhow::Result<()> {
     println!("Updated .sops.yaml with new public key.");
 
     // 5. Re-encrypt secrets with new key
-    let yaml = serde_yml::to_string(&secrets)?;
+    let yaml = serde_yaml_ng::to_string(&secrets)?;
     std::fs::write(&sops_path, yaml)?;
 
     let encrypt = std::process::Command::new("sops")

@@ -15,7 +15,7 @@ pub fn decrypt_file(path: &Path) -> anyhow::Result<ProviderSecrets> {
     }
 
     let decrypted = String::from_utf8(output.stdout)?;
-    let secrets: ProviderSecrets = serde_yml::from_str(&decrypted)?;
+    let secrets: ProviderSecrets = serde_yaml_ng::from_str(&decrypted)?;
     Ok(secrets)
 }
 
