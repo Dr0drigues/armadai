@@ -6,10 +6,10 @@ use super::{LinkAgent, Linker, OutputFile, slugify};
 ///
 /// Produces:
 /// - `agents/{slug}.md` — one sub-agent file per agent (with YAML frontmatter)
-/// - `AGENTS.md` — coordinator context document
+/// - `GEMINI.md` — coordinator context document
 /// - `settings.json` — Gemini CLI settings with contextFileName and enableAgents
 ///
-/// When a coordinator is provided, its prompt is used in AGENTS.md instead of
+/// When a coordinator is provided, its prompt is used in GEMINI.md instead of
 /// the generic "team coordinator" text. The coordinator is excluded from
 /// individual agent files.
 pub struct GeminiLinker;
@@ -40,14 +40,8 @@ impl Linker for GeminiLinker {
             files.push(generate_agent_file(agent));
         }
 
-        // AGENTS.md — coordinator context document
+        // GEMINI.md — coordinator context document (default context filename for Gemini CLI)
         files.push(generate_agents_md(agents, coordinator));
-
-        // settings.json — enable agents + set context file
-        files.push(OutputFile {
-            path: PathBuf::from(".gemini/settings.json"),
-            content: "{\n  \"contextFileName\": \"AGENTS.md\",\n  \"experimental\": {\n    \"enableAgents\": true\n  }\n}\n".to_string(),
-        });
 
         files
     }
@@ -108,7 +102,7 @@ fn generate_agent_file(agent: &LinkAgent) -> OutputFile {
     OutputFile { path, content }
 }
 
-/// Generate the `AGENTS.md` coordinator context document.
+/// Generate the `GEMINI.md` coordinator context document.
 fn generate_agents_md(agents: &[LinkAgent], coordinator: Option<&LinkAgent>) -> OutputFile {
     let mut content = String::new();
 
@@ -189,7 +183,7 @@ fn generate_agents_md(agents: &[LinkAgent], coordinator: Option<&LinkAgent>) -> 
     }
 
     OutputFile {
-        path: PathBuf::from(".gemini/AGENTS.md"),
+        path: PathBuf::from(".gemini/GEMINI.md"),
         content,
     }
 }
@@ -234,8 +228,8 @@ mod tests {
         let agents = vec![make_agent("Code Reviewer", "You review code for bugs.")];
         let files = linker.generate(&agents, None, &[]);
 
-        // agent file + AGENTS.md + settings.json
-        assert_eq!(files.len(), 3);
+        // agent file + GEMINI.md
+        assert_eq!(files.len(), 2);
 
         let agent_file = files
             .iter()
@@ -249,22 +243,11 @@ mod tests {
             PathBuf::from(".gemini/agents/code-reviewer.md")
         );
 
-        let agents_md = files
+        let gemini_md = files
             .iter()
-            .find(|f| f.path.ends_with("AGENTS.md"))
+            .find(|f| f.path.ends_with("GEMINI.md"))
             .unwrap();
-        assert!(agents_md.content.contains("agents/code-reviewer.md"));
-
-        let settings = files
-            .iter()
-            .find(|f| f.path.ends_with("settings.json"))
-            .unwrap();
-        assert!(
-            settings
-                .content
-                .contains("\"contextFileName\": \"AGENTS.md\"")
-        );
-        assert!(settings.content.contains("\"enableAgents\": true"));
+        assert!(gemini_md.content.contains("agents/code-reviewer.md"));
     }
 
     #[test]
@@ -313,8 +296,8 @@ mod tests {
         ];
         let files = linker.generate(&agents, None, &[]);
 
-        // 2 agent files + AGENTS.md + settings.json
-        assert_eq!(files.len(), 4);
+        // 2 agent files + GEMINI.md
+        assert_eq!(files.len(), 3);
 
         assert!(
             files
@@ -329,17 +312,12 @@ mod tests {
         assert!(
             files
                 .iter()
-                .any(|f| f.path.as_os_str() == ".gemini/AGENTS.md")
-        );
-        assert!(
-            files
-                .iter()
-                .any(|f| f.path.as_os_str() == ".gemini/settings.json")
+                .any(|f| f.path.as_os_str() == ".gemini/GEMINI.md")
         );
 
         let agents_md = files
             .iter()
-            .find(|f| f.path.ends_with("AGENTS.md"))
+            .find(|f| f.path.ends_with("GEMINI.md"))
             .unwrap();
         assert!(agents_md.content.contains("team coordinator"));
         assert!(agents_md.content.contains("agents/code-reviewer.md"));
@@ -361,24 +339,6 @@ mod tests {
     }
 
     #[test]
-    fn test_settings_json_content() {
-        let linker = GeminiLinker;
-        let agents = vec![make_agent("Agent", "Prompt.")];
-        let files = linker.generate(&agents, None, &[]);
-
-        let settings = files
-            .iter()
-            .find(|f| f.path.ends_with("settings.json"))
-            .unwrap();
-        assert!(settings.content.contains("\"enableAgents\": true"));
-        assert!(
-            settings
-                .content
-                .contains("\"contextFileName\": \"AGENTS.md\"")
-        );
-    }
-
-    #[test]
     fn test_generate_with_coordinator() {
         let linker = GeminiLinker;
         let coordinator = make_agent("Capitaine", "You are the captain of the crew.");
@@ -388,12 +348,12 @@ mod tests {
         ];
         let files = linker.generate(&agents, Some(&coordinator), &[]);
 
-        // 2 agent files + AGENTS.md + settings.json
-        assert_eq!(files.len(), 4);
+        // 2 agent files + GEMINI.md
+        assert_eq!(files.len(), 3);
 
         let agents_md = files
             .iter()
-            .find(|f| f.path.ends_with("AGENTS.md"))
+            .find(|f| f.path.ends_with("GEMINI.md"))
             .unwrap();
         // Should contain coordinator's prompt, not generic text
         assert!(
