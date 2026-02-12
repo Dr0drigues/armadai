@@ -41,8 +41,16 @@ See ARCHITECTURE.md for full details. Key modules:
 - `src/cli/` — CLI commands (clap)
 - `src/tui/` — Terminal UI (ratatui)
 - `src/core/` — Domain: Agent, Coordinator, Task, Context
+- `src/core/project.rs` — Project config (armadai.yaml) with agent/prompt/skill resolution
+- `src/core/prompt.rs` — Composable prompt fragments with YAML frontmatter
+- `src/core/skill.rs` — Skills following the SKILL.md open standard
+- `src/core/starter.rs` — Starter packs installation
+- `src/core/fleet.rs` — Fleet definitions linking agent groups to directories
 - `src/parser/` — Markdown agent file parsing
+- `src/parser/frontmatter.rs` — Generic YAML frontmatter extraction
 - `src/providers/` — LLM provider abstraction (API, CLI, proxy)
+- `src/linker/` — Generate native config for AI CLIs (Claude Code, Copilot, etc.)
+- `src/registry/` — Community agent registry integration (awesome-copilot)
 - `src/storage/` — SurrealDB persistence layer
 - `src/secrets/` — SOPS + age secret management
 
@@ -50,7 +58,7 @@ See ARCHITECTURE.md for full details. Key modules:
 
 - Unit tests go in the same file as the code (`#[cfg(test)]` module)
 - Integration tests go in `tests/`
-- Test agent files go in `agents/examples/`
+- Test agent files go in `starters/` (organized by pack)
 
 ## Commit Messages
 

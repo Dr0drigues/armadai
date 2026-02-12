@@ -38,6 +38,20 @@ armadai new my-assistant --template basic --description "general-purpose coding 
 
 This creates `agents/my-assistant.md`. Open it and customize the system prompt to your needs.
 
+## Starter Packs
+
+Instead of creating agents one by one, install a curated pack:
+
+```bash
+# Rust development essentials (code-reviewer, test-writer, debug + conventions prompt)
+armadai init --pack rust-dev
+
+# Full stack web development (6 agents)
+armadai init --pack fullstack
+```
+
+List available packs with `armadai init --pack nonexistent` (shows available options on error).
+
 ## Verify Setup
 
 ```bash
@@ -108,8 +122,25 @@ armadai web --port 8080  # custom port
 
 Browse agents, view execution history, and track costs from your browser. The `web` feature is enabled by default.
 
+## Community Registry
+
+Browse and import agents from the community:
+
+```bash
+# Sync the registry
+armadai registry sync
+
+# Search for agents
+armadai registry search "security review"
+
+# Import an agent
+armadai registry add official/security
+```
+
 ## Next Steps
 
 - [Agent Format](agent-format.md) — full reference for agent Markdown files
 - [Providers](providers.md) — configure API, CLI, and proxy providers
 - [Templates](templates.md) — available templates and how to create your own
+- [Starter Packs](starter-packs.md) — curated agent bundles for quick setup
+- [Registry](registry.md) — browsing and importing community agents
