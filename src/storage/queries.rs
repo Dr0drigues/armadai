@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Database;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub agent: String,
     pub input: String,
@@ -14,6 +14,15 @@ pub struct RunRecord {
     pub cost: f64,
     pub duration_ms: i64,
     pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostSummary {
+    pub agent: String,
+    pub total_runs: i64,
+    pub total_cost: f64,
+    pub total_tokens_in: i64,
+    pub total_tokens_out: i64,
 }
 
 /// Insert a new execution record.
@@ -33,7 +42,9 @@ pub async fn get_history(
 ) -> anyhow::Result<Vec<RunRecord>> {
     let query = match agent {
         Some(name) => {
-            format!("SELECT * FROM runs WHERE agent = '{name}' ORDER BY created_at DESC LIMIT {limit}")
+            format!(
+                "SELECT * FROM runs WHERE agent = '{name}' ORDER BY created_at DESC LIMIT {limit}"
+            )
         }
         None => {
             format!("SELECT * FROM runs ORDER BY created_at DESC LIMIT {limit}")
@@ -53,4 +64,33 @@ pub async fn get_agent_cost(db: &Database, agent: &str) -> anyhow::Result<f64> {
         .await?;
     let total: Option<f64> = result.take("total")?;
     Ok(total.unwrap_or(0.0))
+}
+
+/// Get cost summary grouped by agent.
+pub async fn get_costs_summary(
+    db: &Database,
+    agent_filter: Option<&str>,
+) -> anyhow::Result<Vec<CostSummary>> {
+    let query = match agent_filter {
+        Some(name) => format!(
+            "SELECT \
+                agent, \
+                count() AS total_runs, \
+                math::sum(cost) AS total_cost, \
+                math::sum(tokens_in) AS total_tokens_in, \
+                math::sum(tokens_out) AS total_tokens_out \
+            FROM runs WHERE agent = '{name}' GROUP BY agent"
+        ),
+        None => "SELECT \
+                agent, \
+                count() AS total_runs, \
+                math::sum(cost) AS total_cost, \
+                math::sum(tokens_in) AS total_tokens_in, \
+                math::sum(tokens_out) AS total_tokens_out \
+            FROM runs GROUP BY agent ORDER BY total_cost DESC"
+            .to_string(),
+    };
+    let mut result = db.query(&query).await?;
+    let summaries: Vec<CostSummary> = result.take(0)?;
+    Ok(summaries)
 }

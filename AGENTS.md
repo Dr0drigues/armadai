@@ -1,10 +1,10 @@
-# AGENTS.md - swarm-festai
+# AGENTS.md - ArmadAI
 
-This file provides instructions for AI coding agents working on the swarm-festai project.
+This file provides instructions for AI coding agents working on the ArmadAI project.
 
 ## Project Overview
 
-swarm-festai is an AI agent fleet orchestrator written in Rust. It allows defining,
+ArmadAI is an AI agent fleet orchestrator written in Rust. It allows defining,
 managing and executing specialized AI agents configured via Markdown files.
 
 ## Build & Test
@@ -17,7 +17,7 @@ cargo build
 cargo test
 
 # Run with debug logging
-RUST_LOG=swarm_festai=debug cargo run -- <command>
+RUST_LOG=armadai=debug cargo run -- <command>
 
 # Run clippy
 cargo clippy -- -D warnings

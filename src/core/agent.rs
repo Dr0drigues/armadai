@@ -65,16 +65,24 @@ pub struct PipelineConfig {
 }
 
 impl Agent {
-    /// Load all agents from the given directory.
+    /// Load all agents from the given directory (recursively).
     pub fn load_all(agents_dir: &std::path::Path) -> anyhow::Result<Vec<Agent>> {
         let mut agents = Vec::new();
-        if !agents_dir.exists() {
-            return Ok(agents);
+        Self::load_from_dir(agents_dir, &mut agents)?;
+        agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(agents)
+    }
+
+    fn load_from_dir(dir: &std::path::Path, agents: &mut Vec<Agent>) -> anyhow::Result<()> {
+        if !dir.exists() {
+            return Ok(());
         }
-        for entry in std::fs::read_dir(agents_dir)? {
+        for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "md") {
+            if path.is_dir() {
+                Self::load_from_dir(&path, agents)?;
+            } else if path.extension().is_some_and(|ext| ext == "md") {
                 match crate::parser::parse_agent_file(&path) {
                     Ok(agent) => agents.push(agent),
                     Err(e) => {
@@ -83,6 +91,57 @@ impl Agent {
                 }
             }
         }
-        Ok(agents)
+        Ok(())
+    }
+
+    /// Find an agent .md file by name (stem) in the agents directory tree.
+    pub fn find_file(agents_dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+        let direct = agents_dir.join(format!("{name}.md"));
+        if direct.exists() {
+            return Some(direct);
+        }
+        Self::find_file_in_dir(agents_dir, name)
+    }
+
+    fn find_file_in_dir(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()? {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = Self::find_file_in_dir(&path, name) {
+                    return Some(found);
+                }
+            } else if path.file_stem().is_some_and(|s| s == name)
+                && path.extension().is_some_and(|e| e == "md")
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    /// Display string for the model/command column.
+    pub fn model_display(&self) -> String {
+        if let Some(ref model) = self.metadata.model {
+            model.clone()
+        } else if let Some(ref command) = self.metadata.command {
+            format!("$ {command}")
+        } else {
+            "-".to_string()
+        }
+    }
+
+    /// Filter agents by tags (all tags must match).
+    pub fn matches_tags(&self, tags: &[String]) -> bool {
+        tags.iter()
+            .all(|t| self.metadata.tags.iter().any(|at| at == t))
+    }
+
+    /// Filter agents by stack.
+    pub fn matches_stack(&self, stack: &str) -> bool {
+        self.metadata
+            .stacks
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(stack))
     }
 }

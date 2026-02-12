@@ -5,20 +5,30 @@
 # 2. Passes all tests (test)
 # 3. Has no lint warnings (clippy with -D warnings)
 # 4. Follows formatting conventions (rustfmt)
+# 5. Commit messages follow Conventional Commits (on PRs)
 #
-# Runs on: every push to master, every pull request
+# Runs on: every push to master/develop, every pull request
+#
+# Performance strategy:
+# - Heavy optional deps (surrealdb+rocksdb, ratatui) are behind feature flags
+# - clippy/test run with `--no-default-features --features tui` (skips RocksDB C++ build)
+# - build --release compiles with all default features (full binary)
+# - Swatinem/rust-cache caches ~/.cargo and target/ between runs
+# - Cache is shared across clippy/test/build via shared-key
+# - Cache is only saved on develop pushes (save-if), PRs read from it
 
 name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, develop]
   pull_request:
-    branches: [master]
+    branches: [master, develop]
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  CARGO_INCREMENTAL: 0
 
 jobs:
   fmt:
@@ -40,7 +50,10 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets -- -D warnings
+        with:
+          shared-key: ci-cargo
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
+      - run: cargo clippy --all-targets --no-default-features --features tui -- -D warnings
 
   test:
     name: Test
@@ -49,7 +62,10 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all
+        with:
+          shared-key: ci-cargo
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
+      - run: cargo test --no-default-features --features tui
 
   build:
     name: Build
@@ -58,4 +74,25 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
+        with:
+          shared-key: ci-cargo-release
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
+      # Build with storage (kv-mem) but without kv-rocksdb to skip C++ compilation.
+      # RocksDB is only compiled in the release workflow (on tags).
+      - run: cargo build --release --no-default-features --features tui,storage
+
+  commits:
+    name: Conventional Commits
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install commitizen
+      - name: Check PR commits
+        run: |
+          cz check --rev-range origin/${{ github.base_ref }}..HEAD

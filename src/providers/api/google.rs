@@ -29,10 +29,7 @@ impl Provider for GoogleProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "google".to_string(),
-            models: vec![
-                "gemini-2.0-flash".to_string(),
-                "gemini-2.0-pro".to_string(),
-            ],
+            models: vec!["gemini-2.0-flash".to_string(), "gemini-2.0-pro".to_string()],
             supports_streaming: true,
         }
     }
