@@ -35,7 +35,7 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Create a minimal armadai.yaml in the current directory.
+/// Create an armadai.yaml in the current directory using the new project format.
 fn init_project() -> anyhow::Result<()> {
     let path = std::path::Path::new("armadai.yaml");
     if path.exists() {
@@ -46,16 +46,40 @@ fn init_project() -> anyhow::Result<()> {
 # ArmadAI project configuration
 # See: https://github.com/Dr0drigues/swarm-festai
 
-# Agents directory (relative to this file)
-agents_dir: agents
+# Agents used in this project
+agents:
+  # - name: code-reviewer           # Named agent from user library
+  # - registry: official/security   # Agent from the registry
+  # - path: .armadai/agents/team.md # Local agent file
 
-# Templates directory
-templates_dir: templates
+# Composable prompt fragments
+prompts: []
+  # - name: rust-conventions
+  # - path: .armadai/prompts/style.md
+
+# Skills (Agent Skills open standard)
+skills: []
+  # - name: docker-compose
+  # - path: .armadai/skills/deploy/
+
+# Context files injected into agent runs
+sources: []
+  # - docs/architecture.md
+  # - CONTRIBUTING.md
+
+# Linker configuration
+# link:
+#   target: claude
+#   overrides:
+#     claude:
+#       output: .claude/
+#     copilot:
+#       output: .github/agents/
 ";
 
     std::fs::write(path, content)?;
     println!("Created armadai.yaml in current directory");
-    println!("  Edit it to configure project-local settings.");
+    println!("  Edit it to declare agents, prompts, skills and link targets.");
 
     Ok(())
 }

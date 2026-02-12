@@ -1,13 +1,13 @@
 use crate::core::agent::Agent;
 use crate::core::config::AppPaths;
+use crate::core::project;
+use crate::parser;
 
 pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow::Result<()> {
-    let paths = AppPaths::resolve();
-    let agents_dir = &paths.agents_dir;
-    let mut agents = Agent::load_all(agents_dir)?;
+    let mut agents = load_agents()?;
 
     if agents.is_empty() {
-        println!("No agents found in {}/", agents_dir.display());
+        println!("No agents found.");
         println!("Create one with: armadai new --template basic <name>");
         return Ok(());
     }
@@ -82,4 +82,28 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
 
     println!("\n  {} agent(s) found.", agents.len());
     Ok(())
+}
+
+/// Load agents: if a project config is found, resolve only declared agents.
+/// Otherwise, load all agents from the default directory.
+fn load_agents() -> anyhow::Result<Vec<Agent>> {
+    if let Some((root, config)) = project::find_project_config()
+        && !config.agents.is_empty()
+    {
+        let (paths, errors) = project::resolve_all_agents(&config, &root);
+        for err in &errors {
+            eprintln!("  warn: {err}");
+        }
+        let mut agents = Vec::new();
+        for path in &paths {
+            match parser::parse_agent_file(path) {
+                Ok(agent) => agents.push(agent),
+                Err(e) => eprintln!("  warn: failed to parse {}: {e}", path.display()),
+            }
+        }
+        return Ok(agents);
+    }
+
+    let paths = AppPaths::resolve();
+    Agent::load_all(&paths.agents_dir)
 }
