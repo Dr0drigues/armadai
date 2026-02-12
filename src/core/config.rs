@@ -136,7 +136,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             mode: "embedded".to_string(),
-            path: "data/armadai.db".to_string(),
+            path: "data/armadai.sqlite".to_string(),
         }
     }
 }
@@ -304,7 +304,7 @@ defaults:
 
 storage:
   mode: embedded
-  path: data/armadai.db
+  path: data/armadai.sqlite
 
 rate_limits:
   anthropic: 50

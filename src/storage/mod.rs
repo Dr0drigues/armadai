@@ -1,34 +1,27 @@
-pub mod embedded;
 pub mod queries;
 pub mod schema;
 
-use surrealdb::Surreal;
-use surrealdb::engine::local::{Db, Mem};
+use rusqlite::Connection;
+use std::sync::Mutex;
 
-pub type Database = Surreal<Db>;
+pub type Database = Mutex<Connection>;
 
-/// Initialize an embedded in-memory SurrealDB instance.
-pub async fn init_embedded() -> anyhow::Result<Database> {
-    let db = Surreal::new::<Mem>(()).await?;
-    db.use_ns("armadai").use_db("main").await?;
-    schema::apply(&db).await?;
-    Ok(db)
+/// Initialize a persistent SQLite database at the configured path.
+pub fn init_db() -> anyhow::Result<Database> {
+    let config = crate::core::config::load_user_config();
+    let path = &config.storage.path;
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let conn = Connection::open(path)?;
+    schema::apply(&conn)?;
+    Ok(Mutex::new(conn))
 }
 
-/// Initialize the best available database backend.
-/// Prefers RocksDB (persistent) when available, falls back to in-memory.
-pub async fn init_db() -> anyhow::Result<Database> {
-    #[cfg(feature = "storage-rocksdb")]
-    {
-        let config = crate::core::config::load_user_config();
-        let path = config.storage.path;
-        if let Some(parent) = std::path::Path::new(&path).parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        return embedded::init_persistent(&path).await;
-    }
-    #[cfg(not(feature = "storage-rocksdb"))]
-    {
-        init_embedded().await
-    }
+/// Initialize an in-memory SQLite database (for tests).
+#[cfg(test)]
+pub fn init_embedded() -> anyhow::Result<Database> {
+    let conn = Connection::open_in_memory()?;
+    schema::apply(&conn)?;
+    Ok(Mutex::new(conn))
 }

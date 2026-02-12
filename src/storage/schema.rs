@@ -1,31 +1,27 @@
-use super::Database;
+use rusqlite::Connection;
 
 /// Apply the database schema.
-pub async fn apply(db: &Database) -> anyhow::Result<()> {
-    db.query(
+pub fn apply(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
         "
-        DEFINE TABLE IF NOT EXISTS runs SCHEMAFULL;
-        DEFINE FIELD IF NOT EXISTS agent      ON TABLE runs TYPE string;
-        DEFINE FIELD IF NOT EXISTS input      ON TABLE runs TYPE string;
-        DEFINE FIELD IF NOT EXISTS output     ON TABLE runs TYPE string;
-        DEFINE FIELD IF NOT EXISTS provider   ON TABLE runs TYPE string;
-        DEFINE FIELD IF NOT EXISTS model      ON TABLE runs TYPE string;
-        DEFINE FIELD IF NOT EXISTS tokens_in  ON TABLE runs TYPE int;
-        DEFINE FIELD IF NOT EXISTS tokens_out ON TABLE runs TYPE int;
-        DEFINE FIELD IF NOT EXISTS cost       ON TABLE runs TYPE float;
-        DEFINE FIELD IF NOT EXISTS duration_ms ON TABLE runs TYPE int;
-        DEFINE FIELD IF NOT EXISTS status     ON TABLE runs TYPE string;
-        DEFINE FIELD IF NOT EXISTS created_at ON TABLE runs TYPE datetime DEFAULT time::now();
+        CREATE TABLE IF NOT EXISTS runs (
+            id TEXT PRIMARY KEY,
+            agent TEXT NOT NULL,
+            input TEXT NOT NULL,
+            output TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            tokens_in INTEGER NOT NULL DEFAULT 0,
+            tokens_out INTEGER NOT NULL DEFAULT 0,
+            cost REAL NOT NULL DEFAULT 0.0,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'success',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
 
-        DEFINE TABLE IF NOT EXISTS agent_stats SCHEMAFULL;
-        DEFINE FIELD IF NOT EXISTS agent       ON TABLE agent_stats TYPE string;
-        DEFINE FIELD IF NOT EXISTS total_runs  ON TABLE agent_stats TYPE int;
-        DEFINE FIELD IF NOT EXISTS total_cost  ON TABLE agent_stats TYPE float;
-        DEFINE FIELD IF NOT EXISTS avg_duration_ms ON TABLE agent_stats TYPE int;
-        DEFINE FIELD IF NOT EXISTS last_run    ON TABLE agent_stats TYPE datetime;
+        CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent);
+        CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at);
         ",
-    )
-    .await?;
-
+    )?;
     Ok(())
 }

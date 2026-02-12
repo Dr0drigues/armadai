@@ -117,12 +117,12 @@ pub async fn get_agent(Path(name): Path<String>) -> Json<serde_json::Value> {
 pub async fn get_history() -> Json<Vec<HistoryEntry>> {
     use crate::storage::{init_db, queries};
 
-    let db = match init_db().await {
+    let db = match init_db() {
         Ok(db) => db,
         Err(_) => return Json(vec![]),
     };
 
-    match queries::get_history(&db, None, 100).await {
+    match queries::get_history(&db, None, 100) {
         Ok(records) => Json(
             records
                 .into_iter()
@@ -151,12 +151,12 @@ pub async fn get_history() -> Json<Vec<HistoryEntry>> {
 pub async fn get_costs() -> Json<Vec<CostSummary>> {
     use crate::storage::{init_db, queries};
 
-    let db = match init_db().await {
+    let db = match init_db() {
         Ok(db) => db,
         Err(_) => return Json(vec![]),
     };
 
-    match queries::get_costs_summary(&db, None).await {
+    match queries::get_costs_summary(&db, None) {
         Ok(summaries) => Json(
             summaries
                 .into_iter()

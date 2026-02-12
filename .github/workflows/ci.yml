@@ -10,8 +10,8 @@
 # Runs on: every push to master/develop, every pull request
 #
 # Performance strategy:
-# - Heavy optional deps (surrealdb+rocksdb, ratatui) are behind feature flags
-# - clippy/test run with `--no-default-features --features tui` (skips RocksDB C++ build)
+# - Heavy optional deps (ratatui, rusqlite) are behind feature flags
+# - clippy/test run with `--no-default-features --features tui` (minimal deps)
 # - build --release compiles with all default features (full binary)
 # - Swatinem/rust-cache caches ~/.cargo and target/ between runs
 # - Cache is shared across clippy/test/build via shared-key
@@ -77,8 +77,7 @@ jobs:
         with:
           shared-key: ci-cargo-release
           save-if: ${{ github.ref == 'refs/heads/develop' }}
-      # Build with storage (kv-mem) but without kv-rocksdb to skip C++ compilation.
-      # RocksDB is only compiled in the release workflow (on tags).
+      # Build with storage (SQLite bundled) to verify full compilation.
       - run: cargo build --release --no-default-features --features tui,storage
 
   commits:

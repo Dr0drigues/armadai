@@ -3,8 +3,8 @@ pub async fn execute(agent: Option<String>, _from: Option<String>) -> anyhow::Re
     {
         use crate::storage::{init_db, queries};
 
-        let db = init_db().await?;
-        let summaries = queries::get_costs_summary(&db, agent.as_deref()).await?;
+        let db = init_db()?;
+        let summaries = queries::get_costs_summary(&db, agent.as_deref())?;
 
         if summaries.is_empty() {
             println!("No execution records found.");

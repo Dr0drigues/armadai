@@ -9,12 +9,12 @@ ArmadAI is an AI agent fleet orchestrator written in Rust (edition 2024). Agents
 ## Build & Test Commands
 
 ```bash
-# Fast development cycle (skips RocksDB C++ compilation)
+# Development cycle
 cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
 cargo test --no-default-features --features tui,providers-api
 cargo fmt -- --check
 
-# Full build (all features including RocksDB — slow first time)
+# Full build (all features)
 cargo build --release
 
 # Run a single test
@@ -30,19 +30,18 @@ CI runs clippy/test with `--no-default-features --features tui` (no `providers-a
 
 ## Feature Flags
 
-Heavy optional dependencies are gated behind feature flags to keep CI fast (~1min vs ~15min):
+Heavy optional dependencies are gated behind feature flags:
 
 | Feature | Gates | Impact |
 |---|---|---|
 | `tui` | ratatui, crossterm | TUI dashboard |
-| `storage` | surrealdb (in-memory) | Embedded DB |
-| `storage-rocksdb` | surrealdb + RocksDB | Persistent storage (C++ build) |
+| `storage` | rusqlite (bundled SQLite) | Persistent storage |
 | `web` | axum, tower-http | Web UI dashboard |
 | `providers-api` | reqwest | HTTP-based LLM providers |
 
-Default features: `tui`, `web`, `storage-rocksdb`, `providers-api`. CI build uses `--no-default-features --features tui,storage` to skip RocksDB.
+Default features: `tui`, `web`, `storage`, `providers-api`.
 
-Code that depends on optional features must use `#[cfg(feature = "...")]`. Several modules in `main.rs` use `#[allow(dead_code)]` because they are scaffolded but not fully wired yet.
+Code that depends on optional features must use `#[cfg(feature = "...")]`.
 
 ## Architecture
 
@@ -61,7 +60,7 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`. Sever
 - `parser/frontmatter.rs` — Generic YAML frontmatter extraction reused by prompts and skills.
 - `linker/` — Generates native config files for target AI CLIs. Trait `Linker` with one implementation per CLI (claude, copilot, cursor, aider, codex, gemini, windsurf, cline).
 - `registry/` — awesome-copilot integration. Sync, search, convert agents from the community catalog.
-- `storage/` — SurrealDB wrapper. `schema.rs` defines tables (`runs`, `agent_stats`), `queries.rs` has CRUD operations.
+- `storage/` — SQLite wrapper (via rusqlite). `schema.rs` defines the `runs` table, `queries.rs` has CRUD operations.
 - `tui/` — Ratatui-based terminal UI. `app.rs` holds state (incl. command palette), `views/` renders tabs (Agents/Detail/History/Costs + shortcuts bar + command palette overlay), `widgets/` provides reusable components.
 - `web/` — Axum-based web UI. Embedded single-page HTML app with JSON API endpoints (`/api/agents`, `/api/history`, `/api/costs`).
 - `secrets/` — SOPS + age encrypted secrets loader.
