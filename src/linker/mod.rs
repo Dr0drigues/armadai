@@ -1,8 +1,10 @@
 mod claude;
 mod copilot;
+mod gemini;
 
 pub use claude::ClaudeLinker;
 pub use copilot::CopilotLinker;
+pub use gemini::GeminiLinker;
 
 use std::path::PathBuf;
 
@@ -19,6 +21,8 @@ pub struct LinkAgent {
     pub description: Option<String>,
     pub tags: Vec<String>,
     pub stacks: Vec<String>,
+    pub model: Option<String>,
+    pub temperature: f32,
 }
 
 /// A file to be written by a linker.
@@ -32,7 +36,12 @@ pub struct OutputFile {
 pub trait Linker: Send + Sync {
     fn name(&self) -> &str;
     fn default_output_dir(&self) -> &str;
-    fn generate(&self, agents: &[LinkAgent], sources: &[String]) -> Vec<OutputFile>;
+    fn generate(
+        &self,
+        agents: &[LinkAgent],
+        coordinator: Option<&LinkAgent>,
+        sources: &[String],
+    ) -> Vec<OutputFile>;
 }
 
 /// Create a linker for the given target name.
@@ -40,7 +49,10 @@ pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
     match target {
         "claude" => Ok(Box::new(ClaudeLinker)),
         "copilot" => Ok(Box::new(CopilotLinker)),
-        _ => anyhow::bail!("Unknown link target: '{target}'. Supported targets: claude, copilot"),
+        "gemini" => Ok(Box::new(GeminiLinker)),
+        _ => anyhow::bail!(
+            "Unknown link target: '{target}'. Supported targets: claude, copilot, gemini"
+        ),
     }
 }
 
@@ -81,6 +93,8 @@ impl From<&Agent> for LinkAgent {
             description,
             tags: agent.metadata.tags.clone(),
             stacks: agent.metadata.stacks.clone(),
+            model: agent.metadata.model.clone(),
+            temperature: agent.metadata.temperature,
         }
     }
 }
@@ -122,6 +136,11 @@ mod tests {
     #[test]
     fn test_create_linker_copilot() {
         assert!(create_linker("copilot").is_ok());
+    }
+
+    #[test]
+    fn test_create_linker_gemini() {
+        assert!(create_linker("gemini").is_ok());
     }
 
     #[test]

@@ -218,6 +218,9 @@ pub enum Command {
         /// Target AI assistant (claude, copilot)
         #[arg(long, short)]
         target: Option<String>,
+        /// Coordinator agent whose prompt becomes the main context file
+        #[arg(long, short = 'C')]
+        coordinator: Option<String>,
         /// Preview generated files without writing
         #[arg(long)]
         dry_run: bool,
@@ -249,7 +252,7 @@ pub enum Command {
         #[arg(long)]
         force: bool,
         /// Create a project-local armadai.yaml instead
-        #[arg(long, conflicts_with = "pack")]
+        #[arg(long)]
         project: bool,
         /// Install a starter pack (e.g. rust-dev, fullstack)
         #[arg(long)]
@@ -335,11 +338,12 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Skills(action) => skills::execute(action).await,
         Command::Link {
             target,
+            coordinator,
             dry_run,
             force,
             output,
             agents,
-        } => link::execute(target, dry_run, force, output, agents).await,
+        } => link::execute(target, coordinator, dry_run, force, output, agents).await,
         Command::Init {
             force,
             project,
