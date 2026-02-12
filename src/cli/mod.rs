@@ -8,6 +8,7 @@ mod link;
 mod list;
 pub(crate) mod new;
 mod prompts;
+mod registry;
 mod run;
 mod skills;
 mod up;
@@ -254,6 +255,20 @@ pub enum Command {
         #[arg(long)]
         pack: Option<String>,
     },
+    /// Browse and import agents from the community registry
+    #[command(
+        subcommand,
+        long_about = "Browse and import agents from the community registry.\n\n\
+            Integrates with awesome-copilot as a discovery and distribution mechanism. \
+            Agents are converted from Copilot format to ArmadAI Markdown on import.",
+        after_help = "Examples:\n  \
+            armadai registry sync\n  \
+            armadai registry search \"security review\"\n  \
+            armadai registry list --category official\n  \
+            armadai registry add official/security\n  \
+            armadai registry info official/security"
+    )]
+    Registry(registry::RegistryAction),
     /// Manage composable prompts
     #[command(
         subcommand,
@@ -315,6 +330,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         #[cfg(feature = "web")]
         Command::Web { port } => crate::web::serve(port).await,
         Command::Fleet(action) => fleet::execute(action).await,
+        Command::Registry(action) => registry::execute(action).await,
         Command::Prompts(action) => prompts::execute(action).await,
         Command::Skills(action) => skills::execute(action).await,
         Command::Link {

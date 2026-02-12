@@ -4,6 +4,7 @@ mod linker;
 mod parser;
 #[allow(dead_code)]
 mod providers;
+mod registry;
 #[allow(dead_code)]
 mod secrets;
 #[cfg(feature = "storage")]
