@@ -6,6 +6,7 @@ use crate::parser;
 
 pub async fn execute(
     target: Option<String>,
+    coordinator_flag: Option<String>,
     dry_run: bool,
     force: bool,
     output: Option<PathBuf>,
@@ -47,17 +48,15 @@ pub async fn execute(
         }
     }
 
-    // 3b. Extract coordinator if configured
-    let coordinator = config
-        .link
-        .as_ref()
-        .and_then(|l| l.coordinator.as_deref())
-        .and_then(|name| {
-            let idx = link_agents
-                .iter()
-                .position(|a| a.name.eq_ignore_ascii_case(name))?;
-            Some(link_agents.remove(idx))
-        });
+    // 3b. Extract coordinator if configured (CLI flag takes priority over config)
+    let coordinator_name =
+        coordinator_flag.or_else(|| config.link.as_ref().and_then(|l| l.coordinator.clone()));
+    let coordinator = coordinator_name.and_then(|name| {
+        let idx = link_agents
+            .iter()
+            .position(|a| a.name.eq_ignore_ascii_case(&name))?;
+        Some(link_agents.remove(idx))
+    });
 
     // 4. Determine target
     let target_name = target
