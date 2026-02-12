@@ -9,5 +9,7 @@ pub mod fleet;
 #[allow(dead_code)]
 pub mod pipeline;
 pub mod project;
+pub mod prompt;
+pub mod skill;
 #[allow(dead_code)]
 pub mod task;
