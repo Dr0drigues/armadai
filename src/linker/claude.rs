@@ -103,6 +103,8 @@ mod tests {
             description: Some(system_prompt.lines().next().unwrap_or("").to_string()),
             tags: vec![],
             stacks: vec![],
+            model: None,
+            temperature: 0.7,
         }
     }
 
@@ -139,6 +141,8 @@ mod tests {
             description: Some("You are a test agent.".to_string()),
             tags: vec!["test".to_string()],
             stacks: vec!["rust".to_string()],
+            model: Some("claude-sonnet-4-5-20250929".to_string()),
+            temperature: 0.5,
         }];
         let files = linker.generate(&agents, &[]);
 

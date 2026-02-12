@@ -5,9 +5,9 @@ use super::{LinkAgent, Linker, OutputFile, slugify};
 /// Generates Gemini CLI config files in `.gemini/`.
 ///
 /// Produces:
-/// - `AGENTS.md` — coordinator document referencing all agents
-/// - `{slug}.md` — one file per agent with its full prompt
-/// - `settings.json` — Gemini CLI settings pointing to AGENTS.md
+/// - `agents/{slug}.md` — one sub-agent file per agent (with YAML frontmatter)
+/// - `AGENTS.md` — coordinator context document
+/// - `settings.json` — Gemini CLI settings with contextFileName and enableAgents
 pub struct GeminiLinker;
 
 impl Linker for GeminiLinker {
@@ -26,32 +26,52 @@ impl Linker for GeminiLinker {
 
         let mut files = Vec::new();
 
-        // Individual agent files
+        // Individual agent files in .gemini/agents/
         for agent in agents {
             files.push(generate_agent_file(agent));
         }
 
-        // AGENTS.md — coordinator that references individual files
+        // AGENTS.md — coordinator context document
         files.push(generate_agents_md(agents));
 
-        // settings.json
+        // settings.json — enable agents + set context file
         files.push(OutputFile {
             path: PathBuf::from(".gemini/settings.json"),
-            content: "{\n  \"contextFileName\": \"AGENTS.md\"\n}\n".to_string(),
+            content: "{\n  \"contextFileName\": \"AGENTS.md\",\n  \"experimental\": {\n    \"enableAgents\": true\n  }\n}\n".to_string(),
         });
 
         files
     }
 }
 
-/// Generate an individual agent file at `.gemini/{slug}.md`.
+/// Generate an individual agent file at `.gemini/agents/{slug}.md` with YAML frontmatter.
 fn generate_agent_file(agent: &LinkAgent) -> OutputFile {
     let slug = slugify(&agent.name);
-    let path = PathBuf::from(".gemini").join(format!("{slug}.md"));
+    let path = PathBuf::from(".gemini/agents").join(format!("{slug}.md"));
 
     let mut content = String::new();
 
-    content.push_str(&format!("# {}\n\n", agent.name));
+    // YAML frontmatter required by Gemini CLI
+    content.push_str("---\n");
+    content.push_str(&format!("name: {slug}\n"));
+
+    let description = agent
+        .description
+        .as_deref()
+        .or_else(|| agent.system_prompt.lines().find(|l| !l.trim().is_empty()))
+        .unwrap_or(&agent.name);
+    content.push_str(&format!("description: \"{}\"\n", yaml_escape(description)));
+
+    if let Some(ref model) = agent.model {
+        content.push_str(&format!("model: {model}\n"));
+    }
+    if (agent.temperature - 0.7).abs() > f32::EPSILON {
+        content.push_str(&format!("temperature: {}\n", agent.temperature));
+    }
+
+    content.push_str("---\n\n");
+
+    // Body: system prompt
     content.push_str(&agent.system_prompt);
 
     if let Some(ref instructions) = agent.instructions {
@@ -79,7 +99,7 @@ fn generate_agent_file(agent: &LinkAgent) -> OutputFile {
     OutputFile { path, content }
 }
 
-/// Generate the `AGENTS.md` coordinator document.
+/// Generate the `AGENTS.md` coordinator context document.
 fn generate_agents_md(agents: &[LinkAgent]) -> OutputFile {
     let mut content = String::new();
 
@@ -87,7 +107,7 @@ fn generate_agents_md(agents: &[LinkAgent]) -> OutputFile {
         let slug = slugify(&agents[0].name);
         content.push_str(&format!("# {}\n\n", agents[0].name));
         content.push_str(&format!(
-            "See [{slug}.md]({slug}.md) for the full agent prompt.\n"
+            "See [agents/{slug}.md](agents/{slug}.md) for the full agent prompt.\n"
         ));
     } else {
         content.push_str(
@@ -111,7 +131,7 @@ fn generate_agents_md(agents: &[LinkAgent]) -> OutputFile {
                 desc.to_string()
             };
             content.push_str(&format!(
-                "| {} | [{slug}.md]({slug}.md) | {} |\n",
+                "| {} | [agents/{slug}.md](agents/{slug}.md) | {} |\n",
                 agent.name, desc_truncated
             ));
         }
@@ -130,6 +150,11 @@ fn generate_agents_md(agents: &[LinkAgent]) -> OutputFile {
         path: PathBuf::from(".gemini/AGENTS.md"),
         content,
     }
+}
+
+/// Escape a string for use as a YAML double-quoted value.
+fn yaml_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Ensure there are two newlines (blank line) before a new section.
@@ -156,6 +181,8 @@ mod tests {
             description: Some(system_prompt.lines().next().unwrap_or("").to_string()),
             tags: vec![],
             stacks: vec![],
+            model: None,
+            temperature: 0.7,
         }
     }
 
@@ -172,14 +199,19 @@ mod tests {
             .iter()
             .find(|f| f.path.ends_with("code-reviewer.md"))
             .unwrap();
-        assert!(agent_file.content.starts_with("# Code Reviewer\n\n"));
+        assert!(agent_file.content.starts_with("---\n"));
+        assert!(agent_file.content.contains("name: code-reviewer\n"));
         assert!(agent_file.content.contains("You review code for bugs."));
+        assert_eq!(
+            agent_file.path,
+            PathBuf::from(".gemini/agents/code-reviewer.md")
+        );
 
         let agents_md = files
             .iter()
             .find(|f| f.path.ends_with("AGENTS.md"))
             .unwrap();
-        assert!(agents_md.content.contains("code-reviewer.md"));
+        assert!(agents_md.content.contains("agents/code-reviewer.md"));
 
         let settings = files
             .iter()
@@ -190,10 +222,11 @@ mod tests {
                 .content
                 .contains("\"contextFileName\": \"AGENTS.md\"")
         );
+        assert!(settings.content.contains("\"enableAgents\": true"));
     }
 
     #[test]
-    fn test_generate_single_agent_with_sections() {
+    fn test_generate_agent_with_model() {
         let linker = GeminiLinker;
         let agents = vec![LinkAgent {
             name: "Test Agent".to_string(),
@@ -204,6 +237,8 @@ mod tests {
             description: Some("You are a test agent.".to_string()),
             tags: vec![],
             stacks: vec![],
+            model: Some("gemini-2.5-pro".to_string()),
+            temperature: 0.3,
         }];
         let files = linker.generate(&agents, &[]);
 
@@ -211,7 +246,8 @@ mod tests {
             .iter()
             .find(|f| f.path.ends_with("test-agent.md"))
             .unwrap();
-        assert!(agent_file.content.starts_with("# Test Agent\n\n"));
+        assert!(agent_file.content.contains("model: gemini-2.5-pro\n"));
+        assert!(agent_file.content.contains("temperature: 0.3\n"));
         assert!(agent_file.content.contains("You are a test agent."));
         assert!(
             agent_file
@@ -241,12 +277,12 @@ mod tests {
         assert!(
             files
                 .iter()
-                .any(|f| f.path.as_os_str() == ".gemini/code-reviewer.md")
+                .any(|f| f.path.as_os_str() == ".gemini/agents/code-reviewer.md")
         );
         assert!(
             files
                 .iter()
-                .any(|f| f.path.as_os_str() == ".gemini/test-writer.md")
+                .any(|f| f.path.as_os_str() == ".gemini/agents/test-writer.md")
         );
         assert!(
             files
@@ -264,8 +300,8 @@ mod tests {
             .find(|f| f.path.ends_with("AGENTS.md"))
             .unwrap();
         assert!(agents_md.content.contains("team coordinator"));
-        assert!(agents_md.content.contains("code-reviewer.md"));
-        assert!(agents_md.content.contains("test-writer.md"));
+        assert!(agents_md.content.contains("agents/code-reviewer.md"));
+        assert!(agents_md.content.contains("agents/test-writer.md"));
         assert!(agents_md.content.contains("## How to operate"));
     }
 
@@ -292,9 +328,11 @@ mod tests {
             .iter()
             .find(|f| f.path.ends_with("settings.json"))
             .unwrap();
-        assert_eq!(
-            settings.content,
-            "{\n  \"contextFileName\": \"AGENTS.md\"\n}\n"
+        assert!(settings.content.contains("\"enableAgents\": true"));
+        assert!(
+            settings
+                .content
+                .contains("\"contextFileName\": \"AGENTS.md\"")
         );
     }
 }

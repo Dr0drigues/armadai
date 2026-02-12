@@ -94,6 +94,8 @@ mod tests {
             ),
             tags: vec![],
             stacks: vec![],
+            model: None,
+            temperature: 0.7,
         }
     }
 
@@ -129,6 +131,8 @@ mod tests {
             description: Some("You are a test agent.".to_string()),
             tags: vec![],
             stacks: vec![],
+            model: None,
+            temperature: 0.7,
         }];
         let files = linker.generate(&agents, &[]);
 

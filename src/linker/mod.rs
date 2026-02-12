@@ -21,6 +21,8 @@ pub struct LinkAgent {
     pub description: Option<String>,
     pub tags: Vec<String>,
     pub stacks: Vec<String>,
+    pub model: Option<String>,
+    pub temperature: f32,
 }
 
 /// A file to be written by a linker.
@@ -86,6 +88,8 @@ impl From<&Agent> for LinkAgent {
             description,
             tags: agent.metadata.tags.clone(),
             stacks: agent.metadata.stacks.clone(),
+            model: agent.metadata.model.clone(),
+            temperature: agent.metadata.temperature,
         }
     }
 }
