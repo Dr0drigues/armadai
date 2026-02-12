@@ -6,6 +6,7 @@ use crate::parser;
 
 pub async fn execute(
     target: Option<String>,
+    coordinator_flag: Option<String>,
     dry_run: bool,
     force: bool,
     output: Option<PathBuf>,
@@ -47,13 +48,23 @@ pub async fn execute(
         }
     }
 
+    // 3b. Extract coordinator if configured (CLI flag takes priority over config)
+    let coordinator_name =
+        coordinator_flag.or_else(|| config.link.as_ref().and_then(|l| l.coordinator.clone()));
+    let coordinator = coordinator_name.and_then(|name| {
+        let idx = link_agents
+            .iter()
+            .position(|a| a.name.eq_ignore_ascii_case(&name))?;
+        Some(link_agents.remove(idx))
+    });
+
     // 4. Determine target
     let target_name = target
         .or_else(|| config.link.as_ref().and_then(|l| l.target.clone()))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "No link target specified. Use --target or set link.target in armadai.yaml.\n\
-                 Supported targets: claude, copilot"
+                 Supported targets: claude, copilot, gemini"
             )
         })?;
 
@@ -74,7 +85,7 @@ pub async fn execute(
 
     // 7. Generate files
     let sources = &config.sources;
-    let files = linker.generate(&link_agents, sources);
+    let files = linker.generate(&link_agents, coordinator.as_ref(), sources);
 
     if files.is_empty() {
         println!("No files to generate.");

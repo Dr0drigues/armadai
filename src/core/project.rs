@@ -57,6 +57,7 @@ pub enum SkillRef {
 #[serde(default)]
 pub struct LinkConfig {
     pub target: Option<String>,
+    pub coordinator: Option<String>,
     pub overrides: HashMap<String, LinkOverride>,
 }
 

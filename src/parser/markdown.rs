@@ -6,62 +6,83 @@ use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use crate::core::agent::{Agent, PipelineConfig};
 
 /// Parse a Markdown agent definition file into an Agent struct.
+///
+/// Uses pulldown-cmark offset iterator to identify section boundaries, then
+/// slices the raw Markdown content so that formatting (bold, lists, etc.) is
+/// preserved verbatim.
 pub fn parse_agent_file(path: &Path) -> anyhow::Result<Agent> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
-    let mut name = String::new();
-    let mut current_section: Option<String> = None;
-    let mut sections: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut current_text = String::new();
+    parse_agent_content(&content, path)
+}
 
-    let parser = Parser::new(&content);
+/// Inner parser that works on a content string (testable without files).
+fn parse_agent_content(content: &str, path: &Path) -> anyhow::Result<Agent> {
+    // Collect section boundaries: (level, heading_text, heading_byte_start, content_byte_start)
+    let mut boundaries: Vec<(HeadingLevel, String, usize, usize)> = Vec::new();
+    let mut in_heading = false;
+    let mut heading_level = HeadingLevel::H1;
+    let mut heading_start = 0usize;
+    let mut heading_name = String::new();
 
-    for event in parser {
+    let parser = Parser::new(content).into_offset_iter();
+
+    for (event, range) in parser {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
-                // Flush previous section
-                if let Some(ref section) = current_section {
-                    sections.insert(section.clone(), current_text.trim().to_string());
-                    current_text.clear();
-                }
-
-                if level == HeadingLevel::H1 {
-                    current_section = Some("__title__".to_string());
-                } else if level == HeadingLevel::H2 {
-                    current_section = Some(String::new());
-                }
+                in_heading = true;
+                heading_level = level;
+                heading_start = range.start;
+                heading_name.clear();
             }
-            Event::End(TagEnd::Heading(HeadingLevel::H1)) => {
-                name = current_text.trim().to_string();
-                current_text.clear();
-                current_section = None;
+            Event::Text(text) if in_heading => {
+                heading_name.push_str(&text);
             }
-            Event::End(TagEnd::Heading(HeadingLevel::H2)) => {
-                let heading = current_text.trim().to_lowercase();
-                current_text.clear();
-                current_section = Some(heading);
+            Event::Code(text) if in_heading => {
+                heading_name.push_str(&text);
             }
-            Event::Text(text) | Event::Code(text) => {
-                current_text.push_str(&text);
-            }
-            Event::SoftBreak | Event::HardBreak => {
-                current_text.push('\n');
-            }
-            Event::End(TagEnd::Item | TagEnd::Paragraph) => {
-                current_text.push('\n');
+            Event::End(TagEnd::Heading(_)) => {
+                in_heading = false;
+                boundaries.push((
+                    heading_level,
+                    heading_name.trim().to_string(),
+                    heading_start,
+                    range.end,
+                ));
             }
             _ => {}
         }
     }
 
-    // Flush last section
-    if let Some(ref section) = current_section {
-        sections.insert(section.clone(), current_text.trim().to_string());
-    }
+    // Extract name from H1
+    let name = boundaries
+        .iter()
+        .find(|(level, ..)| *level == HeadingLevel::H1)
+        .map(|(_, n, ..)| n.clone())
+        .unwrap_or_default();
 
     if name.is_empty() {
         bail!("Agent file {} is missing an H1 title", path.display());
+    }
+
+    // Build section map: for each H2, extract raw markdown from after its heading
+    // to the start of the next heading (any level).
+    let mut sections: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for (i, (level, heading_text, _heading_start, content_start)) in boundaries.iter().enumerate() {
+        if *level != HeadingLevel::H2 {
+            continue;
+        }
+
+        // Section content ends at the start of the next heading (any level)
+        let section_end = boundaries
+            .get(i + 1)
+            .map(|(_, _, hs, _)| *hs)
+            .unwrap_or(content.len());
+
+        let raw = content[*content_start..section_end].trim().to_string();
+        sections.insert(heading_text.to_lowercase(), raw);
     }
 
     let metadata_raw = sections
@@ -241,6 +262,50 @@ test
         let agent = parse_agent_file(f.path()).unwrap();
         let pipeline = agent.pipeline.unwrap();
         assert_eq!(pipeline.next, vec!["agent-b", "agent-c"]);
+    }
+
+    #[test]
+    fn parse_preserves_markdown_formatting() {
+        let f = write_temp_agent(
+            r#"# Formatted Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## System Prompt
+
+You inspect code for issues:
+
+- **Bugs** — logic errors, edge cases
+- **Security** — injections, data leaks
+- **Performance** — N+1 queries, allocations
+
+Use `grep` to search and **bold** for emphasis.
+
+## Instructions
+
+1. Read the code carefully
+2. Classify each finding by severity
+3. Propose a concrete fix
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+
+        // Markdown list markers preserved
+        assert!(agent.system_prompt.contains("- **Bugs**"));
+        assert!(agent.system_prompt.contains("- **Security**"));
+        assert!(agent.system_prompt.contains("- **Performance**"));
+
+        // Inline code and bold preserved
+        assert!(agent.system_prompt.contains("`grep`"));
+        assert!(agent.system_prompt.contains("**bold**"));
+
+        // Numbered list in instructions preserved
+        let instructions = agent.instructions.unwrap();
+        assert!(instructions.contains("1. Read"));
+        assert!(instructions.contains("2. Classify"));
+        assert!(instructions.contains("3. Propose"));
     }
 
     #[test]
