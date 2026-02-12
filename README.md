@@ -120,6 +120,7 @@ armadai run my-assistant "Explain how async/await works in Rust"
 | `armadai registry sync/search/list/add` | Browse and import community agents | Done |
 | `armadai prompts list/show` | Manage composable prompts | Done |
 | `armadai skills list/show` | Manage composable skills | Done |
+| `armadai skills sync/search/add/info` | Discover and install skills from GitHub | Done |
 | `armadai update` | Self-update to latest release | Done |
 | `armadai tui` | Launch the TUI dashboard | Done |
 | `armadai web [--port N]` | Launch the web UI | Done |
