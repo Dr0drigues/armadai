@@ -49,6 +49,9 @@ pub struct AgentMetadata {
     /// File/directory scope patterns (e.g. ["src/**/*.rs", "tests/"])
     #[serde(default)]
     pub scope: Vec<String>,
+    /// Fallback models to try if the primary model is unavailable
+    #[serde(default)]
+    pub model_fallback: Vec<String>,
     /// Cost limit per execution (USD)
     pub cost_limit: Option<f64>,
     /// Rate limit (e.g. "10/min")

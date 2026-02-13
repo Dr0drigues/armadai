@@ -25,6 +25,7 @@ pub struct LinkAgent {
     pub stacks: Vec<String>,
     pub scope: Vec<String>,
     pub model: Option<String>,
+    pub model_fallback: Vec<String>,
     pub temperature: f32,
 }
 
@@ -99,6 +100,7 @@ impl From<&Agent> for LinkAgent {
             stacks: agent.metadata.stacks.clone(),
             scope: agent.metadata.scope.clone(),
             model: agent.metadata.model.clone(),
+            model_fallback: agent.metadata.model_fallback.clone(),
             temperature: agent.metadata.temperature,
         }
     }
