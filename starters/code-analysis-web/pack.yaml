@@ -1,0 +1,10 @@
+name: code-analysis-web
+description: "Code analysis crew for JS/TS/Node projects — coordinator with scoped specialists"
+agents:
+  - lead-analyst
+  - web-reviewer
+  - web-test-analyzer
+  - web-doc-writer
+  - web-security
+prompts:
+  - analysis-standards
