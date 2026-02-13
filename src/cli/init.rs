@@ -43,6 +43,9 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     let providers_path = config::providers_file_path();
     write_if_missing_or_force(&providers_path, config::DEFAULT_PROVIDERS_YAML, force)?;
 
+    // Install built-in skills
+    let skills_installed = crate::core::skill::install_embedded_skills(force)?;
+
     println!("\nArmadAI initialized at {}", dir.display());
     println!("  config:    {}", config_path.display());
     println!("  providers: {}", providers_path.display());
@@ -51,6 +54,9 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     println!("  prompts:   {}", config::user_prompts_dir().display());
     println!("  skills:    {}", config::user_skills_dir().display());
     println!("  registry:  {}", config::registry_cache_dir().display());
+    if skills_installed > 0 {
+        println!("  built-in:  {} skill(s) installed", skills_installed);
+    }
 
     Ok(())
 }
