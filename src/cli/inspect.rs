@@ -40,6 +40,9 @@ pub async fn execute(agent_name: String) -> anyhow::Result<()> {
     if !agent.metadata.stacks.is_empty() {
         println!("  Stacks:         [{}]", agent.metadata.stacks.join(", "));
     }
+    if !agent.metadata.scope.is_empty() {
+        println!("  Scope:          [{}]", agent.metadata.scope.join(", "));
+    }
     if let Some(cost) = agent.metadata.cost_limit {
         println!("  Cost limit:     ${cost:.2}");
     }

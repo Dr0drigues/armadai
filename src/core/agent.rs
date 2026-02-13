@@ -46,6 +46,9 @@ pub struct AgentMetadata {
     /// Supported tech stacks
     #[serde(default)]
     pub stacks: Vec<String>,
+    /// File/directory scope patterns (e.g. ["src/**/*.rs", "tests/"])
+    #[serde(default)]
+    pub scope: Vec<String>,
     /// Cost limit per execution (USD)
     pub cost_limit: Option<f64>,
     /// Rate limit (e.g. "10/min")

@@ -157,6 +157,7 @@ mod tests {
             ),
             tags: vec![],
             stacks: vec![],
+            scope: vec![],
             model: None,
             temperature: 0.7,
         }
@@ -194,6 +195,7 @@ mod tests {
             description: Some("You are a test agent.".to_string()),
             tags: vec![],
             stacks: vec![],
+            scope: vec![],
             model: None,
             temperature: 0.7,
         }];
@@ -286,6 +288,7 @@ mod tests {
             description: Some("You lead the team.".to_string()),
             tags: vec![],
             stacks: vec![],
+            scope: vec![],
             model: None,
             temperature: 0.7,
         };
