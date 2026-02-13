@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::core::project;
 use crate::linker::{self, LinkAgent};
@@ -104,6 +104,51 @@ pub async fn execute(
         })
         .collect();
 
+    // 8b. Resolve and collect skill files
+    let (skill_dirs, skill_errors) = project::resolve_all_skills(&config, &root);
+    for err in &skill_errors {
+        eprintln!("  warn: {err}");
+    }
+
+    let mut extra_files: Vec<(PathBuf, String)> = Vec::new();
+    let mut skill_count = 0;
+    for skill_dir in &skill_dirs {
+        if let Ok(entries) = collect_dir_files(skill_dir) {
+            let skill_name = skill_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            for (relative, content) in entries {
+                let final_path = root
+                    .join(&output_dir)
+                    .join("skills")
+                    .join(skill_name)
+                    .join(&relative);
+                extra_files.push((final_path, content));
+            }
+            skill_count += 1;
+        }
+    }
+
+    // 8c. Resolve and collect prompt files
+    let (prompt_paths, prompt_errors) = project::resolve_all_prompts(&config, &root);
+    for err in &prompt_errors {
+        eprintln!("  warn: {err}");
+    }
+
+    let mut prompt_count = 0;
+    for prompt_path in &prompt_paths {
+        if let Ok(content) = std::fs::read_to_string(prompt_path) {
+            let filename = prompt_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown.md");
+            let final_path = root.join(&output_dir).join("prompts").join(filename);
+            extra_files.push((final_path, content));
+            prompt_count += 1;
+        }
+    }
+
     // 9. Dry run or write
     if dry_run {
         println!(
@@ -113,14 +158,20 @@ pub async fn execute(
         for (path, _) in &output_files {
             println!("  {}", path.display());
         }
-        println!("\n  {} file(s) total.", output_files.len());
+        for (path, _) in &extra_files {
+            println!("  {}", path.display());
+        }
+        println!(
+            "\n  {} file(s) total.",
+            output_files.len() + extra_files.len()
+        );
         return Ok(());
     }
 
     let mut written = 0;
     let mut skipped = 0;
 
-    for (path, content) in &output_files {
+    for (path, content) in output_files.iter().chain(extra_files.iter()) {
         if path.exists() && !force {
             eprintln!(
                 "  skip: {} already exists (use --force to overwrite)",
@@ -138,13 +189,46 @@ pub async fn execute(
         written += 1;
     }
 
+    let mut summary = format!("Linked {} agent(s)", link_agents.len());
+    if skill_count > 0 {
+        summary.push_str(&format!(", {} skill(s)", skill_count));
+    }
+    if prompt_count > 0 {
+        summary.push_str(&format!(", {} prompt(s)", prompt_count));
+    }
     println!(
-        "\nLinked {} agent(s) to '{}': {} written, {} skipped.",
-        link_agents.len(),
-        target_name,
-        written,
-        skipped
+        "\n{} to '{}': {} written, {} skipped.",
+        summary, target_name, written, skipped
     );
 
+    Ok(())
+}
+
+/// Collect all files from a directory recursively as (relative_path, content) pairs.
+/// Only includes text files (valid UTF-8).
+fn collect_dir_files(dir: &Path) -> anyhow::Result<Vec<(PathBuf, String)>> {
+    let mut files = Vec::new();
+    collect_dir_files_recursive(dir, dir, &mut files)?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(files)
+}
+
+fn collect_dir_files_recursive(
+    base: &Path,
+    current: &Path,
+    files: &mut Vec<(PathBuf, String)>,
+) -> anyhow::Result<()> {
+    let entries = std::fs::read_dir(current)?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_dir_files_recursive(base, &path, files)?;
+        } else if path.is_file()
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            let relative = path.strip_prefix(base).unwrap_or(&path).to_path_buf();
+            files.push((relative, content));
+        }
+    }
     Ok(())
 }

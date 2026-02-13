@@ -11,6 +11,7 @@ mod prompts;
 mod registry;
 mod run;
 mod skills;
+mod unlink;
 mod up;
 mod update;
 mod validate;
@@ -234,6 +235,37 @@ pub enum Command {
         #[arg(long, num_args = 1..)]
         agents: Option<Vec<String>>,
     },
+    /// Remove generated config files for AI assistants (reverse of link)
+    #[command(
+        long_about = "Remove generated config files for AI assistants.\n\n\
+            Reverses the effect of `armadai link` by deleting the generated files. \
+            Uses the same resolution logic as link to determine which files to remove.",
+        after_help = "Examples:\n  \
+            armadai unlink --target claude\n  \
+            armadai unlink --target copilot --dry-run\n  \
+            armadai unlink --target claude --with-config\n  \
+            armadai unlink --target claude --agents code-reviewer test-writer"
+    )]
+    Unlink {
+        /// Target AI assistant (claude, copilot)
+        #[arg(long, short)]
+        target: Option<String>,
+        /// Coordinator agent whose prompt becomes the main context file
+        #[arg(long, short = 'C')]
+        coordinator: Option<String>,
+        /// Preview files that would be removed without deleting
+        #[arg(long)]
+        dry_run: bool,
+        /// Also remove the armadai.yaml project config file
+        #[arg(long)]
+        with_config: bool,
+        /// Output directory (must match the one used during link)
+        #[arg(long, short)]
+        output: Option<std::path::PathBuf>,
+        /// Only unlink specific agents (by name)
+        #[arg(long, num_args = 1..)]
+        agents: Option<Vec<String>>,
+    },
     /// Initialize ArmadAI configuration
     #[command(
         long_about = "Initialize ArmadAI configuration.\n\n\
@@ -349,6 +381,14 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             output,
             agents,
         } => link::execute(target, coordinator, dry_run, force, output, agents).await,
+        Command::Unlink {
+            target,
+            coordinator,
+            dry_run,
+            with_config,
+            output,
+            agents,
+        } => unlink::execute(target, coordinator, dry_run, with_config, output, agents).await,
         Command::Init {
             force,
             project,

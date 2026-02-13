@@ -1,8 +1,13 @@
 use std::path::{Path, PathBuf};
 
+use include_dir::{Dir, include_dir};
 use serde::Deserialize;
 
 use crate::parser::frontmatter::extract_frontmatter;
+
+use super::config::user_skills_dir;
+
+static EMBEDDED_SKILLS: Dir = include_dir!("$CARGO_MANIFEST_DIR/skills");
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -94,6 +99,73 @@ fn list_dir_entries(dir: &Path) -> Vec<PathBuf> {
     }
     entries.sort();
     entries
+}
+
+/// Install embedded built-in skills to `~/.config/armadai/skills/`.
+///
+/// Copies entire skill directories (SKILL.md + references/) from the
+/// compile-time embedded `skills/` directory.
+///
+/// Returns the count of installed skills.
+pub fn install_embedded_skills(force: bool) -> anyhow::Result<usize> {
+    let dst_root = user_skills_dir();
+    std::fs::create_dir_all(&dst_root)?;
+
+    let mut count = 0;
+
+    for skill_dir in EMBEDDED_SKILLS.dirs() {
+        // Each top-level dir in skills/ is one skill
+        // include_dir stores paths relative to the include root,
+        // so we need to use the full path for get_file().
+        if skill_dir
+            .get_file(skill_dir.path().join("SKILL.md"))
+            .is_none()
+        {
+            continue;
+        }
+
+        let skill_name = skill_dir
+            .path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let dest = dst_root.join(skill_name);
+
+        if dest.exists() && !force {
+            continue;
+        }
+
+        // Copy all files recursively
+        extract_embedded_dir(skill_dir, &dest)?;
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+/// Recursively extract an embedded directory to a filesystem path.
+fn extract_embedded_dir(dir: &Dir<'_>, dest: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dest)?;
+
+    for file in dir.files() {
+        let relative = file.path().strip_prefix(dir.path()).unwrap_or(file.path());
+        let file_dest = dest.join(relative);
+        if let Some(parent) = file_dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&file_dest, file.contents())?;
+    }
+
+    for sub_dir in dir.dirs() {
+        let relative = sub_dir
+            .path()
+            .strip_prefix(dir.path())
+            .unwrap_or(sub_dir.path());
+        let sub_dest = dest.join(relative);
+        extract_embedded_dir(sub_dir, &sub_dest)?;
+    }
+
+    Ok(())
 }
 
 /// Scan a directory for skill subdirectories (each containing a `SKILL.md`).
@@ -212,5 +284,53 @@ mod tests {
     fn test_load_all_skills_nonexistent_dir() {
         let skills = load_all_skills(Path::new("/nonexistent/dir"));
         assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_install_embedded_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
+        }
+
+        let count = install_embedded_skills(false).unwrap();
+        assert!(
+            count >= 3,
+            "Expected at least 3 built-in skills, got {count}"
+        );
+
+        // Verify skills are installed
+        let skills_dir = dir.path().join("skills");
+        assert!(
+            skills_dir
+                .join("armadai-agent-authoring")
+                .join("SKILL.md")
+                .exists()
+        );
+        assert!(
+            skills_dir
+                .join("armadai-skill-authoring")
+                .join("SKILL.md")
+                .exists()
+        );
+        assert!(
+            skills_dir
+                .join("armadai-prompt-authoring")
+                .join("SKILL.md")
+                .exists()
+        );
+
+        // Verify references are copied
+        assert!(
+            skills_dir
+                .join("armadai-agent-authoring")
+                .join("references")
+                .join("format.md")
+                .exists()
+        );
+
+        unsafe {
+            std::env::remove_var("ARMADAI_CONFIG_DIR");
+        }
     }
 }
