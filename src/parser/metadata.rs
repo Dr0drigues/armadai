@@ -14,6 +14,7 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
     let mut tags = Vec::new();
     let mut stacks = Vec::new();
     let mut scope = Vec::new();
+    let mut model_fallback = Vec::new();
     let mut cost_limit = None;
     let mut rate_limit = None;
     let mut context_window = None;
@@ -41,6 +42,7 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
             "tags" => tags = parse_string_list(value),
             "stacks" => stacks = parse_string_list(value),
             "scope" => scope = parse_string_list(value),
+            "model_fallback" | "model_fallbacks" => model_fallback = parse_string_list(value),
             "cost_limit" => cost_limit = Some(value.parse().context("invalid cost_limit")?),
             "rate_limit" => rate_limit = Some(value.to_string()),
             "context_window" => {
@@ -63,6 +65,7 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
         tags,
         stacks,
         scope,
+        model_fallback,
         cost_limit,
         rate_limit,
         context_window,
@@ -132,6 +135,41 @@ mod tests {
 ";
         let meta = parse_metadata(raw).unwrap();
         assert!(meta.scope.is_empty());
+    }
+
+    #[test]
+    fn test_parse_model_fallback() {
+        let raw = "\
+- provider: google
+- model: gemini-3.0-pro
+- model_fallback: [gemini-2.5-pro, gemini-2.5-flash]
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(
+            meta.model_fallback,
+            vec!["gemini-2.5-pro", "gemini-2.5-flash"]
+        );
+    }
+
+    #[test]
+    fn test_parse_model_fallbacks_plural_alias() {
+        let raw = "\
+- provider: anthropic
+- model: claude-opus-4-6
+- model_fallbacks: [claude-sonnet-4-5-20250929]
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(meta.model_fallback, vec!["claude-sonnet-4-5-20250929"]);
+    }
+
+    #[test]
+    fn test_parse_model_fallback_empty_by_default() {
+        let raw = "\
+- provider: google
+- model: gemini-2.5-pro
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert!(meta.model_fallback.is_empty());
     }
 
     #[test]

@@ -131,9 +131,33 @@ async fn run_single_agent(
         max_tokens: agent.metadata.max_tokens,
     };
 
-    // 5. Execute
+    // 5. Execute (with model fallback)
     let start = Instant::now();
-    let response = provider.complete(request).await?;
+    let response = match provider.complete(request.clone()).await {
+        Ok(resp) => resp,
+        Err(err) if is_model_not_found(&err) && !agent.metadata.model_fallback.is_empty() => {
+            let mut last_err = err;
+            let mut fallback_resp = None;
+            for fallback_model in &agent.metadata.model_fallback {
+                eprintln!("[{agent_name}] Model unavailable, falling back to {fallback_model}...");
+                let mut retry_request = request.clone();
+                retry_request.model = fallback_model.clone();
+                match provider.complete(retry_request).await {
+                    Ok(resp) => {
+                        fallback_resp = Some(resp);
+                        break;
+                    }
+                    Err(e) if is_model_not_found(&e) => {
+                        last_err = e;
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            fallback_resp.ok_or(last_err)?
+        }
+        Err(err) => return Err(err),
+    };
     let duration = start.elapsed();
 
     // 6. Print summary to stderr (so stdout is clean for piping)
@@ -277,9 +301,50 @@ fn resolve_agents_dir() -> AgentResolution {
     AgentResolution::Default(AppPaths::resolve().agents_dir)
 }
 
+/// Check if an error indicates the model was not found (HTTP 404 or model-related 400).
+fn is_model_not_found(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+
+    // Google-style: HTTP 404 with "not found"
+    if msg.contains("404") && msg.contains("not found") {
+        return true;
+    }
+
+    // Anthropic-style: "model" + "not_found" or "invalid"
+    if msg.contains("model") && (msg.contains("not_found") || msg.contains("invalid")) {
+        return true;
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_model_not_found_google_404() {
+        let err = anyhow::anyhow!("HTTP 404: model gemini-3.0-pro not found");
+        assert!(is_model_not_found(&err));
+    }
+
+    #[test]
+    fn test_is_model_not_found_anthropic_400() {
+        let err = anyhow::anyhow!("400 Bad Request: model not_found: claude-opus-next");
+        assert!(is_model_not_found(&err));
+    }
+
+    #[test]
+    fn test_is_model_not_found_auth_401_false() {
+        let err = anyhow::anyhow!("401 Unauthorized: invalid API key");
+        assert!(!is_model_not_found(&err));
+    }
+
+    #[test]
+    fn test_is_model_not_found_rate_limit_429_false() {
+        let err = anyhow::anyhow!("429 Too Many Requests: rate limit exceeded");
+        assert!(!is_model_not_found(&err));
+    }
 
     #[test]
     fn test_resolve_agents_dir_returns_valid_resolution() {

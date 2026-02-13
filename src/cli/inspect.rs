@@ -22,6 +22,12 @@ pub async fn execute(agent_name: String) -> anyhow::Result<()> {
     if let Some(ref command) = agent.metadata.command {
         println!("  Command:        {command}");
     }
+    if !agent.metadata.model_fallback.is_empty() {
+        println!(
+            "  Fallbacks:      [{}]",
+            agent.metadata.model_fallback.join(", ")
+        );
+    }
     if let Some(ref args) = agent.metadata.args {
         println!("  Args:           [{}]", args.join(", "));
     }

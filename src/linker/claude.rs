@@ -162,6 +162,7 @@ mod tests {
             stacks: vec![],
             scope: vec![],
             model: None,
+            model_fallback: vec![],
             temperature: 0.7,
         }
     }
@@ -201,6 +202,7 @@ mod tests {
             stacks: vec!["rust".to_string()],
             scope: vec![],
             model: Some("claude-sonnet-4-5-20250929".to_string()),
+            model_fallback: vec![],
             temperature: 0.5,
         }];
         let files = linker.generate(&agents, None, &[]);
@@ -308,6 +310,7 @@ mod tests {
             stacks: vec![],
             scope: vec![],
             model: None,
+            model_fallback: vec![],
             temperature: 0.7,
         };
         let agents = vec![make_agent("Worker", "You do the work.")];

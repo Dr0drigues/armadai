@@ -3,6 +3,7 @@
 ## Metadata
 - provider: google
 - model: gemini-2.5-pro
+- model_fallback: [gemini-2.5-flash]
 - temperature: 0.2
 - max_tokens: 4096
 - tags: [security, audit, analysis]
