@@ -178,6 +178,23 @@ armadai skills add anthropics/skills/webapp-testing
 armadai skills list
 ```
 
+## IDE Support
+
+ArmadAI provides a JSON Schema for `armadai.yaml` that enables autocompletion and real-time validation in your editor.
+
+**VS Code** (with [YAML extension by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)) and **IntelliJ** — add this comment as the first line of your `armadai.yaml`:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Dr0drigues/armadai/develop/schemas/armadai.schema.json
+```
+
+Once added, your editor will provide:
+
+- Autocompletion for all configuration keys (`agents`, `prompts`, `skills`, `sources`, `link`)
+- Inline documentation and descriptions for each field
+- Validation of required fields and allowed values (e.g. link targets: `claude`, `copilot`, `gemini`, `opencode`)
+- Type checking for agent, prompt, and skill references
+
 ## Next Steps
 
 - [Agent Format](agent-format.md) — full reference for agent Markdown files

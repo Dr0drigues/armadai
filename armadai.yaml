@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Dr0drigues/armadai/develop/schemas/armadai.schema.json
+# ArmadAI project configuration
+# See: https://github.com/Dr0drigues/swarm-festai
+
+# Agents used in this project
+agents:
+  - name: lead-analyst
+  - name: rust-reviewer
+  - name: rust-test-analyzer
+  - name: rust-doc-writer
+  - name: rust-security
+
+# Composable prompt fragments
+prompts:
+  - name: analysis-standards
+
+skills: []
+sources: []
+
+# Linker configuration
+link:
+  target: google
+  coordinator: lead-analyst
