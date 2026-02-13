@@ -78,7 +78,7 @@ pub enum Command {
         /// Agent name (optional in interactive mode)
         name: Option<String>,
         /// Template to use
-        #[arg(long, short, default_value = "basic")]
+        #[arg(long, short, default_value = "basic", value_parser = crate::cli::new::template_value_parser())]
         template: String,
         /// Tech stack (replaces {{stack}} placeholder)
         #[arg(long, short)]
@@ -255,7 +255,7 @@ pub enum Command {
         #[arg(long)]
         project: bool,
         /// Install a starter pack (e.g. rust-dev, fullstack)
-        #[arg(long)]
+        #[arg(long, value_parser = crate::core::starter::pack_value_parser())]
         pack: Option<String>,
     },
     /// Browse and import agents from the community registry

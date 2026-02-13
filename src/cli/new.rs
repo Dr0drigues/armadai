@@ -523,6 +523,19 @@ pub fn parse_comma_list(input: &str) -> Vec<String> {
         .collect()
 }
 
+/// Clap value parser that provides completion for available template names.
+pub fn template_value_parser() -> clap::builder::PossibleValuesParser {
+    let paths = crate::core::config::AppPaths::resolve();
+    let names = collect_template_names(&paths.templates_dir);
+    // Leak strings to get 'static references needed by clap's PossibleValuesParser.
+    // This is called once at startup, so the leak is negligible.
+    let leaked: Vec<&'static str> = names
+        .into_iter()
+        .map(|s| &*Box::leak(s.into_boxed_str()))
+        .collect();
+    clap::builder::PossibleValuesParser::new(leaked)
+}
+
 /// Collect template names (stems) from the templates directory.
 fn collect_template_names(templates_dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(templates_dir) else {

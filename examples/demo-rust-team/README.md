@@ -16,10 +16,10 @@ A complete example of an ArmadAI fleet for reviewing, testing, documenting, and 
 
 ```bash
 # From the ArmadAI root directory
-cd example
+cd examples/demo-rust-team
 ```
 
-The `armadai.yaml` file links this directory to the fleet. The `source: ..` path points back to the ArmadAI root where agents are loaded from `example/agents/`.
+The `armadai.yaml` file links this directory to the fleet. The `source: .` path tells ArmadAI to load agents from `agents/` relative to this directory.
 
 ## Usage
 
