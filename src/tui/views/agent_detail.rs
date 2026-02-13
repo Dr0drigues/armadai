@@ -61,6 +61,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]),
     ];
 
+    if !meta.model_fallback.is_empty() {
+        meta_lines.push(Line::from(vec![
+            Span::styled("Fallback: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                meta.model_fallback.join(", "),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+
     if !meta.tags.is_empty() {
         meta_lines.push(Line::from(vec![
             Span::styled("Tags:     ", Style::default().add_modifier(Modifier::BOLD)),

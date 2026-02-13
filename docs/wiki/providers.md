@@ -82,6 +82,21 @@ Available models: `gpt-4o`, `gpt-4o-mini`, `o1`
 - temperature: 0.7
 ```
 
+## Model Fallback
+
+Declare fallback models for automatic retry when the primary model is unavailable (404, "model not found"). All fallbacks must use the same provider.
+
+```markdown
+## Metadata
+- provider: google
+- model: gemini-3.0-pro
+- model_fallback: [gemini-2.5-pro, gemini-2.5-flash]
+```
+
+If `gemini-3.0-pro` returns a "model not found" error, ArmadAI automatically retries with `gemini-2.5-pro`, then `gemini-2.5-flash`. Non-model errors (auth, rate limit) are not retried.
+
+The plural alias `model_fallbacks` is also accepted.
+
 ## CLI Provider
 
 Execute any command-line tool as an agent. The input is passed as the last argument to the command, and stdout is captured as the output.
