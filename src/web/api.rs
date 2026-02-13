@@ -11,6 +11,7 @@ pub struct AgentSummary {
     model: String,
     tags: Vec<String>,
     stacks: Vec<String>,
+    scope: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -21,6 +22,7 @@ pub struct AgentDetail {
     model: String,
     tags: Vec<String>,
     stacks: Vec<String>,
+    scope: Vec<String>,
     temperature: f32,
     max_tokens: Option<u32>,
     timeout: Option<u64>,
@@ -73,6 +75,7 @@ pub async fn list_agents() -> Json<Vec<AgentSummary>> {
                 model,
                 tags: a.metadata.tags,
                 stacks: a.metadata.stacks,
+                scope: a.metadata.scope,
             }
         })
         .collect();
@@ -94,6 +97,7 @@ pub async fn get_agent(Path(name): Path<String>) -> Json<serde_json::Value> {
                 model,
                 tags: a.metadata.tags,
                 stacks: a.metadata.stacks,
+                scope: a.metadata.scope,
                 temperature: a.metadata.temperature,
                 max_tokens: a.metadata.max_tokens,
                 timeout: a.metadata.timeout,

@@ -13,6 +13,7 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
     let mut timeout = None;
     let mut tags = Vec::new();
     let mut stacks = Vec::new();
+    let mut scope = Vec::new();
     let mut cost_limit = None;
     let mut rate_limit = None;
     let mut context_window = None;
@@ -39,6 +40,7 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
             "timeout" => timeout = Some(value.parse().context("invalid timeout")?),
             "tags" => tags = parse_string_list(value),
             "stacks" => stacks = parse_string_list(value),
+            "scope" => scope = parse_string_list(value),
             "cost_limit" => cost_limit = Some(value.parse().context("invalid cost_limit")?),
             "rate_limit" => rate_limit = Some(value.to_string()),
             "context_window" => {
@@ -60,6 +62,7 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
         timeout,
         tags,
         stacks,
+        scope,
         cost_limit,
         rate_limit,
         context_window,
@@ -102,4 +105,54 @@ fn parse_string_list(value: &str) -> Vec<String> {
         .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_scope() {
+        let raw = "\
+- provider: google
+- model: gemini-2.5-pro
+- temperature: 0.3
+- tags: [review, quality]
+- scope: [src/**/*.rs, tests/]
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(meta.scope, vec!["src/**/*.rs", "tests/"]);
+    }
+
+    #[test]
+    fn test_parse_scope_empty() {
+        let raw = "\
+- provider: google
+- model: gemini-2.5-pro
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert!(meta.scope.is_empty());
+    }
+
+    #[test]
+    fn test_parse_metadata_full() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- temperature: 0.5
+- max_tokens: 4096
+- tags: [dev, test]
+- stacks: [rust]
+- scope: [src/, docs/*.md]
+- cost_limit: 1.50
+- rate_limit: 10/min
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(meta.provider, "anthropic");
+        assert_eq!(meta.model.as_deref(), Some("claude-sonnet-4-5-20250929"));
+        assert_eq!(meta.tags, vec!["dev", "test"]);
+        assert_eq!(meta.stacks, vec!["rust"]);
+        assert_eq!(meta.scope, vec!["src/", "docs/*.md"]);
+        assert_eq!(meta.cost_limit, Some(1.50));
+    }
 }

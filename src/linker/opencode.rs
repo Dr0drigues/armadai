@@ -169,6 +169,7 @@ mod tests {
             description: Some(system_prompt.lines().next().unwrap_or("").to_string()),
             tags: vec![],
             stacks: vec![],
+            scope: vec![],
             model: None,
             temperature: 0.7,
         }
@@ -214,6 +215,7 @@ mod tests {
             description: Some("You are a test agent.".to_string()),
             tags: vec![],
             stacks: vec![],
+            scope: vec![],
             model: Some("anthropic/claude-sonnet-4-5".to_string()),
             temperature: 0.3,
         }];
@@ -245,6 +247,7 @@ mod tests {
             description: Some("You are a full agent.".to_string()),
             tags: vec!["test".to_string()],
             stacks: vec!["rust".to_string()],
+            scope: vec![],
             model: Some("anthropic/claude-sonnet-4-5".to_string()),
             temperature: 0.5,
         }];
@@ -337,6 +340,7 @@ mod tests {
             description: Some("You lead the team.".to_string()),
             tags: vec![],
             stacks: vec![],
+            scope: vec![],
             model: None,
             temperature: 0.7,
         };

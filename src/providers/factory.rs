@@ -176,7 +176,15 @@ fn create_api_provider(provider: &str, _agent: &Agent) -> anyhow::Result<Box<dyn
             }
             Ok(Box::new(p))
         }
-        "openai" | "google" | "proxy" => {
+        "google" => {
+            let api_key = get_api_key("GOOGLE_API_KEY", "google")?;
+            let mut p = super::api::google::GoogleProvider::new(api_key);
+            if let Ok(url) = std::env::var("GOOGLE_BASE_URL") {
+                p.base_url = url;
+            }
+            Ok(Box::new(p))
+        }
+        "openai" | "proxy" => {
             anyhow::bail!("Provider '{provider}' is not yet implemented")
         }
         other => anyhow::bail!("Unknown API provider: '{other}'"),

@@ -75,6 +75,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
+    if !meta.scope.is_empty() {
+        meta_lines.push(Line::from(vec![
+            Span::styled("Scope:    ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(meta.scope.join(", "), Style::default().fg(Color::Cyan)),
+        ]));
+    }
+
     if let Some(ref rl) = meta.rate_limit {
         meta_lines.push(Line::from(vec![
             Span::styled("Rate:     ", Style::default().add_modifier(Modifier::BOLD)),

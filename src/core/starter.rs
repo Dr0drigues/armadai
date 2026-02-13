@@ -170,6 +170,18 @@ pub fn list_available_packs() -> Vec<String> {
     packs
 }
 
+/// Clap value parser that provides completion for available starter pack names.
+pub fn pack_value_parser() -> clap::builder::PossibleValuesParser {
+    let names = list_available_packs();
+    // Leak strings to get 'static references needed by clap's PossibleValuesParser.
+    // This is called once at startup, so the leak is negligible.
+    let leaked: Vec<&'static str> = names
+        .into_iter()
+        .map(|s| &*Box::leak(s.into_boxed_str()))
+        .collect();
+    clap::builder::PossibleValuesParser::new(leaked)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -282,5 +294,18 @@ prompts:
         unsafe {
             std::env::remove_var("ARMADAI_CONFIG_DIR");
         }
+    }
+
+    #[test]
+    fn test_list_available_packs_includes_analysis() {
+        let names = list_available_packs();
+        assert!(
+            names.contains(&"code-analysis-rust".to_string()),
+            "Expected code-analysis-rust in {names:?}"
+        );
+        assert!(
+            names.contains(&"code-analysis-web".to_string()),
+            "Expected code-analysis-web in {names:?}"
+        );
     }
 }

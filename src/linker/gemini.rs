@@ -217,6 +217,7 @@ mod tests {
             description: Some(system_prompt.lines().next().unwrap_or("").to_string()),
             tags: vec![],
             stacks: vec![],
+            scope: vec![],
             model: None,
             temperature: 0.7,
         }
@@ -262,6 +263,7 @@ mod tests {
             description: Some("You are a test agent.".to_string()),
             tags: vec![],
             stacks: vec![],
+            scope: vec![],
             model: Some("gemini-2.5-pro".to_string()),
             temperature: 0.3,
         }];
@@ -386,6 +388,7 @@ mod tests {
             description: Some("You lead the team.".to_string()),
             tags: vec![],
             stacks: vec![],
+            scope: vec![],
             model: None,
             temperature: 0.7,
         };
