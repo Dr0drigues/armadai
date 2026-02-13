@@ -3,7 +3,7 @@ use std::process::Command;
 
 use crate::core::config::registry_cache_dir;
 
-const DEFAULT_REGISTRY_URL: &str = "https://github.com/anthropics/awesome-copilot.git";
+const DEFAULT_REGISTRY_URL: &str = "https://github.com/github/awesome-copilot.git";
 
 /// Return the path to the cloned registry repository.
 pub fn repo_dir() -> std::path::PathBuf {
