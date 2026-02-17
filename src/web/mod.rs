@@ -17,6 +17,7 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/skills/{name}", get(api::get_skill))
         .route("/api/starters", get(api::list_starters))
         .route("/api/starters/{name}", get(api::get_starter))
+        .route("/api/starters/{name}/config", get(api::get_starter_config))
         .layer(CorsLayer::permissive());
 
     let addr = format!("0.0.0.0:{port}");

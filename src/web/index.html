@@ -43,6 +43,10 @@
   .list-section ul { list-style: none; padding: 0; }
   .list-section li { padding: 4px 0; font-size: 14px; }
   .list-section li::before { content: "• "; color: var(--accent); }
+  .file-details { margin-bottom: 8px; }
+  .file-details summary { cursor: pointer; font-size: 14px; padding: 4px 0; color: var(--accent); }
+  .file-details summary:hover { text-decoration: underline; }
+  .file-content { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 13px; white-space: pre-wrap; line-height: 1.5; margin: 4px 0 8px 0; max-height: 400px; overflow-y: auto; }
   #view { display: none; }
 </style>
 </head>
@@ -206,10 +210,13 @@ async function viewSkill(name) {
   ['agents','prompts','skills','starters','history','costs'].forEach(id => document.getElementById(id).style.display = 'none');
   const el = document.getElementById('view');
   el.style.display = 'block';
+  const fileBlock = (f) => f.content
+    ? `<details class="file-details"><summary>${f.name}</summary><pre class="file-content">${f.content.replace(/</g,'&lt;')}</pre></details>`
+    : `<div style="font-size:14px;padding:2px 0;color:var(--muted)">${f.name} (binary)</div>`;
   let filesHtml = '';
-  if (s.scripts.length) filesHtml += `<div class="list-section"><h3>Scripts</h3><ul>${s.scripts.map(f => `<li>${f}</li>`).join('')}</ul></div>`;
-  if (s.references.length) filesHtml += `<div class="list-section"><h3>References</h3><ul>${s.references.map(f => `<li>${f}</li>`).join('')}</ul></div>`;
-  if (s.assets.length) filesHtml += `<div class="list-section"><h3>Assets</h3><ul>${s.assets.map(f => `<li>${f}</li>`).join('')}</ul></div>`;
+  if (s.scripts.length) filesHtml += `<div class="list-section"><h3>Scripts</h3>${s.scripts.map(fileBlock).join('')}</div>`;
+  if (s.references.length) filesHtml += `<div class="list-section"><h3>References</h3>${s.references.map(fileBlock).join('')}</div>`;
+  if (s.assets.length) filesHtml += `<div class="list-section"><h3>Assets</h3>${s.assets.map(fileBlock).join('')}</div>`;
   el.innerHTML = `
     <div class="detail">
       <button class="back-btn" onclick="backToList()">&larr; Back to skills</button>
@@ -259,6 +266,7 @@ async function viewStarter(name) {
       <button class="back-btn" onclick="backToList()">&larr; Back to starters</button>
       <h2>${s.name}</h2>
       <p style="color:var(--muted);margin-bottom:20px">${s.description}</p>
+      <a href="/api/starters/${encodeURIComponent(name)}/config" download="armadai.yaml" class="back-btn" style="display:inline-block;text-decoration:none;margin-bottom:16px;border-color:var(--green);color:var(--green)">&#8615; Download armadai.yaml</a>
       ${s.agents.length ? `<div class="list-section"><h3>Agents (${s.agents.length})</h3><ul>${s.agents.map(a => `<li>${a}</li>`).join('')}</ul></div>` : ''}
       ${s.prompts.length ? `<div class="list-section"><h3>Prompts (${s.prompts.length})</h3><ul>${s.prompts.map(p => `<li>${p}</li>`).join('')}</ul></div>` : ''}
       ${s.skills.length ? `<div class="list-section"><h3>Skills (${s.skills.length})</h3><ul>${s.skills.map(sk => `<li>${sk}</li>`).join('')}</ul></div>` : ''}

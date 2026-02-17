@@ -116,6 +116,32 @@ pub async fn run() -> Result<()> {
                     }
                     _ => {}
                 },
+                KeyCode::Char('i')
+                    if matches!(
+                        app.current_tab,
+                        app::Tab::Starters | app::Tab::StarterDetail
+                    ) =>
+                {
+                    if let Some(pack) = app.selected_starter().cloned() {
+                        let pack_name = pack.name.clone();
+                        let yaml = crate::cli::init::generate_project_yaml(&pack, &pack_name);
+                        let path = std::path::Path::new("armadai.yaml");
+                        if path.exists() {
+                            app.status_msg = Some("armadai.yaml already exists".to_string());
+                        } else {
+                            match std::fs::write(path, yaml) {
+                                Ok(()) => {
+                                    app.status_msg =
+                                        Some(format!("Created armadai.yaml (pack: {pack_name})"));
+                                }
+                                Err(e) => {
+                                    app.status_msg =
+                                        Some(format!("Failed to write armadai.yaml: {e}"));
+                                }
+                            }
+                        }
+                    }
+                }
                 KeyCode::Char('1') => app.switch_tab(app::Tab::Dashboard),
                 KeyCode::Char('2') => app.switch_tab(app::Tab::Prompts),
                 KeyCode::Char('3') => app.switch_tab(app::Tab::Skills),
