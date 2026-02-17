@@ -24,6 +24,7 @@ pub async fn run() -> Result<()> {
     app.load_agents();
     app.load_prompts();
     app.load_skills();
+    app.load_starters();
     load_storage_data(&mut app);
 
     loop {
@@ -53,6 +54,7 @@ pub async fn run() -> Result<()> {
                                     app.load_agents();
                                     app.load_prompts();
                                     app.load_skills();
+                                    app.load_starters();
                                     load_storage_data(&mut app);
                                 }
                                 PaletteAction::Quit => break,
@@ -95,20 +97,31 @@ pub async fn run() -> Result<()> {
                     app.load_agents();
                     app.load_prompts();
                     app.load_skills();
+                    app.load_starters();
                     load_storage_data(&mut app);
                     app.status_msg = Some("Refreshed".to_string());
                 }
-                KeyCode::Enter => {
-                    if app.current_tab == app::Tab::Dashboard && app.selected_agent().is_some() {
+                KeyCode::Enter => match app.current_tab {
+                    app::Tab::Dashboard if app.selected_agent().is_some() => {
                         app.switch_tab(app::Tab::AgentDetail);
                     }
-                }
+                    app::Tab::Prompts if app.selected_prompt().is_some() => {
+                        app.switch_tab(app::Tab::PromptDetail);
+                    }
+                    app::Tab::Skills if app.selected_skill().is_some() => {
+                        app.switch_tab(app::Tab::SkillDetail);
+                    }
+                    app::Tab::Starters if app.selected_starter().is_some() => {
+                        app.switch_tab(app::Tab::StarterDetail);
+                    }
+                    _ => {}
+                },
                 KeyCode::Char('1') => app.switch_tab(app::Tab::Dashboard),
-                KeyCode::Char('2') => app.switch_tab(app::Tab::AgentDetail),
-                KeyCode::Char('3') => app.switch_tab(app::Tab::History),
-                KeyCode::Char('4') => app.switch_tab(app::Tab::Costs),
-                KeyCode::Char('5') => app.switch_tab(app::Tab::Prompts),
-                KeyCode::Char('6') => app.switch_tab(app::Tab::Skills),
+                KeyCode::Char('2') => app.switch_tab(app::Tab::Prompts),
+                KeyCode::Char('3') => app.switch_tab(app::Tab::Skills),
+                KeyCode::Char('4') => app.switch_tab(app::Tab::Starters),
+                KeyCode::Char('5') => app.switch_tab(app::Tab::History),
+                KeyCode::Char('6') => app.switch_tab(app::Tab::Costs),
                 _ => {}
             }
         }
