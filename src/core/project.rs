@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use super::agent::AgentMode;
 use super::config::{registry_cache_dir, user_agents_dir, user_prompts_dir, user_skills_dir};
 use super::fleet::FleetDefinition;
 
@@ -16,6 +17,13 @@ const PROJECT_FILENAMES: &[&str] = &["armadai.yaml", "armadai.yml"];
 // Data model
 // ---------------------------------------------------------------------------
 
+/// Default settings applied to all agents in the project.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct ProjectDefaults {
+    pub mode: Option<AgentMode>,
+}
+
 /// Project-level configuration declared in `armadai.yaml`.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -25,6 +33,8 @@ pub struct ProjectConfig {
     pub skills: Vec<SkillRef>,
     pub sources: Vec<String>,
     pub link: Option<LinkConfig>,
+    #[serde(default)]
+    pub defaults: ProjectDefaults,
 }
 
 /// Reference to an agent — resolved at runtime.
@@ -90,6 +100,12 @@ impl ProjectConfig {
             serde_yaml_ng::from_str(&content).unwrap_or(FormatProbe { fleet: None });
 
         if probe.fleet.is_some() {
+            tracing::warn!(
+                "Legacy fleet format detected in {}. \
+                 Migrate to the modern armadai.yaml format (see `armadai init --project`). \
+                 Fleet support will be removed in a future release.",
+                path.display()
+            );
             let fleet: FleetDefinition = serde_yaml_ng::from_str(&content)?;
             Ok(Self::from_legacy_fleet(&fleet))
         } else {
@@ -112,6 +128,7 @@ impl ProjectConfig {
             skills: Vec::new(),
             sources: Vec::new(),
             link: None,
+            defaults: ProjectDefaults::default(),
         }
     }
 }
@@ -427,6 +444,9 @@ sources:
   - docs/architecture.md
   - CONTRIBUTING.md
 
+defaults:
+  mode: guided
+
 link:
   target: claude
   overrides:
@@ -473,11 +493,26 @@ link:
 
         assert_eq!(config.skills.len(), 2);
         assert_eq!(config.sources.len(), 2);
+        assert_eq!(config.defaults.mode, Some(AgentMode::Guided));
 
         let link = config.link.unwrap();
         assert_eq!(link.target.as_deref(), Some("claude"));
         assert_eq!(link.overrides.len(), 2);
         assert_eq!(link.overrides["claude"].output.as_deref(), Some(".claude/"));
+    }
+
+    #[test]
+    fn test_defaults_mode_parsing() {
+        let yaml = "defaults:\n  mode: guided\n";
+        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.defaults.mode, Some(AgentMode::Guided));
+    }
+
+    #[test]
+    fn test_defaults_absent_gives_default() {
+        let yaml = "agents:\n  - name: my-agent\n";
+        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.defaults.mode.is_none());
     }
 
     #[test]

@@ -39,6 +39,9 @@
         },
         "link": {
           "$ref": "#/$defs/LinkConfig"
+        },
+        "defaults": {
+          "$ref": "#/$defs/ProjectDefaults"
         }
       },
       "not": {
@@ -48,8 +51,9 @@
     },
     "FleetDefinition": {
       "type": "object",
-      "title": "Fleet Definition (legacy)",
-      "description": "Legacy fleet format. Detected when a 'fleet' key is present. Automatically converted to ProjectConfig at load time.",
+      "title": "Fleet Definition (legacy, deprecated)",
+      "description": "DEPRECATED: Legacy fleet format. Detected when a 'fleet' key is present. Automatically converted to ProjectConfig at load time. Will be removed in a future release. Migrate to the modern ProjectConfig format using `armadai init --project`.",
+      "deprecated": true,
       "properties": {
         "fleet": {
           "type": "string",
@@ -225,6 +229,20 @@
           "title": "Output directory",
           "description": "Custom output directory for the generated config files.",
           "examples": [".claude/", ".github/agents/"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProjectDefaults": {
+      "type": "object",
+      "title": "Project Defaults",
+      "description": "Default settings applied to all agents in the project.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["guided", "autonomous"],
+          "default": "autonomous",
+          "description": "Default interaction mode. 'guided' makes agents ask clarifying questions before responding."
         }
       },
       "additionalProperties": false

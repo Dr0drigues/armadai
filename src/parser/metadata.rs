@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use crate::core::agent::AgentMetadata;
+use crate::core::agent::{AgentMetadata, AgentMode};
 
 /// Parse the Metadata section content (YAML-like list format) into AgentMetadata.
 pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
@@ -18,6 +18,7 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
     let mut cost_limit = None;
     let mut rate_limit = None;
     let mut context_window = None;
+    let mut mode = None;
 
     for line in raw.lines() {
         let line = line.trim().trim_start_matches('-').trim();
@@ -48,6 +49,15 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
             "context_window" => {
                 context_window = Some(value.parse().context("invalid context_window")?)
             }
+            "mode" => {
+                mode = Some(match value.to_lowercase().as_str() {
+                    "guided" => AgentMode::Guided,
+                    "autonomous" => AgentMode::Autonomous,
+                    _ => {
+                        anyhow::bail!("Invalid mode: '{value}'. Expected 'guided' or 'autonomous'")
+                    }
+                })
+            }
             _ => {
                 tracing::debug!("Unknown metadata field: {key}");
             }
@@ -69,6 +79,7 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
         cost_limit,
         rate_limit,
         context_window,
+        mode,
     })
 }
 
@@ -170,6 +181,48 @@ mod tests {
 ";
         let meta = parse_metadata(raw).unwrap();
         assert!(meta.model_fallback.is_empty());
+    }
+
+    #[test]
+    fn test_parse_mode_guided() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- mode: guided
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(meta.mode, Some(AgentMode::Guided));
+    }
+
+    #[test]
+    fn test_parse_mode_autonomous() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- mode: autonomous
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(meta.mode, Some(AgentMode::Autonomous));
+    }
+
+    #[test]
+    fn test_parse_mode_default_none() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert!(meta.mode.is_none());
+    }
+
+    #[test]
+    fn test_parse_mode_invalid() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- mode: interactive
+";
+        assert!(parse_metadata(raw).is_err());
     }
 
     #[test]

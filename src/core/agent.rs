@@ -2,6 +2,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Agent interaction mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentMode {
+    Guided,
+    #[default]
+    Autonomous,
+}
+
 /// An agent loaded from a Markdown definition file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
@@ -58,6 +67,8 @@ pub struct AgentMetadata {
     pub rate_limit: Option<String>,
     /// Context window size override
     pub context_window: Option<u32>,
+    /// Interaction mode (guided asks clarifying questions first)
+    pub mode: Option<AgentMode>,
 }
 
 fn default_temperature() -> f32 {
