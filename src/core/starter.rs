@@ -192,10 +192,19 @@ pub fn starters_dir() -> PathBuf {
         }
     }
 
-    // Fallback: extract embedded starters to config dir
+    // Fallback: extract embedded starters to config dir (per-pack versioning)
     let config_starters = super::config::config_dir().join("starters");
-    if !config_starters.is_dir() {
-        let _ = EMBEDDED_STARTERS.extract(&config_starters);
+    std::fs::create_dir_all(&config_starters).ok();
+    for dir in EMBEDDED_STARTERS.dirs() {
+        if dir.get_file(dir.path().join("pack.yaml")).is_some()
+            && let Some(name) = dir.path().file_name().and_then(|n| n.to_str())
+        {
+            let dest = config_starters.join(name);
+            if !dest.exists() || super::embedded::needs_update(&dest) {
+                let _ = crate::core::skill::extract_embedded_dir(dir, &dest);
+                super::embedded::write_version_marker(&dest);
+            }
+        }
     }
     config_starters
 }
@@ -389,6 +398,10 @@ skills:
         assert!(
             names.contains(&"code-analysis-web".to_string()),
             "Expected code-analysis-web in {names:?}"
+        );
+        assert!(
+            names.contains(&"armadai-authoring".to_string()),
+            "Expected armadai-authoring in {names:?}"
         );
     }
 }

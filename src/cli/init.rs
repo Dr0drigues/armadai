@@ -96,14 +96,9 @@ fn install_pack(name: &str, force: bool) -> anyhow::Result<StarterPack> {
     Ok(pack)
 }
 
-/// Create an armadai.yaml in the current directory using the new project format.
-fn init_project() -> anyhow::Result<()> {
-    let path = std::path::Path::new("armadai.yaml");
-    if path.exists() {
-        anyhow::bail!("armadai.yaml already exists in current directory");
-    }
-
-    let content = "\
+/// Generate the YAML content for an empty armadai project configuration.
+pub fn generate_empty_project_yaml() -> String {
+    "\
 # ArmadAI project configuration
 # See: https://github.com/Dr0drigues/swarm-festai
 
@@ -136,8 +131,18 @@ sources: []
 #       output: .claude/
 #     copilot:
 #       output: .github/agents/
-";
+"
+    .to_string()
+}
 
+/// Create an armadai.yaml in the current directory using the new project format.
+fn init_project() -> anyhow::Result<()> {
+    let path = std::path::Path::new("armadai.yaml");
+    if path.exists() {
+        anyhow::bail!("armadai.yaml already exists in current directory");
+    }
+
+    let content = generate_empty_project_yaml();
     std::fs::write(path, content)?;
     println!("Created armadai.yaml in current directory");
     println!("  Edit it to declare agents, prompts, skills and link targets.");
@@ -145,13 +150,8 @@ sources: []
     Ok(())
 }
 
-/// Create an armadai.yaml pre-configured with the agents from a starter pack.
-fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result<()> {
-    let path = std::path::Path::new("armadai.yaml");
-    if path.exists() {
-        anyhow::bail!("armadai.yaml already exists in current directory");
-    }
-
+/// Generate YAML content for an armadai project pre-configured with a starter pack.
+pub fn generate_project_yaml(pack: &StarterPack, pack_name: &str) -> String {
     // Detect provider and coordinator from the pack's agent files
     let link_target = detect_pack_provider(pack_name);
     let coordinator_name = detect_pack_coordinator(pack, pack_name);
@@ -203,6 +203,17 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
         ));
     }
 
+    content
+}
+
+/// Create an armadai.yaml pre-configured with the agents from a starter pack.
+fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result<()> {
+    let path = std::path::Path::new("armadai.yaml");
+    if path.exists() {
+        anyhow::bail!("armadai.yaml already exists in current directory");
+    }
+
+    let content = generate_project_yaml(pack, pack_name);
     std::fs::write(path, &content)?;
     println!("\nCreated armadai.yaml with pack '{}' agents", pack.name);
     println!("  Run `armadai link` to generate target config files.");

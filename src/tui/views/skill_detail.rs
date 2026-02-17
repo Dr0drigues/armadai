@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use crate::core::skill::read_text_file;
 use crate::tui::app::App;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -22,25 +23,41 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    let has_files =
-        !skill.scripts.is_empty() || !skill.references.is_empty() || !skill.assets.is_empty();
+    // Read reference file contents
+    let ref_contents: Vec<(String, String)> = skill
+        .references
+        .iter()
+        .filter_map(|p| {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            read_text_file(p).map(|content| (name, content))
+        })
+        .collect();
+
+    let has_other_files = !skill.scripts.is_empty() || !skill.assets.is_empty();
+
+    // Build layout constraints dynamically
+    let mut constraints = vec![
+        Constraint::Length(3), // Title
+        Constraint::Length(6), // Metadata
+        Constraint::Min(6),    // Body
+    ];
+
+    // One block per reference file
+    for _ in &ref_contents {
+        constraints.push(Constraint::Min(4));
+    }
+
+    // Scripts/Assets summary block
+    if has_other_files {
+        constraints.push(Constraint::Length(3));
+    }
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(if has_files {
-            vec![
-                Constraint::Length(3), // Title
-                Constraint::Length(6), // Metadata
-                Constraint::Min(6),    // Body
-                Constraint::Length(5), // Files
-            ]
-        } else {
-            vec![
-                Constraint::Length(3), // Title
-                Constraint::Length(6), // Metadata
-                Constraint::Min(6),    // Body
-            ]
-        })
+        .constraints(constraints)
         .split(area);
 
     // Title bar
@@ -126,8 +143,26 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .wrap(Wrap { trim: false });
     frame.render_widget(body_widget, chunks[2]);
 
-    // Files section (only if there are files)
-    if has_files {
+    // Reference file content blocks
+    for (i, (name, content)) in ref_contents.iter().enumerate() {
+        let ref_widget = Paragraph::new(content.as_str())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {name} "))
+                    .title_style(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+            )
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(ref_widget, chunks[3 + i]);
+    }
+
+    // Scripts/Assets summary (compact)
+    if has_other_files {
         let file_name = |p: &std::path::Path| -> String {
             p.file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -138,24 +173,19 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             let names: Vec<String> = skill.scripts.iter().map(|p| file_name(p)).collect();
             file_parts.push(format!("scripts: {}", names.join(", ")));
         }
-        if !skill.references.is_empty() {
-            let names: Vec<String> = skill.references.iter().map(|p| file_name(p)).collect();
-            file_parts.push(format!("references: {}", names.join(", ")));
-        }
         if !skill.assets.is_empty() {
             let names: Vec<String> = skill.assets.iter().map(|p| file_name(p)).collect();
             file_parts.push(format!("assets: {}", names.join(", ")));
         }
 
-        let files_widget = Paragraph::new(file_parts.join("\n"))
+        let files_widget = Paragraph::new(file_parts.join("  |  "))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Files ")
+                    .title(" Other Files ")
                     .title_style(Style::default().add_modifier(Modifier::BOLD)),
             )
-            .style(Style::default().fg(Color::Gray))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(files_widget, chunks[3]);
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(files_widget, chunks[3 + ref_contents.len()]);
     }
 }

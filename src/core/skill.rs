@@ -131,12 +131,13 @@ pub fn install_embedded_skills(force: bool) -> anyhow::Result<usize> {
             .unwrap_or("unknown");
         let dest = dst_root.join(skill_name);
 
-        if dest.exists() && !force {
+        if dest.exists() && !force && !super::embedded::needs_update(&dest) {
             continue;
         }
 
         // Copy all files recursively
         extract_embedded_dir(skill_dir, &dest)?;
+        super::embedded::write_version_marker(&dest);
         count += 1;
     }
 
@@ -144,7 +145,7 @@ pub fn install_embedded_skills(force: bool) -> anyhow::Result<usize> {
 }
 
 /// Recursively extract an embedded directory to a filesystem path.
-fn extract_embedded_dir(dir: &Dir<'_>, dest: &Path) -> anyhow::Result<()> {
+pub(crate) fn extract_embedded_dir(dir: &Dir<'_>, dest: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dest)?;
 
     for file in dir.files() {
@@ -166,6 +167,12 @@ fn extract_embedded_dir(dir: &Dir<'_>, dest: &Path) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Read a file as UTF-8 text, returning `None` if the file can't be read or isn't valid UTF-8.
+pub fn read_text_file(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// Scan a directory for skill subdirectories (each containing a `SKILL.md`).

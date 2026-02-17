@@ -2,7 +2,7 @@ mod config;
 mod costs;
 mod fleet;
 mod history;
-mod init;
+pub mod init;
 mod inspect;
 mod link;
 mod list;

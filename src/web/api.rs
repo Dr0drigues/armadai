@@ -1,5 +1,7 @@
 use axum::Json;
 use axum::extract::Path;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::IntoResponse;
 use serde::Serialize;
 
 use crate::core::agent::Agent;
@@ -82,6 +84,12 @@ pub struct PromptDetail {
 }
 
 #[derive(Serialize)]
+pub struct SkillFile {
+    name: String,
+    content: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct SkillDetail {
     name: String,
     description: Option<String>,
@@ -89,9 +97,9 @@ pub struct SkillDetail {
     tools: Vec<String>,
     body: String,
     source: String,
-    scripts: Vec<String>,
-    references: Vec<String>,
-    assets: Vec<String>,
+    scripts: Vec<SkillFile>,
+    references: Vec<SkillFile>,
+    assets: Vec<SkillFile>,
 }
 
 #[derive(Serialize)]
@@ -308,12 +316,15 @@ pub async fn get_prompt(Path(name): Path<String>) -> Json<serde_json::Value> {
 
 pub async fn get_skill(Path(name): Path<String>) -> Json<serde_json::Value> {
     use crate::core::config::user_skills_dir;
-    use crate::core::skill::load_all_skills;
+    use crate::core::skill::{load_all_skills, read_text_file};
 
-    let file_name = |p: &std::path::Path| -> String {
-        p.file_name()
+    let to_skill_file = |p: &std::path::Path| -> SkillFile {
+        let name = p
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let content = read_text_file(p);
+        SkillFile { name, content }
     };
 
     let skills = load_all_skills(&user_skills_dir());
@@ -329,9 +340,9 @@ pub async fn get_skill(Path(name): Path<String>) -> Json<serde_json::Value> {
                 tools: s.tools,
                 body: s.body,
                 source: s.source.display().to_string(),
-                scripts: s.scripts.iter().map(|p| file_name(p)).collect(),
-                references: s.references.iter().map(|p| file_name(p)).collect(),
-                assets: s.assets.iter().map(|p| file_name(p)).collect(),
+                scripts: s.scripts.iter().map(|p| to_skill_file(p)).collect(),
+                references: s.references.iter().map(|p| to_skill_file(p)).collect(),
+                assets: s.assets.iter().map(|p| to_skill_file(p)).collect(),
             };
             Json(serde_json::to_value(detail).unwrap())
         }
@@ -403,4 +414,34 @@ pub async fn get_starter(Path(name): Path<String>) -> Json<serde_json::Value> {
             .unwrap(),
         ),
     }
+}
+
+pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {
+    use crate::core::starter::{StarterPack, starters_dir};
+
+    let dir = starters_dir();
+    let pack_dir = dir.join(&name);
+
+    let pack = match StarterPack::load(&pack_dir) {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                HeaderMap::new(),
+                format!("Starter '{name}' not found"),
+            );
+        }
+    };
+
+    let yaml = crate::cli::init::generate_project_yaml(&pack, &name);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/x-yaml"),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=\"armadai.yaml\""),
+    );
+    (StatusCode::OK, headers, yaml)
 }
