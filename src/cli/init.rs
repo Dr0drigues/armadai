@@ -87,10 +87,10 @@ fn install_pack(name: &str, force: bool) -> anyhow::Result<StarterPack> {
         pack.name, pack.description
     );
 
-    let (agents, prompts) = pack.install(&pack_dir, force)?;
+    let (agents, prompts, skills) = pack.install(&pack_dir, force)?;
     println!(
-        "\nPack '{}' installed: {} agent(s), {} prompt(s)",
-        pack.name, agents, prompts
+        "\nPack '{}' installed: {} agent(s), {} prompt(s), {} skill(s)",
+        pack.name, agents, prompts, skills
     );
 
     Ok(pack)
@@ -177,7 +177,17 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
         content.push_str("\nprompts: []\n");
     }
 
-    content.push_str("\nskills: []\nsources: []\n");
+    // Skills
+    if !pack.skills.is_empty() {
+        content.push_str("\n# Skills (Agent Skills open standard)\nskills:\n");
+        for skill in &pack.skills {
+            content.push_str(&format!("  - name: {skill}\n"));
+        }
+    } else {
+        content.push_str("\nskills: []\n");
+    }
+
+    content.push_str("\nsources: []\n");
 
     // Linker configuration
     if let Some(target) = link_target {

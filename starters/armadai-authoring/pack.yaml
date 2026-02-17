@@ -1,0 +1,5 @@
+name: armadai-authoring
+description: "ArmadAI authoring pack — create agents, prompts, and skills with built-in reference skills"
+agents: [authoring-lead, agent-builder, prompt-builder, skill-builder]
+prompts: [armadai-conventions]
+skills: [armadai-agent-authoring, armadai-prompt-authoring, armadai-skill-authoring]

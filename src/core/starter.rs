@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use include_dir::{Dir, include_dir};
 use serde::Deserialize;
 
-use super::config::{user_agents_dir, user_prompts_dir};
+use super::config::{user_agents_dir, user_prompts_dir, user_skills_dir};
 
 static EMBEDDED_STARTERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/starters");
 
@@ -19,6 +19,8 @@ pub struct StarterPack {
     pub agents: Vec<String>,
     #[serde(default)]
     pub prompts: Vec<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -37,23 +39,31 @@ impl StarterPack {
         Ok(pack)
     }
 
-    /// Install the starter pack's agents and prompts to the user library.
+    /// Install the starter pack's agents, prompts, and skills to the user library.
     ///
-    /// Copies agent `.md` files from `<pack_dir>/agents/` to `~/.config/armadai/agents/`
-    /// and prompt `.md` files from `<pack_dir>/prompts/` to `~/.config/armadai/prompts/`.
+    /// Copies agent `.md` files from `<pack_dir>/agents/` to `~/.config/armadai/agents/`,
+    /// prompt `.md` files from `<pack_dir>/prompts/` to `~/.config/armadai/prompts/`,
+    /// and skill directories from `<pack_dir>/skills/` to `~/.config/armadai/skills/`.
     ///
-    /// Returns `(installed_agents, installed_prompts)` counts.
-    pub fn install(&self, pack_dir: &Path, force: bool) -> anyhow::Result<(usize, usize)> {
+    /// Skills listed in the pack but not bundled (e.g. built-in skills already
+    /// installed by `armadai init`) are silently skipped.
+    ///
+    /// Returns `(installed_agents, installed_prompts, installed_skills)` counts.
+    pub fn install(&self, pack_dir: &Path, force: bool) -> anyhow::Result<(usize, usize, usize)> {
         let agents_src = pack_dir.join("agents");
         let prompts_src = pack_dir.join("prompts");
+        let skills_src = pack_dir.join("skills");
         let agents_dst = user_agents_dir();
         let prompts_dst = user_prompts_dir();
+        let skills_dst = user_skills_dir();
 
         std::fs::create_dir_all(&agents_dst)?;
         std::fs::create_dir_all(&prompts_dst)?;
+        std::fs::create_dir_all(&skills_dst)?;
 
         let mut agents_count = 0;
         let mut prompts_count = 0;
+        let mut skills_count = 0;
 
         // Install agents
         for name in &self.agents {
@@ -111,8 +121,49 @@ impl StarterPack {
             prompts_count += 1;
         }
 
-        Ok((agents_count, prompts_count))
+        // Install skills (directories)
+        for name in &self.skills {
+            let src = skills_src.join(name);
+            let dst = skills_dst.join(name);
+
+            // Skills not bundled in the pack (e.g. built-in) are silently skipped
+            if !src.is_dir() {
+                continue;
+            }
+
+            if dst.exists() && !force {
+                println!("  skip (exists): {}", dst.display());
+                continue;
+            }
+
+            copy_dir_recursive(&src, &dst)?;
+            println!("  installed: {}", dst.display());
+            skills_count += 1;
+        }
+
+        Ok((agents_count, prompts_count, skills_count))
     }
+}
+
+/// Recursively copy a directory tree from `src` to `dst`.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    if dst.exists() {
+        std::fs::remove_dir_all(dst)?;
+    }
+    std::fs::create_dir_all(dst)?;
+
+    for entry in std::fs::read_dir(src)?.flatten() {
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Discover available starter packs directory.
@@ -201,6 +252,8 @@ agents:
   - test-writer
 prompts:
   - style-guide
+skills:
+  - my-skill
 ";
         std::fs::write(dir.path().join("pack.yaml"), yaml).unwrap();
 
@@ -209,6 +262,7 @@ prompts:
         assert_eq!(pack.description, "A test starter pack");
         assert_eq!(pack.agents, vec!["code-reviewer", "test-writer"]);
         assert_eq!(pack.prompts, vec!["style-guide"]);
+        assert_eq!(pack.skills, vec!["my-skill"]);
     }
 
     #[test]
@@ -229,67 +283,96 @@ description: Minimal pack
         let pack = StarterPack::load(dir.path()).unwrap();
         assert!(pack.agents.is_empty());
         assert!(pack.prompts.is_empty());
+        assert!(pack.skills.is_empty());
     }
 
     #[test]
     fn test_install_pack() {
-        let pack_dir = tempfile::tempdir().unwrap();
         let config_dir = tempfile::tempdir().unwrap();
 
-        // Create pack structure
-        let yaml = "\
+        // Override config dir for test (single env-var test to avoid parallel races)
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", config_dir.path());
+        }
+
+        // --- Sub-test 1: full install with agents, prompts, skills ---
+        {
+            let pack_dir = tempfile::tempdir().unwrap();
+            let yaml = "\
 name: test
 description: Test pack
 agents:
   - my-agent
 prompts:
   - my-prompt
+skills:
+  - my-skill
+  - builtin-only
 ";
-        std::fs::write(pack_dir.path().join("pack.yaml"), yaml).unwrap();
+            std::fs::write(pack_dir.path().join("pack.yaml"), yaml).unwrap();
 
-        let agents_dir = pack_dir.path().join("agents");
-        std::fs::create_dir_all(&agents_dir).unwrap();
-        std::fs::write(agents_dir.join("my-agent.md"), "# My Agent\n").unwrap();
+            let agents_dir = pack_dir.path().join("agents");
+            std::fs::create_dir_all(&agents_dir).unwrap();
+            std::fs::write(agents_dir.join("my-agent.md"), "# My Agent\n").unwrap();
 
-        let prompts_dir = pack_dir.path().join("prompts");
-        std::fs::create_dir_all(&prompts_dir).unwrap();
-        std::fs::write(prompts_dir.join("my-prompt.md"), "# My Prompt\n").unwrap();
+            let prompts_dir = pack_dir.path().join("prompts");
+            std::fs::create_dir_all(&prompts_dir).unwrap();
+            std::fs::write(prompts_dir.join("my-prompt.md"), "# My Prompt\n").unwrap();
 
-        // Override config dir for test
-        unsafe {
-            std::env::set_var("ARMADAI_CONFIG_DIR", config_dir.path());
+            // Create a bundled skill directory with a subdirectory
+            let skill_dir = pack_dir.path().join("skills").join("my-skill");
+            std::fs::create_dir_all(skill_dir.join("references")).unwrap();
+            std::fs::write(skill_dir.join("SKILL.md"), "# My Skill\n").unwrap();
+            std::fs::write(skill_dir.join("references").join("api.md"), "# API\n").unwrap();
+            // "builtin-only" is NOT bundled in the pack — should be silently skipped
+
+            let pack = StarterPack::load(pack_dir.path()).unwrap();
+            let (agents, prompts, skills) = pack.install(pack_dir.path(), false).unwrap();
+            assert_eq!(agents, 1);
+            assert_eq!(prompts, 1);
+            assert_eq!(skills, 1); // only my-skill installed, builtin-only skipped
+
+            // Verify files exist
+            assert!(config_dir.path().join("agents/my-agent.md").exists());
+            assert!(config_dir.path().join("prompts/my-prompt.md").exists());
+            assert!(config_dir.path().join("skills/my-skill/SKILL.md").exists());
+            // Verify recursive copy of subdirectory
+            assert!(
+                config_dir
+                    .path()
+                    .join("skills/my-skill/references/api.md")
+                    .exists()
+            );
+
+            // Second install without force should skip
+            let (agents2, prompts2, skills2) = pack.install(pack_dir.path(), false).unwrap();
+            assert_eq!(agents2, 0);
+            assert_eq!(prompts2, 0);
+            assert_eq!(skills2, 0);
+
+            // With force should overwrite
+            let (agents3, prompts3, skills3) = pack.install(pack_dir.path(), true).unwrap();
+            assert_eq!(agents3, 1);
+            assert_eq!(prompts3, 1);
+            assert_eq!(skills3, 1);
         }
 
-        let pack = StarterPack::load(pack_dir.path()).unwrap();
-        let (agents, prompts) = pack.install(pack_dir.path(), false).unwrap();
-        assert_eq!(agents, 1);
-        assert_eq!(prompts, 1);
+        // --- Sub-test 2: skills not bundled in pack are silently skipped ---
+        {
+            let pack_dir = tempfile::tempdir().unwrap();
+            let yaml = "\
+name: ref-only
+description: Pack with skill references only
+skills:
+  - armadai-agent-authoring
+  - armadai-prompt-authoring
+";
+            std::fs::write(pack_dir.path().join("pack.yaml"), yaml).unwrap();
 
-        // Verify files exist
-        assert!(
-            config_dir
-                .path()
-                .join("agents")
-                .join("my-agent.md")
-                .exists()
-        );
-        assert!(
-            config_dir
-                .path()
-                .join("prompts")
-                .join("my-prompt.md")
-                .exists()
-        );
-
-        // Second install without force should skip
-        let (agents2, prompts2) = pack.install(pack_dir.path(), false).unwrap();
-        assert_eq!(agents2, 0);
-        assert_eq!(prompts2, 0);
-
-        // With force should overwrite
-        let (agents3, prompts3) = pack.install(pack_dir.path(), true).unwrap();
-        assert_eq!(agents3, 1);
-        assert_eq!(prompts3, 1);
+            let pack = StarterPack::load(pack_dir.path()).unwrap();
+            let (_, _, skills) = pack.install(pack_dir.path(), false).unwrap();
+            assert_eq!(skills, 0);
+        }
 
         unsafe {
             std::env::remove_var("ARMADAI_CONFIG_DIR");
