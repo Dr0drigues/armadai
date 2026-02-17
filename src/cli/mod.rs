@@ -191,10 +191,12 @@ pub enum Command {
     #[command(long_about = "Stop infrastructure services (Docker Compose).\n\n\
         Stops and removes the containers started by 'armadai up'.")]
     Down,
-    /// Manage agent fleets
+    /// [deprecated] Manage agent fleets
     #[command(
         subcommand,
-        long_about = "Manage agent fleets.\n\n\
+        long_about = "[DEPRECATED] Manage agent fleets.\n\n\
+            This command uses the legacy fleet format which will be removed in a future release.\n\
+            Use `armadai init --project` to create a modern armadai.yaml instead.\n\n\
             Create named groups of agents and link them to project directories via armadai.yaml.",
         after_help = "Examples:\n  \
             armadai fleet create my-fleet --all\n  \

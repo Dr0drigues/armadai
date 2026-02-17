@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 
 /// A fleet definition linking a named group of agents to a source directory.
 /// Serialized as `armadai.yaml` in project directories.
+///
+/// **Deprecated**: The fleet format is superseded by `ProjectConfig` (the modern
+/// `armadai.yaml` format with `agents:`, `prompts:`, `skills:`, etc.).
+/// Fleet files are still loaded for backward compatibility but will be removed
+/// in a future release. Migrate by running `armadai init --project`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FleetDefinition {
     /// Fleet name
@@ -16,6 +21,8 @@ pub struct FleetDefinition {
 
 impl FleetDefinition {
     /// Load a fleet definition from a YAML file.
+    ///
+    /// **Deprecated**: Use `ProjectConfig::load()` instead.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let def: FleetDefinition = serde_yaml_ng::from_str(&content)?;
