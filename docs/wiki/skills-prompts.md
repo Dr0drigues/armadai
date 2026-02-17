@@ -74,6 +74,28 @@ description: Expert code review with security analysis
 3. Provide actionable feedback
 ```
 
+### Viewing Skill Details
+
+Both the TUI and Web UI display full skill details including reference file contents:
+
+- **TUI** (`armadai tui` → Skills → Enter): shows metadata, SKILL.md body, and each reference file as a scrollable block
+- **Web UI** (`armadai web` → Skills → click): shows metadata, SKILL.md body, and each file as a collapsible `<details>` section
+
+Reference files (e.g. `references/format.md`) are read inline — scripts and assets show names only.
+
+### Built-in Skills
+
+ArmadAI ships with built-in skills that are automatically installed during `armadai init`:
+
+| Skill | Description |
+|---|---|
+| `armadai-agent-authoring` | Guidelines and examples for creating ArmadAI agents |
+| `armadai-prompt-authoring` | Guidelines and examples for composable prompts |
+| `armadai-skill-authoring` | Guidelines and examples for creating skills |
+| `zsh-env-authoring` | Guidelines for zsh environment configuration |
+
+Built-in skills are automatically updated when the binary version changes (tracked via `.armadai-version` marker files).
+
 ### Usage in armadai.yaml
 
 ```yaml
