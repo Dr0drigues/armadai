@@ -251,8 +251,14 @@ impl App {
 
     pub fn load_agents(&mut self) {
         let agents_dir = crate::core::config::AppPaths::resolve().agents_dir;
-        match Agent::load_all(&agents_dir) {
-            Ok(agents) => self.agents = agents,
+        match Agent::load_all_with_skipped(&agents_dir) {
+            Ok((agents, skipped)) => {
+                self.agents = agents;
+                if !skipped.is_empty() {
+                    self.status_msg =
+                        Some(format!("{} agent file(s) skipped (malformed)", skipped.len()));
+                }
+            }
             Err(e) => {
                 self.status_msg = Some(format!("Failed to load agents: {e}"));
             }
