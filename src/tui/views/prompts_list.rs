@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, Paragraph, Row, Table},
 };
 
@@ -15,15 +15,25 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let header = Row::new(vec!["NAME", "DESCRIPTION", "APPLIES TO", "SOURCE"])
+    let header = Row::new(vec!["", "NAME", "DESCRIPTION", "APPLIES TO", "SOURCE"])
         .style(Style::default().add_modifier(Modifier::BOLD))
         .bottom_margin(1);
 
     let rows: Vec<Row> = app
         .prompts
         .iter()
-        .map(|p| {
+        .enumerate()
+        .map(|(i, p)| {
+            let marker = if i == app.selected_prompt { ">" } else { " " };
+            let style = if i == app.selected_prompt {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
             Row::new(vec![
+                marker.to_string(),
                 p.name.clone(),
                 p.description.clone().unwrap_or_default(),
                 p.apply_to.join(", "),
@@ -32,12 +42,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default(),
             ])
+            .style(style)
         })
         .collect();
 
     let table = Table::new(
         rows,
         [
+            Constraint::Length(2),
             Constraint::Min(15),
             Constraint::Min(25),
             Constraint::Length(20),

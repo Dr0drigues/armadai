@@ -8,10 +8,9 @@ use ratatui::{
 use crate::tui::app::App;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    if app.skills.is_empty() {
-        let msg =
-            Paragraph::new("No skills found. Install built-in skills with: armadai init --skills")
-                .block(Block::default().borders(Borders::ALL).title(" Skills "));
+    if app.starters.is_empty() {
+        let msg = Paragraph::new("No starter packs found.")
+            .block(Block::default().borders(Borders::ALL).title(" Starters "));
         frame.render_widget(msg, area);
         return;
     }
@@ -20,20 +19,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         "",
         "NAME",
         "DESCRIPTION",
-        "VERSION",
-        "TOOLS",
-        "SOURCE",
+        "AGENTS",
+        "PROMPTS",
+        "SKILLS",
     ])
     .style(Style::default().add_modifier(Modifier::BOLD))
     .bottom_margin(1);
 
     let rows: Vec<Row> = app
-        .skills
+        .starters
         .iter()
         .enumerate()
-        .map(|(i, s)| {
-            let marker = if i == app.selected_skill { ">" } else { " " };
-            let style = if i == app.selected_skill {
+        .map(|(i, p)| {
+            let marker = if i == app.selected_starter { ">" } else { " " };
+            let style = if i == app.selected_starter {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
@@ -42,14 +41,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             };
             Row::new(vec![
                 marker.to_string(),
-                s.name.clone(),
-                s.description.clone().unwrap_or_default(),
-                s.version.clone().unwrap_or_default(),
-                s.tools.join(", "),
-                s.source
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default(),
+                p.name.clone(),
+                p.description.clone(),
+                p.agents.len().to_string(),
+                p.prompts.len().to_string(),
+                p.skills.len().to_string(),
             ])
             .style(style)
         })
@@ -61,16 +57,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(2),
             Constraint::Min(15),
             Constraint::Min(25),
-            Constraint::Length(10),
-            Constraint::Length(20),
-            Constraint::Length(25),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
         ],
     )
     .header(header)
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" Skills — {} loaded ", app.skills.len())),
+            .title(format!(" Starters — {} packs ", app.starters.len())),
     );
 
     frame.render_widget(table, area);

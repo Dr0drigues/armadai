@@ -1,35 +1,45 @@
 use crate::core::agent::Agent;
 use crate::core::prompt::Prompt;
 use crate::core::skill::Skill;
+use crate::core::starter::StarterPack;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Dashboard,
     AgentDetail,
+    Prompts,
+    PromptDetail,
+    Skills,
+    SkillDetail,
+    Starters,
+    StarterDetail,
     History,
     Costs,
-    Prompts,
-    Skills,
 }
 
 impl Tab {
+    /// Tabs visible in the tab bar (detail tabs are accessed via Enter).
     pub const ALL: [Tab; 6] = [
         Tab::Dashboard,
-        Tab::AgentDetail,
-        Tab::History,
-        Tab::Costs,
         Tab::Prompts,
         Tab::Skills,
+        Tab::Starters,
+        Tab::History,
+        Tab::Costs,
     ];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Dashboard => "Agents",
             Tab::AgentDetail => "Detail",
+            Tab::Prompts => "Prompts",
+            Tab::PromptDetail => "Prompt",
+            Tab::Skills => "Skills",
+            Tab::SkillDetail => "Skill",
+            Tab::Starters => "Starters",
+            Tab::StarterDetail => "Starter",
             Tab::History => "History",
             Tab::Costs => "Costs",
-            Tab::Prompts => "Prompts",
-            Tab::Skills => "Skills",
         }
     }
 
@@ -104,9 +114,19 @@ impl CommandPalette {
                 action: PaletteAction::SwitchTab(Tab::Dashboard),
             },
             PaletteCommand {
-                name: "detail".to_string(),
-                description: "View selected agent detail".to_string(),
-                action: PaletteAction::SwitchTab(Tab::AgentDetail),
+                name: "prompts".to_string(),
+                description: "View prompts library".to_string(),
+                action: PaletteAction::SwitchTab(Tab::Prompts),
+            },
+            PaletteCommand {
+                name: "skills".to_string(),
+                description: "View skills library".to_string(),
+                action: PaletteAction::SwitchTab(Tab::Skills),
+            },
+            PaletteCommand {
+                name: "starters".to_string(),
+                description: "View starter packs".to_string(),
+                action: PaletteAction::SwitchTab(Tab::Starters),
             },
             PaletteCommand {
                 name: "history".to_string(),
@@ -117,16 +137,6 @@ impl CommandPalette {
                 name: "costs".to_string(),
                 description: "View cost tracking".to_string(),
                 action: PaletteAction::SwitchTab(Tab::Costs),
-            },
-            PaletteCommand {
-                name: "prompts".to_string(),
-                description: "View prompts library".to_string(),
-                action: PaletteAction::SwitchTab(Tab::Prompts),
-            },
-            PaletteCommand {
-                name: "skills".to_string(),
-                description: "View skills library".to_string(),
-                action: PaletteAction::SwitchTab(Tab::Skills),
             },
             PaletteCommand {
                 name: "refresh".to_string(),
@@ -198,15 +208,20 @@ pub struct App {
     // Dashboard
     pub agents: Vec<Agent>,
     pub selected_agent: usize,
+    // Prompts
+    pub prompts: Vec<Prompt>,
+    pub selected_prompt: usize,
+    // Skills
+    pub skills: Vec<Skill>,
+    pub selected_skill: usize,
+    // Starters
+    pub starters: Vec<StarterPack>,
+    pub selected_starter: usize,
     // History
     pub history: Vec<RunEntry>,
     pub selected_history: usize,
     // Costs
     pub costs: Vec<CostEntry>,
-    // Prompts
-    pub prompts: Vec<Prompt>,
-    // Skills
-    pub skills: Vec<Skill>,
     // Command palette
     pub palette: CommandPalette,
     // Status message (bottom bar)
@@ -220,11 +235,15 @@ impl App {
             tab_index: 0,
             agents: Vec::new(),
             selected_agent: 0,
+            prompts: Vec::new(),
+            selected_prompt: 0,
+            skills: Vec::new(),
+            selected_skill: 0,
+            starters: Vec::new(),
+            selected_starter: 0,
             history: Vec::new(),
             selected_history: 0,
             costs: Vec::new(),
-            prompts: Vec::new(),
-            skills: Vec::new(),
             palette: CommandPalette::new(),
             status_msg: None,
         }
@@ -255,8 +274,10 @@ impl App {
             Ok((agents, skipped)) => {
                 self.agents = agents;
                 if !skipped.is_empty() {
-                    self.status_msg =
-                        Some(format!("{} agent file(s) skipped (malformed)", skipped.len()));
+                    self.status_msg = Some(format!(
+                        "{} agent file(s) skipped (malformed)",
+                        skipped.len()
+                    ));
                 }
             }
             Err(e) => {
@@ -277,8 +298,47 @@ impl App {
         self.skills = load_all_skills(&user_skills_dir());
     }
 
+    pub fn load_starters(&mut self) {
+        use crate::core::starter::{StarterPack, starters_dir};
+        let dir = starters_dir();
+        let mut packs = Vec::new();
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => {
+                self.starters = packs;
+                return;
+            }
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.join("pack.yaml").is_file() {
+                match StarterPack::load(&path) {
+                    Ok(p) => packs.push(p),
+                    Err(e) => {
+                        self.status_msg =
+                            Some(format!("Failed to load starter {}: {e}", path.display()));
+                    }
+                }
+            }
+        }
+        packs.sort_by(|a, b| a.name.cmp(&b.name));
+        self.starters = packs;
+    }
+
     pub fn selected_agent(&self) -> Option<&Agent> {
         self.agents.get(self.selected_agent)
+    }
+
+    pub fn selected_prompt(&self) -> Option<&Prompt> {
+        self.prompts.get(self.selected_prompt)
+    }
+
+    pub fn selected_skill(&self) -> Option<&Skill> {
+        self.skills.get(self.selected_skill)
+    }
+
+    pub fn selected_starter(&self) -> Option<&StarterPack> {
+        self.starters.get(self.selected_starter)
     }
 
     pub fn select_next(&mut self) {
@@ -286,6 +346,21 @@ impl App {
             Tab::Dashboard => {
                 if !self.agents.is_empty() {
                     self.selected_agent = (self.selected_agent + 1) % self.agents.len();
+                }
+            }
+            Tab::Prompts => {
+                if !self.prompts.is_empty() {
+                    self.selected_prompt = (self.selected_prompt + 1) % self.prompts.len();
+                }
+            }
+            Tab::Skills => {
+                if !self.skills.is_empty() {
+                    self.selected_skill = (self.selected_skill + 1) % self.skills.len();
+                }
+            }
+            Tab::Starters => {
+                if !self.starters.is_empty() {
+                    self.selected_starter = (self.selected_starter + 1) % self.starters.len();
                 }
             }
             Tab::History => {
@@ -305,6 +380,33 @@ impl App {
                         self.agents.len() - 1
                     } else {
                         self.selected_agent - 1
+                    };
+                }
+            }
+            Tab::Prompts => {
+                if !self.prompts.is_empty() {
+                    self.selected_prompt = if self.selected_prompt == 0 {
+                        self.prompts.len() - 1
+                    } else {
+                        self.selected_prompt - 1
+                    };
+                }
+            }
+            Tab::Skills => {
+                if !self.skills.is_empty() {
+                    self.selected_skill = if self.selected_skill == 0 {
+                        self.skills.len() - 1
+                    } else {
+                        self.selected_skill - 1
+                    };
+                }
+            }
+            Tab::Starters => {
+                if !self.starters.is_empty() {
+                    self.selected_starter = if self.selected_starter == 0 {
+                        self.starters.len() - 1
+                    } else {
+                        self.selected_starter - 1
                     };
                 }
             }

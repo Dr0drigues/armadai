@@ -19,11 +19,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ("r", "Refresh"),
             ("q", "Quit"),
         ],
-        Tab::AgentDetail => vec![
+        Tab::AgentDetail | Tab::PromptDetail | Tab::SkillDetail | Tab::StarterDetail => vec![
             ("Esc", "Back to list"),
-            ("j/k", "Scroll"),
             ("Tab", "Next tab"),
             (":", "Commands"),
+            ("q", "Quit"),
+        ],
+        Tab::Prompts | Tab::Skills | Tab::Starters => vec![
+            ("j/k", "Navigate"),
+            ("Enter", "View detail"),
+            ("Tab", "Next tab"),
+            (":", "Commands"),
+            ("r", "Refresh"),
             ("q", "Quit"),
         ],
         Tab::History => vec![
@@ -34,18 +41,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ("q", "Quit"),
         ],
         Tab::Costs => vec![
-            ("Tab", "Next tab"),
-            (":", "Commands"),
-            ("r", "Refresh"),
-            ("q", "Quit"),
-        ],
-        Tab::Prompts => vec![
-            ("Tab", "Next tab"),
-            (":", "Commands"),
-            ("r", "Refresh"),
-            ("q", "Quit"),
-        ],
-        Tab::Skills => vec![
             ("Tab", "Next tab"),
             (":", "Commands"),
             ("r", "Refresh"),

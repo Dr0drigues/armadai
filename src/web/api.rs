@@ -73,6 +73,46 @@ pub struct SkillSummary {
 }
 
 #[derive(Serialize)]
+pub struct PromptDetail {
+    name: String,
+    description: Option<String>,
+    apply_to: Vec<String>,
+    body: String,
+    source: String,
+}
+
+#[derive(Serialize)]
+pub struct SkillDetail {
+    name: String,
+    description: Option<String>,
+    version: Option<String>,
+    tools: Vec<String>,
+    body: String,
+    source: String,
+    scripts: Vec<String>,
+    references: Vec<String>,
+    assets: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct StarterSummary {
+    name: String,
+    description: String,
+    agents_count: usize,
+    prompts_count: usize,
+    skills_count: usize,
+}
+
+#[derive(Serialize)]
+pub struct StarterDetail {
+    name: String,
+    description: String,
+    agents: Vec<String>,
+    prompts: Vec<String>,
+    skills: Vec<String>,
+}
+
+#[derive(Serialize)]
 pub struct ErrorResponse {
     error: String,
 }
@@ -236,4 +276,131 @@ pub async fn list_skills() -> Json<Vec<SkillSummary>> {
         })
         .collect();
     Json(summaries)
+}
+
+pub async fn get_prompt(Path(name): Path<String>) -> Json<serde_json::Value> {
+    use crate::core::config::user_prompts_dir;
+    use crate::core::prompt::load_all_prompts;
+
+    let prompts = load_all_prompts(&user_prompts_dir());
+    match prompts
+        .into_iter()
+        .find(|p| p.name.eq_ignore_ascii_case(&name))
+    {
+        Some(p) => {
+            let detail = PromptDetail {
+                name: p.name,
+                description: p.description,
+                apply_to: p.apply_to,
+                body: p.body,
+                source: p.source.display().to_string(),
+            };
+            Json(serde_json::to_value(detail).unwrap())
+        }
+        None => Json(
+            serde_json::to_value(ErrorResponse {
+                error: format!("Prompt '{name}' not found"),
+            })
+            .unwrap(),
+        ),
+    }
+}
+
+pub async fn get_skill(Path(name): Path<String>) -> Json<serde_json::Value> {
+    use crate::core::config::user_skills_dir;
+    use crate::core::skill::load_all_skills;
+
+    let file_name = |p: &std::path::Path| -> String {
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
+
+    let skills = load_all_skills(&user_skills_dir());
+    match skills
+        .into_iter()
+        .find(|s| s.name.eq_ignore_ascii_case(&name))
+    {
+        Some(s) => {
+            let detail = SkillDetail {
+                name: s.name,
+                description: s.description,
+                version: s.version,
+                tools: s.tools,
+                body: s.body,
+                source: s.source.display().to_string(),
+                scripts: s.scripts.iter().map(|p| file_name(p)).collect(),
+                references: s.references.iter().map(|p| file_name(p)).collect(),
+                assets: s.assets.iter().map(|p| file_name(p)).collect(),
+            };
+            Json(serde_json::to_value(detail).unwrap())
+        }
+        None => Json(
+            serde_json::to_value(ErrorResponse {
+                error: format!("Skill '{name}' not found"),
+            })
+            .unwrap(),
+        ),
+    }
+}
+
+pub async fn list_starters() -> Json<Vec<StarterSummary>> {
+    use crate::core::starter::{StarterPack, starters_dir};
+
+    let dir = starters_dir();
+    let mut packs = Vec::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Json(packs),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() && path.join("pack.yaml").is_file() {
+            if let Ok(p) = StarterPack::load(&path) {
+                packs.push(StarterSummary {
+                    name: p.name,
+                    description: p.description,
+                    agents_count: p.agents.len(),
+                    prompts_count: p.prompts.len(),
+                    skills_count: p.skills.len(),
+                });
+            }
+        }
+    }
+    packs.sort_by(|a, b| a.name.cmp(&b.name));
+    Json(packs)
+}
+
+pub async fn get_starter(Path(name): Path<String>) -> Json<serde_json::Value> {
+    use crate::core::starter::{StarterPack, starters_dir};
+
+    let dir = starters_dir();
+    let pack_dir = dir.join(&name);
+    if !pack_dir.join("pack.yaml").is_file() {
+        return Json(
+            serde_json::to_value(ErrorResponse {
+                error: format!("Starter '{name}' not found"),
+            })
+            .unwrap(),
+        );
+    }
+
+    match StarterPack::load(&pack_dir) {
+        Ok(p) => {
+            let detail = StarterDetail {
+                name: p.name,
+                description: p.description,
+                agents: p.agents,
+                prompts: p.prompts,
+                skills: p.skills,
+            };
+            Json(serde_json::to_value(detail).unwrap())
+        }
+        Err(_) => Json(
+            serde_json::to_value(ErrorResponse {
+                error: format!("Failed to load starter '{name}'"),
+            })
+            .unwrap(),
+        ),
+    }
 }
