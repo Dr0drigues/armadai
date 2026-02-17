@@ -159,7 +159,7 @@ async fn interactive_create() -> anyhow::Result<()> {
     ];
     let provider_idx = Select::new()
         .with_prompt("Provider")
-        .items(&providers)
+        .items(providers)
         .default(0)
         .interact()?;
     let provider = providers[provider_idx];
@@ -176,7 +176,7 @@ async fn interactive_create() -> anyhow::Result<()> {
     ];
     let temp_idx = Select::new()
         .with_prompt("Temperature")
-        .items(&temp_presets)
+        .items(temp_presets)
         .default(1)
         .interact()?;
     let temperature: f32 = match temp_idx {
