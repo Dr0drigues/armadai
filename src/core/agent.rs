@@ -85,12 +85,31 @@ impl Agent {
     /// Load all agents from the given directory (recursively).
     pub fn load_all(agents_dir: &std::path::Path) -> anyhow::Result<Vec<Agent>> {
         let mut agents = Vec::new();
-        Self::load_from_dir(agents_dir, &mut agents)?;
+        let mut skipped = Vec::new();
+        Self::load_from_dir(agents_dir, &mut agents, &mut skipped)?;
         agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        for msg in &skipped {
+            tracing::debug!("{msg}");
+        }
         Ok(agents)
     }
 
-    fn load_from_dir(dir: &std::path::Path, agents: &mut Vec<Agent>) -> anyhow::Result<()> {
+    /// Load all agents, returning both the agents and any skipped-file messages.
+    pub fn load_all_with_skipped(
+        agents_dir: &std::path::Path,
+    ) -> anyhow::Result<(Vec<Agent>, Vec<String>)> {
+        let mut agents = Vec::new();
+        let mut skipped = Vec::new();
+        Self::load_from_dir(agents_dir, &mut agents, &mut skipped)?;
+        agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok((agents, skipped))
+    }
+
+    fn load_from_dir(
+        dir: &std::path::Path,
+        agents: &mut Vec<Agent>,
+        skipped: &mut Vec<String>,
+    ) -> anyhow::Result<()> {
         if !dir.exists() {
             return Ok(());
         }
@@ -98,15 +117,15 @@ impl Agent {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                Self::load_from_dir(&path, agents)?;
+                Self::load_from_dir(&path, agents, skipped)?;
             } else if path.extension().is_some_and(|ext| ext == "md") {
                 match crate::parser::parse_agent_file(&path) {
                     Ok(agent) => agents.push(agent),
                     Err(e) => {
-                        tracing::warn!(
+                        skipped.push(format!(
                             "Skipping {}: {e} (fix the file or remove it)",
                             path.display()
-                        );
+                        ));
                     }
                 }
             }
