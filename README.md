@@ -226,11 +226,15 @@ armadai new my-tool --template cli-generic
 
 ## Starter Packs
 
-Install curated bundles of agents and prompts:
+Install curated bundles of agents, prompts and skills:
 
 ```bash
-armadai init --pack rust-dev      # Code reviewer, test writer, debug agent + Rust conventions
-armadai init --pack fullstack     # Full stack of 6 agents for web development
+armadai init --pack rust-dev              # Rust essentials (3 agents + conventions prompt)
+armadai init --pack fullstack             # Full stack web (6 agents)
+armadai init --pack armadai-authoring     # ArmadAI authoring team (4 agents + skills)
+
+# Combined mode: install pack + create project config
+armadai init --pack rust-dev --project
 ```
 
 Available packs:
@@ -238,7 +242,11 @@ Available packs:
 | Pack | Agents | Description |
 |---|---|---|
 | `rust-dev` | code-reviewer, test-writer, debug | Rust development essentials + conventions prompt |
-| `fullstack` | code-reviewer, test-writer, doc-generator, planning-agent, security-reviewer, tech-debt-analyzer | Full stack web development |
+| `fullstack` | code-reviewer, test-writer, doc-generator, claude-cli-reviewer, gemini-reviewer, echo-reviewer | Full stack web development |
+| `code-analysis-rust` | lead-analyst, rust-reviewer, rust-test-analyzer, rust-doc-writer, rust-security | Rust code analysis team + analysis standards prompt |
+| `code-analysis-web` | lead-analyst, web-reviewer, web-test-analyzer, web-doc-writer, web-security | Web code analysis team + analysis standards prompt |
+| `armadai-authoring` | authoring-lead, agent-builder, prompt-builder, skill-builder | ArmadAI content authoring + conventions prompt + built-in skills |
+| `pirate-crew` | capitaine, cartographe, vigie, charpentier | Pirate-themed demo pack with coordinator pattern |
 
 ## Shell Completion
 
@@ -262,7 +270,9 @@ Launch with `armadai tui`. The dashboard provides fleet management views:
 | Tab | Description |
 |---|---|
 | **Agents** | Browse all loaded agents with provider, model, and tags |
-| **Detail** | View selected agent's full configuration (metadata, prompt, instructions) |
+| **Prompts** | Browse composable prompt fragments |
+| **Skills** | Browse installed skills with reference file contents |
+| **Starters** | Browse starter packs, init projects with `i` key |
 | **History** | Execution history with tokens, costs, and duration |
 | **Costs** | Aggregated cost summary per agent |
 
@@ -271,9 +281,10 @@ Launch with `armadai tui`. The dashboard provides fleet management views:
 | Key | Action |
 |---|---|
 | `Tab` / `Shift+Tab` | Switch tabs |
-| `1-4` | Jump to tab directly |
+| `1-6` | Jump to tab directly |
 | `j/k` or arrows | Navigate lists |
-| `Enter` | View agent detail |
+| `Enter` | View detail |
+| `i` | Init project from selected starter (Starters tab) |
 | `:` or `Ctrl+P` | Open command palette |
 | `r` | Refresh data |
 | `q` / `Esc` | Quit |
@@ -290,6 +301,9 @@ armadai web --port 8080  # custom port
 The web UI provides a read-only dashboard for your agent fleet:
 
 - **Agents** — browse all loaded agents, click to view full configuration
+- **Prompts** — browse composable prompt fragments with full content
+- **Skills** — browse skills with collapsible reference file contents
+- **Starters** — browse packs and download pre-configured `armadai.yaml`
 - **History** — execution history with tokens, costs, and duration
 - **Costs** — aggregated cost summary per agent
 

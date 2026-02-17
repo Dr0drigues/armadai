@@ -258,6 +258,7 @@ armadai/
 │   │   ├── task.rs              # Définition d'une tâche + résultat
 │   │   ├── context.rs           # Gestion du contexte partagé entre agents
 │   │   ├── project.rs          # Config projet (armadai.yaml), résolution agents/prompts/skills
+│   │   ├── embedded.rs         # Versioning des ressources embedded (.armadai-version)
 │   │   ├── fleet.rs            # Définitions de flottes, liaison projets-agents
 │   │   ├── prompt.rs           # Fragments de prompts composables (YAML frontmatter)
 │   │   ├── skill.rs            # Skills (standard SKILL.md)
@@ -277,6 +278,10 @@ armadai/
 │   │   │   └── google.rs
 │   │   ├── proxy.rs             # LiteLLM / OpenRouter
 │   │   └── cli.rs               # CliProvider générique (spawn process)
+│   ├── web/                   # Interface Web (Axum)
+│   │   ├── mod.rs             # Serveur HTTP, routes, embedded HTML
+│   │   ├── api.rs             # Handlers JSON (/api/agents, /api/skills, /api/starters...)
+│   │   └── index.html         # SPA embarquée (dashboard web)
 │   ├── linker/                # Génération de configs natives
 │   │   ├── mod.rs             # Trait Linker + dispatch
 │   │   ├── claude.rs          # .claude/agents/*.md

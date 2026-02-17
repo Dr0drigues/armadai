@@ -71,9 +71,15 @@ armadai init --pack rust-dev
 
 # Full stack web development (6 agents)
 armadai init --pack fullstack
+
+# ArmadAI authoring team (4 agents + skills)
+armadai init --pack armadai-authoring
+
+# Install pack + create project config in one step
+armadai init --pack rust-dev --project
 ```
 
-List available packs with `armadai init --pack nonexistent` (shows available options on error).
+Available packs: `rust-dev`, `fullstack`, `code-analysis-rust`, `code-analysis-web`, `armadai-authoring`, `pirate-crew`. See [Starter Packs](starter-packs.md) for details.
 
 ## Verify Setup
 
@@ -132,7 +138,7 @@ Browse and manage your agent fleet visually:
 armadai tui
 ```
 
-Use `Tab`/`Shift+Tab` to switch views, `j`/`k` to navigate, `Enter` to view agent details, `:` to open the command palette, and `q` to quit.
+Use `Tab`/`Shift+Tab` to switch views (Agents, Prompts, Skills, Starters, History, Costs), `j`/`k` to navigate, `Enter` to view details, `i` to init a project from the Starters tab, `:` to open the command palette, and `q` to quit.
 
 ## Web UI
 
@@ -143,7 +149,7 @@ armadai web              # http://localhost:3000
 armadai web --port 8080  # custom port
 ```
 
-Browse agents, view execution history, and track costs from your browser. The `web` feature is enabled by default.
+Browse agents, prompts, skills and starters. View execution history and track costs. Skill detail views show reference file contents in collapsible sections. Starter detail pages include a "Download armadai.yaml" button.
 
 ## Community Registry
 
