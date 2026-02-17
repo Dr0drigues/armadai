@@ -103,7 +103,10 @@ impl Agent {
                 match crate::parser::parse_agent_file(&path) {
                     Ok(agent) => agents.push(agent),
                     Err(e) => {
-                        tracing::warn!("Failed to parse {}: {e}", path.display());
+                        tracing::warn!(
+                            "Skipping {}: {e} (fix the file or remove it)",
+                            path.display()
+                        );
                     }
                 }
             }

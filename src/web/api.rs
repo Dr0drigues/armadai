@@ -56,6 +56,23 @@ pub struct CostSummary {
 }
 
 #[derive(Serialize)]
+pub struct PromptSummary {
+    name: String,
+    description: Option<String>,
+    apply_to: Vec<String>,
+    source: String,
+}
+
+#[derive(Serialize)]
+pub struct SkillSummary {
+    name: String,
+    description: Option<String>,
+    version: Option<String>,
+    tools: Vec<String>,
+    source: String,
+}
+
+#[derive(Serialize)]
 pub struct ErrorResponse {
     error: String,
 }
@@ -184,4 +201,39 @@ pub async fn get_costs() -> Json<Vec<CostSummary>> {
 #[cfg(not(feature = "storage"))]
 pub async fn get_costs() -> Json<Vec<CostSummary>> {
     Json(vec![])
+}
+
+pub async fn list_prompts() -> Json<Vec<PromptSummary>> {
+    use crate::core::config::user_prompts_dir;
+    use crate::core::prompt::load_all_prompts;
+
+    let prompts = load_all_prompts(&user_prompts_dir());
+    let summaries = prompts
+        .into_iter()
+        .map(|p| PromptSummary {
+            name: p.name,
+            description: p.description,
+            apply_to: p.apply_to,
+            source: p.source.display().to_string(),
+        })
+        .collect();
+    Json(summaries)
+}
+
+pub async fn list_skills() -> Json<Vec<SkillSummary>> {
+    use crate::core::config::user_skills_dir;
+    use crate::core::skill::load_all_skills;
+
+    let skills = load_all_skills(&user_skills_dir());
+    let summaries = skills
+        .into_iter()
+        .map(|s| SkillSummary {
+            name: s.name,
+            description: s.description,
+            version: s.version,
+            tools: s.tools,
+            source: s.source.display().to_string(),
+        })
+        .collect();
+    Json(summaries)
 }

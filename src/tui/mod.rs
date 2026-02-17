@@ -22,6 +22,8 @@ pub async fn run() -> Result<()> {
 
     let mut app = app::App::new();
     app.load_agents();
+    app.load_prompts();
+    app.load_skills();
     load_storage_data(&mut app);
 
     loop {
@@ -49,6 +51,8 @@ pub async fn run() -> Result<()> {
                                 PaletteAction::SwitchTab(tab) => app.switch_tab(tab),
                                 PaletteAction::Refresh => {
                                     app.load_agents();
+                                    app.load_prompts();
+                                    app.load_skills();
                                     load_storage_data(&mut app);
                                 }
                                 PaletteAction::Quit => break,
@@ -89,6 +93,8 @@ pub async fn run() -> Result<()> {
                 KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
                 KeyCode::Char('r') => {
                     app.load_agents();
+                    app.load_prompts();
+                    app.load_skills();
                     load_storage_data(&mut app);
                     app.status_msg = Some("Refreshed".to_string());
                 }
@@ -101,6 +107,8 @@ pub async fn run() -> Result<()> {
                 KeyCode::Char('2') => app.switch_tab(app::Tab::AgentDetail),
                 KeyCode::Char('3') => app.switch_tab(app::Tab::History),
                 KeyCode::Char('4') => app.switch_tab(app::Tab::Costs),
+                KeyCode::Char('5') => app.switch_tab(app::Tab::Prompts),
+                KeyCode::Char('6') => app.switch_tab(app::Tab::Skills),
                 _ => {}
             }
         }

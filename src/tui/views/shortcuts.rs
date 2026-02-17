@@ -39,6 +39,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ("r", "Refresh"),
             ("q", "Quit"),
         ],
+        Tab::Prompts => vec![
+            ("Tab", "Next tab"),
+            (":", "Commands"),
+            ("r", "Refresh"),
+            ("q", "Quit"),
+        ],
+        Tab::Skills => vec![
+            ("Tab", "Next tab"),
+            (":", "Commands"),
+            ("r", "Refresh"),
+            ("q", "Quit"),
+        ],
     };
 
     let spans: Vec<Span> = shortcuts
