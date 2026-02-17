@@ -48,12 +48,16 @@
     <button class="active" onclick="showTab('agents')">Agents</button>
     <button onclick="showTab('history')">History</button>
     <button onclick="showTab('costs')">Costs</button>
+    <button onclick="showTab('prompts')">Prompts</button>
+    <button onclick="showTab('skills')">Skills</button>
   </nav>
 </header>
 <main>
   <div id="agents" class="card"></div>
   <div id="history" class="card" style="display:none"></div>
   <div id="costs" class="card" style="display:none"></div>
+  <div id="prompts" class="card" style="display:none"></div>
+  <div id="skills" class="card" style="display:none"></div>
   <div id="view" class="card"></div>
 </main>
 <script>
@@ -62,12 +66,14 @@ let currentTab = 'agents';
 function showTab(tab) {
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
-  ['agents','history','costs','view'].forEach(id => document.getElementById(id).style.display = 'none');
+  ['agents','history','costs','prompts','skills','view'].forEach(id => document.getElementById(id).style.display = 'none');
   document.getElementById(tab).style.display = 'block';
   currentTab = tab;
   if (tab === 'agents') loadAgents();
   if (tab === 'history') loadHistory();
   if (tab === 'costs') loadCosts();
+  if (tab === 'prompts') loadPrompts();
+  if (tab === 'skills') loadSkills();
 }
 
 async function loadAgents() {
@@ -164,6 +170,45 @@ async function loadCosts() {
           <td class="cost">$${c.total_cost.toFixed(6)}</td>
           <td>${c.total_tokens_in}</td>
           <td>${c.total_tokens_out}</td>
+        </tr>`).join('')}
+    </table>`;
+}
+
+async function loadPrompts() {
+  const res = await fetch('/api/prompts');
+  const prompts = await res.json();
+  const el = document.getElementById('prompts');
+  if (!prompts.length) { el.innerHTML = '<div class="empty">No prompts found. Add .md files to ~/.config/armadai/prompts/</div>'; return; }
+  el.innerHTML = `
+    <div class="card-header">${prompts.length} prompts loaded</div>
+    <table>
+      <tr><th>Name</th><th>Description</th><th>Applies To</th><th>Source</th></tr>
+      ${prompts.map(p => `
+        <tr>
+          <td>${p.name}</td>
+          <td>${p.description || ''}</td>
+          <td>${p.apply_to.map(a => `<span class="tag">${a}</span>`).join('')}</td>
+          <td style="color:var(--muted)">${p.source}</td>
+        </tr>`).join('')}
+    </table>`;
+}
+
+async function loadSkills() {
+  const res = await fetch('/api/skills');
+  const skills = await res.json();
+  const el = document.getElementById('skills');
+  if (!skills.length) { el.innerHTML = '<div class="empty">No skills found. Install built-in skills with: armadai init --skills</div>'; return; }
+  el.innerHTML = `
+    <div class="card-header">${skills.length} skills loaded</div>
+    <table>
+      <tr><th>Name</th><th>Description</th><th>Version</th><th>Tools</th><th>Source</th></tr>
+      ${skills.map(s => `
+        <tr>
+          <td>${s.name}</td>
+          <td>${s.description || ''}</td>
+          <td>${s.version || ''}</td>
+          <td>${s.tools.map(t => `<span class="tag stack">${t}</span>`).join('')}</td>
+          <td style="color:var(--muted)">${s.source}</td>
         </tr>`).join('')}
     </table>`;
 }

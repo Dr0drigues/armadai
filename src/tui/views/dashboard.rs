@@ -41,6 +41,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         Tab::AgentDetail => super::agent_detail::render(frame, app, chunks[1]),
         Tab::History => super::history::render(frame, app, chunks[1]),
         Tab::Costs => super::costs::render(frame, app, chunks[1]),
+        Tab::Prompts => super::prompts_list::render(frame, app, chunks[1]),
+        Tab::Skills => super::skills_list::render(frame, app, chunks[1]),
     };
 
     // Shortcuts bar

@@ -1,4 +1,6 @@
 use crate::core::agent::Agent;
+use crate::core::prompt::Prompt;
+use crate::core::skill::Skill;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -6,10 +8,19 @@ pub enum Tab {
     AgentDetail,
     History,
     Costs,
+    Prompts,
+    Skills,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Dashboard, Tab::AgentDetail, Tab::History, Tab::Costs];
+    pub const ALL: [Tab; 6] = [
+        Tab::Dashboard,
+        Tab::AgentDetail,
+        Tab::History,
+        Tab::Costs,
+        Tab::Prompts,
+        Tab::Skills,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -17,6 +28,8 @@ impl Tab {
             Tab::AgentDetail => "Detail",
             Tab::History => "History",
             Tab::Costs => "Costs",
+            Tab::Prompts => "Prompts",
+            Tab::Skills => "Skills",
         }
     }
 
@@ -106,6 +119,16 @@ impl CommandPalette {
                 action: PaletteAction::SwitchTab(Tab::Costs),
             },
             PaletteCommand {
+                name: "prompts".to_string(),
+                description: "View prompts library".to_string(),
+                action: PaletteAction::SwitchTab(Tab::Prompts),
+            },
+            PaletteCommand {
+                name: "skills".to_string(),
+                description: "View skills library".to_string(),
+                action: PaletteAction::SwitchTab(Tab::Skills),
+            },
+            PaletteCommand {
                 name: "refresh".to_string(),
                 description: "Reload agents and data".to_string(),
                 action: PaletteAction::Refresh,
@@ -180,6 +203,10 @@ pub struct App {
     pub selected_history: usize,
     // Costs
     pub costs: Vec<CostEntry>,
+    // Prompts
+    pub prompts: Vec<Prompt>,
+    // Skills
+    pub skills: Vec<Skill>,
     // Command palette
     pub palette: CommandPalette,
     // Status message (bottom bar)
@@ -196,6 +223,8 @@ impl App {
             history: Vec::new(),
             selected_history: 0,
             costs: Vec::new(),
+            prompts: Vec::new(),
+            skills: Vec::new(),
             palette: CommandPalette::new(),
             status_msg: None,
         }
@@ -228,6 +257,18 @@ impl App {
                 self.status_msg = Some(format!("Failed to load agents: {e}"));
             }
         }
+    }
+
+    pub fn load_prompts(&mut self) {
+        use crate::core::config::user_prompts_dir;
+        use crate::core::prompt::load_all_prompts;
+        self.prompts = load_all_prompts(&user_prompts_dir());
+    }
+
+    pub fn load_skills(&mut self) {
+        use crate::core::config::user_skills_dir;
+        use crate::core::skill::load_all_skills;
+        self.skills = load_all_skills(&user_skills_dir());
     }
 
     pub fn selected_agent(&self) -> Option<&Agent> {
