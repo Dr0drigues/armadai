@@ -1,7 +1,7 @@
 ---
 name: armadai-conventions
 description: Shared naming conventions and quality standards for ArmadAI content authoring
-apply_to: [agent-builder, prompt-builder, skill-builder]
+apply_to: [agent-builder, prompt-builder, skill-builder, starter-builder]
 ---
 
 # ArmadAI Conventions
@@ -38,4 +38,5 @@ Use lowercase, common vocabulary for tags. Standard tag categories:
 - Agents go in `~/.config/armadai/agents/` or project-local paths
 - Prompts go in `~/.config/armadai/prompts/` or project-local paths
 - Skills go in `~/.config/armadai/skills/` or project-local paths
+- Starters go in `starters/<pack-name>/` at the project root (embedded at compile time)
 - Group related content in starter packs for reuse

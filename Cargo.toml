@@ -1,6 +1,6 @@
 [package]
 name = "armadai"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "ArmadAI — AI agent fleet orchestrator. Define, manage and run specialized agents from Markdown files."
 license = "PolyForm-Noncommercial-1.0.0"
