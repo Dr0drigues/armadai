@@ -34,6 +34,18 @@ You can override the CLI args:
 - timeout: 600
 ```
 
+## Model Selection
+
+When using `armadai new -i` (interactive wizard), the model selection step fetches available models from the [models.dev](https://models.dev) registry with enriched metadata (context window size, input/output cost per MTok). Results are cached locally for 24 hours. If the registry is unreachable, the wizard falls back to the static model list in `providers.yaml`.
+
+```
+? Model
+> Claude Sonnet 4.5 — 200K ctx — $3.00/$15.00
+  Claude Haiku 4.5 — 200K ctx — $0.80/$4.00
+  Claude Opus 4 — 200K ctx — $15.00/$75.00
+  (custom)
+```
+
 ## API Providers
 
 Direct HTTP calls to LLM APIs. Use these when you want explicit API control.
@@ -69,6 +81,21 @@ Available models: `gpt-4o`, `gpt-4o-mini`, `o1`
 - model: gemini-2.0-flash
 - temperature: 0.7
 ```
+
+## Model Fallback
+
+Declare fallback models for automatic retry when the primary model is unavailable (404, "model not found"). All fallbacks must use the same provider.
+
+```markdown
+## Metadata
+- provider: google
+- model: gemini-3.0-pro
+- model_fallback: [gemini-2.5-pro, gemini-2.5-flash]
+```
+
+If `gemini-3.0-pro` returns a "model not found" error, ArmadAI automatically retries with `gemini-2.5-pro`, then `gemini-2.5-flash`. Non-model errors (auth, rate limit) are not retried.
+
+The plural alias `model_fallbacks` is also accepted.
 
 ## CLI Provider
 

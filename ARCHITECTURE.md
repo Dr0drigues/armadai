@@ -18,7 +18,7 @@ Gemini...) et des modes d'exécution (API HTTP, proxy, CLI tools).
 | Format agent        | Markdown (agents.md)           | Lisible, versionnable, compatible avec le standard ouvert |
 | Orchestration       | Hub & spoke                    | Un coordinateur dispatch aux agents spécialisés          |
 | Interface           | CLI + TUI (ratatui)            | CLI scriptable + TUI riche pour le monitoring/interaction |
-| Stockage            | SurrealDB embarqué (défaut)    | Zéro config, in-process, SQL+NoSQL, écrit en Rust        |
+| Stockage            | SQLite embarqué (rusqlite)     | Zéro config, in-process, léger, fiable                   |
 | Secrets             | SOPS + age                     | Chiffrement champ par champ, diff-friendly, moderne      |
 | Portabilité         | Docker Compose (optionnel)     | Pour l'infra (SurrealDB serveur, proxy LiteLLM)          |
 | Extensibilité       | Fichiers config uniquement     | Un agent = un fichier .md. Simplicité maximale           |
@@ -38,11 +38,10 @@ Gemini...) et des modes d'exécution (API HTTP, proxy, CLI tools).
 │  │   ├── ApiProvider  ──── HTTP ──▶  OpenAI / Anthropic / Google
 │  │   ├── ProxyProvider ─── HTTP ──▶  LiteLLM / OpenRouter
 │  │   └── CliProvider  ──── spawn ─▶  claude / aider / any CLI
-│  ├── Storage ──────────────────────▶  SurrealDB (embarqué)
+│  ├── Storage ──────────────────────▶  SQLite (embarqué)
 │  └── Secrets (SOPS+age)                                    │
 │                                                             │
 │  ┌─ docker-compose (OPTIONNEL) ──────────────────────┐     │
-│  │  surrealdb       :8000   (mode serveur)           │     │
 │  │  litellm-proxy   :4000   (proxy unifié)           │     │
 │  └───────────────────────────────────────────────────┘     │
 └─────────────────────────────────────────────────────────────┘
@@ -55,7 +54,6 @@ Cela garantit :
 - L'accès au système de fichiers local (projets, repos git)
 
 Docker Compose est **optionnel** et ne sert qu'à l'infrastructure :
-- SurrealDB en mode serveur (multi-instance, persistance réseau)
 - Proxy LiteLLM (normalisation multi-providers)
 
 ---
@@ -208,11 +206,15 @@ Exécute la tâche demandée en utilisant tes outils disponibles.
 ```
 armadai/
 ├── agents/                      # Définitions d'agents
-│   ├── _coordinator.md          # Agent hub (orchestrateur)
-│   └── examples/                # Exemples fournis
-│       ├── code-reviewer.md
-│       ├── test-writer.md
-│       └── doc-generator.md
+│   └── _coordinator.md          # Agent hub (orchestrateur)
+├── starters/                    # Packs d'agents pré-configurés
+│   ├── rust-dev/
+│   │   ├── pack.yaml
+│   │   ├── agents/
+│   │   └── prompts/
+│   └── fullstack/
+│       ├── pack.yaml
+│       └── agents/
 ├── templates/                   # Templates pour scaffolding
 │   ├── basic.md
 │   ├── dev-review.md
@@ -254,11 +256,18 @@ armadai/
 │   │   ├── coordinator.rs       # Hub & spoke : décomposition et dispatch
 │   │   ├── pipeline.rs          # Mode pipeline : chaînage séquentiel
 │   │   ├── task.rs              # Définition d'une tâche + résultat
-│   │   └── context.rs           # Gestion du contexte partagé entre agents
+│   │   ├── context.rs           # Gestion du contexte partagé entre agents
+│   │   ├── project.rs          # Config projet (armadai.yaml), résolution agents/prompts/skills
+│   │   ├── embedded.rs         # Versioning des ressources embedded (.armadai-version)
+│   │   ├── fleet.rs            # Définitions de flottes, liaison projets-agents
+│   │   ├── prompt.rs           # Fragments de prompts composables (YAML frontmatter)
+│   │   ├── skill.rs            # Skills (standard SKILL.md)
+│   │   └── starter.rs          # Starter packs (installation de bundles)
 │   ├── parser/                  # Parsing Markdown → Agent
 │   │   ├── mod.rs
 │   │   ├── markdown.rs          # Parsing headings, sections, metadata
-│   │   └── metadata.rs          # Parsing de la section Metadata (YAML-like)
+│   │   ├── metadata.rs          # Parsing de la section Metadata (YAML-like)
+│   │   └── frontmatter.rs      # Extraction YAML frontmatter générique
 │   ├── providers/               # Abstraction LLM
 │   │   ├── mod.rs
 │   │   ├── traits.rs            # Provider trait + types communs
@@ -269,12 +278,32 @@ armadai/
 │   │   │   └── google.rs
 │   │   ├── proxy.rs             # LiteLLM / OpenRouter
 │   │   └── cli.rs               # CliProvider générique (spawn process)
-│   ├── storage/                 # Couche persistance
+│   ├── web/                   # Interface Web (Axum)
+│   │   ├── mod.rs             # Serveur HTTP, routes, embedded HTML
+│   │   ├── api.rs             # Handlers JSON (/api/agents, /api/skills, /api/starters...)
+│   │   └── index.html         # SPA embarquée (dashboard web)
+│   ├── linker/                # Génération de configs natives
+│   │   ├── mod.rs             # Trait Linker + dispatch
+│   │   ├── claude.rs          # .claude/agents/*.md
+│   │   └── copilot.rs         # .github/agents/*.agent.md
+│   ├── registry/              # Intégration awesome-copilot
 │   │   ├── mod.rs
-│   │   ├── embedded.rs          # SurrealDB mode embarqué
-│   │   ├── client.rs            # SurrealDB mode serveur (Docker)
-│   │   ├── schema.rs            # Définition des tables/schémas
-│   │   └── queries.rs           # Requêtes : historique, coûts, métriques
+│   │   ├── sync.rs            # Clone/pull du repo registry
+│   │   ├── cache.rs           # Index JSON, scanning fichiers
+│   │   ├── search.rs          # Recherche multi-mots-clés avec scoring
+│   │   └── convert.rs         # Conversion Copilot → ArmadAI
+│   ├── skills_registry/       # Découverte de skills GitHub
+│   │   ├── mod.rs
+│   │   ├── sync.rs            # Clone/pull de repos de skills
+│   │   ├── cache.rs           # Index JSON des SKILL.md découverts
+│   │   └── search.rs          # Recherche multi-mots-clés avec scoring
+│   ├── model_registry/        # Catalogue de modèles models.dev
+│   │   ├── mod.rs             # Types (ModelEntry, ModelCost, ModelLimits)
+│   │   └── fetch.rs           # Fetch HTTP + cache JSON local (24h TTL)
+│   ├── storage/                 # Couche persistance (SQLite)
+│   │   ├── mod.rs
+│   │   ├── schema.rs            # Définition de la table runs
+│   │   └── queries.rs           # Requêtes CRUD : historique, coûts, métriques
 │   └── secrets/                 # Gestion des secrets
 │       ├── mod.rs
 │       └── sops.rs              # Déchiffrement SOPS + age
@@ -293,15 +322,14 @@ armadai/
 | ----------------- | ------- | ---------------------------------------- |
 | `tokio`           | 1.x     | Runtime async                            |
 | `clap`            | 4.x     | Parsing CLI avec derive                  |
-| `ratatui`         | 0.29+   | Framework TUI                            |
-| `crossterm`       | 0.28+   | Backend terminal pour ratatui            |
+| `ratatui`         | 0.30+   | Framework TUI                            |
+| `crossterm`       | 0.29+   | Backend terminal pour ratatui            |
 | `reqwest`         | 0.12+   | Client HTTP async (appels API)           |
 | `serde`           | 1.x     | Sérialisation/désérialisation            |
-| `serde_yaml`      | 0.9+    | Parsing YAML (configs)                   |
+| `serde_yaml_ng`   | 0.10+   | Parsing YAML (configs)                   |
 | `serde_json`      | 1.x     | Parsing JSON (réponses API)              |
-| `surrealdb`       | 2.x     | Base de données embarquée/client         |
-| `pulldown-cmark`  | 0.12+   | Parsing Markdown (fichiers agents)       |
-| `age`             | 0.10+   | Chiffrement/déchiffrement (secrets)      |
+| `rusqlite`        | 0.34+   | Base de données SQLite embarquée (bundled) |
+| `pulldown-cmark`  | 0.13+   | Parsing Markdown (fichiers agents)       |
 | `tracing`         | 0.1+    | Logging structuré & instrumentation      |
 | `tracing-subscriber` | 0.3+ | Collecteur de logs                       |
 | `async-trait`     | 0.1+    | Traits async (provider abstraction)      |
@@ -333,6 +361,16 @@ armadai init --project             # Créer armadai.yaml local
 armadai tui                        # Lancer l'interface TUI
 armadai up                         # Lancer l'infra Docker (optionnel)
 armadai down                       # Arrêter l'infra Docker
+armadai fleet create/link/list/show  # Gérer les flottes d'agents
+armadai link --target <t>            # Générer configs natives (claude, copilot...)
+armadai registry sync/search/list/add # Registre communautaire
+armadai prompts list/show            # Fragments de prompts composables
+armadai skills list/show             # Skills (standard SKILL.md)
+armadai skills sync/search/add/info  # Registre de skills GitHub
+armadai init --pack <name>           # Installer un starter pack
+armadai update                       # Mise à jour automatique
+armadai completion <shell>           # Générer les completions shell
+armadai web [--port N]               # Lancer l'interface web
 ```
 
 ---
@@ -351,7 +389,8 @@ Toute la résolution de chemins et la configuration utilisateur passe par `core/
 ├── prompts/             # Fragments de prompts composables
 ├── skills/              # Skills des agents
 ├── fleets/              # Définitions de flottes
-└── registry/            # Cache du registre awesome-copilot
+├── registry/            # Cache du registre awesome-copilot
+└── skills-registry/     # Cache du registre de skills GitHub
 ```
 
 ### Résolution XDG
@@ -422,42 +461,30 @@ Workflow :
 
 ---
 
-## Stockage (SurrealDB)
+## Stockage (SQLite)
 
 ### Mode embarqué (défaut)
-- Base locale dans `~/.config/armadai/data/` ou `./data/`
-- Zéro configuration, démarrage instantané
+- Base locale dans `data/armadai.sqlite` (projet) ou chemin configurable
+- Zéro configuration, démarrage instantané via rusqlite (bundled)
 - Idéal pour usage single-user
-
-### Mode serveur (Docker)
-- `armadai up` lance SurrealDB via docker-compose
-- Connexion via `ws://localhost:8000`
-- Pour usage multi-instance ou persistance réseau
 
 ### Schéma principal
 
 ```sql
--- Exécutions d'agents
-DEFINE TABLE runs SCHEMAFULL;
-DEFINE FIELD agent      ON runs TYPE string;
-DEFINE FIELD input      ON runs TYPE string;
-DEFINE FIELD output     ON runs TYPE string;
-DEFINE FIELD provider   ON runs TYPE string;
-DEFINE FIELD model      ON runs TYPE string;
-DEFINE FIELD tokens_in  ON runs TYPE int;
-DEFINE FIELD tokens_out ON runs TYPE int;
-DEFINE FIELD cost       ON runs TYPE float;
-DEFINE FIELD duration   ON runs TYPE duration;
-DEFINE FIELD status     ON runs TYPE string;
-DEFINE FIELD created_at ON runs TYPE datetime DEFAULT time::now();
-
--- Métriques agrégées par agent
-DEFINE TABLE agent_stats SCHEMAFULL;
-DEFINE FIELD agent       ON agent_stats TYPE string;
-DEFINE FIELD total_runs  ON agent_stats TYPE int;
-DEFINE FIELD total_cost  ON agent_stats TYPE float;
-DEFINE FIELD avg_duration ON agent_stats TYPE duration;
-DEFINE FIELD last_run    ON agent_stats TYPE datetime;
+CREATE TABLE IF NOT EXISTS runs (
+    id          TEXT PRIMARY KEY,
+    agent       TEXT NOT NULL,
+    input       TEXT NOT NULL,
+    output      TEXT NOT NULL,
+    provider    TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    tokens_in   INTEGER NOT NULL DEFAULT 0,
+    tokens_out  INTEGER NOT NULL DEFAULT 0,
+    cost        REAL NOT NULL DEFAULT 0.0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'success',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
 ```
 
 ---
@@ -467,23 +494,12 @@ DEFINE FIELD last_run    ON agent_stats TYPE datetime;
 ```yaml
 # Lancé via `armadai up`, arrêté via `armadai down`
 services:
-  surrealdb:
-    image: surrealdb/surrealdb:latest
-    command: start --user root --pass root
-    ports:
-      - "8000:8000"
-    volumes:
-      - armadai-data:/data
-
-  litellm:  # Optionnel : proxy multi-providers
+  litellm:  # Proxy multi-providers
     image: ghcr.io/berriai/litellm:main-latest
     ports:
       - "4000:4000"
     volumes:
       - ./config/litellm.yaml:/app/config.yaml
-    profiles:
-      - proxy
-
-volumes:
-  armadai-data:
 ```
+
+> **Note :** Le stockage local utilise SQLite embarqué (via rusqlite bundled) — aucun service Docker requis pour la persistance.

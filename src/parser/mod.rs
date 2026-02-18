@@ -1,3 +1,4 @@
+pub mod frontmatter;
 mod markdown;
 mod metadata;
 

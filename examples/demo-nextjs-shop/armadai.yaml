@@ -1,0 +1,21 @@
+# ArmadAI project configuration
+# See: https://github.com/Dr0drigues/swarm-festai
+
+# Agents used in this project
+agents:
+  - name: capitaine
+  - name: vigie
+  - name: charpentier
+  - name: cartographe
+
+# Composable prompt fragments
+prompts:
+  - name: code-nautique
+
+skills: []
+sources: []
+
+# Linker configuration
+link:
+  target: gemini
+  coordinator: capitaine

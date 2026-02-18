@@ -1,0 +1,9 @@
+name: pirate-crew
+description: "Pirate development crew — a captain coordinator and their specialized crew"
+agents:
+  - capitaine
+  - vigie
+  - charpentier
+  - cartographe
+prompts:
+  - code-nautique

@@ -19,11 +19,34 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ("r", "Refresh"),
             ("q", "Quit"),
         ],
-        Tab::AgentDetail => vec![
+        Tab::AgentDetail | Tab::PromptDetail | Tab::SkillDetail => vec![
             ("Esc", "Back to list"),
-            ("j/k", "Scroll"),
             ("Tab", "Next tab"),
             (":", "Commands"),
+            ("q", "Quit"),
+        ],
+        Tab::StarterDetail => vec![
+            ("Esc", "Back to list"),
+            ("i", "Init project"),
+            ("Tab", "Next tab"),
+            (":", "Commands"),
+            ("q", "Quit"),
+        ],
+        Tab::Prompts | Tab::Skills => vec![
+            ("j/k", "Navigate"),
+            ("Enter", "View detail"),
+            ("Tab", "Next tab"),
+            (":", "Commands"),
+            ("r", "Refresh"),
+            ("q", "Quit"),
+        ],
+        Tab::Starters => vec![
+            ("j/k", "Navigate"),
+            ("Enter", "View detail"),
+            ("i", "Init project"),
+            ("Tab", "Next tab"),
+            (":", "Commands"),
+            ("r", "Refresh"),
             ("q", "Quit"),
         ],
         Tab::History => vec![
@@ -41,7 +64,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ],
     };
 
-    let spans: Vec<Span> = shortcuts
+    let mut spans: Vec<Span> = shortcuts
         .into_iter()
         .flat_map(|(key, desc)| {
             vec![
@@ -56,6 +79,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ]
         })
         .collect();
+
+    // Append status message if present
+    if let Some(ref msg) = app.status_msg {
+        spans.push(Span::styled(
+            format!("  {msg}"),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::ITALIC),
+        ));
+    }
 
     let bar = Paragraph::new(Line::from(spans));
     frame.render_widget(bar, area);

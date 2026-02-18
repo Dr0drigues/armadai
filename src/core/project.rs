@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::config::{registry_cache_dir, user_agents_dir};
+use super::agent::AgentMode;
+use super::config::{registry_cache_dir, user_agents_dir, user_prompts_dir, user_skills_dir};
 use super::fleet::FleetDefinition;
 
 // ---------------------------------------------------------------------------
@@ -16,6 +17,13 @@ const PROJECT_FILENAMES: &[&str] = &["armadai.yaml", "armadai.yml"];
 // Data model
 // ---------------------------------------------------------------------------
 
+/// Default settings applied to all agents in the project.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct ProjectDefaults {
+    pub mode: Option<AgentMode>,
+}
+
 /// Project-level configuration declared in `armadai.yaml`.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -25,6 +33,8 @@ pub struct ProjectConfig {
     pub skills: Vec<SkillRef>,
     pub sources: Vec<String>,
     pub link: Option<LinkConfig>,
+    #[serde(default)]
+    pub defaults: ProjectDefaults,
 }
 
 /// Reference to an agent — resolved at runtime.
@@ -57,6 +67,7 @@ pub enum SkillRef {
 #[serde(default)]
 pub struct LinkConfig {
     pub target: Option<String>,
+    pub coordinator: Option<String>,
     pub overrides: HashMap<String, LinkOverride>,
 }
 
@@ -86,13 +97,19 @@ impl ProjectConfig {
 
         // Detect format: if there's a `fleet:` key, it's the old format
         let probe: FormatProbe =
-            serde_yml::from_str(&content).unwrap_or(FormatProbe { fleet: None });
+            serde_yaml_ng::from_str(&content).unwrap_or(FormatProbe { fleet: None });
 
         if probe.fleet.is_some() {
-            let fleet: FleetDefinition = serde_yml::from_str(&content)?;
+            tracing::warn!(
+                "Legacy fleet format detected in {}. \
+                 Migrate to the modern armadai.yaml format (see `armadai init --project`). \
+                 Fleet support will be removed in a future release.",
+                path.display()
+            );
+            let fleet: FleetDefinition = serde_yaml_ng::from_str(&content)?;
             Ok(Self::from_legacy_fleet(&fleet))
         } else {
-            let config: ProjectConfig = serde_yml::from_str(&content)?;
+            let config: ProjectConfig = serde_yaml_ng::from_str(&content)?;
             Ok(config)
         }
     }
@@ -111,6 +128,7 @@ impl ProjectConfig {
             skills: Vec::new(),
             sources: Vec::new(),
             link: None,
+            defaults: ProjectDefaults::default(),
         }
     }
 }
@@ -237,6 +255,132 @@ pub fn resolve_all_agents(
 }
 
 // ---------------------------------------------------------------------------
+// Prompt resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve a single `PromptRef` to an absolute path.
+pub fn resolve_prompt(prompt_ref: &PromptRef, project_root: &Path) -> anyhow::Result<PathBuf> {
+    match prompt_ref {
+        PromptRef::Path { path } => {
+            let resolved = if path.is_absolute() {
+                path.clone()
+            } else {
+                project_root.join(path)
+            };
+            if resolved.exists() {
+                Ok(resolved)
+            } else {
+                anyhow::bail!("Prompt file not found: {}", resolved.display());
+            }
+        }
+        PromptRef::Named { name } => {
+            let filename = if name.ends_with(".md") {
+                name.clone()
+            } else {
+                format!("{name}.md")
+            };
+
+            // 1. Project-local prompts/
+            let local = project_root.join("prompts").join(&filename);
+            if local.exists() {
+                return Ok(local);
+            }
+
+            // 2. User library ~/.config/armadai/prompts/
+            let global = user_prompts_dir().join(&filename);
+            if global.exists() {
+                return Ok(global);
+            }
+
+            anyhow::bail!(
+                "Prompt '{name}' not found in {} or {}",
+                local.display(),
+                global.display()
+            );
+        }
+    }
+}
+
+/// Resolve all prompt refs in the config, collecting paths.
+/// Returns resolved paths and skipped refs (with error messages).
+pub fn resolve_all_prompts(
+    config: &ProjectConfig,
+    project_root: &Path,
+) -> (Vec<PathBuf>, Vec<String>) {
+    let mut resolved = Vec::new();
+    let mut errors = Vec::new();
+
+    for prompt_ref in &config.prompts {
+        match resolve_prompt(prompt_ref, project_root) {
+            Ok(path) => resolved.push(path),
+            Err(e) => errors.push(format!("{e}")),
+        }
+    }
+
+    (resolved, errors)
+}
+
+// ---------------------------------------------------------------------------
+// Skill resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve a single `SkillRef` to an absolute path (directory containing SKILL.md).
+pub fn resolve_skill(skill_ref: &SkillRef, project_root: &Path) -> anyhow::Result<PathBuf> {
+    match skill_ref {
+        SkillRef::Path { path } => {
+            let resolved = if path.is_absolute() {
+                path.clone()
+            } else {
+                project_root.join(path)
+            };
+            if resolved.exists() {
+                Ok(resolved)
+            } else {
+                anyhow::bail!("Skill path not found: {}", resolved.display());
+            }
+        }
+        SkillRef::Named { name } => {
+            // 1. Project-local skills/<name>/
+            let local = project_root.join("skills").join(name);
+            if local.join("SKILL.md").exists() {
+                return Ok(local);
+            }
+
+            // 2. User library ~/.config/armadai/skills/<name>/
+            let global = user_skills_dir().join(name);
+            if global.join("SKILL.md").exists() {
+                return Ok(global);
+            }
+
+            anyhow::bail!(
+                "Skill '{name}' not found in {} or {}",
+                local.display(),
+                global.display()
+            );
+        }
+    }
+}
+
+/// Resolve all skill refs in the config, collecting paths.
+/// Returns resolved paths and skipped refs (with error messages).
+pub fn resolve_all_skills(
+    config: &ProjectConfig,
+    project_root: &Path,
+) -> (Vec<PathBuf>, Vec<String>) {
+    let mut resolved = Vec::new();
+    let mut errors = Vec::new();
+
+    for skill_ref in &config.skills {
+        match resolve_skill(skill_ref, project_root) {
+            Ok(path) => resolved.push(path),
+            Err(e) => errors.push(format!("{e}")),
+        }
+    }
+
+    (resolved, errors)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -247,7 +391,7 @@ mod tests {
     #[test]
     fn test_agent_ref_named() {
         let yaml = "- name: code-reviewer\n";
-        let refs: Vec<AgentRef> = serde_yml::from_str(yaml).unwrap();
+        let refs: Vec<AgentRef> = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             refs[0],
             AgentRef::Named {
@@ -259,7 +403,7 @@ mod tests {
     #[test]
     fn test_agent_ref_registry() {
         let yaml = "- registry: official/security\n";
-        let refs: Vec<AgentRef> = serde_yml::from_str(yaml).unwrap();
+        let refs: Vec<AgentRef> = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             refs[0],
             AgentRef::Registry {
@@ -271,7 +415,7 @@ mod tests {
     #[test]
     fn test_agent_ref_path() {
         let yaml = "- path: .armadai/agents/team.md\n";
-        let refs: Vec<AgentRef> = serde_yml::from_str(yaml).unwrap();
+        let refs: Vec<AgentRef> = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             refs[0],
             AgentRef::Path {
@@ -300,6 +444,9 @@ sources:
   - docs/architecture.md
   - CONTRIBUTING.md
 
+defaults:
+  mode: guided
+
 link:
   target: claude
   overrides:
@@ -308,7 +455,7 @@ link:
     copilot:
       output: .github/agents/
 "#;
-        let config: ProjectConfig = serde_yml::from_str(yaml).unwrap();
+        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
 
         assert_eq!(config.agents.len(), 3);
         assert_eq!(
@@ -346,6 +493,7 @@ link:
 
         assert_eq!(config.skills.len(), 2);
         assert_eq!(config.sources.len(), 2);
+        assert_eq!(config.defaults.mode, Some(AgentMode::Guided));
 
         let link = config.link.unwrap();
         assert_eq!(link.target.as_deref(), Some("claude"));
@@ -354,9 +502,23 @@ link:
     }
 
     #[test]
+    fn test_defaults_mode_parsing() {
+        let yaml = "defaults:\n  mode: guided\n";
+        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.defaults.mode, Some(AgentMode::Guided));
+    }
+
+    #[test]
+    fn test_defaults_absent_gives_default() {
+        let yaml = "agents:\n  - name: my-agent\n";
+        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.defaults.mode.is_none());
+    }
+
+    #[test]
     fn test_partial_config_deserialize() {
         let yaml = "agents:\n  - name: my-agent\n";
-        let config: ProjectConfig = serde_yml::from_str(yaml).unwrap();
+        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.agents.len(), 1);
         assert!(config.prompts.is_empty());
         assert!(config.skills.is_empty());
@@ -367,7 +529,7 @@ link:
     #[test]
     fn test_empty_config_deserialize() {
         let yaml = "";
-        let config: ProjectConfig = serde_yml::from_str(yaml).unwrap_or_default();
+        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap_or_default();
         assert!(config.agents.is_empty());
         assert!(config.prompts.is_empty());
     }
@@ -549,6 +711,116 @@ sources:
         };
 
         let (resolved, errors) = resolve_all_agents(&config, dir.path());
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("missing"));
+    }
+
+    #[test]
+    fn test_resolve_prompt_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompt_path = dir.path().join("custom").join("style.md");
+        std::fs::create_dir_all(prompt_path.parent().unwrap()).unwrap();
+        std::fs::write(&prompt_path, "# Style\n").unwrap();
+
+        let prompt_ref = PromptRef::Path {
+            path: PathBuf::from("custom/style.md"),
+        };
+        let resolved = resolve_prompt(&prompt_ref, dir.path()).unwrap();
+        assert_eq!(resolved, prompt_path);
+    }
+
+    #[test]
+    fn test_resolve_prompt_named_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompts_dir = dir.path().join("prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("rust-style.md"), "# Rust\n").unwrap();
+
+        let prompt_ref = PromptRef::Named {
+            name: "rust-style".to_string(),
+        };
+        let resolved = resolve_prompt(&prompt_ref, dir.path()).unwrap();
+        assert_eq!(resolved, prompts_dir.join("rust-style.md"));
+    }
+
+    #[test]
+    fn test_resolve_prompt_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompt_ref = PromptRef::Named {
+            name: "nonexistent".to_string(),
+        };
+        assert!(resolve_prompt(&prompt_ref, dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_resolve_all_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompts_dir = dir.path().join("prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("found.md"), "# Found\n").unwrap();
+
+        let config = ProjectConfig {
+            prompts: vec![
+                PromptRef::Named {
+                    name: "found".to_string(),
+                },
+                PromptRef::Named {
+                    name: "missing".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let (resolved, errors) = resolve_all_prompts(&config, dir.path());
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("missing"));
+    }
+
+    #[test]
+    fn test_resolve_skill_named_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("skills").join("docker");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "# Docker\n").unwrap();
+
+        let skill_ref = SkillRef::Named {
+            name: "docker".to_string(),
+        };
+        let resolved = resolve_skill(&skill_ref, dir.path()).unwrap();
+        assert_eq!(resolved, skill_dir);
+    }
+
+    #[test]
+    fn test_resolve_skill_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_ref = SkillRef::Named {
+            name: "nonexistent".to_string(),
+        };
+        assert!(resolve_skill(&skill_ref, dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_resolve_all_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("skills").join("found");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "# Found\n").unwrap();
+
+        let config = ProjectConfig {
+            skills: vec![
+                SkillRef::Named {
+                    name: "found".to_string(),
+                },
+                SkillRef::Named {
+                    name: "missing".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let (resolved, errors) = resolve_all_skills(&config, dir.path());
         assert_eq!(resolved.len(), 1);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("missing"));

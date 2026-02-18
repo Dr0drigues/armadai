@@ -61,6 +61,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]),
     ];
 
+    if !meta.model_fallback.is_empty() {
+        meta_lines.push(Line::from(vec![
+            Span::styled("Fallback: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                meta.model_fallback.join(", "),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+
     if !meta.tags.is_empty() {
         meta_lines.push(Line::from(vec![
             Span::styled("Tags:     ", Style::default().add_modifier(Modifier::BOLD)),
@@ -72,6 +82,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         meta_lines.push(Line::from(vec![
             Span::styled("Stacks:   ", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(meta.stacks.join(", "), Style::default().fg(Color::Green)),
+        ]));
+    }
+
+    if !meta.scope.is_empty() {
+        meta_lines.push(Line::from(vec![
+            Span::styled("Scope:    ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(meta.scope.join(", "), Style::default().fg(Color::Cyan)),
         ]));
     }
 

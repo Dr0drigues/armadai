@@ -22,21 +22,38 @@ armadai tui
 - **Pipeline mode** — chain agents sequentially (output A becomes input B)
 - **TUI dashboard** — fleet management with agent browser, detail view, history, costs, and command palette
 - **Shell completion** — auto-complete for bash, zsh, fish, powershell, elvish
-- **Cost tracking** — per-agent, per-run cost monitoring stored in SurrealDB
+- **Cost tracking** — per-agent, per-run cost monitoring stored in SQLite
 
 ## Quick Start
 
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (1.86+)
-- [Docker](https://docs.docker.com/get-docker/) (optional, for SurrealDB server / LiteLLM proxy)
+- [Docker](https://docs.docker.com/get-docker/) (optional, for LiteLLM proxy)
 - [SOPS](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age) (optional, for secret management)
 
 ### Install
 
 ```bash
-git clone https://github.com/Dr0drigues/swarm-festai.git
-cd swarm-festai
+# One-liner (downloads the latest release binary)
+curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+```
+
+Options: `INSTALL_DIR=~/.local/bin` (default), `VERSION=v0.1.0` (default: latest).
+
+```bash
+# Custom install directory
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+
+# Specific version
+VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+```
+
+### Install from source
+
+```bash
+git clone https://github.com/Dr0drigues/armadai.git
+cd armadai
 cargo build --release
 ```
 
@@ -96,6 +113,15 @@ armadai run my-assistant "Explain how async/await works in Rust"
 | `armadai config providers` | Show provider configs and secrets status | Done |
 | `armadai config secrets init` | Initialize SOPS + age encryption | Done |
 | `armadai config secrets rotate` | Rotate age encryption key | Done |
+| `armadai init [--force] [--project]` | Initialize ArmadAI configuration | Done |
+| `armadai init --pack <name>` | Install a starter pack (rust-dev, fullstack) | Done |
+| `armadai fleet create/link/list/show` | Manage agent fleets | Done |
+| `armadai link --target <t> [--dry-run]` | Generate native AI assistant configs | Done |
+| `armadai registry sync/search/list/add` | Browse and import community agents | Done |
+| `armadai prompts list/show` | Manage composable prompts | Done |
+| `armadai skills list/show` | Manage composable skills | Done |
+| `armadai skills sync/search/add/info` | Discover and install skills from GitHub | Done |
+| `armadai update` | Self-update to latest release | Done |
 | `armadai tui` | Launch the TUI dashboard | Done |
 | `armadai web [--port N]` | Launch the web UI | Done |
 | `armadai completion <shell>` | Generate shell completions | Done |
@@ -198,6 +224,30 @@ armadai new my-reviewer --template dev-review --stack rust
 armadai new my-tool --template cli-generic
 ```
 
+## Starter Packs
+
+Install curated bundles of agents, prompts and skills:
+
+```bash
+armadai init --pack rust-dev              # Rust essentials (3 agents + conventions prompt)
+armadai init --pack fullstack             # Full stack web (6 agents)
+armadai init --pack armadai-authoring     # ArmadAI authoring team (4 agents + skills)
+
+# Combined mode: install pack + create project config
+armadai init --pack rust-dev --project
+```
+
+Available packs:
+
+| Pack | Agents | Description |
+|---|---|---|
+| `rust-dev` | code-reviewer, test-writer, debug | Rust development essentials + conventions prompt |
+| `fullstack` | code-reviewer, test-writer, doc-generator, claude-cli-reviewer, gemini-reviewer, echo-reviewer | Full stack web development |
+| `code-analysis-rust` | lead-analyst, rust-reviewer, rust-test-analyzer, rust-doc-writer, rust-security | Rust code analysis team + analysis standards prompt |
+| `code-analysis-web` | lead-analyst, web-reviewer, web-test-analyzer, web-doc-writer, web-security | Web code analysis team + analysis standards prompt |
+| `armadai-authoring` | authoring-lead, agent-builder, prompt-builder, skill-builder | ArmadAI content authoring + conventions prompt + built-in skills |
+| `pirate-crew` | capitaine, cartographe, vigie, charpentier | Pirate-themed demo pack with coordinator pattern |
+
 ## Shell Completion
 
 Generate completion scripts for your shell:
@@ -220,7 +270,9 @@ Launch with `armadai tui`. The dashboard provides fleet management views:
 | Tab | Description |
 |---|---|
 | **Agents** | Browse all loaded agents with provider, model, and tags |
-| **Detail** | View selected agent's full configuration (metadata, prompt, instructions) |
+| **Prompts** | Browse composable prompt fragments |
+| **Skills** | Browse installed skills with reference file contents |
+| **Starters** | Browse starter packs, init projects with `i` key |
 | **History** | Execution history with tokens, costs, and duration |
 | **Costs** | Aggregated cost summary per agent |
 
@@ -229,9 +281,10 @@ Launch with `armadai tui`. The dashboard provides fleet management views:
 | Key | Action |
 |---|---|
 | `Tab` / `Shift+Tab` | Switch tabs |
-| `1-4` | Jump to tab directly |
+| `1-6` | Jump to tab directly |
 | `j/k` or arrows | Navigate lists |
-| `Enter` | View agent detail |
+| `Enter` | View detail |
+| `i` | Init project from selected starter (Starters tab) |
 | `:` or `Ctrl+P` | Open command palette |
 | `r` | Refresh data |
 | `q` / `Esc` | Quit |
@@ -248,6 +301,9 @@ armadai web --port 8080  # custom port
 The web UI provides a read-only dashboard for your agent fleet:
 
 - **Agents** — browse all loaded agents, click to view full configuration
+- **Prompts** — browse composable prompt fragments with full content
+- **Skills** — browse skills with collapsible reference file contents
+- **Starters** — browse packs and download pre-configured `armadai.yaml`
 - **History** — execution history with tokens, costs, and duration
 - **Costs** — aggregated cost summary per agent
 
@@ -260,11 +316,10 @@ HOST MACHINE
 ├── armadai (native binary)
 │   ├── CLI + TUI + Web UI
 │   ├── Providers (API / CLI / Proxy)
-│   ├── SurrealDB (embedded)
+│   ├── SQLite (embedded storage)
 │   └── SOPS + age secrets
 │
 └── docker-compose (optional)
-    ├── surrealdb   :8000
     └── litellm     :4000
 ```
 
@@ -276,17 +331,14 @@ Heavy dependencies are gated behind optional feature flags for faster compilatio
 |---|---|---|
 | `tui` | Yes | TUI dashboard (ratatui + crossterm) |
 | `web` | Yes | Web UI dashboard (axum + tower-http) |
-| `storage` | Yes* | SurrealDB with in-memory backend |
-| `storage-rocksdb` | Yes | SurrealDB with persistent RocksDB backend |
+| `storage` | Yes | SQLite persistence (rusqlite bundled) |
 | `providers-api` | Yes | HTTP API providers (Anthropic, OpenAI, Google) |
-
-\* Implied by `storage-rocksdb`.
 
 ```bash
 # Full build (all features)
 cargo build --release
 
-# Lightweight build (no SurrealDB, no TUI)
+# Lightweight build (no storage, no TUI)
 cargo build --release --no-default-features
 
 # CLI + storage (no TUI)
@@ -345,7 +397,22 @@ Detailed documentation is available in [`docs/wiki/`](docs/wiki/):
 - [Agent Format](docs/wiki/agent-format.md) — complete reference for agent Markdown files
 - [Providers](docs/wiki/providers.md) — configuring API, CLI, and proxy providers
 - [Templates](docs/wiki/templates.md) — using and creating agent templates
+- [Starter Packs](docs/wiki/starter-packs.md) — curated agent bundles
+- [Link Command](docs/wiki/link.md) — generating native configs for AI CLI tools
+- [Skills & Prompts](docs/wiki/skills-prompts.md) — composable prompt fragments and skills
+- [Registry](docs/wiki/registry.md) — browsing and importing community agents
 
 ## License
 
-MIT
+[PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/)
+
+**Free to use for:**
+- Personal use, research, experimentation, and testing
+- Educational institutions and public research organizations
+- Charitable organizations and government institutions
+- Hobby projects and personal study
+
+**Commercial use:**
+For commercial licensing, please contact the maintainer.
+
+See the [LICENSE](./LICENSE) file for full terms.

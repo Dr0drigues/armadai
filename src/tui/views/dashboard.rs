@@ -39,6 +39,12 @@ pub fn render(frame: &mut Frame, app: &App) {
     match app.current_tab {
         Tab::Dashboard => render_agent_list(frame, app, chunks[1]),
         Tab::AgentDetail => super::agent_detail::render(frame, app, chunks[1]),
+        Tab::Prompts => super::prompts_list::render(frame, app, chunks[1]),
+        Tab::PromptDetail => super::prompt_detail::render(frame, app, chunks[1]),
+        Tab::Skills => super::skills_list::render(frame, app, chunks[1]),
+        Tab::SkillDetail => super::skill_detail::render(frame, app, chunks[1]),
+        Tab::Starters => super::starters_list::render(frame, app, chunks[1]),
+        Tab::StarterDetail => super::starter_detail::render(frame, app, chunks[1]),
         Tab::History => super::history::render(frame, app, chunks[1]),
         Tab::Costs => super::costs::render(frame, app, chunks[1]),
     };
