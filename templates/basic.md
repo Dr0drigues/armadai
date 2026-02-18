@@ -6,6 +6,7 @@
 - temperature: 0.7
 - max_tokens: 4096
 - tags: [general]
+- mode: guided
 
 ## System Prompt
 

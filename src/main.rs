@@ -1,12 +1,15 @@
 mod cli;
 mod core;
+mod linker;
+mod model_registry;
 mod parser;
 #[allow(dead_code)]
 mod providers;
+mod registry;
 #[allow(dead_code)]
 mod secrets;
+mod skills_registry;
 #[cfg(feature = "storage")]
-#[allow(dead_code)]
 mod storage;
 #[cfg(feature = "tui")]
 mod tui;

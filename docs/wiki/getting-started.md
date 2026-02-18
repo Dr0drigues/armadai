@@ -2,11 +2,34 @@
 
 ## Installation
 
+### Quick install (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+```
+
+This downloads the latest release binary for your platform (Linux/macOS, x86_64/aarch64) and installs it to `~/.local/bin/`.
+
+**Options** (via environment variables):
+
+| Variable | Default | Description |
+|---|---|---|
+| `INSTALL_DIR` | `~/.local/bin` | Where to install the binary |
+| `VERSION` | latest | Specific version to install (e.g. `v0.1.0`) |
+
+```bash
+# Custom install directory
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+
+# Specific version
+VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+```
+
 ### From source
 
 ```bash
-git clone https://github.com/Dr0drigues/swarm-festai.git
-cd swarm-festai
+git clone https://github.com/Dr0drigues/armadai.git
+cd armadai
 cargo build --release
 ```
 
@@ -37,6 +60,26 @@ armadai new my-assistant --template basic --description "general-purpose coding 
 ```
 
 This creates `agents/my-assistant.md`. Open it and customize the system prompt to your needs.
+
+## Starter Packs
+
+Instead of creating agents one by one, install a curated pack:
+
+```bash
+# Rust development essentials (code-reviewer, test-writer, debug + conventions prompt)
+armadai init --pack rust-dev
+
+# Full stack web development (6 agents)
+armadai init --pack fullstack
+
+# ArmadAI authoring team (4 agents + skills)
+armadai init --pack armadai-authoring
+
+# Install pack + create project config in one step
+armadai init --pack rust-dev --project
+```
+
+Available packs: `rust-dev`, `fullstack`, `code-analysis-rust`, `code-analysis-web`, `armadai-authoring`, `pirate-crew`. See [Starter Packs](starter-packs.md) for details.
 
 ## Verify Setup
 
@@ -95,7 +138,7 @@ Browse and manage your agent fleet visually:
 armadai tui
 ```
 
-Use `Tab`/`Shift+Tab` to switch views, `j`/`k` to navigate, `Enter` to view agent details, `:` to open the command palette, and `q` to quit.
+Use `Tab`/`Shift+Tab` to switch views (Agents, Prompts, Skills, Starters, History, Costs), `j`/`k` to navigate, `Enter` to view details, `i` to init a project from the Starters tab, `:` to open the command palette, and `q` to quit.
 
 ## Web UI
 
@@ -106,10 +149,64 @@ armadai web              # http://localhost:3000
 armadai web --port 8080  # custom port
 ```
 
-Browse agents, view execution history, and track costs from your browser. The `web` feature is enabled by default.
+Browse agents, prompts, skills and starters. View execution history and track costs. Skill detail views show reference file contents in collapsible sections. Starter detail pages include a "Download armadai.yaml" button.
+
+## Community Registry
+
+Browse and import agents from the community:
+
+```bash
+# Sync the registry
+armadai registry sync
+
+# Search for agents
+armadai registry search "security review"
+
+# Import an agent
+armadai registry add official/security
+```
+
+## Discover Skills
+
+Browse and install skills from GitHub repos:
+
+```bash
+# Sync remote skill sources
+armadai skills sync
+
+# Search for skills
+armadai skills search "testing"
+
+# Install a skill
+armadai skills add anthropics/skills/webapp-testing
+
+# List installed skills
+armadai skills list
+```
+
+## IDE Support
+
+ArmadAI provides a JSON Schema for `armadai.yaml` that enables autocompletion and real-time validation in your editor.
+
+**VS Code** (with [YAML extension by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)) and **IntelliJ** — add this comment as the first line of your `armadai.yaml`:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Dr0drigues/armadai/develop/schemas/armadai.schema.json
+```
+
+Once added, your editor will provide:
+
+- Autocompletion for all configuration keys (`agents`, `prompts`, `skills`, `sources`, `link`)
+- Inline documentation and descriptions for each field
+- Validation of required fields and allowed values (e.g. link targets: `claude`, `copilot`, `gemini`, `opencode`)
+- Type checking for agent, prompt, and skill references
 
 ## Next Steps
 
 - [Agent Format](agent-format.md) — full reference for agent Markdown files
 - [Providers](providers.md) — configure API, CLI, and proxy providers
 - [Templates](templates.md) — available templates and how to create your own
+- [Starter Packs](starter-packs.md) — curated agent bundles for quick setup
+- [Link Command](link.md) — generating native configs for AI CLI tools
+- [Skills & Prompts](skills-prompts.md) — composable prompt fragments and skills
+- [Registry](registry.md) — browsing and importing community agents

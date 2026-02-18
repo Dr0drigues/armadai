@@ -1,13 +1,21 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::core::agent::Agent;
+use crate::core::agent::{Agent, AgentMode};
 use crate::core::config::AppPaths;
 use crate::core::fleet::FleetDefinition;
-use crate::core::project::{self, AgentRef, ProjectConfig};
+use crate::core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
 use crate::providers::factory::create_provider;
 use crate::providers::rate_limiter::RateLimiter;
 use crate::providers::traits::{ChatMessage, CompletionRequest};
+
+const GUIDED_MODE_INSTRUCTION: &str = "\
+\n\n---\n\n\
+**Important**: Before providing your full response, assess whether the request \
+is clear and complete. If critical details are missing, ambiguous, or could \
+significantly change your approach, ask 2-3 targeted clarifying questions first. \
+Only proceed with your complete response once you have enough context to deliver \
+accurate, relevant output.";
 
 pub async fn execute(
     agent_name: String,
@@ -25,13 +33,19 @@ pub async fn execute(
     // Resolve input text
     let mut current_input = resolve_input(input).await?;
 
+    let project_defaults = match &resolution {
+        AgentResolution::Project { config, .. } => Some(&config.defaults),
+        _ => None,
+    };
+
     for (i, name) in chain.iter().enumerate() {
         if chain.len() > 1 {
             eprintln!("--- [{}/{} {}] ---", i + 1, chain.len(), name);
         }
 
         let agent_path = resolve_agent_path(&resolution, name)?;
-        let (output, _) = run_single_agent(&agent_path, name, &current_input).await?;
+        let (output, _) =
+            run_single_agent(&agent_path, name, &current_input, project_defaults).await?;
         current_input = output;
     }
 
@@ -97,6 +111,7 @@ async fn run_single_agent(
     agent_path: &Path,
     agent_name: &str,
     input: &str,
+    project_defaults: Option<&ProjectDefaults>,
 ) -> anyhow::Result<(String, RunMetrics)> {
     // 1. Load agent
     let agent = crate::parser::parse_agent_file(agent_path)?;
@@ -112,7 +127,20 @@ async fn run_single_agent(
         limiter.acquire().await;
     }
 
-    // 4. Build request
+    // 4. Resolve effective mode and build system prompt
+    let effective_mode = agent
+        .metadata
+        .mode
+        .or(project_defaults.and_then(|d| d.mode))
+        .unwrap_or_default();
+
+    let system_prompt = if effective_mode == AgentMode::Guided {
+        format!("{}{GUIDED_MODE_INSTRUCTION}", agent.system_prompt)
+    } else {
+        agent.system_prompt.clone()
+    };
+
+    // 5. Build request
     let model = agent
         .metadata
         .model
@@ -122,7 +150,7 @@ async fn run_single_agent(
 
     let request = CompletionRequest {
         model,
-        system_prompt: agent.system_prompt.clone(),
+        system_prompt,
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: input.to_string(),
@@ -131,12 +159,36 @@ async fn run_single_agent(
         max_tokens: agent.metadata.max_tokens,
     };
 
-    // 5. Execute
+    // 6. Execute (with model fallback)
     let start = Instant::now();
-    let response = provider.complete(request).await?;
+    let response = match provider.complete(request.clone()).await {
+        Ok(resp) => resp,
+        Err(err) if is_model_not_found(&err) && !agent.metadata.model_fallback.is_empty() => {
+            let mut last_err = err;
+            let mut fallback_resp = None;
+            for fallback_model in &agent.metadata.model_fallback {
+                eprintln!("[{agent_name}] Model unavailable, falling back to {fallback_model}...");
+                let mut retry_request = request.clone();
+                retry_request.model = fallback_model.clone();
+                match provider.complete(retry_request).await {
+                    Ok(resp) => {
+                        fallback_resp = Some(resp);
+                        break;
+                    }
+                    Err(e) if is_model_not_found(&e) => {
+                        last_err = e;
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            fallback_resp.ok_or(last_err)?
+        }
+        Err(err) => return Err(err),
+    };
     let duration = start.elapsed();
 
-    // 6. Print summary to stderr (so stdout is clean for piping)
+    // 7. Print summary to stderr (so stdout is clean for piping)
     let duration_ms = duration.as_millis() as i64;
     eprintln!(
         "\n[{}] model={} tokens={}/{} cost=${:.6} duration={}ms",
@@ -158,9 +210,9 @@ async fn run_single_agent(
         duration_ms,
     };
 
-    // 7. Record in storage (if available)
+    // 8. Record in storage (if available)
     #[cfg(feature = "storage")]
-    record_run(&metrics, input, &response.content).await;
+    record_run(&metrics, input, &response.content);
 
     Ok((response.content, metrics))
 }
@@ -177,10 +229,10 @@ struct RunMetrics {
 }
 
 #[cfg(feature = "storage")]
-async fn record_run(metrics: &RunMetrics, input: &str, output: &str) {
+fn record_run(metrics: &RunMetrics, input: &str, output: &str) {
     use crate::storage::{init_db, queries};
 
-    let db = match init_db().await {
+    let db = match init_db() {
         Ok(db) => db,
         Err(e) => {
             tracing::warn!("Failed to init storage: {e}");
@@ -201,7 +253,7 @@ async fn record_run(metrics: &RunMetrics, input: &str, output: &str) {
         status: "success".to_string(),
     };
 
-    if let Err(e) = queries::insert_run(&db, record).await {
+    if let Err(e) = queries::insert_run(&db, record) {
         tracing::warn!("Failed to record run: {e}");
     }
 }
@@ -252,17 +304,17 @@ fn resolve_agents_dir() -> AgentResolution {
         return AgentResolution::Project { root, config };
     }
 
-    // 2. Check for legacy fleet file in cwd
+    // 2. Check for legacy fleet file in cwd (deprecated)
     let fleet_path = Path::new("armadai.yaml");
     if fleet_path.exists()
         && let Ok(fleet) = FleetDefinition::load(fleet_path)
     {
         let dir = fleet.agents_dir();
         if dir.exists() {
-            tracing::info!(
-                "Using fleet '{}' agents from {}",
-                fleet.fleet,
-                dir.display()
+            tracing::warn!(
+                "Using deprecated fleet format from '{}'. \
+                 Migrate to the modern armadai.yaml format (see `armadai init --project`).",
+                fleet.fleet
             );
             return AgentResolution::Fleet(fleet);
         }
@@ -277,9 +329,50 @@ fn resolve_agents_dir() -> AgentResolution {
     AgentResolution::Default(AppPaths::resolve().agents_dir)
 }
 
+/// Check if an error indicates the model was not found (HTTP 404 or model-related 400).
+fn is_model_not_found(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+
+    // Google-style: HTTP 404 with "not found"
+    if msg.contains("404") && msg.contains("not found") {
+        return true;
+    }
+
+    // Anthropic-style: "model" + "not_found" or "invalid"
+    if msg.contains("model") && (msg.contains("not_found") || msg.contains("invalid")) {
+        return true;
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_model_not_found_google_404() {
+        let err = anyhow::anyhow!("HTTP 404: model gemini-3.0-pro not found");
+        assert!(is_model_not_found(&err));
+    }
+
+    #[test]
+    fn test_is_model_not_found_anthropic_400() {
+        let err = anyhow::anyhow!("400 Bad Request: model not_found: claude-opus-next");
+        assert!(is_model_not_found(&err));
+    }
+
+    #[test]
+    fn test_is_model_not_found_auth_401_false() {
+        let err = anyhow::anyhow!("401 Unauthorized: invalid API key");
+        assert!(!is_model_not_found(&err));
+    }
+
+    #[test]
+    fn test_is_model_not_found_rate_limit_429_false() {
+        let err = anyhow::anyhow!("429 Too Many Requests: rate limit exceeded");
+        assert!(!is_model_not_found(&err));
+    }
 
     #[test]
     fn test_resolve_agents_dir_returns_valid_resolution() {

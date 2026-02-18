@@ -2,7 +2,7 @@
 # ArmadAI installer — downloads the latest release binary for your platform.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Dr0drigues/swarm-festai/develop/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
 #
 # Options (via environment variables):
 #   INSTALL_DIR   — where to install (default: ~/.local/bin)
@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-REPO="Dr0drigues/swarm-festai"
+REPO="Dr0drigues/armadai"
 BINARY_NAME="armadai"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 

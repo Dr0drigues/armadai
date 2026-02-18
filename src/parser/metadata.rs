@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use crate::core::agent::AgentMetadata;
+use crate::core::agent::{AgentMetadata, AgentMode};
 
 /// Parse the Metadata section content (YAML-like list format) into AgentMetadata.
 pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
@@ -13,9 +13,12 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
     let mut timeout = None;
     let mut tags = Vec::new();
     let mut stacks = Vec::new();
+    let mut scope = Vec::new();
+    let mut model_fallback = Vec::new();
     let mut cost_limit = None;
     let mut rate_limit = None;
     let mut context_window = None;
+    let mut mode = None;
 
     for line in raw.lines() {
         let line = line.trim().trim_start_matches('-').trim();
@@ -39,10 +42,21 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
             "timeout" => timeout = Some(value.parse().context("invalid timeout")?),
             "tags" => tags = parse_string_list(value),
             "stacks" => stacks = parse_string_list(value),
+            "scope" => scope = parse_string_list(value),
+            "model_fallback" | "model_fallbacks" => model_fallback = parse_string_list(value),
             "cost_limit" => cost_limit = Some(value.parse().context("invalid cost_limit")?),
             "rate_limit" => rate_limit = Some(value.to_string()),
             "context_window" => {
                 context_window = Some(value.parse().context("invalid context_window")?)
+            }
+            "mode" => {
+                mode = Some(match value.to_lowercase().as_str() {
+                    "guided" => AgentMode::Guided,
+                    "autonomous" => AgentMode::Autonomous,
+                    _ => {
+                        anyhow::bail!("Invalid mode: '{value}'. Expected 'guided' or 'autonomous'")
+                    }
+                })
             }
             _ => {
                 tracing::debug!("Unknown metadata field: {key}");
@@ -60,9 +74,12 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
         timeout,
         tags,
         stacks,
+        scope,
+        model_fallback,
         cost_limit,
         rate_limit,
         context_window,
+        mode,
     })
 }
 
@@ -102,4 +119,131 @@ fn parse_string_list(value: &str) -> Vec<String> {
         .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_scope() {
+        let raw = "\
+- provider: google
+- model: gemini-2.5-pro
+- temperature: 0.3
+- tags: [review, quality]
+- scope: [src/**/*.rs, tests/]
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(meta.scope, vec!["src/**/*.rs", "tests/"]);
+    }
+
+    #[test]
+    fn test_parse_scope_empty() {
+        let raw = "\
+- provider: google
+- model: gemini-2.5-pro
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert!(meta.scope.is_empty());
+    }
+
+    #[test]
+    fn test_parse_model_fallback() {
+        let raw = "\
+- provider: google
+- model: gemini-3.0-pro
+- model_fallback: [gemini-2.5-pro, gemini-2.5-flash]
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(
+            meta.model_fallback,
+            vec!["gemini-2.5-pro", "gemini-2.5-flash"]
+        );
+    }
+
+    #[test]
+    fn test_parse_model_fallbacks_plural_alias() {
+        let raw = "\
+- provider: anthropic
+- model: claude-opus-4-6
+- model_fallbacks: [claude-sonnet-4-5-20250929]
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(meta.model_fallback, vec!["claude-sonnet-4-5-20250929"]);
+    }
+
+    #[test]
+    fn test_parse_model_fallback_empty_by_default() {
+        let raw = "\
+- provider: google
+- model: gemini-2.5-pro
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert!(meta.model_fallback.is_empty());
+    }
+
+    #[test]
+    fn test_parse_mode_guided() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- mode: guided
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(meta.mode, Some(AgentMode::Guided));
+    }
+
+    #[test]
+    fn test_parse_mode_autonomous() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- mode: autonomous
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(meta.mode, Some(AgentMode::Autonomous));
+    }
+
+    #[test]
+    fn test_parse_mode_default_none() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert!(meta.mode.is_none());
+    }
+
+    #[test]
+    fn test_parse_mode_invalid() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- mode: interactive
+";
+        assert!(parse_metadata(raw).is_err());
+    }
+
+    #[test]
+    fn test_parse_metadata_full() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- temperature: 0.5
+- max_tokens: 4096
+- tags: [dev, test]
+- stacks: [rust]
+- scope: [src/, docs/*.md]
+- cost_limit: 1.50
+- rate_limit: 10/min
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(meta.provider, "anthropic");
+        assert_eq!(meta.model.as_deref(), Some("claude-sonnet-4-5-20250929"));
+        assert_eq!(meta.tags, vec!["dev", "test"]);
+        assert_eq!(meta.stacks, vec!["rust"]);
+        assert_eq!(meta.scope, vec!["src/", "docs/*.md"]);
+        assert_eq!(meta.cost_limit, Some(1.50));
+    }
 }

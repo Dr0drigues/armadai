@@ -22,7 +22,10 @@ pub async fn run() -> Result<()> {
 
     let mut app = app::App::new();
     app.load_agents();
-    load_storage_data(&mut app).await;
+    app.load_prompts();
+    app.load_skills();
+    app.load_starters();
+    load_storage_data(&mut app);
 
     loop {
         terminal.draw(|frame| {
@@ -49,7 +52,10 @@ pub async fn run() -> Result<()> {
                                 PaletteAction::SwitchTab(tab) => app.switch_tab(tab),
                                 PaletteAction::Refresh => {
                                     app.load_agents();
-                                    load_storage_data(&mut app).await;
+                                    app.load_prompts();
+                                    app.load_skills();
+                                    app.load_starters();
+                                    load_storage_data(&mut app);
                                 }
                                 PaletteAction::Quit => break,
                                 PaletteAction::NewAgent => {
@@ -89,18 +95,59 @@ pub async fn run() -> Result<()> {
                 KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
                 KeyCode::Char('r') => {
                     app.load_agents();
-                    load_storage_data(&mut app).await;
+                    app.load_prompts();
+                    app.load_skills();
+                    app.load_starters();
+                    load_storage_data(&mut app);
                     app.status_msg = Some("Refreshed".to_string());
                 }
-                KeyCode::Enter => {
-                    if app.current_tab == app::Tab::Dashboard && app.selected_agent().is_some() {
+                KeyCode::Enter => match app.current_tab {
+                    app::Tab::Dashboard if app.selected_agent().is_some() => {
                         app.switch_tab(app::Tab::AgentDetail);
+                    }
+                    app::Tab::Prompts if app.selected_prompt().is_some() => {
+                        app.switch_tab(app::Tab::PromptDetail);
+                    }
+                    app::Tab::Skills if app.selected_skill().is_some() => {
+                        app.switch_tab(app::Tab::SkillDetail);
+                    }
+                    app::Tab::Starters if app.selected_starter().is_some() => {
+                        app.switch_tab(app::Tab::StarterDetail);
+                    }
+                    _ => {}
+                },
+                KeyCode::Char('i')
+                    if matches!(
+                        app.current_tab,
+                        app::Tab::Starters | app::Tab::StarterDetail
+                    ) =>
+                {
+                    if let Some(pack) = app.selected_starter().cloned() {
+                        let pack_name = pack.name.clone();
+                        let yaml = crate::cli::init::generate_project_yaml(&pack, &pack_name);
+                        let path = std::path::Path::new("armadai.yaml");
+                        if path.exists() {
+                            app.status_msg = Some("armadai.yaml already exists".to_string());
+                        } else {
+                            match std::fs::write(path, yaml) {
+                                Ok(()) => {
+                                    app.status_msg =
+                                        Some(format!("Created armadai.yaml (pack: {pack_name})"));
+                                }
+                                Err(e) => {
+                                    app.status_msg =
+                                        Some(format!("Failed to write armadai.yaml: {e}"));
+                                }
+                            }
+                        }
                     }
                 }
                 KeyCode::Char('1') => app.switch_tab(app::Tab::Dashboard),
-                KeyCode::Char('2') => app.switch_tab(app::Tab::AgentDetail),
-                KeyCode::Char('3') => app.switch_tab(app::Tab::History),
-                KeyCode::Char('4') => app.switch_tab(app::Tab::Costs),
+                KeyCode::Char('2') => app.switch_tab(app::Tab::Prompts),
+                KeyCode::Char('3') => app.switch_tab(app::Tab::Skills),
+                KeyCode::Char('4') => app.switch_tab(app::Tab::Starters),
+                KeyCode::Char('5') => app.switch_tab(app::Tab::History),
+                KeyCode::Char('6') => app.switch_tab(app::Tab::Costs),
                 _ => {}
             }
         }
@@ -114,16 +161,16 @@ pub async fn run() -> Result<()> {
 }
 
 #[cfg(feature = "storage")]
-async fn load_storage_data(app: &mut app::App) {
+fn load_storage_data(app: &mut app::App) {
     use crate::storage::{init_db, queries};
 
-    let db = match init_db().await {
+    let db = match init_db() {
         Ok(db) => db,
         Err(_) => return,
     };
 
     // Load history
-    if let Ok(records) = queries::get_history(&db, None, 100).await {
+    if let Ok(records) = queries::get_history(&db, None, 100) {
         app.history = records
             .into_iter()
             .map(|r| app::RunEntry {
@@ -142,7 +189,7 @@ async fn load_storage_data(app: &mut app::App) {
     }
 
     // Load costs
-    if let Ok(summaries) = queries::get_costs_summary(&db, None).await {
+    if let Ok(summaries) = queries::get_costs_summary(&db, None) {
         app.costs = summaries
             .into_iter()
             .map(|s| app::CostEntry {
@@ -157,6 +204,6 @@ async fn load_storage_data(app: &mut app::App) {
 }
 
 #[cfg(not(feature = "storage"))]
-async fn load_storage_data(_app: &mut app::App) {
+fn load_storage_data(_app: &mut app::App) {
     // No storage feature — data views will be empty
 }

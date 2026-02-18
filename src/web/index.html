@@ -38,6 +38,15 @@
   .back-btn:hover { border-color: var(--accent); color: var(--accent); }
   .empty { padding: 40px; text-align: center; color: var(--muted); }
   .cost { color: var(--yellow); }
+  .list-section { margin-bottom: 16px; }
+  .list-section h3 { font-size: 14px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; }
+  .list-section ul { list-style: none; padding: 0; }
+  .list-section li { padding: 4px 0; font-size: 14px; }
+  .list-section li::before { content: "• "; color: var(--accent); }
+  .file-details { margin-bottom: 8px; }
+  .file-details summary { cursor: pointer; font-size: 14px; padding: 4px 0; color: var(--accent); }
+  .file-details summary:hover { text-decoration: underline; }
+  .file-content { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 13px; white-space: pre-wrap; line-height: 1.5; margin: 4px 0 8px 0; max-height: 400px; overflow-y: auto; }
   #view { display: none; }
 </style>
 </head>
@@ -46,26 +55,38 @@
   <h1><span>Armad</span>AI</h1>
   <nav>
     <button class="active" onclick="showTab('agents')">Agents</button>
+    <button onclick="showTab('prompts')">Prompts</button>
+    <button onclick="showTab('skills')">Skills</button>
+    <button onclick="showTab('starters')">Starters</button>
     <button onclick="showTab('history')">History</button>
     <button onclick="showTab('costs')">Costs</button>
   </nav>
 </header>
 <main>
   <div id="agents" class="card"></div>
+  <div id="prompts" class="card" style="display:none"></div>
+  <div id="skills" class="card" style="display:none"></div>
+  <div id="starters" class="card" style="display:none"></div>
   <div id="history" class="card" style="display:none"></div>
   <div id="costs" class="card" style="display:none"></div>
   <div id="view" class="card"></div>
 </main>
 <script>
 let currentTab = 'agents';
+let viewBackTab = 'agents';
 
 function showTab(tab) {
-  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
-  ['agents','history','costs','view'].forEach(id => document.getElementById(id).style.display = 'none');
+  document.querySelectorAll('nav button').forEach((b, i) => {
+    const tabs = ['agents','prompts','skills','starters','history','costs'];
+    b.classList.toggle('active', tabs[i] === tab);
+  });
+  ['agents','prompts','skills','starters','history','costs','view'].forEach(id => document.getElementById(id).style.display = 'none');
   document.getElementById(tab).style.display = 'block';
   currentTab = tab;
   if (tab === 'agents') loadAgents();
+  if (tab === 'prompts') loadPrompts();
+  if (tab === 'skills') loadSkills();
+  if (tab === 'starters') loadStarters();
   if (tab === 'history') loadHistory();
   if (tab === 'costs') loadCosts();
 }
@@ -94,7 +115,8 @@ async function viewAgent(name) {
   const res = await fetch(`/api/agents/${encodeURIComponent(name)}`);
   const a = await res.json();
   if (a.error) return;
-  ['agents','history','costs'].forEach(id => document.getElementById(id).style.display = 'none');
+  viewBackTab = 'agents';
+  ['agents','prompts','skills','starters','history','costs'].forEach(id => document.getElementById(id).style.display = 'none');
   const el = document.getElementById('view');
   el.style.display = 'block';
   el.innerHTML = `
@@ -119,9 +141,141 @@ async function viewAgent(name) {
     </div>`;
 }
 
+async function loadPrompts() {
+  const res = await fetch('/api/prompts');
+  const prompts = await res.json();
+  const el = document.getElementById('prompts');
+  if (!prompts.length) { el.innerHTML = '<div class="empty">No prompts found. Add .md files to ~/.config/armadai/prompts/</div>'; return; }
+  el.innerHTML = `
+    <div class="card-header">${prompts.length} prompts loaded</div>
+    <table>
+      <tr><th>Name</th><th>Description</th><th>Applies To</th><th>Source</th></tr>
+      ${prompts.map(p => `
+        <tr class="clickable" onclick="viewPrompt('${p.name}')">
+          <td>${p.name}</td>
+          <td>${p.description || ''}</td>
+          <td>${p.apply_to.map(a => `<span class="tag">${a}</span>`).join('')}</td>
+          <td style="color:var(--muted)">${p.source}</td>
+        </tr>`).join('')}
+    </table>`;
+}
+
+async function viewPrompt(name) {
+  const res = await fetch(`/api/prompts/${encodeURIComponent(name)}`);
+  const p = await res.json();
+  if (p.error) return;
+  viewBackTab = 'prompts';
+  ['agents','prompts','skills','starters','history','costs'].forEach(id => document.getElementById(id).style.display = 'none');
+  const el = document.getElementById('view');
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div class="detail">
+      <button class="back-btn" onclick="backToList()">&larr; Back to prompts</button>
+      <h2>${p.name}</h2>
+      <div class="detail-grid">
+        <div class="detail-field"><label>Description</label><span>${p.description || '(none)'}</span></div>
+        <div class="detail-field"><label>Applies To</label><span>${p.apply_to.map(a => `<span class="tag">${a}</span>`).join('') || 'none'}</span></div>
+      </div>
+      <div class="prompt-box-title">Content</div>
+      <div class="prompt-box">${p.body || '(empty)'}</div>
+      <div class="detail-field" style="margin-top:12px"><label>Source</label><span style="color:var(--muted)">${p.source}</span></div>
+    </div>`;
+}
+
+async function loadSkills() {
+  const res = await fetch('/api/skills');
+  const skills = await res.json();
+  const el = document.getElementById('skills');
+  if (!skills.length) { el.innerHTML = '<div class="empty">No skills found. Install built-in skills with: armadai init --skills</div>'; return; }
+  el.innerHTML = `
+    <div class="card-header">${skills.length} skills loaded</div>
+    <table>
+      <tr><th>Name</th><th>Description</th><th>Version</th><th>Tools</th><th>Source</th></tr>
+      ${skills.map(s => `
+        <tr class="clickable" onclick="viewSkill('${s.name}')">
+          <td>${s.name}</td>
+          <td>${s.description || ''}</td>
+          <td>${s.version || ''}</td>
+          <td>${s.tools.map(t => `<span class="tag stack">${t}</span>`).join('')}</td>
+          <td style="color:var(--muted)">${s.source}</td>
+        </tr>`).join('')}
+    </table>`;
+}
+
+async function viewSkill(name) {
+  const res = await fetch(`/api/skills/${encodeURIComponent(name)}`);
+  const s = await res.json();
+  if (s.error) return;
+  viewBackTab = 'skills';
+  ['agents','prompts','skills','starters','history','costs'].forEach(id => document.getElementById(id).style.display = 'none');
+  const el = document.getElementById('view');
+  el.style.display = 'block';
+  const fileBlock = (f) => f.content
+    ? `<details class="file-details"><summary>${f.name}</summary><pre class="file-content">${f.content.replace(/</g,'&lt;')}</pre></details>`
+    : `<div style="font-size:14px;padding:2px 0;color:var(--muted)">${f.name} (binary)</div>`;
+  let filesHtml = '';
+  if (s.scripts.length) filesHtml += `<div class="list-section"><h3>Scripts</h3>${s.scripts.map(fileBlock).join('')}</div>`;
+  if (s.references.length) filesHtml += `<div class="list-section"><h3>References</h3>${s.references.map(fileBlock).join('')}</div>`;
+  if (s.assets.length) filesHtml += `<div class="list-section"><h3>Assets</h3>${s.assets.map(fileBlock).join('')}</div>`;
+  el.innerHTML = `
+    <div class="detail">
+      <button class="back-btn" onclick="backToList()">&larr; Back to skills</button>
+      <h2>${s.name}</h2>
+      <div class="detail-grid">
+        <div class="detail-field"><label>Description</label><span>${s.description || '(none)'}</span></div>
+        <div class="detail-field"><label>Version</label><span>${s.version || '(none)'}</span></div>
+        <div class="detail-field"><label>Tools</label><span>${s.tools.map(t => `<span class="tag stack">${t}</span>`).join('') || 'none'}</span></div>
+      </div>
+      <div class="prompt-box-title">SKILL.md</div>
+      <div class="prompt-box">${s.body || '(empty)'}</div>
+      ${filesHtml}
+      <div class="detail-field" style="margin-top:12px"><label>Source</label><span style="color:var(--muted)">${s.source}</span></div>
+    </div>`;
+}
+
+async function loadStarters() {
+  const res = await fetch('/api/starters');
+  const starters = await res.json();
+  const el = document.getElementById('starters');
+  if (!starters.length) { el.innerHTML = '<div class="empty">No starter packs found.</div>'; return; }
+  el.innerHTML = `
+    <div class="card-header">${starters.length} starter packs</div>
+    <table>
+      <tr><th>Name</th><th>Description</th><th>Agents</th><th>Prompts</th><th>Skills</th></tr>
+      ${starters.map(s => `
+        <tr class="clickable" onclick="viewStarter('${s.name}')">
+          <td>${s.name}</td>
+          <td>${s.description}</td>
+          <td>${s.agents_count}</td>
+          <td>${s.prompts_count}</td>
+          <td>${s.skills_count}</td>
+        </tr>`).join('')}
+    </table>`;
+}
+
+async function viewStarter(name) {
+  const res = await fetch(`/api/starters/${encodeURIComponent(name)}`);
+  const s = await res.json();
+  if (s.error) return;
+  viewBackTab = 'starters';
+  ['agents','prompts','skills','starters','history','costs'].forEach(id => document.getElementById(id).style.display = 'none');
+  const el = document.getElementById('view');
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div class="detail">
+      <button class="back-btn" onclick="backToList()">&larr; Back to starters</button>
+      <h2>${s.name}</h2>
+      <p style="color:var(--muted);margin-bottom:20px">${s.description}</p>
+      <a href="/api/starters/${encodeURIComponent(name)}/config" download="armadai.yaml" class="back-btn" style="display:inline-block;text-decoration:none;margin-bottom:16px;border-color:var(--green);color:var(--green)">&#8615; Download armadai.yaml</a>
+      ${s.agents.length ? `<div class="list-section"><h3>Agents (${s.agents.length})</h3><ul>${s.agents.map(a => `<li>${a}</li>`).join('')}</ul></div>` : ''}
+      ${s.prompts.length ? `<div class="list-section"><h3>Prompts (${s.prompts.length})</h3><ul>${s.prompts.map(p => `<li>${p}</li>`).join('')}</ul></div>` : ''}
+      ${s.skills.length ? `<div class="list-section"><h3>Skills (${s.skills.length})</h3><ul>${s.skills.map(sk => `<li>${sk}</li>`).join('')}</ul></div>` : ''}
+    </div>`;
+}
+
 function backToList() {
   document.getElementById('view').style.display = 'none';
-  document.getElementById('agents').style.display = 'block';
+  document.getElementById(viewBackTab).style.display = 'block';
 }
 
 async function loadHistory() {

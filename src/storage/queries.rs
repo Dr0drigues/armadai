@@ -1,3 +1,4 @@
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use super::Database;
@@ -26,71 +27,178 @@ pub struct CostSummary {
 }
 
 /// Insert a new execution record.
-pub async fn insert_run(db: &Database, run: RunRecord) -> anyhow::Result<()> {
+pub fn insert_run(db: &Database, run: RunRecord) -> anyhow::Result<()> {
     let id = uuid::Uuid::new_v4().to_string();
-    db.create::<Option<RunRecord>>(("runs", id.as_str()))
-        .content(run)
-        .await?;
+    let conn = db.lock().unwrap();
+    conn.execute(
+        "INSERT INTO runs (id, agent, input, output, provider, model, tokens_in, tokens_out, cost, duration_ms, status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![id, run.agent, run.input, run.output, run.provider, run.model,
+                run.tokens_in, run.tokens_out, run.cost, run.duration_ms, run.status],
+    )?;
     Ok(())
 }
 
 /// Get execution history, optionally filtered by agent name.
-pub async fn get_history(
+pub fn get_history(
     db: &Database,
     agent: Option<&str>,
     limit: u32,
 ) -> anyhow::Result<Vec<RunRecord>> {
-    let query = match agent {
+    let conn = db.lock().unwrap();
+    let mut records = Vec::new();
+
+    match agent {
         Some(name) => {
-            format!(
-                "SELECT * FROM runs WHERE agent = '{name}' ORDER BY created_at DESC LIMIT {limit}"
-            )
+            let mut stmt = conn.prepare(
+                "SELECT agent, input, output, provider, model, tokens_in, tokens_out, cost, duration_ms, status
+                 FROM runs WHERE agent = ?1 ORDER BY created_at DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![name, limit], |row| {
+                Ok(RunRecord {
+                    agent: row.get(0)?,
+                    input: row.get(1)?,
+                    output: row.get(2)?,
+                    provider: row.get(3)?,
+                    model: row.get(4)?,
+                    tokens_in: row.get(5)?,
+                    tokens_out: row.get(6)?,
+                    cost: row.get(7)?,
+                    duration_ms: row.get(8)?,
+                    status: row.get(9)?,
+                })
+            })?;
+            for row in rows {
+                records.push(row?);
+            }
         }
         None => {
-            format!("SELECT * FROM runs ORDER BY created_at DESC LIMIT {limit}")
+            let mut stmt = conn.prepare(
+                "SELECT agent, input, output, provider, model, tokens_in, tokens_out, cost, duration_ms, status
+                 FROM runs ORDER BY created_at DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit], |row| {
+                Ok(RunRecord {
+                    agent: row.get(0)?,
+                    input: row.get(1)?,
+                    output: row.get(2)?,
+                    provider: row.get(3)?,
+                    model: row.get(4)?,
+                    tokens_in: row.get(5)?,
+                    tokens_out: row.get(6)?,
+                    cost: row.get(7)?,
+                    duration_ms: row.get(8)?,
+                    status: row.get(9)?,
+                })
+            })?;
+            for row in rows {
+                records.push(row?);
+            }
         }
-    };
-    let mut result = db.query(&query).await?;
-    let records: Vec<RunRecord> = result.take(0)?;
+    }
+
     Ok(records)
 }
 
-/// Get total cost for an agent.
-pub async fn get_agent_cost(db: &Database, agent: &str) -> anyhow::Result<f64> {
-    let mut result = db
-        .query(format!(
-            "SELECT math::sum(cost) AS total FROM runs WHERE agent = '{agent}'"
-        ))
-        .await?;
-    let total: Option<f64> = result.take("total")?;
-    Ok(total.unwrap_or(0.0))
-}
-
 /// Get cost summary grouped by agent.
-pub async fn get_costs_summary(
+pub fn get_costs_summary(
     db: &Database,
     agent_filter: Option<&str>,
 ) -> anyhow::Result<Vec<CostSummary>> {
-    let query = match agent_filter {
-        Some(name) => format!(
-            "SELECT \
-                agent, \
-                count() AS total_runs, \
-                math::sum(cost) AS total_cost, \
-                math::sum(tokens_in) AS total_tokens_in, \
-                math::sum(tokens_out) AS total_tokens_out \
-            FROM runs WHERE agent = '{name}' GROUP BY agent"
-        ),
-        None => "SELECT \
-                agent, \
-                count() AS total_runs, \
-                math::sum(cost) AS total_cost, \
-                math::sum(tokens_in) AS total_tokens_in, \
-                math::sum(tokens_out) AS total_tokens_out \
-            FROM runs GROUP BY agent ORDER BY total_cost DESC"
-            .to_string(),
-    };
-    let mut result = db.query(&query).await?;
-    let summaries: Vec<CostSummary> = result.take(0)?;
+    let conn = db.lock().unwrap();
+    let mut summaries = Vec::new();
+
+    match agent_filter {
+        Some(name) => {
+            let mut stmt = conn.prepare(
+                "SELECT agent, COUNT(*) AS total_runs, SUM(cost) AS total_cost,
+                        SUM(tokens_in) AS total_tokens_in, SUM(tokens_out) AS total_tokens_out
+                 FROM runs WHERE agent = ?1 GROUP BY agent",
+            )?;
+            let rows = stmt.query_map(params![name], |row| {
+                Ok(CostSummary {
+                    agent: row.get(0)?,
+                    total_runs: row.get(1)?,
+                    total_cost: row.get(2)?,
+                    total_tokens_in: row.get(3)?,
+                    total_tokens_out: row.get(4)?,
+                })
+            })?;
+            for row in rows {
+                summaries.push(row?);
+            }
+        }
+        None => {
+            let mut stmt = conn.prepare(
+                "SELECT agent, COUNT(*) AS total_runs, SUM(cost) AS total_cost,
+                        SUM(tokens_in) AS total_tokens_in, SUM(tokens_out) AS total_tokens_out
+                 FROM runs GROUP BY agent ORDER BY total_cost DESC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(CostSummary {
+                    agent: row.get(0)?,
+                    total_runs: row.get(1)?,
+                    total_cost: row.get(2)?,
+                    total_tokens_in: row.get(3)?,
+                    total_tokens_out: row.get(4)?,
+                })
+            })?;
+            for row in rows {
+                summaries.push(row?);
+            }
+        }
+    }
+
     Ok(summaries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::init_embedded;
+
+    fn sample_run(agent: &str, cost: f64) -> RunRecord {
+        RunRecord {
+            agent: agent.to_string(),
+            input: "test input".to_string(),
+            output: "test output".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet".to_string(),
+            tokens_in: 100,
+            tokens_out: 200,
+            cost,
+            duration_ms: 500,
+            status: "success".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_insert_and_get_history() {
+        let db = init_embedded().unwrap();
+        insert_run(&db, sample_run("agent-a", 0.01)).unwrap();
+        insert_run(&db, sample_run("agent-b", 0.02)).unwrap();
+
+        let all = get_history(&db, None, 10).unwrap();
+        assert_eq!(all.len(), 2);
+
+        let filtered = get_history(&db, Some("agent-a"), 10).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].agent, "agent-a");
+    }
+
+    #[test]
+    fn test_costs_summary() {
+        let db = init_embedded().unwrap();
+        insert_run(&db, sample_run("agent-a", 0.01)).unwrap();
+        insert_run(&db, sample_run("agent-a", 0.02)).unwrap();
+        insert_run(&db, sample_run("agent-b", 0.05)).unwrap();
+
+        let all = get_costs_summary(&db, None).unwrap();
+        assert_eq!(all.len(), 2);
+
+        let filtered = get_costs_summary(&db, Some("agent-a")).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].total_runs, 2);
+        assert!((filtered[0].total_cost - 0.03).abs() < 1e-9);
+    }
 }

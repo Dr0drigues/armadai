@@ -2,11 +2,16 @@ mod config;
 mod costs;
 mod fleet;
 mod history;
-mod init;
+pub mod init;
 mod inspect;
+mod link;
 mod list;
 pub(crate) mod new;
+mod prompts;
+mod registry;
 mod run;
+mod skills;
+mod unlink;
 mod up;
 mod update;
 mod validate;
@@ -74,7 +79,7 @@ pub enum Command {
         /// Agent name (optional in interactive mode)
         name: Option<String>,
         /// Template to use
-        #[arg(long, short, default_value = "basic")]
+        #[arg(long, short, default_value = "basic", value_parser = crate::cli::new::template_value_parser())]
         template: String,
         /// Tech stack (replaces {{stack}} placeholder)
         #[arg(long, short)]
@@ -186,10 +191,12 @@ pub enum Command {
     #[command(long_about = "Stop infrastructure services (Docker Compose).\n\n\
         Stops and removes the containers started by 'armadai up'.")]
     Down,
-    /// Manage agent fleets
+    /// [deprecated] Manage agent fleets
     #[command(
         subcommand,
-        long_about = "Manage agent fleets.\n\n\
+        long_about = "[DEPRECATED] Manage agent fleets.\n\n\
+            This command uses the legacy fleet format which will be removed in a future release.\n\
+            Use `armadai init --project` to create a modern armadai.yaml instead.\n\n\
             Create named groups of agents and link them to project directories via armadai.yaml.",
         after_help = "Examples:\n  \
             armadai fleet create my-fleet --all\n  \
@@ -198,6 +205,69 @@ pub enum Command {
             armadai fleet show my-fleet"
     )]
     Fleet(fleet::FleetAction),
+    /// Generate native config files for AI assistants
+    #[command(
+        long_about = "Generate native config files for AI assistants.\n\n\
+            Reads armadai.yaml and generates target-specific configuration files \
+            (e.g. .claude/agents/*.md for Claude Code, .github/agents/*.agent.md \
+            for GitHub Copilot). One source format, any target.",
+        after_help = "Examples:\n  \
+            armadai link --target claude\n  \
+            armadai link --target copilot --dry-run\n  \
+            armadai link --target claude --agents code-reviewer test-writer\n  \
+            armadai link --target claude --output .claude/agents --force"
+    )]
+    Link {
+        /// Target AI assistant (claude, copilot)
+        #[arg(long, short)]
+        target: Option<String>,
+        /// Coordinator agent whose prompt becomes the main context file
+        #[arg(long, short = 'C')]
+        coordinator: Option<String>,
+        /// Preview generated files without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Overwrite existing files without confirmation
+        #[arg(long)]
+        force: bool,
+        /// Output directory (overrides config and defaults)
+        #[arg(long, short)]
+        output: Option<std::path::PathBuf>,
+        /// Only link specific agents (by name)
+        #[arg(long, num_args = 1..)]
+        agents: Option<Vec<String>>,
+    },
+    /// Remove generated config files for AI assistants (reverse of link)
+    #[command(
+        long_about = "Remove generated config files for AI assistants.\n\n\
+            Reverses the effect of `armadai link` by deleting the generated files. \
+            Uses the same resolution logic as link to determine which files to remove.",
+        after_help = "Examples:\n  \
+            armadai unlink --target claude\n  \
+            armadai unlink --target copilot --dry-run\n  \
+            armadai unlink --target claude --with-config\n  \
+            armadai unlink --target claude --agents code-reviewer test-writer"
+    )]
+    Unlink {
+        /// Target AI assistant (claude, copilot)
+        #[arg(long, short)]
+        target: Option<String>,
+        /// Coordinator agent whose prompt becomes the main context file
+        #[arg(long, short = 'C')]
+        coordinator: Option<String>,
+        /// Preview files that would be removed without deleting
+        #[arg(long)]
+        dry_run: bool,
+        /// Also remove the armadai.yaml project config file
+        #[arg(long)]
+        with_config: bool,
+        /// Output directory (must match the one used during link)
+        #[arg(long, short)]
+        output: Option<std::path::PathBuf>,
+        /// Only unlink specific agents (by name)
+        #[arg(long, num_args = 1..)]
+        agents: Option<Vec<String>>,
+    },
     /// Initialize ArmadAI configuration
     #[command(
         long_about = "Initialize ArmadAI configuration.\n\n\
@@ -207,7 +277,9 @@ pub enum Command {
         after_help = "Examples:\n  \
             armadai init\n  \
             armadai init --force\n  \
-            armadai init --project"
+            armadai init --project\n  \
+            armadai init --pack rust-dev\n  \
+            armadai init --pack fullstack --force"
     )]
     Init {
         /// Overwrite existing config files
@@ -216,7 +288,53 @@ pub enum Command {
         /// Create a project-local armadai.yaml instead
         #[arg(long)]
         project: bool,
+        /// Install a starter pack (e.g. rust-dev, fullstack)
+        #[arg(long, value_parser = crate::core::starter::pack_value_parser())]
+        pack: Option<String>,
     },
+    /// Browse and import agents from the community registry
+    #[command(
+        subcommand,
+        long_about = "Browse and import agents from the community registry.\n\n\
+            Integrates with awesome-copilot as a discovery and distribution mechanism. \
+            Agents are converted from Copilot format to ArmadAI Markdown on import.",
+        after_help = "Examples:\n  \
+            armadai registry sync\n  \
+            armadai registry search \"security review\"\n  \
+            armadai registry list --category official\n  \
+            armadai registry add official/security\n  \
+            armadai registry info official/security"
+    )]
+    Registry(registry::RegistryAction),
+    /// Manage composable prompts
+    #[command(
+        subcommand,
+        long_about = "Manage composable prompt fragments.\n\n\
+            Prompts are reusable Markdown files with optional YAML frontmatter \
+            (name, description, apply_to). They compose with agents via the \
+            apply_to field or explicit project config references.",
+        after_help = "Examples:\n  \
+            armadai prompts list\n  \
+            armadai prompts show rust-conventions"
+    )]
+    Prompts(prompts::PromptsAction),
+    /// Manage composable skills
+    #[command(
+        subcommand,
+        long_about = "Manage composable skills.\n\n\
+            Skills follow the SKILL.md open standard — structured knowledge with \
+            scripts, references and assets. Each skill lives in a directory \
+            containing a SKILL.md file.\n\n\
+            Discover and install skills from GitHub repos with sync/search/add.",
+        after_help = "Examples:\n  \
+            armadai skills list\n  \
+            armadai skills show docker-compose\n  \
+            armadai skills sync\n  \
+            armadai skills search \"testing\"\n  \
+            armadai skills add anthropics/skills/webapp-testing\n  \
+            armadai skills info webapp-testing"
+    )]
+    Skills(skills::SkillsAction),
     /// Self-update to the latest release
     #[command(long_about = "Self-update to the latest release.\n\n\
             Downloads the latest binary from GitHub Releases and replaces the current one.")]
@@ -254,7 +372,30 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         #[cfg(feature = "web")]
         Command::Web { port } => crate::web::serve(port).await,
         Command::Fleet(action) => fleet::execute(action).await,
-        Command::Init { force, project } => init::execute(force, project).await,
+        Command::Registry(action) => registry::execute(action).await,
+        Command::Prompts(action) => prompts::execute(action).await,
+        Command::Skills(action) => skills::execute(action).await,
+        Command::Link {
+            target,
+            coordinator,
+            dry_run,
+            force,
+            output,
+            agents,
+        } => link::execute(target, coordinator, dry_run, force, output, agents).await,
+        Command::Unlink {
+            target,
+            coordinator,
+            dry_run,
+            with_config,
+            output,
+            agents,
+        } => unlink::execute(target, coordinator, dry_run, with_config, output, agents).await,
+        Command::Init {
+            force,
+            project,
+            pack,
+        } => init::execute(force, project, pack).await,
         Command::Update => update::execute().await,
         Command::Up => up::start().await,
         Command::Down => up::stop().await,

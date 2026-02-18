@@ -60,6 +60,10 @@ pub enum FleetAction {
 }
 
 pub async fn execute(action: FleetAction) -> anyhow::Result<()> {
+    eprintln!(
+        "Warning: `armadai fleet` is deprecated and will be removed in a future release.\n\
+         Use `armadai init --project` to create an armadai.yaml with the modern format instead.\n"
+    );
     match action {
         FleetAction::Create {
             name,

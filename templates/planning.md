@@ -7,6 +7,7 @@
 - max_tokens: 8192
 - tags: [planning, architecture]
 - stacks: [{{stack}}]
+- mode: guided
 
 ## System Prompt
 

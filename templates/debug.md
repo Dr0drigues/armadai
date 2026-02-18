@@ -7,6 +7,7 @@
 - max_tokens: 8192
 - tags: [dev, debug]
 - stacks: [{{stack}}]
+- mode: guided
 
 ## System Prompt
 

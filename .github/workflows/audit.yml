@@ -20,6 +20,10 @@ on:
   schedule:
     - cron: "0 6 * * *"
 
+permissions:
+  contents: read
+  checks: write
+
 jobs:
   audit:
     name: Audit Dependencies

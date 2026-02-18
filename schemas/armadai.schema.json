@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Dr0drigues/armadai/develop/schemas/armadai.schema.json",
+  "title": "ArmadAI Project Configuration",
+  "description": "Configuration file for ArmadAI projects (armadai.yaml). Supports both the current ProjectConfig format and the legacy FleetDefinition format.",
+  "oneOf": [
+    { "$ref": "#/$defs/ProjectConfig" },
+    { "$ref": "#/$defs/FleetDefinition" }
+  ],
+  "$defs": {
+    "ProjectConfig": {
+      "type": "object",
+      "title": "Project Configuration",
+      "description": "Modern ArmadAI project configuration format.",
+      "properties": {
+        "agents": {
+          "type": "array",
+          "title": "Agents",
+          "description": "List of agent references used in this project.",
+          "items": { "$ref": "#/$defs/AgentRef" }
+        },
+        "prompts": {
+          "type": "array",
+          "title": "Prompts",
+          "description": "Composable prompt fragments included in agent contexts.",
+          "items": { "$ref": "#/$defs/PromptRef" }
+        },
+        "skills": {
+          "type": "array",
+          "title": "Skills",
+          "description": "Skill directories following the Agent Skills open standard (SKILL.md).",
+          "items": { "$ref": "#/$defs/SkillRef" }
+        },
+        "sources": {
+          "type": "array",
+          "title": "Sources",
+          "description": "Additional source files to include in agent context (e.g. docs/architecture.md).",
+          "items": { "type": "string" }
+        },
+        "link": {
+          "$ref": "#/$defs/LinkConfig"
+        },
+        "defaults": {
+          "$ref": "#/$defs/ProjectDefaults"
+        }
+      },
+      "not": {
+        "required": ["fleet"]
+      },
+      "additionalProperties": false
+    },
+    "FleetDefinition": {
+      "type": "object",
+      "title": "Fleet Definition (legacy, deprecated)",
+      "description": "DEPRECATED: Legacy fleet format. Detected when a 'fleet' key is present. Automatically converted to ProjectConfig at load time. Will be removed in a future release. Migrate to the modern ProjectConfig format using `armadai init --project`.",
+      "deprecated": true,
+      "properties": {
+        "fleet": {
+          "type": "string",
+          "title": "Fleet name",
+          "description": "Name of the agent fleet."
+        },
+        "agents": {
+          "type": "array",
+          "title": "Agent names",
+          "description": "List of agent names (file stems without .md extension).",
+          "items": { "type": "string" }
+        },
+        "source": {
+          "type": "string",
+          "title": "Source directory",
+          "description": "Absolute path to the ArmadAI source directory."
+        }
+      },
+      "required": ["fleet", "agents", "source"],
+      "additionalProperties": false
+    },
+    "AgentRef": {
+      "title": "Agent Reference",
+      "description": "Reference to an agent, resolved at runtime. Exactly one of 'name', 'registry', or 'path' must be specified.",
+      "oneOf": [
+        {
+          "type": "object",
+          "title": "Named agent",
+          "description": "Agent looked up by name in project-local agents/ or user library ~/.config/armadai/agents/.",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Agent name (file stem, e.g. 'code-reviewer').",
+              "examples": ["code-reviewer", "rust-security"]
+            }
+          },
+          "required": ["name"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "Registry agent",
+          "description": "Agent fetched from the awesome-copilot community registry.",
+          "properties": {
+            "registry": {
+              "type": "string",
+              "description": "Registry identifier (e.g. 'official/security'). Run 'armadai registry sync' first.",
+              "examples": ["official/security"]
+            }
+          },
+          "required": ["registry"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "Path agent",
+          "description": "Agent referenced by a direct file path (absolute or relative to project root).",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Path to the agent Markdown file.",
+              "examples": [".armadai/agents/team.md"]
+            }
+          },
+          "required": ["path"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PromptRef": {
+      "title": "Prompt Reference",
+      "description": "Reference to a composable prompt fragment. Exactly one of 'name' or 'path' must be specified.",
+      "oneOf": [
+        {
+          "type": "object",
+          "title": "Named prompt",
+          "description": "Prompt looked up by name in project-local prompts/ or user library ~/.config/armadai/prompts/.",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Prompt name (file stem, e.g. 'rust-conventions').",
+              "examples": ["rust-conventions", "analysis-standards"]
+            }
+          },
+          "required": ["name"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "Path prompt",
+          "description": "Prompt referenced by a direct file path (absolute or relative to project root).",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Path to the prompt Markdown file.",
+              "examples": [".armadai/prompts/style.md"]
+            }
+          },
+          "required": ["path"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SkillRef": {
+      "title": "Skill Reference",
+      "description": "Reference to a skill directory containing a SKILL.md. Exactly one of 'name' or 'path' must be specified.",
+      "oneOf": [
+        {
+          "type": "object",
+          "title": "Named skill",
+          "description": "Skill looked up by name in project-local skills/ or user library ~/.config/armadai/skills/.",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Skill name (directory name, e.g. 'docker-compose').",
+              "examples": ["docker-compose"]
+            }
+          },
+          "required": ["name"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "title": "Path skill",
+          "description": "Skill referenced by a direct path (absolute or relative to project root).",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Path to the skill directory.",
+              "examples": [".armadai/skills/deploy/"]
+            }
+          },
+          "required": ["path"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "LinkConfig": {
+      "type": "object",
+      "title": "Linker Configuration",
+      "description": "Configuration for generating native config files for AI CLI tools.",
+      "properties": {
+        "target": {
+          "type": "string",
+          "title": "Link target",
+          "description": "Target AI CLI tool to generate configuration for.",
+          "enum": ["claude", "copilot", "gemini", "opencode"]
+        },
+        "coordinator": {
+          "type": "string",
+          "title": "Coordinator agent",
+          "description": "Name of the agent to use as coordinator/orchestrator.",
+          "examples": ["lead-analyst"]
+        },
+        "overrides": {
+          "type": "object",
+          "title": "Per-target overrides",
+          "description": "Override settings per linker target.",
+          "additionalProperties": {
+            "$ref": "#/$defs/LinkOverride"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "LinkOverride": {
+      "type": "object",
+      "title": "Link Override",
+      "description": "Per-target linker override settings.",
+      "properties": {
+        "output": {
+          "type": "string",
+          "title": "Output directory",
+          "description": "Custom output directory for the generated config files.",
+          "examples": [".claude/", ".github/agents/"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProjectDefaults": {
+      "type": "object",
+      "title": "Project Defaults",
+      "description": "Default settings applied to all agents in the project.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["guided", "autonomous"],
+          "default": "autonomous",
+          "description": "Default interaction mode. 'guided' makes agents ask clarifying questions before responding."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

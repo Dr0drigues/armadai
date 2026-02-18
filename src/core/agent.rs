@@ -2,6 +2,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Agent interaction mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentMode {
+    Guided,
+    #[default]
+    Autonomous,
+}
+
 /// An agent loaded from a Markdown definition file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
@@ -46,12 +55,20 @@ pub struct AgentMetadata {
     /// Supported tech stacks
     #[serde(default)]
     pub stacks: Vec<String>,
+    /// File/directory scope patterns (e.g. ["src/**/*.rs", "tests/"])
+    #[serde(default)]
+    pub scope: Vec<String>,
+    /// Fallback models to try if the primary model is unavailable
+    #[serde(default)]
+    pub model_fallback: Vec<String>,
     /// Cost limit per execution (USD)
     pub cost_limit: Option<f64>,
     /// Rate limit (e.g. "10/min")
     pub rate_limit: Option<String>,
     /// Context window size override
     pub context_window: Option<u32>,
+    /// Interaction mode (guided asks clarifying questions first)
+    pub mode: Option<AgentMode>,
 }
 
 fn default_temperature() -> f32 {
@@ -68,12 +85,31 @@ impl Agent {
     /// Load all agents from the given directory (recursively).
     pub fn load_all(agents_dir: &std::path::Path) -> anyhow::Result<Vec<Agent>> {
         let mut agents = Vec::new();
-        Self::load_from_dir(agents_dir, &mut agents)?;
+        let mut skipped = Vec::new();
+        Self::load_from_dir(agents_dir, &mut agents, &mut skipped)?;
         agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        for msg in &skipped {
+            tracing::debug!("{msg}");
+        }
         Ok(agents)
     }
 
-    fn load_from_dir(dir: &std::path::Path, agents: &mut Vec<Agent>) -> anyhow::Result<()> {
+    /// Load all agents, returning both the agents and any skipped-file messages.
+    pub fn load_all_with_skipped(
+        agents_dir: &std::path::Path,
+    ) -> anyhow::Result<(Vec<Agent>, Vec<String>)> {
+        let mut agents = Vec::new();
+        let mut skipped = Vec::new();
+        Self::load_from_dir(agents_dir, &mut agents, &mut skipped)?;
+        agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok((agents, skipped))
+    }
+
+    fn load_from_dir(
+        dir: &std::path::Path,
+        agents: &mut Vec<Agent>,
+        skipped: &mut Vec<String>,
+    ) -> anyhow::Result<()> {
         if !dir.exists() {
             return Ok(());
         }
@@ -81,12 +117,15 @@ impl Agent {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                Self::load_from_dir(&path, agents)?;
+                Self::load_from_dir(&path, agents, skipped)?;
             } else if path.extension().is_some_and(|ext| ext == "md") {
                 match crate::parser::parse_agent_file(&path) {
                     Ok(agent) => agents.push(agent),
                     Err(e) => {
-                        tracing::warn!("Failed to parse {}: {e}", path.display());
+                        skipped.push(format!(
+                            "Skipping {}: {e} (fix the file or remove it)",
+                            path.display()
+                        ));
                     }
                 }
             }
