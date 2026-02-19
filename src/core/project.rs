@@ -11,6 +11,8 @@ use super::fleet::FleetDefinition;
 // Project config file names
 // ---------------------------------------------------------------------------
 
+const PROJECT_DIR: &str = ".armadai";
+const PROJECT_DIR_CONFIG: &str = "config.yaml";
 const PROJECT_FILENAMES: &[&str] = &["armadai.yaml", "armadai.yml"];
 
 // ---------------------------------------------------------------------------
@@ -151,11 +153,24 @@ pub fn find_project_config() -> Option<(PathBuf, ProjectConfig)> {
 pub fn find_project_config_from(start: &Path) -> Option<(PathBuf, ProjectConfig)> {
     let mut dir = start.to_path_buf();
     loop {
+        // 1. Try .armadai/config.yaml first (preferred)
+        let dotarmadai_config = dir.join(PROJECT_DIR).join(PROJECT_DIR_CONFIG);
+        if dotarmadai_config.is_file()
+            && let Ok(config) = ProjectConfig::load(&dotarmadai_config)
+        {
+            return Some((dir.clone(), config));
+        }
+
+        // 2. Fallback to armadai.yaml / armadai.yml
         for filename in PROJECT_FILENAMES {
             let candidate = dir.join(filename);
             if candidate.is_file()
                 && let Ok(config) = ProjectConfig::load(&candidate)
             {
+                // Emit migration hint if .armadai/ doesn't exist
+                if !dir.join(PROJECT_DIR).exists() {
+                    check_dotarmadai_migration_hint(&dir, filename);
+                }
                 return Some((dir.clone(), config));
             }
         }
@@ -169,6 +184,20 @@ pub fn find_project_config_from(start: &Path) -> Option<(PathBuf, ProjectConfig)
         if !dir.pop() {
             return None;
         }
+    }
+}
+
+/// Print a one-time hint suggesting migration to `.armadai/config.yaml`.
+fn check_dotarmadai_migration_hint(project_root: &Path, legacy_filename: &str) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static PRINTED: AtomicBool = AtomicBool::new(false);
+    if !PRINTED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "hint: {} detected in {}. Consider migrating to \
+             .armadai/config.yaml. Run `armadai init --project` to create the new structure.",
+            legacy_filename,
+            project_root.display()
+        );
     }
 }
 
@@ -198,20 +227,30 @@ pub fn resolve_agent(agent_ref: &AgentRef, project_root: &Path) -> anyhow::Resul
                 format!("{name}.md")
             };
 
-            // 1. Project-local agents/
+            // 1. .armadai/agents/ (preferred)
+            let dotarmadai = project_root
+                .join(PROJECT_DIR)
+                .join("agents")
+                .join(&filename);
+            if dotarmadai.exists() {
+                return Ok(dotarmadai);
+            }
+
+            // 2. Project-local agents/ (legacy)
             let local = project_root.join("agents").join(&filename);
             if local.exists() {
                 return Ok(local);
             }
 
-            // 2. User library ~/.config/armadai/agents/
+            // 3. User library ~/.config/armadai/agents/
             let global = user_agents_dir().join(&filename);
             if global.exists() {
                 return Ok(global);
             }
 
             anyhow::bail!(
-                "Agent '{name}' not found in {} or {}",
+                "Agent '{name}' not found in {}, {} or {}",
+                dotarmadai.display(),
                 local.display(),
                 global.display()
             );
@@ -280,20 +319,30 @@ pub fn resolve_prompt(prompt_ref: &PromptRef, project_root: &Path) -> anyhow::Re
                 format!("{name}.md")
             };
 
-            // 1. Project-local prompts/
+            // 1. .armadai/prompts/ (preferred)
+            let dotarmadai = project_root
+                .join(PROJECT_DIR)
+                .join("prompts")
+                .join(&filename);
+            if dotarmadai.exists() {
+                return Ok(dotarmadai);
+            }
+
+            // 2. Project-local prompts/ (legacy)
             let local = project_root.join("prompts").join(&filename);
             if local.exists() {
                 return Ok(local);
             }
 
-            // 2. User library ~/.config/armadai/prompts/
+            // 3. User library ~/.config/armadai/prompts/
             let global = user_prompts_dir().join(&filename);
             if global.exists() {
                 return Ok(global);
             }
 
             anyhow::bail!(
-                "Prompt '{name}' not found in {} or {}",
+                "Prompt '{name}' not found in {}, {} or {}",
+                dotarmadai.display(),
                 local.display(),
                 global.display()
             );
@@ -340,20 +389,27 @@ pub fn resolve_skill(skill_ref: &SkillRef, project_root: &Path) -> anyhow::Resul
             }
         }
         SkillRef::Named { name } => {
-            // 1. Project-local skills/<name>/
+            // 1. .armadai/skills/<name>/ (preferred)
+            let dotarmadai = project_root.join(PROJECT_DIR).join("skills").join(name);
+            if dotarmadai.join("SKILL.md").exists() {
+                return Ok(dotarmadai);
+            }
+
+            // 2. Project-local skills/<name>/ (legacy)
             let local = project_root.join("skills").join(name);
             if local.join("SKILL.md").exists() {
                 return Ok(local);
             }
 
-            // 2. User library ~/.config/armadai/skills/<name>/
+            // 3. User library ~/.config/armadai/skills/<name>/
             let global = user_skills_dir().join(name);
             if global.join("SKILL.md").exists() {
                 return Ok(global);
             }
 
             anyhow::bail!(
-                "Skill '{name}' not found in {} or {}",
+                "Skill '{name}' not found in {}, {} or {}",
+                dotarmadai.display(),
                 local.display(),
                 global.display()
             );
@@ -841,5 +897,120 @@ sources:
         assert!(result.is_some());
         let (_, config) = result.unwrap();
         assert_eq!(config.agents.len(), 1);
+    }
+
+    #[test]
+    fn test_dotarmadai_config_priority() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create both .armadai/config.yaml and armadai.yaml
+        let dotarmadai = dir.path().join(".armadai");
+        std::fs::create_dir_all(&dotarmadai).unwrap();
+        std::fs::write(
+            dotarmadai.join("config.yaml"),
+            "agents:\n  - name: dotarmadai-agent\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("armadai.yaml"),
+            "agents:\n  - name: legacy-agent\n",
+        )
+        .unwrap();
+
+        // Create .git to stop walk-up
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+
+        let result = find_project_config_from(dir.path());
+        assert!(result.is_some());
+        let (_, config) = result.unwrap();
+        assert_eq!(config.agents.len(), 1);
+        assert_eq!(
+            config.agents[0],
+            AgentRef::Named {
+                name: "dotarmadai-agent".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_legacy_yaml_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Only armadai.yaml, no .armadai/
+        std::fs::write(
+            dir.path().join("armadai.yaml"),
+            "agents:\n  - name: legacy-agent\n",
+        )
+        .unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+
+        let result = find_project_config_from(dir.path());
+        assert!(result.is_some());
+        let (_, config) = result.unwrap();
+        assert_eq!(config.agents.len(), 1);
+        assert_eq!(
+            config.agents[0],
+            AgentRef::Named {
+                name: "legacy-agent".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_resolve_agent_dotarmadai_priority() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create both .armadai/agents/ and agents/
+        let dotarmadai_agents = dir.path().join(".armadai").join("agents");
+        std::fs::create_dir_all(&dotarmadai_agents).unwrap();
+        std::fs::write(dotarmadai_agents.join("my-agent.md"), "# DotArmadai\n").unwrap();
+
+        let legacy_agents = dir.path().join("agents");
+        std::fs::create_dir_all(&legacy_agents).unwrap();
+        std::fs::write(legacy_agents.join("my-agent.md"), "# Legacy\n").unwrap();
+
+        let agent_ref = AgentRef::Named {
+            name: "my-agent".to_string(),
+        };
+        let resolved = resolve_agent(&agent_ref, dir.path()).unwrap();
+        assert_eq!(resolved, dotarmadai_agents.join("my-agent.md"));
+    }
+
+    #[test]
+    fn test_resolve_prompt_dotarmadai_priority() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let dotarmadai_prompts = dir.path().join(".armadai").join("prompts");
+        std::fs::create_dir_all(&dotarmadai_prompts).unwrap();
+        std::fs::write(dotarmadai_prompts.join("style.md"), "# DotArmadai\n").unwrap();
+
+        let legacy_prompts = dir.path().join("prompts");
+        std::fs::create_dir_all(&legacy_prompts).unwrap();
+        std::fs::write(legacy_prompts.join("style.md"), "# Legacy\n").unwrap();
+
+        let prompt_ref = PromptRef::Named {
+            name: "style".to_string(),
+        };
+        let resolved = resolve_prompt(&prompt_ref, dir.path()).unwrap();
+        assert_eq!(resolved, dotarmadai_prompts.join("style.md"));
+    }
+
+    #[test]
+    fn test_resolve_skill_dotarmadai_priority() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let dotarmadai_skill = dir.path().join(".armadai").join("skills").join("docker");
+        std::fs::create_dir_all(&dotarmadai_skill).unwrap();
+        std::fs::write(dotarmadai_skill.join("SKILL.md"), "# DotArmadai\n").unwrap();
+
+        let legacy_skill = dir.path().join("skills").join("docker");
+        std::fs::create_dir_all(&legacy_skill).unwrap();
+        std::fs::write(legacy_skill.join("SKILL.md"), "# Legacy\n").unwrap();
+
+        let skill_ref = SkillRef::Named {
+            name: "docker".to_string(),
+        };
+        let resolved = resolve_skill(&skill_ref, dir.path()).unwrap();
+        assert_eq!(resolved, dotarmadai_skill);
     }
 }

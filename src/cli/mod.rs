@@ -196,8 +196,8 @@ pub enum Command {
         subcommand,
         long_about = "[DEPRECATED] Manage agent fleets.\n\n\
             This command uses the legacy fleet format which will be removed in a future release.\n\
-            Use `armadai init --project` to create a modern armadai.yaml instead.\n\n\
-            Create named groups of agents and link them to project directories via armadai.yaml.",
+            Use `armadai init --project` to create a modern .armadai/config.yaml instead.\n\n\
+            Create named groups of agents and link them to project directories.",
         after_help = "Examples:\n  \
             armadai fleet create my-fleet --all\n  \
             armadai fleet link my-fleet\n  \
@@ -208,9 +208,9 @@ pub enum Command {
     /// Generate native config files for AI assistants
     #[command(
         long_about = "Generate native config files for AI assistants.\n\n\
-            Reads armadai.yaml and generates target-specific configuration files \
-            (e.g. .claude/agents/*.md for Claude Code, .github/agents/*.agent.md \
-            for GitHub Copilot). One source format, any target.",
+            Reads project config (.armadai/config.yaml or armadai.yaml) and generates \
+            target-specific configuration files (e.g. .claude/agents/*.md for Claude Code, \
+            .github/agents/*.agent.md for GitHub Copilot). One source format, any target.",
         after_help = "Examples:\n  \
             armadai link --target claude\n  \
             armadai link --target copilot --dry-run\n  \
@@ -258,7 +258,7 @@ pub enum Command {
         /// Preview files that would be removed without deleting
         #[arg(long)]
         dry_run: bool,
-        /// Also remove the armadai.yaml project config file
+        /// Also remove the project config file (.armadai/config.yaml or armadai.yaml)
         #[arg(long)]
         with_config: bool,
         /// Output directory (must match the one used during link)
@@ -273,7 +273,8 @@ pub enum Command {
         long_about = "Initialize ArmadAI configuration.\n\n\
             Creates ~/.config/armadai/ with default config.yaml, providers.yaml, \
             and subdirectories (agents/, prompts/, skills/, fleets/, registry/).\n\n\
-            Use --project to create a minimal armadai.yaml in the current directory.",
+            Use --project to create a .armadai/ directory with config.yaml and \
+            subdirectories (agents/, prompts/, skills/, starters/).",
         after_help = "Examples:\n  \
             armadai init\n  \
             armadai init --force\n  \
@@ -285,7 +286,7 @@ pub enum Command {
         /// Overwrite existing config files
         #[arg(long)]
         force: bool,
-        /// Create a project-local armadai.yaml instead
+        /// Create a project-local .armadai/ directory with config.yaml
         #[arg(long)]
         project: bool,
         /// Install a starter pack (e.g. rust-dev, fullstack)
