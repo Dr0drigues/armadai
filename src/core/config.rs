@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // XDG path helpers
@@ -42,6 +42,10 @@ pub fn user_fleets_dir() -> PathBuf {
     config_dir().join("fleets")
 }
 
+pub fn user_starters_dir() -> PathBuf {
+    config_dir().join("starters")
+}
+
 pub fn registry_cache_dir() -> PathBuf {
     config_dir().join("registry")
 }
@@ -78,7 +82,7 @@ pub fn ensure_config_dirs() -> anyhow::Result<()> {
 // UserConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct UserConfig {
     pub defaults: DefaultsConfig,
@@ -86,6 +90,8 @@ pub struct UserConfig {
     pub rate_limits: HashMap<String, u32>,
     pub costs: CostsConfig,
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub starters_dirs: Vec<String>,
 }
 
 impl Default for UserConfig {
@@ -103,11 +109,12 @@ impl Default for UserConfig {
             .collect(),
             costs: CostsConfig::default(),
             logging: LoggingConfig::default(),
+            starters_dirs: Vec::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DefaultsConfig {
     pub provider: String,
@@ -129,7 +136,7 @@ impl Default for DefaultsConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct StorageConfig {
     pub mode: String,
@@ -145,7 +152,7 @@ impl Default for StorageConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CostsConfig {
     pub enabled: bool,
@@ -161,7 +168,7 @@ impl Default for CostsConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LoggingConfig {
     pub level: String,
@@ -187,6 +194,17 @@ pub fn load_user_config() -> UserConfig {
         Ok(content) => serde_yaml_ng::from_str(&content).unwrap_or_default(),
         Err(_) => UserConfig::default(),
     }
+}
+
+/// Save user config back to `~/.config/armadai/config.yaml`.
+pub fn save_user_config(config: &UserConfig) -> anyhow::Result<()> {
+    let path = config_file_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let yaml = serde_yaml_ng::to_string(config)?;
+    std::fs::write(&path, yaml)?;
+    Ok(())
 }
 
 /// Apply environment variable overrides on top of a loaded config.
@@ -254,14 +272,18 @@ pub struct AppPaths {
 }
 
 impl AppPaths {
-    /// Resolve paths: prefer project-local directories, fall back to global.
+    /// Resolve paths: prefer `.armadai/` → project-local → global.
     pub fn resolve() -> Self {
+        let dotarmadai_agents = Path::new(".armadai/agents");
         let local_agents = Path::new("agents");
         let local_templates = Path::new("templates");
+        let dotarmadai_config = Path::new(".armadai");
         let local_config = Path::new("config");
 
         Self {
-            agents_dir: if local_agents.exists() {
+            agents_dir: if dotarmadai_agents.exists() {
+                dotarmadai_agents.to_path_buf()
+            } else if local_agents.exists() {
                 local_agents.to_path_buf()
             } else {
                 user_agents_dir()
@@ -271,7 +293,9 @@ impl AppPaths {
             } else {
                 config_dir().join("templates")
             },
-            config_dir: if local_config.exists() {
+            config_dir: if dotarmadai_config.exists() {
+                dotarmadai_config.to_path_buf()
+            } else if local_config.exists() {
                 local_config.to_path_buf()
             } else {
                 config_dir()

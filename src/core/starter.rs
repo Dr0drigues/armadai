@@ -3,7 +3,11 @@ use std::path::{Path, PathBuf};
 use include_dir::{Dir, include_dir};
 use serde::Deserialize;
 
-use super::config::{user_agents_dir, user_prompts_dir, user_skills_dir};
+use std::collections::HashMap;
+
+use super::config::{
+    load_user_config, user_agents_dir, user_prompts_dir, user_skills_dir, user_starters_dir,
+};
 
 static EMBEDDED_STARTERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/starters");
 
@@ -166,14 +170,14 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Discover available starter packs directory.
+/// Discover the built-in starter packs directory.
 ///
 /// Resolution order:
 /// 1. `./starters` relative to CWD (dev)
 /// 2. `CARGO_MANIFEST_DIR/starters` (dev, compile-time path)
 /// 3. Next to the binary (packaged installs)
 /// 4. `~/.config/armadai/starters/` — extracted from embedded data on first use
-pub fn starters_dir() -> PathBuf {
+pub fn builtin_starters_dir() -> PathBuf {
     let candidates = [
         // Dev: relative to CWD
         PathBuf::from("starters"),
@@ -209,23 +213,122 @@ pub fn starters_dir() -> PathBuf {
     config_starters
 }
 
-/// List all available starter pack names.
-pub fn list_available_packs() -> Vec<String> {
-    let dir = starters_dir();
-    let mut packs = Vec::new();
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(_) => return packs,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir()
-            && path.join("pack.yaml").is_file()
-            && let Some(name) = path.file_name().and_then(|n| n.to_str())
-        {
-            packs.push(name.to_string());
+/// Return all starter directories in priority order.
+///
+/// Resolution order:
+/// 1. Built-in (embedded/bundled)
+/// 2. Project-local `.armadai/starters/`
+/// 3. User directory (`~/.config/armadai/starters/`)
+/// 4. `ARMADAI_STARTERS_DIRS` env var (colon-separated)
+/// 5. Custom directories from `config.yaml` `starters_dirs`
+pub fn all_starters_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    let builtin = builtin_starters_dir();
+    let user = user_starters_dir();
+
+    // 1. Built-in
+    dirs.push(builtin.clone());
+
+    // 2. Project-local .armadai/starters/
+    let project_starters = Path::new(".armadai/starters");
+    if project_starters.is_dir() && !dirs.contains(&project_starters.to_path_buf()) {
+        dirs.push(project_starters.to_path_buf());
+    }
+
+    // 3. User dir (only if different from builtin)
+    if user != builtin {
+        dirs.push(user);
+    }
+
+    // 4. ARMADAI_STARTERS_DIRS env var (colon-separated)
+    if let Ok(env_dirs) = std::env::var("ARMADAI_STARTERS_DIRS") {
+        for entry in env_dirs.split(':') {
+            let trimmed = entry.trim();
+            if !trimmed.is_empty() {
+                let p = PathBuf::from(trimmed);
+                if p.is_dir() && !dirs.contains(&p) {
+                    dirs.push(p);
+                }
+            }
         }
     }
+
+    // 5. Custom dirs from config.yaml
+    let config = load_user_config();
+    for custom in &config.starters_dirs {
+        let p = PathBuf::from(custom);
+        if p.is_dir() && !dirs.contains(&p) {
+            dirs.push(p);
+        }
+    }
+
+    dirs
+}
+
+/// Find a starter pack directory by name across all source directories.
+///
+/// User and custom directories take priority over built-in (last match wins).
+pub fn find_pack_dir(name: &str) -> Option<PathBuf> {
+    let mut found: Option<PathBuf> = None;
+    for dir in all_starters_dirs() {
+        let candidate = dir.join(name);
+        if candidate.is_dir() && candidate.join("pack.yaml").is_file() {
+            found = Some(candidate);
+        }
+    }
+    found
+}
+
+/// Load all starter packs from all source directories.
+///
+/// Packs are deduplicated by name: later directories (user, custom) override
+/// built-in packs with the same name.
+pub fn load_all_packs() -> Vec<StarterPack> {
+    let mut packs_map: HashMap<String, StarterPack> = HashMap::new();
+
+    for dir in all_starters_dirs() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir()
+                && path.join("pack.yaml").is_file()
+                && let Ok(pack) = StarterPack::load(&path)
+            {
+                packs_map.insert(pack.name.clone(), pack);
+            }
+        }
+    }
+
+    let mut packs: Vec<StarterPack> = packs_map.into_values().collect();
+    packs.sort_by(|a, b| a.name.cmp(&b.name));
+    packs
+}
+
+/// List all available starter pack names.
+pub fn list_available_packs() -> Vec<String> {
+    let mut seen = HashMap::new();
+
+    for dir in all_starters_dirs() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir()
+                && path.join("pack.yaml").is_file()
+                && let Some(name) = path.file_name().and_then(|n| n.to_str())
+            {
+                seen.insert(name.to_string(), ());
+            }
+        }
+    }
+
+    let mut packs: Vec<String> = seen.into_keys().collect();
     packs.sort();
     packs
 }
@@ -403,5 +506,74 @@ skills:
             names.contains(&"armadai-authoring".to_string()),
             "Expected armadai-authoring in {names:?}"
         );
+    }
+
+    #[test]
+    fn test_find_pack_dir_builtin() {
+        // Built-in packs should be findable
+        let found = find_pack_dir("code-analysis-rust");
+        assert!(found.is_some(), "Expected to find code-analysis-rust pack");
+        assert!(found.unwrap().join("pack.yaml").is_file());
+    }
+
+    #[test]
+    fn test_find_pack_dir_not_found() {
+        assert!(find_pack_dir("nonexistent-pack-xyz").is_none());
+    }
+
+    #[test]
+    fn test_load_all_packs() {
+        let packs = load_all_packs();
+        assert!(
+            !packs.is_empty(),
+            "Expected at least one pack from load_all_packs()"
+        );
+        // Should be sorted by name
+        let names: Vec<&str> = packs.iter().map(|p| p.name.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn test_env_var_starters_dirs() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+
+        // Create a pack in dir1
+        let pack_dir = dir1.path().join("env-pack");
+        std::fs::create_dir_all(&pack_dir).unwrap();
+        std::fs::write(
+            pack_dir.join("pack.yaml"),
+            "name: env-pack\ndescription: From env\n",
+        )
+        .unwrap();
+
+        let orig = std::env::var("ARMADAI_STARTERS_DIRS").ok();
+        let env_val = format!("{}:{}", dir1.path().display(), dir2.path().display());
+        unsafe {
+            std::env::set_var("ARMADAI_STARTERS_DIRS", &env_val);
+        }
+
+        let dirs = all_starters_dirs();
+        // Both dirs should be present (dir2 exists even though empty)
+        assert!(
+            dirs.contains(&dir1.path().to_path_buf()),
+            "Expected dir1 in starters dirs"
+        );
+        assert!(
+            dirs.contains(&dir2.path().to_path_buf()),
+            "Expected dir2 in starters dirs"
+        );
+
+        // The env pack should be findable
+        let found = find_pack_dir("env-pack");
+        assert!(found.is_some(), "Expected to find env-pack");
+
+        // Restore
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_STARTERS_DIRS", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_STARTERS_DIRS") },
+        }
     }
 }
