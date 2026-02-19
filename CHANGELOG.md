@@ -1,3 +1,12 @@
+## v0.7.0 (2026-02-19)
+
+### Feat
+
+- add .armadai/ project directory and ARMADAI_STARTERS_DIRS env var
+- add `armadai config starters-dir` subcommand (list/add/remove)
+- 3-level resource resolution: .armadai/ → project root → user library
+- automatic migration hint for legacy armadai.yaml projects
+
 ## v0.6.1 (2026-02-18)
 
 ### Feat

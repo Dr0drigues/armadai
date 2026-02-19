@@ -235,7 +235,7 @@ armadai/
 │   │   ├── history.rs           # armadai history [--agent ...] [--replay id]
 │   │   ├── init.rs              # armadai init (bootstrap config)
 │   │   ├── up.rs                # armadai up (lance docker-compose)
-│   │   ├── config.rs            # armadai config (gestion providers/settings)
+│   │   ├── config.rs            # armadai config (providers, secrets, starters-dir)
 │   │   └── validate.rs          # armadai validate [agent] (dry-run)
 │   ├── tui/                     # Interface TUI
 │   │   ├── mod.rs
@@ -252,17 +252,17 @@ armadai/
 │   ├── core/                    # Domaine métier
 │   │   ├── mod.rs
 │   │   ├── agent.rs             # Struct Agent, chargement depuis .md
-│   │   ├── config.rs            # Config centralisée, résolution XDG, AppPaths
+│   │   ├── config.rs            # Config centralisée, résolution XDG, AppPaths, save_user_config()
 │   │   ├── coordinator.rs       # Hub & spoke : décomposition et dispatch
 │   │   ├── pipeline.rs          # Mode pipeline : chaînage séquentiel
 │   │   ├── task.rs              # Définition d'une tâche + résultat
 │   │   ├── context.rs           # Gestion du contexte partagé entre agents
-│   │   ├── project.rs          # Config projet (armadai.yaml), résolution agents/prompts/skills
+│   │   ├── project.rs          # Config projet (.armadai/config.yaml ou armadai.yaml), résolution 3 niveaux
 │   │   ├── embedded.rs         # Versioning des ressources embedded (.armadai-version)
 │   │   ├── fleet.rs            # Définitions de flottes, liaison projets-agents
 │   │   ├── prompt.rs           # Fragments de prompts composables (YAML frontmatter)
 │   │   ├── skill.rs            # Skills (standard SKILL.md)
-│   │   └── starter.rs          # Starter packs (installation de bundles)
+│   │   └── starter.rs          # Starter packs, all_starters_dirs(), ARMADAI_STARTERS_DIRS
 │   ├── parser/                  # Parsing Markdown → Agent
 │   │   ├── mod.rs
 │   │   ├── markdown.rs          # Parsing headings, sections, metadata
@@ -355,9 +355,12 @@ armadai history --replay <id>      # Rejouer une exécution passée
 armadai costs [--agent a] [--from] # Consulter les coûts
 armadai config providers           # Gérer les providers
 armadai config secrets init        # Initialiser SOPS + age
+armadai config starters-dir list   # Lister les répertoires starters
+armadai config starters-dir add <path>  # Ajouter un répertoire starters
+armadai config starters-dir remove <path> # Retirer un répertoire starters
 armadai init                       # Initialiser ~/.config/armadai/
 armadai init --force               # Écraser les fichiers existants
-armadai init --project             # Créer armadai.yaml local
+armadai init --project             # Créer .armadai/config.yaml local
 armadai tui                        # Lancer l'interface TUI
 armadai up                         # Lancer l'infra Docker (optionnel)
 armadai down                       # Arrêter l'infra Docker
@@ -402,14 +405,21 @@ Toute la résolution de chemins et la configuration utilisateur passe par `core/
 ### Résolution des chemins (AppPaths)
 
 Pour `agents/`, `templates/`, `config/` :
-1. Répertoire projet-local (s'il existe dans le cwd)
-2. Fallback vers le répertoire global `~/.config/armadai/`
+1. `.armadai/{type}/` (dossier projet préféré)
+2. `{type}/` (répertoire projet-local legacy)
+3. Fallback vers le répertoire global `~/.config/armadai/`
+
+### Config projet
+
+Priorité de recherche (walk-up depuis le cwd) :
+1. `.armadai/config.yaml` (préféré)
+2. `armadai.yaml` / `armadai.yml` (legacy, hint migration affiché)
 
 ### Couches de configuration
 
 1. Defaults Rust (impl `Default`)
 2. `~/.config/armadai/config.yaml` (désérialisation serde avec `#[serde(default)]`)
-3. Variables d'environnement : `ARMADAI_PROVIDER`, `ARMADAI_MODEL`, `ARMADAI_TEMPERATURE`
+3. Variables d'environnement : `ARMADAI_PROVIDER`, `ARMADAI_MODEL`, `ARMADAI_TEMPERATURE`, `ARMADAI_STARTERS_DIRS`
 
 ---
 

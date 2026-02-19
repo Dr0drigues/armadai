@@ -299,30 +299,8 @@ impl App {
     }
 
     pub fn load_starters(&mut self) {
-        use crate::core::starter::{StarterPack, starters_dir};
-        let dir = starters_dir();
-        let mut packs = Vec::new();
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => {
-                self.starters = packs;
-                return;
-            }
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() && path.join("pack.yaml").is_file() {
-                match StarterPack::load(&path) {
-                    Ok(p) => packs.push(p),
-                    Err(e) => {
-                        self.status_msg =
-                            Some(format!("Failed to load starter {}: {e}", path.display()));
-                    }
-                }
-            }
-        }
-        packs.sort_by(|a, b| a.name.cmp(&b.name));
-        self.starters = packs;
+        use crate::core::starter::load_all_packs;
+        self.starters = load_all_packs();
     }
 
     pub fn selected_agent(&self) -> Option<&Agent> {

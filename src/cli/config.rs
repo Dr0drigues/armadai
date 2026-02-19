@@ -16,6 +16,12 @@ pub enum ConfigAction {
         #[command(subcommand)]
         action: SecretsAction,
     },
+    /// Manage custom starter pack directories
+    #[command(name = "starters-dir")]
+    StartersDir {
+        #[command(subcommand)]
+        action: StartersDirAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -26,12 +32,33 @@ pub enum SecretsAction {
     Rotate,
 }
 
+#[derive(Subcommand)]
+pub enum StartersDirAction {
+    /// List all starter directories and their sources
+    List,
+    /// Add a custom starter directory to config.yaml
+    Add {
+        /// Path to the directory containing starter packs
+        path: String,
+    },
+    /// Remove a custom starter directory from config.yaml
+    Remove {
+        /// Path to remove
+        path: String,
+    },
+}
+
 pub async fn execute(action: ConfigAction) -> anyhow::Result<()> {
     match action {
         ConfigAction::Providers => show_providers().await,
         ConfigAction::Secrets { action } => match action {
             SecretsAction::Init => secrets_init().await,
             SecretsAction::Rotate => secrets_rotate().await,
+        },
+        ConfigAction::StartersDir { action } => match action {
+            StartersDirAction::List => starters_dir_list().await,
+            StartersDirAction::Add { path } => starters_dir_add(&path).await,
+            StartersDirAction::Remove { path } => starters_dir_remove(&path).await,
         },
     }
 }
@@ -265,6 +292,85 @@ async fn secrets_rotate() -> anyhow::Result<()> {
         "You can delete the backup when confirmed: rm {}",
         backup_path.display()
     );
+
+    Ok(())
+}
+
+/// List all starter directories with their source type.
+async fn starters_dir_list() -> anyhow::Result<()> {
+    use crate::core::starter::{all_starters_dirs, builtin_starters_dir};
+
+    let builtin = builtin_starters_dir();
+    let user = app_config::user_starters_dir();
+
+    let config = app_config::load_user_config();
+    let config_dirs: Vec<std::path::PathBuf> = config
+        .starters_dirs
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+
+    let env_dirs: Vec<std::path::PathBuf> = std::env::var("ARMADAI_STARTERS_DIRS")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| std::path::PathBuf::from(s.trim()))
+        .collect();
+
+    let project_starters = std::path::Path::new(".armadai/starters");
+
+    for dir in all_starters_dirs() {
+        let source = if dir == builtin {
+            "built-in"
+        } else if dir == project_starters.to_path_buf() {
+            "project"
+        } else if dir == user {
+            "user"
+        } else if env_dirs.contains(&dir) {
+            "env"
+        } else if config_dirs.contains(&dir) {
+            "config"
+        } else {
+            "unknown"
+        };
+        println!("  [{source}] {}", dir.display());
+    }
+
+    Ok(())
+}
+
+/// Add a custom starter directory to config.yaml.
+async fn starters_dir_add(path: &str) -> anyhow::Result<()> {
+    let mut config = app_config::load_user_config();
+
+    if config.starters_dirs.contains(&path.to_string()) {
+        println!("Directory already in config: {path}");
+        return Ok(());
+    }
+
+    config.starters_dirs.push(path.to_string());
+    app_config::save_user_config(&config)?;
+    println!("Added starter directory: {path}");
+    println!("  Saved to {}", app_config::config_file_path().display());
+
+    Ok(())
+}
+
+/// Remove a custom starter directory from config.yaml.
+async fn starters_dir_remove(path: &str) -> anyhow::Result<()> {
+    let mut config = app_config::load_user_config();
+
+    let before = config.starters_dirs.len();
+    config.starters_dirs.retain(|d| d != path);
+
+    if config.starters_dirs.len() == before {
+        println!("Directory not found in config: {path}");
+        return Ok(());
+    }
+
+    app_config::save_user_config(&config)?;
+    println!("Removed starter directory: {path}");
+    println!("  Saved to {}", app_config::config_file_path().display());
 
     Ok(())
 }

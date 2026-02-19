@@ -14,11 +14,14 @@ pub async fn execute(
 ) -> anyhow::Result<()> {
     // 1. Find project config
     let (root, config) = project::find_project_config().ok_or_else(|| {
-        anyhow::anyhow!("No armadai.yaml found. Run `armadai init --project` to create one.")
+        anyhow::anyhow!(
+            "No project config found (.armadai/config.yaml or armadai.yaml). \
+             Run `armadai init --project` to create one."
+        )
     })?;
 
     if config.agents.is_empty() {
-        anyhow::bail!("No agents declared in armadai.yaml.");
+        anyhow::bail!("No agents declared in project config.");
     }
 
     // 2. Resolve and parse agents
@@ -36,7 +39,7 @@ pub async fn execute(
     }
 
     if link_agents.is_empty() {
-        anyhow::bail!("No agents could be resolved. Check your armadai.yaml.");
+        anyhow::bail!("No agents could be resolved. Check your project config.");
     }
 
     // 3. Filter by --agents if provided

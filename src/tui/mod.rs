@@ -125,18 +125,36 @@ pub async fn run() -> Result<()> {
                     if let Some(pack) = app.selected_starter().cloned() {
                         let pack_name = pack.name.clone();
                         let yaml = crate::cli::init::generate_project_yaml(&pack, &pack_name);
-                        let path = std::path::Path::new("armadai.yaml");
-                        if path.exists() {
-                            app.status_msg = Some("armadai.yaml already exists".to_string());
+                        let dotarmadai = std::path::Path::new(".armadai");
+                        let config_path = dotarmadai.join("config.yaml");
+                        let legacy_path = std::path::Path::new("armadai.yaml");
+                        if config_path.exists() {
+                            app.status_msg =
+                                Some(".armadai/config.yaml already exists".to_string());
+                        } else if legacy_path.exists() {
+                            app.status_msg = Some(
+                                "armadai.yaml already exists (migrate to .armadai/)".to_string(),
+                            );
                         } else {
-                            match std::fs::write(path, yaml) {
-                                Ok(()) => {
-                                    app.status_msg =
-                                        Some(format!("Created armadai.yaml (pack: {pack_name})"));
-                                }
-                                Err(e) => {
-                                    app.status_msg =
-                                        Some(format!("Failed to write armadai.yaml: {e}"));
+                            // Create .armadai/ directory structure
+                            let dirs_ok = ["agents", "prompts", "skills", "starters"]
+                                .iter()
+                                .all(|sub| std::fs::create_dir_all(dotarmadai.join(sub)).is_ok());
+                            if !dirs_ok {
+                                app.status_msg =
+                                    Some("Failed to create .armadai/ directories".to_string());
+                            } else {
+                                match std::fs::write(&config_path, yaml) {
+                                    Ok(()) => {
+                                        app.status_msg = Some(format!(
+                                            "Created .armadai/config.yaml (pack: {pack_name})"
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        app.status_msg = Some(format!(
+                                            "Failed to write .armadai/config.yaml: {e}"
+                                        ));
+                                    }
                                 }
                             }
                         }
