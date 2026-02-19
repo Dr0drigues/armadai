@@ -8,7 +8,7 @@ Starter packs are curated bundles of agents, prompts and skills that you can ins
 # Install a pack (agents, prompts, skills copied to user library)
 armadai init --pack <pack-name>
 
-# Install a pack + create armadai.yaml project config
+# Install a pack + create .armadai/config.yaml project config
 armadai init --pack <pack-name> --project
 ```
 
@@ -18,8 +18,8 @@ This copies the pack's agents, prompts and skills into your user library (`~/.co
 
 You can also init a project from the UI:
 
-- **TUI**: navigate to the Starters tab (or Starter Detail), press `i` to write `armadai.yaml` to the current working directory
-- **Web UI**: click the "Download armadai.yaml" button on any starter detail page
+- **TUI**: navigate to the Starters tab (or Starter Detail), press `i` to create `.armadai/config.yaml` in the current working directory
+- **Web UI**: click the "Download config.yaml" button on any starter detail page
 
 ## Available Packs
 
@@ -173,6 +173,47 @@ When the binary is updated, packs are automatically re-extracted to ensure they 
 4. Add prompt `.md` files in `prompts/` (optional)
 5. Add skill directories in `skills/` (optional)
 6. Follow the [Agent Format](agent-format.md) for agent files
+
+## Custom Starter Directories
+
+By default, ArmadAI looks for starters in the built-in directory and the user library. You can add custom directories in several ways:
+
+### Priority order
+
+1. **Built-in** — embedded in the binary
+2. **Project-local** — `.armadai/starters/` in the current project
+3. **User library** — `~/.config/armadai/starters/`
+4. **Environment variable** — `ARMADAI_STARTERS_DIRS` (colon-separated paths)
+5. **Config file** — `starters_dirs` in `~/.config/armadai/config.yaml`
+
+### Environment variable
+
+```bash
+export ARMADAI_STARTERS_DIRS=/path/to/starters1:/path/to/starters2
+armadai list --starters
+```
+
+### Config file
+
+Add custom directories to `~/.config/armadai/config.yaml`:
+
+```yaml
+starters_dirs:
+  - /path/to/my-starters
+  - /shared/team-starters
+```
+
+Or use the CLI:
+
+```bash
+armadai config starters-dir add /path/to/my-starters
+armadai config starters-dir list
+armadai config starters-dir remove /path/to/my-starters
+```
+
+### Project-local starters
+
+Place starter packs in `.armadai/starters/` for project-specific starters that are versioned with the project.
 
 ## See Also
 

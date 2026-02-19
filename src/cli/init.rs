@@ -1,5 +1,5 @@
 use crate::core::config;
-use crate::core::starter::{StarterPack, list_available_packs, starters_dir};
+use crate::core::starter::{StarterPack, find_pack_dir, list_available_packs};
 
 pub async fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Result<()> {
     if let Some(ref pack_name) = pack
@@ -63,23 +63,20 @@ fn init_global(force: bool) -> anyhow::Result<()> {
 
 /// Install a starter pack by name. Returns the loaded pack definition.
 fn install_pack(name: &str, force: bool) -> anyhow::Result<StarterPack> {
-    let dir = starters_dir();
-    let pack_dir = dir.join(name);
-
-    if !pack_dir.is_dir() {
-        let available = list_available_packs();
-        if available.is_empty() {
-            anyhow::bail!(
-                "Starter pack '{name}' not found. No packs available in {}",
-                dir.display()
-            );
-        } else {
-            anyhow::bail!(
-                "Starter pack '{name}' not found. Available packs: {}",
-                available.join(", ")
-            );
+    let pack_dir = match find_pack_dir(name) {
+        Some(dir) => dir,
+        None => {
+            let available = list_available_packs();
+            if available.is_empty() {
+                anyhow::bail!("Starter pack '{name}' not found. No packs available.");
+            } else {
+                anyhow::bail!(
+                    "Starter pack '{name}' not found. Available packs: {}",
+                    available.join(", ")
+                );
+            }
         }
-    }
+    };
 
     let pack = StarterPack::load(&pack_dir)?;
     println!(
@@ -135,17 +132,36 @@ sources: []
     .to_string()
 }
 
-/// Create an armadai.yaml in the current directory using the new project format.
+/// Create a `.armadai/` project structure in the current directory.
 fn init_project() -> anyhow::Result<()> {
-    let path = std::path::Path::new("armadai.yaml");
-    if path.exists() {
-        anyhow::bail!("armadai.yaml already exists in current directory");
+    let dotarmadai = std::path::Path::new(".armadai");
+    let dotarmadai_config = dotarmadai.join("config.yaml");
+    let legacy_path = std::path::Path::new("armadai.yaml");
+
+    if dotarmadai_config.exists() {
+        anyhow::bail!(".armadai/config.yaml already exists in current directory");
+    }
+    if legacy_path.exists() {
+        anyhow::bail!(
+            "armadai.yaml already exists in current directory. \
+             Remove it first or manually move it to .armadai/config.yaml"
+        );
+    }
+
+    // Create directory structure
+    for subdir in &["agents", "prompts", "skills", "starters"] {
+        std::fs::create_dir_all(dotarmadai.join(subdir))?;
     }
 
     let content = generate_empty_project_yaml();
-    std::fs::write(path, content)?;
-    println!("Created armadai.yaml in current directory");
-    println!("  Edit it to declare agents, prompts, skills and link targets.");
+    std::fs::write(&dotarmadai_config, content)?;
+    println!("Created .armadai/ project structure:");
+    println!("  .armadai/config.yaml");
+    println!("  .armadai/agents/");
+    println!("  .armadai/prompts/");
+    println!("  .armadai/skills/");
+    println!("  .armadai/starters/");
+    println!("\n  Edit .armadai/config.yaml to declare agents, prompts, skills and link targets.");
 
     Ok(())
 }
@@ -206,16 +222,33 @@ pub fn generate_project_yaml(pack: &StarterPack, pack_name: &str) -> String {
     content
 }
 
-/// Create an armadai.yaml pre-configured with the agents from a starter pack.
+/// Create a `.armadai/` project structure pre-configured with a starter pack.
 fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result<()> {
-    let path = std::path::Path::new("armadai.yaml");
-    if path.exists() {
-        anyhow::bail!("armadai.yaml already exists in current directory");
+    let dotarmadai = std::path::Path::new(".armadai");
+    let dotarmadai_config = dotarmadai.join("config.yaml");
+    let legacy_path = std::path::Path::new("armadai.yaml");
+
+    if dotarmadai_config.exists() {
+        anyhow::bail!(".armadai/config.yaml already exists in current directory");
+    }
+    if legacy_path.exists() {
+        anyhow::bail!(
+            "armadai.yaml already exists in current directory. \
+             Remove it first or manually move it to .armadai/config.yaml"
+        );
+    }
+
+    // Create directory structure
+    for subdir in &["agents", "prompts", "skills", "starters"] {
+        std::fs::create_dir_all(dotarmadai.join(subdir))?;
     }
 
     let content = generate_project_yaml(pack, pack_name);
-    std::fs::write(path, &content)?;
-    println!("\nCreated armadai.yaml with pack '{}' agents", pack.name);
+    std::fs::write(&dotarmadai_config, &content)?;
+    println!(
+        "\nCreated .armadai/config.yaml with pack '{}' agents",
+        pack.name
+    );
     println!("  Run `armadai link` to generate target config files.");
 
     Ok(())
@@ -224,8 +257,7 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
 /// Detect a coordinator agent from a pack by scanning agent files for a
 /// `tags: [... coordinator ...]` metadata entry.
 fn detect_pack_coordinator(pack: &StarterPack, pack_name: &str) -> Option<String> {
-    let dir = starters_dir();
-    let agents_dir = dir.join(pack_name).join("agents");
+    let agents_dir = find_pack_dir(pack_name)?.join("agents");
     if !agents_dir.is_dir() {
         return None;
     }
@@ -255,8 +287,7 @@ fn detect_pack_coordinator(pack: &StarterPack, pack_name: &str) -> Option<String
 
 /// Try to detect the primary provider used by a pack's agents.
 fn detect_pack_provider(pack_name: &str) -> Option<String> {
-    let dir = starters_dir();
-    let agents_dir = dir.join(pack_name).join("agents");
+    let agents_dir = find_pack_dir(pack_name)?.join("agents");
     if !agents_dir.is_dir() {
         return None;
     }

@@ -149,7 +149,7 @@ armadai web              # http://localhost:3000
 armadai web --port 8080  # custom port
 ```
 
-Browse agents, prompts, skills and starters. View execution history and track costs. Skill detail views show reference file contents in collapsible sections. Starter detail pages include a "Download armadai.yaml" button.
+Browse agents, prompts, skills and starters. View execution history and track costs. Skill detail views show reference file contents in collapsible sections. Starter detail pages include a "Download config.yaml" button.
 
 ## Community Registry
 
@@ -183,6 +183,42 @@ armadai skills add anthropics/skills/webapp-testing
 # List installed skills
 armadai skills list
 ```
+
+## Project Structure
+
+ArmadAI uses a `.armadai/` directory as the canonical project configuration location:
+
+```
+.armadai/
+├── config.yaml     # Project configuration (agents, prompts, skills, link targets)
+├── agents/         # Project-local agent definitions (.md files)
+├── prompts/        # Project-local prompt fragments (.md files)
+├── skills/         # Project-local skills (directories with SKILL.md)
+└── starters/       # Project-local starter packs
+```
+
+Create this structure with:
+
+```bash
+armadai init --project
+```
+
+### Legacy format
+
+The older `armadai.yaml` at the repository root is still supported for backwards compatibility. When ArmadAI detects `armadai.yaml` without a `.armadai/` directory, it prints a migration hint:
+
+```
+hint: armadai.yaml detected in /path/to/project. Consider migrating to
+.armadai/config.yaml. Run `armadai init --project` to create the new structure.
+```
+
+### Resolution order
+
+Resources (agents, prompts, skills) are resolved in this order:
+
+1. `.armadai/{type}/` — project-local (preferred)
+2. `{type}/` — legacy root-level directories
+3. `~/.config/armadai/{type}/` — user library
 
 ## IDE Support
 

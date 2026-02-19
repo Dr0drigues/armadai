@@ -356,45 +356,36 @@ pub async fn get_skill(Path(name): Path<String>) -> Json<serde_json::Value> {
 }
 
 pub async fn list_starters() -> Json<Vec<StarterSummary>> {
-    use crate::core::starter::{StarterPack, starters_dir};
+    use crate::core::starter::load_all_packs;
 
-    let dir = starters_dir();
-    let mut packs = Vec::new();
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(_) => return Json(packs),
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() && path.join("pack.yaml").is_file() {
-            if let Ok(p) = StarterPack::load(&path) {
-                packs.push(StarterSummary {
-                    name: p.name,
-                    description: p.description,
-                    agents_count: p.agents.len(),
-                    prompts_count: p.prompts.len(),
-                    skills_count: p.skills.len(),
-                });
-            }
-        }
-    }
-    packs.sort_by(|a, b| a.name.cmp(&b.name));
-    Json(packs)
+    let packs = load_all_packs();
+    let summaries = packs
+        .into_iter()
+        .map(|p| StarterSummary {
+            name: p.name,
+            description: p.description,
+            agents_count: p.agents.len(),
+            prompts_count: p.prompts.len(),
+            skills_count: p.skills.len(),
+        })
+        .collect();
+    Json(summaries)
 }
 
 pub async fn get_starter(Path(name): Path<String>) -> Json<serde_json::Value> {
-    use crate::core::starter::{StarterPack, starters_dir};
+    use crate::core::starter::{StarterPack, find_pack_dir};
 
-    let dir = starters_dir();
-    let pack_dir = dir.join(&name);
-    if !pack_dir.join("pack.yaml").is_file() {
-        return Json(
-            serde_json::to_value(ErrorResponse {
-                error: format!("Starter '{name}' not found"),
-            })
-            .unwrap(),
-        );
-    }
+    let pack_dir = match find_pack_dir(&name) {
+        Some(dir) => dir,
+        None => {
+            return Json(
+                serde_json::to_value(ErrorResponse {
+                    error: format!("Starter '{name}' not found"),
+                })
+                .unwrap(),
+            );
+        }
+    };
 
     match StarterPack::load(&pack_dir) {
         Ok(p) => {
@@ -417,10 +408,18 @@ pub async fn get_starter(Path(name): Path<String>) -> Json<serde_json::Value> {
 }
 
 pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {
-    use crate::core::starter::{StarterPack, starters_dir};
+    use crate::core::starter::{StarterPack, find_pack_dir};
 
-    let dir = starters_dir();
-    let pack_dir = dir.join(&name);
+    let pack_dir = match find_pack_dir(&name) {
+        Some(dir) => dir,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                HeaderMap::new(),
+                format!("Starter '{name}' not found"),
+            );
+        }
+    };
 
     let pack = match StarterPack::load(&pack_dir) {
         Ok(p) => p,
@@ -428,7 +427,7 @@ pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {
             return (
                 StatusCode::NOT_FOUND,
                 HeaderMap::new(),
-                format!("Starter '{name}' not found"),
+                format!("Failed to load starter '{name}'"),
             );
         }
     };
@@ -441,7 +440,7 @@ pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_static("attachment; filename=\"armadai.yaml\""),
+        HeaderValue::from_static("attachment; filename=\"config.yaml\""),
     );
     (StatusCode::OK, headers, yaml)
 }

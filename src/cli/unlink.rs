@@ -14,11 +14,14 @@ pub async fn execute(
 ) -> anyhow::Result<()> {
     // 1. Find project config
     let (root, config) = project::find_project_config().ok_or_else(|| {
-        anyhow::anyhow!("No armadai.yaml found. Run `armadai init --project` to create one.")
+        anyhow::anyhow!(
+            "No project config found (.armadai/config.yaml or armadai.yaml). \
+             Run `armadai init --project` to create one."
+        )
     })?;
 
     if config.agents.is_empty() {
-        anyhow::bail!("No agents declared in armadai.yaml.");
+        anyhow::bail!("No agents declared in project config.");
     }
 
     // 2. Resolve and parse agents
@@ -36,7 +39,7 @@ pub async fn execute(
     }
 
     if link_agents.is_empty() {
-        anyhow::bail!("No agents could be resolved. Check your armadai.yaml.");
+        anyhow::bail!("No agents could be resolved. Check your project config.");
     }
 
     // 3. Filter by --agents if provided
@@ -128,16 +131,19 @@ pub async fn execute(
         }
     }
 
-    // 9. Optionally include armadai.yaml itself
+    // 9. Optionally include the project config file itself
     if with_config {
-        let config_path = root.join("armadai.yaml");
-        if config_path.exists() {
-            targets.push(config_path);
-        } else {
-            let alt = root.join("armadai.yml");
-            if alt.exists() {
-                targets.push(alt);
-            }
+        // Detect which config file is active
+        let dotarmadai_config = root.join(".armadai").join("config.yaml");
+        let legacy_yaml = root.join("armadai.yaml");
+        let legacy_yml = root.join("armadai.yml");
+
+        if dotarmadai_config.exists() {
+            targets.push(dotarmadai_config);
+        } else if legacy_yaml.exists() {
+            targets.push(legacy_yaml);
+        } else if legacy_yml.exists() {
+            targets.push(legacy_yml);
         }
     }
 

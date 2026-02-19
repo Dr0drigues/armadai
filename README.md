@@ -113,7 +113,8 @@ armadai run my-assistant "Explain how async/await works in Rust"
 | `armadai config providers` | Show provider configs and secrets status | Done |
 | `armadai config secrets init` | Initialize SOPS + age encryption | Done |
 | `armadai config secrets rotate` | Rotate age encryption key | Done |
-| `armadai init [--force] [--project]` | Initialize ArmadAI configuration | Done |
+| `armadai config starters-dir list\|add\|remove` | Manage custom starter directories | Done |
+| `armadai init [--force] [--project]` | Initialize ArmadAI configuration (.armadai/) | Done |
 | `armadai init --pack <name>` | Install a starter pack (rust-dev, fullstack) | Done |
 | `armadai fleet create/link/list/show` | Manage agent fleets | Done |
 | `armadai link --target <t> [--dry-run]` | Generate native AI assistant configs | Done |
@@ -303,7 +304,7 @@ The web UI provides a read-only dashboard for your agent fleet:
 - **Agents** — browse all loaded agents, click to view full configuration
 - **Prompts** — browse composable prompt fragments with full content
 - **Skills** — browse skills with collapsible reference file contents
-- **Starters** — browse packs and download pre-configured `armadai.yaml`
+- **Starters** — browse packs and download pre-configured `config.yaml`
 - **History** — execution history with tokens, costs, and duration
 - **Costs** — aggregated cost summary per agent
 
@@ -344,6 +345,39 @@ cargo build --release --no-default-features
 # CLI + storage (no TUI)
 cargo build --release --no-default-features --features storage
 ```
+
+### Configuration
+
+ArmadAI supports two project configuration formats:
+
+- **`.armadai/config.yaml`** (preferred) — project config inside a `.armadai/` directory
+- **`armadai.yaml`** / **`armadai.yml`** (legacy) — project config at the repository root
+
+Run `armadai init --project` to create the `.armadai/` structure:
+
+```
+.armadai/
+├── config.yaml     # Project configuration
+├── agents/         # Project-local agents
+├── prompts/        # Project-local prompts
+├── skills/         # Project-local skills
+└── starters/       # Project-local starter packs
+```
+
+Resource resolution order: `.armadai/{type}/` → `{type}/` (legacy root) → `~/.config/armadai/{type}/`.
+
+### Environment Variables
+
+| Variable | Description |
+|---|---|
+| `ARMADAI_CONFIG_DIR` | Override global config directory |
+| `ARMADAI_PROVIDER` | Override default provider |
+| `ARMADAI_MODEL` | Override default model |
+| `ARMADAI_TEMPERATURE` | Override default temperature |
+| `ARMADAI_STARTERS_DIRS` | Additional starter directories (colon-separated) |
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `GOOGLE_API_KEY` | Google API key |
 
 ## Development
 
