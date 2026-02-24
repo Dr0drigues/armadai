@@ -59,13 +59,13 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`.
 - `core/starter.rs` — Starter packs: curated agent bundles installed via `armadai init --pack`.
 - `core/embedded.rs` — Version-based extraction for embedded resources (`.armadai-version` marker).
 - `parser/frontmatter.rs` — Generic YAML frontmatter extraction reused by prompts and skills.
-- `linker/` — Generates native config files for target AI CLIs. Trait `Linker` with one implementation per CLI (claude, copilot, cursor, aider, codex, gemini, windsurf, cline).
+- `linker/` — Generates native config files for target AI CLIs. Trait `Linker` with one implementation per CLI (claude, copilot, cursor, aider, codex, gemini, windsurf, cline). `model_resolution.rs` handles model remapping per target and exposes `preview_model_resolution()` for UI previews.
 - `registry/` — awesome-copilot integration. Sync, search, convert agents from the community catalog.
 - `skills_registry/` — GitHub-based skills discovery. Sync repos, build search index, install skills (`sync.rs`, `cache.rs`, `search.rs`).
-- `model_registry/` — Dynamic model catalog from models.dev. Fetches and caches model metadata (cost, context window) for enriched selection in `armadai new -i`. Gated behind `providers-api` for HTTP fetch, cache-only fallback otherwise.
+- `model_registry/` — Dynamic model catalog from models.dev. Fetches and caches model metadata (cost, context window) for enriched selection in `armadai new -i`. Gated behind `providers-api` for HTTP fetch, cache-only fallback otherwise. Sync cache-only helpers (`load_models_cached`, `load_all_providers_cached`) always available for TUI/Web.
 - `storage/` — SQLite wrapper (via rusqlite). `schema.rs` defines the `runs` table, `queries.rs` has CRUD operations.
-- `tui/` — Ratatui-based terminal UI. `app.rs` holds state (incl. command palette), `views/` renders tabs (Agents/Prompts/Skills/Starters/History/Costs + detail views + shortcuts bar + command palette overlay), `widgets/` provides reusable components. Supports `i` key to init project from starters.
-- `web/` — Axum-based web UI. Embedded single-page HTML app with JSON API endpoints (`/api/agents`, `/api/prompts`, `/api/skills`, `/api/starters`, `/api/starters/{name}/config`, `/api/history`, `/api/costs`). Skill detail views show collapsible reference file contents. Starter detail pages include YAML config download.
+- `tui/` — Ratatui-based terminal UI. `app.rs` holds state (incl. command palette), `views/` renders tabs (Agents/Prompts/Skills/Starters/History/Costs/Models + detail views + shortcuts bar + command palette overlay), `widgets/` provides reusable components. Supports `i` key to init project from starters. Models tab (key `7`) shows cached model catalog from models.dev. Agent detail view includes model resolution preview for all link targets.
+- `web/` — Axum-based web UI. Embedded single-page HTML app with JSON API endpoints (`/api/agents`, `/api/prompts`, `/api/skills`, `/api/starters`, `/api/starters/{name}/config`, `/api/history`, `/api/costs`, `/api/models`). Skill detail views show collapsible reference file contents. Starter detail pages include YAML config download. Models tab shows grouped catalog by provider. Agent detail includes model resolution table.
 - `secrets/` — SOPS + age encrypted secrets loader.
 
 **Provider trait** (`providers/traits.rs`):
@@ -77,7 +77,7 @@ trait Provider: Send + Sync {
 }
 ```
 
-**Agent definition** lives in `~/.config/armadai/agents/` (user library) or project-local paths. Templates in `templates/*.md` use `{{name}}`, `{{stack}}`, `{{description}}` placeholders.
+**Agent definition** lives in `~/.config/armadai/agents/` (user library) or project-local paths. Templates in `templates/*.md` use `{{name}}`, `{{stack}}`, `{{description}}`, `{{model}}` placeholders.
 
 **Config** lives in `~/.config/armadai/` (user) and `armadai.yaml` (project).
 

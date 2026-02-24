@@ -25,6 +25,7 @@ pub async fn run() -> Result<()> {
     app.load_prompts();
     app.load_skills();
     app.load_starters();
+    app.load_models();
     load_storage_data(&mut app);
 
     loop {
@@ -55,6 +56,7 @@ pub async fn run() -> Result<()> {
                                     app.load_prompts();
                                     app.load_skills();
                                     app.load_starters();
+                                    app.load_models();
                                     load_storage_data(&mut app);
                                 }
                                 PaletteAction::Quit => break,
@@ -81,8 +83,36 @@ pub async fn run() -> Result<()> {
             }
 
             // Normal mode
+
+            // Detail view: Esc goes back to parent list
+            if key.code == KeyCode::Esc {
+                match app.current_tab {
+                    app::Tab::AgentDetail => {
+                        app.switch_tab(app::Tab::Dashboard);
+                        continue;
+                    }
+                    app::Tab::PromptDetail => {
+                        app.switch_tab(app::Tab::Prompts);
+                        continue;
+                    }
+                    app::Tab::SkillDetail => {
+                        app.switch_tab(app::Tab::Skills);
+                        continue;
+                    }
+                    app::Tab::StarterDetail => {
+                        app.switch_tab(app::Tab::Starters);
+                        continue;
+                    }
+                    app::Tab::ModelDetail => {
+                        app.switch_tab(app::Tab::Models);
+                        continue;
+                    }
+                    _ => break, // Quit on Esc from top-level tabs
+                }
+            }
+
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('q') => break,
                 KeyCode::Char(':') | KeyCode::Char('p')
                     if key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
@@ -98,6 +128,7 @@ pub async fn run() -> Result<()> {
                     app.load_prompts();
                     app.load_skills();
                     app.load_starters();
+                    app.load_models();
                     load_storage_data(&mut app);
                     app.status_msg = Some("Refreshed".to_string());
                 }
@@ -113,6 +144,9 @@ pub async fn run() -> Result<()> {
                     }
                     app::Tab::Starters if app.selected_starter().is_some() => {
                         app.switch_tab(app::Tab::StarterDetail);
+                    }
+                    app::Tab::Models if app.selected_model_entry().is_some() => {
+                        app.switch_tab(app::Tab::ModelDetail);
                     }
                     _ => {}
                 },
@@ -166,6 +200,7 @@ pub async fn run() -> Result<()> {
                 KeyCode::Char('4') => app.switch_tab(app::Tab::Starters),
                 KeyCode::Char('5') => app.switch_tab(app::Tab::History),
                 KeyCode::Char('6') => app.switch_tab(app::Tab::Costs),
+                KeyCode::Char('7') => app.switch_tab(app::Tab::Models),
                 _ => {}
             }
         }

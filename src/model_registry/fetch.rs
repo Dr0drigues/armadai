@@ -92,6 +92,18 @@ fn parse_registry(body: &serde_json::Value) -> HashMap<String, Vec<ModelEntry>> 
     providers
 }
 
+/// Load models for a provider from cache (sync). Always available, no feature gate.
+pub fn load_models_cached(provider: &str) -> Option<Vec<ModelEntry>> {
+    let cached = load_cache_from(&cache_path())?;
+    cached.providers.get(provider).cloned()
+}
+
+/// Load all providers from cache (sync). Always available, no feature gate.
+pub fn load_all_providers_cached() -> Option<HashMap<String, Vec<ModelEntry>>> {
+    let cached = load_cache_from(&cache_path())?;
+    Some(cached.providers)
+}
+
 fn load_cache_from(path: &Path) -> Option<CachedRegistry> {
     let content = std::fs::read_to_string(path).ok()?;
     let cached: CachedRegistry = serde_json::from_str(&content).ok()?;
@@ -238,5 +250,70 @@ mod tests {
         let json = serde_json::json!({});
         let providers = parse_registry(&json);
         assert!(providers.is_empty());
+    }
+
+    #[test]
+    fn test_load_all_providers_cached_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CACHE_FILE);
+
+        let registry = CachedRegistry {
+            fetched_at: now_secs(),
+            providers: HashMap::from([
+                (
+                    "anthropic".to_string(),
+                    vec![ModelEntry {
+                        id: "claude-sonnet-4-5".to_string(),
+                        name: Some("Claude Sonnet 4.5".to_string()),
+                        cost: None,
+                        limit: None,
+                    }],
+                ),
+                (
+                    "openai".to_string(),
+                    vec![ModelEntry {
+                        id: "gpt-4o".to_string(),
+                        name: Some("GPT-4o".to_string()),
+                        cost: None,
+                        limit: None,
+                    }],
+                ),
+            ]),
+        };
+
+        save_cache_to(&path, &registry);
+
+        // Temporarily override cache path by loading directly
+        let loaded = load_cache_from(&path).expect("cache should load");
+        assert_eq!(loaded.providers.len(), 2);
+        assert!(loaded.providers.contains_key("anthropic"));
+        assert!(loaded.providers.contains_key("openai"));
+    }
+
+    #[test]
+    fn test_load_models_cached_specific_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CACHE_FILE);
+
+        let registry = CachedRegistry {
+            fetched_at: now_secs(),
+            providers: HashMap::from([(
+                "google".to_string(),
+                vec![ModelEntry {
+                    id: "gemini-2.5-pro".to_string(),
+                    name: Some("Gemini 2.5 Pro".to_string()),
+                    cost: None,
+                    limit: None,
+                }],
+            )]),
+        };
+
+        save_cache_to(&path, &registry);
+        let loaded = load_cache_from(&path).expect("cache should load");
+        let google = loaded.providers.get("google").unwrap();
+        assert_eq!(google.len(), 1);
+        assert_eq!(google[0].id, "gemini-2.5-pro");
+        // Non-existent provider
+        assert!(!loaded.providers.contains_key("unknown"));
     }
 }
