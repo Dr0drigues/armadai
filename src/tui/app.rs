@@ -2,6 +2,7 @@ use crate::core::agent::Agent;
 use crate::core::prompt::Prompt;
 use crate::core::skill::Skill;
 use crate::core::starter::StarterPack;
+use crate::model_registry::ModelEntry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -15,17 +16,20 @@ pub enum Tab {
     StarterDetail,
     History,
     Costs,
+    Models,
+    ModelDetail,
 }
 
 impl Tab {
     /// Tabs visible in the tab bar (detail tabs are accessed via Enter).
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 7] = [
         Tab::Dashboard,
         Tab::Prompts,
         Tab::Skills,
         Tab::Starters,
         Tab::History,
         Tab::Costs,
+        Tab::Models,
     ];
 
     pub fn title(self) -> &'static str {
@@ -40,6 +44,8 @@ impl Tab {
             Tab::StarterDetail => "Starter",
             Tab::History => "History",
             Tab::Costs => "Costs",
+            Tab::Models => "Models",
+            Tab::ModelDetail => "Model",
         }
     }
 
@@ -139,6 +145,11 @@ impl CommandPalette {
                 action: PaletteAction::SwitchTab(Tab::Costs),
             },
             PaletteCommand {
+                name: "models".to_string(),
+                description: "View model catalog".to_string(),
+                action: PaletteAction::SwitchTab(Tab::Models),
+            },
+            PaletteCommand {
                 name: "refresh".to_string(),
                 description: "Reload agents and data".to_string(),
                 action: PaletteAction::Refresh,
@@ -222,6 +233,9 @@ pub struct App {
     pub selected_history: usize,
     // Costs
     pub costs: Vec<CostEntry>,
+    // Models (from model registry cache)
+    pub models_flat: Vec<(String, ModelEntry)>,
+    pub selected_model: usize,
     // Command palette
     pub palette: CommandPalette,
     // Status message (bottom bar)
@@ -244,6 +258,8 @@ impl App {
             history: Vec::new(),
             selected_history: 0,
             costs: Vec::new(),
+            models_flat: Vec::new(),
+            selected_model: 0,
             palette: CommandPalette::new(),
             status_msg: None,
         }
@@ -319,6 +335,27 @@ impl App {
         self.starters.get(self.selected_starter)
     }
 
+    pub fn selected_model_entry(&self) -> Option<&(String, ModelEntry)> {
+        self.models_flat.get(self.selected_model)
+    }
+
+    pub fn load_models(&mut self) {
+        use crate::model_registry::fetch::load_all_providers_cached;
+        if let Some(providers) = load_all_providers_cached() {
+            let mut flat: Vec<(String, ModelEntry)> = Vec::new();
+            let mut keys: Vec<String> = providers.keys().cloned().collect();
+            keys.sort();
+            for provider in keys {
+                if let Some(models) = providers.get(&provider) {
+                    for entry in models {
+                        flat.push((provider.clone(), entry.clone()));
+                    }
+                }
+            }
+            self.models_flat = flat;
+        }
+    }
+
     pub fn select_next(&mut self) {
         match self.current_tab {
             Tab::Dashboard => {
@@ -344,6 +381,11 @@ impl App {
             Tab::History => {
                 if !self.history.is_empty() {
                     self.selected_history = (self.selected_history + 1) % self.history.len();
+                }
+            }
+            Tab::Models => {
+                if !self.models_flat.is_empty() {
+                    self.selected_model = (self.selected_model + 1) % self.models_flat.len();
                 }
             }
             _ => {}
@@ -394,6 +436,15 @@ impl App {
                         self.history.len() - 1
                     } else {
                         self.selected_history - 1
+                    };
+                }
+            }
+            Tab::Models => {
+                if !self.models_flat.is_empty() {
+                    self.selected_model = if self.selected_model == 0 {
+                        self.models_flat.len() - 1
+                    } else {
+                        self.selected_model - 1
                     };
                 }
             }

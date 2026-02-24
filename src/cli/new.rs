@@ -63,6 +63,9 @@ fn template_create(
         content = content.replace("{{stack}}", s);
     }
 
+    // Replace model placeholder with default
+    content = content.replace("{{model}}", "claude-sonnet-4-5-20250929");
+
     // Check for remaining placeholders
     let remaining: Vec<&str> = content
         .match_indices("{{")

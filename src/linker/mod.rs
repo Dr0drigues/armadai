@@ -1,9 +1,12 @@
 mod claude;
+mod codex;
 mod copilot;
 mod gemini;
+pub mod model_resolution;
 mod opencode;
 
 pub use claude::ClaudeLinker;
+pub use codex::CodexLinker;
 pub use copilot::CopilotLinker;
 pub use gemini::GeminiLinker;
 pub use opencode::OpencodeLinker;
@@ -52,11 +55,12 @@ pub trait Linker: Send + Sync {
 pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
     match target {
         "claude" => Ok(Box::new(ClaudeLinker)),
+        "codex" => Ok(Box::new(CodexLinker)),
         "copilot" => Ok(Box::new(CopilotLinker)),
         "gemini" => Ok(Box::new(GeminiLinker)),
         "opencode" => Ok(Box::new(OpencodeLinker)),
         _ => anyhow::bail!(
-            "Unknown link target: '{target}'. Supported targets: claude, copilot, gemini, opencode"
+            "Unknown link target: '{target}'. Supported targets: claude, codex, copilot, gemini, opencode"
         ),
     }
 }
@@ -148,6 +152,11 @@ mod tests {
     #[test]
     fn test_create_linker_gemini() {
         assert!(create_linker("gemini").is_ok());
+    }
+
+    #[test]
+    fn test_create_linker_codex() {
+        assert!(create_linker("codex").is_ok());
     }
 
     #[test]
