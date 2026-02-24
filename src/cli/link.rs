@@ -1,11 +1,14 @@
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::core::project;
+use crate::linker::model_resolution::{self, TargetKind};
 use crate::linker::{self, LinkAgent};
 use crate::parser;
 
 pub async fn execute(
     target: Option<String>,
+    model_flag: Option<String>,
     coordinator_flag: Option<String>,
     dry_run: bool,
     force: bool,
@@ -54,7 +57,7 @@ pub async fn execute(
     // 3b. Extract coordinator if configured (CLI flag takes priority over config)
     let coordinator_name =
         coordinator_flag.or_else(|| config.link.as_ref().and_then(|l| l.coordinator.clone()));
-    let coordinator = coordinator_name.and_then(|name| {
+    let mut coordinator = coordinator_name.and_then(|name| {
         let idx = link_agents
             .iter()
             .position(|a| a.name.eq_ignore_ascii_case(&name))?;
@@ -67,9 +70,61 @@ pub async fn execute(
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "No link target specified. Use --target or set link.target in armadai.yaml.\n\
-                 Supported targets: claude, copilot, gemini"
+                 Supported targets: claude, codex, copilot, gemini, opencode"
             )
         })?;
+
+    // 4b. Model resolution: remap agent models based on target kind
+    let target_kind = model_resolution::classify_target(&target_name);
+    match target_kind {
+        TargetKind::LlmEditor { provider } => {
+            #[cfg(feature = "providers-api")]
+            {
+                model_resolution::remap_models_for_llm_editor(&mut link_agents, provider).await;
+                if let Some(ref mut coord) = coordinator {
+                    model_resolution::remap_models_for_llm_editor(
+                        std::slice::from_mut(coord),
+                        provider,
+                    )
+                    .await;
+                }
+            }
+            #[cfg(not(feature = "providers-api"))]
+            {
+                model_resolution::remap_models_for_llm_editor(&mut link_agents, provider);
+                if let Some(ref mut coord) = coordinator {
+                    model_resolution::remap_models_for_llm_editor(
+                        std::slice::from_mut(coord),
+                        provider,
+                    );
+                }
+            }
+        }
+        TargetKind::Orchestrator => {
+            if let Some(ref model) = model_flag {
+                model_resolution::remap_models_for_orchestrator(&mut link_agents, model);
+                if let Some(ref mut coord) = coordinator {
+                    model_resolution::remap_models_for_orchestrator(
+                        std::slice::from_mut(coord),
+                        model,
+                    );
+                }
+            } else if std::io::stdin().is_terminal() {
+                #[cfg(feature = "providers-api")]
+                let model = model_resolution::prompt_model_interactive().await?;
+                #[cfg(not(feature = "providers-api"))]
+                let model = model_resolution::prompt_model_interactive()?;
+                model_resolution::remap_models_for_orchestrator(&mut link_agents, &model);
+                if let Some(ref mut coord) = coordinator {
+                    model_resolution::remap_models_for_orchestrator(
+                        std::slice::from_mut(coord),
+                        &model,
+                    );
+                }
+            }
+            // else: non-interactive without --model → keep original models
+        }
+    }
 
     // 5. Create linker
     let linker = linker::create_linker(&target_name)?;

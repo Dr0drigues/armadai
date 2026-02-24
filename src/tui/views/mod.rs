@@ -2,6 +2,8 @@ pub mod agent_detail;
 pub mod costs;
 pub mod dashboard;
 pub mod history;
+pub mod model_detail;
+pub mod models_list;
 pub mod palette;
 pub mod prompt_detail;
 pub mod prompts_list;

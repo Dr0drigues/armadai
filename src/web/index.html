@@ -60,6 +60,7 @@
     <button onclick="showTab('starters')">Starters</button>
     <button onclick="showTab('history')">History</button>
     <button onclick="showTab('costs')">Costs</button>
+    <button onclick="showTab('models')">Models</button>
   </nav>
 </header>
 <main>
@@ -69,6 +70,7 @@
   <div id="starters" class="card" style="display:none"></div>
   <div id="history" class="card" style="display:none"></div>
   <div id="costs" class="card" style="display:none"></div>
+  <div id="models" class="card" style="display:none"></div>
   <div id="view" class="card"></div>
 </main>
 <script>
@@ -77,10 +79,10 @@ let viewBackTab = 'agents';
 
 function showTab(tab) {
   document.querySelectorAll('nav button').forEach((b, i) => {
-    const tabs = ['agents','prompts','skills','starters','history','costs'];
+    const tabs = ['agents','prompts','skills','starters','history','costs','models'];
     b.classList.toggle('active', tabs[i] === tab);
   });
-  ['agents','prompts','skills','starters','history','costs','view'].forEach(id => document.getElementById(id).style.display = 'none');
+  ['agents','prompts','skills','starters','history','costs','models','view'].forEach(id => document.getElementById(id).style.display = 'none');
   document.getElementById(tab).style.display = 'block';
   currentTab = tab;
   if (tab === 'agents') loadAgents();
@@ -89,6 +91,7 @@ function showTab(tab) {
   if (tab === 'starters') loadStarters();
   if (tab === 'history') loadHistory();
   if (tab === 'costs') loadCosts();
+  if (tab === 'models') loadModels();
 }
 
 async function loadAgents() {
@@ -116,7 +119,7 @@ async function viewAgent(name) {
   const a = await res.json();
   if (a.error) return;
   viewBackTab = 'agents';
-  ['agents','prompts','skills','starters','history','costs'].forEach(id => document.getElementById(id).style.display = 'none');
+  ['agents','prompts','skills','starters','history','costs','models'].forEach(id => document.getElementById(id).style.display = 'none');
   const el = document.getElementById('view');
   el.style.display = 'block';
   el.innerHTML = `
@@ -133,6 +136,12 @@ async function viewAgent(name) {
         <div class="detail-field"><label>Tags</label><span>${a.tags.map(t => `<span class="tag">${t}</span>`).join('') || 'none'}</span></div>
         <div class="detail-field"><label>Stacks</label><span>${a.stacks.map(s => `<span class="tag stack">${s}</span>`).join('') || 'none'}</span></div>
       </div>
+      ${a.model_resolution && a.model_resolution.length ? `
+      <div class="prompt-box-title">Model Resolution (link targets)</div>
+      <table style="margin-bottom:16px">
+        <tr><th>Target</th><th>Resolved Model</th></tr>
+        ${a.model_resolution.map(r => `<tr><td>${r.target}</td><td style="color:var(--green)">${r.resolved_model}</td></tr>`).join('')}
+      </table>` : ''}
       <div class="prompt-box-title">System Prompt</div>
       <div class="prompt-box">${a.system_prompt || '(none)'}</div>
       ${a.instructions ? `<div class="prompt-box-title">Instructions</div><div class="prompt-box">${a.instructions}</div>` : ''}
@@ -165,7 +174,7 @@ async function viewPrompt(name) {
   const p = await res.json();
   if (p.error) return;
   viewBackTab = 'prompts';
-  ['agents','prompts','skills','starters','history','costs'].forEach(id => document.getElementById(id).style.display = 'none');
+  ['agents','prompts','skills','starters','history','costs','models'].forEach(id => document.getElementById(id).style.display = 'none');
   const el = document.getElementById('view');
   el.style.display = 'block';
   el.innerHTML = `
@@ -207,7 +216,7 @@ async function viewSkill(name) {
   const s = await res.json();
   if (s.error) return;
   viewBackTab = 'skills';
-  ['agents','prompts','skills','starters','history','costs'].forEach(id => document.getElementById(id).style.display = 'none');
+  ['agents','prompts','skills','starters','history','costs','models'].forEach(id => document.getElementById(id).style.display = 'none');
   const el = document.getElementById('view');
   el.style.display = 'block';
   const fileBlock = (f) => f.content
@@ -258,7 +267,7 @@ async function viewStarter(name) {
   const s = await res.json();
   if (s.error) return;
   viewBackTab = 'starters';
-  ['agents','prompts','skills','starters','history','costs'].forEach(id => document.getElementById(id).style.display = 'none');
+  ['agents','prompts','skills','starters','history','costs','models'].forEach(id => document.getElementById(id).style.display = 'none');
   const el = document.getElementById('view');
   el.style.display = 'block';
   el.innerHTML = `
@@ -320,6 +329,30 @@ async function loadCosts() {
           <td>${c.total_tokens_out}</td>
         </tr>`).join('')}
     </table>`;
+}
+
+async function loadModels() {
+  const res = await fetch('/api/models');
+  const providers = await res.json();
+  const el = document.getElementById('models');
+  if (!providers.length) { el.innerHTML = '<div class="empty">No model data cached. Run `armadai new -i` to populate.</div>'; return; }
+  const totalModels = providers.reduce((s, p) => s + p.models.length, 0);
+  el.innerHTML = `
+    <div class="card-header">${totalModels} models, ${providers.length} providers</div>
+    ${providers.map(p => `
+      <div style="padding:8px 16px;color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;border-bottom:1px solid var(--border);background:rgba(88,166,255,0.04)">${p.provider}</div>
+      <table>
+        <tr><th>Model ID</th><th>Name</th><th>Context</th><th>Max Output</th><th>Cost In</th><th>Cost Out</th></tr>
+        ${p.models.map(m => `
+          <tr>
+            <td>${m.id}</td>
+            <td>${m.name || '-'}</td>
+            <td>${m.context ? (m.context/1000)+'K' : '-'}</td>
+            <td>${m.max_output || '-'}</td>
+            <td>${m.cost_input != null ? '$'+m.cost_input.toFixed(2) : '-'}</td>
+            <td>${m.cost_output != null ? '$'+m.cost_output.toFixed(2) : '-'}</td>
+          </tr>`).join('')}
+      </table>`).join('')}`;
 }
 
 // Initial load
