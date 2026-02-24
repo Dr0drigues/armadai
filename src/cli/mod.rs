@@ -218,9 +218,12 @@ pub enum Command {
             armadai link --target claude --output .claude/agents --force"
     )]
     Link {
-        /// Target AI assistant (claude, copilot)
+        /// Target AI assistant (claude, codex, copilot, gemini, opencode)
         #[arg(long, short)]
         target: Option<String>,
+        /// Model to use in generated configs (for orchestrator targets like copilot/opencode)
+        #[arg(long, short = 'm')]
+        model: Option<String>,
         /// Coordinator agent whose prompt becomes the main context file
         #[arg(long, short = 'C')]
         coordinator: Option<String>,
@@ -378,12 +381,13 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Skills(action) => skills::execute(action).await,
         Command::Link {
             target,
+            model,
             coordinator,
             dry_run,
             force,
             output,
             agents,
-        } => link::execute(target, coordinator, dry_run, force, output, agents).await,
+        } => link::execute(target, model, coordinator, dry_run, force, output, agents).await,
         Command::Unlink {
             target,
             coordinator,

@@ -1,3 +1,13 @@
+## v0.8.0 (2026-02-24)
+
+### Feat
+
+- add Models catalog tab in TUI (key `7`) and Web UI (`/api/models`)
+- add model resolution preview in agent detail views (TUI + Web)
+- add `preview_model_resolution()` for link target model preview
+- add sync cache-only helpers `load_models_cached` and `load_all_providers_cached`
+- dynamic `{{model}}` placeholder in templates and starter-packs
+
 ## v0.7.0 (2026-02-19)
 
 ### Feat

@@ -47,6 +47,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         Tab::StarterDetail => super::starter_detail::render(frame, app, chunks[1]),
         Tab::History => super::history::render(frame, app, chunks[1]),
         Tab::Costs => super::costs::render(frame, app, chunks[1]),
+        Tab::Models => super::models_list::render(frame, app, chunks[1]),
+        Tab::ModelDetail => super::model_detail::render(frame, app, chunks[1]),
     };
 
     // Shortcuts bar
