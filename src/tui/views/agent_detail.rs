@@ -27,6 +27,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([
             Constraint::Length(3), // Title
             Constraint::Length(8), // Metadata
+            Constraint::Length(8), // Model Resolution
             Constraint::Min(6),    // System Prompt
             Constraint::Length(6), // Instructions (if any)
         ])
@@ -116,6 +117,32 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .wrap(Wrap { trim: false });
     frame.render_widget(meta_widget, chunks[1]);
 
+    // Model Resolution section
+    let resolution =
+        crate::linker::model_resolution::preview_model_resolution(agent.metadata.model.as_deref());
+    let res_lines: Vec<Line> = resolution
+        .iter()
+        .map(|(target, resolved)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("{:<10}", target),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" → ", Style::default().fg(Color::DarkGray)),
+                Span::styled(resolved.as_str(), Style::default().fg(Color::Green)),
+            ])
+        })
+        .collect();
+    let res_widget = Paragraph::new(res_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Model Resolution (link targets) ")
+                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(res_widget, chunks[2]);
+
     // System Prompt section
     let prompt_text = if agent.system_prompt.is_empty() {
         "(no system prompt)".to_string()
@@ -131,7 +158,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )
         .style(Style::default().fg(Color::White))
         .wrap(Wrap { trim: false });
-    frame.render_widget(prompt_widget, chunks[2]);
+    frame.render_widget(prompt_widget, chunks[3]);
 
     // Instructions section
     let instr_text = agent.instructions.as_deref().unwrap_or("(no instructions)");
@@ -144,5 +171,5 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )
         .style(Style::default().fg(Color::Gray))
         .wrap(Wrap { trim: false });
-    frame.render_widget(instr_widget, chunks[3]);
+    frame.render_widget(instr_widget, chunks[4]);
 }

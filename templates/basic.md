@@ -2,7 +2,7 @@
 
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: {{model}}
 - temperature: 0.7
 - max_tokens: 4096
 - tags: [general]

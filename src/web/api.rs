@@ -34,6 +34,7 @@ pub struct AgentDetail {
     system_prompt: String,
     instructions: Option<String>,
     output_format: Option<String>,
+    model_resolution: Vec<ModelResolutionEntry>,
 }
 
 #[derive(Serialize)]
@@ -121,6 +122,28 @@ pub struct StarterDetail {
 }
 
 #[derive(Serialize)]
+pub struct ProviderModels {
+    provider: String,
+    models: Vec<ModelSummary>,
+}
+
+#[derive(Serialize)]
+pub struct ModelSummary {
+    id: String,
+    name: Option<String>,
+    context: Option<u64>,
+    max_output: Option<u64>,
+    cost_input: Option<f64>,
+    cost_output: Option<f64>,
+}
+
+#[derive(Serialize)]
+pub struct ModelResolutionEntry {
+    target: String,
+    resolved_model: String,
+}
+
+#[derive(Serialize)]
 pub struct ErrorResponse {
     error: String,
 }
@@ -158,6 +181,16 @@ pub async fn get_agent(Path(name): Path<String>) -> Json<serde_json::Value> {
     {
         Some(a) => {
             let model = a.model_display();
+            let resolution = crate::linker::model_resolution::preview_model_resolution(
+                a.metadata.model.as_deref(),
+            );
+            let model_resolution = resolution
+                .into_iter()
+                .map(|(target, resolved)| ModelResolutionEntry {
+                    target: target.to_string(),
+                    resolved_model: resolved,
+                })
+                .collect();
             let detail = AgentDetail {
                 name: a.name,
                 source: a.source.display().to_string(),
@@ -174,6 +207,7 @@ pub async fn get_agent(Path(name): Path<String>) -> Json<serde_json::Value> {
                 system_prompt: a.system_prompt,
                 instructions: a.instructions,
                 output_format: a.output_format,
+                model_resolution,
             };
             Json(serde_json::to_value(detail).unwrap())
         }
@@ -405,6 +439,35 @@ pub async fn get_starter(Path(name): Path<String>) -> Json<serde_json::Value> {
             .unwrap(),
         ),
     }
+}
+
+pub async fn list_models() -> Json<Vec<ProviderModels>> {
+    use crate::model_registry::fetch::load_all_providers_cached;
+
+    let providers = load_all_providers_cached().unwrap_or_default();
+    let mut keys: Vec<String> = providers.keys().cloned().collect();
+    keys.sort();
+
+    let result: Vec<ProviderModels> = keys
+        .into_iter()
+        .filter_map(|provider| {
+            let entries = providers.get(&provider)?;
+            let models = entries
+                .iter()
+                .map(|e| ModelSummary {
+                    id: e.id.clone(),
+                    name: e.name.clone(),
+                    context: e.limit.as_ref().and_then(|l| l.context),
+                    max_output: e.limit.as_ref().and_then(|l| l.output),
+                    cost_input: e.cost.as_ref().and_then(|c| c.input),
+                    cost_output: e.cost.as_ref().and_then(|c| c.output),
+                })
+                .collect();
+            Some(ProviderModels { provider, models })
+        })
+        .collect();
+
+    Json(result)
 }
 
 pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {

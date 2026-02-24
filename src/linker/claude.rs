@@ -55,6 +55,11 @@ fn generate_agent_file(agent: &LinkAgent) -> OutputFile {
         .unwrap_or(&agent.name);
     // Escape YAML string
     content.push_str(&format!("description: \"{}\"\n", yaml_escape(description)));
+
+    if let Some(ref model) = agent.model {
+        content.push_str(&format!("model: {model}\n"));
+    }
+
     content.push_str("---\n\n");
 
     // System prompt (main content)
@@ -210,6 +215,11 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, PathBuf::from(".claude/agents/test-agent.md"));
         assert!(files[0].content.contains("name: test-agent\n"));
+        assert!(
+            files[0]
+                .content
+                .contains("model: claude-sonnet-4-5-20250929\n")
+        );
         assert!(files[0].content.contains("You are a test agent."));
         assert!(
             files[0]
