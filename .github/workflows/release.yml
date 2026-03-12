@@ -107,7 +107,7 @@ jobs:
           pip install commitizen
           cz changelog --dry-run --file-name /dev/null | awk '/^## v/{if(n++) exit; next} n' > RELEASE_NOTES.md
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
