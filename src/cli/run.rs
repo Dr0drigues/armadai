@@ -114,7 +114,17 @@ async fn run_single_agent(
     project_defaults: Option<&ProjectDefaults>,
 ) -> anyhow::Result<(String, RunMetrics)> {
     // 1. Load agent
-    let agent = crate::parser::parse_agent_file(agent_path)?;
+    let mut agent = crate::parser::parse_agent_file(agent_path)?;
+
+    // 1b. Resolve deprecated model aliases
+    crate::linker::model_aliases::resolve_model_deprecations(
+        &mut agent.metadata.model,
+        &mut agent.metadata.model_fallback,
+    );
+    // 1c. Warn if model unknown in registry
+    if let Some(ref model) = agent.metadata.model {
+        crate::linker::model_resolution::warn_unknown_model(model, &agent.metadata.provider);
+    }
 
     // 2. Create provider
     let provider = create_provider(&agent)?;

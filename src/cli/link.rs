@@ -45,6 +45,14 @@ pub async fn execute(
         anyhow::bail!("No agents could be resolved. Check your project config.");
     }
 
+    // 2b. Resolve deprecated model aliases before remapping
+    for agent in &mut link_agents {
+        crate::linker::model_aliases::resolve_model_deprecations(
+            &mut agent.model,
+            &mut agent.model_fallback,
+        );
+    }
+
     // 3. Filter by --agents if provided
     if let Some(ref filter) = agents_filter {
         let filter_lower: Vec<String> = filter.iter().map(|s| s.to_lowercase()).collect();
