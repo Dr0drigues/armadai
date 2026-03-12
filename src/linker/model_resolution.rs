@@ -186,6 +186,18 @@ pub fn prompt_model_interactive() -> anyhow::Result<String> {
     Ok(model)
 }
 
+/// Warn if the model is not found in the cached models.dev registry.
+pub fn warn_unknown_model(model: &str, provider: &str) {
+    if let Some(entries) = crate::model_registry::fetch::load_models_cached(provider)
+        && !entries.iter().any(|e| e.id == model)
+    {
+        tracing::warn!(
+            "Model '{model}' not found in {provider} registry — \
+             it may be unavailable. Consider adding model_fallback entries."
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

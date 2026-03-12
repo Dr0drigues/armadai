@@ -2,6 +2,7 @@ mod claude;
 mod codex;
 mod copilot;
 mod gemini;
+pub mod model_aliases;
 pub mod model_resolution;
 mod opencode;
 
