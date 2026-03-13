@@ -1,0 +1,12 @@
+# ArmadAI project configuration — Rust Web Team example
+
+agents:
+  - name: rust-reviewer
+  - name: rust-test-writer
+  - name: security-auditor
+  - name: doc-writer
+  - name: refactor-advisor
+
+prompts: []
+skills: []
+sources: []

@@ -1,8 +1,0 @@
-fleet: rust-web-team
-agents:
-  - rust-reviewer
-  - rust-test-writer
-  - security-auditor
-  - doc-writer
-  - refactor-advisor
-source: .

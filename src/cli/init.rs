@@ -163,6 +163,11 @@ fn init_project() -> anyhow::Result<()> {
     println!("  .armadai/starters/");
     println!("\n  Edit .armadai/config.yaml to declare agents, prompts, skills and link targets.");
 
+    // Check for deprecated models in newly created project
+    if let Some((root, _)) = crate::core::project::find_project_config() {
+        crate::core::model_updater::auto_check_and_prompt(&root, true);
+    }
+
     Ok(())
 }
 
@@ -250,6 +255,11 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
         pack.name
     );
     println!("  Run `armadai link` to generate target config files.");
+
+    // Check for deprecated models in newly created project
+    if let Some((root, _)) = crate::core::project::find_project_config() {
+        crate::core::model_updater::auto_check_and_prompt(&root, true);
+    }
 
     Ok(())
 }

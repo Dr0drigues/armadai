@@ -1,6 +1,6 @@
 # Example: Rust Web Team
 
-A complete example of an ArmadAI fleet for reviewing, testing, documenting, and improving Rust code.
+A complete example of an ArmadAI project for reviewing, testing, documenting, and improving Rust code.
 
 ## Fleet composition
 
@@ -19,7 +19,7 @@ A complete example of an ArmadAI fleet for reviewing, testing, documenting, and 
 cd examples/demo-rust-team
 ```
 
-The `armadai.yaml` file links this directory to the fleet. The `source: .` path tells ArmadAI to load agents from `agents/` relative to this directory.
+The `.armadai/config.yaml` file declares the project agents. Agent files live in `.armadai/agents/`.
 
 ## Usage
 
@@ -62,17 +62,24 @@ cat sample-code/user_service.rs | armadai run rust-reviewer
 git diff HEAD~1 | armadai run rust-reviewer
 ```
 
-## Fleet management
+### Check for deprecated models
 
 ```bash
-# List the fleet linked to this directory
-armadai fleet list
+# Check if any agent uses a deprecated model
+armadai models check
 
-# Show fleet details with agent status
-armadai fleet show rust-web-team
+# Auto-update deprecated models in-place
+armadai models update
+```
 
-# Validate all agents in the fleet
-armadai validate
+## Generate native configs
+
+```bash
+# Generate configs for Claude Code
+armadai link --target claude
+
+# Preview without writing
+armadai link --target gemini --dry-run
 ```
 
 ## Expected output
@@ -98,12 +105,12 @@ To add a new agent to the fleet:
 # Interactive creation
 armadai new -i
 
-# Then add it to armadai.yaml agents list
+# Then add it to .armadai/config.yaml agents list
 ```
 
 Or copy an existing agent and modify it:
 
 ```bash
-cp agents/rust-reviewer.md agents/perf-analyzer.md
+cp .armadai/agents/rust-reviewer.md .armadai/agents/perf-analyzer.md
 # Edit the new file
 ```

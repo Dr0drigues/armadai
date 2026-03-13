@@ -1,3 +1,13 @@
+## v0.9.0 (2026-03-13)
+
+### Feat
+
+- add `armadai models check/update/list` commands for deprecated model management
+- add project auto-registration on `run` and `link` commands
+- add deprecated model alias resolution with embedded YAML registry
+- auto-check deprecated models on `run`, `link`, and `init --project` with interactive prompt
+- consolidate `example/` into `examples/` and migrate to `.armadai/` project format
+
 ## v0.8.0 (2026-02-24)
 
 ### Feat
