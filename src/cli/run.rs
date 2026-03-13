@@ -311,6 +311,8 @@ fn resolve_agents_dir() -> AgentResolution {
             root.display(),
             config.agents.len()
         );
+        let _ = crate::core::project_registry::register_project(&root);
+        crate::core::model_updater::auto_check_and_prompt(&root, !atty_is_pipe());
         return AgentResolution::Project { root, config };
     }
 

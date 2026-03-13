@@ -197,6 +197,9 @@ Exécute la tâche demandée en utilisant tes outils disponibles.
 | `stacks`       | list[string]  | Stacks techniques supportées                        |
 | `cost_limit`   | float         | Limite de coût par exécution (USD)                  |
 | `rate_limit`   | string        | Limite de requêtes (ex: "10/min")                   |
+| `model_fallback` | list[string] | Chaîne de fallback en cas de modèle indisponible   |
+| `mode`          | string       | Mode d'exécution (`guided` ou `autonomous`)         |
+| `scope`         | list[string] | Fichiers/répertoires ciblés par l'agent             |
 | `context_window` | int         | Override de la taille du contexte du modèle         |
 
 ---
@@ -234,6 +237,8 @@ armadai/
 │   │   ├── inspect.rs           # armadai inspect <agent>
 │   │   ├── history.rs           # armadai history [--agent ...] [--replay id]
 │   │   ├── init.rs              # armadai init (bootstrap config)
+│   │   ├── link.rs              # armadai link --target <t> (génération configs natives)
+│   │   ├── models.rs            # armadai models check/update/list
 │   │   ├── up.rs                # armadai up (lance docker-compose)
 │   │   ├── config.rs            # armadai config (providers, secrets, starters-dir)
 │   │   └── validate.rs          # armadai validate [agent] (dry-run)
@@ -260,6 +265,8 @@ armadai/
 │   │   ├── project.rs          # Config projet (.armadai/config.yaml ou armadai.yaml), résolution 3 niveaux
 │   │   ├── embedded.rs         # Versioning des ressources embedded (.armadai-version)
 │   │   ├── fleet.rs            # Définitions de flottes, liaison projets-agents
+│   │   ├── model_updater.rs    # Détection et mise à jour des modèles dépréciés
+│   │   ├── project_registry.rs # Registre des projets (auto-enregistrement, prune)
 │   │   ├── prompt.rs           # Fragments de prompts composables (YAML frontmatter)
 │   │   ├── skill.rs            # Skills (standard SKILL.md)
 │   │   └── starter.rs          # Starter packs, all_starters_dirs(), ARMADAI_STARTERS_DIRS
@@ -285,7 +292,12 @@ armadai/
 │   ├── linker/                # Génération de configs natives
 │   │   ├── mod.rs             # Trait Linker + dispatch
 │   │   ├── claude.rs          # .claude/agents/*.md
-│   │   └── copilot.rs         # .github/agents/*.agent.md
+│   │   ├── codex.rs           # .codex/agents/*.md
+│   │   ├── copilot.rs         # .github/agents/*.agent.md
+│   │   ├── gemini.rs          # .gemini/agents/*.md
+│   │   ├── opencode.rs        # .opencode/agents/*.md
+│   │   ├── model_aliases.rs   # Résolution des alias de modèles dépréciés
+│   │   └── model_resolution.rs # Remapping de modèles par cible
 │   ├── registry/              # Intégration awesome-copilot
 │   │   ├── mod.rs
 │   │   ├── sync.rs            # Clone/pull du repo registry
@@ -366,6 +378,9 @@ armadai up                         # Lancer l'infra Docker (optionnel)
 armadai down                       # Arrêter l'infra Docker
 armadai fleet create/link/list/show  # Gérer les flottes d'agents
 armadai link --target <t>            # Générer configs natives (claude, copilot...)
+armadai models check [--all] [--prune] # Vérifier les modèles dépréciés
+armadai models update [--all]        # Mettre à jour les modèles dépréciés
+armadai models list                  # Lister les projets enregistrés
 armadai registry sync/search/list/add # Registre communautaire
 armadai prompts list/show            # Fragments de prompts composables
 armadai skills list/show             # Skills (standard SKILL.md)
