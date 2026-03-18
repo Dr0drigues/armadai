@@ -4,6 +4,8 @@ use rusqlite::Connection;
 pub fn apply(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch(
         "
+        PRAGMA foreign_keys = ON;
+
         CREATE TABLE IF NOT EXISTS runs (
             id TEXT PRIMARY KEY,
             agent TEXT NOT NULL,

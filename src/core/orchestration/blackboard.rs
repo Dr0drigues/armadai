@@ -82,7 +82,8 @@ pub struct TokenCount {
 pub struct TokenBudget {
     pub total: u64,
     pub used: u64,
-    pub warning_threshold: f32,
+    /// Percentage of budget consumed that triggers a warning log (e.g., 0.80 = warn at 80% consumed).
+    pub budget_warning_pct: f32,
 }
 
 impl TokenBudget {
@@ -90,7 +91,7 @@ impl TokenBudget {
         Self {
             total,
             used: 0,
-            warning_threshold: 0.80,
+            budget_warning_pct: 0.80,
         }
     }
 
@@ -422,7 +423,7 @@ fn check_convergence(board: &Board, config: &BlackboardConfig) -> Option<HaltRea
     }
 
     // Log a warning when budget nears the threshold (but do not halt)
-    if board.budget.remaining_ratio() < (1.0 - board.budget.warning_threshold) {
+    if board.budget.remaining_ratio() < (1.0 - board.budget.budget_warning_pct) {
         tracing::warn!(
             remaining_ratio = board.budget.remaining_ratio(),
             "token budget nearing exhaustion"
@@ -944,7 +945,7 @@ mod tests {
     #[test]
     fn test_check_convergence_budget_warning_not_halt() {
         let mut board = Board::new("task".to_string(), 1000);
-        board.budget.used = 850; // 85% used, past warning_threshold (80%)
+        board.budget.used = 850; // 85% used, past budget_warning_pct (80%)
         // Add a finding so it's not an empty round
         let entry = BoardEntry {
             index: 0,
@@ -1159,35 +1160,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_blackboard_no_agents_halts_stable() {
-        use crate::providers::traits::*;
-
-        struct DummyProvider;
-        #[async_trait]
-        impl Provider for DummyProvider {
-            async fn complete(&self, _: CompletionRequest) -> anyhow::Result<CompletionResponse> {
-                Ok(CompletionResponse {
-                    content: "ok".to_string(),
-                    model: "test".to_string(),
-                    tokens_in: 0,
-                    tokens_out: 0,
-                    cost: 0.0,
-                })
-            }
-            async fn stream(&self, _: CompletionRequest) -> anyhow::Result<TokenStream> {
-                unimplemented!()
-            }
-            fn metadata(&self) -> ProviderMetadata {
-                ProviderMetadata {
-                    name: "test".to_string(),
-                    models: vec![],
-                    supports_streaming: false,
-                }
-            }
-        }
-
         let mut board = Board::new("task".to_string(), 10_000);
         let agents: Vec<Arc<dyn BoardAgent>> = vec![];
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(DummyProvider)];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = BlackboardConfig::default();
         run_blackboard(&mut board, &agents, &providers, &config)
             .await
@@ -1201,32 +1176,6 @@ mod tests {
     }
 
     // ── Integration tests with mock agents ────────────────────────
-
-    use crate::providers::traits::*;
-
-    struct MockProvider;
-    #[async_trait]
-    impl Provider for MockProvider {
-        async fn complete(&self, _: CompletionRequest) -> anyhow::Result<CompletionResponse> {
-            Ok(CompletionResponse {
-                content: "ok".to_string(),
-                model: "mock".to_string(),
-                tokens_in: 10,
-                tokens_out: 10,
-                cost: 0.0,
-            })
-        }
-        async fn stream(&self, _: CompletionRequest) -> anyhow::Result<TokenStream> {
-            unimplemented!()
-        }
-        fn metadata(&self) -> ProviderMetadata {
-            ProviderMetadata {
-                name: "mock".to_string(),
-                models: vec![],
-                supports_streaming: false,
-            }
-        }
-    }
 
     /// Mock agent that produces Findings, then Confirmations after round 1.
     struct FindThenConfirmAgent {
@@ -1294,7 +1243,7 @@ mod tests {
                 id: "agent-b".into(),
             }),
         ];
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = BlackboardConfig::default();
 
         run_blackboard(&mut board, &agents, &providers, &config)
@@ -1335,7 +1284,7 @@ mod tests {
     async fn test_integration_blackboard_agent_timeout() {
         let mut board = Board::new("task".to_string(), 50_000);
         let agents: Vec<Arc<dyn BoardAgent>> = vec![Arc::new(TimeoutAgent)];
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = BlackboardConfig {
             agent_timeout_secs: 1,
             max_rounds: 2,
@@ -1356,7 +1305,7 @@ mod tests {
         let agents: Vec<Arc<dyn BoardAgent>> = vec![Arc::new(FindThenConfirmAgent {
             id: "a".into(),
         })];
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = BlackboardConfig {
             max_rounds: 0,
             ..Default::default()
@@ -1381,7 +1330,7 @@ mod tests {
         let agents: Vec<Arc<dyn BoardAgent>> = vec![Arc::new(FindThenConfirmAgent {
             id: "a".into(),
         })];
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = BlackboardConfig::default();
 
         run_blackboard(&mut board, &agents, &providers, &config)

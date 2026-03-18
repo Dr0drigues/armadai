@@ -1,6 +1,8 @@
 pub mod blackboard;
 pub mod classifier;
 pub mod ring;
+#[cfg(test)]
+pub(crate) mod test_helpers;
 
 use serde::{Deserialize, Serialize};
 

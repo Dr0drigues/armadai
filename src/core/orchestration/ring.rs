@@ -784,35 +784,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_ring_no_agents_votes_empty() {
-        use crate::providers::traits::*;
-
-        struct DummyProvider;
-        #[async_trait]
-        impl Provider for DummyProvider {
-            async fn complete(&self, _: CompletionRequest) -> anyhow::Result<CompletionResponse> {
-                Ok(CompletionResponse {
-                    content: "ok".to_string(),
-                    model: "test".to_string(),
-                    tokens_in: 0,
-                    tokens_out: 0,
-                    cost: 0.0,
-                })
-            }
-            async fn stream(&self, _: CompletionRequest) -> anyhow::Result<TokenStream> {
-                unimplemented!()
-            }
-            fn metadata(&self) -> ProviderMetadata {
-                ProviderMetadata {
-                    name: "test".to_string(),
-                    models: vec![],
-                    supports_streaming: false,
-                }
-            }
-        }
-
         let mut token = RingToken::new("task".to_string(), vec![], 10_000);
         let agents: Vec<Arc<dyn RingAgent>> = vec![];
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(DummyProvider)];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = RingConfig::default();
         run_ring(&mut token, &agents, &providers, &config)
             .await
@@ -828,32 +802,6 @@ mod tests {
     }
 
     // ── Integration tests with mock agents ────────────────────────
-
-    use crate::providers::traits::*;
-
-    struct MockProvider;
-    #[async_trait]
-    impl Provider for MockProvider {
-        async fn complete(&self, _: CompletionRequest) -> anyhow::Result<CompletionResponse> {
-            Ok(CompletionResponse {
-                content: "ok".to_string(),
-                model: "mock".to_string(),
-                tokens_in: 10,
-                tokens_out: 10,
-                cost: 0.0,
-            })
-        }
-        async fn stream(&self, _: CompletionRequest) -> anyhow::Result<TokenStream> {
-            unimplemented!()
-        }
-        fn metadata(&self) -> ProviderMetadata {
-            ProviderMetadata {
-                name: "mock".to_string(),
-                models: vec![],
-                supports_streaming: false,
-            }
-        }
-    }
 
     /// Mock ring agent that Proposes on lap 0, Enriches on lap 1, then Endorses.
     struct ProposeEnrichEndorseAgent {
@@ -916,7 +864,7 @@ mod tests {
             Arc::new(ProposeEnrichEndorseAgent { id: "b".into() }),
             Arc::new(ProposeEnrichEndorseAgent { id: "c".into() }),
         ];
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = RingConfig {
             max_laps: 2,
             ..Default::default()
@@ -985,7 +933,7 @@ mod tests {
             Arc::new(AlwaysPassAgent { id: "a".into() }),
             Arc::new(AlwaysPassAgent { id: "b".into() }),
         ];
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = RingConfig::default();
 
         run_ring(&mut token, &agents, &providers, &config)
@@ -1004,7 +952,7 @@ mod tests {
         let agents: Vec<Arc<dyn RingAgent>> = vec![Arc::new(ProposeEnrichEndorseAgent {
             id: "a".into(),
         })];
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = RingConfig {
             max_laps: 0,
             ..Default::default()
@@ -1025,7 +973,7 @@ mod tests {
         let agents: Vec<Arc<dyn RingAgent>> = vec![Arc::new(ProposeEnrichEndorseAgent {
             id: "a".into(),
         })];
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = RingConfig::default();
 
         run_ring(&mut token, &agents, &providers, &config)

@@ -18,11 +18,18 @@ pub struct TaskClassification {
 
 /// Classify a task and select the appropriate orchestration pattern.
 ///
-/// Uses heuristics (no LLM call):
-/// 1. Count how many agents are relevant to the task.
+/// **Phase 1 — keyword heuristic classifier.**
+/// This is a lightweight, zero-cost classifier that runs entirely on string
+/// matching.  It will be replaced by an LLM-based classifier in phase 2 once
+/// the prompt/evaluation harness is ready.  Until then, every change here
+/// should keep the logic simple and deterministic.
+///
+/// Algorithm:
+/// 1. Count how many agents are relevant to the task (tag + name matching).
 /// 2. If only one → Direct.
 /// 3. If multiple with low domain overlap → Blackboard (parallel).
 /// 4. If multiple with high domain overlap → Ring (cross-critique).
+/// 5. Keyword hints can nudge the pattern choice (e.g. "review" → Ring).
 pub fn classify_task(task: &str, available_agents: &[Agent]) -> TaskClassification {
     let relevant: Vec<&Agent> = available_agents
         .iter()
@@ -70,25 +77,34 @@ pub fn classify_task(task: &str, available_agents: &[Agent]) -> TaskClassificati
         _ => {
             let overlap = compute_domain_overlap(&relevant);
             let agent_names: Vec<String> = relevant.iter().map(|a| a.name.clone()).collect();
+            let hint = keyword_pattern_hint(task);
 
-            if overlap < 0.3 {
-                TaskClassification {
-                    pattern: OrchestrationPattern::Blackboard,
-                    agents: agent_names,
-                    config: PatternConfig::Blackboard(BlackboardConfig::default()),
-                    reasoning: format!(
-                        "Multiple agents with low domain overlap ({overlap:.2}); \
-                         parallel blackboard execution"
-                    ),
-                }
-            } else {
+            let use_ring = match hint {
+                Some(PatternHint::Ring) => true,
+                Some(PatternHint::Blackboard) => false,
+                None => overlap >= 0.3,
+            };
+
+            if use_ring {
                 TaskClassification {
                     pattern: OrchestrationPattern::Ring,
                     agents: agent_names,
                     config: PatternConfig::Ring(RingConfig::default()),
                     reasoning: format!(
-                        "Multiple agents with high domain overlap ({overlap:.2}); \
-                         ring with cross-critique"
+                        "Multiple agents (overlap {overlap:.2}{}); \
+                         ring with cross-critique",
+                        hint.map_or(String::new(), |h| format!(", keyword hint: {h:?}"))
+                    ),
+                }
+            } else {
+                TaskClassification {
+                    pattern: OrchestrationPattern::Blackboard,
+                    agents: agent_names,
+                    config: PatternConfig::Blackboard(BlackboardConfig::default()),
+                    reasoning: format!(
+                        "Multiple agents (overlap {overlap:.2}{}); \
+                         parallel blackboard execution",
+                        hint.map_or(String::new(), |h| format!(", keyword hint: {h:?}"))
                     ),
                 }
             }
@@ -96,7 +112,44 @@ pub fn classify_task(task: &str, available_agents: &[Agent]) -> TaskClassificati
     }
 }
 
+/// Keyword-based pattern hint.
+///
+/// Phase-1 heuristic: certain task keywords strongly suggest one pattern.
+/// Returns `None` when no keyword matches — the overlap score decides.
+#[derive(Debug, Clone, Copy)]
+enum PatternHint {
+    /// Keywords that suggest cross-critique / sequential review.
+    Ring,
+    /// Keywords that suggest parallel, independent work.
+    Blackboard,
+}
+
+/// Scan the task description for pattern-hinting keywords.
+fn keyword_pattern_hint(task: &str) -> Option<PatternHint> {
+    let t = task.to_lowercase();
+
+    // Ring keywords: action verbs that benefit from sequential review / critique.
+    const RING_KEYWORDS: &[&str] = &[
+        "review", "audit", "critique", "evaluate", "assess", "validate",
+    ];
+    // Blackboard keywords: tasks that benefit from parallel generation.
+    const BLACKBOARD_KEYWORDS: &[&str] = &[
+        "generate", "build", "create", "implement", "draft", "produce", "write",
+    ];
+
+    if RING_KEYWORDS.iter().any(|kw| t.contains(kw)) {
+        return Some(PatternHint::Ring);
+    }
+    if BLACKBOARD_KEYWORDS.iter().any(|kw| t.contains(kw)) {
+        return Some(PatternHint::Blackboard);
+    }
+    None
+}
+
 /// Check if an agent is relevant to a task based on tags and name keywords.
+///
+/// Phase-1 heuristic: simple case-insensitive substring matching.
+/// A future LLM-based classifier will use semantic similarity instead.
 fn agent_matches_task(agent: &Agent, task: &str) -> bool {
     let task_lower = task.to_lowercase();
 
@@ -119,6 +172,9 @@ fn agent_matches_task(agent: &Agent, task: &str) -> bool {
 
 /// Compute domain overlap ratio between agents based on their tags.
 /// Returns 0.0 (completely independent) to 1.0 (identical tags).
+///
+/// Uses pairwise Jaccard similarity averaged over all agent pairs.
+/// Phase-1 heuristic: tag-only; a future version may use embedding similarity.
 fn compute_domain_overlap(agents: &[&Agent]) -> f32 {
     if agents.len() < 2 {
         return 0.0;
@@ -214,11 +270,12 @@ mod tests {
     #[test]
     fn test_classify_multiple_independent_blackboard() {
         let agents = vec![
-            make_agent("Security Reviewer", &["security"]),
-            make_agent("Performance Reviewer", &["performance"]),
-            make_agent("Style Checker", &["style"]),
+            make_agent("Security Agent", &["security"]),
+            make_agent("Performance Agent", &["performance"]),
+            make_agent("Style Agent", &["style"]),
         ];
-        let result = classify_task("review security performance style", &agents);
+        // Task matches all three agents but uses no ring/blackboard keyword hints
+        let result = classify_task("check security performance style", &agents);
         assert_eq!(result.pattern, OrchestrationPattern::Blackboard);
         assert_eq!(result.agents.len(), 3);
     }
@@ -297,5 +354,40 @@ mod tests {
         let agents = vec![make_agent("Agent", &["test"])];
         let result = classify_task("test something", &agents);
         assert!(!result.reasoning.is_empty());
+    }
+
+    #[test]
+    fn test_keyword_hint_review_suggests_ring() {
+        let agents = vec![
+            make_agent("Agent A", &["code"]),
+            make_agent("Agent B", &["code"]),
+        ];
+        let result = classify_task("review the code changes", &agents);
+        assert_eq!(result.pattern, OrchestrationPattern::Ring);
+    }
+
+    #[test]
+    fn test_keyword_hint_generate_suggests_blackboard() {
+        let agents = vec![
+            make_agent("Agent A", &["code"]),
+            make_agent("Agent B", &["code"]),
+        ];
+        let result = classify_task("generate code for the API", &agents);
+        assert_eq!(result.pattern, OrchestrationPattern::Blackboard);
+    }
+
+    #[test]
+    fn test_keyword_hint_audit_suggests_ring() {
+        let agents = vec![
+            make_agent("Agent A", &["infra"]),
+            make_agent("Agent B", &["infra"]),
+        ];
+        let result = classify_task("audit infrastructure setup", &agents);
+        assert_eq!(result.pattern, OrchestrationPattern::Ring);
+    }
+
+    #[test]
+    fn test_keyword_hint_none_falls_back_to_overlap() {
+        assert!(keyword_pattern_hint("do something").is_none());
     }
 }
