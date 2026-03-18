@@ -21,11 +21,9 @@ pub async fn execute(
     agent_name: String,
     input: Option<String>,
     pipe: Option<Vec<String>>,
+    orchestrate: Option<String>,
 ) -> anyhow::Result<()> {
     let resolution = resolve_agents_dir();
-
-    // TODO: phase 2 — accept --orchestrate flag and dispatch to
-    //       run_blackboard / run_ring when multiple agents match.
 
     // Build the execution chain: primary agent + piped agents
     let mut chain = vec![agent_name];
@@ -34,8 +32,18 @@ pub async fn execute(
     }
 
     // Resolve input text
-    let mut current_input = resolve_input(input).await?;
+    let current_input = resolve_input(input).await?;
 
+    // Orchestrated multi-agent execution
+    if let Some(pattern) = orchestrate {
+        if chain.len() < 2 {
+            anyhow::bail!("--orchestrate requires at least 2 agents (use --pipe to add more)");
+        }
+        return run_orchestrated(&resolution, &chain, &current_input, &pattern).await;
+    }
+
+    // Standard sequential execution (backward compatible)
+    let mut current_input = current_input;
     let project_defaults = match &resolution {
         AgentResolution::Project { config, .. } => Some(&config.defaults),
         _ => None,
@@ -342,6 +350,129 @@ fn resolve_agents_dir() -> AgentResolution {
 
     // 3. Default fallback
     AgentResolution::Default(AppPaths::resolve().agents_dir)
+}
+
+/// Run orchestrated multi-agent execution (blackboard or ring).
+async fn run_orchestrated(
+    resolution: &AgentResolution,
+    agent_names: &[String],
+    input: &str,
+    pattern: &str,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    use crate::core::orchestration::blackboard::{
+        BlackboardConfig, Board, BoardAgent, run_blackboard,
+    };
+    use crate::core::orchestration::llm_agents::{LlmBoardAgent, LlmRingAgent};
+    use crate::core::orchestration::ring::{
+        RingAgent, RingConfig, RingOutcome, RingToken, TokenStatus, run_ring,
+    };
+    use crate::providers::traits::Provider;
+
+    // Load all agents and create providers
+    let mut agents = Vec::new();
+    let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
+
+    for name in agent_names {
+        let agent_path = resolve_agent_path(resolution, name)?;
+        let mut agent = crate::parser::parse_agent_file(&agent_path)?;
+        crate::linker::model_aliases::resolve_model_deprecations(
+            &mut agent.metadata.model,
+            &mut agent.metadata.model_fallback,
+        );
+        let provider = create_provider(&agent)?;
+        providers.push(Arc::from(provider));
+        agents.push(agent);
+    }
+
+    match pattern {
+        "blackboard" => {
+            let board_agents: Vec<Arc<dyn BoardAgent>> = agents
+                .into_iter()
+                .map(|a| Arc::new(LlmBoardAgent::new(a)) as Arc<dyn BoardAgent>)
+                .collect();
+
+            let config = BlackboardConfig::default();
+            let mut board = Board::new(input.to_string(), config.token_budget);
+
+            eprintln!(
+                "[blackboard] Starting with {} agent(s), max {} rounds",
+                board_agents.len(),
+                config.max_rounds
+            );
+
+            run_blackboard(&mut board, &board_agents, &providers, &config).await?;
+
+            eprintln!("[blackboard] Halted: {:?}", board.state());
+
+            for entry in board.entries() {
+                println!("[{}] {}", entry.agent, entry.content);
+            }
+        }
+        "ring" => {
+            let ring_agents: Vec<Arc<dyn RingAgent>> = agents
+                .into_iter()
+                .map(|a| Arc::new(LlmRingAgent::new(a)) as Arc<dyn RingAgent>)
+                .collect();
+
+            let agent_order: Vec<String> =
+                ring_agents.iter().map(|a| a.name().to_string()).collect();
+
+            let config = RingConfig::default();
+            let mut token = RingToken::new(input.to_string(), agent_order, config.token_budget);
+
+            eprintln!(
+                "[ring] Starting with {} agent(s), max {} laps",
+                ring_agents.len(),
+                config.max_laps
+            );
+
+            run_ring(&mut token, &ring_agents, &providers, &config).await?;
+
+            match token.status() {
+                TokenStatus::Done { outcome } => match outcome {
+                    RingOutcome::Consensus {
+                        resolution, score, ..
+                    } => {
+                        eprintln!("[ring] Consensus ({:.0}%)", score * 100.0);
+                        println!("{resolution}");
+                    }
+                    RingOutcome::Majority {
+                        resolution,
+                        score,
+                        dissents,
+                    } => {
+                        eprintln!(
+                            "[ring] Majority ({:.0}%, {} dissent(s))",
+                            score * 100.0,
+                            dissents.len()
+                        );
+                        println!("{resolution}");
+                    }
+                    RingOutcome::NoConsensus { summary, .. } => {
+                        eprintln!("[ring] No consensus");
+                        println!("{summary}");
+                    }
+                    RingOutcome::BudgetExhausted { partial_summary } => {
+                        eprintln!("[ring] Budget exhausted");
+                        println!("{partial_summary}");
+                    }
+                    RingOutcome::Cancelled => {
+                        eprintln!("[ring] Cancelled");
+                    }
+                },
+                other => {
+                    eprintln!("[ring] Unexpected status: {other:?}");
+                }
+            }
+        }
+        other => {
+            anyhow::bail!("Unknown orchestration pattern: '{other}'. Use 'blackboard' or 'ring'");
+        }
+    }
+
+    Ok(())
 }
 
 /// Check if an error indicates the model was not found (HTTP 404 or model-related 400).

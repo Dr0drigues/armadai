@@ -1,5 +1,6 @@
 pub mod blackboard;
 pub mod classifier;
+pub mod llm_agents;
 pub mod ring;
 #[cfg(test)]
 pub(crate) mod test_helpers;
