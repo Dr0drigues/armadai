@@ -21,8 +21,23 @@ pub async fn execute(
     agent_name: String,
     input: Option<String>,
     pipe: Option<Vec<String>>,
+    orchestrate: Option<String>,
 ) -> anyhow::Result<()> {
     let resolution = resolve_agents_dir();
+
+    // Validate --orchestrate flag if provided
+    if let Some(ref pattern) = orchestrate {
+        match pattern.to_lowercase().as_str() {
+            "direct" | "blackboard" | "ring" => {}
+            _ => {
+                anyhow::bail!(
+                    "Invalid orchestration pattern: '{pattern}'. \
+                     Expected 'direct', 'blackboard', or 'ring'"
+                );
+            }
+        }
+        tracing::info!("Orchestration override: {pattern}");
+    }
 
     // Build the execution chain: primary agent + piped agents
     let mut chain = vec![agent_name];

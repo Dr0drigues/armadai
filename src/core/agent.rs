@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::orchestration::OrchestrationPattern;
+
 /// Agent interaction mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -69,6 +71,51 @@ pub struct AgentMetadata {
     pub context_window: Option<u32>,
     /// Interaction mode (guided asks clarifying questions first)
     pub mode: Option<AgentMode>,
+    /// Orchestration pattern this agent participates in
+    pub orchestration: Option<OrchestrationPattern>,
+    /// Blackboard trigger configuration (parsed from ## Triggers section)
+    pub triggers: Option<TriggerConfig>,
+    /// Ring configuration (parsed from ## Ring Config section)
+    pub ring_config: Option<AgentRingConfig>,
+}
+
+/// Blackboard trigger configuration for reactive agent activation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerConfig {
+    /// Board entry kinds that must be present for agent to activate
+    #[serde(default)]
+    pub requires: Vec<String>,
+    /// Board entry kinds that prevent agent from activating
+    #[serde(default)]
+    pub excludes: Vec<String>,
+    /// Earliest round the agent can contribute
+    #[serde(default)]
+    pub min_round: u32,
+    /// Latest round the agent can contribute
+    pub max_round: Option<u32>,
+    /// Agent priority (0-100, higher = earlier)
+    #[serde(default = "default_trigger_priority")]
+    pub priority: u8,
+}
+
+fn default_trigger_priority() -> u8 {
+    50
+}
+
+/// Ring-specific agent configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRingConfig {
+    /// Role in the ring (initiator, specialist, challenger, synthesizer)
+    pub role: String,
+    /// Position in the ring order (0-indexed)
+    pub position: Option<usize>,
+    /// Vote weight multiplier (default 1.0)
+    #[serde(default = "default_vote_weight")]
+    pub vote_weight: f32,
+}
+
+fn default_vote_weight() -> f32 {
+    1.0
 }
 
 fn default_temperature() -> f32 {

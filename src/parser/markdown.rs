@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, bail};
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 
-use crate::core::agent::{Agent, PipelineConfig};
+use crate::core::agent::{Agent, AgentRingConfig, PipelineConfig, TriggerConfig};
 
 /// Parse a Markdown agent definition file into an Agent struct.
 ///
@@ -88,7 +88,7 @@ fn parse_agent_content(content: &str, path: &Path) -> anyhow::Result<Agent> {
     let metadata_raw = sections
         .get("metadata")
         .context("Missing ## Metadata section")?;
-    let metadata = super::metadata::parse_metadata(metadata_raw)?;
+    let mut metadata = super::metadata::parse_metadata(metadata_raw)?;
 
     let system_prompt = sections
         .get("system prompt")
@@ -114,6 +114,16 @@ fn parse_agent_content(content: &str, path: &Path) -> anyhow::Result<Agent> {
         PipelineConfig { next }
     });
 
+    // Parse ## Triggers section (for Blackboard agents)
+    if let Some(raw) = sections.get("triggers") {
+        metadata.triggers = Some(parse_trigger_config(raw));
+    }
+
+    // Parse ## Ring Config section (for Ring agents)
+    if let Some(raw) = sections.get("ring config") {
+        metadata.ring_config = Some(parse_ring_config(raw));
+    }
+
     Ok(Agent {
         name,
         source: path.to_path_buf(),
@@ -124,6 +134,86 @@ fn parse_agent_content(content: &str, path: &Path) -> anyhow::Result<Agent> {
         pipeline,
         context,
     })
+}
+
+/// Parse a ## Triggers section into TriggerConfig.
+fn parse_trigger_config(raw: &str) -> TriggerConfig {
+    let mut requires = Vec::new();
+    let mut excludes = Vec::new();
+    let mut min_round = 0u32;
+    let mut max_round = None;
+    let mut priority = 50u8;
+
+    for line in raw.lines() {
+        let line = line.trim().trim_start_matches('-').trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_lowercase();
+        let value = value.trim();
+
+        match key.as_str() {
+            "requires" => requires = parse_string_list_inline(value),
+            "excludes" => excludes = parse_string_list_inline(value),
+            "min_round" => min_round = value.parse().unwrap_or(0),
+            "max_round" => max_round = value.parse().ok(),
+            "priority" => priority = value.parse().unwrap_or(50),
+            _ => {}
+        }
+    }
+
+    TriggerConfig {
+        requires,
+        excludes,
+        min_round,
+        max_round,
+        priority,
+    }
+}
+
+/// Parse a ## Ring Config section into AgentRingConfig.
+fn parse_ring_config(raw: &str) -> AgentRingConfig {
+    let mut role = "specialist".to_string();
+    let mut position = None;
+    let mut vote_weight = 1.0f32;
+
+    for line in raw.lines() {
+        let line = line.trim().trim_start_matches('-').trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_lowercase();
+        let value = value.trim();
+
+        match key.as_str() {
+            "role" => role = value.to_string(),
+            "position" => position = value.parse().ok(),
+            "vote_weight" => vote_weight = value.parse().unwrap_or(1.0),
+            _ => {}
+        }
+    }
+
+    AgentRingConfig {
+        role,
+        position,
+        vote_weight,
+    }
+}
+
+/// Parse bracket-delimited list inline (reused for trigger fields).
+fn parse_string_list_inline(value: &str) -> Vec<String> {
+    let trimmed = value.trim().trim_start_matches('[').trim_end_matches(']');
+    trimmed
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 #[cfg(test)]

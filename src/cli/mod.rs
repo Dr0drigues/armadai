@@ -62,6 +62,9 @@ pub enum Command {
         /// Pipeline mode: chain agents sequentially
         #[arg(long, num_args = 1..)]
         pipe: Option<Vec<String>>,
+        /// Override orchestration pattern (direct, blackboard, ring)
+        #[arg(long)]
+        orchestrate: Option<String>,
     },
     /// Create a new agent from a template
     #[command(
@@ -372,7 +375,12 @@ pub enum Command {
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Command::Run { agent, input, pipe } => run::execute(agent, input, pipe).await,
+        Command::Run {
+            agent,
+            input,
+            pipe,
+            orchestrate,
+        } => run::execute(agent, input, pipe, orchestrate).await,
         Command::New {
             name,
             template,
