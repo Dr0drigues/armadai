@@ -350,6 +350,7 @@ fn resolve_votes(token: &RingToken, config: &RingConfig) -> RingOutcome {
     }
 
     let total_voters = token.votes.len() as f32;
+    // SAFETY: groups is non-empty because votes is non-empty (early return above)
     let largest_group = groups.values().max_by_key(|g| g.len()).unwrap();
     let majority_ratio = largest_group.len() as f32 / total_voters;
     let representative = largest_group[0].1.position.clone();

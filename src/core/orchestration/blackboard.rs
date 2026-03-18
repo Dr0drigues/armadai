@@ -16,7 +16,7 @@ use crate::providers::traits::Provider;
 pub struct Board {
     pub id: Uuid,
     pub task: String,
-    pub entries: Arc<Vec<BoardEntry>>,
+    pub(crate) entries: Arc<Vec<BoardEntry>>,
     pub round: u32,
     pub(crate) state: BoardState,
     pub(crate) budget: TokenBudget,
@@ -402,6 +402,7 @@ fn check_convergence(board: &Board, config: &BlackboardConfig) -> Option<HaltRea
         .count();
 
     let total = last_round_entries.len() as f32;
+    // SAFETY: total > 0 because last_round_entries.is_empty() returns early above
     let consensus_score = confirmations as f32 / total;
 
     if consensus_score >= config.consensus_threshold {
