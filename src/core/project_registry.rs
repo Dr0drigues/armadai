@@ -191,11 +191,7 @@ mod tests {
 
         // Upsert new path: should add
         let new_path = "/home/user/other-project".to_string();
-        if !registry
-            .projects
-            .iter_mut()
-            .any(|e| e.path == new_path)
-        {
+        if !registry.projects.iter_mut().any(|e| e.path == new_path) {
             registry.projects.push(ProjectEntry {
                 path: new_path,
                 last_seen: new_ts,

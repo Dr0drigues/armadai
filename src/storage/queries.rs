@@ -205,7 +205,10 @@ pub struct RingVoteRecord {
 }
 
 /// Insert an orchestration run record (finished_at populated automatically).
-pub fn insert_orchestration_run(db: &Database, record: OrchestrationRunRecord) -> anyhow::Result<()> {
+pub fn insert_orchestration_run(
+    db: &Database,
+    record: OrchestrationRunRecord,
+) -> anyhow::Result<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO orchestration_runs (run_id, pattern, config_json, outcome_json, rounds, halt_reason, finished_at)
@@ -244,7 +247,10 @@ pub fn insert_board_entry(db: &Database, record: BoardEntryRecord) -> anyhow::Re
 }
 
 /// Insert a ring contribution record.
-pub fn insert_ring_contribution(db: &Database, record: RingContributionRecord) -> anyhow::Result<()> {
+pub fn insert_ring_contribution(
+    db: &Database,
+    record: RingContributionRecord,
+) -> anyhow::Result<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO ring_contributions (run_id, agent, lap, position_in_lap, action, content, reactions_json, tokens_in, tokens_out)
@@ -479,38 +485,50 @@ mod tests {
         };
 
         // Insert orchestration run first
-        insert_orchestration_run(&db, OrchestrationRunRecord {
-            run_id: run_id.clone(),
-            pattern: "blackboard".to_string(),
-            config_json: "{}".to_string(),
-            outcome_json: None,
-            rounds: 1,
-            halt_reason: None,
-        }).unwrap();
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: run_id.clone(),
+                pattern: "blackboard".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: None,
+                rounds: 1,
+                halt_reason: None,
+            },
+        )
+        .unwrap();
 
-        insert_board_entry(&db, BoardEntryRecord {
-            run_id: run_id.clone(),
-            agent: "security".to_string(),
-            round: 0,
-            kind: "finding".to_string(),
-            content: "SQL injection found".to_string(),
-            refs_json: "[]".to_string(),
-            confidence: 0.9,
-            tokens_in: 100,
-            tokens_out: 50,
-        }).unwrap();
+        insert_board_entry(
+            &db,
+            BoardEntryRecord {
+                run_id: run_id.clone(),
+                agent: "security".to_string(),
+                round: 0,
+                kind: "finding".to_string(),
+                content: "SQL injection found".to_string(),
+                refs_json: "[]".to_string(),
+                confidence: 0.9,
+                tokens_in: 100,
+                tokens_out: 50,
+            },
+        )
+        .unwrap();
 
-        insert_board_entry(&db, BoardEntryRecord {
-            run_id: run_id.clone(),
-            agent: "perf".to_string(),
-            round: 0,
-            kind: "finding".to_string(),
-            content: "N+1 query".to_string(),
-            refs_json: "[]".to_string(),
-            confidence: 0.8,
-            tokens_in: 80,
-            tokens_out: 40,
-        }).unwrap();
+        insert_board_entry(
+            &db,
+            BoardEntryRecord {
+                run_id: run_id.clone(),
+                agent: "perf".to_string(),
+                round: 0,
+                kind: "finding".to_string(),
+                content: "N+1 query".to_string(),
+                refs_json: "[]".to_string(),
+                confidence: 0.8,
+                tokens_in: 80,
+                tokens_out: 40,
+            },
+        )
+        .unwrap();
 
         let entries = get_board_entries(&db, &run_id).unwrap();
         assert_eq!(entries.len(), 2);
@@ -528,26 +546,34 @@ mod tests {
             stmt.query_row([], |row| row.get::<_, String>(0)).unwrap()
         };
 
-        insert_orchestration_run(&db, OrchestrationRunRecord {
-            run_id: run_id.clone(),
-            pattern: "ring".to_string(),
-            config_json: "{}".to_string(),
-            outcome_json: None,
-            rounds: 1,
-            halt_reason: None,
-        }).unwrap();
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: run_id.clone(),
+                pattern: "ring".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: None,
+                rounds: 1,
+                halt_reason: None,
+            },
+        )
+        .unwrap();
 
-        insert_ring_contribution(&db, RingContributionRecord {
-            run_id: run_id.clone(),
-            agent: "initiator".to_string(),
-            lap: 0,
-            position_in_lap: 0,
-            action: "propose".to_string(),
-            content: "Use Rust".to_string(),
-            reactions_json: "[]".to_string(),
-            tokens_in: 100,
-            tokens_out: 200,
-        }).unwrap();
+        insert_ring_contribution(
+            &db,
+            RingContributionRecord {
+                run_id: run_id.clone(),
+                agent: "initiator".to_string(),
+                lap: 0,
+                position_in_lap: 0,
+                action: "propose".to_string(),
+                content: "Use Rust".to_string(),
+                reactions_json: "[]".to_string(),
+                tokens_in: 100,
+                tokens_out: 200,
+            },
+        )
+        .unwrap();
 
         let contribs = get_ring_contributions(&db, &run_id).unwrap();
         assert_eq!(contribs.len(), 1);
@@ -565,32 +591,44 @@ mod tests {
             stmt.query_row([], |row| row.get::<_, String>(0)).unwrap()
         };
 
-        insert_orchestration_run(&db, OrchestrationRunRecord {
-            run_id: run_id.clone(),
-            pattern: "ring".to_string(),
-            config_json: "{}".to_string(),
-            outcome_json: None,
-            rounds: 2,
-            halt_reason: None,
-        }).unwrap();
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: run_id.clone(),
+                pattern: "ring".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: None,
+                rounds: 2,
+                halt_reason: None,
+            },
+        )
+        .unwrap();
 
-        insert_ring_vote(&db, RingVoteRecord {
-            run_id: run_id.clone(),
-            agent: "agent-a".to_string(),
-            position: "Use Rust".to_string(),
-            confidence: 0.9,
-            supports: "[0, 2]".to_string(),
-            concerns: "[]".to_string(),
-        }).unwrap();
+        insert_ring_vote(
+            &db,
+            RingVoteRecord {
+                run_id: run_id.clone(),
+                agent: "agent-a".to_string(),
+                position: "Use Rust".to_string(),
+                confidence: 0.9,
+                supports: "[0, 2]".to_string(),
+                concerns: "[]".to_string(),
+            },
+        )
+        .unwrap();
 
-        insert_ring_vote(&db, RingVoteRecord {
-            run_id: run_id.clone(),
-            agent: "agent-b".to_string(),
-            position: "Use Go".to_string(),
-            confidence: 0.7,
-            supports: "[1]".to_string(),
-            concerns: "[\"recruiting\"]".to_string(),
-        }).unwrap();
+        insert_ring_vote(
+            &db,
+            RingVoteRecord {
+                run_id: run_id.clone(),
+                agent: "agent-b".to_string(),
+                position: "Use Go".to_string(),
+                confidence: 0.7,
+                supports: "[1]".to_string(),
+                concerns: "[\"recruiting\"]".to_string(),
+            },
+        )
+        .unwrap();
 
         let votes = get_ring_votes(&db, &run_id).unwrap();
         assert_eq!(votes.len(), 2);

@@ -373,11 +373,7 @@ pub enum Command {
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Command::Run {
-            agent,
-            input,
-            pipe,
-        } => run::execute(agent, input, pipe).await,
+        Command::Run { agent, input, pipe } => run::execute(agent, input, pipe).await,
         Command::New {
             name,
             template,

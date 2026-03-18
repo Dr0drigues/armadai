@@ -78,10 +78,8 @@ impl Contribution {
             agent: agent.to_string(),
             lap,
             position_in_lap: position,
-            action: ContributionAction::Pass {
-                reason: reason.clone(),
-            },
-            content: reason,
+            content: reason.clone(),
+            action: ContributionAction::Pass { reason },
             reactions: vec![],
             tokens_used: TokenCount::default(),
             created_at: Utc::now(),
@@ -93,11 +91,20 @@ impl Contribution {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ContributionAction {
     Propose,
-    Enrich { target: usize },
-    Contest { target: usize, counter_argument: String },
-    Endorse { target: usize },
+    Enrich {
+        target: usize,
+    },
+    Contest {
+        target: usize,
+        counter_argument: String,
+    },
+    Endorse {
+        target: usize,
+    },
     Synthesize,
-    Pass { reason: String },
+    Pass {
+        reason: String,
+    },
 }
 
 /// Reaction to a previous contribution.
@@ -226,11 +233,7 @@ pub trait RingAgent: Send + Sync {
     ) -> anyhow::Result<Contribution>;
 
     /// Vote phase: agent takes a final position.
-    async fn vote(
-        &self,
-        token: &TokenSnapshot,
-        provider: &dyn Provider,
-    ) -> anyhow::Result<Vote>;
+    async fn vote(&self, token: &TokenSnapshot, provider: &dyn Provider) -> anyhow::Result<Vote>;
 }
 
 // ── Configuration ────────────────────────────────────────────────
@@ -343,10 +346,7 @@ fn resolve_votes(token: &RingToken, config: &RingConfig) -> RingOutcome {
     let mut groups: BTreeMap<String, Vec<(String, &Vote)>> = BTreeMap::new();
     for (agent, vote) in &token.votes {
         let key = vote.position.to_lowercase();
-        groups
-            .entry(key)
-            .or_default()
-            .push((agent.clone(), vote));
+        groups.entry(key).or_default().push((agent.clone(), vote));
     }
 
     let total_voters = token.votes.len() as f32;
@@ -469,20 +469,24 @@ pub async fn run_ring(
         token.lap += 1;
     }
 
-    // Phase 2: Voting
+    // Phase 2: Voting (with timeout, same as circulation phase)
     token.status = TokenStatus::Voting;
+    let vote_timeout = config.agent_timeout();
 
     for (pos, agent) in agents.iter().enumerate() {
         let snapshot = token.snapshot();
         let provider_idx = pos % providers.len();
         let provider = providers[provider_idx].as_ref();
 
-        match agent.vote(&snapshot, provider).await {
-            Ok(vote) => {
+        match tokio::time::timeout(vote_timeout, agent.vote(&snapshot, provider)).await {
+            Ok(Ok(vote)) => {
                 token.votes.insert(agent.name().to_string(), vote);
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!(agent = %agent.name(), "vote failed: {e}");
+            }
+            Err(_) => {
+                tracing::warn!(agent = %agent.name(), "vote timed out");
             }
         }
     }
@@ -949,9 +953,8 @@ mod tests {
     #[tokio::test]
     async fn test_integration_ring_max_laps_zero() {
         let mut token = RingToken::new("task".to_string(), vec!["a".into()], 50_000);
-        let agents: Vec<Arc<dyn RingAgent>> = vec![Arc::new(ProposeEnrichEndorseAgent {
-            id: "a".into(),
-        })];
+        let agents: Vec<Arc<dyn RingAgent>> =
+            vec![Arc::new(ProposeEnrichEndorseAgent { id: "a".into() })];
         let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = RingConfig {
             max_laps: 0,
@@ -970,9 +973,8 @@ mod tests {
     #[tokio::test]
     async fn test_integration_ring_token_budget_zero() {
         let mut token = RingToken::new("task".to_string(), vec!["a".into()], 0);
-        let agents: Vec<Arc<dyn RingAgent>> = vec![Arc::new(ProposeEnrichEndorseAgent {
-            id: "a".into(),
-        })];
+        let agents: Vec<Arc<dyn RingAgent>> =
+            vec![Arc::new(ProposeEnrichEndorseAgent { id: "a".into() })];
         let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = RingConfig::default();
 

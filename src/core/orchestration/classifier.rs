@@ -68,10 +68,7 @@ pub fn classify_task(task: &str, available_agents: &[Agent]) -> TaskClassificati
                 config: PatternConfig::Direct {
                     agent: agent.name.clone(),
                 },
-                reasoning: format!(
-                    "Single matching agent '{}'; direct execution",
-                    agent.name
-                ),
+                reasoning: format!("Single matching agent '{}'; direct execution", agent.name),
             }
         }
         _ => {
@@ -134,7 +131,13 @@ fn keyword_pattern_hint(task: &str) -> Option<PatternHint> {
     ];
     // Blackboard keywords: tasks that benefit from parallel generation.
     const BLACKBOARD_KEYWORDS: &[&str] = &[
-        "generate", "build", "create", "implement", "draft", "produce", "write",
+        "generate",
+        "build",
+        "create",
+        "implement",
+        "draft",
+        "produce",
+        "write",
     ];
 
     if RING_KEYWORDS.iter().any(|kw| t.contains(kw)) {
@@ -337,10 +340,7 @@ mod tests {
     fn test_agent_matches_task_by_name() {
         let agent = make_agent("Security Reviewer", &[]);
         assert!(agent_matches_task(&agent, "need security help"));
-        assert!(agent_matches_task(
-            &agent,
-            "reviewer needed for this code"
-        ));
+        assert!(agent_matches_task(&agent, "reviewer needed for this code"));
     }
 
     #[test]

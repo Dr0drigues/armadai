@@ -476,11 +476,9 @@ pub async fn run_blackboard(
             let agent_name = agent.name().to_string();
 
             handles.push(tokio::spawn(async move {
-                let result = tokio::time::timeout(
-                    timeout_dur,
-                    agent.contribute(&snap, provider.as_ref()),
-                )
-                .await;
+                let result =
+                    tokio::time::timeout(timeout_dur, agent.contribute(&snap, provider.as_ref()))
+                        .await;
                 (agent_name, result)
             }));
         }
@@ -702,7 +700,11 @@ mod tests {
             })
             .unwrap();
 
-        assert!(board.entries()[0].content.contains("[annotation] extra info"));
+        assert!(
+            board.entries()[0]
+                .content
+                .contains("[annotation] extra info")
+        );
     }
 
     #[test]
@@ -1302,9 +1304,8 @@ mod tests {
     #[tokio::test]
     async fn test_integration_blackboard_max_rounds_zero() {
         let mut board = Board::new("task".to_string(), 50_000);
-        let agents: Vec<Arc<dyn BoardAgent>> = vec![Arc::new(FindThenConfirmAgent {
-            id: "a".into(),
-        })];
+        let agents: Vec<Arc<dyn BoardAgent>> =
+            vec![Arc::new(FindThenConfirmAgent { id: "a".into() })];
         let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = BlackboardConfig {
             max_rounds: 0,
@@ -1327,9 +1328,8 @@ mod tests {
     #[tokio::test]
     async fn test_integration_blackboard_token_budget_zero() {
         let mut board = Board::new("task".to_string(), 0);
-        let agents: Vec<Arc<dyn BoardAgent>> = vec![Arc::new(FindThenConfirmAgent {
-            id: "a".into(),
-        })];
+        let agents: Vec<Arc<dyn BoardAgent>> =
+            vec![Arc::new(FindThenConfirmAgent { id: "a".into() })];
         let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = BlackboardConfig::default();
 
