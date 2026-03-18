@@ -100,7 +100,7 @@ pub fn classify_task(task: &str, available_agents: &[Agent]) -> TaskClassificati
 fn agent_matches_task(agent: &Agent, task: &str) -> bool {
     let task_lower = task.to_lowercase();
 
-    // Check if any tag appears in the task
+    // Check if any tag appears in the task (tag normalized once)
     if agent
         .metadata
         .tags
@@ -111,15 +111,10 @@ fn agent_matches_task(agent: &Agent, task: &str) -> bool {
     }
 
     // Check if the agent name (words) appears in the task
-    let name_words: Vec<&str> = agent.name.split_whitespace().collect();
-    if name_words
-        .iter()
-        .any(|w| task_lower.contains(&w.to_lowercase()) && w.len() > 2)
-    {
-        return true;
-    }
-
-    false
+    agent
+        .name
+        .split_whitespace()
+        .any(|w| w.len() > 2 && task_lower.contains(&w.to_lowercase()))
 }
 
 /// Compute domain overlap ratio between agents based on their tags.

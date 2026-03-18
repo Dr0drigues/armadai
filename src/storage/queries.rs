@@ -204,12 +204,12 @@ pub struct RingVoteRecord {
     pub concerns: String,
 }
 
-/// Insert an orchestration run record.
+/// Insert an orchestration run record (finished_at populated automatically).
 pub fn insert_orchestration_run(db: &Database, record: OrchestrationRunRecord) -> anyhow::Result<()> {
     let conn = db.lock().unwrap();
     conn.execute(
-        "INSERT INTO orchestration_runs (run_id, pattern, config_json, outcome_json, rounds, halt_reason)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO orchestration_runs (run_id, pattern, config_json, outcome_json, rounds, halt_reason, finished_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
         params![
             record.run_id,
             record.pattern,

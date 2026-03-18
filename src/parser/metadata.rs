@@ -65,11 +65,10 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
                     "direct" => OrchestrationPattern::Direct,
                     "blackboard" => OrchestrationPattern::Blackboard,
                     "ring" => OrchestrationPattern::Ring,
-                    "both" => OrchestrationPattern::Both,
                     _ => {
                         anyhow::bail!(
                             "Invalid orchestration: '{value}'. \
-                             Expected 'direct', 'blackboard', 'ring', or 'both'"
+                             Expected 'direct', 'blackboard', or 'ring'"
                         )
                     }
                 })

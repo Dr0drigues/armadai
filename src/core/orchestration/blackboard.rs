@@ -16,12 +16,14 @@ use crate::providers::traits::Provider;
 pub struct Board {
     pub id: Uuid,
     pub task: String,
-    pub entries: Vec<BoardEntry>,
+    pub entries: Arc<Vec<BoardEntry>>,
     pub round: u32,
-    pub state: BoardState,
-    pub budget: TokenBudget,
+    pub(crate) state: BoardState,
+    pub(crate) budget: TokenBudget,
     pub context: HashMap<String, serde_json::Value>,
     pub created_at: DateTime<Utc>,
+    pub(crate) consecutive_convergence: u32,
+    pub(crate) halt_proposals: Vec<HaltReason>,
 }
 
 /// Global state of the board.
@@ -108,7 +110,7 @@ impl TokenBudget {
     }
 
     pub fn consume(&mut self, count: TokenCount) {
-        self.used += (count.input + count.output) as u64;
+        self.used += count.input as u64 + count.output as u64;
     }
 }
 
@@ -118,7 +120,7 @@ impl TokenBudget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardSnapshot {
     pub task: String,
-    pub entries: Vec<BoardEntry>,
+    pub entries: Arc<Vec<BoardEntry>>,
     pub round: u32,
     pub state: BoardState,
     pub context: HashMap<String, serde_json::Value>,
@@ -141,20 +143,42 @@ impl Board {
         Self {
             id: Uuid::new_v4(),
             task,
-            entries: Vec::new(),
+            entries: Arc::new(Vec::new()),
             round: 0,
             state: BoardState::Open,
             budget: TokenBudget::new(token_budget),
             context: HashMap::new(),
             created_at: Utc::now(),
+            consecutive_convergence: 0,
+            halt_proposals: Vec::new(),
         }
     }
 
-    /// Produce an immutable snapshot for agents.
+    /// Accessor for the board state.
+    pub fn state(&self) -> &BoardState {
+        &self.state
+    }
+
+    /// Check if the board has halted.
+    pub fn is_halted(&self) -> bool {
+        matches!(self.state, BoardState::Halted { .. })
+    }
+
+    /// Accessor for the budget.
+    pub fn budget(&self) -> &TokenBudget {
+        &self.budget
+    }
+
+    /// Accessor for entries as a slice.
+    pub fn entries(&self) -> &[BoardEntry] {
+        &self.entries
+    }
+
+    /// Produce an immutable snapshot for agents (cheap: Arc clone).
     pub fn snapshot(&self) -> BoardSnapshot {
         BoardSnapshot {
             task: self.task.clone(),
-            entries: self.entries.clone(),
+            entries: Arc::clone(&self.entries),
             round: self.round,
             state: self.state.clone(),
             context: self.context.clone(),
@@ -162,23 +186,89 @@ impl Board {
         }
     }
 
+    /// Validate that all target indices in an entry kind are within bounds.
+    fn validate_entry_references(
+        &self,
+        entry: &BoardEntry,
+        current_len: usize,
+    ) -> anyhow::Result<()> {
+        match &entry.kind {
+            EntryKind::Challenge { target } | EntryKind::Confirmation { target } => {
+                if *target >= current_len {
+                    anyhow::bail!(
+                        "entry references target index {target} but board has {current_len} entries"
+                    );
+                }
+            }
+            EntryKind::Synthesis { sources } => {
+                for &src in sources {
+                    if src >= current_len {
+                        anyhow::bail!(
+                            "synthesis references source index {src} but board has {current_len} entries"
+                        );
+                    }
+                }
+            }
+            EntryKind::Answer { question } => {
+                if *question >= current_len {
+                    anyhow::bail!(
+                        "answer references question index {question} but board has {current_len} entries"
+                    );
+                }
+            }
+            EntryKind::Finding | EntryKind::Question => {}
+        }
+        Ok(())
+    }
+
     /// Apply a delta to the board.
-    pub fn apply(&mut self, delta: BoardDelta) {
+    pub fn apply(&mut self, delta: BoardDelta) -> anyhow::Result<()> {
         match delta {
             BoardDelta::AddEntry(mut entry) => {
-                entry.index = self.entries.len();
+                let current_len = self.entries.len();
+                entry.index = current_len;
+                self.validate_entry_references(&entry, current_len)?;
                 self.budget.consume(entry.tokens_used);
-                self.entries.push(entry);
+                Arc::make_mut(&mut self.entries).push(entry);
             }
             BoardDelta::Annotate { target, note } => {
-                if let Some(entry) = self.entries.get_mut(target) {
-                    entry.content.push_str(&format!("\n[annotation] {note}"));
+                let entries = Arc::make_mut(&mut self.entries);
+                if let Some(entry) = entries.get_mut(target) {
+                    entry.content.push_str("\n[annotation] ");
+                    entry.content.push_str(&note);
                 }
             }
             BoardDelta::ProposeHalt(reason) => {
-                self.state = BoardState::Halted { reason };
+                self.halt_proposals.push(reason);
             }
         }
+        Ok(())
+    }
+
+    /// Check if pending halt proposals should trigger a halt.
+    /// Halts if majority of agents proposed, or if a round passed with no objection.
+    pub(crate) fn check_halt_proposals(&mut self, total_agents: usize) -> bool {
+        if self.halt_proposals.is_empty() {
+            return false;
+        }
+        // Majority proposed halt
+        if self.halt_proposals.len() * 2 > total_agents {
+            let reason = self.halt_proposals[0].clone();
+            self.state = BoardState::Halted { reason };
+            return true;
+        }
+        // Check if this round had no objection (no new findings/challenges)
+        let has_objection = self
+            .entries
+            .iter()
+            .filter(|e| e.round == self.round)
+            .any(|e| matches!(e.kind, EntryKind::Finding | EntryKind::Challenge { .. }));
+        if !has_objection {
+            let reason = self.halt_proposals[0].clone();
+            self.state = BoardState::Halted { reason };
+            return true;
+        }
+        false
     }
 }
 
@@ -225,22 +315,22 @@ pub struct BlackboardConfig {
     pub convergence_rounds: u32,
 }
 
-fn default_max_rounds() -> u32 {
+const fn default_max_rounds() -> u32 {
     5
 }
-fn default_agent_timeout_secs() -> u64 {
+const fn default_agent_timeout_secs() -> u64 {
     60
 }
-fn default_bb_consensus_threshold() -> f32 {
+const fn default_bb_consensus_threshold() -> f32 {
     0.75
 }
-fn default_divergence_threshold() -> f32 {
+const fn default_divergence_threshold() -> f32 {
     0.60
 }
-fn default_bb_token_budget() -> u64 {
+const fn default_bb_token_budget() -> u64 {
     50_000
 }
-fn default_convergence_rounds() -> u32 {
+const fn default_convergence_rounds() -> u32 {
     1
 }
 
@@ -261,6 +351,23 @@ impl BlackboardConfig {
     pub fn agent_timeout(&self) -> Duration {
         Duration::from_secs(self.agent_timeout_secs)
     }
+
+    /// Validate that config thresholds are in valid range (0.0..=1.0).
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !(0.0..=1.0).contains(&self.consensus_threshold) {
+            anyhow::bail!(
+                "consensus_threshold must be in 0.0..=1.0, got {}",
+                self.consensus_threshold
+            );
+        }
+        if !(0.0..=1.0).contains(&self.divergence_threshold) {
+            anyhow::bail!(
+                "divergence_threshold must be in 0.0..=1.0, got {}",
+                self.divergence_threshold
+            );
+        }
+        Ok(())
+    }
 }
 
 // ── Execution loop ───────────────────────────────────────────────
@@ -272,7 +379,7 @@ fn should_halt(board: &Board, config: &BlackboardConfig) -> bool {
         || board.budget.exhausted()
 }
 
-/// Check convergence conditions.
+/// Check convergence conditions (budget check removed — budget exhaustion only in should_halt).
 fn check_convergence(board: &Board, config: &BlackboardConfig) -> Option<HaltReason> {
     let last_round_entries: Vec<_> = board
         .entries
@@ -314,8 +421,12 @@ fn check_convergence(board: &Board, config: &BlackboardConfig) -> Option<HaltRea
         });
     }
 
+    // Log a warning when budget nears the threshold (but do not halt)
     if board.budget.remaining_ratio() < (1.0 - board.budget.warning_threshold) {
-        return Some(HaltReason::BudgetExhausted);
+        tracing::warn!(
+            remaining_ratio = board.budget.remaining_ratio(),
+            "token budget nearing exhaustion"
+        );
     }
 
     None
@@ -328,6 +439,8 @@ pub async fn run_blackboard(
     providers: &[Arc<dyn Provider>],
     config: &BlackboardConfig,
 ) -> anyhow::Result<()> {
+    config.validate()?;
+
     // We need at least one provider; agents share them by index (mod len).
     if providers.is_empty() {
         anyhow::bail!("At least one provider is required for blackboard execution");
@@ -376,7 +489,9 @@ pub async fn run_blackboard(
             match result {
                 Ok(Ok(deltas)) => {
                     for delta in deltas {
-                        board.apply(delta);
+                        if let Err(e) = board.apply(delta) {
+                            tracing::warn!(agent = %agent_name, error = %e, "invalid delta");
+                        }
                     }
                 }
                 Ok(Err(e)) => {
@@ -388,17 +503,25 @@ pub async fn run_blackboard(
             }
         }
 
-        // Evaluate convergence
+        // Check pending halt proposals
+        if board.check_halt_proposals(agents.len()) {
+            break;
+        }
+
+        // Evaluate convergence with consecutive round tracking
         if let Some(reason) = check_convergence(board, config) {
-            match board.state {
-                BoardState::Open => {
-                    board.state = BoardState::Converging;
-                }
-                BoardState::Converging => {
-                    board.state = BoardState::Halted { reason };
-                    break;
-                }
-                BoardState::Halted { .. } => break,
+            board.consecutive_convergence += 1;
+            if board.consecutive_convergence >= config.convergence_rounds {
+                board.state = BoardState::Halted { reason };
+                break;
+            } else {
+                board.state = BoardState::Converging;
+            }
+        } else {
+            // Convergence not detected — reset counter and state
+            board.consecutive_convergence = 0;
+            if matches!(board.state, BoardState::Converging) {
+                board.state = BoardState::Open;
             }
         }
 
@@ -478,13 +601,26 @@ mod tests {
     }
 
     #[test]
+    fn test_token_budget_u32_overflow() {
+        let mut budget = TokenBudget::new(u64::MAX);
+        budget.consume(TokenCount {
+            input: u32::MAX,
+            output: u32::MAX,
+        });
+        // Should not overflow: u32::MAX + u32::MAX fits in u64
+        assert_eq!(budget.used, u32::MAX as u64 + u32::MAX as u64);
+    }
+
+    #[test]
     fn test_board_new() {
         let board = Board::new("test task".to_string(), 50_000);
         assert_eq!(board.task, "test task");
         assert_eq!(board.round, 0);
-        assert_eq!(board.state, BoardState::Open);
-        assert!(board.entries.is_empty());
-        assert_eq!(board.budget.total, 50_000);
+        assert_eq!(*board.state(), BoardState::Open);
+        assert!(board.entries().is_empty());
+        assert_eq!(board.budget().total, 50_000);
+        assert_eq!(board.consecutive_convergence, 0);
+        assert!(board.halt_proposals.is_empty());
     }
 
     #[test]
@@ -495,6 +631,26 @@ mod tests {
         assert_eq!(snap.round, 0);
         assert_eq!(snap.state, BoardState::Open);
         assert_eq!(snap.budget_remaining, 10_000);
+    }
+
+    #[test]
+    fn test_board_snapshot_shares_arc() {
+        let mut board = Board::new("task".to_string(), 10_000);
+        let entry = BoardEntry {
+            index: 0,
+            agent: "a".to_string(),
+            round: 0,
+            kind: EntryKind::Finding,
+            content: "f".to_string(),
+            references: vec![],
+            confidence: 0.5,
+            tokens_used: TokenCount::default(),
+            created_at: Utc::now(),
+        };
+        board.apply(BoardDelta::AddEntry(entry)).unwrap();
+        let snap = board.snapshot();
+        // Snapshot shares the Arc — same pointer
+        assert!(Arc::ptr_eq(&board.entries, &snap.entries));
     }
 
     #[test]
@@ -515,11 +671,11 @@ mod tests {
             created_at: Utc::now(),
         };
 
-        board.apply(BoardDelta::AddEntry(entry));
+        board.apply(BoardDelta::AddEntry(entry)).unwrap();
 
-        assert_eq!(board.entries.len(), 1);
-        assert_eq!(board.entries[0].index, 0); // auto-assigned
-        assert_eq!(board.entries[0].agent, "agent-a");
+        assert_eq!(board.entries().len(), 1);
+        assert_eq!(board.entries()[0].index, 0); // auto-assigned
+        assert_eq!(board.entries()[0].agent, "agent-a");
         assert_eq!(board.budget.used, 150);
     }
 
@@ -537,25 +693,101 @@ mod tests {
             tokens_used: TokenCount::default(),
             created_at: Utc::now(),
         };
-        board.apply(BoardDelta::AddEntry(entry));
-        board.apply(BoardDelta::Annotate {
-            target: 0,
-            note: "extra info".to_string(),
-        });
+        board.apply(BoardDelta::AddEntry(entry)).unwrap();
+        board
+            .apply(BoardDelta::Annotate {
+                target: 0,
+                note: "extra info".to_string(),
+            })
+            .unwrap();
 
-        assert!(board.entries[0].content.contains("[annotation] extra info"));
+        assert!(board.entries()[0].content.contains("[annotation] extra info"));
     }
 
     #[test]
-    fn test_board_apply_propose_halt() {
+    fn test_board_apply_propose_halt_pending() {
         let mut board = Board::new("task".to_string(), 10_000);
-        board.apply(BoardDelta::ProposeHalt(HaltReason::Cancelled));
-        assert_eq!(
-            board.state,
-            BoardState::Halted {
-                reason: HaltReason::Cancelled
-            }
-        );
+        board
+            .apply(BoardDelta::ProposeHalt(HaltReason::Cancelled))
+            .unwrap();
+        // ProposeHalt no longer immediately halts — it adds a pending proposal
+        assert_eq!(*board.state(), BoardState::Open);
+        assert_eq!(board.halt_proposals.len(), 1);
+    }
+
+    #[test]
+    fn test_halt_proposals_majority() {
+        let mut board = Board::new("task".to_string(), 10_000);
+        board
+            .apply(BoardDelta::ProposeHalt(HaltReason::Cancelled))
+            .unwrap();
+        board
+            .apply(BoardDelta::ProposeHalt(HaltReason::Cancelled))
+            .unwrap();
+        // 2 proposals out of 3 agents = majority
+        assert!(board.check_halt_proposals(3));
+        assert!(board.is_halted());
+    }
+
+    #[test]
+    fn test_halt_proposals_no_majority() {
+        let mut board = Board::new("task".to_string(), 10_000);
+        // Add a finding in the current round (objection)
+        let entry = BoardEntry {
+            index: 0,
+            agent: "agent-a".to_string(),
+            round: 0,
+            kind: EntryKind::Finding,
+            content: "new finding".to_string(),
+            references: vec![],
+            confidence: 0.5,
+            tokens_used: TokenCount::default(),
+            created_at: Utc::now(),
+        };
+        board.apply(BoardDelta::AddEntry(entry)).unwrap();
+        board
+            .apply(BoardDelta::ProposeHalt(HaltReason::Cancelled))
+            .unwrap();
+        // 1 proposal out of 5 agents with objection = no halt
+        assert!(!board.check_halt_proposals(5));
+        assert!(!board.is_halted());
+    }
+
+    #[test]
+    fn test_halt_proposals_no_objection() {
+        let mut board = Board::new("task".to_string(), 10_000);
+        // Only a confirmation in this round (not an objection)
+        let entry = BoardEntry {
+            index: 0,
+            agent: "agent-b".to_string(),
+            round: 0,
+            kind: EntryKind::Finding,
+            content: "base".to_string(),
+            references: vec![],
+            confidence: 0.5,
+            tokens_used: TokenCount::default(),
+            created_at: Utc::now(),
+        };
+        board.apply(BoardDelta::AddEntry(entry)).unwrap();
+        board.round = 1;
+        let confirm = BoardEntry {
+            index: 0,
+            agent: "agent-c".to_string(),
+            round: 1,
+            kind: EntryKind::Confirmation { target: 0 },
+            content: "agreed".to_string(),
+            references: vec![],
+            confidence: 0.9,
+            tokens_used: TokenCount::default(),
+            created_at: Utc::now(),
+        };
+        board.apply(BoardDelta::AddEntry(confirm)).unwrap();
+        board
+            .apply(BoardDelta::ProposeHalt(HaltReason::Stable))
+            .unwrap();
+        // 1 proposal out of 5, but no objection (no findings/challenges in this round)
+        assert!(board.check_halt_proposals(5));
+        assert!(board.is_halted());
     }
 
     #[test]
@@ -602,31 +834,47 @@ mod tests {
     #[test]
     fn test_check_convergence_high_consensus() {
         let mut board = Board::new("task".to_string(), 50_000);
-        // Add 4 confirmations out of 5 entries
+        // Need a base entry to confirm
+        let base = BoardEntry {
+            index: 0,
+            agent: "base".to_string(),
+            round: 0,
+            kind: EntryKind::Finding,
+            content: "base".to_string(),
+            references: vec![],
+            confidence: 0.9,
+            tokens_used: TokenCount::default(),
+            created_at: Utc::now(),
+        };
+        board.apply(BoardDelta::AddEntry(base)).unwrap();
+        board.round = 1;
+        // Add 4 confirmations out of 5 entries in round 1
         for i in 0..4 {
-            board.entries.push(BoardEntry {
-                index: i,
+            let entry = BoardEntry {
+                index: 0,
                 agent: format!("agent-{i}"),
-                round: 0,
+                round: 1,
                 kind: EntryKind::Confirmation { target: 0 },
                 content: "agree".to_string(),
                 references: vec![],
                 confidence: 0.9,
                 tokens_used: TokenCount::default(),
                 created_at: Utc::now(),
-            });
+            };
+            board.apply(BoardDelta::AddEntry(entry)).unwrap();
         }
-        board.entries.push(BoardEntry {
-            index: 4,
+        let new_finding = BoardEntry {
+            index: 0,
             agent: "agent-4".to_string(),
-            round: 0,
+            round: 1,
             kind: EntryKind::Finding,
             content: "new finding".to_string(),
             references: vec![],
             confidence: 0.7,
             tokens_used: TokenCount::default(),
             created_at: Utc::now(),
-        });
+        };
+        board.apply(BoardDelta::AddEntry(new_finding)).unwrap();
 
         let config = BlackboardConfig::default();
         let result = check_convergence(&board, &config);
@@ -638,8 +886,8 @@ mod tests {
         let mut board = Board::new("task".to_string(), 50_000);
         // All findings, no confirmations
         for i in 0..5 {
-            board.entries.push(BoardEntry {
-                index: i,
+            let entry = BoardEntry {
+                index: 0,
                 agent: format!("agent-{i}"),
                 round: 0,
                 kind: EntryKind::Finding,
@@ -648,7 +896,8 @@ mod tests {
                 confidence: 0.5,
                 tokens_used: TokenCount::default(),
                 created_at: Utc::now(),
-            });
+            };
+            board.apply(BoardDelta::AddEntry(entry)).unwrap();
         }
         let config = BlackboardConfig::default();
         let result = check_convergence(&board, &config);
@@ -658,11 +907,24 @@ mod tests {
     #[test]
     fn test_check_convergence_divergence() {
         let mut board = Board::new("task".to_string(), 50_000);
+        // Add a base entry to challenge
+        let base = BoardEntry {
+            index: 0,
+            agent: "base".to_string(),
+            round: 0,
+            kind: EntryKind::Finding,
+            content: "base".to_string(),
+            references: vec![],
+            confidence: 0.5,
+            tokens_used: TokenCount::default(),
+            created_at: Utc::now(),
+        };
+        board.apply(BoardDelta::AddEntry(base)).unwrap();
         board.round = 3;
         // All challenges in round 3
         for i in 0..5 {
-            board.entries.push(BoardEntry {
-                index: i,
+            let entry = BoardEntry {
+                index: 0,
                 agent: format!("agent-{i}"),
                 round: 3,
                 kind: EntryKind::Challenge { target: 0 },
@@ -671,11 +933,35 @@ mod tests {
                 confidence: 0.5,
                 tokens_used: TokenCount::default(),
                 created_at: Utc::now(),
-            });
+            };
+            board.apply(BoardDelta::AddEntry(entry)).unwrap();
         }
         let config = BlackboardConfig::default();
         let result = check_convergence(&board, &config);
         assert!(matches!(result, Some(HaltReason::Divergence { .. })));
+    }
+
+    #[test]
+    fn test_check_convergence_budget_warning_not_halt() {
+        let mut board = Board::new("task".to_string(), 1000);
+        board.budget.used = 850; // 85% used, past warning_threshold (80%)
+        // Add a finding so it's not an empty round
+        let entry = BoardEntry {
+            index: 0,
+            agent: "a".to_string(),
+            round: 0,
+            kind: EntryKind::Finding,
+            content: "f".to_string(),
+            references: vec![],
+            confidence: 0.5,
+            tokens_used: TokenCount::default(),
+            created_at: Utc::now(),
+        };
+        board.apply(BoardDelta::AddEntry(entry)).unwrap();
+        let config = BlackboardConfig::default();
+        // Budget warning should NOT cause halt (only a log warning)
+        let result = check_convergence(&board, &config);
+        assert!(result.is_none());
     }
 
     #[test]
@@ -688,6 +974,30 @@ mod tests {
         assert_eq!(config.token_budget, 50_000);
         assert_eq!(config.convergence_rounds, 1);
         assert_eq!(config.agent_timeout(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_blackboard_config_validate_ok() {
+        let config = BlackboardConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_blackboard_config_validate_bad_consensus() {
+        let config = BlackboardConfig {
+            consensus_threshold: 1.5,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_blackboard_config_validate_bad_divergence() {
+        let config = BlackboardConfig {
+            divergence_threshold: -0.1,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
     }
 
     #[test]
@@ -753,12 +1063,88 @@ mod tests {
                 tokens_used: TokenCount::default(),
                 created_at: Utc::now(),
             };
-            board.apply(BoardDelta::AddEntry(entry));
+            board.apply(BoardDelta::AddEntry(entry)).unwrap();
         }
-        assert_eq!(board.entries.len(), 3);
-        assert_eq!(board.entries[0].index, 0);
-        assert_eq!(board.entries[1].index, 1);
-        assert_eq!(board.entries[2].index, 2);
+        assert_eq!(board.entries().len(), 3);
+        assert_eq!(board.entries()[0].index, 0);
+        assert_eq!(board.entries()[1].index, 1);
+        assert_eq!(board.entries()[2].index, 2);
+    }
+
+    #[test]
+    fn test_validate_references_invalid_target() {
+        let mut board = Board::new("task".to_string(), 10_000);
+        let entry = BoardEntry {
+            index: 0,
+            agent: "a".to_string(),
+            round: 0,
+            kind: EntryKind::Challenge { target: 99 },
+            content: "bad ref".to_string(),
+            references: vec![],
+            confidence: 0.5,
+            tokens_used: TokenCount::default(),
+            created_at: Utc::now(),
+        };
+        assert!(board.apply(BoardDelta::AddEntry(entry)).is_err());
+    }
+
+    #[test]
+    fn test_validate_references_valid_target() {
+        let mut board = Board::new("task".to_string(), 10_000);
+        // Add a base entry first
+        let base = BoardEntry {
+            index: 0,
+            agent: "a".to_string(),
+            round: 0,
+            kind: EntryKind::Finding,
+            content: "base".to_string(),
+            references: vec![],
+            confidence: 0.5,
+            tokens_used: TokenCount::default(),
+            created_at: Utc::now(),
+        };
+        board.apply(BoardDelta::AddEntry(base)).unwrap();
+        // Now confirm the base entry
+        let confirm = BoardEntry {
+            index: 0,
+            agent: "b".to_string(),
+            round: 0,
+            kind: EntryKind::Confirmation { target: 0 },
+            content: "agreed".to_string(),
+            references: vec![],
+            confidence: 0.9,
+            tokens_used: TokenCount::default(),
+            created_at: Utc::now(),
+        };
+        assert!(board.apply(BoardDelta::AddEntry(confirm)).is_ok());
+    }
+
+    #[test]
+    fn test_convergence_rounds_tracking() {
+        let mut board = Board::new("task".to_string(), 50_000);
+        let config = BlackboardConfig {
+            convergence_rounds: 3,
+            ..Default::default()
+        };
+
+        // Simulate 3 rounds of convergence
+        for _ in 0..3 {
+            board.consecutive_convergence += 1;
+        }
+        assert!(board.consecutive_convergence >= config.convergence_rounds);
+
+        // Reset on non-convergence
+        board.consecutive_convergence = 0;
+        assert!(board.consecutive_convergence < config.convergence_rounds);
+    }
+
+    #[test]
+    fn test_board_accessors() {
+        let board = Board::new("task".to_string(), 10_000);
+        assert_eq!(*board.state(), BoardState::Open);
+        assert!(!board.is_halted());
+        assert_eq!(board.budget().total, 10_000);
+        assert!(board.entries().is_empty());
     }
 
     #[tokio::test]
@@ -807,9 +1193,206 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            board.state,
+            *board.state(),
             BoardState::Halted {
                 reason: HaltReason::Stable
+            }
+        );
+    }
+
+    // ── Integration tests with mock agents ────────────────────────
+
+    use crate::providers::traits::*;
+
+    struct MockProvider;
+    #[async_trait]
+    impl Provider for MockProvider {
+        async fn complete(&self, _: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            Ok(CompletionResponse {
+                content: "ok".to_string(),
+                model: "mock".to_string(),
+                tokens_in: 10,
+                tokens_out: 10,
+                cost: 0.0,
+            })
+        }
+        async fn stream(&self, _: CompletionRequest) -> anyhow::Result<TokenStream> {
+            unimplemented!()
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "mock".to_string(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    /// Mock agent that produces Findings, then Confirmations after round 1.
+    struct FindThenConfirmAgent {
+        id: String,
+    }
+
+    #[async_trait]
+    impl BoardAgent for FindThenConfirmAgent {
+        fn name(&self) -> &str {
+            &self.id
+        }
+
+        fn can_contribute(&self, _board: &BoardSnapshot) -> bool {
+            true
+        }
+
+        async fn contribute(
+            &self,
+            board: &BoardSnapshot,
+            _provider: &dyn Provider,
+        ) -> anyhow::Result<Vec<BoardDelta>> {
+            if board.round == 0 {
+                Ok(vec![BoardDelta::AddEntry(BoardEntry {
+                    index: 0,
+                    agent: self.id.clone(),
+                    round: board.round,
+                    kind: EntryKind::Finding,
+                    content: format!("finding from {}", self.id),
+                    references: vec![],
+                    confidence: 0.8,
+                    tokens_used: TokenCount {
+                        input: 10,
+                        output: 10,
+                    },
+                    created_at: Utc::now(),
+                })])
+            } else {
+                // Confirm the first entry
+                Ok(vec![BoardDelta::AddEntry(BoardEntry {
+                    index: 0,
+                    agent: self.id.clone(),
+                    round: board.round,
+                    kind: EntryKind::Confirmation { target: 0 },
+                    content: "confirmed".to_string(),
+                    references: vec![],
+                    confidence: 0.9,
+                    tokens_used: TokenCount {
+                        input: 10,
+                        output: 10,
+                    },
+                    created_at: Utc::now(),
+                })])
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_integration_blackboard_consensus() {
+        let mut board = Board::new("review code".to_string(), 50_000);
+        let agents: Vec<Arc<dyn BoardAgent>> = vec![
+            Arc::new(FindThenConfirmAgent {
+                id: "agent-a".into(),
+            }),
+            Arc::new(FindThenConfirmAgent {
+                id: "agent-b".into(),
+            }),
+        ];
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let config = BlackboardConfig::default();
+
+        run_blackboard(&mut board, &agents, &providers, &config)
+            .await
+            .unwrap();
+
+        assert!(board.is_halted());
+        match board.state() {
+            BoardState::Halted {
+                reason: HaltReason::Consensus { .. },
+            } => {}
+            other => panic!("Expected Consensus halt, got {other:?}"),
+        }
+    }
+
+    /// Mock agent that always times out.
+    struct TimeoutAgent;
+
+    #[async_trait]
+    impl BoardAgent for TimeoutAgent {
+        fn name(&self) -> &str {
+            "timeout-agent"
+        }
+        fn can_contribute(&self, _board: &BoardSnapshot) -> bool {
+            true
+        }
+        async fn contribute(
+            &self,
+            _board: &BoardSnapshot,
+            _provider: &dyn Provider,
+        ) -> anyhow::Result<Vec<BoardDelta>> {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_integration_blackboard_agent_timeout() {
+        let mut board = Board::new("task".to_string(), 50_000);
+        let agents: Vec<Arc<dyn BoardAgent>> = vec![Arc::new(TimeoutAgent)];
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let config = BlackboardConfig {
+            agent_timeout_secs: 1,
+            max_rounds: 2,
+            ..Default::default()
+        };
+
+        run_blackboard(&mut board, &agents, &providers, &config)
+            .await
+            .unwrap();
+
+        // Should halt (stable, since timeout agent produces nothing each round)
+        assert!(board.is_halted());
+    }
+
+    #[tokio::test]
+    async fn test_integration_blackboard_max_rounds_zero() {
+        let mut board = Board::new("task".to_string(), 50_000);
+        let agents: Vec<Arc<dyn BoardAgent>> = vec![Arc::new(FindThenConfirmAgent {
+            id: "a".into(),
+        })];
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let config = BlackboardConfig {
+            max_rounds: 0,
+            ..Default::default()
+        };
+
+        run_blackboard(&mut board, &agents, &providers, &config)
+            .await
+            .unwrap();
+
+        assert!(board.is_halted());
+        assert_eq!(
+            *board.state(),
+            BoardState::Halted {
+                reason: HaltReason::MaxRounds
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_integration_blackboard_token_budget_zero() {
+        let mut board = Board::new("task".to_string(), 0);
+        let agents: Vec<Arc<dyn BoardAgent>> = vec![Arc::new(FindThenConfirmAgent {
+            id: "a".into(),
+        })];
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let config = BlackboardConfig::default();
+
+        run_blackboard(&mut board, &agents, &providers, &config)
+            .await
+            .unwrap();
+
+        assert!(board.is_halted());
+        assert_eq!(
+            *board.state(),
+            BoardState::Halted {
+                reason: HaltReason::BudgetExhausted
             }
         );
     }

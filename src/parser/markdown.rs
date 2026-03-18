@@ -3,7 +3,8 @@ use std::path::Path;
 use anyhow::{Context, bail};
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 
-use crate::core::agent::{Agent, AgentRingConfig, PipelineConfig, TriggerConfig};
+use crate::core::agent::{Agent, PipelineConfig};
+use crate::core::orchestration::{AgentRingConfig, TriggerConfig};
 
 /// Parse a Markdown agent definition file into an Agent struct.
 ///
@@ -414,5 +415,132 @@ Use `grep` to search and **bold** for emphasis.
             assert!(!agent.metadata.provider.is_empty());
             assert!(!agent.system_prompt.is_empty());
         }
+    }
+
+    #[test]
+    fn parse_triggers_section() {
+        let f = write_temp_agent(
+            r#"# Trigger Agent
+
+## Metadata
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- orchestration: blackboard
+
+## System Prompt
+
+You react to findings.
+
+## Triggers
+- requires: [finding, question]
+- excludes: [synthesis]
+- min_round: 1
+- max_round: 4
+- priority: 75
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        let triggers = agent.metadata.triggers.unwrap();
+        assert_eq!(triggers.requires, vec!["finding", "question"]);
+        assert_eq!(triggers.excludes, vec!["synthesis"]);
+        assert_eq!(triggers.min_round, 1);
+        assert_eq!(triggers.max_round, Some(4));
+        assert_eq!(triggers.priority, 75);
+    }
+
+    #[test]
+    fn parse_triggers_section_defaults() {
+        let f = write_temp_agent(
+            r#"# Trigger Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## System Prompt
+
+test
+
+## Triggers
+- requires: [finding]
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        let triggers = agent.metadata.triggers.unwrap();
+        assert_eq!(triggers.requires, vec!["finding"]);
+        assert!(triggers.excludes.is_empty());
+        assert_eq!(triggers.min_round, 0);
+        assert!(triggers.max_round.is_none());
+        assert_eq!(triggers.priority, 50);
+    }
+
+    #[test]
+    fn parse_ring_config_section() {
+        let f = write_temp_agent(
+            r#"# Ring Agent
+
+## Metadata
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- orchestration: ring
+
+## System Prompt
+
+You participate in ring reviews.
+
+## Ring Config
+- role: challenger
+- position: 2
+- vote_weight: 1.5
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        let ring = agent.metadata.ring_config.unwrap();
+        assert_eq!(ring.role, "challenger");
+        assert_eq!(ring.position, Some(2));
+        assert!((ring.vote_weight - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parse_ring_config_section_defaults() {
+        let f = write_temp_agent(
+            r#"# Ring Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## System Prompt
+
+test
+
+## Ring Config
+- role: synthesizer
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        let ring = agent.metadata.ring_config.unwrap();
+        assert_eq!(ring.role, "synthesizer");
+        assert!(ring.position.is_none());
+        assert!((ring.vote_weight - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parse_no_triggers_or_ring_config() {
+        let f = write_temp_agent(
+            r#"# Plain Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## System Prompt
+
+test
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        assert!(agent.metadata.triggers.is_none());
+        assert!(agent.metadata.ring_config.is_none());
     }
 }

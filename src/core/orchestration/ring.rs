@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -14,13 +15,13 @@ use crate::providers::traits::Provider;
 
 /// Artifact that circulates between agents in the ring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Token {
+pub struct RingToken {
     pub id: Uuid,
     pub task: String,
     pub contributions: Vec<Contribution>,
     pub lap: u32,
-    pub votes: HashMap<String, Vote>,
-    pub status: TokenStatus,
+    pub(crate) votes: BTreeMap<String, Vote>,
+    pub(crate) status: TokenStatus,
     pub ring_order: Vec<String>,
     pub current_position: usize,
     pub budget: TokenBudget,
@@ -151,9 +152,9 @@ pub enum RingRole {
     Synthesizer,
 }
 
-// ── Token methods ────────────────────────────────────────────────
+// ── RingToken methods ────────────────────────────────────────────
 
-impl Token {
+impl RingToken {
     /// Create a new token for a ring execution.
     pub fn new(task: String, ring_order: Vec<String>, token_budget: u64) -> Self {
         Self {
@@ -161,13 +162,23 @@ impl Token {
             task,
             contributions: Vec::new(),
             lap: 0,
-            votes: HashMap::new(),
+            votes: BTreeMap::new(),
             status: TokenStatus::Circulating,
             ring_order,
             current_position: 0,
             budget: TokenBudget::new(token_budget),
             created_at: Utc::now(),
         }
+    }
+
+    /// Accessor for the token status.
+    pub fn status(&self) -> &TokenStatus {
+        &self.status
+    }
+
+    /// Accessor for the votes.
+    pub fn votes(&self) -> &BTreeMap<String, Vote> {
+        &self.votes
     }
 
     /// Produce a snapshot for agents.
@@ -241,22 +252,22 @@ pub struct RingConfig {
     pub token_budget: u64,
 }
 
-fn default_max_laps() -> u32 {
+const fn default_max_laps() -> u32 {
     3
 }
-fn default_ring_agent_timeout_secs() -> u64 {
+const fn default_ring_agent_timeout_secs() -> u64 {
     90
 }
-fn default_ring_consensus_threshold() -> f32 {
+const fn default_ring_consensus_threshold() -> f32 {
     0.80
 }
-fn default_majority_threshold() -> f32 {
+const fn default_majority_threshold() -> f32 {
     0.60
 }
-fn default_similarity_threshold() -> f32 {
+const fn default_similarity_threshold() -> f32 {
     0.85
 }
-fn default_ring_token_budget() -> u64 {
+const fn default_ring_token_budget() -> u64 {
     40_000
 }
 
@@ -277,13 +288,39 @@ impl RingConfig {
     pub fn agent_timeout(&self) -> Duration {
         Duration::from_secs(self.agent_timeout_secs)
     }
+
+    /// Validate that config thresholds are in valid range (0.0..=1.0).
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !(0.0..=1.0).contains(&self.consensus_threshold) {
+            anyhow::bail!(
+                "consensus_threshold must be in 0.0..=1.0, got {}",
+                self.consensus_threshold
+            );
+        }
+        if !(0.0..=1.0).contains(&self.majority_threshold) {
+            anyhow::bail!(
+                "majority_threshold must be in 0.0..=1.0, got {}",
+                self.majority_threshold
+            );
+        }
+        if !(0.0..=1.0).contains(&self.similarity_threshold) {
+            anyhow::bail!(
+                "similarity_threshold must be in 0.0..=1.0, got {}",
+                self.similarity_threshold
+            );
+        }
+        Ok(())
+    }
 }
 
 // ── Execution loop ───────────────────────────────────────────────
 
 /// Summarize contributions so far (for budget exhaustion outcome).
-fn summarize_so_far(token: &Token) -> String {
-    let mut summary = format!("Task: {}\n\n", token.task);
+fn summarize_so_far(token: &RingToken) -> String {
+    let mut summary = String::with_capacity(256);
+    summary.push_str("Task: ");
+    summary.push_str(&token.task);
+    summary.push_str("\n\n");
     for c in &token.contributions {
         summary.push_str(&format!(
             "[Lap {} / {}] {}: {}\n",
@@ -294,7 +331,7 @@ fn summarize_so_far(token: &Token) -> String {
 }
 
 /// Group votes by position similarity and resolve the outcome.
-fn resolve_votes(token: &Token, config: &RingConfig) -> RingOutcome {
+fn resolve_votes(token: &RingToken, config: &RingConfig) -> RingOutcome {
     if token.votes.is_empty() {
         return RingOutcome::NoConsensus {
             summary: "No votes cast".into(),
@@ -302,10 +339,8 @@ fn resolve_votes(token: &Token, config: &RingConfig) -> RingOutcome {
         };
     }
 
-    // Simple grouping: exact string match on position.
-    // A full implementation would use semantic similarity, but for now we group by
-    // lowercased position string.
-    let mut groups: HashMap<String, Vec<(String, &Vote)>> = HashMap::new();
+    // Group by lowercased position string (deterministic iteration via BTreeMap).
+    let mut groups: BTreeMap<String, Vec<(String, &Vote)>> = BTreeMap::new();
     for (agent, vote) in &token.votes {
         let key = vote.position.to_lowercase();
         groups
@@ -360,11 +395,13 @@ fn resolve_votes(token: &Token, config: &RingConfig) -> RingOutcome {
 
 /// Run the ring execution loop with 3 phases: circulation, voting, resolution.
 pub async fn run_ring(
-    token: &mut Token,
-    agents: &[Box<dyn RingAgent>],
-    providers: &[Box<dyn Provider>],
+    token: &mut RingToken,
+    agents: &[Arc<dyn RingAgent>],
+    providers: &[Arc<dyn Provider>],
     config: &RingConfig,
 ) -> anyhow::Result<()> {
+    config.validate()?;
+
     if providers.is_empty() {
         anyhow::bail!("At least one provider is required for ring execution");
     }
@@ -465,27 +502,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_token_new() {
-        let token = Token::new(
+    fn test_ring_token_new() {
+        let token = RingToken::new(
             "test task".to_string(),
             vec!["a".to_string(), "b".to_string()],
             40_000,
         );
         assert_eq!(token.task, "test task");
         assert_eq!(token.lap, 0);
-        assert_eq!(token.status, TokenStatus::Circulating);
+        assert_eq!(*token.status(), TokenStatus::Circulating);
         assert_eq!(token.ring_order, vec!["a", "b"]);
         assert!(token.contributions.is_empty());
-        assert!(token.votes.is_empty());
+        assert!(token.votes().is_empty());
     }
 
     #[test]
-    fn test_token_snapshot() {
-        let token = Token::new("task".to_string(), vec!["a".to_string()], 10_000);
+    fn test_ring_token_snapshot() {
+        let token = RingToken::new("task".to_string(), vec!["a".to_string()], 10_000);
         let snap = token.snapshot();
         assert_eq!(snap.task, "task");
         assert_eq!(snap.lap, 0);
         assert_eq!(snap.budget_remaining, 10_000);
+    }
+
+    #[test]
+    fn test_ring_token_accessors() {
+        let token = RingToken::new("task".to_string(), vec![], 10_000);
+        assert_eq!(*token.status(), TokenStatus::Circulating);
+        assert!(token.votes().is_empty());
     }
 
     #[test]
@@ -510,8 +554,32 @@ mod tests {
     }
 
     #[test]
+    fn test_ring_config_validate_ok() {
+        let config = RingConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_ring_config_validate_bad_consensus() {
+        let config = RingConfig {
+            consensus_threshold: 1.5,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_ring_config_validate_bad_majority() {
+        let config = RingConfig {
+            majority_threshold: -0.1,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn test_resolve_votes_empty() {
-        let token = Token::new("task".to_string(), vec![], 10_000);
+        let token = RingToken::new("task".to_string(), vec![], 10_000);
         let config = RingConfig::default();
         let outcome = resolve_votes(&token, &config);
         assert!(matches!(outcome, RingOutcome::NoConsensus { .. }));
@@ -519,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_resolve_votes_consensus() {
-        let mut token = Token::new("task".to_string(), vec![], 10_000);
+        let mut token = RingToken::new("task".to_string(), vec![], 10_000);
         // 5 agents all vote the same
         for i in 0..5 {
             token.votes.insert(
@@ -544,7 +612,7 @@ mod tests {
 
     #[test]
     fn test_resolve_votes_majority() {
-        let mut token = Token::new("task".to_string(), vec![], 10_000);
+        let mut token = RingToken::new("task".to_string(), vec![], 10_000);
         // 3 out of 4 vote the same → 0.75, which is >= majority (0.60) but < consensus (0.80)
         for i in 0..3 {
             token.votes.insert(
@@ -580,7 +648,7 @@ mod tests {
 
     #[test]
     fn test_resolve_votes_no_consensus() {
-        let mut token = Token::new("task".to_string(), vec![], 10_000);
+        let mut token = RingToken::new("task".to_string(), vec![], 10_000);
         // Each agent votes differently → no majority
         for i in 0..5 {
             token.votes.insert(
@@ -604,6 +672,27 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_votes_deterministic_btreemap() {
+        // With BTreeMap, iteration order is deterministic
+        let mut token = RingToken::new("task".to_string(), vec![], 10_000);
+        for i in (0..5).rev() {
+            token.votes.insert(
+                format!("agent-{i}"),
+                Vote {
+                    position: "same".to_string(),
+                    confidence: 0.9,
+                    supporting_contributions: vec![],
+                    unresolved_concerns: vec![],
+                },
+            );
+        }
+        let config = RingConfig::default();
+        let outcome = resolve_votes(&token, &config);
+        // Should deterministically resolve to consensus
+        assert!(matches!(outcome, RingOutcome::Consensus { .. }));
+    }
+
+    #[test]
     fn test_ring_role_variants() {
         let _init = RingRole::Initiator;
         let _spec = RingRole::Specialist {
@@ -622,7 +711,7 @@ mod tests {
 
     #[test]
     fn test_summarize_so_far() {
-        let mut token = Token::new("review code".to_string(), vec!["a".to_string()], 10_000);
+        let mut token = RingToken::new("review code".to_string(), vec!["a".to_string()], 10_000);
         token.contributions.push(Contribution {
             agent: "agent-a".to_string(),
             lap: 0,
@@ -685,9 +774,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_ring_no_providers() {
-        let mut token = Token::new("task".to_string(), vec![], 10_000);
-        let agents: Vec<Box<dyn RingAgent>> = vec![];
-        let providers: Vec<Box<dyn Provider>> = vec![];
+        let mut token = RingToken::new("task".to_string(), vec![], 10_000);
+        let agents: Vec<Arc<dyn RingAgent>> = vec![];
+        let providers: Vec<Arc<dyn Provider>> = vec![];
         let config = RingConfig::default();
         let result = run_ring(&mut token, &agents, &providers, &config).await;
         assert!(result.is_err());
@@ -721,20 +810,234 @@ mod tests {
             }
         }
 
-        let mut token = Token::new("task".to_string(), vec![], 10_000);
-        let agents: Vec<Box<dyn RingAgent>> = vec![];
-        let providers: Vec<Box<dyn Provider>> = vec![Box::new(DummyProvider)];
+        let mut token = RingToken::new("task".to_string(), vec![], 10_000);
+        let agents: Vec<Arc<dyn RingAgent>> = vec![];
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(DummyProvider)];
         let config = RingConfig::default();
         run_ring(&mut token, &agents, &providers, &config)
             .await
             .unwrap();
 
         // With no agents, should go straight to voting then resolution with NoConsensus
-        match &token.status {
+        match token.status() {
             TokenStatus::Done { outcome } => {
                 assert!(matches!(outcome, RingOutcome::NoConsensus { .. }));
             }
             other => panic!("Expected Done, got {other:?}"),
+        }
+    }
+
+    // ── Integration tests with mock agents ────────────────────────
+
+    use crate::providers::traits::*;
+
+    struct MockProvider;
+    #[async_trait]
+    impl Provider for MockProvider {
+        async fn complete(&self, _: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            Ok(CompletionResponse {
+                content: "ok".to_string(),
+                model: "mock".to_string(),
+                tokens_in: 10,
+                tokens_out: 10,
+                cost: 0.0,
+            })
+        }
+        async fn stream(&self, _: CompletionRequest) -> anyhow::Result<TokenStream> {
+            unimplemented!()
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "mock".to_string(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    /// Mock ring agent that Proposes on lap 0, Enriches on lap 1, then Endorses.
+    struct ProposeEnrichEndorseAgent {
+        id: String,
+    }
+
+    #[async_trait]
+    impl RingAgent for ProposeEnrichEndorseAgent {
+        fn name(&self) -> &str {
+            &self.id
+        }
+        fn role(&self) -> RingRole {
+            RingRole::Initiator
+        }
+        async fn process(
+            &self,
+            token: &TokenSnapshot,
+            _provider: &dyn Provider,
+        ) -> anyhow::Result<Contribution> {
+            let action = match token.lap {
+                0 => ContributionAction::Propose,
+                1 if !token.contributions.is_empty() => ContributionAction::Enrich { target: 0 },
+                _ if !token.contributions.is_empty() => ContributionAction::Endorse { target: 0 },
+                _ => ContributionAction::Propose,
+            };
+            Ok(Contribution {
+                agent: self.id.clone(),
+                lap: token.lap,
+                position_in_lap: token.current_position,
+                action,
+                content: format!("{} contribution lap {}", self.id, token.lap),
+                reactions: vec![],
+                tokens_used: TokenCount {
+                    input: 10,
+                    output: 10,
+                },
+                created_at: Utc::now(),
+            })
+        }
+        async fn vote(
+            &self,
+            _token: &TokenSnapshot,
+            _provider: &dyn Provider,
+        ) -> anyhow::Result<Vote> {
+            Ok(Vote {
+                position: "Use Rust".to_string(),
+                confidence: 0.9,
+                supporting_contributions: vec![0],
+                unresolved_concerns: vec![],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_integration_ring_propose_enrich_endorse_consensus() {
+        let order = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let mut token = RingToken::new("design API".to_string(), order, 50_000);
+        let agents: Vec<Arc<dyn RingAgent>> = vec![
+            Arc::new(ProposeEnrichEndorseAgent { id: "a".into() }),
+            Arc::new(ProposeEnrichEndorseAgent { id: "b".into() }),
+            Arc::new(ProposeEnrichEndorseAgent { id: "c".into() }),
+        ];
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let config = RingConfig {
+            max_laps: 2,
+            ..Default::default()
+        };
+
+        run_ring(&mut token, &agents, &providers, &config)
+            .await
+            .unwrap();
+
+        // All 3 agents vote "Use Rust" → consensus
+        match token.status() {
+            TokenStatus::Done {
+                outcome: RingOutcome::Consensus { score, .. },
+            } => {
+                assert!((score - 1.0).abs() < f32::EPSILON);
+            }
+            other => panic!("Expected Consensus, got {other:?}"),
+        }
+    }
+
+    /// Mock agent that always passes.
+    struct AlwaysPassAgent {
+        id: String,
+    }
+
+    #[async_trait]
+    impl RingAgent for AlwaysPassAgent {
+        fn name(&self) -> &str {
+            &self.id
+        }
+        fn role(&self) -> RingRole {
+            RingRole::Specialist {
+                domain: "none".into(),
+            }
+        }
+        async fn process(
+            &self,
+            token: &TokenSnapshot,
+            _provider: &dyn Provider,
+        ) -> anyhow::Result<Contribution> {
+            Ok(Contribution::pass(
+                &self.id,
+                token.lap,
+                token.current_position,
+                "nothing to add".into(),
+            ))
+        }
+        async fn vote(
+            &self,
+            _token: &TokenSnapshot,
+            _provider: &dyn Provider,
+        ) -> anyhow::Result<Vote> {
+            Ok(Vote {
+                position: "No opinion".to_string(),
+                confidence: 0.1,
+                supporting_contributions: vec![],
+                unresolved_concerns: vec![],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_integration_ring_all_pass_early_exit() {
+        let mut token = RingToken::new("task".to_string(), vec!["a".into(), "b".into()], 50_000);
+        let agents: Vec<Arc<dyn RingAgent>> = vec![
+            Arc::new(AlwaysPassAgent { id: "a".into() }),
+            Arc::new(AlwaysPassAgent { id: "b".into() }),
+        ];
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let config = RingConfig::default();
+
+        run_ring(&mut token, &agents, &providers, &config)
+            .await
+            .unwrap();
+
+        // All agents passed → early exit after lap 0, should still vote and resolve
+        assert!(matches!(token.status(), TokenStatus::Done { .. }));
+        // Only 1 lap's worth of contributions (lap 0, no lap 1)
+        assert_eq!(token.lap, 0);
+    }
+
+    #[tokio::test]
+    async fn test_integration_ring_max_laps_zero() {
+        let mut token = RingToken::new("task".to_string(), vec!["a".into()], 50_000);
+        let agents: Vec<Arc<dyn RingAgent>> = vec![Arc::new(ProposeEnrichEndorseAgent {
+            id: "a".into(),
+        })];
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let config = RingConfig {
+            max_laps: 0,
+            ..Default::default()
+        };
+
+        run_ring(&mut token, &agents, &providers, &config)
+            .await
+            .unwrap();
+
+        // max_laps=0 means no circulation, straight to voting
+        assert!(matches!(token.status(), TokenStatus::Done { .. }));
+        assert!(token.contributions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_integration_ring_token_budget_zero() {
+        let mut token = RingToken::new("task".to_string(), vec!["a".into()], 0);
+        let agents: Vec<Arc<dyn RingAgent>> = vec![Arc::new(ProposeEnrichEndorseAgent {
+            id: "a".into(),
+        })];
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider)];
+        let config = RingConfig::default();
+
+        run_ring(&mut token, &agents, &providers, &config)
+            .await
+            .unwrap();
+
+        // Budget is 0, should exhaust immediately after first contribution
+        match token.status() {
+            TokenStatus::Done {
+                outcome: RingOutcome::BudgetExhausted { .. },
+            } => {}
+            other => panic!("Expected BudgetExhausted, got {other:?}"),
         }
     }
 }
