@@ -1,6 +1,6 @@
 [package]
 name = "armadai"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2024"
 description = "ArmadAI — AI agent fleet orchestrator. Define, manage and run specialized agents from Markdown files."
 license = "PolyForm-Noncommercial-1.0.0"
@@ -33,7 +33,7 @@ ratatui = { version = "0.30", optional = true }
 crossterm = { version = "0.29", optional = true }
 
 # HTTP client (optional — enable with `providers-api` feature)
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"], optional = true }
 
 # HTTP server (optional — enable with `web` feature)
 axum = { version = "0.8", optional = true }
