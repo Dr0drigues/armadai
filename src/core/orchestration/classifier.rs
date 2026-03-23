@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::blackboard::BlackboardConfig;
 use super::ring::RingConfig;
-use super::{OrchestrationPattern, PatternConfig};
+use super::{OrchestrationConfig, OrchestrationPattern, PatternConfig};
 use crate::core::agent::Agent;
 
 /// Result of task classification.
@@ -14,6 +14,94 @@ pub struct TaskClassification {
     pub agents: Vec<String>,
     pub config: PatternConfig,
     pub reasoning: String,
+}
+
+/// Classify a task using the orchestration config to determine the pattern.
+///
+/// If the config explicitly sets a pattern (not `Auto`), that pattern is used.
+/// If `Auto`, the classifier selects the best pattern:
+/// - Hierarchical when coordinator + teams are configured
+/// - Otherwise falls back to the heuristic classifier (Direct/Blackboard/Ring)
+pub fn classify_with_config(
+    task: &str,
+    available_agents: &[Agent],
+    config: &OrchestrationConfig,
+) -> TaskClassification {
+    match config.pattern {
+        // Explicit patterns — honor the user's choice
+        OrchestrationPattern::Hierarchical => TaskClassification {
+            pattern: OrchestrationPattern::Hierarchical,
+            agents: all_agents_from_config(config),
+            config: PatternConfig::Direct {
+                agent: config.coordinator.clone().unwrap_or_default(),
+            },
+            reasoning: "Explicit hierarchical pattern from config".to_string(),
+        },
+        OrchestrationPattern::Blackboard => {
+            let agent_names: Vec<String> =
+                available_agents.iter().map(|a| a.name.clone()).collect();
+            TaskClassification {
+                pattern: OrchestrationPattern::Blackboard,
+                agents: agent_names,
+                config: PatternConfig::Blackboard(BlackboardConfig::default()),
+                reasoning: "Explicit blackboard pattern from config".to_string(),
+            }
+        }
+        OrchestrationPattern::Ring => {
+            let agent_names: Vec<String> =
+                available_agents.iter().map(|a| a.name.clone()).collect();
+            TaskClassification {
+                pattern: OrchestrationPattern::Ring,
+                agents: agent_names,
+                config: PatternConfig::Ring(RingConfig::default()),
+                reasoning: "Explicit ring pattern from config".to_string(),
+            }
+        }
+        OrchestrationPattern::Direct => {
+            let agent_name = available_agents
+                .first()
+                .map(|a| a.name.clone())
+                .unwrap_or_default();
+            TaskClassification {
+                pattern: OrchestrationPattern::Direct,
+                agents: vec![agent_name.clone()],
+                config: PatternConfig::Direct { agent: agent_name },
+                reasoning: "Explicit direct pattern from config".to_string(),
+            }
+        }
+        OrchestrationPattern::Auto => {
+            // Auto-detect: if coordinator + teams are configured, use Hierarchical
+            if config.coordinator.is_some() && !config.teams.is_empty() {
+                TaskClassification {
+                    pattern: OrchestrationPattern::Hierarchical,
+                    agents: all_agents_from_config(config),
+                    config: PatternConfig::Direct {
+                        agent: config.coordinator.clone().unwrap_or_default(),
+                    },
+                    reasoning: "Auto-detected hierarchical: coordinator and teams configured"
+                        .to_string(),
+                }
+            } else {
+                // Fall back to task-based heuristic
+                classify_task(task, available_agents)
+            }
+        }
+    }
+}
+
+/// Collect all agent names from a hierarchical orchestration config.
+fn all_agents_from_config(config: &OrchestrationConfig) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(ref coord) = config.coordinator {
+        names.push(coord.clone());
+    }
+    for team in &config.teams {
+        if let Some(ref lead) = team.lead {
+            names.push(lead.clone());
+        }
+        names.extend(team.agents.iter().cloned());
+    }
+    names
 }
 
 /// Classify a task and select the appropriate orchestration pattern.
@@ -433,5 +521,94 @@ mod tests {
         let agent = make_agent("Test", &["secure"]);
         // "secure" should NOT match "insecure" (prefix doesn't match)
         assert!(!agent_matches_task(&agent, "insecure connection"));
+    }
+
+    // ── classify_with_config tests ──
+
+    use super::super::{OrchestrationConfig, TeamConfig};
+
+    fn hierarchical_config() -> OrchestrationConfig {
+        OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some("coordinator".to_string()),
+            teams: vec![TeamConfig {
+                lead: Some("lead-a".to_string()),
+                agents: vec!["worker-1".to_string(), "worker-2".to_string()],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_classify_with_config_explicit_hierarchical() {
+        let config = hierarchical_config();
+        let result = classify_with_config("do something", &[], &config);
+        assert_eq!(result.pattern, OrchestrationPattern::Hierarchical);
+        assert!(result.agents.contains(&"coordinator".to_string()));
+        assert!(result.agents.contains(&"lead-a".to_string()));
+        assert!(result.agents.contains(&"worker-1".to_string()));
+    }
+
+    #[test]
+    fn test_classify_with_config_explicit_blackboard() {
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Blackboard,
+            ..Default::default()
+        };
+        let agents = vec![make_agent("A", &["test"]), make_agent("B", &["test"])];
+        let result = classify_with_config("test task", &agents, &config);
+        assert_eq!(result.pattern, OrchestrationPattern::Blackboard);
+    }
+
+    #[test]
+    fn test_classify_with_config_explicit_ring() {
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Ring,
+            ..Default::default()
+        };
+        let agents = vec![make_agent("A", &["test"])];
+        let result = classify_with_config("test task", &agents, &config);
+        assert_eq!(result.pattern, OrchestrationPattern::Ring);
+    }
+
+    #[test]
+    fn test_classify_with_config_auto_detects_hierarchical() {
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Auto,
+            coordinator: Some("coord".to_string()),
+            teams: vec![TeamConfig {
+                lead: None,
+                agents: vec!["agent-x".to_string()],
+            }],
+            ..Default::default()
+        };
+        let result = classify_with_config("any task", &[], &config);
+        assert_eq!(result.pattern, OrchestrationPattern::Hierarchical);
+        assert!(result.reasoning.contains("Auto-detected"));
+    }
+
+    #[test]
+    fn test_classify_with_config_auto_falls_back_to_heuristic() {
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Auto,
+            // No coordinator or teams
+            ..Default::default()
+        };
+        let agents = vec![make_agent("Security Agent", &["security"])];
+        let result = classify_with_config("security review", &agents, &config);
+        // Falls back to heuristic — single match → Direct
+        assert_eq!(result.pattern, OrchestrationPattern::Direct);
+    }
+
+    #[test]
+    fn test_all_agents_from_config() {
+        let config = hierarchical_config();
+        let names = all_agents_from_config(&config);
+        assert_eq!(names.len(), 4); // coordinator + lead-a + worker-1 + worker-2
     }
 }

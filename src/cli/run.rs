@@ -34,12 +34,34 @@ pub async fn execute(
     // Resolve input text
     let current_input = resolve_input(input).await?;
 
-    // Orchestrated multi-agent execution
+    // Orchestrated multi-agent execution (explicit --orchestrate flag)
     if let Some(pattern) = orchestrate {
         if chain.len() < 2 {
             anyhow::bail!("--orchestrate requires at least 2 agents (use --pipe to add more)");
         }
         return run_orchestrated(&resolution, &chain, &current_input, &pattern).await;
+    }
+
+    // Auto-detect orchestration from project config (orchestration.enabled: true)
+    if let AgentResolution::Project { ref config, .. } = resolution
+        && let Some(ref orch) = config.orchestration
+        && orch.enabled
+    {
+        let pattern = orch.pattern.to_string();
+        // Collect all agents from orchestration config
+        let mut orch_agents = Vec::new();
+        if let Some(ref coord) = orch.coordinator {
+            orch_agents.push(coord.clone());
+        }
+        for team in &orch.teams {
+            if let Some(ref lead) = team.lead {
+                orch_agents.push(lead.clone());
+            }
+            orch_agents.extend(team.agents.iter().cloned());
+        }
+        if !orch_agents.is_empty() {
+            return run_orchestrated(&resolution, &orch_agents, &current_input, &pattern).await;
+        }
     }
 
     // Standard sequential execution (backward compatible)
@@ -71,7 +93,7 @@ enum AgentResolution {
     /// New-format project config with walk-up root
     Project {
         root: PathBuf,
-        config: ProjectConfig,
+        config: Box<ProjectConfig>,
     },
     /// Legacy fleet format
     Fleet(FleetDefinition),
@@ -324,7 +346,10 @@ fn resolve_agents_dir() -> AgentResolution {
         );
         let _ = crate::core::project_registry::register_project(&root);
         crate::core::model_updater::auto_check_and_prompt(&root, !atty_is_pipe());
-        return AgentResolution::Project { root, config };
+        return AgentResolution::Project {
+            root,
+            config: Box::new(config),
+        };
     }
 
     // 2. Check for legacy fleet file in cwd (deprecated)
@@ -482,8 +507,60 @@ async fn run_orchestrated(
                 }
             }
         }
+        "hierarchical" => {
+            use std::collections::HashMap;
+
+            use crate::core::orchestration::OrchestrationConfig;
+            use crate::core::orchestration::hierarchical::HierarchicalEngine;
+
+            // Build orchestration config from project or defaults
+            let orch_config = match resolution {
+                AgentResolution::Project { config, .. } => {
+                    config.orchestration.as_deref().cloned().unwrap_or_default()
+                }
+                _ => OrchestrationConfig::default(),
+            };
+
+            // Validate the config
+            if let Err(errors) = crate::core::orchestration::validate_config(&orch_config) {
+                let msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+                anyhow::bail!("Orchestration config errors:\n  - {}", msgs.join("\n  - "));
+            }
+
+            let coordinator_name = orch_config
+                .coordinator
+                .as_deref()
+                .unwrap_or(agent_names.first().map(|s| s.as_str()).unwrap_or(""));
+
+            // Build agent map and provider map
+            let mut agent_map: HashMap<String, crate::core::agent::Agent> = HashMap::new();
+            let mut provider_map: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+
+            for (agent, provider) in agents.into_iter().zip(providers.into_iter()) {
+                provider_map.insert(agent.name.clone(), provider);
+                agent_map.insert(agent.name.clone(), agent);
+            }
+
+            eprintln!(
+                "[hierarchical] Starting with coordinator '{}', {} agent(s)",
+                coordinator_name,
+                agent_map.len()
+            );
+
+            let mut engine = HierarchicalEngine::new(orch_config, agent_map, provider_map);
+            let result = engine.run(input).await?;
+
+            eprintln!(
+                "[hierarchical] Done: {} invocations, {} tokens in, {} tokens out",
+                result.invocation_count, result.total_tokens_in, result.total_tokens_out
+            );
+
+            println!("{}", result.content);
+        }
         other => {
-            anyhow::bail!("Unknown orchestration pattern: '{other}'. Use 'blackboard' or 'ring'");
+            anyhow::bail!(
+                "Unknown orchestration pattern: '{other}'. Use 'blackboard', 'ring', or 'hierarchical'"
+            );
         }
     }
 
