@@ -16,7 +16,7 @@ Gemini...) et des modes d'exécution (API HTTP, proxy, CLI tools).
 | Langage             | Rust                           | Performance, binaire unique, écosystème CLI/TUI mature   |
 | Runtime async       | tokio                          | Standard de facto, écosystème massif (reqwest, axum...)   |
 | Format agent        | Markdown (agents.md)           | Lisible, versionnable, compatible avec le standard ouvert |
-| Orchestration       | Blackboard + Ring              | Patterns non-hiérarchiques sans coordinateur central     |
+| Orchestration       | Hub & Spoke + Blackboard + Ring | Hub centralisé + patterns non-hiérarchiques             |
 | Interface           | CLI + TUI (ratatui)            | CLI scriptable + TUI riche pour le monitoring/interaction |
 | Stockage            | SQLite embarqué (rusqlite)     | Zéro config, in-process, léger, fiable                   |
 | Secrets             | SOPS + age                     | Chiffrement champ par champ, diff-friendly, moderne      |
@@ -58,10 +58,30 @@ Docker Compose est **optionnel** et ne sert qu'à l'infrastructure :
 
 ---
 
-## Modèle d'orchestration : Blackboard + Ring
+## Modèles d'orchestration
 
-Deux patterns non-hiérarchiques remplacent l'ancien hub & spoke. Aucun coordinateur
-central n'est nécessaire : les agents collaborent directement.
+Trois patterns d'orchestration coexistent, chacun adapté à un type de tâche.
+
+### Hub & Spoke (coordinateur central)
+
+```
+                    ┌──────────────┐
+           ┌───────│ Coordinator  │───────┐
+           │       │  (hub agent) │       │
+           │       └──────┬───────┘       │
+           ▼              ▼               ▼
+    ┌────────────┐ ┌────────────┐ ┌────────────┐
+    │  Agent A   │ │  Agent B   │ │  Agent C   │
+    │ (reviewer) │ │ (test gen) │ │ (doc gen)  │
+    └────────────┘ └────────────┘ └────────────┘
+```
+
+Le **Coordinator** :
+- Reçoit la tâche utilisateur
+- Analyse et décompose en sous-tâches
+- Dispatch aux agents spécialisés appropriés
+- Agrège les résultats et fournit la réponse finale
+- Utilisé par la commande `link` pour générer les fichiers de configuration
 
 ### Blackboard (parallel, état partagé)
 
@@ -122,10 +142,15 @@ defaults:
     agent_timeout_secs: 120
 ```
 
-### Pipeline mode (legacy, supprimé)
+### Choix du pattern
 
-L'ancien pipeline séquentiel (`output A → input B`) est remplacé par le Ring pattern
-qui offre les mêmes capacités avec en plus le vote et la convergence.
+| Critère | Hub & Spoke | Blackboard | Ring |
+|---|---|---|---|
+| Agents indépendants, tâches décomposables | Oui | — | — |
+| Agents parallèles, état partagé | — | Oui | — |
+| Revue croisée, consensus | — | — | Oui |
+| Coordinateur nécessaire | Oui | Non | Non |
+| CLI | `link` | `--orchestrate blackboard` | `--orchestrate ring` |
 
 ---
 
@@ -254,6 +279,7 @@ Exécute la tâche demandée en utilisant tes outils disponibles.
 ```
 armadai/
 ├── agents/                      # Définitions d'agents
+│   └── _coordinator.md          # Agent hub (orchestrateur)
 ├── starters/                    # Packs d'agents pré-configurés
 │   ├── rust-dev/
 │   │   ├── pack.yaml

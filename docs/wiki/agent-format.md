@@ -175,6 +175,7 @@ Agents can be organized in subdirectories:
 
 ```
 agents/
+├── _coordinator.md       ← Hub agent (prefixed with _ for sorting)
 ├── code-reviewer.md
 ├── test-writer.md
 ├── examples/

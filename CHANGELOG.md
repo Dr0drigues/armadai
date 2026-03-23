@@ -14,7 +14,7 @@
 
 ### Refactor
 
-- remove dead `coordinator.rs` and `pipeline.rs` (superseded by orchestration module)
+- remove dead `coordinator.rs` and `pipeline.rs` execution code (hub & spoke pattern preserved for `link` command)
 - remove global `serde/rc` feature, replaced by local `arc_vec_serde` module
 - remove `PRAGMA foreign_keys = ON` from global schema (FK constraints kept for documentation)
 
