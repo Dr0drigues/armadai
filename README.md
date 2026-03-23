@@ -19,6 +19,7 @@ armadai tui
 
 - **Markdown-based agents** — one `.md` file = one agent. Human-readable, git-friendly.
 - **Multi-provider** — unified tool names (`claude`, `gemini`, `gpt`, `aider`) auto-detect CLI vs API; explicit API/CLI/proxy modes also supported
+- **Multi-pattern orchestration** — Direct (single-shot), Blackboard (parallel shared-state), Ring (sequential consensus), Hierarchical (coordinator → leads → agents)
 - **Pipeline mode** — chain agents sequentially (output A becomes input B)
 - **TUI dashboard** — fleet management with agent browser, detail view, history, costs, and command palette
 - **Shell completion** — auto-complete for bash, zsh, fish, powershell, elvish
@@ -321,6 +322,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.
 HOST MACHINE
 ├── armadai (native binary)
 │   ├── CLI + TUI + Web UI
+│   ├── Orchestration (Direct / Blackboard / Ring / Hierarchical)
 │   ├── Providers (API / CLI / Proxy)
 │   ├── SQLite (embedded storage)
 │   └── SOPS + age secrets

@@ -6,6 +6,7 @@ use serde::Deserialize;
 use super::agent::AgentMode;
 use super::config::{registry_cache_dir, user_agents_dir, user_prompts_dir, user_skills_dir};
 use super::fleet::FleetDefinition;
+use super::orchestration::OrchestrationConfig;
 
 // ---------------------------------------------------------------------------
 // Project config file names
@@ -25,10 +26,15 @@ const PROJECT_FILENAMES: &[&str] = &["armadai.yaml", "armadai.yml"];
 pub struct ProjectDefaults {
     pub mode: Option<AgentMode>,
     /// Orchestration config overrides (applied when --orchestrate is used).
+    /// PR #91: Blackboard/Ring defaults. Extended for Hierarchical.
     pub orchestration: Option<OrchestrationDefaults>,
 }
 
 /// Project-level orchestration configuration overrides.
+///
+/// These are the `defaults.orchestration` values in `armadai.yaml`.
+/// For the full orchestration topology (teams, coordinator), see
+/// `OrchestrationConfig` at the top-level `orchestration:` key.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct OrchestrationDefaults {
@@ -54,6 +60,8 @@ pub struct ProjectConfig {
     pub link: Option<LinkConfig>,
     #[serde(default)]
     pub defaults: ProjectDefaults,
+    /// Top-level orchestration configuration (teams, coordinator, pattern).
+    pub orchestration: Option<Box<OrchestrationConfig>>,
 }
 
 /// Reference to an agent — resolved at runtime.
@@ -148,6 +156,7 @@ impl ProjectConfig {
             sources: Vec::new(),
             link: None,
             defaults: ProjectDefaults::default(),
+            orchestration: None,
         }
     }
 }

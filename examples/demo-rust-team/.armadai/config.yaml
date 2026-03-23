@@ -10,3 +10,15 @@ agents:
 prompts: []
 skills: []
 sources: []
+
+# Orchestration example (uncomment to enable):
+# orchestration:
+#   enabled: true
+#   pattern: hierarchical
+#   coordinator: rust-reviewer      # acts as coordinator
+#   teams:
+#     - agents:
+#         - security-auditor
+#         - rust-test-writer
+#         - refactor-advisor
+#   max_depth: 3
