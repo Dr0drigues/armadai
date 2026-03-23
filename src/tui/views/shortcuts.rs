@@ -65,6 +65,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Models => vec![
             ("j/k", "Navigate"),
             ("Enter", "View detail"),
+            ("R", "Sync models.dev"),
             ("Tab", "Next tab"),
             (":", "Commands"),
             ("r", "Refresh"),
