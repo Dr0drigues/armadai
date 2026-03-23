@@ -295,6 +295,7 @@ pub fn insert_ring_vote(db: &Database, record: RingVoteRecord) -> anyhow::Result
 }
 
 /// Get orchestration run details by run_id.
+#[allow(dead_code)] // API reserved for future `armadai history` / web UI
 pub fn get_orchestration_run(
     db: &Database,
     run_id: &str,
@@ -321,6 +322,7 @@ pub fn get_orchestration_run(
 }
 
 /// Get board entries for a run.
+#[allow(dead_code)] // API reserved for future `armadai history` / web UI
 pub fn get_board_entries(db: &Database, run_id: &str) -> anyhow::Result<Vec<BoardEntryRecord>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(
@@ -348,6 +350,7 @@ pub fn get_board_entries(db: &Database, run_id: &str) -> anyhow::Result<Vec<Boar
 }
 
 /// Get ring contributions for a run.
+#[allow(dead_code)] // API reserved for future `armadai history` / web UI
 pub fn get_ring_contributions(
     db: &Database,
     run_id: &str,
@@ -378,6 +381,7 @@ pub fn get_ring_contributions(
 }
 
 /// Get ring votes for a run.
+#[allow(dead_code)] // API reserved for future `armadai history` / web UI
 pub fn get_ring_votes(db: &Database, run_id: &str) -> anyhow::Result<Vec<RingVoteRecord>> {
     let conn = db.lock().unwrap();
     let mut stmt = conn.prepare(

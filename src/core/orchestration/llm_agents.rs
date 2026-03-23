@@ -74,24 +74,26 @@ pub(crate) fn parse_board_action(response: &str) -> (EntryKind, f32, String) {
 
     let content = content_start.unwrap_or_else(|| response.to_string());
 
+    // Actions that require a TARGET fall back to Finding when the index is
+    // absent — this avoids silently pointing at entry 0.
     let kind = match action_str.as_deref() {
-        Some(a) if a.starts_with("CHALLENGE") => {
-            let target = parse_single_index(&target_str);
-            EntryKind::Challenge { target }
-        }
-        Some(a) if a.starts_with("CONFIRMATION") => {
-            let target = parse_single_index(&target_str);
-            EntryKind::Confirmation { target }
-        }
+        Some(a) if a.starts_with("CHALLENGE") => match parse_single_index(&target_str) {
+            Some(target) => EntryKind::Challenge { target },
+            None => EntryKind::Finding,
+        },
+        Some(a) if a.starts_with("CONFIRMATION") => match parse_single_index(&target_str) {
+            Some(target) => EntryKind::Confirmation { target },
+            None => EntryKind::Finding,
+        },
         Some(a) if a.starts_with("SYNTHESIS") => {
             let sources = parse_index_list(&target_str);
             EntryKind::Synthesis { sources }
         }
         Some(a) if a.starts_with("QUESTION") => EntryKind::Question,
-        Some(a) if a.starts_with("ANSWER") => {
-            let question = parse_single_index(&target_str);
-            EntryKind::Answer { question }
-        }
+        Some(a) if a.starts_with("ANSWER") => match parse_single_index(&target_str) {
+            Some(question) => EntryKind::Answer { question },
+            None => EntryKind::Finding,
+        },
         // FINDING or anything unrecognised → default
         _ => EntryKind::Finding,
     };
@@ -132,22 +134,23 @@ pub(crate) fn parse_ring_action(response: &str) -> (ContributionAction, String) 
 
     let content = content_start.unwrap_or_else(|| response.to_string());
 
+    // Actions that require a TARGET fall back to Propose when the index is absent.
     let action = match action_str.as_deref() {
-        Some(a) if a.starts_with("ENRICH") => {
-            let target = parse_single_index(&target_str);
-            ContributionAction::Enrich { target }
-        }
-        Some(a) if a.starts_with("CONTEST") => {
-            let target = parse_single_index(&target_str);
-            ContributionAction::Contest {
+        Some(a) if a.starts_with("ENRICH") => match parse_single_index(&target_str) {
+            Some(target) => ContributionAction::Enrich { target },
+            None => ContributionAction::Propose,
+        },
+        Some(a) if a.starts_with("CONTEST") => match parse_single_index(&target_str) {
+            Some(target) => ContributionAction::Contest {
                 target,
-                counter_argument: content.clone(),
-            }
-        }
-        Some(a) if a.starts_with("ENDORSE") => {
-            let target = parse_single_index(&target_str);
-            ContributionAction::Endorse { target }
-        }
+                counter_argument: String::new(),
+            },
+            None => ContributionAction::Propose,
+        },
+        Some(a) if a.starts_with("ENDORSE") => match parse_single_index(&target_str) {
+            Some(target) => ContributionAction::Endorse { target },
+            None => ContributionAction::Propose,
+        },
         Some(a) if a.starts_with("SYNTHESIZE") => ContributionAction::Synthesize,
         Some(a) if a.starts_with("PASS") => ContributionAction::Pass {
             reason: content.clone(),
@@ -175,11 +178,10 @@ fn parse_vote_confidence(response: &str) -> (f32, String) {
     (0.8, response.to_string())
 }
 
-fn parse_single_index(s: &Option<String>) -> usize {
+fn parse_single_index(s: &Option<String>) -> Option<usize> {
     s.as_deref()
         .and_then(|v| v.trim().split(',').next())
         .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or(0)
 }
 
 fn parse_index_list(s: &Option<String>) -> Vec<usize> {
@@ -445,11 +447,12 @@ impl RingAgent for LlmRingAgent {
         }
 
         user_msg.push_str(
-            "\nBased on all contributions above, state your final position \
-             in one sentence.\n\
-             Start your response with:\n\
+            "\nSynthesize the contributions above. Identify areas of agreement, \
+             unresolved disagreements, and any gaps. Then state your final \
+             position in one or two sentences.\n\n\
+             Format your response as:\n\
              CONFIDENCE: <0.0-1.0>\n\
-             Then your position on a new line.",
+             <your synthesized position>",
         );
 
         let request = CompletionRequest {
@@ -844,5 +847,266 @@ mod tests {
             }
             other => panic!("Expected Consensus, got {other:?}"),
         }
+    }
+
+    // ── Parser unit tests ────────────────────────────────────────
+
+    // -- parse_board_action --
+
+    #[test]
+    fn test_parse_board_action_complete_header() {
+        let response = "ACTION: CHALLENGE\nTARGET: 3\nCONFIDENCE: 0.9\nCONTENT: I disagree";
+        let (kind, conf, content) = parse_board_action(response);
+        assert!(matches!(kind, EntryKind::Challenge { target: 3 }));
+        assert!((conf - 0.9).abs() < f32::EPSILON);
+        assert_eq!(content, "I disagree");
+    }
+
+    #[test]
+    fn test_parse_board_action_confirmation() {
+        let response = "ACTION: CONFIRMATION\nTARGET: 0\nCONFIDENCE: 0.95\nCONTENT: Agreed";
+        let (kind, conf, _) = parse_board_action(response);
+        assert!(matches!(kind, EntryKind::Confirmation { target: 0 }));
+        assert!((conf - 0.95).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_board_action_synthesis_multi_target() {
+        let response = "ACTION: SYNTHESIS\nTARGET: 0, 2, 5\nCONTENT: Combined view";
+        let (kind, _, content) = parse_board_action(response);
+        match kind {
+            EntryKind::Synthesis { sources } => assert_eq!(sources, vec![0, 2, 5]),
+            other => panic!("Expected Synthesis, got {other:?}"),
+        }
+        assert_eq!(content, "Combined view");
+    }
+
+    #[test]
+    fn test_parse_board_action_question() {
+        let response = "ACTION: QUESTION\nCONTENT: What about edge cases?";
+        let (kind, _, content) = parse_board_action(response);
+        assert!(matches!(kind, EntryKind::Question));
+        assert_eq!(content, "What about edge cases?");
+    }
+
+    #[test]
+    fn test_parse_board_action_answer() {
+        let response = "ACTION: ANSWER\nTARGET: 4\nCONTENT: Here is the answer";
+        let (kind, _, _) = parse_board_action(response);
+        assert!(matches!(kind, EntryKind::Answer { question: 4 }));
+    }
+
+    #[test]
+    fn test_parse_board_action_no_header_fallback() {
+        let response = "Just some plain text without any structured header";
+        let (kind, conf, content) = parse_board_action(response);
+        assert!(matches!(kind, EntryKind::Finding));
+        assert!((conf - 0.8).abs() < f32::EPSILON);
+        assert_eq!(content, response);
+    }
+
+    #[test]
+    fn test_parse_board_action_challenge_no_target_fallback() {
+        // CHALLENGE without TARGET should fallback to Finding
+        let response = "ACTION: CHALLENGE\nCONFIDENCE: 0.7\nCONTENT: I disagree";
+        let (kind, _, _) = parse_board_action(response);
+        assert!(
+            matches!(kind, EntryKind::Finding),
+            "CHALLENGE without TARGET should fallback to Finding, got {kind:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_board_action_confirmation_no_target_fallback() {
+        let response = "ACTION: CONFIRMATION\nCONTENT: Looks good";
+        let (kind, _, _) = parse_board_action(response);
+        assert!(matches!(kind, EntryKind::Finding));
+    }
+
+    #[test]
+    fn test_parse_board_action_multiline_content() {
+        let response = "ACTION: FINDING\nCONFIDENCE: 0.6\nCONTENT: Line one\nLine two\nLine three";
+        let (kind, conf, content) = parse_board_action(response);
+        assert!(matches!(kind, EntryKind::Finding));
+        assert!((conf - 0.6).abs() < f32::EPSILON);
+        assert_eq!(content, "Line one\nLine two\nLine three");
+    }
+
+    #[test]
+    fn test_parse_board_action_confidence_clamped() {
+        let response = "ACTION: FINDING\nCONFIDENCE: 5.0\nCONTENT: high";
+        let (_, conf, _) = parse_board_action(response);
+        assert!((conf - 1.0).abs() < f32::EPSILON);
+
+        let response = "ACTION: FINDING\nCONFIDENCE: -2.0\nCONTENT: low";
+        let (_, conf, _) = parse_board_action(response);
+        assert!((conf - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_board_action_invalid_confidence_keeps_default() {
+        let response = "ACTION: FINDING\nCONFIDENCE: not_a_number\nCONTENT: text";
+        let (_, conf, _) = parse_board_action(response);
+        assert!((conf - 0.8).abs() < f32::EPSILON);
+    }
+
+    // -- parse_ring_action --
+
+    #[test]
+    fn test_parse_ring_action_propose() {
+        let response = "ACTION: PROPOSE\nCONTENT: Use Rust for this";
+        let (action, content) = parse_ring_action(response);
+        assert!(matches!(action, ContributionAction::Propose));
+        assert_eq!(content, "Use Rust for this");
+    }
+
+    #[test]
+    fn test_parse_ring_action_enrich() {
+        let response = "ACTION: ENRICH\nTARGET: 2\nCONTENT: Adding error handling";
+        let (action, _) = parse_ring_action(response);
+        assert!(matches!(action, ContributionAction::Enrich { target: 2 }));
+    }
+
+    #[test]
+    fn test_parse_ring_action_contest() {
+        let response = "ACTION: CONTEST\nTARGET: 1\nCONTENT: Performance concern";
+        let (action, content) = parse_ring_action(response);
+        match action {
+            ContributionAction::Contest {
+                target,
+                counter_argument,
+            } => {
+                assert_eq!(target, 1);
+                // counter_argument is empty (content is in the Contribution.content field)
+                assert!(counter_argument.is_empty());
+            }
+            other => panic!("Expected Contest, got {other:?}"),
+        }
+        assert_eq!(content, "Performance concern");
+    }
+
+    #[test]
+    fn test_parse_ring_action_endorse() {
+        let response = "ACTION: ENDORSE\nTARGET: 0\nCONTENT: Fully agree";
+        let (action, _) = parse_ring_action(response);
+        assert!(matches!(action, ContributionAction::Endorse { target: 0 }));
+    }
+
+    #[test]
+    fn test_parse_ring_action_synthesize() {
+        let response = "ACTION: SYNTHESIZE\nCONTENT: Combining all views";
+        let (action, _) = parse_ring_action(response);
+        assert!(matches!(action, ContributionAction::Synthesize));
+    }
+
+    #[test]
+    fn test_parse_ring_action_pass() {
+        let response = "ACTION: PASS\nCONTENT: Nothing to add";
+        let (action, _) = parse_ring_action(response);
+        match action {
+            ContributionAction::Pass { reason } => assert_eq!(reason, "Nothing to add"),
+            other => panic!("Expected Pass, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_ring_action_no_header_fallback() {
+        let response = "Just a plain response";
+        let (action, content) = parse_ring_action(response);
+        assert!(matches!(action, ContributionAction::Propose));
+        assert_eq!(content, response);
+    }
+
+    #[test]
+    fn test_parse_ring_action_enrich_no_target_fallback() {
+        let response = "ACTION: ENRICH\nCONTENT: More detail";
+        let (action, _) = parse_ring_action(response);
+        assert!(
+            matches!(action, ContributionAction::Propose),
+            "ENRICH without TARGET should fallback to Propose"
+        );
+    }
+
+    #[test]
+    fn test_parse_ring_action_contest_no_target_fallback() {
+        let response = "ACTION: CONTEST\nCONTENT: I disagree";
+        let (action, _) = parse_ring_action(response);
+        assert!(matches!(action, ContributionAction::Propose));
+    }
+
+    // -- parse_vote_confidence --
+
+    #[test]
+    fn test_parse_vote_confidence_valid() {
+        let response = "CONFIDENCE: 0.75\nI agree with the proposal";
+        let (conf, body) = parse_vote_confidence(response);
+        assert!((conf - 0.75).abs() < f32::EPSILON);
+        assert_eq!(body, "I agree with the proposal");
+    }
+
+    #[test]
+    fn test_parse_vote_confidence_clamped() {
+        let response = "CONFIDENCE: 99.0\nOverconfident";
+        let (conf, _) = parse_vote_confidence(response);
+        assert!((conf - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_vote_confidence_missing() {
+        let response = "I just have an opinion";
+        let (conf, body) = parse_vote_confidence(response);
+        assert!((conf - 0.8).abs() < f32::EPSILON);
+        assert_eq!(body, response);
+    }
+
+    #[test]
+    fn test_parse_vote_confidence_malformed() {
+        let response = "CONFIDENCE: high\nMy position";
+        let (conf, body) = parse_vote_confidence(response);
+        assert!((conf - 0.8).abs() < f32::EPSILON);
+        assert_eq!(body, response); // entire response since parse failed
+    }
+
+    // -- parse_single_index / parse_index_list --
+
+    #[test]
+    fn test_parse_single_index_valid() {
+        assert_eq!(parse_single_index(&Some("5".to_string())), Some(5));
+        assert_eq!(parse_single_index(&Some(" 3 ".to_string())), Some(3));
+    }
+
+    #[test]
+    fn test_parse_single_index_from_list() {
+        // Takes first index from comma-separated
+        assert_eq!(parse_single_index(&Some("2, 5, 7".to_string())), Some(2));
+    }
+
+    #[test]
+    fn test_parse_single_index_none() {
+        assert_eq!(parse_single_index(&None), None);
+    }
+
+    #[test]
+    fn test_parse_single_index_invalid() {
+        assert_eq!(parse_single_index(&Some("abc".to_string())), None);
+    }
+
+    #[test]
+    fn test_parse_index_list_valid() {
+        assert_eq!(
+            parse_index_list(&Some("0, 2, 5".to_string())),
+            vec![0, 2, 5]
+        );
+    }
+
+    #[test]
+    fn test_parse_index_list_none() {
+        assert!(parse_index_list(&None).is_empty());
+    }
+
+    #[test]
+    fn test_parse_index_list_mixed_invalid() {
+        // Skips invalid entries
+        assert_eq!(parse_index_list(&Some("1, abc, 3".to_string())), vec![1, 3]);
     }
 }
