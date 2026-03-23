@@ -2,8 +2,8 @@
 
 ## Metadata
 - provider: gemini
-- model: gemini-2.5-pro
-- model_fallback: [gemini-2.5-flash]
+- model: latest:pro
+- model_fallback: [latest:fast]
 - temperature: 0.3
 - max_tokens: 4096
 - tags: [review, security, quality, pirate]

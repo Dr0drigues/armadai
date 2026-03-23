@@ -18,7 +18,7 @@ Use a tool name directly as the provider. ArmadAI auto-detects whether the CLI t
 ```markdown
 ## Metadata
 - provider: claude
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - timeout: 120
 - tags: [dev, review]
 ```
@@ -55,30 +55,30 @@ Direct HTTP calls to LLM APIs. Use these when you want explicit API control.
 ```markdown
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.3
 - max_tokens: 4096
 ```
 
-Available models: `claude-opus-4-6`, `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`
+Available models: `claude-opus-4-6`, `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001` — or use `latest:max`, `latest:pro`, `latest:fast`
 
 ### OpenAI
 
 ```markdown
 ## Metadata
 - provider: openai
-- model: gpt-4o
+- model: latest:pro
 - temperature: 0.7
 ```
 
-Available models: `gpt-4o`, `gpt-4o-mini`, `o1`
+Available models: `gpt-4o`, `gpt-4o-mini`, `o1` — or use `latest:pro`, `latest:fast`, `latest:max`
 
 ### Google
 
 ```markdown
 ## Metadata
 - provider: google
-- model: gemini-2.0-flash
+- model: latest:pro
 - temperature: 0.7
 ```
 
@@ -89,11 +89,11 @@ Declare fallback models for automatic retry when the primary model is unavailabl
 ```markdown
 ## Metadata
 - provider: google
-- model: gemini-3.0-pro
-- model_fallback: [gemini-2.5-pro, gemini-2.5-flash]
+- model: latest:max
+- model_fallback: [latest:pro, latest:fast]
 ```
 
-If `gemini-3.0-pro` returns a "model not found" error, ArmadAI automatically retries with `gemini-2.5-pro`, then `gemini-2.5-flash`. Non-model errors (auth, rate limit) are not retried.
+If the primary model returns a "model not found" error, ArmadAI automatically retries with each fallback in order. Non-model errors (auth, rate limit) are not retried.
 
 The plural alias `model_fallbacks` is also accepted.
 
@@ -128,7 +128,7 @@ Route requests through an OpenAI-compatible proxy like LiteLLM or OpenRouter.
 ```markdown
 ## Metadata
 - provider: proxy
-- model: anthropic/claude-sonnet-4-5-20250929
+- model: latest:pro
 ```
 
 ### Setting up LiteLLM
@@ -213,10 +213,10 @@ Global provider settings are in `config/providers.yaml`:
 providers:
   anthropic:
     base_url: https://api.anthropic.com
-    default_model: claude-sonnet-4-5-20250929
+    default_model: latest:pro
   openai:
     base_url: https://api.openai.com/v1
-    default_model: gpt-4o
+    default_model: latest:pro
   proxy:
     base_url: http://localhost:4000
 ```

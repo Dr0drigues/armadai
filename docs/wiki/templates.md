@@ -112,7 +112,7 @@ Add a `.md` file to the `templates/` directory following the [agent format](agen
 
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.5
 - tags: [{{tags}}]
 - stacks: [{{stack}}]

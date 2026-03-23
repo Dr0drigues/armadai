@@ -49,6 +49,16 @@ An ArmadAI agent is a Markdown file (`.md`) that defines an AI-powered specialis
 
 ## Known Models
 
+Use `latest:*` placeholders instead of hardcoded model names:
+
+| Placeholder | Tier | Examples |
+|---|---|---|
+| `latest` or `latest:pro` | Balanced (default) | `claude-sonnet-4-5-20250929`, `gpt-4o`, `gemini-2.5-pro` |
+| `latest:fast` | Fast / cheap | `claude-haiku-4-5-20251001`, `gpt-4o-mini`, `gemini-2.5-flash` |
+| `latest:max` | Most capable | `claude-opus-4-5-20250929`, `o3-pro`, `gemini-2.5-ultra` |
+
+You can also use concrete model names if needed:
+
 **Anthropic**: `claude-opus-4-6`, `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`
 **OpenAI**: `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini`
 **Google**: `gemini-2.0-flash`, `gemini-2.0-pro`
@@ -92,7 +102,7 @@ When helping a user create an ArmadAI agent, ask these questions in order:
 
 ## Metadata
 - provider: claude
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.3
 - max_tokens: 4096
 - tags: [dev, review, quality]

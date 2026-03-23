@@ -9,7 +9,7 @@ Agents are defined as Markdown files in the `agents/` directory. Each file repre
 
 ## Metadata           ← H2: required, key-value configuration
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.3
 
 ## System Prompt      ← H2: required, the system prompt sent to the model
@@ -43,7 +43,7 @@ Key-value pairs configuring the agent's technical behavior.
 | Key | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `provider` | string | Yes | — | Provider type: `anthropic`, `openai`, `google`, `cli`, `proxy` |
-| `model` | string | API providers | — | Model identifier (e.g. `claude-sonnet-4-5-20250929`) |
+| `model` | string | API providers | — | Model identifier or `latest:*` placeholder (e.g. `latest:pro`, `latest:fast`) |
 | `command` | string | CLI provider | — | CLI command to execute |
 | `args` | list | No | — | CLI arguments: `["-p", "--model", "sonnet"]` |
 | `temperature` | float | No | `0.7` | Sampling temperature (0.0 - 2.0) |
@@ -83,6 +83,16 @@ Additional context injected at runtime. Can include project-specific information
 
 ## Provider Types
 
+### Model Placeholders
+
+Instead of hardcoding model names, use `latest:*` placeholders that resolve to the best available model for each provider:
+
+| Placeholder | Tier | Examples |
+|---|---|---|
+| `latest` or `latest:pro` | Balanced (default) | `claude-sonnet-4-5-20250929`, `gpt-4o`, `gemini-2.5-pro` |
+| `latest:fast` | Fast / cheap | `claude-haiku-4-5-20251001`, `gpt-4o-mini`, `gemini-2.5-flash` |
+| `latest:max` | Most capable | `claude-opus-4-5-20250929`, `o3-pro`, `gemini-2.5-ultra` |
+
 ### API Providers (`anthropic`, `openai`, `google`)
 
 Send requests to LLM APIs. Require `model` field.
@@ -90,7 +100,7 @@ Send requests to LLM APIs. Require `model` field.
 ```markdown
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.3
 - max_tokens: 4096
 ```
@@ -114,7 +124,7 @@ Route through an OpenAI-compatible proxy (LiteLLM, OpenRouter).
 ```markdown
 ## Metadata
 - provider: proxy
-- model: anthropic/claude-sonnet-4-5-20250929
+- model: latest:pro
 ```
 
 ## File Organization

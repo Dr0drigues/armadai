@@ -2,7 +2,7 @@
 
 ## Metadata
 - provider: cli claude
-- model: sonnet
+- model: latest:pro
 - temperature: 0.3
 - max_tokens: 8192
 - tags: [authoring, skill]

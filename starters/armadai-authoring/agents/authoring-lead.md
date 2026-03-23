@@ -2,7 +2,7 @@
 
 ## Metadata
 - provider: cli claude
-- model: sonnet
+- model: latest:pro
 - temperature: 0.4
 - max_tokens: 8192
 - tags: [coordinator, lead, authoring]
