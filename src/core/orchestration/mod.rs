@@ -1,9 +1,9 @@
 // orchestration/ — Non-hierarchical multi-agent orchestration patterns.
 //
-// This module replaces the earlier hub-and-spoke `coordinator.rs` and
-// sequential `pipeline.rs` with two richer patterns: Blackboard (shared-state
-// parallel reactive agents) and Ring (sequential token-passing with voting).
-// Once migration is complete, coordinator.rs and pipeline.rs will be removed.
+// Replaces the earlier hub-and-spoke `coordinator.rs` and sequential
+// `pipeline.rs` (both removed) with two richer patterns: Blackboard
+// (shared-state parallel reactive agents) and Ring (sequential
+// token-passing with voting).
 
 pub mod blackboard;
 pub mod classifier;
