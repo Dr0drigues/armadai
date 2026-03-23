@@ -505,6 +505,41 @@ pub async fn list_models() -> Json<Vec<ProviderModels>> {
     Json(result)
 }
 
+#[derive(Serialize)]
+pub struct RefreshResult {
+    status: String,
+    providers: usize,
+}
+
+#[cfg(feature = "providers-api")]
+pub async fn refresh_models() -> Json<serde_json::Value> {
+    match crate::model_registry::fetch::refresh_registry().await {
+        Ok(count) => Json(
+            serde_json::to_value(RefreshResult {
+                status: "ok".to_string(),
+                providers: count,
+            })
+            .unwrap(),
+        ),
+        Err(e) => Json(
+            serde_json::to_value(ErrorResponse {
+                error: format!("Refresh failed: {e}"),
+            })
+            .unwrap(),
+        ),
+    }
+}
+
+#[cfg(not(feature = "providers-api"))]
+pub async fn refresh_models() -> Json<serde_json::Value> {
+    Json(
+        serde_json::to_value(ErrorResponse {
+            error: "Model sync requires providers-api feature".to_string(),
+        })
+        .unwrap(),
+    )
+}
+
 pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {
     use crate::core::starter::{StarterPack, find_pack_dir};
 
