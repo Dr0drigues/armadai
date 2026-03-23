@@ -22,6 +22,8 @@ An ArmadAI agent file is a Markdown document with these required sections:
 - **## Instructions** — Additional behavioral instructions
 - **## Output Format** — Expected output structure
 - **## Pipeline** — List of downstream agents (one per line, prefixed with `- `)
+- **## Triggers** — Blackboard orchestration triggers (requires/excludes/priority)
+- **## Ring Config** — Ring orchestration settings (role/position/vote_weight)
 
 ### Metadata Fields
 Required:
@@ -52,7 +54,12 @@ Guidelines:
 - Use structured formatting (lists, bold) in system prompts for clarity
 - Tags should use lowercase, common vocabulary
 - For coordinator agents, include a Pipeline section listing downstream agents
+- For coordinator agents using orchestration, include the `@agent-name: task` delegation protocol in the system prompt
 - Temperature: use 0.2-0.4 for analytical tasks, 0.5-0.7 for creative tasks
+
+Orchestration sections (optional, for orchestrated agents):
+- `## Triggers` — for Blackboard pattern: `requires`, `excludes`, `min_round`, `max_round`, `priority`
+- `## Ring Config` — for Ring pattern: `role` (proposer/reviewer/validator), `position`, `vote_weight`
 
 ## Output Format
 
