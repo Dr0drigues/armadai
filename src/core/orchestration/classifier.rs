@@ -165,24 +165,30 @@ fn task_words(task: &str) -> Vec<String> {
 
 /// Check if an agent is relevant to a task based on tags and name keywords.
 ///
-/// Phase-1 heuristic: whole-word matching to avoid false positives from
-/// substring containment (e.g. tag "review" matching "unreviewed").
+/// Phase-1 heuristic: prefix matching on whole words to catch derived forms
+/// (e.g. tag "review" matches task word "reviewing", "infra" matches
+/// "infrastructure") while avoiding pure substring false positives.
 /// A future LLM-based classifier will use semantic similarity instead.
 fn agent_matches_task(agent: &Agent, task: &str) -> bool {
     let words = task_words(task);
 
-    // Check if any tag appears as a whole word in the task
+    // Check if any tag matches a task word (either direction prefix)
     if agent.metadata.tags.iter().any(|tag| {
         let tag_lower = tag.to_lowercase();
-        words.iter().any(|w| w == &tag_lower)
+        words
+            .iter()
+            .any(|w| w.starts_with(&tag_lower) || tag_lower.starts_with(w.as_str()))
     }) {
         return true;
     }
 
-    // Check if any word from the agent's name appears as a whole word in the task
+    // Check if any word from the agent's name prefix-matches a task word
     agent.name.split_whitespace().any(|name_word| {
         let nw = name_word.to_lowercase();
-        nw.len() > 2 && words.iter().any(|w| w == &nw)
+        nw.len() > 2
+            && words
+                .iter()
+                .any(|w| w.starts_with(&nw) || nw.starts_with(w.as_str()))
     })
 }
 
@@ -395,13 +401,37 @@ mod tests {
             make_agent("Agent A", &["infra"]),
             make_agent("Agent B", &["infra"]),
         ];
-        // Use exact tag word "infra" (word-boundary matching, not substring)
-        let result = classify_task("audit infra setup", &agents);
+        // "infra" prefix-matches "infrastructure"
+        let result = classify_task("audit infrastructure setup", &agents);
         assert_eq!(result.pattern, OrchestrationPattern::Ring);
     }
 
     #[test]
     fn test_keyword_hint_none_falls_back_to_overlap() {
         assert!(keyword_pattern_hint("do something").is_none());
+    }
+
+    #[test]
+    fn test_agent_matches_task_prefix_derived_forms() {
+        // "review" tag matches "reviewing" task word
+        let agent = make_agent("Test", &["review"]);
+        assert!(agent_matches_task(&agent, "start reviewing the code"));
+
+        // "infra" tag matches "infrastructure" task word
+        let agent = make_agent("Test", &["infra"]);
+        assert!(agent_matches_task(&agent, "infrastructure audit"));
+
+        // Reverse: long tag, short task word
+        let agent = make_agent("Test", &["infrastructure"]);
+        assert!(agent_matches_task(&agent, "infra audit"));
+    }
+
+    #[test]
+    fn test_agent_matches_task_no_false_positive_prefix() {
+        // "view" should NOT match "reviewing" (too short, but len > 2 so it will
+        // prefix-match — this is acceptable for phase-1 heuristic)
+        let agent = make_agent("Test", &["secure"]);
+        // "secure" should NOT match "insecure" (prefix doesn't match)
+        assert!(!agent_matches_task(&agent, "insecure connection"));
     }
 }

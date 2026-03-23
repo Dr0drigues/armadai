@@ -348,6 +348,22 @@ fn summarize_so_far(token: &RingToken) -> String {
 ///
 /// Vote weights are read from `token.vote_weights`; agents absent from the map
 /// default to weight 1.0.
+/// Normalised string similarity (1.0 = identical, 0.0 = completely different).
+///
+/// Uses a word-overlap Jaccard coefficient on lowercased words — cheap to
+/// compute and good enough for short vote positions.  A future iteration may
+/// use embedding cosine similarity.
+fn position_similarity(a: &str, b: &str) -> f32 {
+    let words_a: std::collections::HashSet<&str> = a.split_whitespace().collect();
+    let words_b: std::collections::HashSet<&str> = b.split_whitespace().collect();
+    let intersection = words_a.intersection(&words_b).count();
+    let union = words_a.union(&words_b).count();
+    if union == 0 {
+        return 1.0; // both empty → identical
+    }
+    intersection as f32 / union as f32
+}
+
 fn resolve_votes(token: &RingToken, config: &RingConfig) -> RingOutcome {
     if token.votes.is_empty() {
         return RingOutcome::NoConsensus {
@@ -358,11 +374,30 @@ fn resolve_votes(token: &RingToken, config: &RingConfig) -> RingOutcome {
 
     let weight_of = |name: &str| -> f32 { token.vote_weights.get(name).copied().unwrap_or(1.0) };
 
-    // Group by lowercased position string (deterministic iteration via BTreeMap).
+    // Group votes by position similarity.  Each vote is assigned to the first
+    // existing group whose representative position exceeds `similarity_threshold`,
+    // or starts a new group.  Groups are keyed by the representative's lowercased
+    // position (the first vote that created the group).
     let mut groups: BTreeMap<String, Vec<(String, &Vote)>> = BTreeMap::new();
+    let mut group_reps: Vec<String> = Vec::new(); // ordered representative keys
+
     for (agent, vote) in &token.votes {
-        let key = vote.position.to_lowercase();
-        groups.entry(key).or_default().push((agent.clone(), vote));
+        let pos_lower = vote.position.to_lowercase();
+        let mut assigned = false;
+        for rep in &group_reps {
+            if position_similarity(&pos_lower, rep) >= config.similarity_threshold {
+                groups.get_mut(rep).unwrap().push((agent.clone(), vote));
+                assigned = true;
+                break;
+            }
+        }
+        if !assigned {
+            group_reps.push(pos_lower.clone());
+            groups
+                .entry(pos_lower)
+                .or_default()
+                .push((agent.clone(), vote));
+        }
     }
 
     let total_weight: f32 = token.votes.keys().map(|n| weight_of(n)).sum();

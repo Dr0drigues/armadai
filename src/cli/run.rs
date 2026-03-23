@@ -368,11 +368,20 @@ async fn run_orchestrated(
     use crate::core::orchestration::ring::{
         RingAgent, RingConfig, RingOutcome, RingToken, TokenStatus, run_ring,
     };
+    use crate::core::project::OrchestrationDefaults;
     use crate::providers::traits::Provider;
 
     // Load all agents and create providers
     let mut agents = Vec::new();
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
+
+    // Read project-level orchestration overrides (if any).
+    let orch_defaults = match resolution {
+        AgentResolution::Project { config, .. } => {
+            config.defaults.orchestration.clone().unwrap_or_default()
+        }
+        _ => OrchestrationDefaults::default(),
+    };
 
     for name in agent_names {
         let agent_path = resolve_agent_path(resolution, name)?;
@@ -393,7 +402,7 @@ async fn run_orchestrated(
                 .map(|a| Arc::new(LlmBoardAgent::new(a)) as Arc<dyn BoardAgent>)
                 .collect();
 
-            let config = BlackboardConfig::default();
+            let config = apply_blackboard_overrides(BlackboardConfig::default(), &orch_defaults);
             let mut board = Board::new(input.to_string(), config.token_budget);
 
             eprintln!(
@@ -422,7 +431,7 @@ async fn run_orchestrated(
             let agent_order: Vec<String> =
                 ring_agents.iter().map(|a| a.name().to_string()).collect();
 
-            let config = RingConfig::default();
+            let config = apply_ring_overrides(RingConfig::default(), &orch_defaults);
             let mut token = RingToken::new(input.to_string(), agent_order, config.token_budget);
 
             eprintln!(
@@ -479,6 +488,58 @@ async fn run_orchestrated(
     }
 
     Ok(())
+}
+
+/// Apply project-level orchestration overrides to a BlackboardConfig.
+fn apply_blackboard_overrides(
+    mut config: crate::core::orchestration::blackboard::BlackboardConfig,
+    overrides: &crate::core::project::OrchestrationDefaults,
+) -> crate::core::orchestration::blackboard::BlackboardConfig {
+    if let Some(v) = overrides.max_rounds {
+        config.max_rounds = v;
+    }
+    if let Some(v) = overrides.consensus_threshold {
+        config.consensus_threshold = v;
+    }
+    if let Some(v) = overrides.divergence_threshold {
+        config.divergence_threshold = v;
+    }
+    if let Some(v) = overrides.token_budget {
+        config.token_budget = v;
+    }
+    if let Some(v) = overrides.agent_timeout_secs {
+        config.agent_timeout_secs = v;
+    }
+    if let Some(v) = overrides.convergence_rounds {
+        config.convergence_rounds = v;
+    }
+    config
+}
+
+/// Apply project-level orchestration overrides to a RingConfig.
+fn apply_ring_overrides(
+    mut config: crate::core::orchestration::ring::RingConfig,
+    overrides: &crate::core::project::OrchestrationDefaults,
+) -> crate::core::orchestration::ring::RingConfig {
+    if let Some(v) = overrides.max_laps {
+        config.max_laps = v;
+    }
+    if let Some(v) = overrides.consensus_threshold {
+        config.consensus_threshold = v;
+    }
+    if let Some(v) = overrides.majority_threshold {
+        config.majority_threshold = v;
+    }
+    if let Some(v) = overrides.similarity_threshold {
+        config.similarity_threshold = v;
+    }
+    if let Some(v) = overrides.token_budget {
+        config.token_budget = v;
+    }
+    if let Some(v) = overrides.agent_timeout_secs {
+        config.agent_timeout_secs = v;
+    }
+    config
 }
 
 #[cfg(feature = "storage")]
