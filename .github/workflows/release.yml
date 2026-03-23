@@ -84,7 +84,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item "target/${{ matrix.target }}/release/armadai.exe" "dist/${{ matrix.artifact }}"
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
@@ -107,7 +107,7 @@ jobs:
           pip install commitizen
           cz changelog --dry-run --file-name /dev/null | awk '/^## v/{if(n++) exit; next} n' > RELEASE_NOTES.md
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 

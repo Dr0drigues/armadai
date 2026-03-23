@@ -31,10 +31,29 @@ pub struct AgentDetail {
     max_tokens: Option<u32>,
     timeout: Option<u64>,
     rate_limit: Option<String>,
+    orchestration: Option<String>,
+    triggers: Option<AgentTriggersInfo>,
+    ring_config: Option<AgentRingInfo>,
     system_prompt: String,
     instructions: Option<String>,
     output_format: Option<String>,
     model_resolution: Vec<ModelResolutionEntry>,
+}
+
+#[derive(Serialize)]
+pub struct AgentTriggersInfo {
+    requires: Vec<String>,
+    excludes: Vec<String>,
+    min_round: u32,
+    max_round: Option<u32>,
+    priority: u8,
+}
+
+#[derive(Serialize)]
+pub struct AgentRingInfo {
+    role: String,
+    position: Option<usize>,
+    vote_weight: f32,
 }
 
 #[derive(Serialize)]
@@ -191,6 +210,19 @@ pub async fn get_agent(Path(name): Path<String>) -> Json<serde_json::Value> {
                     resolved_model: resolved,
                 })
                 .collect();
+            let orchestration = a.metadata.orchestration.map(|p| p.to_string());
+            let triggers = a.metadata.triggers.map(|t| AgentTriggersInfo {
+                requires: t.requires,
+                excludes: t.excludes,
+                min_round: t.min_round,
+                max_round: t.max_round,
+                priority: t.priority,
+            });
+            let ring_config = a.metadata.ring_config.map(|r| AgentRingInfo {
+                role: r.role,
+                position: r.position,
+                vote_weight: r.vote_weight,
+            });
             let detail = AgentDetail {
                 name: a.name,
                 source: a.source.display().to_string(),
@@ -204,6 +236,9 @@ pub async fn get_agent(Path(name): Path<String>) -> Json<serde_json::Value> {
                 max_tokens: a.metadata.max_tokens,
                 timeout: a.metadata.timeout,
                 rate_limit: a.metadata.rate_limit,
+                orchestration,
+                triggers,
+                ring_config,
                 system_prompt: a.system_prompt,
                 instructions: a.instructions,
                 output_format: a.output_format,

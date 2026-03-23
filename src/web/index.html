@@ -136,6 +136,25 @@ async function viewAgent(name) {
         <div class="detail-field"><label>Tags</label><span>${a.tags.map(t => `<span class="tag">${t}</span>`).join('') || 'none'}</span></div>
         <div class="detail-field"><label>Stacks</label><span>${a.stacks.map(s => `<span class="tag stack">${s}</span>`).join('') || 'none'}</span></div>
       </div>
+      ${a.orchestration || a.triggers || a.ring_config ? `
+      <div class="prompt-box-title">Orchestration</div>
+      <div class="detail-grid">
+        ${a.orchestration ? `<div class="detail-field"><label>Pattern</label><span class="tag" style="background:var(--purple,#8b5cf6);color:#fff">${a.orchestration}</span></div>` : ''}
+        ${a.triggers ? `<div class="detail-field"><label>Triggers</label><span>${
+          [a.triggers.requires.length ? 'requires: [' + a.triggers.requires.join(', ') + ']' : '',
+           a.triggers.excludes.length ? 'excludes: [' + a.triggers.excludes.join(', ') + ']' : '',
+           a.triggers.min_round > 0 ? 'min_round: ' + a.triggers.min_round : '',
+           a.triggers.max_round != null ? 'max_round: ' + a.triggers.max_round : '',
+           'priority: ' + a.triggers.priority
+          ].filter(Boolean).join(', ')
+        }</span></div>` : ''}
+        ${a.ring_config ? `<div class="detail-field"><label>Ring Config</label><span>${
+          ['role: ' + a.ring_config.role,
+           a.ring_config.position != null ? 'position: ' + a.ring_config.position : '',
+           Math.abs(a.ring_config.vote_weight - 1.0) > 0.01 ? 'weight: ' + a.ring_config.vote_weight.toFixed(1) : ''
+          ].filter(Boolean).join(', ')
+        }</span></div>` : ''}
+      </div>` : ''}
       ${a.model_resolution && a.model_resolution.length ? `
       <div class="prompt-box-title">Model Resolution (link targets)</div>
       <table style="margin-bottom:16px">

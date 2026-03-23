@@ -1,6 +1,6 @@
 [package]
 name = "armadai"
-version = "0.8.0"
+version = "0.10.0"
 edition = "2024"
 description = "ArmadAI — AI agent fleet orchestrator. Define, manage and run specialized agents from Markdown files."
 license = "PolyForm-Noncommercial-1.0.0"
@@ -45,7 +45,7 @@ serde_json = "1"
 serde_yaml_ng = "0.10"
 
 # Database (optional — enable with `storage` feature)
-rusqlite = { version = "0.38", features = ["bundled"], optional = true }
+rusqlite = { version = "0.39", features = ["bundled"], optional = true }
 
 # Markdown parsing
 pulldown-cmark = "0.13"

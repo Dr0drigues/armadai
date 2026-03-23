@@ -9,7 +9,7 @@ A coordinator that orchestrates a code analysis fleet:
 
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.4
 - tags: [coordinator, analysis]
 - stacks: [rust]
@@ -43,12 +43,12 @@ A Java/Spring specialist with scoped focus:
 
 ## Metadata
 - provider: google
-- model: gemini-2.5-pro
+- model: latest:pro
 - temperature: 0.3
 - tags: [review, api]
 - stacks: [java, spring]
 - scope: [src/main/java/**/*.java, src/test/java/**/*.java]
-- model_fallback: [gemini-2.5-flash]
+- model_fallback: [latest:fast]
 - cost_limit: 0.30
 
 ## System Prompt
@@ -87,7 +87,7 @@ A TDD red-phase agent that chains to green then refactor:
 
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.4
 - tags: [tdd, test]
 - stacks: [rust]

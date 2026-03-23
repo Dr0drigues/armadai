@@ -6,6 +6,7 @@ pub mod init;
 mod inspect;
 mod link;
 mod list;
+mod models;
 pub(crate) mod new;
 mod prompts;
 mod registry;
@@ -61,6 +62,9 @@ pub enum Command {
         /// Pipeline mode: chain agents sequentially
         #[arg(long, num_args = 1..)]
         pipe: Option<Vec<String>>,
+        /// Orchestration pattern for multi-agent execution
+        #[arg(long, value_parser = ["blackboard", "ring"])]
+        orchestrate: Option<String>,
     },
     /// Create a new agent from a template
     #[command(
@@ -205,6 +209,20 @@ pub enum Command {
             armadai fleet show my-fleet"
     )]
     Fleet(fleet::FleetAction),
+    /// Manage model deprecations and project registry
+    #[command(
+        subcommand,
+        long_about = "Manage model deprecations and project registry.\n\n\
+            Check for deprecated models in agent files and update them in-place. \
+            Projects are auto-registered when you run `armadai run` or `armadai link`.",
+        after_help = "Examples:\n  \
+            armadai models check\n  \
+            armadai models check --all --prune\n  \
+            armadai models update\n  \
+            armadai models update --all\n  \
+            armadai models list"
+    )]
+    Models(models::ModelsAction),
     /// Generate native config files for AI assistants
     #[command(
         long_about = "Generate native config files for AI assistants.\n\n\
@@ -357,7 +375,12 @@ pub enum Command {
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Command::Run { agent, input, pipe } => run::execute(agent, input, pipe).await,
+        Command::Run {
+            agent,
+            input,
+            pipe,
+            orchestrate,
+        } => run::execute(agent, input, pipe, orchestrate).await,
         Command::New {
             name,
             template,
@@ -375,6 +398,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Tui => crate::tui::run().await,
         #[cfg(feature = "web")]
         Command::Web { port } => crate::web::serve(port).await,
+        Command::Models(action) => models::execute(action).await,
         Command::Fleet(action) => fleet::execute(action).await,
         Command::Registry(action) => registry::execute(action).await,
         Command::Prompts(action) => prompts::execute(action).await,

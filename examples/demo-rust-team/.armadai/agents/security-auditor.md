@@ -2,7 +2,7 @@
 
 ## Metadata
 - provider: gemini
-- model: gemini-2.0-flash
+- model: latest:pro
 - temperature: 0.2
 - max_tokens: 4096
 - tags: [security, review]

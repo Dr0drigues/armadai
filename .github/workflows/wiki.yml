@@ -14,6 +14,9 @@ on:
     paths:
       - "docs/wiki/**"
 
+permissions:
+  contents: write
+
 jobs:
   sync:
     name: Publish to Wiki
@@ -27,7 +30,7 @@ jobs:
         with:
           repository: ${{ github.repository }}.wiki
           path: wiki
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.WIKI_TOKEN }}
 
       - name: Sync wiki pages
         run: |
@@ -39,9 +42,9 @@ jobs:
             ["templates.md"]="Templates.md"
             ["starter-packs.md"]="Starter-Packs.md"
             ["registry.md"]="Registry.md"
-            ["linker.md"]="Linker.md"
-            ["coordinator.md"]="Coordinator.md"
-            ["pirate-crew.md"]="Pirate-Crew.md"
+            ["link.md"]="Link.md"
+            ["orchestration.md"]="Orchestration.md"
+            ["skills-prompts.md"]="Skills-Prompts.md"
           )
 
           # Link replacements: source .md references → wiki page names
@@ -52,9 +55,9 @@ jobs:
             ["templates.md"]="Templates"
             ["starter-packs.md"]="Starter-Packs"
             ["registry.md"]="Registry"
-            ["linker.md"]="Linker"
-            ["coordinator.md"]="Coordinator"
-            ["pirate-crew.md"]="Pirate-Crew"
+            ["link.md"]="Link"
+            ["orchestration.md"]="Orchestration"
+            ["skills-prompts.md"]="Skills-Prompts"
           )
 
           for src in docs/wiki/*.md; do

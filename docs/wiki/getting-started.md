@@ -1,5 +1,7 @@
 # Getting Started
 
+Welcome to ArmadAI — follow the steps below to get up and running.
+
 ## Installation
 
 ### Quick install (recommended)

@@ -2,6 +2,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::orchestration::OrchestrationPattern;
+
+// Re-export from orchestration module (canonical location)
+pub use super::orchestration::{AgentRingConfig, TriggerConfig};
+
 /// Agent interaction mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -69,6 +74,12 @@ pub struct AgentMetadata {
     pub context_window: Option<u32>,
     /// Interaction mode (guided asks clarifying questions first)
     pub mode: Option<AgentMode>,
+    /// Orchestration pattern this agent participates in
+    pub orchestration: Option<OrchestrationPattern>,
+    /// Blackboard trigger configuration (parsed from ## Triggers section)
+    pub triggers: Option<TriggerConfig>,
+    /// Ring configuration (parsed from ## Ring Config section)
+    pub ring_config: Option<AgentRingConfig>,
 }
 
 fn default_temperature() -> f32 {

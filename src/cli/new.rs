@@ -64,7 +64,7 @@ fn template_create(
     }
 
     // Replace model placeholder with default
-    content = content.replace("{{model}}", "claude-sonnet-4-5-20250929");
+    content = content.replace("{{model}}", "latest:pro");
 
     // Check for remaining placeholders
     let remaining: Vec<&str> = content

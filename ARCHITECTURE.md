@@ -16,7 +16,7 @@ Gemini...) et des modes d'exécution (API HTTP, proxy, CLI tools).
 | Langage             | Rust                           | Performance, binaire unique, écosystème CLI/TUI mature   |
 | Runtime async       | tokio                          | Standard de facto, écosystème massif (reqwest, axum...)   |
 | Format agent        | Markdown (agents.md)           | Lisible, versionnable, compatible avec le standard ouvert |
-| Orchestration       | Hub & spoke                    | Un coordinateur dispatch aux agents spécialisés          |
+| Orchestration       | Hub & Spoke + Blackboard + Ring | Hub centralisé + patterns non-hiérarchiques             |
 | Interface           | CLI + TUI (ratatui)            | CLI scriptable + TUI riche pour le monitoring/interaction |
 | Stockage            | SQLite embarqué (rusqlite)     | Zéro config, in-process, léger, fiable                   |
 | Secrets             | SOPS + age                     | Chiffrement champ par champ, diff-friendly, moderne      |
@@ -58,7 +58,11 @@ Docker Compose est **optionnel** et ne sert qu'à l'infrastructure :
 
 ---
 
-## Modèle d'orchestration : Hub & Spoke
+## Modèles d'orchestration
+
+Trois patterns d'orchestration coexistent, chacun adapté à un type de tâche.
+
+### Hub & Spoke (coordinateur central)
 
 ```
                     ┌──────────────┐
@@ -77,10 +81,76 @@ Le **Coordinator** :
 - Analyse et décompose en sous-tâches
 - Dispatch aux agents spécialisés appropriés
 - Agrège les résultats et fournit la réponse finale
+- Utilisé par la commande `link` pour générer les fichiers de configuration
 
-Le **Pipeline mode** (complémentaire) :
-- Enchaînement séquentiel : output A → input B → input C
-- Déclaré dans la config de l'agent ou via CLI
+### Blackboard (parallel, état partagé)
+
+```
+    ┌─────────────────────────────────────────────┐
+    │              Board (shared state)            │
+    │  entries: [Finding, Challenge, Confirmation] │
+    └───────┬──────────┬──────────┬───────────────┘
+            │          │          │
+     ┌──────▼──┐ ┌─────▼───┐ ┌───▼───────┐
+     │ Agent A │ │ Agent B  │ │ Agent C   │
+     │ (react) │ │ (react)  │ │ (react)   │
+     └─────────┘ └─────────┘ └───────────┘
+```
+
+- Les agents tournent en **parallèle** à chaque round
+- Chaque agent lit le board, produit des deltas (Finding, Challenge, Confirmation, Synthesis...)
+- Le board évalue la convergence : consensus, divergence, ou stabilité
+- Arrêt sur consensus, max_rounds, ou budget épuisé
+- Agents réactifs : `## Triggers` contrôle quand un agent s'active (min/max round, requires, excludes)
+
+### Ring (séquentiel, token-passing)
+
+```
+     ┌───────────┐     ┌───────────┐     ┌───────────┐
+     │  Agent A  │────▶│  Agent B  │────▶│  Agent C  │
+     │(initiator)│     │(specialist)│     │(challenger)│
+     └───────────┘     └───────────┘     └───────────┘
+           ▲                                    │
+           └────────────── lap N+1 ─────────────┘
+```
+
+- Token circule séquentiellement entre les agents (laps)
+- Chaque agent choisit une action : Propose, Enrich, Contest, Endorse, Synthesize, Pass
+- Après circulation : phase de vote avec positions pondérées (`vote_weight`)
+- Résolution : Consensus, Majority (avec dissents), ou NoConsensus
+- Groupement par similarité de position (Jaccard word-overlap, `similarity_threshold`)
+
+### Sélection automatique du pattern
+
+Le **classifier** (heuristique phase 1) choisit le pattern en fonction :
+- du nombre d'agents pertinents (tags + nom, prefix matching)
+- de l'overlap des domaines (Jaccard sur les tags)
+- de mots-clés dans la tâche (review/audit → Ring, generate/build → Blackboard)
+
+Override manuel : `armadai run agent-a --pipe agent-b agent-c --orchestrate blackboard|ring`
+
+### Configuration projet
+
+```yaml
+# armadai.yaml
+defaults:
+  orchestration:
+    max_rounds: 10          # Blackboard
+    max_laps: 5             # Ring
+    consensus_threshold: 0.85
+    token_budget: 100000
+    agent_timeout_secs: 120
+```
+
+### Choix du pattern
+
+| Critère | Hub & Spoke | Blackboard | Ring |
+|---|---|---|---|
+| Agents indépendants, tâches décomposables | Oui | — | — |
+| Agents parallèles, état partagé | — | Oui | — |
+| Revue croisée, consensus | — | — | Oui |
+| Coordinateur nécessaire | Oui | Non | Non |
+| CLI | `link` | `--orchestrate blackboard` | `--orchestrate ring` |
 
 ---
 
@@ -123,7 +193,7 @@ les sections par convention de nommage des headings.
 
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.3
 - max_tokens: 4096
 - tags: [dev, review, quality]
@@ -197,6 +267,9 @@ Exécute la tâche demandée en utilisant tes outils disponibles.
 | `stacks`       | list[string]  | Stacks techniques supportées                        |
 | `cost_limit`   | float         | Limite de coût par exécution (USD)                  |
 | `rate_limit`   | string        | Limite de requêtes (ex: "10/min")                   |
+| `model_fallback` | list[string] | Chaîne de fallback en cas de modèle indisponible   |
+| `mode`          | string       | Mode d'exécution (`guided` ou `autonomous`)         |
+| `scope`         | list[string] | Fichiers/répertoires ciblés par l'agent             |
 | `context_window` | int         | Override de la taille du contexte du modèle         |
 
 ---
@@ -234,6 +307,8 @@ armadai/
 │   │   ├── inspect.rs           # armadai inspect <agent>
 │   │   ├── history.rs           # armadai history [--agent ...] [--replay id]
 │   │   ├── init.rs              # armadai init (bootstrap config)
+│   │   ├── link.rs              # armadai link --target <t> (génération configs natives)
+│   │   ├── models.rs            # armadai models check/update/list
 │   │   ├── up.rs                # armadai up (lance docker-compose)
 │   │   ├── config.rs            # armadai config (providers, secrets, starters-dir)
 │   │   └── validate.rs          # armadai validate [agent] (dry-run)
@@ -260,6 +335,8 @@ armadai/
 │   │   ├── project.rs          # Config projet (.armadai/config.yaml ou armadai.yaml), résolution 3 niveaux
 │   │   ├── embedded.rs         # Versioning des ressources embedded (.armadai-version)
 │   │   ├── fleet.rs            # Définitions de flottes, liaison projets-agents
+│   │   ├── model_updater.rs    # Détection et mise à jour des modèles dépréciés
+│   │   ├── project_registry.rs # Registre des projets (auto-enregistrement, prune)
 │   │   ├── prompt.rs           # Fragments de prompts composables (YAML frontmatter)
 │   │   ├── skill.rs            # Skills (standard SKILL.md)
 │   │   └── starter.rs          # Starter packs, all_starters_dirs(), ARMADAI_STARTERS_DIRS
@@ -285,7 +362,12 @@ armadai/
 │   ├── linker/                # Génération de configs natives
 │   │   ├── mod.rs             # Trait Linker + dispatch
 │   │   ├── claude.rs          # .claude/agents/*.md
-│   │   └── copilot.rs         # .github/agents/*.agent.md
+│   │   ├── codex.rs           # .codex/agents/*.md
+│   │   ├── copilot.rs         # .github/agents/*.agent.md
+│   │   ├── gemini.rs          # .gemini/agents/*.md
+│   │   ├── opencode.rs        # .opencode/agents/*.md
+│   │   ├── model_aliases.rs   # Résolution des alias de modèles dépréciés
+│   │   └── model_resolution.rs # Remapping de modèles par cible
 │   ├── registry/              # Intégration awesome-copilot
 │   │   ├── mod.rs
 │   │   ├── sync.rs            # Clone/pull du repo registry
@@ -366,6 +448,9 @@ armadai up                         # Lancer l'infra Docker (optionnel)
 armadai down                       # Arrêter l'infra Docker
 armadai fleet create/link/list/show  # Gérer les flottes d'agents
 armadai link --target <t>            # Générer configs natives (claude, copilot...)
+armadai models check [--all] [--prune] # Vérifier les modèles dépréciés
+armadai models update [--all]        # Mettre à jour les modèles dépréciés
+armadai models list                  # Lister les projets enregistrés
 armadai registry sync/search/list/add # Registre communautaire
 armadai prompts list/show            # Fragments de prompts composables
 armadai skills list/show             # Skills (standard SKILL.md)

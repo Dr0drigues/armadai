@@ -23,6 +23,9 @@ pub async fn execute(
         )
     })?;
 
+    let _ = crate::core::project_registry::register_project(&root);
+    crate::core::model_updater::auto_check_and_prompt(&root, std::io::stdin().is_terminal());
+
     if config.agents.is_empty() {
         anyhow::bail!("No agents declared in project config.");
     }
@@ -43,6 +46,14 @@ pub async fn execute(
 
     if link_agents.is_empty() {
         anyhow::bail!("No agents could be resolved. Check your project config.");
+    }
+
+    // 2b. Resolve deprecated model aliases before remapping
+    for agent in &mut link_agents {
+        crate::linker::model_aliases::resolve_model_deprecations(
+            &mut agent.model,
+            &mut agent.model_fallback,
+        );
     }
 
     // 3. Filter by --agents if provided
@@ -121,8 +132,14 @@ pub async fn execute(
                         &model,
                     );
                 }
+            } else {
+                // Non-interactive without --model: resolve latest:* placeholders
+                // using each agent's own provider
+                model_resolution::resolve_latest_placeholders(&mut link_agents);
+                if let Some(ref mut coord) = coordinator {
+                    model_resolution::resolve_latest_placeholders(std::slice::from_mut(coord));
+                }
             }
-            // else: non-interactive without --model → keep original models
         }
     }
 

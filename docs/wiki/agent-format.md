@@ -9,7 +9,7 @@ Agents are defined as Markdown files in the `agents/` directory. Each file repre
 
 ## Metadata           ← H2: required, key-value configuration
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.3
 
 ## System Prompt      ← H2: required, the system prompt sent to the model
@@ -32,6 +32,17 @@ Description of the expected output format.
 ## Context            ← H2: optional, additional runtime context
 
 Extra context injected at execution time.
+
+## Triggers           ← H2: optional, Blackboard activation rules
+
+- requires: [finding]
+- min_round: 1
+- priority: 80
+
+## Ring Config         ← H2: optional, Ring pattern settings
+
+- role: challenger
+- vote_weight: 1.5
 ```
 
 ## Sections Reference
@@ -43,7 +54,7 @@ Key-value pairs configuring the agent's technical behavior.
 | Key | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `provider` | string | Yes | — | Provider type: `anthropic`, `openai`, `google`, `cli`, `proxy` |
-| `model` | string | API providers | — | Model identifier (e.g. `claude-sonnet-4-5-20250929`) |
+| `model` | string | API providers | — | Model identifier or `latest:*` placeholder (e.g. `latest:pro`, `latest:fast`) |
 | `command` | string | CLI provider | — | CLI command to execute |
 | `args` | list | No | — | CLI arguments: `["-p", "--model", "sonnet"]` |
 | `temperature` | float | No | `0.7` | Sampling temperature (0.0 - 2.0) |
@@ -54,6 +65,7 @@ Key-value pairs configuring the agent's technical behavior.
 | `cost_limit` | float | No | — | Max cost per execution in USD |
 | `rate_limit` | string | No | — | Rate limit: `"10/min"` |
 | `context_window` | int | No | — | Context window size override |
+| `orchestration` | string | No | — | Orchestration pattern: `blackboard`, `ring` |
 
 ### System Prompt (required)
 
@@ -81,7 +93,57 @@ List of agent names to chain after this agent. Each agent receives the previous 
 
 Additional context injected at runtime. Can include project-specific information, coding standards, etc.
 
+### Triggers (optional, Blackboard pattern)
+
+Controls when an agent activates during Blackboard orchestration. Agents without a Triggers section participate in every round.
+
+```markdown
+## Triggers
+- requires: [finding]
+- excludes: [synthesis]
+- min_round: 1
+- max_round: 4
+- priority: 80
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `requires` | list | `[]` | Entry kinds that must be present on the board for agent to activate |
+| `excludes` | list | `[]` | Entry kinds that prevent agent from activating |
+| `min_round` | int | `0` | Earliest round the agent can contribute |
+| `max_round` | int | — | Latest round the agent can contribute |
+| `priority` | int | `50` | Agent priority (0-100, higher = runs earlier when budget is tight) |
+
+Entry kinds: `finding`, `challenge`, `confirmation`, `synthesis`, `question`, `answer`.
+
+### Ring Config (optional, Ring pattern)
+
+Configures an agent's role and weight in Ring orchestration.
+
+```markdown
+## Ring Config
+- role: challenger
+- position: 2
+- vote_weight: 1.5
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `role` | string | `specialist` | Role in the ring: `initiator`, `specialist`, `challenger`, `synthesizer` |
+| `position` | int | — | Position in the ring order (0-indexed, auto-assigned if omitted) |
+| `vote_weight` | float | `1.0` | Multiplier applied to this agent's vote during resolution |
+
 ## Provider Types
+
+### Model Placeholders
+
+Instead of hardcoding model names, use `latest:*` placeholders that resolve to the best available model for each provider:
+
+| Placeholder | Tier | Examples |
+|---|---|---|
+| `latest` or `latest:pro` | Balanced (default) | `claude-sonnet-4-5-20250929`, `gpt-4o`, `gemini-2.5-pro` |
+| `latest:fast` | Fast / cheap | `claude-haiku-4-5-20251001`, `gpt-4o-mini`, `gemini-2.5-flash` |
+| `latest:max` | Most capable | `claude-opus-4-5-20250929`, `o3-pro`, `gemini-2.5-ultra` |
 
 ### API Providers (`anthropic`, `openai`, `google`)
 
@@ -90,7 +152,7 @@ Send requests to LLM APIs. Require `model` field.
 ```markdown
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.3
 - max_tokens: 4096
 ```
@@ -114,7 +176,7 @@ Route through an OpenAI-compatible proxy (LiteLLM, OpenRouter).
 ```markdown
 ## Metadata
 - provider: proxy
-- model: anthropic/claude-sonnet-4-5-20250929
+- model: latest:pro
 ```
 
 ## File Organization

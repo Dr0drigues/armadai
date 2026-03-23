@@ -26,19 +26,29 @@ YAML-like key-value list defining the agent's configuration. Each field is on it
 ```markdown
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.5
 - max_tokens: 4096
 - tags: [review, quality]
 - stacks: [rust, typescript]
 ```
 
+#### Model Placeholders
+
+Instead of hardcoding model names, use `latest:*` placeholders that resolve to the best available model for each provider:
+
+| Placeholder | Tier | Resolves to (examples) |
+|---|---|---|
+| `latest` or `latest:pro` | Balanced (default) | `claude-sonnet-4-5-20250929`, `gpt-4o`, `gemini-2.5-pro` |
+| `latest:fast` | Fast / cheap | `claude-haiku-4-5-20251001`, `gpt-4o-mini`, `gemini-2.5-flash` |
+| `latest:max` | Most capable | `claude-opus-4-5-20250929`, `o3-pro`, `gemini-2.5-ultra` |
+
 #### Metadata Fields
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `provider` | string | **yes** | — | Provider backend: `anthropic`, `openai`, `google`, `gemini`, `cli`, `proxy`, `aider` |
-| `model` | string | for API providers | — | Model identifier (e.g., `claude-sonnet-4-5-20250929`, `gpt-4o`) |
+| `model` | string | for API providers | — | Model identifier or `latest:*` placeholder (e.g., `latest:pro`, `latest:fast`) |
 | `command` | string | for `cli` provider | — | CLI command to execute |
 | `args` | string[] | no | — | Arguments for CLI command: `[--flag, value]` |
 | `temperature` | float | no | `0.7` | Sampling temperature, range `0.0` to `2.0` |
@@ -133,7 +143,7 @@ Each entry is the name of another agent. The output of the current agent is pass
 
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.7
 
 ## System Prompt

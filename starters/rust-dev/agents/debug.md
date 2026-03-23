@@ -2,7 +2,7 @@
 
 ## Metadata
 - provider: anthropic
-- model: {{model}}
+- model: latest:pro
 - temperature: 0.3
 - max_tokens: 8192
 - tags: [dev, debug]

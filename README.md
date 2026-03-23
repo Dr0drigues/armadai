@@ -19,6 +19,7 @@ armadai tui
 
 - **Markdown-based agents** — one `.md` file = one agent. Human-readable, git-friendly.
 - **Multi-provider** — unified tool names (`claude`, `gemini`, `gpt`, `aider`) auto-detect CLI vs API; explicit API/CLI/proxy modes also supported
+- **Multi-pattern orchestration** — Direct (single-shot), Blackboard (parallel shared-state), Ring (sequential consensus), Hierarchical (coordinator → leads → agents)
 - **Pipeline mode** — chain agents sequentially (output A becomes input B)
 - **TUI dashboard** — fleet management with agent browser, detail view, history, costs, and command palette
 - **Shell completion** — auto-complete for bash, zsh, fish, powershell, elvish
@@ -122,6 +123,9 @@ armadai run my-assistant "Explain how async/await works in Rust"
 | `armadai prompts list/show` | Manage composable prompts | Done |
 | `armadai skills list/show` | Manage composable skills | Done |
 | `armadai skills sync/search/add/info` | Discover and install skills from GitHub | Done |
+| `armadai models check [--all] [--prune]` | Check for deprecated models in agents | Done |
+| `armadai models update [--all]` | Update deprecated models in-place | Done |
+| `armadai models list` | List registered projects | Done |
 | `armadai update` | Self-update to latest release | Done |
 | `armadai tui` | Launch the TUI dashboard | Done |
 | `armadai web [--port N]` | Launch the web UI | Done |
@@ -137,7 +141,7 @@ Each agent is a Markdown file in `agents/`:
 
 ## Metadata
 - provider: claude
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.3
 - max_tokens: 4096
 - tags: [dev, review, quality]
@@ -276,13 +280,14 @@ Launch with `armadai tui`. The dashboard provides fleet management views:
 | **Starters** | Browse starter packs, init projects with `i` key |
 | **History** | Execution history with tokens, costs, and duration |
 | **Costs** | Aggregated cost summary per agent |
+| **Models** | Cached model catalog from models.dev, grouped by provider |
 
 ### Keyboard shortcuts
 
 | Key | Action |
 |---|---|
 | `Tab` / `Shift+Tab` | Switch tabs |
-| `1-6` | Jump to tab directly |
+| `1-7` | Jump to tab directly |
 | `j/k` or arrows | Navigate lists |
 | `Enter` | View detail |
 | `i` | Init project from selected starter (Starters tab) |
@@ -307,6 +312,7 @@ The web UI provides a read-only dashboard for your agent fleet:
 - **Starters** — browse packs and download pre-configured `config.yaml`
 - **History** — execution history with tokens, costs, and duration
 - **Costs** — aggregated cost summary per agent
+- **Models** — cached model catalog from models.dev, grouped by provider
 
 ## Architecture
 
@@ -316,6 +322,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.
 HOST MACHINE
 ├── armadai (native binary)
 │   ├── CLI + TUI + Web UI
+│   ├── Orchestration (Direct / Blackboard / Ring / Hierarchical)
 │   ├── Providers (API / CLI / Proxy)
 │   ├── SQLite (embedded storage)
 │   └── SOPS + age secrets
