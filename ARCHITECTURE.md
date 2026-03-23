@@ -16,7 +16,7 @@ Gemini...) et des modes d'exécution (API HTTP, proxy, CLI tools).
 | Langage             | Rust                           | Performance, binaire unique, écosystème CLI/TUI mature   |
 | Runtime async       | tokio                          | Standard de facto, écosystème massif (reqwest, axum...)   |
 | Format agent        | Markdown (agents.md)           | Lisible, versionnable, compatible avec le standard ouvert |
-| Orchestration       | Hub & spoke                    | Un coordinateur dispatch aux agents spécialisés          |
+| Orchestration       | Blackboard + Ring              | Patterns non-hiérarchiques sans coordinateur central     |
 | Interface           | CLI + TUI (ratatui)            | CLI scriptable + TUI riche pour le monitoring/interaction |
 | Stockage            | SQLite embarqué (rusqlite)     | Zéro config, in-process, léger, fiable                   |
 | Secrets             | SOPS + age                     | Chiffrement champ par champ, diff-friendly, moderne      |
@@ -58,29 +58,74 @@ Docker Compose est **optionnel** et ne sert qu'à l'infrastructure :
 
 ---
 
-## Modèle d'orchestration : Hub & Spoke
+## Modèle d'orchestration : Blackboard + Ring
+
+Deux patterns non-hiérarchiques remplacent l'ancien hub & spoke. Aucun coordinateur
+central n'est nécessaire : les agents collaborent directement.
+
+### Blackboard (parallel, état partagé)
 
 ```
-                    ┌──────────────┐
-           ┌───────│ Coordinator  │───────┐
-           │       │  (hub agent) │       │
-           │       └──────┬───────┘       │
-           ▼              ▼               ▼
-    ┌────────────┐ ┌────────────┐ ┌────────────┐
-    │  Agent A   │ │  Agent B   │ │  Agent C   │
-    │ (reviewer) │ │ (test gen) │ │ (doc gen)  │
-    └────────────┘ └────────────┘ └────────────┘
+    ┌─────────────────────────────────────────────┐
+    │              Board (shared state)            │
+    │  entries: [Finding, Challenge, Confirmation] │
+    └───────┬──────────┬──────────┬───────────────┘
+            │          │          │
+     ┌──────▼──┐ ┌─────▼───┐ ┌───▼───────┐
+     │ Agent A │ │ Agent B  │ │ Agent C   │
+     │ (react) │ │ (react)  │ │ (react)   │
+     └─────────┘ └─────────┘ └───────────┘
 ```
 
-Le **Coordinator** :
-- Reçoit la tâche utilisateur
-- Analyse et décompose en sous-tâches
-- Dispatch aux agents spécialisés appropriés
-- Agrège les résultats et fournit la réponse finale
+- Les agents tournent en **parallèle** à chaque round
+- Chaque agent lit le board, produit des deltas (Finding, Challenge, Confirmation, Synthesis...)
+- Le board évalue la convergence : consensus, divergence, ou stabilité
+- Arrêt sur consensus, max_rounds, ou budget épuisé
+- Agents réactifs : `## Triggers` contrôle quand un agent s'active (min/max round, requires, excludes)
 
-Le **Pipeline mode** (complémentaire) :
-- Enchaînement séquentiel : output A → input B → input C
-- Déclaré dans la config de l'agent ou via CLI
+### Ring (séquentiel, token-passing)
+
+```
+     ┌───────────┐     ┌───────────┐     ┌───────────┐
+     │  Agent A  │────▶│  Agent B  │────▶│  Agent C  │
+     │(initiator)│     │(specialist)│     │(challenger)│
+     └───────────┘     └───────────┘     └───────────┘
+           ▲                                    │
+           └────────────── lap N+1 ─────────────┘
+```
+
+- Token circule séquentiellement entre les agents (laps)
+- Chaque agent choisit une action : Propose, Enrich, Contest, Endorse, Synthesize, Pass
+- Après circulation : phase de vote avec positions pondérées (`vote_weight`)
+- Résolution : Consensus, Majority (avec dissents), ou NoConsensus
+- Groupement par similarité de position (Jaccard word-overlap, `similarity_threshold`)
+
+### Sélection automatique du pattern
+
+Le **classifier** (heuristique phase 1) choisit le pattern en fonction :
+- du nombre d'agents pertinents (tags + nom, prefix matching)
+- de l'overlap des domaines (Jaccard sur les tags)
+- de mots-clés dans la tâche (review/audit → Ring, generate/build → Blackboard)
+
+Override manuel : `armadai run agent-a --pipe agent-b agent-c --orchestrate blackboard|ring`
+
+### Configuration projet
+
+```yaml
+# armadai.yaml
+defaults:
+  orchestration:
+    max_rounds: 10          # Blackboard
+    max_laps: 5             # Ring
+    consensus_threshold: 0.85
+    token_budget: 100000
+    agent_timeout_secs: 120
+```
+
+### Pipeline mode (legacy, supprimé)
+
+L'ancien pipeline séquentiel (`output A → input B`) est remplacé par le Ring pattern
+qui offre les mêmes capacités avec en plus le vote et la convergence.
 
 ---
 
@@ -209,7 +254,6 @@ Exécute la tâche demandée en utilisant tes outils disponibles.
 ```
 armadai/
 ├── agents/                      # Définitions d'agents
-│   └── _coordinator.md          # Agent hub (orchestrateur)
 ├── starters/                    # Packs d'agents pré-configurés
 │   ├── rust-dev/
 │   │   ├── pack.yaml

@@ -32,6 +32,17 @@ Description of the expected output format.
 ## Context            ← H2: optional, additional runtime context
 
 Extra context injected at execution time.
+
+## Triggers           ← H2: optional, Blackboard activation rules
+
+- requires: [finding]
+- min_round: 1
+- priority: 80
+
+## Ring Config         ← H2: optional, Ring pattern settings
+
+- role: challenger
+- vote_weight: 1.5
 ```
 
 ## Sections Reference
@@ -54,6 +65,7 @@ Key-value pairs configuring the agent's technical behavior.
 | `cost_limit` | float | No | — | Max cost per execution in USD |
 | `rate_limit` | string | No | — | Rate limit: `"10/min"` |
 | `context_window` | int | No | — | Context window size override |
+| `orchestration` | string | No | — | Orchestration pattern: `blackboard`, `ring` |
 
 ### System Prompt (required)
 
@@ -80,6 +92,46 @@ List of agent names to chain after this agent. Each agent receives the previous 
 ### Context (optional)
 
 Additional context injected at runtime. Can include project-specific information, coding standards, etc.
+
+### Triggers (optional, Blackboard pattern)
+
+Controls when an agent activates during Blackboard orchestration. Agents without a Triggers section participate in every round.
+
+```markdown
+## Triggers
+- requires: [finding]
+- excludes: [synthesis]
+- min_round: 1
+- max_round: 4
+- priority: 80
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `requires` | list | `[]` | Entry kinds that must be present on the board for agent to activate |
+| `excludes` | list | `[]` | Entry kinds that prevent agent from activating |
+| `min_round` | int | `0` | Earliest round the agent can contribute |
+| `max_round` | int | — | Latest round the agent can contribute |
+| `priority` | int | `50` | Agent priority (0-100, higher = runs earlier when budget is tight) |
+
+Entry kinds: `finding`, `challenge`, `confirmation`, `synthesis`, `question`, `answer`.
+
+### Ring Config (optional, Ring pattern)
+
+Configures an agent's role and weight in Ring orchestration.
+
+```markdown
+## Ring Config
+- role: challenger
+- position: 2
+- vote_weight: 1.5
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `role` | string | `specialist` | Role in the ring: `initiator`, `specialist`, `challenger`, `synthesizer` |
+| `position` | int | — | Position in the ring order (0-indexed, auto-assigned if omitted) |
+| `vote_weight` | float | `1.0` | Multiplier applied to this agent's vote during resolution |
 
 ## Provider Types
 
@@ -123,7 +175,6 @@ Agents can be organized in subdirectories:
 
 ```
 agents/
-├── _coordinator.md       ← Hub agent (prefixed with _ for sorting)
 ├── code-reviewer.md
 ├── test-writer.md
 ├── examples/
