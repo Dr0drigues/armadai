@@ -22,15 +22,31 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
 
+    // Determine if orchestration section is needed
+    let has_orchestration = agent.metadata.orchestration.is_some()
+        || agent.metadata.triggers.is_some()
+        || agent.metadata.ring_config.is_some();
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Title
-            Constraint::Length(8), // Metadata
-            Constraint::Length(8), // Model Resolution
-            Constraint::Min(6),    // System Prompt
-            Constraint::Length(6), // Instructions (if any)
-        ])
+        .constraints(if has_orchestration {
+            vec![
+                Constraint::Length(3), // Title
+                Constraint::Length(8), // Metadata
+                Constraint::Length(5), // Orchestration
+                Constraint::Length(8), // Model Resolution
+                Constraint::Min(6),    // System Prompt
+                Constraint::Length(6), // Instructions
+            ]
+        } else {
+            vec![
+                Constraint::Length(3), // Title
+                Constraint::Length(8), // Metadata
+                Constraint::Length(8), // Model Resolution
+                Constraint::Min(6),    // System Prompt
+                Constraint::Length(6), // Instructions
+            ]
+        })
         .split(area);
 
     // Title bar
@@ -117,6 +133,66 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .wrap(Wrap { trim: false });
     frame.render_widget(meta_widget, chunks[1]);
 
+    // Orchestration section (conditional)
+    let orch_offset: usize = if has_orchestration {
+        let mut orch_lines: Vec<Line> = Vec::new();
+
+        if let Some(ref pattern) = agent.metadata.orchestration {
+            orch_lines.push(Line::from(vec![
+                Span::styled("Pattern:  ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(pattern.to_string(), Style::default().fg(Color::Magenta)),
+            ]));
+        }
+
+        if let Some(ref triggers) = agent.metadata.triggers {
+            let mut parts = Vec::new();
+            if !triggers.requires.is_empty() {
+                parts.push(format!("requires: [{}]", triggers.requires.join(", ")));
+            }
+            if !triggers.excludes.is_empty() {
+                parts.push(format!("excludes: [{}]", triggers.excludes.join(", ")));
+            }
+            if triggers.min_round > 0 {
+                parts.push(format!("min_round: {}", triggers.min_round));
+            }
+            if let Some(max) = triggers.max_round {
+                parts.push(format!("max_round: {max}"));
+            }
+            parts.push(format!("priority: {}", triggers.priority));
+            orch_lines.push(Line::from(vec![
+                Span::styled("Triggers: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(parts.join(", "), Style::default().fg(Color::Yellow)),
+            ]));
+        }
+
+        if let Some(ref ring) = agent.metadata.ring_config {
+            let mut parts = vec![format!("role: {}", ring.role)];
+            if let Some(pos) = ring.position {
+                parts.push(format!("position: {pos}"));
+            }
+            if (ring.vote_weight - 1.0).abs() > f32::EPSILON {
+                parts.push(format!("weight: {:.1}", ring.vote_weight));
+            }
+            orch_lines.push(Line::from(vec![
+                Span::styled("Ring:     ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(parts.join(", "), Style::default().fg(Color::Blue)),
+            ]));
+        }
+
+        let orch_widget = Paragraph::new(orch_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Orchestration ")
+                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(orch_widget, chunks[2]);
+        1 // offset for subsequent chunk indices
+    } else {
+        0
+    };
+
     // Model Resolution section
     let resolution =
         crate::linker::model_resolution::preview_model_resolution(agent.metadata.model.as_deref());
@@ -141,7 +217,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .title_style(Style::default().add_modifier(Modifier::BOLD)),
         )
         .wrap(Wrap { trim: false });
-    frame.render_widget(res_widget, chunks[2]);
+    frame.render_widget(res_widget, chunks[2 + orch_offset]);
 
     // System Prompt section
     let prompt_text = if agent.system_prompt.is_empty() {
@@ -158,7 +234,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )
         .style(Style::default().fg(Color::White))
         .wrap(Wrap { trim: false });
-    frame.render_widget(prompt_widget, chunks[3]);
+    frame.render_widget(prompt_widget, chunks[3 + orch_offset]);
 
     // Instructions section
     let instr_text = agent.instructions.as_deref().unwrap_or("(no instructions)");
@@ -171,5 +247,5 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )
         .style(Style::default().fg(Color::Gray))
         .wrap(Wrap { trim: false });
-    frame.render_widget(instr_widget, chunks[4]);
+    frame.render_widget(instr_widget, chunks[4 + orch_offset]);
 }
