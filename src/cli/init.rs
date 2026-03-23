@@ -224,6 +224,28 @@ pub fn generate_project_yaml(pack: &StarterPack, pack_name: &str) -> String {
         ));
     }
 
+    // Orchestration configuration (when a coordinator is detected)
+    if let Some(ref coord) = coordinator_name {
+        let non_coord_agents: Vec<&String> = pack
+            .agents
+            .iter()
+            .filter(|a| Some(*a) != coordinator_name.as_ref())
+            .collect();
+
+        content.push_str(&format!(
+            "\n# Orchestration — auto-detected coordinator '{coord}'\n\
+             orchestration:\n\
+             \x20 enabled: true\n\
+             \x20 pattern: hierarchical\n\
+             \x20 coordinator: {coord}\n\
+             \x20 teams:\n\
+             \x20   - agents:\n"
+        ));
+        for agent in &non_coord_agents {
+            content.push_str(&format!("        - {agent}\n"));
+        }
+    }
+
     content
 }
 
