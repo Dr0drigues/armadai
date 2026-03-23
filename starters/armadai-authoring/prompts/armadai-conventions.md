@@ -32,6 +32,9 @@ Use lowercase, common vocabulary for tags. Standard tag categories:
 - System prompts should be specific, actionable, and structured
 - Avoid vague instructions like "be helpful" or "do your best"
 - Include concrete examples when explaining expected behavior
+- Coordinator agents MUST use the `@agent-name: task` delegation protocol
+- Coordinator agents MUST list team members in a table (Agent | Role)
+- Starter packs with coordinators auto-generate `orchestration:` config on init
 
 ## File Organization
 

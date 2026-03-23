@@ -1,0 +1,9 @@
+name: orchestration-demo
+description: "Orchestration demo — showcases Hierarchical, Blackboard, and Ring patterns with a minimal agent team"
+agents:
+  - demo-coordinator
+  - demo-analyst
+  - demo-reviewer
+  - demo-writer
+prompts:
+  - demo-conventions

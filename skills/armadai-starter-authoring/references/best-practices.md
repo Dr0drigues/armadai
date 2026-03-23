@@ -65,6 +65,37 @@ Including too many agents dilutes the pack's focus and makes coordination harder
 - Use `tags:` consistently across agents for prompt targeting
 - Set appropriate temperatures: analytical tasks (0.2-0.3), creative tasks (0.5-0.7)
 
+## Orchestration Configuration
+
+When a starter pack includes a coordinator agent (tagged `coordinator`), `armadai init --pack` automatically generates an `orchestration:` block in the project config.
+
+### Coordinator Design for Orchestration
+
+Coordinators should use the `@agent-name: task` delegation protocol:
+
+```markdown
+## System Prompt
+
+Your team:
+| Agent | Role |
+|-------|------|
+| specialist-a | Does X |
+| specialist-b | Does Y |
+
+To delegate: `@agent-name: description of the task`
+```
+
+### Choosing a Pattern
+
+| Pattern | When to use | Agent requirements |
+|---------|------------|-------------------|
+| Hierarchical | Coordinator dispatches to specialists | Coordinator with `@agent:` protocol |
+| Blackboard | Parallel reactive processing | Agents with `## Triggers` section |
+| Ring | Sequential review with consensus | Agents with `## Ring Config` section |
+| Direct | Single agent, no coordination | No special requirements |
+
+For most starter packs with a coordinator, **Hierarchical** is the default and best choice.
+
 ## Testing Your Pack
 
 Before publishing a starter pack:

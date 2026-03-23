@@ -1,6 +1,6 @@
 mod api;
 
-use axum::{Router, response::Html, routing::get};
+use axum::{Router, response::Html, routing::{get, post}};
 use tower_http::cors::CorsLayer;
 
 /// Serve the web UI on the given port.
@@ -19,6 +19,7 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/starters/{name}", get(api::get_starter))
         .route("/api/starters/{name}/config", get(api::get_starter_config))
         .route("/api/models", get(api::list_models))
+        .route("/api/models/refresh", post(api::refresh_models))
         .layer(CorsLayer::permissive());
 
     let addr = format!("0.0.0.0:{port}");

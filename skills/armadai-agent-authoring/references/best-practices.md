@@ -120,6 +120,52 @@ The `scope` field restricts which files an agent operates on (used by linkers):
 
 Use glob patterns. This is informational — the agent won't automatically filter files, but linkers and tools use this metadata.
 
+## Orchestration Sections
+
+ArmadAI supports 4 orchestration patterns. Agents can participate in orchestration by adding optional sections:
+
+### Hierarchical (Coordinator → Specialists)
+
+The coordinator uses `@agent-name: task` delegation protocol in its system prompt:
+
+```markdown
+## System Prompt
+
+Your team:
+| Agent | Role |
+|-------|------|
+| security-auditor | Security vulnerability scanning |
+| test-writer | Test coverage analysis |
+
+To delegate, use: `@agent-name: description of the task`
+```
+
+### Blackboard (Parallel Reactive)
+
+Add a `## Triggers` section to reactive agents:
+
+```markdown
+## Triggers
+- requires: [initial_analysis]
+- excludes: []
+- min_round: 1
+- max_round: 3
+- priority: 5
+```
+
+### Ring (Token-Passing Consensus)
+
+Add a `## Ring Config` section:
+
+```markdown
+## Ring Config
+- role: reviewer
+- position: 2
+- vote_weight: 1.0
+```
+
+Roles: `proposer` (generates initial proposal), `reviewer` (evaluates and refines), `validator` (final approval).
+
 ## Common Anti-Patterns
 
 1. **Overly generic system prompt** — "You are a helpful assistant" gives no focus
