@@ -1,6 +1,10 @@
 mod api;
 
-use axum::{Router, response::Html, routing::{get, post}};
+use axum::{
+    Router,
+    response::Html,
+    routing::{get, post},
+};
 use tower_http::cors::CorsLayer;
 
 /// Serve the web UI on the given port.
