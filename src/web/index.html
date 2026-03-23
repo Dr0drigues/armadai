@@ -357,7 +357,10 @@ async function loadModels() {
   if (!providers.length) { el.innerHTML = '<div class="empty">No model data cached. Run `armadai new -i` to populate.</div>'; return; }
   const totalModels = providers.reduce((s, p) => s + p.models.length, 0);
   el.innerHTML = `
-    <div class="card-header">${totalModels} models, ${providers.length} providers</div>
+    <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+      <span>${totalModels} models, ${providers.length} providers</span>
+      <button onclick="refreshModels()" style="padding:4px 12px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);cursor:pointer;font-size:12px">⟳ Sync models.dev</button>
+    </div>
     ${providers.map(p => `
       <div style="padding:8px 16px;color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;border-bottom:1px solid var(--border);background:rgba(88,166,255,0.04)">${p.provider}</div>
       <table>
@@ -372,6 +375,18 @@ async function loadModels() {
             <td>${m.cost_output != null ? '$'+m.cost_output.toFixed(2) : '-'}</td>
           </tr>`).join('')}
       </table>`).join('')}`;
+}
+
+async function refreshModels() {
+  const btn = document.querySelector('#models button');
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+  try {
+    const res = await fetch('/api/models/refresh', { method: 'POST' });
+    const data = await res.json();
+    if (data.error) { alert('Sync failed: ' + data.error); }
+    else { await loadModels(); }
+  } catch (e) { alert('Sync failed: ' + e.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '⟳ Sync models.dev'; } }
 }
 
 // Initial load

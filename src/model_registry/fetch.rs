@@ -92,6 +92,14 @@ fn parse_registry(body: &serde_json::Value) -> HashMap<String, Vec<ModelEntry>> 
     providers
 }
 
+/// Force-refresh the model registry from models.dev, ignoring cache TTL.
+/// Returns the number of providers fetched, or an error.
+#[cfg(feature = "providers-api")]
+pub async fn refresh_registry() -> anyhow::Result<usize> {
+    let registry = fetch_and_cache().await?;
+    Ok(registry.providers.len())
+}
+
 /// Load models for a provider from cache (sync). Always available, no feature gate.
 pub fn load_models_cached(provider: &str) -> Option<Vec<ModelEntry>> {
     let cached = load_cache_from(&cache_path())?;

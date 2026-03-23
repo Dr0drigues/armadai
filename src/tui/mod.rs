@@ -123,6 +123,29 @@ pub async fn run() -> Result<()> {
                 KeyCode::BackTab => app.prev_tab(),
                 KeyCode::Char('j') | KeyCode::Down => app.select_next(),
                 KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
+                KeyCode::Char('R')
+                    if matches!(
+                        app.current_tab,
+                        app::Tab::Models | app::Tab::ModelDetail
+                    ) =>
+                {
+                    app.status_msg = Some("Syncing models from models.dev…".to_string());
+                    // Force redraw to show status message
+                    terminal.draw(|frame| {
+                        views::dashboard::render(frame, &app);
+                        views::palette::render(frame, &app);
+                    })?;
+                    match sync_models_online().await {
+                        Ok(count) => {
+                            app.load_models();
+                            app.status_msg =
+                                Some(format!("Synced {count} providers from models.dev"));
+                        }
+                        Err(e) => {
+                            app.status_msg = Some(format!("Sync failed: {e}"));
+                        }
+                    }
+                }
                 KeyCode::Char('r') => {
                     app.load_agents();
                     app.load_prompts();
@@ -259,4 +282,15 @@ fn load_storage_data(app: &mut app::App) {
 #[cfg(not(feature = "storage"))]
 fn load_storage_data(_app: &mut app::App) {
     // No storage feature — data views will be empty
+}
+
+/// Force-refresh model registry from models.dev.
+#[cfg(feature = "providers-api")]
+async fn sync_models_online() -> anyhow::Result<usize> {
+    crate::model_registry::fetch::refresh_registry().await
+}
+
+#[cfg(not(feature = "providers-api"))]
+async fn sync_models_online() -> anyhow::Result<usize> {
+    anyhow::bail!("Model sync requires providers-api feature")
 }
