@@ -14,10 +14,13 @@
 .DS_Store
 Thumbs.db
 
-# Secrets — NEVER commit unencrypted secrets
-config/age-key.txt
-config/age-key.txt.bak
-config/providers.secret.yaml
+# Config — local settings, not part of the project
+config/
+
+# Project-local config at repo root (development only)
+/armadai.yaml
+/armadai.yml
+
 
 # Storage
 /data/
