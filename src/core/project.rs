@@ -24,6 +24,23 @@ const PROJECT_FILENAMES: &[&str] = &["armadai.yaml", "armadai.yml"];
 #[serde(default)]
 pub struct ProjectDefaults {
     pub mode: Option<AgentMode>,
+    /// Orchestration config overrides (applied when --orchestrate is used).
+    pub orchestration: Option<OrchestrationDefaults>,
+}
+
+/// Project-level orchestration configuration overrides.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct OrchestrationDefaults {
+    pub max_rounds: Option<u32>,
+    pub max_laps: Option<u32>,
+    pub consensus_threshold: Option<f32>,
+    pub divergence_threshold: Option<f32>,
+    pub majority_threshold: Option<f32>,
+    pub similarity_threshold: Option<f32>,
+    pub token_budget: Option<u64>,
+    pub agent_timeout_secs: Option<u64>,
+    pub convergence_rounds: Option<u32>,
 }
 
 /// Project-level configuration declared in `armadai.yaml`.

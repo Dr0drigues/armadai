@@ -1,3 +1,28 @@
+## v0.10.0 (2026-03-23)
+
+### Feat
+
+- non-hierarchical orchestration: Blackboard (shared-state parallel agents) and Ring (sequential token-passing with voting)
+- task-dependent classifier for automatic pattern selection (keyword heuristics + tag overlap)
+- LLM agent wrappers with structured prompts (ACTION/TARGET/CONFIDENCE/CONTENT) and graceful fallback
+- SQLite persistence for orchestration runs, board entries, ring contributions, and votes
+- `--orchestrate blackboard|ring` CLI flag for manual pattern override
+- new agent format sections: `## Triggers` (Blackboard) and `## Ring Config` (Ring)
+- project-level orchestration config via `armadai.yaml` defaults (max_rounds, thresholds, budget, etc.)
+- weighted voting in Ring pattern via `vote_weight` agent config
+- position similarity grouping in vote resolution (Jaccard word-overlap)
+
+### Refactor
+
+- remove dead `coordinator.rs` and `pipeline.rs` execution code (hub & spoke pattern preserved for `link` command)
+- remove global `serde/rc` feature, replaced by local `arc_vec_serde` module
+- remove `PRAGMA foreign_keys = ON` from global schema (FK constraints kept for documentation)
+
+### Fix
+
+- prefix matching in classifier (tag "review" matches "reviewing", "infra" matches "infrastructure")
+- parser fallback to Finding/Propose when LLM omits TARGET (no silent pointer to entry 0)
+
 ## v0.9.0 (2026-03-13)
 
 ### Feat

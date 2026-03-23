@@ -1,6 +1,7 @@
 use anyhow::Context;
 
 use crate::core::agent::{AgentMetadata, AgentMode};
+use crate::core::orchestration::OrchestrationPattern;
 
 /// Parse the Metadata section content (YAML-like list format) into AgentMetadata.
 pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
@@ -19,6 +20,7 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
     let mut rate_limit = None;
     let mut context_window = None;
     let mut mode = None;
+    let mut orchestration = None;
 
     for line in raw.lines() {
         let line = line.trim().trim_start_matches('-').trim();
@@ -58,6 +60,19 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
                     }
                 })
             }
+            "orchestration" => {
+                orchestration = Some(match value.to_lowercase().as_str() {
+                    "direct" => OrchestrationPattern::Direct,
+                    "blackboard" => OrchestrationPattern::Blackboard,
+                    "ring" => OrchestrationPattern::Ring,
+                    _ => {
+                        anyhow::bail!(
+                            "Invalid orchestration: '{value}'. \
+                             Expected 'direct', 'blackboard', or 'ring'"
+                        )
+                    }
+                })
+            }
             _ => {
                 tracing::debug!("Unknown metadata field: {key}");
             }
@@ -80,6 +95,9 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
         rate_limit,
         context_window,
         mode,
+        orchestration,
+        triggers: None,
+        ring_config: None,
     })
 }
 
