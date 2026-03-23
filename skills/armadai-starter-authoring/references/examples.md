@@ -116,6 +116,37 @@ my-pack/
     └── my-agent.md
 ```
 
+## Pattern 5: Orchestrated Pack with Hierarchical Config
+
+**Pack: `code-analysis-rust`** — Generates orchestration config automatically on init.
+
+```yaml
+name: code-analysis-rust
+description: "Code analysis crew for Rust projects — coordinator with scoped specialists"
+agents: [lead-analyst, rust-reviewer, rust-test-analyzer, rust-doc-writer, rust-security]
+prompts: [analysis-standards]
+```
+
+When installed via `armadai init --pack code-analysis-rust`, the generated `config.yaml` includes:
+
+```yaml
+orchestration:
+  enabled: true
+  pattern: hierarchical
+  coordinator: lead-analyst
+  teams:
+    - agents:
+        - rust-reviewer
+        - rust-test-analyzer
+        - rust-doc-writer
+        - rust-security
+```
+
+**Key traits:**
+- Coordinator tagged with `coordinator` → auto-detected
+- Non-coordinator agents grouped into a team automatically
+- Hierarchical pattern enables `@agent:` delegation at runtime
+
 ## Full Pack Template
 
 A complete starter pack with all content types:

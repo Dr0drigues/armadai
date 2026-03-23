@@ -59,6 +59,15 @@ skills: [custom-skill, builtin-skill-reference]
 - **Size**: 3-6 agents is the sweet spot
 - **Naming**: Use kebab-case everywhere, descriptive names
 
+### Orchestration
+
+When a pack includes a coordinator agent (tagged `coordinator`), `armadai init --pack` auto-generates an `orchestration:` block in the project config. Coordinators should use the `@agent-name: task` delegation protocol in their system prompt.
+
+Available orchestration patterns:
+- **Hierarchical**: Coordinator delegates to specialists via `@agent:` syntax (default for coordinator packs)
+- **Blackboard**: Parallel reactive agents with shared state (agents need `## Triggers`)
+- **Ring**: Sequential token-passing with consensus voting (agents need `## Ring Config`)
+
 ## Instructions
 
 When creating a starter pack:
@@ -77,8 +86,9 @@ For each agent in the pack:
 - Add relevant tags for categorization
 
 For the coordinator:
-- List all team members and their specialties
-- Define dispatch rules
+- List all team members and their specialties in a table
+- Use `@agent-name: task` delegation protocol in the system prompt
+- Define dispatch rules mapping request types to agents
 - Include a `## Pipeline` section with downstream agents
 
 ## Output Format
