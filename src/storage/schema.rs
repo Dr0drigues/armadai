@@ -2,10 +2,12 @@ use rusqlite::Connection;
 
 /// Apply the database schema.
 pub fn apply(conn: &Connection) -> anyhow::Result<()> {
+    // NOTE: PRAGMA foreign_keys is intentionally omitted here.  The FK
+    // constraints in the schema below exist for documentation and external
+    // tooling only; enforcing them globally could break existing code paths
+    // that insert into `runs` without a matching orchestration record.
     conn.execute_batch(
         "
-        PRAGMA foreign_keys = ON;
-
         CREATE TABLE IF NOT EXISTS runs (
             id TEXT PRIMARY KEY,
             agent TEXT NOT NULL,

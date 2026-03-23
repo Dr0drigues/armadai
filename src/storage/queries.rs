@@ -29,6 +29,12 @@ pub struct CostSummary {
 /// Insert a new execution record.
 pub fn insert_run(db: &Database, run: RunRecord) -> anyhow::Result<()> {
     let id = uuid::Uuid::new_v4().to_string();
+    insert_run_with_id(db, &id, run)
+}
+
+/// Insert an execution record with a caller-supplied id (used by orchestration
+/// to share the same id across the parent `runs` row and child tables).
+pub fn insert_run_with_id(db: &Database, id: &str, run: RunRecord) -> anyhow::Result<()> {
     let conn = db.lock().unwrap();
     conn.execute(
         "INSERT INTO runs (id, agent, input, output, provider, model, tokens_in, tokens_out, cost, duration_ms, status)

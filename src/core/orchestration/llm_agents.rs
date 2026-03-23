@@ -30,6 +30,168 @@ fn agent_model(agent: &Agent) -> String {
         .unwrap_or_else(|| "default".to_string())
 }
 
+// ── Structured-response parsers ─────────────────────────────────
+
+/// Prompt suffix appended to board agent messages so the LLM returns a
+/// structured action header we can parse.
+const BOARD_ACTION_INSTRUCTIONS: &str = "\n\n\
+Respond with the following structured header, then your content:\n\
+ACTION: <type> (one of: FINDING, CHALLENGE, CONFIRMATION, SYNTHESIS, QUESTION, ANSWER)\n\
+TARGET: <index> (required for CHALLENGE, CONFIRMATION, ANSWER; comma-separated for SYNTHESIS)\n\
+CONFIDENCE: <0.0-1.0>\n\
+CONTENT: <your actual response>\n";
+
+/// Parse a board agent's structured response into (EntryKind, confidence, content).
+///
+/// Falls back to `EntryKind::Finding` with confidence 0.8 if the header cannot
+/// be parsed (e.g. the LLM ignores the instructions).
+pub(crate) fn parse_board_action(response: &str) -> (EntryKind, f32, String) {
+    let mut action_str = None;
+    let mut target_str = None;
+    let mut confidence: f32 = 0.8;
+    let mut content_start = None;
+
+    for (i, line) in response.lines().enumerate() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("ACTION:") {
+            action_str = Some(rest.trim().to_uppercase());
+        } else if let Some(rest) = trimmed.strip_prefix("TARGET:") {
+            target_str = Some(rest.trim().to_string());
+        } else if let Some(rest) = trimmed.strip_prefix("CONFIDENCE:") {
+            if let Ok(c) = rest.trim().parse::<f32>() {
+                confidence = c.clamp(0.0, 1.0);
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("CONTENT:") {
+            // Everything from here onward is the content body.
+            let remainder: String = std::iter::once(rest.trim().to_string())
+                .chain(response.lines().skip(i + 1).map(|l| l.to_string()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            content_start = Some(remainder);
+            break;
+        }
+    }
+
+    let content = content_start.unwrap_or_else(|| response.to_string());
+
+    let kind = match action_str.as_deref() {
+        Some(a) if a.starts_with("CHALLENGE") => {
+            let target = parse_single_index(&target_str);
+            EntryKind::Challenge { target }
+        }
+        Some(a) if a.starts_with("CONFIRMATION") => {
+            let target = parse_single_index(&target_str);
+            EntryKind::Confirmation { target }
+        }
+        Some(a) if a.starts_with("SYNTHESIS") => {
+            let sources = parse_index_list(&target_str);
+            EntryKind::Synthesis { sources }
+        }
+        Some(a) if a.starts_with("QUESTION") => EntryKind::Question,
+        Some(a) if a.starts_with("ANSWER") => {
+            let question = parse_single_index(&target_str);
+            EntryKind::Answer { question }
+        }
+        // FINDING or anything unrecognised → default
+        _ => EntryKind::Finding,
+    };
+
+    (kind, confidence, content)
+}
+
+/// Prompt suffix for ring agent process messages.
+const RING_ACTION_INSTRUCTIONS: &str = "\n\n\
+Respond with the following structured header, then your content:\n\
+ACTION: <type> (one of: PROPOSE, ENRICH, CONTEST, ENDORSE, SYNTHESIZE, PASS)\n\
+TARGET: <index> (required for ENRICH, CONTEST, ENDORSE)\n\
+CONTENT: <your actual response>\n";
+
+/// Parse a ring agent's structured response into (ContributionAction, content).
+///
+/// Falls back to `ContributionAction::Propose` if parsing fails.
+pub(crate) fn parse_ring_action(response: &str) -> (ContributionAction, String) {
+    let mut action_str = None;
+    let mut target_str = None;
+    let mut content_start = None;
+
+    for (i, line) in response.lines().enumerate() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("ACTION:") {
+            action_str = Some(rest.trim().to_uppercase());
+        } else if let Some(rest) = trimmed.strip_prefix("TARGET:") {
+            target_str = Some(rest.trim().to_string());
+        } else if let Some(rest) = trimmed.strip_prefix("CONTENT:") {
+            let remainder: String = std::iter::once(rest.trim().to_string())
+                .chain(response.lines().skip(i + 1).map(|l| l.to_string()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            content_start = Some(remainder);
+            break;
+        }
+    }
+
+    let content = content_start.unwrap_or_else(|| response.to_string());
+
+    let action = match action_str.as_deref() {
+        Some(a) if a.starts_with("ENRICH") => {
+            let target = parse_single_index(&target_str);
+            ContributionAction::Enrich { target }
+        }
+        Some(a) if a.starts_with("CONTEST") => {
+            let target = parse_single_index(&target_str);
+            ContributionAction::Contest {
+                target,
+                counter_argument: content.clone(),
+            }
+        }
+        Some(a) if a.starts_with("ENDORSE") => {
+            let target = parse_single_index(&target_str);
+            ContributionAction::Endorse { target }
+        }
+        Some(a) if a.starts_with("SYNTHESIZE") => ContributionAction::Synthesize,
+        Some(a) if a.starts_with("PASS") => ContributionAction::Pass {
+            reason: content.clone(),
+        },
+        // PROPOSE or anything unrecognised → default
+        _ => ContributionAction::Propose,
+    };
+
+    (action, content)
+}
+
+/// Parse a confidence value from the first line of a vote response.
+///
+/// Falls back to 0.8 if the header is absent or malformed.
+fn parse_vote_confidence(response: &str) -> (f32, String) {
+    if let Some(first_line) = response.lines().next() {
+        let trimmed = first_line.trim();
+        if let Some(rest) = trimmed.strip_prefix("CONFIDENCE:")
+            && let Ok(c) = rest.trim().parse::<f32>()
+        {
+            let body = response.lines().skip(1).collect::<Vec<_>>().join("\n");
+            return (c.clamp(0.0, 1.0), body);
+        }
+    }
+    (0.8, response.to_string())
+}
+
+fn parse_single_index(s: &Option<String>) -> usize {
+    s.as_deref()
+        .and_then(|v| v.trim().split(',').next())
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn parse_index_list(s: &Option<String>) -> Vec<usize> {
+    s.as_deref()
+        .map(|v| {
+            v.split(',')
+                .filter_map(|p| p.trim().parse::<usize>().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 // ── LlmBoardAgent ────────────────────────────────────────────────
 
 /// LLM-backed agent that participates in Blackboard orchestration.
@@ -125,11 +287,16 @@ impl BoardAgent for LlmBoardAgent {
             user_msg.push_str("\nRecent board entries:\n");
             for entry in board.entries.iter().rev().take(10) {
                 user_msg.push_str(&format!(
-                    "- [{}] {:?}: {}\n",
-                    entry.agent, entry.kind, entry.content
+                    "- [{}#{} {}] {}\n",
+                    entry.agent,
+                    entry.index,
+                    entry_kind_name(&entry.kind),
+                    entry.content
                 ));
             }
         }
+
+        user_msg.push_str(BOARD_ACTION_INSTRUCTIONS);
 
         let request = CompletionRequest {
             model: agent_model(&self.agent),
@@ -144,14 +311,16 @@ impl BoardAgent for LlmBoardAgent {
 
         let response = provider.complete(request).await?;
 
+        let (kind, confidence, content) = parse_board_action(&response.content);
+
         let entry = BoardEntry {
             index: 0, // assigned by Board::apply_deltas
             agent: self.agent.name.clone(),
             round: board.round,
-            kind: EntryKind::Finding,
-            content: response.content,
+            kind,
+            content,
             references: vec![],
-            confidence: 0.8,
+            confidence,
             tokens_used: TokenCount {
                 input: response.tokens_in,
                 output: response.tokens_out,
@@ -216,15 +385,15 @@ impl RingAgent for LlmRingAgent {
 
         if !token.contributions.is_empty() {
             user_msg.push_str("\nPrevious contributions:\n");
-            for c in &token.contributions {
+            for (i, c) in token.contributions.iter().enumerate() {
                 user_msg.push_str(&format!(
-                    "- [Lap {} / {}] {}: {}\n",
-                    c.lap, c.position_in_lap, c.agent, c.content
+                    "- [#{} Lap {} / {}] {}: {}\n",
+                    i, c.lap, c.position_in_lap, c.agent, c.content
                 ));
             }
         }
 
-        user_msg.push_str("\nProvide your contribution to this task.");
+        user_msg.push_str(RING_ACTION_INSTRUCTIONS);
 
         let request = CompletionRequest {
             model: agent_model(&self.agent),
@@ -239,12 +408,14 @@ impl RingAgent for LlmRingAgent {
 
         let response = provider.complete(request).await?;
 
+        let (action, content) = parse_ring_action(&response.content);
+
         Ok(Contribution {
             agent: self.agent.name.clone(),
             lap: token.lap,
             position_in_lap: token.current_position,
-            action: ContributionAction::Propose,
-            content: response.content,
+            action,
+            content,
             reactions: vec![],
             tokens_used: TokenCount {
                 input: response.tokens_in,
@@ -254,10 +425,19 @@ impl RingAgent for LlmRingAgent {
         })
     }
 
+    fn vote_weight(&self) -> f32 {
+        self.agent
+            .metadata
+            .ring_config
+            .as_ref()
+            .map(|c| c.vote_weight)
+            .unwrap_or(1.0)
+    }
+
     async fn vote(&self, token: &TokenSnapshot, provider: &dyn Provider) -> anyhow::Result<Vote> {
         let mut user_msg = format!("Task: {}\n\nAll contributions:\n", token.task);
 
-        for c in &token.contributions {
+        for c in token.contributions.iter() {
             user_msg.push_str(&format!(
                 "- [Lap {} / {}] {}: {}\n",
                 c.lap, c.position_in_lap, c.agent, c.content
@@ -266,7 +446,10 @@ impl RingAgent for LlmRingAgent {
 
         user_msg.push_str(
             "\nBased on all contributions above, state your final position \
-             in one sentence. Rate your confidence from 0.0 to 1.0.",
+             in one sentence.\n\
+             Start your response with:\n\
+             CONFIDENCE: <0.0-1.0>\n\
+             Then your position on a new line.",
         );
 
         let request = CompletionRequest {
@@ -282,9 +465,11 @@ impl RingAgent for LlmRingAgent {
 
         let response = provider.complete(request).await?;
 
+        let (confidence, position) = parse_vote_confidence(&response.content);
+
         Ok(Vote {
-            position: response.content,
-            confidence: 0.8,
+            position,
+            confidence,
             supporting_contributions: (0..token.contributions.len()).collect(),
             unresolved_concerns: vec![],
         })
@@ -606,11 +791,12 @@ mod tests {
         assert!(agent_a_entries >= 1, "agent-a should have contributed");
         assert!(agent_b_entries >= 1, "agent-b should have contributed");
 
-        // All entries should be Findings (our LlmBoardAgent always produces Findings)
+        // NoopProvider returns "ok" which has no structured header, so
+        // parse_board_action falls back to Finding for every entry.
         for entry in board.entries() {
             assert!(
                 matches!(entry.kind, EntryKind::Finding),
-                "expected Finding, got {:?}",
+                "expected Finding (fallback), got {:?}",
                 entry.kind
             );
         }

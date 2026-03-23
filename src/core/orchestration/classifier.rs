@@ -121,9 +121,9 @@ enum PatternHint {
     Blackboard,
 }
 
-/// Scan the task description for pattern-hinting keywords.
+/// Scan the task description for pattern-hinting keywords (whole-word match).
 fn keyword_pattern_hint(task: &str) -> Option<PatternHint> {
-    let t = task.to_lowercase();
+    let words = task_words(task);
 
     // Ring keywords: action verbs that benefit from sequential review / critique.
     const RING_KEYWORDS: &[&str] = &[
@@ -140,37 +140,50 @@ fn keyword_pattern_hint(task: &str) -> Option<PatternHint> {
         "write",
     ];
 
-    if RING_KEYWORDS.iter().any(|kw| t.contains(kw)) {
+    if RING_KEYWORDS.iter().any(|kw| words.iter().any(|w| w == kw)) {
         return Some(PatternHint::Ring);
     }
-    if BLACKBOARD_KEYWORDS.iter().any(|kw| t.contains(kw)) {
+    if BLACKBOARD_KEYWORDS
+        .iter()
+        .any(|kw| words.iter().any(|w| w == kw))
+    {
         return Some(PatternHint::Blackboard);
     }
     None
 }
 
+/// Split task into normalised lowercase words, stripping punctuation.
+fn task_words(task: &str) -> Vec<String> {
+    task.split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
 /// Check if an agent is relevant to a task based on tags and name keywords.
 ///
-/// Phase-1 heuristic: simple case-insensitive substring matching.
+/// Phase-1 heuristic: whole-word matching to avoid false positives from
+/// substring containment (e.g. tag "review" matching "unreviewed").
 /// A future LLM-based classifier will use semantic similarity instead.
 fn agent_matches_task(agent: &Agent, task: &str) -> bool {
-    let task_lower = task.to_lowercase();
+    let words = task_words(task);
 
-    // Check if any tag appears in the task (tag normalized once)
-    if agent
-        .metadata
-        .tags
-        .iter()
-        .any(|tag| task_lower.contains(&tag.to_lowercase()))
-    {
+    // Check if any tag appears as a whole word in the task
+    if agent.metadata.tags.iter().any(|tag| {
+        let tag_lower = tag.to_lowercase();
+        words.iter().any(|w| w == &tag_lower)
+    }) {
         return true;
     }
 
-    // Check if the agent name (words) appears in the task
-    agent
-        .name
-        .split_whitespace()
-        .any(|w| w.len() > 2 && task_lower.contains(&w.to_lowercase()))
+    // Check if any word from the agent's name appears as a whole word in the task
+    agent.name.split_whitespace().any(|name_word| {
+        let nw = name_word.to_lowercase();
+        nw.len() > 2 && words.iter().any(|w| w == &nw)
+    })
 }
 
 /// Compute domain overlap ratio between agents based on their tags.
@@ -382,7 +395,8 @@ mod tests {
             make_agent("Agent A", &["infra"]),
             make_agent("Agent B", &["infra"]),
         ];
-        let result = classify_task("audit infrastructure setup", &agents);
+        // Use exact tag word "infra" (word-boundary matching, not substring)
+        let result = classify_task("audit infra setup", &agents);
         assert_eq!(result.pattern, OrchestrationPattern::Ring);
     }
 

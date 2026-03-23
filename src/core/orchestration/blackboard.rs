@@ -16,6 +16,7 @@ use crate::providers::traits::Provider;
 pub struct Board {
     pub id: Uuid,
     pub task: String,
+    #[serde(with = "super::arc_vec_serde")]
     pub(crate) entries: Arc<Vec<BoardEntry>>,
     pub round: u32,
     pub(crate) state: BoardState,
@@ -121,6 +122,7 @@ impl TokenBudget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardSnapshot {
     pub task: String,
+    #[serde(with = "super::arc_vec_serde")]
     pub entries: Arc<Vec<BoardEntry>>,
     pub round: u32,
     pub state: BoardState,

@@ -18,7 +18,8 @@ use crate::providers::traits::Provider;
 pub struct RingToken {
     pub id: Uuid,
     pub task: String,
-    pub contributions: Vec<Contribution>,
+    #[serde(with = "super::arc_vec_serde")]
+    pub contributions: Arc<Vec<Contribution>>,
     pub lap: u32,
     pub(crate) votes: BTreeMap<String, Vote>,
     pub(crate) status: TokenStatus,
@@ -26,6 +27,9 @@ pub struct RingToken {
     pub current_position: usize,
     pub budget: TokenBudget,
     pub created_at: DateTime<Utc>,
+    /// Per-agent vote weights (populated by `run_ring` before circulation).
+    #[serde(default)]
+    pub(crate) vote_weights: BTreeMap<String, f32>,
 }
 
 /// Status of the ring token.
@@ -167,7 +171,7 @@ impl RingToken {
         Self {
             id: Uuid::new_v4(),
             task,
-            contributions: Vec::new(),
+            contributions: Arc::new(Vec::new()),
             lap: 0,
             votes: BTreeMap::new(),
             status: TokenStatus::Circulating,
@@ -175,6 +179,7 @@ impl RingToken {
             current_position: 0,
             budget: TokenBudget::new(token_budget),
             created_at: Utc::now(),
+            vote_weights: BTreeMap::new(),
         }
     }
 
@@ -188,11 +193,11 @@ impl RingToken {
         &self.votes
     }
 
-    /// Produce a snapshot for agents.
+    /// Produce a snapshot for agents (cheap: Arc clone for contributions).
     pub fn snapshot(&self) -> TokenSnapshot {
         TokenSnapshot {
             task: self.task.clone(),
-            contributions: self.contributions.clone(),
+            contributions: Arc::clone(&self.contributions),
             lap: self.lap,
             status: self.status.clone(),
             ring_order: self.ring_order.clone(),
@@ -206,7 +211,8 @@ impl RingToken {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenSnapshot {
     pub task: String,
-    pub contributions: Vec<Contribution>,
+    #[serde(with = "super::arc_vec_serde")]
+    pub contributions: Arc<Vec<Contribution>>,
     pub lap: u32,
     pub status: TokenStatus,
     pub ring_order: Vec<String>,
@@ -234,6 +240,11 @@ pub trait RingAgent: Send + Sync {
 
     /// Vote phase: agent takes a final position.
     async fn vote(&self, token: &TokenSnapshot, provider: &dyn Provider) -> anyhow::Result<Vote>;
+
+    /// Weight applied to this agent's vote (default 1.0).
+    fn vote_weight(&self) -> f32 {
+        1.0
+    }
 }
 
 // ── Configuration ────────────────────────────────────────────────
@@ -324,7 +335,7 @@ fn summarize_so_far(token: &RingToken) -> String {
     summary.push_str("Task: ");
     summary.push_str(&token.task);
     summary.push_str("\n\n");
-    for c in &token.contributions {
+    for c in token.contributions.iter() {
         summary.push_str(&format!(
             "[Lap {} / {}] {}: {}\n",
             c.lap, c.position_in_lap, c.agent, c.content
@@ -334,6 +345,9 @@ fn summarize_so_far(token: &RingToken) -> String {
 }
 
 /// Group votes by position similarity and resolve the outcome.
+///
+/// Vote weights are read from `token.vote_weights`; agents absent from the map
+/// default to weight 1.0.
 fn resolve_votes(token: &RingToken, config: &RingConfig) -> RingOutcome {
     if token.votes.is_empty() {
         return RingOutcome::NoConsensus {
@@ -342,6 +356,8 @@ fn resolve_votes(token: &RingToken, config: &RingConfig) -> RingOutcome {
         };
     }
 
+    let weight_of = |name: &str| -> f32 { token.vote_weights.get(name).copied().unwrap_or(1.0) };
+
     // Group by lowercased position string (deterministic iteration via BTreeMap).
     let mut groups: BTreeMap<String, Vec<(String, &Vote)>> = BTreeMap::new();
     for (agent, vote) in &token.votes {
@@ -349,10 +365,22 @@ fn resolve_votes(token: &RingToken, config: &RingConfig) -> RingOutcome {
         groups.entry(key).or_default().push((agent.clone(), vote));
     }
 
-    let total_voters = token.votes.len() as f32;
+    let total_weight: f32 = token.votes.keys().map(|n| weight_of(n)).sum();
     // SAFETY: groups is non-empty because votes is non-empty (early return above)
-    let largest_group = groups.values().max_by_key(|g| g.len()).unwrap();
-    let majority_ratio = largest_group.len() as f32 / total_voters;
+    let largest_group = groups
+        .values()
+        .max_by(|a, b| {
+            let wa: f32 = a.iter().map(|(n, _)| weight_of(n)).sum();
+            let wb: f32 = b.iter().map(|(n, _)| weight_of(n)).sum();
+            wa.partial_cmp(&wb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap();
+    let group_weight: f32 = largest_group.iter().map(|(n, _)| weight_of(n)).sum();
+    let majority_ratio = if total_weight > 0.0 {
+        group_weight / total_weight
+    } else {
+        0.0
+    };
     let representative = largest_group[0].1.position.clone();
     let largest_members: Vec<String> = largest_group.iter().map(|(n, _)| n.clone()).collect();
 
@@ -407,6 +435,13 @@ pub async fn run_ring(
         anyhow::bail!("At least one provider is required for ring execution");
     }
 
+    // Populate per-agent vote weights before circulation.
+    for agent in agents.iter() {
+        token
+            .vote_weights
+            .insert(agent.name().to_string(), agent.vote_weight());
+    }
+
     // Phase 1: Circulation
     while token.lap < config.max_laps && !matches!(token.status, TokenStatus::Done { .. }) {
         let mut any_substantive = false;
@@ -429,11 +464,11 @@ pub async fn run_ring(
                         any_substantive = true;
                     }
                     token.budget.consume(contrib.tokens_used);
-                    token.contributions.push(contrib);
+                    Arc::make_mut(&mut token.contributions).push(contrib);
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(agent = %agent.name(), error = %e, "agent error");
-                    token.contributions.push(Contribution::pass(
+                    Arc::make_mut(&mut token.contributions).push(Contribution::pass(
                         agent.name(),
                         token.lap,
                         pos,
@@ -442,7 +477,7 @@ pub async fn run_ring(
                 }
                 Err(_) => {
                     tracing::warn!(agent = %agent.name(), "agent timeout");
-                    token.contributions.push(Contribution::pass(
+                    Arc::make_mut(&mut token.contributions).push(Contribution::pass(
                         agent.name(),
                         token.lap,
                         pos,
@@ -717,7 +752,7 @@ mod tests {
     #[test]
     fn test_summarize_so_far() {
         let mut token = RingToken::new("review code".to_string(), vec!["a".to_string()], 10_000);
-        token.contributions.push(Contribution {
+        Arc::make_mut(&mut token.contributions).push(Contribution {
             agent: "agent-a".to_string(),
             lap: 0,
             position_in_lap: 0,

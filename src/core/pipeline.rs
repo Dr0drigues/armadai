@@ -1,3 +1,6 @@
+// TODO: Superseded by `orchestration/` module (Blackboard + Ring patterns).
+// Remove once all call-sites have migrated.
+
 use super::agent::Agent;
 
 /// Executes a chain of agents sequentially, passing each output as input to the next.

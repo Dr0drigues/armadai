@@ -1,3 +1,10 @@
+// orchestration/ — Non-hierarchical multi-agent orchestration patterns.
+//
+// This module replaces the earlier hub-and-spoke `coordinator.rs` and
+// sequential `pipeline.rs` with two richer patterns: Blackboard (shared-state
+// parallel reactive agents) and Ring (sequential token-passing with voting).
+// Once migration is complete, coordinator.rs and pipeline.rs will be removed.
+
 pub mod blackboard;
 pub mod classifier;
 pub mod llm_agents;
@@ -6,6 +13,27 @@ pub mod ring;
 pub(crate) mod test_helpers;
 
 use serde::{Deserialize, Serialize};
+
+/// Custom serde helpers for `Arc<Vec<T>>` so we can drop the global `serde/rc`
+/// feature flag.  Serializes/deserializes as a plain `Vec<T>`.
+pub(crate) mod arc_vec_serde {
+    use std::sync::Arc;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<T: Serialize, S: Serializer>(
+        data: &Arc<Vec<T>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        data.as_ref().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Arc<Vec<T>>, D::Error> {
+        Vec::<T>::deserialize(deserializer).map(Arc::new)
+    }
+}
 
 use self::blackboard::BlackboardConfig;
 use self::ring::RingConfig;
