@@ -124,10 +124,7 @@ pub async fn run() -> Result<()> {
                 KeyCode::Char('j') | KeyCode::Down => app.select_next(),
                 KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
                 KeyCode::Char('R')
-                    if matches!(
-                        app.current_tab,
-                        app::Tab::Models | app::Tab::ModelDetail
-                    ) =>
+                    if matches!(app.current_tab, app::Tab::Models | app::Tab::ModelDetail) =>
                 {
                     app.status_msg = Some("Syncing models from models.dev…".to_string());
                     // Force redraw to show status message
