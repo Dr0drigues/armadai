@@ -31,6 +31,7 @@ pub struct LinkAgent {
     pub model: Option<String>,
     pub model_fallback: Vec<String>,
     pub temperature: f32,
+    pub provider: Option<String>,
 }
 
 /// A file to be written by a linker.
@@ -107,6 +108,7 @@ impl From<&Agent> for LinkAgent {
             model: agent.metadata.model.clone(),
             model_fallback: agent.metadata.model_fallback.clone(),
             temperature: agent.metadata.temperature,
+            provider: Some(agent.metadata.provider.clone()),
         }
     }
 }

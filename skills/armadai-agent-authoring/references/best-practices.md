@@ -48,7 +48,7 @@ A coordinator orchestrates a fleet of specialist agents. Tag it with `coordinato
 ```markdown
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - tags: [coordinator]
 ```
 
@@ -65,7 +65,7 @@ A specialist focuses on one domain. Keep it narrow and deep:
 ```markdown
 ## Metadata
 - provider: anthropic
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - tags: [review, security]
 - stacks: [java, spring]
 - scope: [src/**/*.java]
@@ -86,8 +86,8 @@ Set a per-run budget to prevent runaway costs:
 Define cheaper fallback models tried in order if the primary model fails or exceeds limits:
 
 ```markdown
-- model: claude-opus-4-6
-- model_fallback: [claude-sonnet-4-5-20250929, claude-haiku-4-5-20251001]
+- model: latest:max
+- model_fallback: [latest:pro, latest:fast]
 ```
 
 The system tries each model in sequence until one succeeds.

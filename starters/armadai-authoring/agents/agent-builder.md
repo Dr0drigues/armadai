@@ -2,7 +2,7 @@
 
 ## Metadata
 - provider: cli claude
-- model: sonnet
+- model: latest:pro
 - temperature: 0.3
 - max_tokens: 8192
 - tags: [authoring, agent]
@@ -35,7 +35,7 @@ Optional:
 - `stacks:` — Technology stacks (e.g., `[rust, python]`)
 - `scope:` — File patterns the agent focuses on (e.g., `[src/**/*.rs]`)
 - `cost_limit:` — Maximum cost per run in USD
-- `model_fallback:` — Fallback model chain (e.g., `[gemini-2.5-flash]`)
+- `model_fallback:` — Fallback model chain (e.g., `[latest:fast]`)
 
 ## Instructions
 

@@ -173,6 +173,7 @@ mod tests {
             model: None,
             model_fallback: vec![],
             temperature: 0.7,
+            provider: None,
         }
     }
 
@@ -220,6 +221,7 @@ mod tests {
             model: Some("anthropic/claude-sonnet-4-5".to_string()),
             model_fallback: vec![],
             temperature: 0.3,
+            provider: None,
         }];
         let files = linker.generate(&agents, None, &[]);
 
@@ -253,6 +255,7 @@ mod tests {
             model: Some("anthropic/claude-sonnet-4-5".to_string()),
             model_fallback: vec![],
             temperature: 0.5,
+            provider: None,
         }];
         let files = linker.generate(&agents, None, &[]);
 
@@ -347,6 +350,7 @@ mod tests {
             model: None,
             model_fallback: vec![],
             temperature: 0.7,
+            provider: None,
         };
         let agents = vec![make_agent("Worker", "You do the work.")];
 

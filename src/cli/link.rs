@@ -132,8 +132,14 @@ pub async fn execute(
                         &model,
                     );
                 }
+            } else {
+                // Non-interactive without --model: resolve latest:* placeholders
+                // using each agent's own provider
+                model_resolution::resolve_latest_placeholders(&mut link_agents);
+                if let Some(ref mut coord) = coordinator {
+                    model_resolution::resolve_latest_placeholders(std::slice::from_mut(coord));
+                }
             }
-            // else: non-interactive without --model → keep original models
         }
     }
 

@@ -140,7 +140,7 @@ Each agent is a Markdown file in `agents/`:
 
 ## Metadata
 - provider: claude
-- model: claude-sonnet-4-5-20250929
+- model: latest:pro
 - temperature: 0.3
 - max_tokens: 4096
 - tags: [dev, review, quality]

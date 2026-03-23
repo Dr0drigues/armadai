@@ -2,8 +2,8 @@
 
 ## Metadata
 - provider: google
-- model: gemini-2.5-pro
-- model_fallback: [gemini-2.5-flash]
+- model: latest:pro
+- model_fallback: [latest:fast]
 - temperature: 0.4
 - max_tokens: 8192
 - tags: [coordinator, lead, analysis]
