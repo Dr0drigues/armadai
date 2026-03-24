@@ -16,6 +16,34 @@ use std::path::PathBuf;
 
 use crate::core::agent::Agent;
 
+/// Supported link targets for autocompletion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum LinkTarget {
+    Claude,
+    Codex,
+    Copilot,
+    Gemini,
+    Opencode,
+}
+
+impl LinkTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Copilot => "copilot",
+            Self::Gemini => "gemini",
+            Self::Opencode => "opencode",
+        }
+    }
+}
+
+impl std::fmt::Display for LinkTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A resolved agent ready for linking.
 #[allow(dead_code)]
 pub struct LinkAgent {

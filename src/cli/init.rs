@@ -24,6 +24,8 @@ pub async fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow
         install_pack(&pack_name, force)?;
     }
 
+    super::setup::prompt_shell_setup();
+
     Ok(())
 }
 
