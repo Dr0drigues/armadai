@@ -1,3 +1,13 @@
+## v0.10.3 (2026-03-24)
+
+### Feat
+
+- add interactive shell setup (PATH + completions) on init and update
+
+### Fix
+
+- use ValueEnum for link/unlink --target autocompletion
+
 ## v0.10.0 (2026-03-23)
 
 ### Feat
