@@ -7,7 +7,7 @@ use crate::linker::{self, LinkAgent};
 use crate::parser;
 
 pub async fn execute(
-    target: Option<String>,
+    target: Option<crate::linker::LinkTarget>,
     model_flag: Option<String>,
     coordinator_flag: Option<String>,
     dry_run: bool,
@@ -77,6 +77,7 @@ pub async fn execute(
 
     // 4. Determine target
     let target_name = target
+        .map(|t| t.to_string())
         .or_else(|| config.link.as_ref().and_then(|l| l.target.clone()))
         .ok_or_else(|| {
             anyhow::anyhow!(

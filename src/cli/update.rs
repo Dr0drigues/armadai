@@ -97,5 +97,7 @@ pub async fn execute() -> anyhow::Result<()> {
     println!("Updated to v{latest_version}!");
     println!("Run 'armadai --version' to verify.");
 
+    super::setup::prompt_shell_setup();
+
     Ok(())
 }
