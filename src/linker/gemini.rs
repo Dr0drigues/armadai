@@ -117,6 +117,15 @@ fn generate_agents_md(agents: &[LinkAgent], coordinator: Option<&LinkAgent>) -> 
 
         if !agents.is_empty() {
             ensure_blank_line(&mut content);
+            content.push_str("## Coordination\n\n");
+            content.push_str(&format!(
+                "You are the project coordinator (`{}`). Analyze each request and delegate \
+                 to the most appropriate agent from the team below. For complex tasks, \
+                 combine multiple agents' perspectives.\n",
+                coord.name
+            ));
+
+            ensure_blank_line(&mut content);
             content.push_str("## Team\n\n");
             content.push_str("| Agent | File | Description |\n");
             content.push_str("|-------|------|-------------|\n");
@@ -405,5 +414,37 @@ mod tests {
         assert!(file.content.contains("Always be kind."));
         assert!(file.content.contains("## Team"));
         assert!(file.content.contains("agents/worker.md"));
+    }
+
+    #[test]
+    fn test_generate_coordinator_coordination_section() {
+        let linker = GeminiLinker;
+        let coordinator = make_agent("Capitaine", "You are the captain of the crew.");
+        let agents = vec![
+            make_agent("Vigie", "You watch from the mast."),
+            make_agent("Charpentier", "You repair the hull."),
+        ];
+        let files = linker.generate(&agents, Some(&coordinator), &[]);
+
+        let gemini_md = files
+            .iter()
+            .find(|f| f.path.ends_with("GEMINI.md"))
+            .unwrap();
+
+        // Coordination section must be present with the coordinator's name
+        assert!(gemini_md.content.contains("## Coordination"));
+        assert!(gemini_md.content.contains("`Capitaine`"));
+        assert!(gemini_md.content.contains("complex tasks"));
+
+        // Coordination section must appear before the Team section
+        let coord_pos = gemini_md.content.find("## Coordination").unwrap();
+        let team_pos = gemini_md.content.find("## Team").unwrap();
+        assert!(
+            coord_pos < team_pos,
+            "## Coordination must appear before ## Team"
+        );
+
+        // Should not contain the no-coordinator generic text
+        assert!(!gemini_md.content.contains("team coordinator"));
     }
 }
