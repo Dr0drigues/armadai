@@ -1,3 +1,9 @@
+## v0.10.4 (2026-03-25)
+
+### Feat
+
+- add coordinator name and delegation instructions to generated CLAUDE.md/GEMINI.md
+
 ## v0.10.3 (2026-03-24)
 
 ### Feat

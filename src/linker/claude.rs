@@ -107,6 +107,15 @@ fn generate_claude_md(coordinator: &LinkAgent, agents: &[LinkAgent]) -> OutputFi
 
     if !agents.is_empty() {
         ensure_blank_line(&mut content);
+        content.push_str("## Coordination\n\n");
+        content.push_str(&format!(
+            "You are the project coordinator (`{}`). Your role is to analyze each request \
+             and delegate to the appropriate specialized agent listed below. \
+             Use `/agents` to activate a sub-agent.\n",
+            coordinator.name
+        ));
+
+        ensure_blank_line(&mut content);
         content.push_str("## Team\n\n");
         content.push_str("| Agent | Description |\n");
         content.push_str("|-------|-------------|\n");
@@ -332,5 +341,34 @@ mod tests {
         assert!(file.content.contains("You lead the team."));
         assert!(file.content.contains("Always be kind."));
         assert!(file.content.contains("## Team"));
+    }
+
+    #[test]
+    fn test_generate_coordinator_coordination_section() {
+        let linker = ClaudeLinker;
+        let coordinator = make_agent("Capitaine", "You are the captain of the crew.");
+        let agents = vec![
+            make_agent("Vigie", "You watch from the mast."),
+            make_agent("Charpentier", "You repair the hull."),
+        ];
+        let files = linker.generate(&agents, Some(&coordinator), &[]);
+
+        let claude_md = files
+            .iter()
+            .find(|f| f.path.ends_with("CLAUDE.md"))
+            .unwrap();
+
+        // Coordination section must be present with the coordinator's name
+        assert!(claude_md.content.contains("## Coordination"));
+        assert!(claude_md.content.contains("`Capitaine`"));
+        assert!(claude_md.content.contains("/agents"));
+
+        // Coordination section must appear before the Team section
+        let coord_pos = claude_md.content.find("## Coordination").unwrap();
+        let team_pos = claude_md.content.find("## Team").unwrap();
+        assert!(
+            coord_pos < team_pos,
+            "## Coordination must appear before ## Team"
+        );
     }
 }
