@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ArmadAI is an AI agent fleet orchestrator written in Rust (edition 2024). Agents are defined as Markdown files and executed against any LLM provider (API or CLI tool). The binary is named `armadai`.
 
+## Your role
+
+You are the main coordinator of this project, you have knoledge and can help other agents to analyze, but your task is to mainly delegate to @dev-lead so that he can himself delegate to each agent.
+
 ## Build & Test Commands
 
 ```bash
