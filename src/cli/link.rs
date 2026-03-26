@@ -162,7 +162,45 @@ pub async fn execute(
 
     // 7. Generate files
     let sources = &config.sources;
-    let files = linker.generate(&link_agents, coordinator.as_ref(), sources);
+    let mut files = linker.generate(&link_agents, coordinator.as_ref(), sources);
+
+    // 7b. If a root context file already exists for the target, replace the generated
+    // context file with a coordination-only variant to avoid duplicating the coordinator's
+    // system prompt.
+    type CoordOnlyFn =
+        fn(&crate::linker::LinkAgent, &[crate::linker::LinkAgent]) -> crate::linker::OutputFile;
+
+    if let Some(ref coord) = coordinator {
+        let root_and_generated: Option<(PathBuf, CoordOnlyFn)> = match target_name.as_str() {
+            "claude" if root.join("CLAUDE.md").exists() => Some((
+                PathBuf::from(".claude/CLAUDE.md"),
+                crate::linker::generate_claude_coordination_only,
+            )),
+            "gemini" if root.join("GEMINI.md").exists() => Some((
+                PathBuf::from(".gemini/GEMINI.md"),
+                crate::linker::generate_gemini_coordination_only,
+            )),
+            "codex" if root.join("AGENTS.md").exists() => Some((
+                PathBuf::from(".codex/AGENTS.md"),
+                crate::linker::generate_codex_coordination_only,
+            )),
+            "copilot" if root.join(".github/copilot-instructions.md").exists() => Some((
+                PathBuf::from(".github/copilot-instructions.md"),
+                crate::linker::generate_copilot_coordination_only,
+            )),
+            "opencode" if root.join(".opencode/instructions.md").exists() => Some((
+                PathBuf::from(".opencode/instructions.md"),
+                crate::linker::generate_opencode_coordination_only,
+            )),
+            _ => None,
+        };
+
+        if let Some((generated_path, generator)) = root_and_generated
+            && let Some(pos) = files.iter().position(|f| f.path == generated_path)
+        {
+            files[pos] = generator(coord, &link_agents);
+        }
+    }
 
     if files.is_empty() {
         println!("No files to generate.");

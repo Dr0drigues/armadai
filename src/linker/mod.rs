@@ -7,10 +7,15 @@ pub mod model_resolution;
 mod opencode;
 
 pub use claude::ClaudeLinker;
+pub use claude::generate_coordination_only as generate_claude_coordination_only;
 pub use codex::CodexLinker;
+pub use codex::generate_coordination_only as generate_codex_coordination_only;
 pub use copilot::CopilotLinker;
+pub use copilot::generate_coordination_only as generate_copilot_coordination_only;
 pub use gemini::GeminiLinker;
+pub use gemini::generate_coordination_only as generate_gemini_coordination_only;
 pub use opencode::OpencodeLinker;
+pub use opencode::generate_coordination_only as generate_opencode_coordination_only;
 
 use std::path::PathBuf;
 
