@@ -11,6 +11,7 @@ pub(crate) mod new;
 mod prompts;
 mod registry;
 mod run;
+pub(crate) mod setup;
 mod skills;
 mod unlink;
 mod up;
@@ -236,9 +237,9 @@ pub enum Command {
             armadai link --target claude --output .claude/agents --force"
     )]
     Link {
-        /// Target AI assistant (claude, codex, copilot, gemini, opencode)
-        #[arg(long, short)]
-        target: Option<String>,
+        /// Target AI assistant
+        #[arg(long, short, value_enum)]
+        target: Option<crate::linker::LinkTarget>,
         /// Model to use in generated configs (for orchestrator targets like copilot/opencode)
         #[arg(long, short = 'm')]
         model: Option<String>,
@@ -270,9 +271,9 @@ pub enum Command {
             armadai unlink --target claude --agents code-reviewer test-writer"
     )]
     Unlink {
-        /// Target AI assistant (claude, copilot)
-        #[arg(long, short)]
-        target: Option<String>,
+        /// Target AI assistant
+        #[arg(long, short, value_enum)]
+        target: Option<crate::linker::LinkTarget>,
         /// Coordinator agent whose prompt becomes the main context file
         #[arg(long, short = 'C')]
         coordinator: Option<String>,
