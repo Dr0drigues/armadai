@@ -498,6 +498,14 @@ async fn run_orchestrated(
                         eprintln!("[ring] Budget exhausted");
                         println!("{partial_summary}");
                     }
+                    RingOutcome::CostLimitExceeded {
+                        partial_summary,
+                        spent,
+                        limit,
+                    } => {
+                        eprintln!("[ring] Cost limit exceeded: ${:.4}/${:.4}", spent, limit);
+                        println!("{partial_summary}");
+                    }
                     RingOutcome::Cancelled => {
                         eprintln!("[ring] Cancelled");
                     }

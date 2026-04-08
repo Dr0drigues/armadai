@@ -1,0 +1,12 @@
+name: armadai-dev
+description: "Rust development fleet with hierarchical delegation — specialized agents for core, providers, CLI, UI, QA, and releases"
+agents:
+  - dev-lead
+  - core-specialist
+  - provider-specialist
+  - cli-specialist
+  - ui-specialist
+  - qa-specialist
+  - release-manager
+prompts:
+  - rust-conventions

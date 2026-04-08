@@ -13,6 +13,8 @@ pub mod classifier;
 pub mod context_injection;
 #[cfg(test)]
 mod e2e_tests;
+#[cfg(all(test, feature = "providers-api"))]
+mod gemini_integration_tests;
 pub mod hierarchical;
 pub mod llm_agents;
 pub mod protocol;
@@ -166,6 +168,9 @@ pub struct OrchestrationConfig {
 
     /// Global token budget (default: 100_000).
     pub token_budget: Option<u64>,
+
+    /// Global cost budget in USD (no default, optional enforcement).
+    pub cost_limit: Option<f64>,
 }
 
 impl OrchestrationConfig {

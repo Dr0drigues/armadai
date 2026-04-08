@@ -31,7 +31,9 @@ impl RateLimiter {
     pub async fn acquire(&self) {
         loop {
             let wait = {
-                let mut state = self.state.lock().unwrap();
+                // If the mutex is poisoned, we can't recover, so we panic with a clear message.
+                // This should never happen in practice unless there's a panic inside the lock.
+                let mut state = self.state.lock().expect("rate limiter mutex poisoned");
                 let now = Instant::now();
                 let elapsed = now.duration_since(state.last_refill).as_secs_f64();
                 state.tokens = (state.tokens + elapsed * state.refill_rate).min(state.max_tokens);

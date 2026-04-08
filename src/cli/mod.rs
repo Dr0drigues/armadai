@@ -130,15 +130,11 @@ pub enum Command {
     /// View execution history
     #[command(after_help = "Examples:\n  \
         armadai history\n  \
-        armadai history --agent code-reviewer\n  \
-        armadai history --replay abc123")]
+        armadai history --agent code-reviewer")]
     History {
         /// Filter by agent name
         #[arg(long)]
         agent: Option<String>,
-        /// Replay a specific execution by ID
-        #[arg(long)]
-        replay: Option<String>,
     },
     /// View cost tracking
     #[command(after_help = "Examples:\n  \
@@ -392,7 +388,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::List { tags, stack } => list::execute(tags, stack).await,
         Command::Inspect { agent } => inspect::execute(agent).await,
         Command::Validate { agent } => validate::execute(agent).await,
-        Command::History { agent, replay } => history::execute(agent, replay).await,
+        Command::History { agent } => history::execute(agent).await,
         Command::Costs { agent, from } => costs::execute(agent, from).await,
         Command::Config { action } => config::execute(action).await,
         #[cfg(feature = "tui")]
