@@ -295,7 +295,10 @@ mod tests {
 
     #[test]
     fn test_install_embedded_skills() {
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
+        // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
+        // Serialised via ENV_MUTEX to avoid data races with other tests.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
         }
@@ -336,6 +339,7 @@ mod tests {
                 .exists()
         );
 
+        // SAFETY: Cleaning up env state at end of test scope.
         unsafe {
             std::env::remove_var("ARMADAI_CONFIG_DIR");
         }

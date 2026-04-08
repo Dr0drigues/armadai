@@ -41,6 +41,7 @@ pub enum HaltReason {
     Stable,
     Consensus { score: f32 },
     BudgetExhausted,
+    CostLimitExceeded { spent: f64, limit: f64 },
     MaxRounds,
     Divergence { conflicting_entries: Vec<usize> },
     Cancelled,
@@ -71,20 +72,28 @@ pub enum EntryKind {
     Answer { question: usize },
 }
 
-/// Token usage for a single contribution.
+/// Token usage and cost for a single contribution.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct TokenCount {
     pub input: u32,
     pub output: u32,
+    #[serde(default)]
+    pub cost: f64,
 }
 
-/// Token budget tracker.
+/// Token budget and cost limit tracker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenBudget {
     pub total: u64,
     pub used: u64,
     /// Percentage of budget consumed that triggers a warning log (e.g., 0.80 = warn at 80% consumed).
     pub budget_warning_pct: f32,
+    /// Optional cost limit in USD.
+    #[serde(default)]
+    pub cost_limit: Option<f64>,
+    /// Total cost consumed so far.
+    #[serde(default)]
+    pub cost_used: f64,
 }
 
 impl TokenBudget {
@@ -93,6 +102,18 @@ impl TokenBudget {
             total,
             used: 0,
             budget_warning_pct: 0.80,
+            cost_limit: None,
+            cost_used: 0.0,
+        }
+    }
+
+    pub fn with_cost_limit(total: u64, cost_limit: Option<f64>) -> Self {
+        Self {
+            total,
+            used: 0,
+            budget_warning_pct: 0.80,
+            cost_limit,
+            cost_used: 0.0,
         }
     }
 
@@ -108,11 +129,14 @@ impl TokenBudget {
     }
 
     pub fn exhausted(&self) -> bool {
-        self.used >= self.total
+        let token_exhausted = self.used >= self.total;
+        let cost_exhausted = self.cost_limit.is_some_and(|limit| self.cost_used >= limit);
+        token_exhausted || cost_exhausted
     }
 
     pub fn consume(&mut self, count: TokenCount) {
         self.used += count.input as u64 + count.output as u64;
+        self.cost_used += count.cost;
     }
 }
 
@@ -150,6 +174,22 @@ impl Board {
             round: 0,
             state: BoardState::Open,
             budget: TokenBudget::new(token_budget),
+            context: HashMap::new(),
+            created_at: Utc::now(),
+            consecutive_convergence: 0,
+            halt_proposals: Vec::new(),
+        }
+    }
+
+    /// Create a new board with both token and cost budgets.
+    pub fn with_cost_limit(task: String, token_budget: u64, cost_limit: Option<f64>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            task,
+            entries: Arc::new(Vec::new()),
+            round: 0,
+            state: BoardState::Open,
+            budget: TokenBudget::with_cost_limit(token_budget, cost_limit),
             context: HashMap::new(),
             created_at: Utc::now(),
             consecutive_convergence: 0,
@@ -539,9 +579,17 @@ pub async fn run_blackboard(
 
     // Handle budget exhaustion
     if board.budget.exhausted() && !matches!(board.state, BoardState::Halted { .. }) {
-        board.state = BoardState::Halted {
-            reason: HaltReason::BudgetExhausted,
+        let reason = if let Some(limit) = board.budget.cost_limit
+            && board.budget.cost_used >= limit
+        {
+            HaltReason::CostLimitExceeded {
+                spent: board.budget.cost_used,
+                limit,
+            }
+        } else {
+            HaltReason::BudgetExhausted
         };
+        board.state = BoardState::Halted { reason };
     }
 
     Ok(())
@@ -568,6 +616,7 @@ mod tests {
         budget.consume(TokenCount {
             input: 300,
             output: 200,
+            cost: 0.0,
         });
         assert_eq!(budget.used, 500);
         assert_eq!(budget.remaining(), 500);
@@ -580,6 +629,7 @@ mod tests {
         budget.consume(TokenCount {
             input: 60,
             output: 50,
+            cost: 0.0,
         });
         assert!(budget.exhausted());
         assert_eq!(budget.remaining(), 0);
@@ -591,6 +641,7 @@ mod tests {
         budget.consume(TokenCount {
             input: 250,
             output: 250,
+            cost: 0.0,
         });
         assert!((budget.remaining_ratio() - 0.5).abs() < f32::EPSILON);
     }
@@ -608,6 +659,7 @@ mod tests {
         budget.consume(TokenCount {
             input: u32::MAX,
             output: u32::MAX,
+            cost: 0.0,
         });
         // Should not overflow: u32::MAX + u32::MAX fits in u64
         assert_eq!(budget.used, u32::MAX as u64 + u32::MAX as u64);
@@ -669,6 +721,7 @@ mod tests {
             tokens_used: TokenCount {
                 input: 100,
                 output: 50,
+                cost: 0.0,
             },
             created_at: Utc::now(),
         };
@@ -1214,6 +1267,7 @@ mod tests {
                     tokens_used: TokenCount {
                         input: 10,
                         output: 10,
+                        cost: 0.0,
                     },
                     created_at: Utc::now(),
                 })])
@@ -1230,6 +1284,7 @@ mod tests {
                     tokens_used: TokenCount {
                         input: 10,
                         output: 10,
+                        cost: 0.0,
                     },
                     created_at: Utc::now(),
                 })])
@@ -1347,5 +1402,148 @@ mod tests {
                 reason: HaltReason::BudgetExhausted
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_cost_limit_enforcement() {
+        let mut board = Board::with_cost_limit("task".to_string(), 50_000, Some(0.002));
+        let _agents: Vec<Arc<dyn BoardAgent>> =
+            vec![Arc::new(FindThenConfirmAgent { id: "a".into() })];
+        let _providers = crate::core::orchestration::test_helpers::noop_providers();
+        let _config = BlackboardConfig::default();
+
+        // Manually add entries that consume cost
+        let entry1 = BoardEntry {
+            index: 0,
+            agent: "a".into(),
+            round: 0,
+            kind: EntryKind::Finding,
+            content: "first finding".into(),
+            references: vec![],
+            confidence: 0.9,
+            tokens_used: TokenCount {
+                input: 10,
+                output: 10,
+                cost: 0.0015, // Below limit
+            },
+            created_at: Utc::now(),
+        };
+        board.apply(BoardDelta::AddEntry(entry1)).unwrap();
+
+        let entry2 = BoardEntry {
+            index: 1,
+            agent: "a".into(),
+            round: 1,
+            kind: EntryKind::Finding,
+            content: "second finding".into(),
+            references: vec![],
+            confidence: 0.9,
+            tokens_used: TokenCount {
+                input: 10,
+                output: 10,
+                cost: 0.0015, // Total: 0.003, exceeds 0.002 limit
+            },
+            created_at: Utc::now(),
+        };
+        board.apply(BoardDelta::AddEntry(entry2)).unwrap();
+
+        // Budget should be exhausted due to cost
+        assert!(board.budget.exhausted());
+        assert!(board.budget.cost_used >= 0.002);
+    }
+
+    #[tokio::test]
+    async fn test_cost_limit_halts_gracefully() {
+        let mut board = Board::with_cost_limit("task".to_string(), 50_000, Some(0.0005));
+        let agents: Vec<Arc<dyn BoardAgent>> =
+            vec![Arc::new(FindThenConfirmAgent { id: "a".into() })];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
+        let config = BlackboardConfig {
+            max_rounds: 10,
+            ..Default::default()
+        };
+
+        // Pre-fill with a costly entry
+        let entry = BoardEntry {
+            index: 0,
+            agent: "a".into(),
+            round: 0,
+            kind: EntryKind::Finding,
+            content: "costly finding".into(),
+            references: vec![],
+            confidence: 0.9,
+            tokens_used: TokenCount {
+                input: 100,
+                output: 100,
+                cost: 0.001, // Exceeds 0.0005 limit
+            },
+            created_at: Utc::now(),
+        };
+        board.apply(BoardDelta::AddEntry(entry)).unwrap();
+
+        run_blackboard(&mut board, &agents, &providers, &config)
+            .await
+            .unwrap();
+
+        assert!(board.is_halted());
+        match board.state() {
+            BoardState::Halted {
+                reason: HaltReason::CostLimitExceeded { spent, limit },
+            } => {
+                assert!(*spent >= 0.0005);
+                assert_eq!(*limit, 0.0005);
+            }
+            other => panic!("Expected CostLimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_token_budget_with_cost_limit() {
+        let mut budget = TokenBudget::with_cost_limit(1000, Some(0.01));
+        assert_eq!(budget.total, 1000);
+        assert_eq!(budget.cost_limit, Some(0.01));
+        assert_eq!(budget.cost_used, 0.0);
+        assert!(!budget.exhausted());
+
+        // Consume tokens but stay under cost limit
+        budget.consume(TokenCount {
+            input: 100,
+            output: 100,
+            cost: 0.005,
+        });
+        assert!(!budget.exhausted());
+
+        // Exceed cost limit
+        budget.consume(TokenCount {
+            input: 100,
+            output: 100,
+            cost: 0.006, // Total: 0.011, exceeds 0.01
+        });
+        assert!(budget.exhausted());
+    }
+
+    #[test]
+    fn test_token_budget_exhausted_by_tokens_only() {
+        let mut budget = TokenBudget::with_cost_limit(100, Some(1.0));
+        budget.consume(TokenCount {
+            input: 60,
+            output: 50,
+            cost: 0.001,
+        });
+        // Token budget exhausted, cost is fine
+        assert!(budget.exhausted());
+        assert!(budget.cost_used < 1.0);
+    }
+
+    #[test]
+    fn test_token_budget_exhausted_by_cost_only() {
+        let mut budget = TokenBudget::with_cost_limit(10_000, Some(0.005));
+        budget.consume(TokenCount {
+            input: 50,
+            output: 50,
+            cost: 0.006, // Cost exhausted, tokens are fine
+        });
+        assert!(budget.exhausted());
+        assert!(budget.used < 10_000);
     }
 }

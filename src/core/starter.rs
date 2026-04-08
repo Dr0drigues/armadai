@@ -400,9 +400,12 @@ description: Minimal pack
 
     #[test]
     fn test_install_pack() {
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
         let config_dir = tempfile::tempdir().unwrap();
 
-        // Override config dir for test (single env-var test to avoid parallel races)
+        // Override config dir for test.
+        // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
+        // Serialised via ENV_MUTEX to avoid data races with other tests.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", config_dir.path());
         }
@@ -486,6 +489,7 @@ skills:
             assert_eq!(skills, 0);
         }
 
+        // SAFETY: Cleaning up env state at end of test scope.
         unsafe {
             std::env::remove_var("ARMADAI_CONFIG_DIR");
         }
@@ -551,6 +555,9 @@ skills:
 
         let orig = std::env::var("ARMADAI_STARTERS_DIRS").ok();
         let env_val = format!("{}:{}", dir1.path().display(), dir2.path().display());
+        // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
+        // This is the only test touching ARMADAI_STARTERS_DIRS, but must still be run
+        // with `--test-threads=1` for safety.
         unsafe {
             std::env::set_var("ARMADAI_STARTERS_DIRS", &env_val);
         }
@@ -571,6 +578,7 @@ skills:
         assert!(found.is_some(), "Expected to find env-pack");
 
         // Restore
+        // SAFETY: Restoring original env state at end of test scope.
         match orig {
             Some(v) => unsafe { std::env::set_var("ARMADAI_STARTERS_DIRS", v) },
             None => unsafe { std::env::remove_var("ARMADAI_STARTERS_DIRS") },
