@@ -1,0 +1,21 @@
+# ArmadAI project configuration — Ring Pattern Example
+
+agents:
+  - name: writer
+  - name: reviewer
+  - name: editor
+
+prompts: []
+skills: []
+sources: []
+
+# Ring orchestration: sequential processing with feedback loop
+orchestration:
+  enabled: true
+  pattern: ring
+  agents:
+    - writer
+    - reviewer
+    - editor
+  max_laps: 3
+  consensus_threshold: 0.75

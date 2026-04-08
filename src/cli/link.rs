@@ -30,6 +30,21 @@ pub async fn execute(
         anyhow::bail!("No agents declared in project config.");
     }
 
+    // 1b. Validate orchestration config if enabled
+    if let Some(ref orch) = config.orchestration
+        && orch.enabled
+        && let Err(errors) = crate::core::orchestration::validate_config(orch)
+    {
+        eprintln!("Orchestration validation failed:\n");
+        for error in &errors {
+            eprintln!("  - {}", error);
+        }
+        anyhow::bail!(
+            "Cannot link with invalid orchestration config. {} error(s) found.",
+            errors.len()
+        );
+    }
+
     // 2. Resolve and parse agents
     let (paths, errors) = project::resolve_all_agents(&config, &root);
     for err in &errors {

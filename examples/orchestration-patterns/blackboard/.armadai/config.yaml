@@ -1,0 +1,21 @@
+# ArmadAI project configuration — Blackboard Pattern Example
+
+agents:
+  - name: frontend-dev
+  - name: backend-dev
+  - name: devops
+
+prompts: []
+skills: []
+sources: []
+
+# Blackboard orchestration: shared context, autonomous agents
+orchestration:
+  enabled: true
+  pattern: blackboard
+  agents:
+    - frontend-dev
+    - backend-dev
+    - devops
+  max_rounds: 3
+  token_budget: 50000

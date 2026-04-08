@@ -1,0 +1,13 @@
+# ArmadAI project configuration — Direct Pattern Example
+
+agents:
+  - name: analyst
+
+prompts: []
+skills: []
+sources: []
+
+# Direct orchestration: single agent execution
+orchestration:
+  enabled: true
+  pattern: direct
