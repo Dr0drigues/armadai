@@ -47,6 +47,12 @@
   .file-details summary { cursor: pointer; font-size: 14px; padding: 4px 0; color: var(--accent); }
   .file-details summary:hover { text-decoration: underline; }
   .file-content { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 13px; white-space: pre-wrap; line-height: 1.5; margin: 4px 0 8px 0; max-height: 400px; overflow-y: auto; }
+  .search-bar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: rgba(88,166,255,0.02); }
+  .search-input { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 14px; }
+  .search-input::placeholder { color: var(--muted); }
+  .search-clear { background: none; border: 1px solid var(--border); color: var(--text); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1; }
+  .search-clear:hover { border-color: var(--accent); color: var(--accent); }
+  .search-count { font-size: 12px; color: var(--muted); white-space: nowrap; }
   #view { display: none; }
 </style>
 </head>
@@ -77,6 +83,57 @@
 let currentTab = 'agents';
 let viewBackTab = 'agents';
 
+function createSearchBar(tableId) {
+  const tableEl = document.querySelector(`#${tableId} table`);
+  if (!tableEl) return;
+
+  const container = tableEl.parentElement;
+  const searchBar = document.createElement('div');
+  searchBar.className = 'search-bar';
+  searchBar.innerHTML = `
+    <input type="text" class="search-input" placeholder="Filter..." aria-label="Filter table">
+    <button class="search-clear" aria-label="Clear search">×</button>
+    <span class="search-count"></span>
+  `;
+
+  const input = searchBar.querySelector('.search-input');
+  const clearBtn = searchBar.querySelector('.search-clear');
+  const counter = searchBar.querySelector('.search-count');
+
+  function updateCount() {
+    const rows = tableEl.querySelectorAll('tbody tr');
+    const visible = Array.from(rows).filter(r => r.style.display !== 'none').length;
+    counter.textContent = visible > 0 ? `Showing ${visible}/${rows.length} items` : 'No matches';
+  }
+
+  function filterTable() {
+    const query = input.value.toLowerCase().trim();
+    const rows = tableEl.querySelectorAll('tbody tr');
+
+    rows.forEach(row => {
+      if (!query) {
+        row.style.display = '';
+        return;
+      }
+
+      const text = row.textContent.toLowerCase();
+      row.style.display = text.includes(query) ? '' : 'none';
+    });
+
+    updateCount();
+  }
+
+  input.addEventListener('input', filterTable);
+  clearBtn.addEventListener('click', () => {
+    input.value = '';
+    filterTable();
+    input.focus();
+  });
+
+  container.insertBefore(searchBar, tableEl);
+  updateCount();
+}
+
 function showTab(tab) {
   document.querySelectorAll('nav button').forEach((b, i) => {
     const tabs = ['agents','prompts','skills','starters','history','costs','models'];
@@ -103,15 +160,18 @@ async function loadAgents() {
     <div class="card-header">${agents.length} agents loaded</div>
     <table>
       <tr><th>Agent</th><th>Provider</th><th>Model</th><th>Tags</th><th>Stacks</th></tr>
-      ${agents.map(a => `
-        <tr class="clickable" onclick="viewAgent('${a.name}')">
-          <td>${a.name}</td>
-          <td>${a.provider}</td>
-          <td>${a.model}</td>
-          <td>${a.tags.map(t => `<span class="tag">${t}</span>`).join('')}</td>
-          <td>${a.stacks.map(s => `<span class="tag stack">${s}</span>`).join('')}</td>
-        </tr>`).join('')}
+      <tbody>
+        ${agents.map(a => `
+          <tr class="clickable" onclick="viewAgent('${a.name}')">
+            <td>${a.name}</td>
+            <td>${a.provider}</td>
+            <td>${a.model}</td>
+            <td>${a.tags.map(t => `<span class="tag">${t}</span>`).join('')}</td>
+            <td>${a.stacks.map(s => `<span class="tag stack">${s}</span>`).join('')}</td>
+          </tr>`).join('')}
+      </tbody>
     </table>`;
+  createSearchBar('agents');
 }
 
 async function viewAgent(name) {
@@ -178,14 +238,17 @@ async function loadPrompts() {
     <div class="card-header">${prompts.length} prompts loaded</div>
     <table>
       <tr><th>Name</th><th>Description</th><th>Applies To</th><th>Source</th></tr>
-      ${prompts.map(p => `
-        <tr class="clickable" onclick="viewPrompt('${p.name}')">
-          <td>${p.name}</td>
-          <td>${p.description || ''}</td>
-          <td>${p.apply_to.map(a => `<span class="tag">${a}</span>`).join('')}</td>
-          <td style="color:var(--muted)">${p.source}</td>
-        </tr>`).join('')}
+      <tbody>
+        ${prompts.map(p => `
+          <tr class="clickable" onclick="viewPrompt('${p.name}')">
+            <td>${p.name}</td>
+            <td>${p.description || ''}</td>
+            <td>${p.apply_to.map(a => `<span class="tag">${a}</span>`).join('')}</td>
+            <td style="color:var(--muted)">${p.source}</td>
+          </tr>`).join('')}
+      </tbody>
     </table>`;
+  createSearchBar('prompts');
 }
 
 async function viewPrompt(name) {
@@ -219,15 +282,18 @@ async function loadSkills() {
     <div class="card-header">${skills.length} skills loaded</div>
     <table>
       <tr><th>Name</th><th>Description</th><th>Version</th><th>Tools</th><th>Source</th></tr>
-      ${skills.map(s => `
-        <tr class="clickable" onclick="viewSkill('${s.name}')">
-          <td>${s.name}</td>
-          <td>${s.description || ''}</td>
-          <td>${s.version || ''}</td>
-          <td>${s.tools.map(t => `<span class="tag stack">${t}</span>`).join('')}</td>
-          <td style="color:var(--muted)">${s.source}</td>
-        </tr>`).join('')}
+      <tbody>
+        ${skills.map(s => `
+          <tr class="clickable" onclick="viewSkill('${s.name}')">
+            <td>${s.name}</td>
+            <td>${s.description || ''}</td>
+            <td>${s.version || ''}</td>
+            <td>${s.tools.map(t => `<span class="tag stack">${t}</span>`).join('')}</td>
+            <td style="color:var(--muted)">${s.source}</td>
+          </tr>`).join('')}
+      </tbody>
     </table>`;
+  createSearchBar('skills');
 }
 
 async function viewSkill(name) {
@@ -270,15 +336,18 @@ async function loadStarters() {
     <div class="card-header">${starters.length} starter packs</div>
     <table>
       <tr><th>Name</th><th>Description</th><th>Agents</th><th>Prompts</th><th>Skills</th></tr>
-      ${starters.map(s => `
-        <tr class="clickable" onclick="viewStarter('${s.name}')">
-          <td>${s.name}</td>
-          <td>${s.description}</td>
-          <td>${s.agents_count}</td>
-          <td>${s.prompts_count}</td>
-          <td>${s.skills_count}</td>
-        </tr>`).join('')}
+      <tbody>
+        ${starters.map(s => `
+          <tr class="clickable" onclick="viewStarter('${s.name}')">
+            <td>${s.name}</td>
+            <td>${s.description}</td>
+            <td>${s.agents_count}</td>
+            <td>${s.prompts_count}</td>
+            <td>${s.skills_count}</td>
+          </tr>`).join('')}
+      </tbody>
     </table>`;
+  createSearchBar('starters');
 }
 
 async function viewStarter(name) {
@@ -315,18 +384,21 @@ async function loadHistory() {
     <div class="card-header">${history.length} runs</div>
     <table>
       <tr><th>Agent</th><th>Provider</th><th>Model</th><th>Tokens In</th><th>Tokens Out</th><th>Cost</th><th>Duration</th><th>Status</th></tr>
-      ${history.map(h => `
-        <tr>
-          <td>${h.agent}</td>
-          <td>${h.provider}</td>
-          <td>${h.model}</td>
-          <td>${h.tokens_in}</td>
-          <td>${h.tokens_out}</td>
-          <td class="cost">$${h.cost.toFixed(6)}</td>
-          <td>${h.duration_ms}ms</td>
-          <td>${h.status}</td>
-        </tr>`).join('')}
+      <tbody>
+        ${history.map(h => `
+          <tr>
+            <td>${h.agent}</td>
+            <td>${h.provider}</td>
+            <td>${h.model}</td>
+            <td>${h.tokens_in}</td>
+            <td>${h.tokens_out}</td>
+            <td class="cost">$${h.cost.toFixed(6)}</td>
+            <td>${h.duration_ms}ms</td>
+            <td>${h.status}</td>
+          </tr>`).join('')}
+      </tbody>
     </table>`;
+  createSearchBar('history');
 }
 
 async function loadCosts() {
@@ -339,15 +411,18 @@ async function loadCosts() {
     <div class="card-header">Cost summary &mdash; total: <span class="cost">$${total.toFixed(4)}</span></div>
     <table>
       <tr><th>Agent</th><th>Runs</th><th>Cost (USD)</th><th>Tokens In</th><th>Tokens Out</th></tr>
-      ${costs.map(c => `
-        <tr>
-          <td>${c.agent}</td>
-          <td>${c.total_runs}</td>
-          <td class="cost">$${c.total_cost.toFixed(6)}</td>
-          <td>${c.total_tokens_in}</td>
-          <td>${c.total_tokens_out}</td>
-        </tr>`).join('')}
+      <tbody>
+        ${costs.map(c => `
+          <tr>
+            <td>${c.agent}</td>
+            <td>${c.total_runs}</td>
+            <td class="cost">$${c.total_cost.toFixed(6)}</td>
+            <td>${c.total_tokens_in}</td>
+            <td>${c.total_tokens_out}</td>
+          </tr>`).join('')}
+      </tbody>
     </table>`;
+  createSearchBar('costs');
 }
 
 async function loadModels() {
@@ -361,20 +436,23 @@ async function loadModels() {
       <span>${totalModels} models, ${providers.length} providers</span>
       <button onclick="refreshModels()" style="padding:4px 12px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);cursor:pointer;font-size:12px">⟳ Sync models.dev</button>
     </div>
-    ${providers.map(p => `
+    ${providers.map((p, idx) => `
       <div style="padding:8px 16px;color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;border-bottom:1px solid var(--border);background:rgba(88,166,255,0.04)">${p.provider}</div>
-      <table>
+      <table id="models-provider-${idx}">
         <tr><th>Model ID</th><th>Name</th><th>Context</th><th>Max Output</th><th>Cost In</th><th>Cost Out</th></tr>
-        ${p.models.map(m => `
-          <tr>
-            <td>${m.id}</td>
-            <td>${m.name || '-'}</td>
-            <td>${m.context ? (m.context/1000)+'K' : '-'}</td>
-            <td>${m.max_output || '-'}</td>
-            <td>${m.cost_input != null ? '$'+m.cost_input.toFixed(2) : '-'}</td>
-            <td>${m.cost_output != null ? '$'+m.cost_output.toFixed(2) : '-'}</td>
-          </tr>`).join('')}
+        <tbody>
+          ${p.models.map(m => `
+            <tr>
+              <td>${m.id}</td>
+              <td>${m.name || '-'}</td>
+              <td>${m.context ? (m.context/1000)+'K' : '-'}</td>
+              <td>${m.max_output || '-'}</td>
+              <td>${m.cost_input != null ? '$'+m.cost_input.toFixed(2) : '-'}</td>
+              <td>${m.cost_output != null ? '$'+m.cost_output.toFixed(2) : '-'}</td>
+            </tr>`).join('')}
+        </tbody>
       </table>`).join('')}`;
+  providers.forEach((p, idx) => createSearchBar(`models-provider-${idx}`));
 }
 
 async function refreshModels() {

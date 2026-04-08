@@ -500,6 +500,7 @@ pub async fn list_models() -> Json<Vec<ProviderModels>> {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 pub struct RefreshResult {
     status: String,
     providers: usize,
