@@ -13,6 +13,8 @@ pub mod classifier;
 pub mod context_injection;
 #[cfg(test)]
 mod e2e_tests;
+#[cfg(all(test, feature = "providers-api"))]
+mod gemini_integration_tests;
 pub mod hierarchical;
 pub mod llm_agents;
 pub mod protocol;
