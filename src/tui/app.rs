@@ -5,6 +5,7 @@ use crate::core::starter::StarterPack;
 use crate::model_registry::ModelEntry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Tab {
     Dashboard,
     AgentDetail,
@@ -18,11 +19,13 @@ pub enum Tab {
     Costs,
     Models,
     ModelDetail,
+    Orchestration,
+    OrchestrationDetail,
 }
 
 impl Tab {
     /// Tabs visible in the tab bar (detail tabs are accessed via Enter).
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Dashboard,
         Tab::Prompts,
         Tab::Skills,
@@ -30,6 +33,7 @@ impl Tab {
         Tab::History,
         Tab::Costs,
         Tab::Models,
+        Tab::Orchestration,
     ];
 
     pub fn title(self) -> &'static str {
@@ -46,6 +50,8 @@ impl Tab {
             Tab::Costs => "Costs",
             Tab::Models => "Models",
             Tab::ModelDetail => "Model",
+            Tab::Orchestration => "Orchestration",
+            Tab::OrchestrationDetail => "Run",
         }
     }
 
@@ -77,6 +83,16 @@ pub struct CostEntry {
     pub total_cost: f64,
     pub total_tokens_in: i64,
     pub total_tokens_out: i64,
+}
+
+/// Lightweight copy of OrchestrationRunRecord for TUI display (gated by storage feature).
+#[derive(Debug, Clone)]
+#[cfg(feature = "storage")]
+pub struct OrchestrationEntry {
+    pub run_id: String,
+    pub pattern: String,
+    pub rounds: i64,
+    pub halt_reason: Option<String>,
 }
 
 /// Command palette state
@@ -113,7 +129,7 @@ impl CommandPalette {
     }
 
     fn all_commands() -> Vec<PaletteCommand> {
-        vec![
+        let mut cmds = vec![
             PaletteCommand {
                 name: "agents".to_string(),
                 description: "Switch to Agents dashboard".to_string(),
@@ -149,6 +165,16 @@ impl CommandPalette {
                 description: "View model catalog".to_string(),
                 action: PaletteAction::SwitchTab(Tab::Models),
             },
+        ];
+
+        #[cfg(feature = "storage")]
+        cmds.push(PaletteCommand {
+            name: "orchestration".to_string(),
+            description: "View orchestration runs".to_string(),
+            action: PaletteAction::SwitchTab(Tab::Orchestration),
+        });
+
+        cmds.extend(vec![
             PaletteCommand {
                 name: "refresh".to_string(),
                 description: "Reload agents and data".to_string(),
@@ -164,7 +190,9 @@ impl CommandPalette {
                 description: "Exit the application".to_string(),
                 action: PaletteAction::Quit,
             },
-        ]
+        ]);
+
+        cmds
     }
 
     pub fn open(&mut self) {
@@ -244,6 +272,11 @@ pub struct App {
     // Models (from model registry cache)
     pub models_flat: Vec<(String, ModelEntry)>,
     pub selected_model: usize,
+    // Orchestration (gated by storage feature)
+    #[cfg(feature = "storage")]
+    pub orchestration_runs: Vec<OrchestrationEntry>,
+    #[cfg(feature = "storage")]
+    pub selected_orchestration: usize,
     // Command palette
     pub palette: CommandPalette,
     // Status message (bottom bar)
@@ -272,6 +305,10 @@ impl App {
             costs: Vec::new(),
             models_flat: Vec::new(),
             selected_model: 0,
+            #[cfg(feature = "storage")]
+            orchestration_runs: Vec::new(),
+            #[cfg(feature = "storage")]
+            selected_orchestration: 0,
             palette: CommandPalette::new(),
             status_msg: None,
             search_mode: false,
@@ -388,6 +425,19 @@ impl App {
             .and_then(|&idx| self.models_flat.get(idx))
     }
 
+    #[cfg(feature = "storage")]
+    pub fn selected_orchestration_entry(&self) -> Option<&OrchestrationEntry> {
+        use crate::tui::filter;
+        let display_indices = filter::apply_filter_and_sort_orchestration(
+            &self.orchestration_runs,
+            &self.search_query,
+            self.sort_mode,
+        );
+        display_indices
+            .get(self.selected_orchestration)
+            .and_then(|&idx| self.orchestration_runs.get(idx))
+    }
+
     pub fn cycle_sort_mode(&mut self) {
         self.sort_mode = match self.sort_mode {
             SortMode::Default => SortMode::NameAsc,
@@ -401,6 +451,10 @@ impl App {
         self.selected_starter = 0;
         self.selected_history = 0;
         self.selected_model = 0;
+        #[cfg(feature = "storage")]
+        {
+            self.selected_orchestration = 0;
+        }
     }
 
     pub fn clear_search(&mut self) {
@@ -413,6 +467,10 @@ impl App {
         self.selected_starter = 0;
         self.selected_history = 0;
         self.selected_model = 0;
+        #[cfg(feature = "storage")]
+        {
+            self.selected_orchestration = 0;
+        }
     }
 
     pub fn sort_indicator(&self) -> &'static str {
@@ -437,6 +495,28 @@ impl App {
                 }
             }
             self.models_flat = flat;
+        }
+    }
+
+    #[cfg(feature = "storage")]
+    pub fn load_orchestration_runs(&mut self) {
+        use crate::storage::{init_db, queries};
+
+        let db = match init_db() {
+            Ok(db) => db,
+            Err(_) => return,
+        };
+
+        if let Ok(records) = queries::get_orchestration_runs(&db, 100) {
+            self.orchestration_runs = records
+                .into_iter()
+                .map(|r| OrchestrationEntry {
+                    run_id: r.run_id,
+                    pattern: r.pattern,
+                    rounds: r.rounds,
+                    halt_reason: r.halt_reason,
+                })
+                .collect();
         }
     }
 
@@ -501,6 +581,18 @@ impl App {
                 );
                 if !display_indices.is_empty() {
                     self.selected_model = (self.selected_model + 1) % display_indices.len();
+                }
+            }
+            #[cfg(feature = "storage")]
+            Tab::Orchestration => {
+                let display_indices = filter::apply_filter_and_sort_orchestration(
+                    &self.orchestration_runs,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
+                    self.selected_orchestration =
+                        (self.selected_orchestration + 1) % display_indices.len();
                 }
             }
             _ => {}
@@ -591,6 +683,21 @@ impl App {
                         display_indices.len() - 1
                     } else {
                         self.selected_model - 1
+                    };
+                }
+            }
+            #[cfg(feature = "storage")]
+            Tab::Orchestration => {
+                let display_indices = filter::apply_filter_and_sort_orchestration(
+                    &self.orchestration_runs,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
+                    self.selected_orchestration = if self.selected_orchestration == 0 {
+                        display_indices.len() - 1
+                    } else {
+                        self.selected_orchestration - 1
                     };
                 }
             }

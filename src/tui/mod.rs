@@ -128,6 +128,11 @@ pub async fn run() -> Result<()> {
                         app.switch_tab(app::Tab::Models);
                         continue;
                     }
+                    #[cfg(feature = "storage")]
+                    app::Tab::OrchestrationDetail => {
+                        app.switch_tab(app::Tab::Orchestration);
+                        continue;
+                    }
                     _ => break, // Quit on Esc from top-level tabs
                 }
             }
@@ -142,7 +147,7 @@ pub async fn run() -> Result<()> {
                 KeyCode::Char(':') => app.palette.open(),
                 KeyCode::Char('/') => {
                     // Enter search mode on list tabs
-                    if matches!(
+                    let is_searchable = matches!(
                         app.current_tab,
                         app::Tab::Dashboard
                             | app::Tab::Prompts
@@ -150,14 +155,24 @@ pub async fn run() -> Result<()> {
                             | app::Tab::Starters
                             | app::Tab::History
                             | app::Tab::Models
-                    ) {
+                    ) || {
+                        #[cfg(feature = "storage")]
+                        {
+                            matches!(app.current_tab, app::Tab::Orchestration)
+                        }
+                        #[cfg(not(feature = "storage"))]
+                        {
+                            false
+                        }
+                    };
+                    if is_searchable {
                         app.search_mode = true;
                         app.search_query.clear();
                     }
                 }
                 KeyCode::Char('s') => {
                     // Cycle sort mode on list tabs
-                    if matches!(
+                    let is_sortable = matches!(
                         app.current_tab,
                         app::Tab::Dashboard
                             | app::Tab::Prompts
@@ -165,7 +180,17 @@ pub async fn run() -> Result<()> {
                             | app::Tab::Starters
                             | app::Tab::History
                             | app::Tab::Models
-                    ) {
+                    ) || {
+                        #[cfg(feature = "storage")]
+                        {
+                            matches!(app.current_tab, app::Tab::Orchestration)
+                        }
+                        #[cfg(not(feature = "storage"))]
+                        {
+                            false
+                        }
+                    };
+                    if is_sortable {
                         app.cycle_sort_mode();
                     }
                 }
@@ -217,6 +242,10 @@ pub async fn run() -> Result<()> {
                     }
                     app::Tab::Models if app.selected_model_entry().is_some() => {
                         app.switch_tab(app::Tab::ModelDetail);
+                    }
+                    #[cfg(feature = "storage")]
+                    app::Tab::Orchestration if app.selected_orchestration_entry().is_some() => {
+                        app.switch_tab(app::Tab::OrchestrationDetail);
                     }
                     _ => {}
                 },
@@ -271,6 +300,8 @@ pub async fn run() -> Result<()> {
                 KeyCode::Char('5') => app.switch_tab(app::Tab::History),
                 KeyCode::Char('6') => app.switch_tab(app::Tab::Costs),
                 KeyCode::Char('7') => app.switch_tab(app::Tab::Models),
+                #[cfg(feature = "storage")]
+                KeyCode::Char('8') => app.switch_tab(app::Tab::Orchestration),
                 _ => {}
             }
         }
@@ -324,6 +355,9 @@ fn load_storage_data(app: &mut app::App) {
             })
             .collect();
     }
+
+    // Load orchestration runs
+    app.load_orchestration_runs();
 }
 
 #[cfg(not(feature = "storage"))]

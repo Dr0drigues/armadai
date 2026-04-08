@@ -50,6 +50,18 @@ pub fn render(frame: &mut Frame, app: &App) {
         Tab::Costs => super::costs::render(frame, app, chunks[1]),
         Tab::Models => super::models_list::render(frame, app, chunks[1]),
         Tab::ModelDetail => super::model_detail::render(frame, app, chunks[1]),
+        #[cfg(feature = "storage")]
+        Tab::Orchestration => super::orchestration::render(frame, app, chunks[1]),
+        #[cfg(feature = "storage")]
+        Tab::OrchestrationDetail => super::orchestration::render_detail(frame, app, chunks[1]),
+        #[cfg(not(feature = "storage"))]
+        Tab::Orchestration | Tab::OrchestrationDetail => {
+            let msg = Paragraph::new("Orchestration tab requires storage feature");
+            frame.render_widget(
+                msg.block(Block::default().borders(Borders::ALL).title(" Orchestration ")),
+                chunks[1],
+            );
+        }
     };
 
     // Shortcuts bar

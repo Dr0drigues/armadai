@@ -321,6 +321,34 @@ pub fn get_orchestration_run(
     }
 }
 
+/// Get orchestration runs list (most recent first).
+#[allow(dead_code)] // API reserved for TUI / web UI
+pub fn get_orchestration_runs(
+    db: &Database,
+    limit: u32,
+) -> anyhow::Result<Vec<OrchestrationRunRecord>> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
+    let mut stmt = conn.prepare(
+        "SELECT run_id, pattern, config_json, outcome_json, rounds, halt_reason
+         FROM orchestration_runs ORDER BY created_at DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], |row| {
+        Ok(OrchestrationRunRecord {
+            run_id: row.get(0)?,
+            pattern: row.get(1)?,
+            config_json: row.get(2)?,
+            outcome_json: row.get(3)?,
+            rounds: row.get(4)?,
+            halt_reason: row.get(5)?,
+        })
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
 /// Get board entries for a run.
 #[allow(dead_code)] // API reserved for future `armadai history` / web UI
 pub fn get_board_entries(db: &Database, run_id: &str) -> anyhow::Result<Vec<BoardEntryRecord>> {

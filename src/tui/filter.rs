@@ -4,6 +4,8 @@ use crate::core::skill::Skill;
 use crate::core::starter::StarterPack;
 use crate::model_registry::ModelEntry;
 use crate::tui::app::{RunEntry, SortMode};
+#[cfg(feature = "storage")]
+use crate::tui::app::OrchestrationEntry;
 
 /// Filter items by search query (case-insensitive substring match on name + metadata).
 pub fn filter_agents(agents: &[Agent], query: &str) -> Vec<usize> {
@@ -200,5 +202,38 @@ pub fn apply_filter_and_sort_models(
 ) -> Vec<usize> {
     let filtered = filter_models(models, query);
     let names: Vec<_> = filtered.iter().map(|&i| &models[i].0).collect();
+    sort_by_name(filtered, &names, sort_mode)
+}
+
+#[cfg(feature = "storage")]
+pub fn filter_orchestration(orchestration: &[OrchestrationEntry], query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return (0..orchestration.len()).collect();
+    }
+    let query = query.to_lowercase();
+    orchestration
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| {
+            o.run_id.to_lowercase().contains(&query)
+                || o.pattern.to_lowercase().contains(&query)
+                || o.halt_reason
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&query)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+#[cfg(feature = "storage")]
+pub fn apply_filter_and_sort_orchestration(
+    orchestration: &[OrchestrationEntry],
+    query: &str,
+    sort_mode: SortMode,
+) -> Vec<usize> {
+    let filtered = filter_orchestration(orchestration, query);
+    let names: Vec<_> = filtered.iter().map(|&i| &orchestration[i].run_id).collect();
     sort_by_name(filtered, &names, sort_mode)
 }

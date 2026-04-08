@@ -7,6 +7,8 @@ pub mod models_list;
 pub mod palette;
 pub mod prompt_detail;
 pub mod prompts_list;
+#[cfg(feature = "storage")]
+pub mod orchestration;
 pub mod shortcuts;
 pub mod skill_detail;
 pub mod skills_list;
