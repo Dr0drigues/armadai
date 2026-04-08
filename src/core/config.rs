@@ -382,6 +382,19 @@ providers:
 ";
 
 // ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+/// Global mutex to serialise tests that mutate `ARMADAI_CONFIG_DIR`.
+///
+/// Any test in any module that calls `std::env::set_var("ARMADAI_CONFIG_DIR", …)`
+/// must hold this lock for the duration of the test to avoid data races when
+/// the test suite runs with multiple threads (the default).
+#[cfg(test)]
+pub(crate) static ENV_MUTEX: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -422,14 +435,18 @@ mod tests {
 
     #[test]
     fn test_config_dir_respects_env() {
+        let _guard = super::ENV_MUTEX.lock().unwrap();
         // Save and restore env
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
+        // Serialised via ENV_MUTEX to avoid data races with other tests.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", "/tmp/test-armadai-config");
         }
         assert_eq!(config_dir(), PathBuf::from("/tmp/test-armadai-config"));
         // Restore
         match orig {
+            // SAFETY: Restoring original env state at end of test scope.
             Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
             None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
         }
@@ -467,6 +484,9 @@ providers:
         let orig_model = std::env::var("ARMADAI_MODEL").ok();
         let orig_temp = std::env::var("ARMADAI_TEMPERATURE").ok();
 
+        // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
+        // These specific env vars are only used in this test, but parallel test execution
+        // can still cause races. Safe for single-threaded test runs.
         unsafe {
             std::env::set_var("ARMADAI_PROVIDER", "openai");
             std::env::set_var("ARMADAI_MODEL", "gpt-4o");
@@ -479,6 +499,7 @@ providers:
         assert!((cfg.defaults.temperature - 0.3).abs() < f32::EPSILON);
 
         // Restore
+        // SAFETY: Restoring original env state at end of test scope.
         unsafe {
             for (var, orig) in [
                 ("ARMADAI_PROVIDER", orig_provider),
@@ -495,7 +516,10 @@ providers:
 
     #[test]
     fn test_user_dirs() {
+        let _guard = super::ENV_MUTEX.lock().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
+        // Serialised via ENV_MUTEX to avoid data races with other tests.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", "/tmp/armadai-test");
         }
@@ -506,6 +530,7 @@ providers:
             PathBuf::from("/tmp/armadai-test/registry")
         );
         match orig {
+            // SAFETY: Restoring original env state at end of test scope.
             Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
             None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
         }

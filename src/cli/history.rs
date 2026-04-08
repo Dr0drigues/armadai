@@ -1,15 +1,9 @@
-pub async fn execute(agent: Option<String>, replay: Option<String>) -> anyhow::Result<()> {
+pub async fn execute(agent: Option<String>) -> anyhow::Result<()> {
     #[cfg(feature = "storage")]
     {
         use crate::storage::{init_db, queries};
 
         let db = init_db()?;
-
-        // Replay mode: re-run an agent with the same input
-        if let Some(ref _id) = replay {
-            // TODO: lookup run by ID and re-execute
-            anyhow::bail!("Replay is not yet implemented");
-        }
 
         let records = queries::get_history(&db, agent.as_deref(), 50)?;
 
@@ -41,7 +35,7 @@ pub async fn execute(agent: Option<String>, replay: Option<String>) -> anyhow::R
 
     #[cfg(not(feature = "storage"))]
     {
-        let _ = (agent, replay);
+        let _ = agent;
         anyhow::bail!(
             "History requires the 'storage' feature. Build with: cargo build --features storage"
         )

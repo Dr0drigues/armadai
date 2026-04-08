@@ -35,7 +35,9 @@ pub fn insert_run(db: &Database, run: RunRecord) -> anyhow::Result<()> {
 /// Insert an execution record with a caller-supplied id (used by orchestration
 /// to share the same id across the parent `runs` row and child tables).
 pub fn insert_run_with_id(db: &Database, id: &str, run: RunRecord) -> anyhow::Result<()> {
-    let conn = db.lock().unwrap();
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     conn.execute(
         "INSERT INTO runs (id, agent, input, output, provider, model, tokens_in, tokens_out, cost, duration_ms, status)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -51,7 +53,9 @@ pub fn get_history(
     agent: Option<&str>,
     limit: u32,
 ) -> anyhow::Result<Vec<RunRecord>> {
-    let conn = db.lock().unwrap();
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     let mut records = Vec::new();
 
     match agent {
@@ -111,7 +115,9 @@ pub fn get_costs_summary(
     db: &Database,
     agent_filter: Option<&str>,
 ) -> anyhow::Result<Vec<CostSummary>> {
-    let conn = db.lock().unwrap();
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     let mut summaries = Vec::new();
 
     match agent_filter {
@@ -215,7 +221,9 @@ pub fn insert_orchestration_run(
     db: &Database,
     record: OrchestrationRunRecord,
 ) -> anyhow::Result<()> {
-    let conn = db.lock().unwrap();
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     conn.execute(
         "INSERT INTO orchestration_runs (run_id, pattern, config_json, outcome_json, rounds, halt_reason, finished_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
@@ -233,7 +241,9 @@ pub fn insert_orchestration_run(
 
 /// Insert a board entry record.
 pub fn insert_board_entry(db: &Database, record: BoardEntryRecord) -> anyhow::Result<()> {
-    let conn = db.lock().unwrap();
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     conn.execute(
         "INSERT INTO board_entries (run_id, agent, round, kind, content, refs_json, confidence, tokens_in, tokens_out)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -257,7 +267,9 @@ pub fn insert_ring_contribution(
     db: &Database,
     record: RingContributionRecord,
 ) -> anyhow::Result<()> {
-    let conn = db.lock().unwrap();
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     conn.execute(
         "INSERT INTO ring_contributions (run_id, agent, lap, position_in_lap, action, content, reactions_json, tokens_in, tokens_out)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -278,7 +290,9 @@ pub fn insert_ring_contribution(
 
 /// Insert a ring vote record.
 pub fn insert_ring_vote(db: &Database, record: RingVoteRecord) -> anyhow::Result<()> {
-    let conn = db.lock().unwrap();
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     conn.execute(
         "INSERT INTO ring_votes (run_id, agent, position, confidence, supports, concerns)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -300,7 +314,9 @@ pub fn get_orchestration_run(
     db: &Database,
     run_id: &str,
 ) -> anyhow::Result<Option<OrchestrationRunRecord>> {
-    let conn = db.lock().unwrap();
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     let mut stmt = conn.prepare(
         "SELECT run_id, pattern, config_json, outcome_json, rounds, halt_reason
          FROM orchestration_runs WHERE run_id = ?1",
@@ -321,10 +337,42 @@ pub fn get_orchestration_run(
     }
 }
 
+/// Get orchestration runs list (most recent first).
+#[allow(dead_code)] // API reserved for TUI / web UI
+pub fn get_orchestration_runs(
+    db: &Database,
+    limit: u32,
+) -> anyhow::Result<Vec<OrchestrationRunRecord>> {
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
+    let mut stmt = conn.prepare(
+        "SELECT run_id, pattern, config_json, outcome_json, rounds, halt_reason
+         FROM orchestration_runs ORDER BY created_at DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], |row| {
+        Ok(OrchestrationRunRecord {
+            run_id: row.get(0)?,
+            pattern: row.get(1)?,
+            config_json: row.get(2)?,
+            outcome_json: row.get(3)?,
+            rounds: row.get(4)?,
+            halt_reason: row.get(5)?,
+        })
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
 /// Get board entries for a run.
 #[allow(dead_code)] // API reserved for future `armadai history` / web UI
 pub fn get_board_entries(db: &Database, run_id: &str) -> anyhow::Result<Vec<BoardEntryRecord>> {
-    let conn = db.lock().unwrap();
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     let mut stmt = conn.prepare(
         "SELECT run_id, agent, round, kind, content, refs_json, confidence, tokens_in, tokens_out
          FROM board_entries WHERE run_id = ?1 ORDER BY round, id",
@@ -355,7 +403,9 @@ pub fn get_ring_contributions(
     db: &Database,
     run_id: &str,
 ) -> anyhow::Result<Vec<RingContributionRecord>> {
-    let conn = db.lock().unwrap();
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     let mut stmt = conn.prepare(
         "SELECT run_id, agent, lap, position_in_lap, action, content, reactions_json, tokens_in, tokens_out
          FROM ring_contributions WHERE run_id = ?1 ORDER BY lap, position_in_lap",
@@ -383,7 +433,9 @@ pub fn get_ring_contributions(
 /// Get ring votes for a run.
 #[allow(dead_code)] // API reserved for future `armadai history` / web UI
 pub fn get_ring_votes(db: &Database, run_id: &str) -> anyhow::Result<Vec<RingVoteRecord>> {
-    let conn = db.lock().unwrap();
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     let mut stmt = conn.prepare(
         "SELECT run_id, agent, position, confidence, supports, concerns
          FROM ring_votes WHERE run_id = ?1",

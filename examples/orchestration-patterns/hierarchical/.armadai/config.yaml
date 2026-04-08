@@ -1,0 +1,23 @@
+# ArmadAI project configuration — Hierarchical Pattern Example
+
+agents:
+  - name: architect
+  - name: team-lead
+  - name: specialist-a
+  - name: specialist-b
+
+prompts: []
+skills: []
+sources: []
+
+# Hierarchical orchestration: coordinator delegates to team lead, who manages specialists
+orchestration:
+  enabled: true
+  pattern: hierarchical
+  coordinator: architect
+  teams:
+    - lead: team-lead
+      agents:
+        - specialist-a
+        - specialist-b
+  max_depth: 3
