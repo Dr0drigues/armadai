@@ -117,7 +117,9 @@ pub fn import_to_library(registry_path: &str, force: bool) -> anyhow::Result<Pat
     let agents_dir = user_agents_dir();
     std::fs::create_dir_all(&agents_dir)?;
 
-    let filename = cached.file_name().unwrap();
+    let filename = cached
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid path: no file name in {:?}", cached))?;
     let dst = agents_dir.join(filename);
 
     if dst.exists() && !force {

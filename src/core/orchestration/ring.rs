@@ -386,7 +386,11 @@ fn resolve_votes(token: &RingToken, config: &RingConfig) -> RingOutcome {
         let mut assigned = false;
         for rep in &group_reps {
             if position_similarity(&pos_lower, rep) >= config.similarity_threshold {
-                groups.get_mut(rep).unwrap().push((agent.clone(), vote));
+                // SAFETY: rep is always in groups because it comes from group_reps which tracks inserted keys
+                groups
+                    .get_mut(rep)
+                    .expect("group representative must exist in groups map")
+                    .push((agent.clone(), vote));
                 assigned = true;
                 break;
             }
@@ -409,7 +413,7 @@ fn resolve_votes(token: &RingToken, config: &RingConfig) -> RingOutcome {
             let wb: f32 = b.iter().map(|(n, _)| weight_of(n)).sum();
             wa.partial_cmp(&wb).unwrap_or(std::cmp::Ordering::Equal)
         })
-        .unwrap();
+        .expect("groups must be non-empty because votes is non-empty");
     let group_weight: f32 = largest_group.iter().map(|(n, _)| weight_of(n)).sum();
     let majority_ratio = if total_weight > 0.0 {
         group_weight / total_weight

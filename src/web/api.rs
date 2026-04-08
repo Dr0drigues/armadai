@@ -6,6 +6,15 @@ use serde::Serialize;
 
 use crate::core::agent::Agent;
 
+/// Helper to convert a serializable value to JSON, returning an error response on failure.
+fn to_json<T: Serialize>(value: T) -> Json<serde_json::Value> {
+    Json(
+        serde_json::to_value(value).unwrap_or_else(|e| {
+            serde_json::json!({"error": format!("Serialization failed: {}", e)})
+        }),
+    )
+}
+
 #[derive(Serialize)]
 pub struct AgentSummary {
     name: String,
@@ -244,14 +253,11 @@ pub async fn get_agent(Path(name): Path<String>) -> Json<serde_json::Value> {
                 output_format: a.output_format,
                 model_resolution,
             };
-            Json(serde_json::to_value(detail).unwrap())
+            to_json(detail)
         }
-        None => Json(
-            serde_json::to_value(ErrorResponse {
-                error: format!("Agent '{name}' not found"),
-            })
-            .unwrap(),
-        ),
+        None => to_json(ErrorResponse {
+            error: format!("Agent '{name}' not found"),
+        }),
     }
 }
 
@@ -372,14 +378,11 @@ pub async fn get_prompt(Path(name): Path<String>) -> Json<serde_json::Value> {
                 body: p.body,
                 source: p.source.display().to_string(),
             };
-            Json(serde_json::to_value(detail).unwrap())
+            to_json(detail)
         }
-        None => Json(
-            serde_json::to_value(ErrorResponse {
-                error: format!("Prompt '{name}' not found"),
-            })
-            .unwrap(),
-        ),
+        None => to_json(ErrorResponse {
+            error: format!("Prompt '{name}' not found"),
+        }),
     }
 }
 
@@ -413,14 +416,11 @@ pub async fn get_skill(Path(name): Path<String>) -> Json<serde_json::Value> {
                 references: s.references.iter().map(|p| to_skill_file(p)).collect(),
                 assets: s.assets.iter().map(|p| to_skill_file(p)).collect(),
             };
-            Json(serde_json::to_value(detail).unwrap())
+            to_json(detail)
         }
-        None => Json(
-            serde_json::to_value(ErrorResponse {
-                error: format!("Skill '{name}' not found"),
-            })
-            .unwrap(),
-        ),
+        None => to_json(ErrorResponse {
+            error: format!("Skill '{name}' not found"),
+        }),
     }
 }
 
@@ -447,12 +447,9 @@ pub async fn get_starter(Path(name): Path<String>) -> Json<serde_json::Value> {
     let pack_dir = match find_pack_dir(&name) {
         Some(dir) => dir,
         None => {
-            return Json(
-                serde_json::to_value(ErrorResponse {
-                    error: format!("Starter '{name}' not found"),
-                })
-                .unwrap(),
-            );
+            return to_json(ErrorResponse {
+                error: format!("Starter '{name}' not found"),
+            });
         }
     };
 
@@ -465,14 +462,11 @@ pub async fn get_starter(Path(name): Path<String>) -> Json<serde_json::Value> {
                 prompts: p.prompts,
                 skills: p.skills,
             };
-            Json(serde_json::to_value(detail).unwrap())
+            to_json(detail)
         }
-        Err(_) => Json(
-            serde_json::to_value(ErrorResponse {
-                error: format!("Failed to load starter '{name}'"),
-            })
-            .unwrap(),
-        ),
+        Err(_) => to_json(ErrorResponse {
+            error: format!("Failed to load starter '{name}'"),
+        }),
     }
 }
 
@@ -514,30 +508,21 @@ pub struct RefreshResult {
 #[cfg(feature = "providers-api")]
 pub async fn refresh_models() -> Json<serde_json::Value> {
     match crate::model_registry::fetch::refresh_registry().await {
-        Ok(count) => Json(
-            serde_json::to_value(RefreshResult {
-                status: "ok".to_string(),
-                providers: count,
-            })
-            .unwrap(),
-        ),
-        Err(e) => Json(
-            serde_json::to_value(ErrorResponse {
-                error: format!("Refresh failed: {e}"),
-            })
-            .unwrap(),
-        ),
+        Ok(count) => to_json(RefreshResult {
+            status: "ok".to_string(),
+            providers: count,
+        }),
+        Err(e) => to_json(ErrorResponse {
+            error: format!("Refresh failed: {e}"),
+        }),
     }
 }
 
 #[cfg(not(feature = "providers-api"))]
 pub async fn refresh_models() -> Json<serde_json::Value> {
-    Json(
-        serde_json::to_value(ErrorResponse {
-            error: "Model sync requires providers-api feature".to_string(),
-        })
-        .unwrap(),
-    )
+    to_json(ErrorResponse {
+        error: "Model sync requires providers-api feature".to_string(),
+    })
 }
 
 pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {

@@ -424,12 +424,16 @@ mod tests {
     fn test_config_dir_respects_env() {
         // Save and restore env
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
+        // The test must be run with `--test-threads=1` to avoid data races with other
+        // tests that read or modify ARMADAI_CONFIG_DIR (test_user_dirs).
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", "/tmp/test-armadai-config");
         }
         assert_eq!(config_dir(), PathBuf::from("/tmp/test-armadai-config"));
         // Restore
         match orig {
+            // SAFETY: Restoring original env state at end of test scope.
             Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
             None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
         }
@@ -467,6 +471,9 @@ providers:
         let orig_model = std::env::var("ARMADAI_MODEL").ok();
         let orig_temp = std::env::var("ARMADAI_TEMPERATURE").ok();
 
+        // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
+        // These specific env vars are only used in this test, but parallel test execution
+        // can still cause races. Safe for single-threaded test runs.
         unsafe {
             std::env::set_var("ARMADAI_PROVIDER", "openai");
             std::env::set_var("ARMADAI_MODEL", "gpt-4o");
@@ -479,6 +486,7 @@ providers:
         assert!((cfg.defaults.temperature - 0.3).abs() < f32::EPSILON);
 
         // Restore
+        // SAFETY: Restoring original env state at end of test scope.
         unsafe {
             for (var, orig) in [
                 ("ARMADAI_PROVIDER", orig_provider),
@@ -496,6 +504,9 @@ providers:
     #[test]
     fn test_user_dirs() {
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
+        // The test must be run with `--test-threads=1` to avoid data races with other
+        // tests that read or modify ARMADAI_CONFIG_DIR (test_config_dir_respects_env).
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", "/tmp/armadai-test");
         }
@@ -506,6 +517,7 @@ providers:
             PathBuf::from("/tmp/armadai-test/registry")
         );
         match orig {
+            // SAFETY: Restoring original env state at end of test scope.
             Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
             None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
         }
