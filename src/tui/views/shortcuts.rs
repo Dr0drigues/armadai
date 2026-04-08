@@ -100,11 +100,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ("q", "Quit"),
         ],
         #[cfg(not(feature = "storage"))]
-        Tab::Orchestration | Tab::OrchestrationDetail => vec![
-            ("Tab", "Next tab"),
-            (":", "Commands"),
-            ("q", "Quit"),
-        ],
+        Tab::Orchestration | Tab::OrchestrationDetail => {
+            vec![("Tab", "Next tab"), (":", "Commands"), ("q", "Quit")]
+        }
     };
 
     let mut spans: Vec<Span> = shortcuts

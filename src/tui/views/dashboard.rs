@@ -58,7 +58,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         Tab::Orchestration | Tab::OrchestrationDetail => {
             let msg = Paragraph::new("Orchestration tab requires storage feature");
             frame.render_widget(
-                msg.block(Block::default().borders(Borders::ALL).title(" Orchestration ")),
+                msg.block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Orchestration "),
+                ),
                 chunks[1],
             );
         }

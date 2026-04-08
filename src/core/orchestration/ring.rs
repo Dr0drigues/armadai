@@ -532,7 +532,9 @@ pub async fn run_ring(
 
             // Check budget mid-ring
             if token.budget.exhausted() {
-                let outcome = if let Some(limit) = token.budget.cost_limit && token.budget.cost_used >= limit {
+                let outcome = if let Some(limit) = token.budget.cost_limit
+                    && token.budget.cost_used >= limit
+                {
                     RingOutcome::CostLimitExceeded {
                         partial_summary: summarize_so_far(token),
                         spent: token.budget.cost_used,

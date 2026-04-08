@@ -280,15 +280,9 @@ fn invoke_agent(
                 let sender = agent_name.clone();
                 let target_name = target.clone();
                 handles.push(tokio::spawn(async move {
-                    let result = invoke_agent(
-                        ctx,
-                        state,
-                        target_name.clone(),
-                        task,
-                        depth + 1,
-                        sender,
-                    )
-                    .await?;
+                    let result =
+                        invoke_agent(ctx, state, target_name.clone(), task, depth + 1, sender)
+                            .await?;
                     Ok::<_, anyhow::Error>((target_name, result))
                 }));
             }
@@ -364,8 +358,7 @@ fn build_enriched_prompt(ctx: &EngineContext, agent_name: &str) -> String {
         .map(|a| a.system_prompt.as_str())
         .unwrap_or("You are a helpful assistant.");
 
-    let orchestration_block =
-        build_orchestration_prompt(agent_name, &ctx.config, &ctx.agents_info);
+    let orchestration_block = build_orchestration_prompt(agent_name, &ctx.config, &ctx.agents_info);
 
     match orchestration_block {
         Some(block) => format!("{base_prompt}{block}"),
@@ -417,10 +410,7 @@ async fn call_llm(
 
     let messages = {
         let s = state.lock().expect("engine state mutex poisoned");
-        s.conversations
-            .get(agent_name)
-            .cloned()
-            .unwrap_or_default()
+        s.conversations.get(agent_name).cloned().unwrap_or_default()
     }; // unlock before async call
 
     let model = agent
@@ -1067,7 +1057,10 @@ mod tests {
         let mut engine = HierarchicalEngine::new(config, agents, providers);
         let result = engine.run("Do all three tasks").await.unwrap();
 
-        assert_eq!(result.content, "All three results received and synthesized.");
+        assert_eq!(
+            result.content,
+            "All three results received and synthesized."
+        );
         // coord (1) + a,b,c parallel (3) + coord synthesis (1) = 5
         assert_eq!(result.invocation_count, 5);
         // Trace: user→coord, coord→a, coord→b, coord→c = at least 4

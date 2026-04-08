@@ -579,7 +579,9 @@ pub async fn run_blackboard(
 
     // Handle budget exhaustion
     if board.budget.exhausted() && !matches!(board.state, BoardState::Halted { .. }) {
-        let reason = if let Some(limit) = board.budget.cost_limit && board.budget.cost_used >= limit {
+        let reason = if let Some(limit) = board.budget.cost_limit
+            && board.budget.cost_used >= limit
+        {
             HaltReason::CostLimitExceeded {
                 spent: board.budget.cost_used,
                 limit,
@@ -1545,4 +1547,3 @@ mod tests {
         assert!(budget.used < 10_000);
     }
 }
-

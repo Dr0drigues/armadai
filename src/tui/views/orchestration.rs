@@ -32,12 +32,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     if display_indices.is_empty() {
-        let msg = Paragraph::new("No orchestration runs match your search.")
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Orchestration "),
-            );
+        let msg = Paragraph::new("No orchestration runs match your search.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Orchestration "),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -142,7 +141,8 @@ pub fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
                         ];
 
                         // Pretty print config JSON
-                        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&record.config_json)
+                        if let Ok(config) =
+                            serde_json::from_str::<serde_json::Value>(&record.config_json)
                             && let Ok(pretty) = serde_json::to_string_pretty(&config)
                         {
                             lines.extend(pretty.lines().map(|s| format!("  {}", s)));
@@ -153,7 +153,8 @@ pub fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
 
                         // Pretty print outcome JSON if present
                         if let Some(outcome_json) = &record.outcome_json {
-                            if let Ok(outcome) = serde_json::from_str::<serde_json::Value>(outcome_json)
+                            if let Ok(outcome) =
+                                serde_json::from_str::<serde_json::Value>(outcome_json)
                                 && let Ok(pretty) = serde_json::to_string_pretty(&outcome)
                             {
                                 lines.extend(pretty.lines().map(|s| format!("  {}", s)));
@@ -182,11 +183,7 @@ pub fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(paragraph, area);
     } else {
         let msg = Paragraph::new("No orchestration run selected")
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Run Detail "),
-            );
+            .block(Block::default().borders(Borders::ALL).title(" Run Detail "));
         frame.render_widget(msg, area);
     }
 }
