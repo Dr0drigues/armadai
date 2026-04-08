@@ -150,6 +150,30 @@ impl HierarchicalEngine {
             if self.iteration_count >= self.config.max_iterations() {
                 anyhow::bail!("Max iterations ({}) reached", self.config.max_iterations());
             }
+
+            // Budget checks - return partial results instead of error
+            if let Some(token_budget) = self.config.token_budget {
+                let total_tokens = self.total_tokens_in as u64 + self.total_tokens_out as u64;
+                if total_tokens >= token_budget {
+                    let partial = self.build_partial_result(
+                        &format!(
+                            "[Budget exceeded: used {}/{} tokens. Returning partial results.]",
+                            total_tokens, token_budget
+                        )
+                    );
+                    return Ok(partial);
+                }
+            }
+            if let Some(cost_limit) = self.config.cost_limit
+                && self.total_cost >= cost_limit
+            {
+                let partial = self.build_partial_result(&format!(
+                    "[Cost limit exceeded: spent ${:.4}/${:.4}. Returning partial results.]",
+                    self.total_cost, cost_limit
+                ));
+                return Ok(partial);
+            }
+
             self.iteration_count += 1;
 
             // Record delegation event
@@ -281,6 +305,28 @@ impl HierarchicalEngine {
             Some(block) => format!("{base_prompt}{block}"),
             None => base_prompt.to_string(),
         }
+    }
+
+    /// Build a partial result when budget is exceeded.
+    /// Collects the last assistant message from each agent's conversation.
+    fn build_partial_result(&self, budget_message: &str) -> String {
+        let mut result = String::from(budget_message);
+        result.push_str("\n\n");
+
+        for (agent_name, conversation) in &self.conversations {
+            if let Some(last_msg) = conversation.iter().rev().find(|m| m.role == "assistant") {
+                result.push_str(&format!(
+                    "[Partial from @{agent_name}]\n{}\n\n",
+                    truncate(&last_msg.content, 500)
+                ));
+            }
+        }
+
+        if result.len() <= budget_message.len() + 2 {
+            result.push_str("[No partial results available yet.]");
+        }
+
+        result
     }
 
     /// Call the LLM for a specific agent using its conversation history.
@@ -693,4 +739,213 @@ mod tests {
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("a long string here", 10), "a long str...");
     }
+
+    #[tokio::test]
+    async fn test_token_budget_enforcement() {
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: super::super::OrchestrationPattern::Hierarchical,
+            coordinator: Some("coordinator".to_string()),
+            teams: vec![TeamConfig {
+                lead: None,
+                agents: vec!["agent-a".to_string(), "agent-b".to_string()],
+            }],
+            token_budget: Some(55), // Budget: will exceed when trying to call second agent
+            ..Default::default()
+        };
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "You coordinate."),
+        );
+        agents.insert("agent-a".to_string(), make_agent("agent-a", "You do A."));
+        agents.insert("agent-b".to_string(), make_agent("agent-b", "You do B."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        // Each call consumes 10 (in) + 20 (out) = 30 tokens
+        // Coordinator: 30, agent-a: 30 (total 60, exceeds 55)
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(MockProvider::new(vec![
+                "@agent-a: task A\n@agent-b: task B",  // First call: 30 tokens
+                "Final synthesis.",                     // Won't reach here
+            ])),
+        );
+        providers.insert(
+            "agent-a".to_string(),
+            Arc::new(MockProvider::new(vec!["Result A."])),
+        );
+        providers.insert(
+            "agent-b".to_string(),
+            Arc::new(MockProvider::new(vec!["Result B."])),
+        );
+
+        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let result = engine.run("Do both tasks").await.unwrap();
+
+        // Budget should have stopped execution early
+        // We expect: coordinator (30) + agent-a (30) + maybe agent-b budget check returns partial
+        // Total should be around 60 tokens (first agent finished, second denied due to budget)
+        eprintln!("Result content: {}", result.content);
+        let total_tokens = result.total_tokens_in as u64 + result.total_tokens_out as u64;
+        eprintln!("Total tokens: {}", total_tokens);
+
+        // Should have stopped before processing all agents due to budget
+        // The total should be close to the budget limit (55) but might slightly exceed
+        // due to the last call that triggered the limit
+        assert!((55..=100).contains(&total_tokens), "Expected tokens to be around budget limit");
+
+        // At least one invocation should have been prevented by budget
+        // (would be 4 calls without budget: coord + agent-a + agent-b + coord synthesis)
+        assert!(result.invocation_count < 4, "Budget should have prevented all delegations");
+    }
+
+    #[tokio::test]
+    async fn test_cost_limit_enforcement() {
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: super::super::OrchestrationPattern::Hierarchical,
+            coordinator: Some("coordinator".to_string()),
+            teams: vec![TeamConfig {
+                lead: None,
+                agents: vec!["agent-a".to_string(), "agent-b".to_string()],
+            }],
+            cost_limit: Some(0.0015), // Tiny cost limit: will exceed after 2 calls (each 0.001)
+            ..Default::default()
+        };
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "You coordinate."),
+        );
+        agents.insert("agent-a".to_string(), make_agent("agent-a", "You do A."));
+        agents.insert("agent-b".to_string(), make_agent("agent-b", "You do B."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        // Each call costs 0.001, limit is 0.0015
+        // Coordinator: 0.001, agent-a: 0.001 (total 0.002, exceeds 0.0015)
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(MockProvider::new(vec![
+                "@agent-a: task A\n@agent-b: task B",
+                "Final synthesis.",
+            ])),
+        );
+        providers.insert(
+            "agent-a".to_string(),
+            Arc::new(MockProvider::new(vec!["Result A."])),
+        );
+        providers.insert(
+            "agent-b".to_string(),
+            Arc::new(MockProvider::new(vec!["Result B."])),
+        );
+
+        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let result = engine.run("Do something").await.unwrap();
+
+        // Cost limit should have stopped execution early
+        assert!(result.total_cost >= 0.0015, "Should have spent at least the limit");
+        assert!(
+            result.invocation_count < 4,
+            "Cost limit should have prevented all delegations"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_no_budget_limit() {
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: super::super::OrchestrationPattern::Hierarchical,
+            coordinator: Some("coordinator".to_string()),
+            teams: vec![TeamConfig {
+                lead: None,
+                agents: vec!["agent-a".to_string()],
+            }],
+            token_budget: None, // No limit
+            cost_limit: None,   // No limit
+            ..Default::default()
+        };
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "You coordinate."),
+        );
+        agents.insert("agent-a".to_string(), make_agent("agent-a", "You do A."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(MockProvider::new(vec![
+                "@agent-a: task 1",
+                "Final synthesis.",
+            ])),
+        );
+        providers.insert(
+            "agent-a".to_string(),
+            Arc::new(MockProvider::new(vec!["Result A."])),
+        );
+
+        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let result = engine.run("Do something").await.unwrap();
+
+        // Should complete normally without budget warnings
+        assert!(!result.content.contains("Budget exceeded"));
+        assert!(!result.content.contains("Cost limit exceeded"));
+        assert_eq!(result.content, "Final synthesis.");
+    }
+
+    #[tokio::test]
+    async fn test_budget_returns_partial_not_error() {
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: super::super::OrchestrationPattern::Hierarchical,
+            coordinator: Some("coordinator".to_string()),
+            teams: vec![TeamConfig {
+                lead: None,
+                agents: vec!["agent-a".to_string(), "agent-b".to_string()],
+            }],
+            token_budget: Some(50), // Will exceed mid-execution
+            ..Default::default()
+        };
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "You coordinate."),
+        );
+        agents.insert("agent-a".to_string(), make_agent("agent-a", "You do A."));
+        agents.insert("agent-b".to_string(), make_agent("agent-b", "You do B."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(MockProvider::new(vec![
+                "@agent-a: task A\n@agent-b: task B",
+                "Combined result.",
+            ])),
+        );
+        providers.insert(
+            "agent-a".to_string(),
+            Arc::new(MockProvider::new(vec!["Done A."])),
+        );
+        providers.insert(
+            "agent-b".to_string(),
+            Arc::new(MockProvider::new(vec!["Done B."])),
+        );
+
+        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let result = engine.run("Do both tasks").await;
+
+        // Should return Ok with partial results, NOT an error
+        assert!(result.is_ok(), "Budget limit should return Ok, not Err");
+        let result = result.unwrap();
+
+        // The key is that it returns Ok (graceful degradation) even when budget is hit
+        // We don't care about the exact content, just that it didn't error
+        assert!(result.invocation_count > 0, "Should have made at least one call");
+    }
 }
+

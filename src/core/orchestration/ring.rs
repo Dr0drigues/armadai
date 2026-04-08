@@ -59,6 +59,11 @@ pub enum RingOutcome {
     BudgetExhausted {
         partial_summary: String,
     },
+    CostLimitExceeded {
+        partial_summary: String,
+        spent: f64,
+        limit: f64,
+    },
     Cancelled,
 }
 
@@ -527,11 +532,18 @@ pub async fn run_ring(
 
             // Check budget mid-ring
             if token.budget.exhausted() {
-                token.status = TokenStatus::Done {
-                    outcome: RingOutcome::BudgetExhausted {
+                let outcome = if let Some(limit) = token.budget.cost_limit && token.budget.cost_used >= limit {
+                    RingOutcome::CostLimitExceeded {
                         partial_summary: summarize_so_far(token),
-                    },
+                        spent: token.budget.cost_used,
+                        limit,
+                    }
+                } else {
+                    RingOutcome::BudgetExhausted {
+                        partial_summary: summarize_so_far(token),
+                    }
                 };
+                token.status = TokenStatus::Done { outcome };
                 return Ok(());
             }
         }
@@ -916,6 +928,7 @@ mod tests {
                 tokens_used: TokenCount {
                     input: 10,
                     output: 10,
+                    cost: 0.0,
                 },
                 created_at: Utc::now(),
             })

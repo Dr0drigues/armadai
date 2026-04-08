@@ -326,6 +326,7 @@ impl BoardAgent for LlmBoardAgent {
             tokens_used: TokenCount {
                 input: response.tokens_in,
                 output: response.tokens_out,
+                cost: response.cost,
             },
             created_at: Utc::now(),
         };
@@ -422,6 +423,7 @@ impl RingAgent for LlmRingAgent {
             tokens_used: TokenCount {
                 input: response.tokens_in,
                 output: response.tokens_out,
+                cost: response.cost,
             },
             created_at: Utc::now(),
         })

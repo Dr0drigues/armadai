@@ -166,6 +166,9 @@ pub struct OrchestrationConfig {
 
     /// Global token budget (default: 100_000).
     pub token_budget: Option<u64>,
+
+    /// Global cost budget in USD (no default, optional enforcement).
+    pub cost_limit: Option<f64>,
 }
 
 impl OrchestrationConfig {
