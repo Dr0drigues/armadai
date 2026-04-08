@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::tui::app::{App, Tab};
+use crate::tui::filter;
 
 pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -66,18 +67,33 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         return;
     }
 
+    // Apply filtering and sorting
+    let display_indices =
+        filter::apply_filter_and_sort_agents(&app.agents, &app.search_query, app.sort_mode);
+
+    if display_indices.is_empty() {
+        let msg = Paragraph::new("No agents match your search.")
+            .block(Block::default().borders(Borders::ALL).title(" Agents "));
+        frame.render_widget(msg, area);
+        return;
+    }
+
     let header = Row::new(vec!["", "AGENT", "PROVIDER", "MODEL", "TAGS"])
         .style(Style::default().add_modifier(Modifier::BOLD))
         .bottom_margin(1);
 
-    let rows: Vec<Row> = app
-        .agents
+    let rows: Vec<Row> = display_indices
         .iter()
         .enumerate()
-        .map(|(i, agent)| {
-            let marker = if i == app.selected_agent { ">" } else { " " };
+        .map(|(display_i, &agent_i)| {
+            let marker = if display_i == app.selected_agent {
+                ">"
+            } else {
+                " "
+            };
+            let agent = &app.agents[agent_i];
             let tags = agent.metadata.tags.join(", ");
-            let style = if i == app.selected_agent {
+            let style = if display_i == app.selected_agent {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
@@ -106,11 +122,32 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         ],
     )
     .header(header)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" Agents — {} loaded ", app.agents.len())),
-    );
+    .block(Block::default().borders(Borders::ALL).title(format!(
+        " Agents — {} loaded, {} shown{} ",
+        app.agents.len(),
+        display_indices.len(),
+        app.sort_indicator()
+    )));
 
     frame.render_widget(table, area);
+
+    // Render search bar if in search mode
+    if app.search_mode {
+        render_search_bar(frame, app, area);
+    }
+}
+
+fn render_search_bar(frame: &mut Frame, app: &App, list_area: ratatui::layout::Rect) {
+    let search_area = ratatui::layout::Rect {
+        x: list_area.x,
+        y: list_area.bottom() - 1,
+        width: list_area.width,
+        height: 1,
+    };
+
+    let query_display = format!("/ {}\u{2588}", app.search_query);
+    let search = Paragraph::new(query_display)
+        .style(Style::default().fg(Color::Yellow))
+        .block(Block::default());
+    frame.render_widget(search, search_area);
 }

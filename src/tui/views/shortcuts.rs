@@ -14,6 +14,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Dashboard => vec![
             ("j/k", "Navigate"),
             ("Enter", "View detail"),
+            ("/", "Search"),
+            ("s", "Sort"),
             ("Tab", "Next tab"),
             (":", "Commands"),
             ("r", "Refresh"),
@@ -35,6 +37,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Prompts | Tab::Skills => vec![
             ("j/k", "Navigate"),
             ("Enter", "View detail"),
+            ("/", "Search"),
+            ("s", "Sort"),
             ("Tab", "Next tab"),
             (":", "Commands"),
             ("r", "Refresh"),
@@ -43,6 +47,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Starters => vec![
             ("j/k", "Navigate"),
             ("Enter", "View detail"),
+            ("/", "Search"),
+            ("s", "Sort"),
             ("i", "Init project"),
             ("Tab", "Next tab"),
             (":", "Commands"),
@@ -51,6 +57,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ],
         Tab::History => vec![
             ("j/k", "Navigate"),
+            ("/", "Search"),
+            ("s", "Sort"),
             ("Tab", "Next tab"),
             (":", "Commands"),
             ("r", "Refresh"),
@@ -65,6 +73,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Models => vec![
             ("j/k", "Navigate"),
             ("Enter", "View detail"),
+            ("/", "Search"),
+            ("s", "Sort"),
             ("R", "Sync models.dev"),
             ("Tab", "Next tab"),
             (":", "Commands"),

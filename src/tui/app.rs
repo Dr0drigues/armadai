@@ -213,6 +213,14 @@ impl CommandPalette {
     }
 }
 
+/// Sort mode for lists
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortMode {
+    Default,
+    NameAsc,
+    NameDesc,
+}
+
 pub struct App {
     pub current_tab: Tab,
     pub tab_index: usize,
@@ -240,6 +248,10 @@ pub struct App {
     pub palette: CommandPalette,
     // Status message (bottom bar)
     pub status_msg: Option<String>,
+    // Search & sort
+    pub search_mode: bool,
+    pub search_query: String,
+    pub sort_mode: SortMode,
 }
 
 impl App {
@@ -262,6 +274,9 @@ impl App {
             selected_model: 0,
             palette: CommandPalette::new(),
             status_msg: None,
+            search_mode: false,
+            search_query: String::new(),
+            sort_mode: SortMode::Default,
         }
     }
 
@@ -320,23 +335,92 @@ impl App {
     }
 
     pub fn selected_agent(&self) -> Option<&Agent> {
-        self.agents.get(self.selected_agent)
+        use crate::tui::filter;
+        let display_indices =
+            filter::apply_filter_and_sort_agents(&self.agents, &self.search_query, self.sort_mode);
+        display_indices
+            .get(self.selected_agent)
+            .and_then(|&idx| self.agents.get(idx))
     }
 
     pub fn selected_prompt(&self) -> Option<&Prompt> {
-        self.prompts.get(self.selected_prompt)
+        use crate::tui::filter;
+        let display_indices = filter::apply_filter_and_sort_prompts(
+            &self.prompts,
+            &self.search_query,
+            self.sort_mode,
+        );
+        display_indices
+            .get(self.selected_prompt)
+            .and_then(|&idx| self.prompts.get(idx))
     }
 
     pub fn selected_skill(&self) -> Option<&Skill> {
-        self.skills.get(self.selected_skill)
+        use crate::tui::filter;
+        let display_indices =
+            filter::apply_filter_and_sort_skills(&self.skills, &self.search_query, self.sort_mode);
+        display_indices
+            .get(self.selected_skill)
+            .and_then(|&idx| self.skills.get(idx))
     }
 
     pub fn selected_starter(&self) -> Option<&StarterPack> {
-        self.starters.get(self.selected_starter)
+        use crate::tui::filter;
+        let display_indices = filter::apply_filter_and_sort_starters(
+            &self.starters,
+            &self.search_query,
+            self.sort_mode,
+        );
+        display_indices
+            .get(self.selected_starter)
+            .and_then(|&idx| self.starters.get(idx))
     }
 
     pub fn selected_model_entry(&self) -> Option<&(String, ModelEntry)> {
-        self.models_flat.get(self.selected_model)
+        use crate::tui::filter;
+        let display_indices = filter::apply_filter_and_sort_models(
+            &self.models_flat,
+            &self.search_query,
+            self.sort_mode,
+        );
+        display_indices
+            .get(self.selected_model)
+            .and_then(|&idx| self.models_flat.get(idx))
+    }
+
+    pub fn cycle_sort_mode(&mut self) {
+        self.sort_mode = match self.sort_mode {
+            SortMode::Default => SortMode::NameAsc,
+            SortMode::NameAsc => SortMode::NameDesc,
+            SortMode::NameDesc => SortMode::Default,
+        };
+        // Reset selection to 0 when sorting changes
+        self.selected_agent = 0;
+        self.selected_prompt = 0;
+        self.selected_skill = 0;
+        self.selected_starter = 0;
+        self.selected_history = 0;
+        self.selected_model = 0;
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search_query.clear();
+        self.search_mode = false;
+        // Reset selection when clearing search
+        self.selected_agent = 0;
+        self.selected_prompt = 0;
+        self.selected_skill = 0;
+        self.selected_starter = 0;
+        self.selected_history = 0;
+        self.selected_model = 0;
+    }
+
+    pub fn sort_indicator(&self) -> &'static str {
+        match self.sort_mode {
+            SortMode::Default => "",
+            SortMode::NameAsc => " (A→Z)",
+            SortMode::NameDesc => " (Z→A)",
+        }
     }
 
     pub fn load_models(&mut self) {
@@ -357,35 +441,66 @@ impl App {
     }
 
     pub fn select_next(&mut self) {
+        use crate::tui::filter;
         match self.current_tab {
             Tab::Dashboard => {
-                if !self.agents.is_empty() {
-                    self.selected_agent = (self.selected_agent + 1) % self.agents.len();
+                let display_indices = filter::apply_filter_and_sort_agents(
+                    &self.agents,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
+                    self.selected_agent = (self.selected_agent + 1) % display_indices.len();
                 }
             }
             Tab::Prompts => {
-                if !self.prompts.is_empty() {
-                    self.selected_prompt = (self.selected_prompt + 1) % self.prompts.len();
+                let display_indices = filter::apply_filter_and_sort_prompts(
+                    &self.prompts,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
+                    self.selected_prompt = (self.selected_prompt + 1) % display_indices.len();
                 }
             }
             Tab::Skills => {
-                if !self.skills.is_empty() {
-                    self.selected_skill = (self.selected_skill + 1) % self.skills.len();
+                let display_indices = filter::apply_filter_and_sort_skills(
+                    &self.skills,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
+                    self.selected_skill = (self.selected_skill + 1) % display_indices.len();
                 }
             }
             Tab::Starters => {
-                if !self.starters.is_empty() {
-                    self.selected_starter = (self.selected_starter + 1) % self.starters.len();
+                let display_indices = filter::apply_filter_and_sort_starters(
+                    &self.starters,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
+                    self.selected_starter = (self.selected_starter + 1) % display_indices.len();
                 }
             }
             Tab::History => {
-                if !self.history.is_empty() {
-                    self.selected_history = (self.selected_history + 1) % self.history.len();
+                let display_indices = filter::apply_filter_and_sort_history(
+                    &self.history,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
+                    self.selected_history = (self.selected_history + 1) % display_indices.len();
                 }
             }
             Tab::Models => {
-                if !self.models_flat.is_empty() {
-                    self.selected_model = (self.selected_model + 1) % self.models_flat.len();
+                let display_indices = filter::apply_filter_and_sort_models(
+                    &self.models_flat,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
+                    self.selected_model = (self.selected_model + 1) % display_indices.len();
                 }
             }
             _ => {}
@@ -393,56 +508,87 @@ impl App {
     }
 
     pub fn select_prev(&mut self) {
+        use crate::tui::filter;
         match self.current_tab {
             Tab::Dashboard => {
-                if !self.agents.is_empty() {
+                let display_indices = filter::apply_filter_and_sort_agents(
+                    &self.agents,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
                     self.selected_agent = if self.selected_agent == 0 {
-                        self.agents.len() - 1
+                        display_indices.len() - 1
                     } else {
                         self.selected_agent - 1
                     };
                 }
             }
             Tab::Prompts => {
-                if !self.prompts.is_empty() {
+                let display_indices = filter::apply_filter_and_sort_prompts(
+                    &self.prompts,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
                     self.selected_prompt = if self.selected_prompt == 0 {
-                        self.prompts.len() - 1
+                        display_indices.len() - 1
                     } else {
                         self.selected_prompt - 1
                     };
                 }
             }
             Tab::Skills => {
-                if !self.skills.is_empty() {
+                let display_indices = filter::apply_filter_and_sort_skills(
+                    &self.skills,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
                     self.selected_skill = if self.selected_skill == 0 {
-                        self.skills.len() - 1
+                        display_indices.len() - 1
                     } else {
                         self.selected_skill - 1
                     };
                 }
             }
             Tab::Starters => {
-                if !self.starters.is_empty() {
+                let display_indices = filter::apply_filter_and_sort_starters(
+                    &self.starters,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
                     self.selected_starter = if self.selected_starter == 0 {
-                        self.starters.len() - 1
+                        display_indices.len() - 1
                     } else {
                         self.selected_starter - 1
                     };
                 }
             }
             Tab::History => {
-                if !self.history.is_empty() {
+                let display_indices = filter::apply_filter_and_sort_history(
+                    &self.history,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
                     self.selected_history = if self.selected_history == 0 {
-                        self.history.len() - 1
+                        display_indices.len() - 1
                     } else {
                         self.selected_history - 1
                     };
                 }
             }
             Tab::Models => {
-                if !self.models_flat.is_empty() {
+                let display_indices = filter::apply_filter_and_sort_models(
+                    &self.models_flat,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
                     self.selected_model = if self.selected_model == 0 {
-                        self.models_flat.len() - 1
+                        display_indices.len() - 1
                     } else {
                         self.selected_model - 1
                     };

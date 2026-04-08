@@ -1,4 +1,5 @@
 mod app;
+pub mod filter;
 pub mod views;
 pub mod widgets;
 
@@ -82,6 +83,26 @@ pub async fn run() -> Result<()> {
                 continue;
             }
 
+            // Search mode
+            if app.search_mode {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.clear_search();
+                    }
+                    KeyCode::Enter => {
+                        app.search_mode = false;
+                    }
+                    KeyCode::Backspace => {
+                        app.search_query.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        app.search_query.push(c);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             // Normal mode
 
             // Detail view: Esc goes back to parent list
@@ -119,6 +140,35 @@ pub async fn run() -> Result<()> {
                     app.palette.open();
                 }
                 KeyCode::Char(':') => app.palette.open(),
+                KeyCode::Char('/') => {
+                    // Enter search mode on list tabs
+                    if matches!(
+                        app.current_tab,
+                        app::Tab::Dashboard
+                            | app::Tab::Prompts
+                            | app::Tab::Skills
+                            | app::Tab::Starters
+                            | app::Tab::History
+                            | app::Tab::Models
+                    ) {
+                        app.search_mode = true;
+                        app.search_query.clear();
+                    }
+                }
+                KeyCode::Char('s') => {
+                    // Cycle sort mode on list tabs
+                    if matches!(
+                        app.current_tab,
+                        app::Tab::Dashboard
+                            | app::Tab::Prompts
+                            | app::Tab::Skills
+                            | app::Tab::Starters
+                            | app::Tab::History
+                            | app::Tab::Models
+                    ) {
+                        app.cycle_sort_mode();
+                    }
+                }
                 KeyCode::Tab => app.next_tab(),
                 KeyCode::BackTab => app.prev_tab(),
                 KeyCode::Char('j') | KeyCode::Down => app.select_next(),
