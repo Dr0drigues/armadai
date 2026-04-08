@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Dr0drigues/armadai/develop/schemas/pack.schema.json",
+  "title": "ArmadAI Starter Pack Configuration",
+  "description": "Configuration file for ArmadAI starter packs (pack.yaml). Defines a curated bundle of agents, prompts, skills, and optional orchestration.",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "title": "Pack name",
+      "description": "Unique identifier for this starter pack (e.g. 'rust-dev', 'pirate-crew'). Used as the directory name when installed.",
+      "examples": ["rust-dev", "orchestration-demo", "pirate-crew"]
+    },
+    "description": {
+      "type": "string",
+      "title": "Pack description",
+      "description": "Human-readable description of what this pack provides.",
+      "examples": ["Rust development suite with linting, testing, and documentation agents", "Pirate development crew — a captain coordinator and their specialized crew"]
+    },
+    "agents": {
+      "type": "array",
+      "title": "Agents",
+      "description": "List of agent names included in this pack (required, minimum 1).",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "examples": [["rust-formatter", "rust-clippy", "doc-writer"], ["capitaine", "vigie", "charpentier"]]
+    },
+    "prompts": {
+      "type": "array",
+      "title": "Prompts",
+      "description": "List of prompt fragment names included in this pack (optional, default: empty).",
+      "items": { "type": "string" },
+      "default": [],
+      "examples": [["rust-conventions", "safety-standards"]]
+    },
+    "skills": {
+      "type": "array",
+      "title": "Skills",
+      "description": "List of skill names included in this pack (optional, default: empty).",
+      "items": { "type": "string" },
+      "default": [],
+      "examples": [["docker-compose", "git-workflow"]]
+    },
+    "orchestration": {
+      "$ref": "#/$defs/OrchestrationConfig"
+    }
+  },
+  "required": ["name", "description", "agents"],
+  "additionalProperties": false,
+  "$defs": {
+    "OrchestrationConfig": {
+      "type": "object",
+      "title": "Orchestration Configuration",
+      "description": "Optional configuration for multi-agent orchestration patterns (hierarchical, blackboard, ring, or direct). When specified in a pack, these settings are inherited by projects that install the pack.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Enable orchestration",
+          "description": "Whether orchestration mode is active.",
+          "default": false
+        },
+        "pattern": {
+          "type": "string",
+          "title": "Orchestration pattern",
+          "description": "Pattern for multi-agent execution: direct (single agent), blackboard (shared state), ring (token-passing), hierarchical (pyramid topology), or auto (auto-detect).",
+          "enum": ["direct", "blackboard", "ring", "hierarchical", "auto"],
+          "default": "direct"
+        },
+        "coordinator": {
+          "type": "string",
+          "title": "Coordinator agent",
+          "description": "Name of the coordinator agent (required for hierarchical pattern).",
+          "examples": ["capitaine", "lead-analyst", "master-agent"]
+        },
+        "teams": {
+          "type": "array",
+          "title": "Team definitions",
+          "description": "Team topology for hierarchical orchestration. Each team has optional coordinator and list of agents.",
+          "items": { "$ref": "#/$defs/TeamConfig" }
+        },
+        "max_depth": {
+          "type": "integer",
+          "title": "Maximum delegation depth",
+          "description": "Maximum depth for coordinator delegation chain (default: 5).",
+          "default": 5,
+          "minimum": 1
+        },
+        "max_iterations": {
+          "type": "integer",
+          "title": "Maximum iterations",
+          "description": "Maximum total iterations across all agents (default: 50).",
+          "default": 50,
+          "minimum": 1
+        },
+        "timeout": {
+          "type": "integer",
+          "title": "Global timeout",
+          "description": "Global timeout in seconds (default: 300).",
+          "default": 300,
+          "minimum": 1
+        },
+        "max_rounds": {
+          "type": "integer",
+          "title": "Maximum rounds (blackboard)",
+          "description": "Maximum rounds for blackboard pattern (default: 5).",
+          "default": 5,
+          "minimum": 1
+        },
+        "max_laps": {
+          "type": "integer",
+          "title": "Maximum laps (ring)",
+          "description": "Maximum token laps for ring pattern (default: 3).",
+          "default": 3,
+          "minimum": 1
+        },
+        "consensus_threshold": {
+          "type": "number",
+          "title": "Consensus threshold",
+          "description": "Consensus threshold (0-1, default: 0.75). Used for voting in ring and hierarchical patterns.",
+          "default": 0.75,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "token_budget": {
+          "type": "integer",
+          "title": "Global token budget",
+          "description": "Global token budget across all agents (default: 100,000).",
+          "default": 100000,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "TeamConfig": {
+      "type": "object",
+      "title": "Team Configuration",
+      "description": "Definition of a team in hierarchical orchestration topology.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "title": "Team name",
+          "description": "Human-readable team name (optional).",
+          "examples": ["backend-team", "analysis-team"]
+        },
+        "coordinator": {
+          "type": "string",
+          "title": "Team coordinator",
+          "description": "Name of the team coordinator (optional). If absent, agents report directly to the project coordinator.",
+          "examples": ["vigie", "senior-backend", "analysis-lead"]
+        },
+        "agents": {
+          "type": "array",
+          "title": "Team agents",
+          "description": "List of agent names in this team.",
+          "items": { "type": "string" },
+          "examples": [["charpentier", "cartographe"]]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
