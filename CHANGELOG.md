@@ -1,3 +1,43 @@
+## v0.11.0 (2026-04-01)
+
+### Feat
+
+- TUI: inline search with `/`, column sort with `s`, new Orchestration tab (key `8`)
+- Web UI: search/filter bars on all tabs, Mermaid.js orchestration topology diagram
+- New API endpoint: `GET /api/orchestration/topology`
+- Orchestration: parallel dispatch for hierarchical delegations via `tokio::spawn`
+- Orchestration: cost budget enforcement with `token_budget` and `cost_limit` (graceful halt)
+- New starter pack `armadai-dev`: 7 agents + `rust-conventions` prompt
+- 4 Gemini API integration tests (gated behind `GOOGLE_API_KEY`)
+- Gemini CLI E2E test script with 18 assertions (`tests/gemini_cli_e2e.sh`)
+- `link.rs` validation improvements, 4 orchestration pattern examples, `demo-rust-team` config
+- Orchestration user guide with decision matrix (`docs/wiki/orchestration-guide.md`)
+- `pack.schema.json` for starter pack config validation
+
+### Fix
+
+- Remove unimplemented `--replay` flag from history command
+- Serialise env-mutating tests with a shared mutex to prevent race conditions
+- Fix `rustfmt` formatting in `web/mod.rs` route definition
+
+### Refactor
+
+- Harden error handling: 33 dangerous `unwrap()` replaced
+- Document all unsafe blocks with `SAFETY` comments
+
+## v0.10.6 (2026-03-31)
+
+### Fix
+
+- Revert coordination-only mode, always include coordinator prompt
+
+## v0.10.5 (2026-03-28)
+
+### Fix
+
+- Skip coordinator system prompt when root context file exists
+- Match coordinator name against slugified agent name
+
 ## v0.10.4 (2026-03-25)
 
 ### Feat
