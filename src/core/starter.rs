@@ -400,12 +400,12 @@ description: Minimal pack
 
     #[test]
     fn test_install_pack() {
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
         let config_dir = tempfile::tempdir().unwrap();
 
-        // Override config dir for test (single env-var test to avoid parallel races)
+        // Override config dir for test.
         // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
-        // The test must be run with `--test-threads=1` to avoid data races with other
-        // tests that read or modify ARMADAI_CONFIG_DIR (in core::config and core::skill).
+        // Serialised via ENV_MUTEX to avoid data races with other tests.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", config_dir.path());
         }
