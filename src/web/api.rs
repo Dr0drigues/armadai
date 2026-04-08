@@ -9,9 +9,9 @@ use crate::core::agent::Agent;
 /// Helper to convert a serializable value to JSON, returning an error response on failure.
 fn to_json<T: Serialize>(value: T) -> Json<serde_json::Value> {
     Json(
-        serde_json::to_value(value).unwrap_or_else(|e| {
-            serde_json::json!({"error": format!("Serialization failed: {}", e)})
-        }),
+        serde_json::to_value(value).unwrap_or_else(
+            |e| serde_json::json!({"error": format!("Serialization failed: {}", e)}),
+        ),
     )
 }
 
@@ -500,6 +500,21 @@ pub async fn list_models() -> Json<Vec<ProviderModels>> {
 }
 
 #[derive(Serialize)]
+pub struct OrchestrationTopology {
+    enabled: bool,
+    pattern: Option<String>,
+    coordinator: Option<String>,
+    teams: Vec<TeamResponse>,
+    agents: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct TeamResponse {
+    lead: Option<String>,
+    agents: Vec<String>,
+}
+
+#[derive(Serialize)]
 #[allow(dead_code)]
 pub struct RefreshResult {
     status: String,
@@ -562,4 +577,56 @@ pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {
         HeaderValue::from_static("attachment; filename=\"config.yaml\""),
     );
     (StatusCode::OK, headers, yaml)
+}
+
+pub async fn get_orchestration_topology() -> Json<serde_json::Value> {
+    use crate::core::project::find_project_config;
+
+    let disabled = OrchestrationTopology {
+        enabled: false,
+        pattern: None,
+        coordinator: None,
+        teams: vec![],
+        agents: vec![],
+    };
+
+    // Try to find and load project config from current directory
+    let project = match find_project_config() {
+        Some((_, cfg)) => cfg,
+        None => return to_json(disabled),
+    };
+
+    let orch = match project.orchestration {
+        Some(cfg) => *cfg,
+        None => return to_json(disabled),
+    };
+
+    // Collect all agents from teams
+    let mut all_agents: Vec<String> = vec![];
+    if let Some(ref coord) = orch.coordinator {
+        all_agents.push(coord.clone());
+    }
+
+    let mut teams: Vec<TeamResponse> = vec![];
+    for t in &orch.teams {
+        if let Some(ref lead) = t.lead {
+            all_agents.push(lead.clone());
+        }
+        all_agents.extend(t.agents.clone());
+        teams.push(TeamResponse {
+            lead: t.lead.clone(),
+            agents: t.agents.clone(),
+        });
+    }
+
+    all_agents.sort();
+    all_agents.dedup();
+
+    to_json(OrchestrationTopology {
+        enabled: orch.enabled,
+        pattern: Some(orch.pattern.to_string()),
+        coordinator: orch.coordinator,
+        teams,
+        agents: all_agents,
+    })
 }

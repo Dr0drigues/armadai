@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ArmadAI</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <style>
   :root { --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --green: #3fb950; --yellow: #d29922; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -54,6 +55,7 @@
   .search-clear:hover { border-color: var(--accent); color: var(--accent); }
   .search-count { font-size: 12px; color: var(--muted); white-space: nowrap; }
   #view { display: none; }
+  .mermaid { background: var(--bg); padding: 20px; text-align: center; }
 </style>
 </head>
 <body>
@@ -67,6 +69,7 @@
     <button onclick="showTab('history')">History</button>
     <button onclick="showTab('costs')">Costs</button>
     <button onclick="showTab('models')">Models</button>
+    <button onclick="showTab('orchestration')">Orchestration</button>
   </nav>
 </header>
 <main>
@@ -77,9 +80,13 @@
   <div id="history" class="card" style="display:none"></div>
   <div id="costs" class="card" style="display:none"></div>
   <div id="models" class="card" style="display:none"></div>
+  <div id="orchestration" class="card" style="display:none"></div>
   <div id="view" class="card"></div>
 </main>
 <script>
+// Initialize Mermaid
+mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+
 let currentTab = 'agents';
 let viewBackTab = 'agents';
 
@@ -136,10 +143,10 @@ function createSearchBar(tableId) {
 
 function showTab(tab) {
   document.querySelectorAll('nav button').forEach((b, i) => {
-    const tabs = ['agents','prompts','skills','starters','history','costs','models'];
+    const tabs = ['agents','prompts','skills','starters','history','costs','models','orchestration'];
     b.classList.toggle('active', tabs[i] === tab);
   });
-  ['agents','prompts','skills','starters','history','costs','models','view'].forEach(id => document.getElementById(id).style.display = 'none');
+  ['agents','prompts','skills','starters','history','costs','models','orchestration','view'].forEach(id => document.getElementById(id).style.display = 'none');
   document.getElementById(tab).style.display = 'block';
   currentTab = tab;
   if (tab === 'agents') loadAgents();
@@ -149,6 +156,7 @@ function showTab(tab) {
   if (tab === 'history') loadHistory();
   if (tab === 'costs') loadCosts();
   if (tab === 'models') loadModels();
+  if (tab === 'orchestration') loadOrchestration();
 }
 
 async function loadAgents() {
@@ -465,6 +473,127 @@ async function refreshModels() {
     else { await loadModels(); }
   } catch (e) { alert('Sync failed: ' + e.message); }
   finally { if (btn) { btn.disabled = false; btn.textContent = '⟳ Sync models.dev'; } }
+}
+
+async function loadOrchestration() {
+  const res = await fetch('/api/orchestration/topology');
+  const data = await res.json();
+  const el = document.getElementById('orchestration');
+
+  if (!data.enabled) {
+    el.innerHTML = '<div class="empty">No orchestration configured. Add an `orchestration:` section to armadai.yaml to enable.</div>';
+    return;
+  }
+
+  const pattern = data.pattern || 'unknown';
+  let diagram = '';
+
+  if (pattern === 'hierarchical') {
+    diagram = generateHierarchicalDiagram(data);
+  } else if (pattern === 'blackboard') {
+    diagram = generateBlackboardDiagram(data);
+  } else if (pattern === 'ring') {
+    diagram = generateRingDiagram(data);
+  } else if (pattern === 'direct') {
+    diagram = generateDirectDiagram(data);
+  } else {
+    diagram = `<p>Unknown pattern: ${pattern}</p>`;
+  }
+
+  el.innerHTML = `
+    <div class="detail">
+      <h2>Orchestration Topology</h2>
+      <div class="detail-grid" style="grid-template-columns: 1fr;">
+        <div class="detail-field"><label>Pattern</label><span class="tag" style="background:var(--purple,#8b5cf6);color:#fff;padding:4px 12px;font-size:13px">${pattern}</span></div>
+      </div>
+      ${data.coordinator ? `<div class="detail-field"><label>Coordinator</label><span style="font-family:monospace">${data.coordinator}</span></div>` : ''}
+      <div style="margin-top:20px">${diagram}</div>
+    </div>`;
+
+  // Render mermaid diagrams
+  mermaid.run();
+}
+
+function generateHierarchicalDiagram(data) {
+  const coordinator = data.coordinator || 'Coordinator';
+  let nodes = `User([User])-->coordinator["${coordinator}<br/>Coordinator"]`;
+
+  data.teams.forEach((team, i) => {
+    if (team.lead) {
+      nodes += `\ncoordinator-->${team.lead}["${team.lead}<br/>Lead"]`;
+      team.agents.forEach(agent => {
+        nodes += `\n${team.lead}-->${agent}["${agent}"]`;
+      });
+    } else {
+      team.agents.forEach(agent => {
+        nodes += `\ncoordinator-->${agent}["${agent}"]`;
+      });
+    }
+  });
+
+  let styles = `\nstyle coordinator fill:#e74c3c,color:#fff`;
+  data.teams.forEach((team) => {
+    if (team.lead) {
+      styles += `\nstyle ${team.lead} fill:#f39c12,color:#fff`;
+    }
+  });
+
+  const mermaidCode = `flowchart TD\n${nodes}${styles}`;
+  return `<div class="mermaid">${escapeHtml(mermaidCode)}</div>`;
+}
+
+function generateBlackboardDiagram(data) {
+  let nodes = `User([User])-->Board["Shared Board"]`;
+  data.agents.forEach(agent => {
+    if (data.coordinator && agent === data.coordinator) {
+      nodes += `\nBoard<-->${agent}["${agent}<br/>Coordinator"]`;
+    } else {
+      nodes += `\nBoard<-->${agent}["${agent}"]`;
+    }
+  });
+
+  const mermaidCode = `flowchart TD\n${nodes}`;
+  return `<div class="mermaid">${escapeHtml(mermaidCode)}</div>`;
+}
+
+function generateRingDiagram(data) {
+  const agents = data.agents.filter(a => !data.coordinator || a !== data.coordinator);
+  if (agents.length < 2) {
+    return '<p>Ring pattern requires at least 2 agents</p>';
+  }
+
+  let nodes = '';
+  for (let i = 0; i < agents.length; i++) {
+    const current = agents[i];
+    const next = agents[(i + 1) % agents.length];
+    if (i === 0) {
+      nodes += `${current}["${current}"]-->${next}["${next}"]`;
+    } else {
+      nodes += `\n${current}-->${next}`;
+    }
+  }
+  // Close the ring
+  nodes += `\n${agents[agents.length - 1]}-->${agents[0]}`;
+
+  const mermaidCode = `flowchart LR\n${nodes}`;
+  return `<div class="mermaid">${escapeHtml(mermaidCode)}</div>`;
+}
+
+function generateDirectDiagram(data) {
+  const agent = data.coordinator || (data.agents.length > 0 ? data.agents[0] : 'agent');
+  const mermaidCode = `flowchart TD\nUser([User])-->${agent}["${agent}"]`;
+  return `<div class="mermaid">${escapeHtml(mermaidCode)}</div>`;
+}
+
+function escapeHtml(text) {
+  const map = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+  };
+  return text.replace(/[&<>"']/g, m => map[m]);
 }
 
 // Initial load

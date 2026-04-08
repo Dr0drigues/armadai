@@ -24,6 +24,7 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/starters/{name}/config", get(api::get_starter_config))
         .route("/api/models", get(api::list_models))
         .route("/api/models/refresh", post(api::refresh_models))
+        .route("/api/orchestration/topology", get(api::get_orchestration_topology))
         .layer(CorsLayer::permissive());
 
     let addr = format!("0.0.0.0:{port}");
