@@ -97,6 +97,7 @@ dependencies = [
  "include_dir",
  "pulldown-cmark",
  "ratatui",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

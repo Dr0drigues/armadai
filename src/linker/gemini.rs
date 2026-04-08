@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{LinkAgent, Linker, OutputFile, slugify};
+use super::{LinkAgent, Linker, OutputFile, armadai_protocol_block, slugify};
 
 /// Generates Gemini CLI config files in `.gemini/`.
 ///
@@ -190,6 +190,9 @@ fn generate_agents_md(agents: &[LinkAgent], coordinator: Option<&LinkAgent>) -> 
              5. For complex tasks, combine multiple members' perspectives\n",
         );
     }
+
+    // Inject ArmadAI response protocol
+    content.push_str(armadai_protocol_block());
 
     OutputFile {
         path: PathBuf::from(".gemini/GEMINI.md"),
@@ -446,5 +449,19 @@ mod tests {
 
         // Should not contain the no-coordinator generic text
         assert!(!gemini_md.content.contains("team coordinator"));
+
+        // Protocol block must be present
+        assert!(gemini_md.content.contains("## ArmadAI Response Protocol"));
+        assert!(gemini_md.content.contains("<!--ARMADAI_END-->"));
+        assert!(
+            gemini_md
+                .content
+                .contains("<!--ARMADAI_DELEGATE:agent-name-->")
+        );
+        assert!(
+            gemini_md
+                .content
+                .contains("<!--ARMADAI_META:status=complete-->")
+        );
     }
 }

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{LinkAgent, Linker, OutputFile, slugify};
+use super::{LinkAgent, Linker, OutputFile, armadai_protocol_block, slugify};
 
 /// Generates Claude Code sub-agent files (`.claude/agents/{slug}.md`).
 ///
@@ -138,6 +138,9 @@ fn generate_claude_md(coordinator: &LinkAgent, agents: &[LinkAgent]) -> OutputFi
             "\nTo delegate to a specialized agent, use `/agents` and select the appropriate one.\n",
         );
     }
+
+    // Inject ArmadAI response protocol
+    content.push_str(armadai_protocol_block());
 
     OutputFile {
         path: PathBuf::from(".claude/CLAUDE.md"),
@@ -369,6 +372,20 @@ mod tests {
         assert!(
             coord_pos < team_pos,
             "## Coordination must appear before ## Team"
+        );
+
+        // Protocol block must be present
+        assert!(claude_md.content.contains("## ArmadAI Response Protocol"));
+        assert!(claude_md.content.contains("<!--ARMADAI_END-->"));
+        assert!(
+            claude_md
+                .content
+                .contains("<!--ARMADAI_DELEGATE:agent-name-->")
+        );
+        assert!(
+            claude_md
+                .content
+                .contains("<!--ARMADAI_META:status=complete-->")
         );
     }
 }
