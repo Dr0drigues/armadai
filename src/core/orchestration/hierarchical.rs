@@ -221,6 +221,10 @@ impl HierarchicalEngine {
             }
 
             // Process delegations
+            // TODO(C1-parallel-dispatch): Implement parallel execution for independent Delegate actions.
+            // Current blocker: invoke_agent() takes &mut self, preventing concurrent calls.
+            // Required refactoring: Extract mutable state into Arc<Mutex<State>> or use message-passing.
+            // See docs/PARALLEL_DELEGATION.md for detailed implementation plan.
             let mut results = Vec::new();
             for action in &actions {
                 match action {
