@@ -196,8 +196,58 @@ impl ShellRunner {
         prompt
     }
 
+    /// Get the CLI command name.
+    pub fn command(&self) -> &str {
+        &self.config.command
+    }
+
+    /// Get the CLI args.
+    pub fn args(&self) -> &[String] {
+        &self.config.args
+    }
+
+    /// Build the prompt for a given input (public for app.rs integration).
+    pub fn build_prompt_for(&mut self, user_input: &str) -> String {
+        self.history.push(Message {
+            role: MessageRole::User,
+            content: user_input.to_string(),
+            metrics: None,
+        });
+        self.build_prompt(user_input)
+    }
+
+    /// Record a completed turn in history (called by app.rs after CLI returns).
+    pub fn record_turn(&mut self, _user_input: &str, assistant_content: &str, duration: Duration) {
+        let tokens_in = Self::estimate_tokens(
+            self.history
+                .last()
+                .map(|m| m.content.as_str())
+                .unwrap_or(""),
+        );
+        let tokens_out = Self::estimate_tokens(assistant_content);
+
+        self.turn_count += 1;
+        self.total_tokens_in += tokens_in;
+        self.total_tokens_out += tokens_out;
+
+        let turn_cost = (tokens_in as f64 / 1_000_000.0) * COST_PER_1M_INPUT
+            + (tokens_out as f64 / 1_000_000.0) * COST_PER_1M_OUTPUT;
+        self.total_cost_estimate += turn_cost;
+
+        self.history.push(Message {
+            role: MessageRole::Assistant,
+            content: assistant_content.to_string(),
+            metrics: Some(TurnMetrics {
+                tokens_in_estimate: tokens_in,
+                tokens_out_estimate: tokens_out,
+                duration,
+                turn_number: self.turn_count,
+            }),
+        });
+    }
+
     /// Estimate token count from text (rough: chars / 4)
-    fn estimate_tokens(text: &str) -> usize {
+    pub fn estimate_tokens(text: &str) -> usize {
         text.len() / 4
     }
 

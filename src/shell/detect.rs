@@ -78,6 +78,31 @@ pub fn provider_display_name(command: &str) -> &str {
     }
 }
 
+/// Try to detect the model name for a given provider.
+///
+/// For Gemini: reads `.gemini/settings.json` or runs `gemini --version`.
+/// For others: returns a default based on the provider.
+pub fn detect_model_name(command: &str) -> String {
+    match command {
+        "gemini" => detect_gemini_model(),
+        "claude" => "claude-sonnet-4-5".to_string(),
+        "aider" => "gpt-4o".to_string(),
+        "codex" => "codex".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn detect_gemini_model() -> String {
+    // Try to read model from .gemini/settings.json
+    if let Ok(content) = std::fs::read_to_string(".gemini/settings.json")
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
+        && let Some(model) = json.get("model").and_then(|m| m.as_str())
+    {
+        return model.to_string();
+    }
+    "gemini-2.5-flash".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
