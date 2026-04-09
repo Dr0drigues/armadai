@@ -1,3 +1,61 @@
+## v0.12.0 (2026-04-09)
+
+### New: `armadai shell` — Interactive Conversational TUI
+
+- One-shot CLI runner supporting Gemini, Claude, Aider, Codex
+- Rich markdown rendering with syntax-highlighted code blocks (tui-markdown)
+- Mouse scroll, input history (↑↓), popup overlays for slash commands
+- Spinner animation with elapsed time during loading
+- Auto-detect provider from PATH, model from config
+- UTF-8 cursor handling for accented characters
+- Terminal restore on panic (panic hook)
+
+### New: Wizard Setup
+
+- Auto-detect project config and existing links
+- Interactive init with starter pack selection
+- Interactive link target selection
+- Provider auth verification
+
+### New: Slash Commands
+
+- `/help`, `/clear`, `/cost`, `/agents`, `/model`, `/history` — session management
+- `/providers`, `/switch <name>` — multi-provider support
+- `/sessions`, `/resume <id>`, `/save` — persistent sessions
+- `/quit` — exit shell
+- All commands render as popup overlays with markdown formatting
+
+### New: Multi-Provider Support
+
+- Switch between Gemini, Claude, Aider, Codex mid-session
+- Preserves conversation history across provider switches
+- Provider detection with model name and pricing display
+
+### New: Persistent Sessions
+
+- Auto-save after each turn to `~/.config/armadai/sessions/`
+- Resume conversations with `/resume`
+- JSON-based storage (no SQLite dependency)
+- Relative timestamps ("2 hours ago", "yesterday")
+
+### New: Response Protocol
+
+- `armadai-protocol` skill with standardized markers (END, DELEGATE, META)
+- Injected automatically in all linker outputs (Gemini, Claude, Copilot, Codex, OpenCode)
+- Shell parser module for marker extraction
+
+### Web UI Improvements
+
+- Light/dark mode toggle with localStorage persistence
+- Markdown rendering for system prompts, skills, prompts (marked.js)
+- Download `.md` buttons on agent, prompt, skill detail views
+- Orchestration config display in starter detail views
+- Graceful Ctrl+C shutdown
+
+### Dependencies
+
+- New: `tui-markdown` 0.3 (rich markdown rendering in TUI)
+
 ## v0.11.0 (2026-04-01)
 
 ### Feat

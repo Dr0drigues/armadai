@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{LinkAgent, Linker, OutputFile, slugify};
+use super::{LinkAgent, Linker, OutputFile, armadai_protocol_block, slugify};
 
 /// Generates OpenAI Codex CLI config files in `.codex/`.
 ///
@@ -187,6 +187,9 @@ fn generate_agents_md(agents: &[LinkAgent], coordinator: Option<&LinkAgent>) -> 
              5. For complex tasks, combine multiple members' perspectives\n",
         );
     }
+
+    // Inject ArmadAI response protocol
+    content.push_str(armadai_protocol_block());
 
     OutputFile {
         path: PathBuf::from(".codex/AGENTS.md"),
@@ -438,5 +441,11 @@ mod tests {
         assert!(file.content.contains("Always be kind."));
         assert!(file.content.contains("## Team"));
         assert!(file.content.contains("agents/worker.toml"));
+
+        // Protocol block must be present
+        assert!(file.content.contains("## ArmadAI Response Protocol"));
+        assert!(file.content.contains("<!--ARMADAI_END-->"));
+        assert!(file.content.contains("<!--ARMADAI_DELEGATE:agent-name-->"));
+        assert!(file.content.contains("<!--ARMADAI_META:status=complete-->"));
     }
 }

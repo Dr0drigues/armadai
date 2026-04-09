@@ -5,8 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ArmadAI</title>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   :root { --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --green: #3fb950; --yellow: #d29922; }
+  [data-theme="light"] {
+    --bg: #ffffff;
+    --surface: #f6f8fa;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --muted: #656d76;
+    --accent: #0969da;
+    --green: #1a7f37;
+    --yellow: #9a6700;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
   header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
@@ -56,6 +67,30 @@
   .search-count { font-size: 12px; color: var(--muted); white-space: nowrap; }
   #view { display: none; }
   .mermaid { background: var(--bg); padding: 20px; text-align: center; }
+  #theme-btn { background: none; border: 1px solid transparent; color: var(--muted); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 16px; margin-left: auto; }
+  #theme-btn:hover { color: var(--text); border-color: var(--border); }
+  .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { margin-top: 16px; margin-bottom: 8px; font-weight: 600; }
+  .markdown-body h1 { font-size: 24px; }
+  .markdown-body h2 { font-size: 20px; }
+  .markdown-body h3 { font-size: 16px; }
+  .markdown-body h4 { font-size: 14px; }
+  .markdown-body p { margin-bottom: 12px; line-height: 1.6; }
+  .markdown-body ul, .markdown-body ol { margin-left: 20px; margin-bottom: 12px; }
+  .markdown-body li { margin-bottom: 4px; }
+  .markdown-body code { background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 2px 6px; font-family: 'Courier New', monospace; font-size: 13px; }
+  .markdown-body pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow-x: auto; margin-bottom: 12px; }
+  .markdown-body pre code { background: none; border: none; padding: 0; }
+  .markdown-body a { color: var(--accent); text-decoration: none; }
+  .markdown-body a:hover { text-decoration: underline; }
+  .markdown-body blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--muted); margin: 12px 0; }
+  .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+  .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+  .markdown-body th { background: var(--bg); font-weight: 600; }
+  .download-btn { background: none; border: 1px solid var(--green); color: var(--green); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; margin-bottom: 16px; margin-right: 8px; }
+  .download-btn:hover { background: rgba(63,185,80,0.1); }
+  [data-theme="light"] .download-btn { border-color: #1a7f37; color: #1a7f37; }
+  [data-theme="light"] .download-btn:hover { background: rgba(26,127,55,0.1); }
+  .yaml-block { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: 'Courier New', monospace; font-size: 13px; white-space: pre-wrap; line-height: 1.5; margin-bottom: 16px; overflow-x: auto; }
 </style>
 </head>
 <body>
@@ -71,6 +106,7 @@
     <button onclick="showTab('models')">Models</button>
     <button onclick="showTab('orchestration')">Orchestration</button>
   </nav>
+  <button id="theme-btn" onclick="toggleTheme()" title="Toggle dark/light mode">🌙</button>
 </header>
 <main>
   <div id="agents" class="card"></div>
@@ -86,6 +122,84 @@
 <script>
 // Initialize Mermaid
 mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+
+// Theme management
+function initTheme() {
+  const saved = localStorage.getItem('armadai-theme') || 'dark';
+  applyTheme(saved);
+}
+
+function applyTheme(theme) {
+  if (theme === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+    document.getElementById('theme-btn').textContent = '☀️';
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+    document.getElementById('theme-btn').textContent = '🌙';
+  }
+  localStorage.setItem('armadai-theme', theme);
+  mermaid.initialize({ startOnLoad: false, theme: theme === 'light' ? 'default' : 'dark' });
+}
+
+function toggleTheme() {
+  const current = localStorage.getItem('armadai-theme') || 'dark';
+  applyTheme(current === 'dark' ? 'light' : 'dark');
+}
+
+// Markdown and sanitization helpers
+function escapeHtmlContent(text) {
+  const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+  return text.replace(/[&<>"']/g, m => map[m]);
+}
+
+function renderMarkdown(content) {
+  if (!content) return '';
+  marked.setOptions({ breaks: true, gfm: true });
+  return marked.parse(content);
+}
+
+function downloadText(filename, content) {
+  const blob = new Blob([content], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function reconstructAgentMarkdown(agent) {
+  let md = `# ${agent.name}\n\n## Metadata\n`;
+  md += `- provider: ${agent.provider}\n`;
+  md += `- model: ${agent.model}\n`;
+  if (agent.temperature !== undefined) md += `- temperature: ${agent.temperature}\n`;
+  if (agent.max_tokens) md += `- max_tokens: ${agent.max_tokens}\n`;
+  if (agent.timeout) md += `- timeout: ${agent.timeout}\n`;
+  if (agent.rate_limit) md += `- rate_limit: ${agent.rate_limit}\n`;
+  if (agent.tags && agent.tags.length) md += `- tags: [${agent.tags.join(', ')}]\n`;
+  if (agent.stacks && agent.stacks.length) md += `- stacks: [${agent.stacks.join(', ')}]\n`;
+  md += `\n## System Prompt\n\n${agent.system_prompt || '(none)'}\n`;
+  if (agent.instructions) md += `\n## Instructions\n\n${agent.instructions}\n`;
+  if (agent.output_format) md += `\n## Output Format\n\n${agent.output_format}\n`;
+  return md;
+}
+
+function reconstructPromptMarkdown(prompt) {
+  let md = `# ${prompt.name}\n\n## Metadata\n`;
+  if (prompt.description) md += `- description: ${prompt.description}\n`;
+  if (prompt.apply_to && prompt.apply_to.length) md += `- apply_to: [${prompt.apply_to.join(', ')}]\n`;
+  md += `\n## Content\n\n${prompt.body || '(empty)'}\n`;
+  return md;
+}
+
+function reconstructSkillMarkdown(skill) {
+  let md = `# ${skill.name}\n\n## Metadata\n`;
+  if (skill.description) md += `- description: ${skill.description}\n`;
+  if (skill.version) md += `- version: ${skill.version}\n`;
+  if (skill.tools && skill.tools.length) md += `- tools: [${skill.tools.join(', ')}]\n`;
+  md += `\n## SKILL.md\n\n${skill.body || '(empty)'}\n`;
+  return md;
+}
 
 let currentTab = 'agents';
 let viewBackTab = 'agents';
@@ -190,9 +304,13 @@ async function viewAgent(name) {
   ['agents','prompts','skills','starters','history','costs','models'].forEach(id => document.getElementById(id).style.display = 'none');
   const el = document.getElementById('view');
   el.style.display = 'block';
+  const agentMarkdown = reconstructAgentMarkdown(a);
   el.innerHTML = `
     <div class="detail">
-      <button class="back-btn" onclick="backToList()">&larr; Back to agents</button>
+      <div style="display:flex;gap:8px">
+        <button class="back-btn" onclick="backToList()">&larr; Back to agents</button>
+        <button class="download-btn" onclick="downloadText('${a.name}.md', reconstructAgentMarkdown(agentContent))">↓ Download .md</button>
+      </div>
       <h2>${a.name}</h2>
       <div class="detail-grid">
         <div class="detail-field"><label>Provider</label><span>${a.provider}</span></div>
@@ -230,11 +348,12 @@ async function viewAgent(name) {
         ${a.model_resolution.map(r => `<tr><td>${r.target}</td><td style="color:var(--green)">${r.resolved_model}</td></tr>`).join('')}
       </table>` : ''}
       <div class="prompt-box-title">System Prompt</div>
-      <div class="prompt-box">${a.system_prompt || '(none)'}</div>
-      ${a.instructions ? `<div class="prompt-box-title">Instructions</div><div class="prompt-box">${a.instructions}</div>` : ''}
-      ${a.output_format ? `<div class="prompt-box-title">Output Format</div><div class="prompt-box">${a.output_format}</div>` : ''}
+      <div class="prompt-box markdown-body">${renderMarkdown(a.system_prompt || '(none)')}</div>
+      ${a.instructions ? `<div class="prompt-box-title">Instructions</div><div class="prompt-box markdown-body">${renderMarkdown(a.instructions)}</div>` : ''}
+      ${a.output_format ? `<div class="prompt-box-title">Output Format</div><div class="prompt-box markdown-body">${renderMarkdown(a.output_format)}</div>` : ''}
       <div class="detail-field" style="margin-top:12px"><label>Source</label><span style="color:var(--muted)">${a.source}</span></div>
     </div>`;
+  window.agentContent = a;
 }
 
 async function loadPrompts() {
@@ -267,18 +386,23 @@ async function viewPrompt(name) {
   ['agents','prompts','skills','starters','history','costs','models'].forEach(id => document.getElementById(id).style.display = 'none');
   const el = document.getElementById('view');
   el.style.display = 'block';
+  const promptMarkdown = reconstructPromptMarkdown(p);
   el.innerHTML = `
     <div class="detail">
-      <button class="back-btn" onclick="backToList()">&larr; Back to prompts</button>
+      <div style="display:flex;gap:8px">
+        <button class="back-btn" onclick="backToList()">&larr; Back to prompts</button>
+        <button class="download-btn" onclick="downloadText('${p.name}.md', reconstructPromptMarkdown(promptContent))">↓ Download .md</button>
+      </div>
       <h2>${p.name}</h2>
       <div class="detail-grid">
         <div class="detail-field"><label>Description</label><span>${p.description || '(none)'}</span></div>
         <div class="detail-field"><label>Applies To</label><span>${p.apply_to.map(a => `<span class="tag">${a}</span>`).join('') || 'none'}</span></div>
       </div>
       <div class="prompt-box-title">Content</div>
-      <div class="prompt-box">${p.body || '(empty)'}</div>
+      <div class="prompt-box markdown-body">${renderMarkdown(p.body || '(empty)')}</div>
       <div class="detail-field" style="margin-top:12px"><label>Source</label><span style="color:var(--muted)">${p.source}</span></div>
     </div>`;
+  window.promptContent = p;
 }
 
 async function loadSkills() {
@@ -319,9 +443,13 @@ async function viewSkill(name) {
   if (s.scripts.length) filesHtml += `<div class="list-section"><h3>Scripts</h3>${s.scripts.map(fileBlock).join('')}</div>`;
   if (s.references.length) filesHtml += `<div class="list-section"><h3>References</h3>${s.references.map(fileBlock).join('')}</div>`;
   if (s.assets.length) filesHtml += `<div class="list-section"><h3>Assets</h3>${s.assets.map(fileBlock).join('')}</div>`;
+  const skillMarkdown = reconstructSkillMarkdown(s);
   el.innerHTML = `
     <div class="detail">
-      <button class="back-btn" onclick="backToList()">&larr; Back to skills</button>
+      <div style="display:flex;gap:8px">
+        <button class="back-btn" onclick="backToList()">&larr; Back to skills</button>
+        <button class="download-btn" onclick="downloadText('${s.name}-SKILL.md', reconstructSkillMarkdown(skillContent))">↓ Download SKILL.md</button>
+      </div>
       <h2>${s.name}</h2>
       <div class="detail-grid">
         <div class="detail-field"><label>Description</label><span>${s.description || '(none)'}</span></div>
@@ -329,10 +457,11 @@ async function viewSkill(name) {
         <div class="detail-field"><label>Tools</label><span>${s.tools.map(t => `<span class="tag stack">${t}</span>`).join('') || 'none'}</span></div>
       </div>
       <div class="prompt-box-title">SKILL.md</div>
-      <div class="prompt-box">${s.body || '(empty)'}</div>
+      <div class="prompt-box markdown-body">${renderMarkdown(s.body || '(empty)')}</div>
       ${filesHtml}
       <div class="detail-field" style="margin-top:12px"><label>Source</label><span style="color:var(--muted)">${s.source}</span></div>
     </div>`;
+  window.skillContent = s;
 }
 
 async function loadStarters() {
@@ -366,15 +495,37 @@ async function viewStarter(name) {
   ['agents','prompts','skills','starters','history','costs','models'].forEach(id => document.getElementById(id).style.display = 'none');
   const el = document.getElementById('view');
   el.style.display = 'block';
+
+  // Fetch and parse YAML config for orchestration info
+  let orchestrationHtml = '';
+  try {
+    const configRes = await fetch(`/api/starters/${encodeURIComponent(name)}/config`);
+    const configYaml = await configRes.text();
+    if (configYaml.includes('orchestration:')) {
+      const orchStart = configYaml.indexOf('orchestration:');
+      if (orchStart !== -1) {
+        let orchEnd = configYaml.indexOf('\n\n', orchStart);
+        if (orchEnd === -1) orchEnd = configYaml.length;
+        const orchSection = configYaml.substring(orchStart, orchEnd).trim();
+        orchestrationHtml = `<div class="list-section"><h3>Orchestration Configuration</h3><div class="yaml-block">${escapeHtmlContent(orchSection)}</div></div>`;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to fetch config:', e);
+  }
+
   el.innerHTML = `
     <div class="detail">
-      <button class="back-btn" onclick="backToList()">&larr; Back to starters</button>
+      <div style="display:flex;gap:8px">
+        <button class="back-btn" onclick="backToList()">&larr; Back to starters</button>
+        <a href="/api/starters/${encodeURIComponent(name)}/config" download="armadai.yaml" class="download-btn" style="text-decoration:none">&#8615; Download armadai.yaml</a>
+      </div>
       <h2>${s.name}</h2>
       <p style="color:var(--muted);margin-bottom:20px">${s.description}</p>
-      <a href="/api/starters/${encodeURIComponent(name)}/config" download="armadai.yaml" class="back-btn" style="display:inline-block;text-decoration:none;margin-bottom:16px;border-color:var(--green);color:var(--green)">&#8615; Download armadai.yaml</a>
       ${s.agents.length ? `<div class="list-section"><h3>Agents (${s.agents.length})</h3><ul>${s.agents.map(a => `<li>${a}</li>`).join('')}</ul></div>` : ''}
       ${s.prompts.length ? `<div class="list-section"><h3>Prompts (${s.prompts.length})</h3><ul>${s.prompts.map(p => `<li>${p}</li>`).join('')}</ul></div>` : ''}
       ${s.skills.length ? `<div class="list-section"><h3>Skills (${s.skills.length})</h3><ul>${s.skills.map(sk => `<li>${sk}</li>`).join('')}</ul></div>` : ''}
+      ${orchestrationHtml}
     </div>`;
 }
 
@@ -597,6 +748,7 @@ function escapeHtml(text) {
 }
 
 // Initial load
+initTheme();
 loadAgents();
 </script>
 </body>
