@@ -39,7 +39,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -378,7 +378,18 @@ pub enum Command {
 }
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
-    match cli.command {
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            // No subcommand — launch the interactive shell
+            #[cfg(feature = "tui")]
+            return crate::shell::app::run_shell().await;
+            #[cfg(not(feature = "tui"))]
+            anyhow::bail!("Shell requires the 'tui' feature. Use `armadai shell` or `armadai --help`.");
+        }
+    };
+
+    match command {
         Command::Run {
             agent,
             input,
