@@ -5,6 +5,16 @@
 use super::runner::RunnerConfig;
 use std::time::Duration;
 
+/// Information about a provider's availability and configuration.
+#[derive(Debug, Clone)]
+pub struct ProviderInfo {
+    pub command: String,
+    pub args: Vec<String>,
+    pub display_name: String,
+    pub model_name: String,
+    pub available: bool,
+}
+
 /// Detect the best available CLI tool and return a RunnerConfig.
 ///
 /// Checks in order of preference:
@@ -37,8 +47,39 @@ pub fn detect_provider() -> Option<RunnerConfig> {
     None
 }
 
+/// List all known providers with their availability.
+///
+/// Returns a vector of all providers we know how to work with,
+/// including whether each one is currently available (installed in PATH).
+pub fn list_providers() -> Vec<ProviderInfo> {
+    let providers = [
+        ("gemini", vec!["-p"], "Gemini"),
+        ("claude", vec!["-p", "--output-format", "text"], "Claude"),
+        ("aider", vec!["--yes", "--message"], "Aider"),
+        ("codex", vec!["--quiet", "--full-auto"], "Codex"),
+    ];
+
+    providers
+        .iter()
+        .map(|(cmd, args, name)| {
+            let available = is_command_available(cmd);
+            ProviderInfo {
+                command: cmd.to_string(),
+                args: args.iter().map(|s| s.to_string()).collect(),
+                display_name: name.to_string(),
+                model_name: if available {
+                    detect_model_name(cmd)
+                } else {
+                    String::new()
+                },
+                available,
+            }
+        })
+        .collect()
+}
+
 /// Check if a command is available in PATH.
-fn is_command_available(command: &str) -> bool {
+pub fn is_command_available(command: &str) -> bool {
     #[cfg(unix)]
     {
         use std::process::Command;

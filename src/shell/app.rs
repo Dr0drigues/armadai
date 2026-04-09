@@ -130,6 +130,44 @@ async fn event_loop(
                 CommandResult::Quit => {
                     break;
                 }
+                CommandResult::SwitchProvider(provider_name) => {
+                    if provider_name.is_empty() {
+                        app.show_popup(
+                            "Usage: /switch <provider>\nExample: /switch claude".to_string(),
+                        );
+                        continue;
+                    }
+
+                    // Find the provider in the registry
+                    let providers = super::detect::list_providers();
+                    if let Some(provider) = providers.iter().find(|p| {
+                        p.command == provider_name
+                            || p.display_name.to_lowercase() == provider_name.to_lowercase()
+                    }) {
+                        if !provider.available {
+                            app.show_popup(format!("Provider '{}' is not available. Make sure '{}' is installed and in your PATH.", provider.display_name, provider.command));
+                            continue;
+                        }
+
+                        // Switch the provider
+                        runner.switch_provider(provider.command.clone(), provider.args.clone());
+                        app.set_provider_name(provider.display_name.clone());
+                        app.set_model_name(provider.model_name.clone());
+
+                        app.show_popup(format!(
+                            "Switched to {} ({})\nModel: {}",
+                            provider.display_name, provider.command, provider.model_name
+                        ));
+                    } else {
+                        let available: Vec<String> = providers
+                            .iter()
+                            .filter(|p| p.available)
+                            .map(|p| p.command.clone())
+                            .collect();
+                        app.show_popup(format!("Unknown provider: '{}'\nAvailable providers: {}\nUse /providers to see all options.", provider_name, available.join(", ")));
+                    }
+                    continue;
+                }
             }
             continue;
         }

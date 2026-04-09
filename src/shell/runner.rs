@@ -274,6 +274,16 @@ impl ShellRunner {
         self.total_tokens_out = 0;
         self.total_cost_estimate = 0.0;
     }
+
+    /// Switch to a different provider while keeping conversation history.
+    ///
+    /// This allows changing the CLI tool mid-session while preserving context.
+    /// The history is kept because it can still be useful for the new provider.
+    pub fn switch_provider(&mut self, command: String, args: Vec<String>) {
+        self.config.command = command;
+        self.config.args = args;
+        // Keep history — it's still useful as context
+    }
 }
 
 #[cfg(test)]

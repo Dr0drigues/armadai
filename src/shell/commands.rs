@@ -48,6 +48,16 @@ pub const COMMANDS: &[SlashCommand] = &[
         description: "Show prompt history",
     },
     SlashCommand {
+        name: "providers",
+        aliases: &["p"],
+        description: "List available providers",
+    },
+    SlashCommand {
+        name: "switch",
+        aliases: &["sw"],
+        description: "Switch provider (e.g. /switch claude)",
+    },
+    SlashCommand {
         name: "quit",
         aliases: &["q", "exit"],
         description: "Exit the shell",
@@ -63,6 +73,8 @@ pub enum CommandResult {
     Clear,
     /// Exit shell
     Quit,
+    /// Switch to a different provider
+    SwitchProvider(String),
 }
 
 /// Find a command by name or alias
@@ -97,6 +109,11 @@ pub fn try_execute(
             model_name,
         ))),
         Some(c) if c.name == "history" => Some(CommandResult::Display(format_history(runner))),
+        Some(c) if c.name == "providers" => Some(CommandResult::Display(format_providers())),
+        Some(c) if c.name == "switch" => {
+            let arg = trimmed[1..].split_whitespace().nth(1).unwrap_or("");
+            Some(CommandResult::SwitchProvider(arg.to_string()))
+        }
         Some(c) if c.name == "quit" => Some(CommandResult::Quit),
         _ => Some(CommandResult::Display(format!(
             "Unknown command: /{cmd_part}\nType /help for available commands."
@@ -212,7 +229,10 @@ fn parse_field_from_yaml(content: &str, field: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with(&prefix) {
-            let value = trimmed[prefix.len()..].trim().trim_matches('"').trim_matches('\'');
+            let value = trimmed[prefix.len()..]
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'');
             if !value.is_empty() {
                 return Some(value.to_string());
             }
@@ -264,7 +284,11 @@ fn parse_teams_from_yaml(content: &str) -> Vec<TeamInfo> {
         }
 
         if trimmed.starts_with("- lead:") {
-            let val = trimmed.strip_prefix("- lead:").unwrap().trim().trim_matches('"');
+            let val = trimmed
+                .strip_prefix("- lead:")
+                .unwrap()
+                .trim()
+                .trim_matches('"');
             if !val.is_empty() {
                 current_lead = Some(val.to_string());
             }
@@ -378,11 +402,7 @@ fn parse_agents_from_yaml(content: &str) -> Vec<String> {
 
 /// Format model info
 fn format_model(provider: &str, model: &str) -> String {
-    let model_display = if model.is_empty() {
-        "(not set)"
-    } else {
-        model
-    };
+    let model_display = if model.is_empty() { "(not set)" } else { model };
 
     let pricing = match (
         provider.to_lowercase().as_str(),
@@ -401,6 +421,39 @@ fn format_model(provider: &str, model: &str) -> String {
     text.push_str(&format!("- **Provider:** {}\n", provider));
     text.push_str(&format!("- **Model:** {}\n", model_display));
     text.push_str(&format!("- **Pricing:** {}\n", pricing));
+    text
+}
+
+/// Format providers list
+fn format_providers() -> String {
+    use super::detect::list_providers;
+
+    let providers = list_providers();
+    let mut text = "# Available Providers\n\n".to_string();
+
+    if providers.is_empty() {
+        text.push_str("*(no providers found)*\n");
+        return text;
+    }
+
+    for provider in &providers {
+        let status = if provider.available {
+            "✓ available"
+        } else {
+            "✗ not installed"
+        };
+
+        text.push_str(&format!(
+            "- **{}** ({}) — {}\n",
+            provider.display_name, provider.command, status
+        ));
+
+        if provider.available && !provider.model_name.is_empty() {
+            text.push_str(&format!("  Model: {}\n", provider.model_name));
+        }
+    }
+
+    text.push_str("\nUse `/switch <provider>` to change provider (e.g., `/switch claude`)\n");
     text
 }
 

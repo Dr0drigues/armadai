@@ -463,6 +463,11 @@ impl ShellApp {
         &self.model_name
     }
 
+    /// Set the provider name (used when switching providers)
+    pub fn set_provider_name(&mut self, name: String) {
+        self.provider_name = name;
+    }
+
     /// Render the shell TUI
     pub fn render(&self, frame: &mut Frame) {
         let chunks = Layout::default()
