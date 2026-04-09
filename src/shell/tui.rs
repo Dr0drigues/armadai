@@ -172,6 +172,52 @@ impl ShellApp {
         self.scroll_to_bottom();
     }
 
+    /// Start a new streaming assistant response
+    pub fn start_streaming_response(&mut self) {
+        self.messages.push(DisplayMessage {
+            role: self.provider_name.clone(),
+            content: String::new(),
+            is_user: false,
+            is_system: false,
+        });
+        self.manual_scroll = false;
+        self.scroll = 0;
+    }
+
+    /// Append text to the current streaming response
+    pub fn append_to_streaming(&mut self, text: &str) {
+        if let Some(last) = self.messages.last_mut()
+            && !last.is_user
+            && !last.is_system
+        {
+            last.content.push_str(text);
+            self.manual_scroll = false;
+            self.scroll = 0;
+        }
+    }
+
+    /// Get content of the last assistant message
+    pub fn get_last_assistant_content(&self) -> String {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| !m.is_user && !m.is_system)
+            .map(|m| m.content.clone())
+            .unwrap_or_default()
+    }
+
+    /// Update the last assistant message content (after marker stripping)
+    pub fn update_last_assistant(&mut self, content: &str) {
+        if let Some(last) = self.messages.iter_mut().rev().find(|m| !m.is_user && !m.is_system) {
+            last.content = content.to_string();
+        }
+    }
+
+    /// Check if loading
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
     /// Show a popup overlay (dismissed with Esc or any key)
     pub fn show_popup(&mut self, content: String) {
         self.popup = Some(content);

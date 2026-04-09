@@ -307,87 +307,117 @@ async fn event_loop(
 
         app.add_user_message(&input);
         app.set_loading(true);
+        app.start_streaming_response();
 
         let input_clone = input.clone();
-        let (tx, mut rx) = tokio::sync::oneshot::channel();
-
         let cmd = runner.command().to_string();
         let args: Vec<String> = runner.args().to_vec();
         let prompt = runner.build_prompt_for(&input_clone);
-        let prompt_for_spawn = prompt.clone();
 
-        // Spawn the CLI call in background
-        let handle = tokio::spawn(async move {
-            let start = std::time::Instant::now();
-            let output = tokio::process::Command::new(&cmd)
-                .args(&args)
-                .arg(&prompt_for_spawn)
-                .output()
-                .await;
-            let _ = tx.send((output, start.elapsed()));
+        // Spawn CLI with piped stdout for streaming
+        let start_time = std::time::Instant::now();
+        let mut child = match tokio::process::Command::new(&cmd)
+            .args(&args)
+            .arg(&prompt)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                app.update_last_assistant(&format!("Error spawning {}: {}", cmd, e));
+                app.set_loading(false);
+                continue;
+            }
+        };
+
+        // Stream stdout line by line via channel
+        let stdout = child.stdout.take().unwrap();
+        let (stream_tx, mut stream_rx) =
+            tokio::sync::mpsc::unbounded_channel::<String>();
+
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let _ = stream_tx.send(line.clone());
+                    }
+                    Err(_) => break,
+                }
+            }
         });
 
-        // Keep rendering while waiting (spinner animation)
+        // Render loop: drain stream chunks + handle cancel
         loop {
             app.tick_spinner();
             terminal.draw(|f| app.render(f))?;
 
-            // Check for cancel during loading
-            if event::poll(Duration::from_millis(80))?
+            // Check for cancel
+            if event::poll(Duration::from_millis(30))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
                 && (key.code == KeyCode::Esc
                     || (key.code == KeyCode::Char('c')
                         && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
             {
-                handle.abort();
+                let _ = child.kill().await;
+                app.append_to_streaming("\n\n[Cancelled]");
                 app.set_loading(false);
-                app.add_assistant_message("[Cancelled]");
                 break;
             }
 
-            // Check if response arrived
-            let Ok((output_result, duration)) = rx.try_recv() else {
-                continue;
-            };
-
-            match output_result {
-                Ok(output) if output.status.success() => {
-                    let raw = String::from_utf8_lossy(&output.stdout).to_string();
-                    let parsed = super::parser::parse_response(&raw);
-                    runner.record_turn(&input_clone, &parsed.content, duration);
-                    let metrics = runner.session_metrics();
-                    app.add_assistant_message(&parsed.content);
-                    app.set_session_metrics(
-                        metrics.total_tokens_in,
-                        metrics.total_tokens_out,
-                        metrics.total_cost_estimate,
-                        metrics.turn_count,
-                        duration,
-                    );
-
-                    // Auto-save session after each turn
-                    let _ = save_current_session(
-                        session_id,
-                        project_dir,
-                        provider_name,
-                        model_name,
-                        runner,
-                    );
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    app.add_assistant_message(&format!(
-                        "Error (exit {}): {}",
-                        output.status, stderr
-                    ));
-                }
-                Err(e) => {
-                    app.add_assistant_message(&format!("Error: {e}"));
-                }
+            // Drain all available lines
+            let mut got_data = false;
+            while let Ok(line) = stream_rx.try_recv() {
+                app.append_to_streaming(&line);
+                got_data = true;
             }
-            app.set_loading(false);
-            break;
+
+            // If we got data, force a re-render for smoother streaming
+            if got_data {
+                terminal.draw(|f| app.render(f))?;
+            }
+
+            // Check if child process has finished
+            if let Ok(Some(_status)) = child.try_wait() {
+                // Drain any remaining lines
+                while let Ok(line) = stream_rx.try_recv() {
+                    app.append_to_streaming(&line);
+                }
+                let duration = start_time.elapsed();
+
+                // Parse markers from full content
+                let raw_content = app.get_last_assistant_content();
+                let parsed = super::parser::parse_response(&raw_content);
+                app.update_last_assistant(&parsed.content);
+
+                runner.record_turn(&input_clone, &parsed.content, duration);
+                let metrics = runner.session_metrics();
+                app.set_session_metrics(
+                    metrics.total_tokens_in,
+                    metrics.total_tokens_out,
+                    metrics.total_cost_estimate,
+                    metrics.turn_count,
+                    duration,
+                );
+
+                // Auto-save session
+                let _ = save_current_session(
+                    session_id,
+                    project_dir,
+                    provider_name,
+                    model_name,
+                    runner,
+                );
+
+                app.set_loading(false);
+                break;
+            }
         }
     }
     Ok(())
