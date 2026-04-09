@@ -58,6 +58,21 @@ pub const COMMANDS: &[SlashCommand] = &[
         description: "Switch provider (e.g. /switch claude)",
     },
     SlashCommand {
+        name: "sessions",
+        aliases: &["ss"],
+        description: "List saved sessions",
+    },
+    SlashCommand {
+        name: "resume",
+        aliases: &["r"],
+        description: "Resume a saved session (e.g. /resume 20260401_1430)",
+    },
+    SlashCommand {
+        name: "save",
+        aliases: &[],
+        description: "Force save current session",
+    },
+    SlashCommand {
         name: "quit",
         aliases: &["q", "exit"],
         description: "Exit the shell",
@@ -75,6 +90,10 @@ pub enum CommandResult {
     Quit,
     /// Switch to a different provider
     SwitchProvider(String),
+    /// Resume a saved session
+    ResumeSession(String),
+    /// Save current session
+    SaveSession,
 }
 
 /// Find a command by name or alias
@@ -114,6 +133,18 @@ pub fn try_execute(
             let arg = trimmed[1..].split_whitespace().nth(1).unwrap_or("");
             Some(CommandResult::SwitchProvider(arg.to_string()))
         }
+        Some(c) if c.name == "sessions" => Some(CommandResult::Display(format_sessions())),
+        Some(c) if c.name == "resume" => {
+            let arg = trimmed[1..].split_whitespace().nth(1).unwrap_or("");
+            if arg.is_empty() {
+                Some(CommandResult::Display(
+                    "Usage: /resume <session-id>\nExample: /resume 20260401_1430\n\nUse /sessions to see available sessions.".to_string()
+                ))
+            } else {
+                Some(CommandResult::ResumeSession(arg.to_string()))
+            }
+        }
+        Some(c) if c.name == "save" => Some(CommandResult::SaveSession),
         Some(c) if c.name == "quit" => Some(CommandResult::Quit),
         _ => Some(CommandResult::Display(format!(
             "Unknown command: /{cmd_part}\nType /help for available commands."
@@ -492,6 +523,38 @@ fn format_history(runner: &ShellRunner) -> String {
         }
     }
 
+    text
+}
+
+/// Format sessions list
+fn format_sessions() -> String {
+    use super::session::{format_relative_time, list_sessions};
+
+    let sessions = list_sessions();
+    let mut text = "# Saved Sessions\n\n".to_string();
+
+    if sessions.is_empty() {
+        text.push_str("*(no saved sessions)*\n\n");
+        text.push_str("Sessions are automatically saved as you chat.\n");
+        text.push_str("Use `/resume <session-id>` to restore a previous conversation.\n");
+        return text;
+    }
+
+    for session in &sessions {
+        let project = session
+            .project_dir
+            .split('/')
+            .next_back()
+            .unwrap_or(&session.project_dir);
+        let relative = format_relative_time(&session.updated_at);
+
+        text.push_str(&format!(
+            "- **{}** — {} ({} turns, ${:.4}) — {}\n",
+            session.id, project, session.turn_count, session.total_cost, relative
+        ));
+    }
+
+    text.push_str("\nUse `/resume <session-id>` to restore a session.\n");
     text
 }
 

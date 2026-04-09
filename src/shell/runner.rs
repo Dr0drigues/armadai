@@ -284,6 +284,37 @@ impl ShellRunner {
         self.config.args = args;
         // Keep history — it's still useful as context
     }
+
+    /// Restore session state from a saved session.
+    pub fn restore_from_session(&mut self, messages: Vec<Message>) {
+        self.clear();
+        self.history = messages;
+        // Recalculate metrics from history
+        for msg in &self.history {
+            if let MessageRole::Assistant = msg.role
+                && let Some(ref metrics) = msg.metrics
+            {
+                self.total_tokens_in += metrics.tokens_in_estimate;
+                self.total_tokens_out += metrics.tokens_out_estimate;
+                self.turn_count = metrics.turn_number;
+                // Recalculate cost
+                let turn_cost = (metrics.tokens_in_estimate as f64 / 1_000_000.0)
+                    * COST_PER_1M_INPUT
+                    + (metrics.tokens_out_estimate as f64 / 1_000_000.0) * COST_PER_1M_OUTPUT;
+                self.total_cost_estimate += turn_cost;
+            }
+        }
+    }
+
+    /// Get the current provider command
+    pub fn provider_command(&self) -> &str {
+        &self.config.command
+    }
+
+    /// Get turn count
+    pub fn turn_count(&self) -> u32 {
+        self.turn_count
+    }
 }
 
 #[cfg(test)]
