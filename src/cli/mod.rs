@@ -162,6 +162,13 @@ pub enum Command {
         #[command(subcommand)]
         action: config::ConfigAction,
     },
+    /// Launch the interactive shell
+    #[cfg(feature = "tui")]
+    #[command(long_about = "Launch the interactive shell.\n\n\
+            Conversational interface for interacting with LLM providers. \
+            Type messages and press Enter to get responses. Use Ctrl+C or Esc to quit, \
+            Ctrl+L to clear conversation.")]
+    Shell,
     /// Launch the TUI dashboard
     #[cfg(feature = "tui")]
     #[command(long_about = "Launch the TUI dashboard.\n\n\
@@ -391,6 +398,8 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::History { agent } => history::execute(agent).await,
         Command::Costs { agent, from } => costs::execute(agent, from).await,
         Command::Config { action } => config::execute(action).await,
+        #[cfg(feature = "tui")]
+        Command::Shell => crate::shell::app::run_shell().await,
         #[cfg(feature = "tui")]
         Command::Tui => crate::tui::run().await,
         #[cfg(feature = "web")]

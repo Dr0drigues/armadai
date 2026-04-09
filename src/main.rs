@@ -8,6 +8,8 @@ mod providers;
 mod registry;
 #[allow(dead_code)]
 mod secrets;
+#[allow(dead_code)]
+mod shell;
 mod skills_registry;
 #[cfg(feature = "storage")]
 mod storage;
