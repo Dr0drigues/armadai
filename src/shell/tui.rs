@@ -23,7 +23,10 @@ struct ArmadaiStyleSheet;
 impl tui_markdown::StyleSheet for ArmadaiStyleSheet {
     fn heading(&self, level: u8) -> Style {
         match level {
-            1 => Style::new().fg(Color::Rgb(88, 166, 255)).bold().underlined(),
+            1 => Style::new()
+                .fg(Color::Rgb(88, 166, 255))
+                .bold()
+                .underlined(),
             2 => Style::new().fg(Color::Rgb(63, 185, 80)).bold(),
             3 => Style::new().fg(Color::Rgb(210, 153, 34)).bold(),
             _ => Style::new().fg(Color::Rgb(139, 148, 158)).italic(),
@@ -31,7 +34,9 @@ impl tui_markdown::StyleSheet for ArmadaiStyleSheet {
     }
 
     fn code(&self) -> Style {
-        Style::new().fg(Color::Rgb(230, 237, 243)).bg(Color::Rgb(55, 62, 71))
+        Style::new()
+            .fg(Color::Rgb(230, 237, 243))
+            .bg(Color::Rgb(55, 62, 71))
     }
 
     fn link(&self) -> Style {
@@ -59,6 +64,7 @@ pub struct DisplayMessage {
     pub role: String, // "You" or agent name
     pub content: String,
     pub is_user: bool,
+    pub is_system: bool, // System messages (commands, etc.)
 }
 
 /// Application state for the shell TUI
@@ -131,6 +137,7 @@ impl ShellApp {
             role: "You".to_string(),
             content: content.to_string(),
             is_user: true,
+            is_system: false,
         });
         self.scroll_to_bottom();
     }
@@ -141,10 +148,22 @@ impl ShellApp {
             role: self.provider_name.clone(),
             content: content.to_string(),
             is_user: false,
+            is_system: false,
         });
         // Reset to auto-scroll on new content
         self.manual_scroll = false;
         self.scroll = 0;
+    }
+
+    /// Add a system message (from slash commands, etc.)
+    pub fn add_system_message(&mut self, content: &str) {
+        self.messages.push(DisplayMessage {
+            role: "System".to_string(),
+            content: content.to_string(),
+            is_user: false,
+            is_system: true,
+        });
+        self.scroll_to_bottom();
     }
 
     /// Update metrics after a turn
@@ -378,6 +397,16 @@ impl ShellApp {
         self.should_quit
     }
 
+    /// Get the provider name
+    pub fn provider_name(&self) -> &str {
+        &self.provider_name
+    }
+
+    /// Get the model name
+    pub fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
     /// Render the shell TUI
     pub fn render(&self, frame: &mut Frame) {
         let chunks = Layout::default()
@@ -396,10 +425,7 @@ impl ShellApp {
         } else {
             format!("{} ({})", self.provider_name, self.model_name)
         };
-        let header_text = format!(
-            "ArmadAI Shell — {} — Turn #{}",
-            model_info, self.turn_count
-        );
+        let header_text = format!("ArmadAI Shell — {} — Turn #{}", model_info, self.turn_count);
         let header = Paragraph::new(header_text).style(
             Style::default()
                 .fg(Color::Cyan)
@@ -431,7 +457,11 @@ impl ShellApp {
 
         for msg in &self.messages {
             // Add role label
-            let role_style = if msg.is_user {
+            let role_style = if msg.is_system {
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM)
+            } else if msg.is_user {
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD)
@@ -441,12 +471,23 @@ impl ShellApp {
                     .add_modifier(Modifier::BOLD)
             };
 
+            let role_prefix = if msg.is_system { "⚙ " } else { "" };
             lines.push(Line::from(vec![Span::styled(
-                format!("{}: ", msg.role),
+                format!("{}{}: ", role_prefix, msg.role),
                 role_style,
             )]));
 
-            if msg.is_user {
+            if msg.is_system {
+                // System messages: dim text
+                for line in msg.content.lines() {
+                    lines.push(Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::DIM),
+                    )));
+                }
+            } else if msg.is_user {
                 // User messages: plain text
                 for line in msg.content.lines() {
                     lines.push(Line::from(line.to_string()));
@@ -483,7 +524,8 @@ impl ShellApp {
                         }
 
                         // Apply heading style from our stylesheet
-                        let heading_style = ArmadaiStyleSheet.heading(hash_count as u8)
+                        let heading_style = ArmadaiStyleSheet
+                            .heading(hash_count as u8)
                             .patch(line_style);
                         lines.push(Line::from(Span::styled(heading_text, heading_style)));
 
@@ -507,10 +549,15 @@ impl ShellApp {
         // Add loading indicator as last message
         if self.loading {
             let spinner = SPINNER_FRAMES[self.spinner_frame];
-            let elapsed = self.loading_start.map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0);
+            let elapsed = self
+                .loading_start
+                .map(|s| s.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
             lines.push(Line::from(vec![Span::styled(
                 format!("{spinner} Generating response… {elapsed:.0}s"),
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
             )]));
         }
 
@@ -541,15 +588,14 @@ impl ShellApp {
 
     fn render_statusbar(&self, frame: &mut Frame, area: Rect) {
         let status_text = if self.loading {
-            let elapsed = self.loading_start.map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0);
+            let elapsed = self
+                .loading_start
+                .map(|s| s.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
             let spinner = SPINNER_FRAMES[self.spinner_frame];
             format!(
                 "{} │ {} in │ {} out │ ${:.3} │ {spinner} thinking… {:.0}s",
-                self.provider_name,
-                self.tokens_in,
-                self.tokens_out,
-                self.cost,
-                elapsed,
+                self.provider_name, self.tokens_in, self.tokens_out, self.cost, elapsed,
             )
         } else {
             format!(
@@ -563,8 +609,11 @@ impl ShellApp {
             )
         };
 
-        let statusbar = Paragraph::new(status_text)
-            .style(Style::default().fg(Color::DarkGray).bg(Color::Rgb(22, 27, 34)));
+        let statusbar = Paragraph::new(status_text).style(
+            Style::default()
+                .fg(Color::DarkGray)
+                .bg(Color::Rgb(22, 27, 34)),
+        );
 
         frame.render_widget(statusbar, area);
     }
@@ -627,6 +676,19 @@ mod tests {
         assert_eq!(app.messages.len(), 2);
         assert!(app.messages[0].is_user);
         assert!(!app.messages[1].is_user);
+        assert!(!app.messages[0].is_system);
+        assert!(!app.messages[1].is_system);
+    }
+
+    #[test]
+    fn test_add_system_message() {
+        let mut app = ShellApp::new("Gemini".to_string());
+        app.add_system_message("Session cleared");
+
+        assert_eq!(app.messages.len(), 1);
+        assert!(!app.messages[0].is_user);
+        assert!(app.messages[0].is_system);
+        assert_eq!(app.messages[0].role, "System");
     }
 
     #[test]

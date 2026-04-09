@@ -8,6 +8,12 @@ pub mod parser;
 pub mod runner;
 
 #[cfg(feature = "tui")]
+pub mod wizard;
+
+#[cfg(feature = "tui")]
+pub mod commands;
+
+#[cfg(feature = "tui")]
 pub mod tui;
 
 #[cfg(feature = "tui")]

@@ -12,7 +12,6 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 use std::time::Duration;
 
-use super::detect::detect_provider;
 use super::runner::ShellRunner;
 use super::tui::ShellApp;
 
@@ -29,12 +28,16 @@ fn restore_terminal() {
 
 /// Main shell entry point.
 pub async fn run_shell() -> Result<()> {
-    let config = detect_provider().ok_or_else(|| {
-        anyhow::anyhow!(
-            "No supported CLI tool found. Install gemini, claude, or aider.\n\
-             Supported tools: gemini, claude, aider, codex"
-        )
-    })?;
+    // Run wizard to ensure project is ready
+    let wizard_result = super::wizard::ensure_project_ready()?;
+
+    // Use wizard result for provider config
+    let config = super::runner::RunnerConfig {
+        command: wizard_result.provider_command.clone(),
+        args: wizard_result.provider_args,
+        max_history_turns: 5,
+        timeout: std::time::Duration::from_secs(120),
+    };
 
     let provider_name = super::detect::provider_display_name(&config.command).to_string();
 
@@ -57,9 +60,8 @@ pub async fn run_shell() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let model_name = super::detect::detect_model_name(&config.command);
     let mut app = ShellApp::new(provider_name);
-    app.set_model_name(model_name);
+    app.set_model_name(wizard_result.model_name);
     let mut runner = ShellRunner::new(config);
 
     // Event loop
@@ -111,6 +113,27 @@ async fn event_loop(
         let Some(input) = app.take_input() else {
             continue;
         };
+
+        // Check for slash commands first
+        if let Some(result) =
+            super::commands::try_execute(&input, runner, app.provider_name(), app.model_name())
+        {
+            use super::commands::CommandResult;
+            match result {
+                CommandResult::Display(text) => {
+                    app.add_system_message(&text);
+                }
+                CommandResult::Clear => {
+                    app.clear_conversation();
+                    runner.clear();
+                    app.add_system_message("Conversation cleared.");
+                }
+                CommandResult::Quit => {
+                    break;
+                }
+            }
+            continue;
+        }
 
         app.add_user_message(&input);
         app.set_loading(true);
@@ -175,7 +198,10 @@ async fn event_loop(
                 }
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    app.add_assistant_message(&format!("Error (exit {}): {}", output.status, stderr));
+                    app.add_assistant_message(&format!(
+                        "Error (exit {}): {}",
+                        output.status, stderr
+                    ));
                 }
                 Err(e) => {
                     app.add_assistant_message(&format!("Error: {e}"));
