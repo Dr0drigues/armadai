@@ -106,16 +106,20 @@ pub fn try_execute(
 
 /// Format help text showing all available commands
 fn format_help() -> String {
-    let mut text = "Available commands:\n".to_string();
-    text.push_str("─".repeat(40).as_str());
-    text.push('\n');
+    let mut text = "# Available Commands\n\n".to_string();
 
     for cmd in COMMANDS {
-        text.push_str(&format!("  /{:<10}", cmd.name));
-        if !cmd.aliases.is_empty() {
-            text.push_str(&format!("({})", cmd.aliases.join(", ")));
-        }
-        text.push_str(&format!("  — {}\n", cmd.description));
+        let aliases = if cmd.aliases.is_empty() {
+            String::new()
+        } else {
+            format!(" *({})*", cmd.aliases.join(", "))
+        };
+        text.push_str(&format!(
+            "- **/{name}**{aliases} — {desc}\n",
+            name = cmd.name,
+            aliases = aliases,
+            desc = cmd.description,
+        ));
     }
 
     text
@@ -124,38 +128,170 @@ fn format_help() -> String {
 /// Format cost summary
 fn format_cost(runner: &ShellRunner) -> String {
     let metrics = runner.session_metrics();
-    let provider_names = ["Gemini", "Claude", "OpenAI"];
-    let provider_name = provider_names.first().copied().unwrap_or("Unknown");
 
-    format!(
-        "Session Cost Summary\n{}\nTurns:      {}\nTokens in:  {} (~estimated)\nTokens out: {} (~estimated)\nEst. cost:  ${:.6}\nProvider:   {}",
-        "─".repeat(40),
-        metrics.turn_count,
-        metrics.total_tokens_in,
-        metrics.total_tokens_out,
-        metrics.total_cost_estimate,
-        provider_name,
-    )
+    let mut text = "# Session Cost Summary\n\n".to_string();
+    text.push_str(&format!("- **Turns:** {}\n", metrics.turn_count));
+    text.push_str(&format!(
+        "- **Tokens in:** {} *(~estimated)*\n",
+        metrics.total_tokens_in
+    ));
+    text.push_str(&format!(
+        "- **Tokens out:** {} *(~estimated)*\n",
+        metrics.total_tokens_out
+    ));
+    text.push_str(&format!(
+        "- **Est. cost:** ${:.6}\n",
+        metrics.total_cost_estimate
+    ));
+    text
 }
 
-/// Format agents list from config
+/// Format agents list with orchestration organization
 fn format_agents() -> String {
-    let mut text = "Available Agents\n".to_string();
-    text.push_str("─".repeat(40).as_str());
-    text.push('\n');
+    let mut text = String::new();
 
-    // Try to find agents from project config
+    // Try to read orchestration config for team structure
+    let config_content = std::fs::read_to_string(".armadai/config.yaml")
+        .or_else(|_| std::fs::read_to_string("armadai.yaml"))
+        .unwrap_or_default();
+
+    let coordinator = parse_field_from_yaml(&config_content, "coordinator");
+    let teams = parse_teams_from_yaml(&config_content);
     let agents = list_agents_from_config();
 
     if agents.is_empty() {
         text.push_str("(no agents found in project config)\n");
-    } else {
-        for agent in agents {
-            text.push_str(&format!("  • {}\n", agent));
+        return text;
+    }
+
+    // If we have orchestration info, show the org chart
+    if let Some(ref coord) = coordinator {
+        let pattern = parse_field_from_yaml(&config_content, "pattern")
+            .unwrap_or_else(|| "hierarchical".to_string());
+        text.push_str("# Orchestration\n\n");
+        text.push_str(&format!("- **Pattern:** {}\n\n", pattern));
+        text.push_str(&format!("### 🎯 Coordinator: {}\n\n", coord));
+
+        if !teams.is_empty() {
+            for (i, team) in teams.iter().enumerate() {
+                if let Some(ref lead) = team.lead {
+                    text.push_str(&format!("### 📋 Team {} — Lead: {}\n", i + 1, lead));
+                } else {
+                    text.push_str(&format!("### 👥 Team {} — Direct reports\n", i + 1));
+                }
+                for agent in &team.agents {
+                    text.push_str(&format!("- 🔧 {}\n", agent));
+                }
+                text.push('\n');
+            }
+        } else {
+            text.push_str("### 👥 Agents\n");
+            for agent in &agents {
+                if Some(agent) != coordinator.as_ref() {
+                    text.push_str(&format!("- 🔧 {}\n", agent));
+                }
+            }
         }
+
+        text.push_str(&format!("**Total:** {} agent(s)\n", agents.len()));
+    } else {
+        // No orchestration — flat list
+        text.push_str("# Available Agents\n\n");
+        for agent in &agents {
+            text.push_str(&format!("- {}\n", agent));
+        }
+        text.push_str(&format!("\n**Total:** {} agent(s)\n", agents.len()));
     }
 
     text
+}
+
+/// Simple YAML field parser
+fn parse_field_from_yaml(content: &str, field: &str) -> Option<String> {
+    let prefix = format!("{}:", field);
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&prefix) {
+            let value = trimmed[prefix.len()..].trim().trim_matches('"').trim_matches('\'');
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Parse teams from orchestration YAML config
+fn parse_teams_from_yaml(content: &str) -> Vec<TeamInfo> {
+    let mut teams = Vec::new();
+    let mut in_teams = false;
+    let mut current_lead: Option<String> = None;
+    let mut current_agents: Vec<String> = Vec::new();
+    let mut in_agents_list = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("teams:") {
+            in_teams = true;
+            continue;
+        }
+
+        if !in_teams {
+            continue;
+        }
+
+        // Exit teams on next top-level key
+        if !trimmed.is_empty()
+            && !trimmed.starts_with('-')
+            && !trimmed.starts_with(' ')
+            && !trimmed.starts_with('\t')
+            && !trimmed.starts_with("lead:")
+            && !trimmed.starts_with("agents:")
+        {
+            break;
+        }
+
+        if trimmed.starts_with("- lead:") || trimmed.starts_with("- agents:") {
+            // Save previous team
+            if !current_agents.is_empty() || current_lead.is_some() {
+                teams.push(TeamInfo {
+                    lead: current_lead.take(),
+                    agents: std::mem::take(&mut current_agents),
+                });
+            }
+            in_agents_list = false;
+        }
+
+        if trimmed.starts_with("- lead:") {
+            let val = trimmed.strip_prefix("- lead:").unwrap().trim().trim_matches('"');
+            if !val.is_empty() {
+                current_lead = Some(val.to_string());
+            }
+        } else if trimmed.contains("agents:") {
+            in_agents_list = true;
+        } else if in_agents_list && trimmed.starts_with("- ") {
+            let agent = trimmed.strip_prefix("- ").unwrap().trim().trim_matches('"');
+            if !agent.is_empty() && !agent.contains(':') {
+                current_agents.push(agent.to_string());
+            }
+        }
+    }
+
+    // Save last team
+    if !current_agents.is_empty() || current_lead.is_some() {
+        teams.push(TeamInfo {
+            lead: current_lead,
+            agents: current_agents,
+        });
+    }
+
+    teams
+}
+
+struct TeamInfo {
+    lead: Option<String>,
+    agents: Vec<String>,
 }
 
 /// List agent names from armadai.yaml or .armadai/config.yaml
@@ -242,50 +378,40 @@ fn parse_agents_from_yaml(content: &str) -> Vec<String> {
 
 /// Format model info
 fn format_model(provider: &str, model: &str) -> String {
-    let mut text = "Current Model\n".to_string();
-    text.push_str("─".repeat(40).as_str());
-    text.push('\n');
+    let model_display = if model.is_empty() {
+        "(not set)"
+    } else {
+        model
+    };
 
-    text.push_str(&format!("Provider:  {}\n", provider));
-    text.push_str(&format!(
-        "Model:     {}\n",
-        if model.is_empty() { "(not set)" } else { model }
-    ));
-
-    // Add pricing info for common models
-    match (
+    let pricing = match (
         provider.to_lowercase().as_str(),
         model.to_lowercase().as_str(),
     ) {
-        ("gemini", "gemini-2.5-flash") | ("gemini", _) => {
-            text.push_str("Pricing:   $0.075/1M tokens in, $0.30/1M tokens out\n");
-        }
-        ("claude", _) if model.contains("3.5") => {
-            text.push_str("Pricing:   $3.00/1M tokens in, $15.00/1M tokens out\n");
-        }
-        ("claude", _) if model.contains("opus") => {
-            text.push_str("Pricing:   $15.00/1M tokens in, $75.00/1M tokens out\n");
-        }
-        ("openai", _) if model.contains("gpt-4") => {
-            text.push_str("Pricing:   $0.03/1K tokens in, $0.06/1K tokens out\n");
-        }
-        _ => {
-            text.push_str("Pricing:   (unknown)\n");
-        }
-    }
+        ("gemini", m) if m.contains("flash") => "$0.075/1M in, $0.30/1M out",
+        ("gemini", m) if m.contains("pro") => "$1.25/1M in, $10.00/1M out",
+        ("claude", m) if m.contains("sonnet") => "$3.00/1M in, $15.00/1M out",
+        ("claude", m) if m.contains("opus") => "$15.00/1M in, $75.00/1M out",
+        ("claude", m) if m.contains("haiku") => "$0.80/1M in, $4.00/1M out",
+        ("openai", m) if m.contains("gpt-4o") => "$2.50/1M in, $10.00/1M out",
+        _ => "(unknown)",
+    };
 
+    let mut text = "# Current Model\n\n".to_string();
+    text.push_str(&format!("- **Provider:** {}\n", provider));
+    text.push_str(&format!("- **Model:** {}\n", model_display));
+    text.push_str(&format!("- **Pricing:** {}\n", pricing));
     text
 }
 
 /// Format conversation history
 fn format_history(runner: &ShellRunner) -> String {
-    let mut text = "Conversation History\n".to_string();
-    text.push_str("─".repeat(40).as_str());
-    text.push('\n');
-
     let history = runner.history();
+
+    let mut text = "# Conversation History\n\n".to_string();
+
     if history.is_empty() {
-        text.push_str("(no messages in history)\n");
+        text.push_str("*(no messages yet)*\n");
         return text;
     }
 
@@ -293,21 +419,21 @@ fn format_history(runner: &ShellRunner) -> String {
     for msg in history {
         match msg.role {
             MessageRole::User => {
-                let preview = if msg.content.len() > 60 {
-                    format!("{}…", &msg.content[..60])
+                let preview = if msg.content.len() > 80 {
+                    format!("{}…", &msg.content[..80])
                 } else {
                     msg.content.clone()
                 };
-                text.push_str(&format!("Turn {}: You — {}\n", turn, preview));
+                text.push_str(&format!("**Turn {}** — {}\n", turn, preview));
                 turn += 1;
             }
             MessageRole::Assistant => {
-                let preview = if msg.content.len() > 60 {
-                    format!("{}…", &msg.content[..60])
+                let preview = if msg.content.len() > 80 {
+                    format!("{}…", &msg.content[..80])
                 } else {
                     msg.content.clone()
                 };
-                text.push_str(&format!("        → {}\n", preview));
+                text.push_str(&format!("- → {}\n", preview));
             }
             MessageRole::System => {}
         }

@@ -101,6 +101,10 @@ pub struct ShellApp {
     last_duration: Duration,
     /// Whether user has manually scrolled (disables auto-scroll to bottom)
     manual_scroll: bool,
+    /// Overlay popup content (shown on top of messages, dismissed with Esc)
+    popup: Option<String>,
+    /// Popup scroll offset
+    popup_scroll: u16,
     /// Should quit
     should_quit: bool,
 }
@@ -120,6 +124,8 @@ impl ShellApp {
             history_index: None,
             saved_input: String::new(),
             manual_scroll: false,
+            popup: None,
+            popup_scroll: 0,
             provider_name,
             model_name: String::new(),
             turn_count: 0,
@@ -164,6 +170,23 @@ impl ShellApp {
             is_system: true,
         });
         self.scroll_to_bottom();
+    }
+
+    /// Show a popup overlay (dismissed with Esc or any key)
+    pub fn show_popup(&mut self, content: String) {
+        self.popup = Some(content);
+        self.popup_scroll = 0;
+    }
+
+    /// Dismiss the popup
+    pub fn dismiss_popup(&mut self) {
+        self.popup = None;
+        self.popup_scroll = 0;
+    }
+
+    /// Whether a popup is currently shown
+    pub fn has_popup(&self) -> bool {
+        self.popup.is_some()
     }
 
     /// Update metrics after a turn
@@ -269,6 +292,27 @@ impl ShellApp {
     /// Handle a key event, returns true if should quit
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        // If popup is active, handle popup keys first
+        if self.has_popup() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => self.dismiss_popup(),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.popup_scroll = self.popup_scroll.saturating_sub(2);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.popup_scroll = self.popup_scroll.saturating_add(2);
+                }
+                KeyCode::PageUp => {
+                    self.popup_scroll = self.popup_scroll.saturating_sub(10);
+                }
+                KeyCode::PageDown => {
+                    self.popup_scroll = self.popup_scroll.saturating_add(10);
+                }
+                _ => self.dismiss_popup(),
+            }
+            return false;
+        }
 
         match key.code {
             // Handle Ctrl+C and Esc for quit
@@ -386,10 +430,22 @@ impl ShellApp {
     /// Handle mouse events (scroll wheel)
     pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         use crossterm::event::MouseEventKind;
-        match mouse.kind {
-            MouseEventKind::ScrollUp => self.scroll_up(),
-            MouseEventKind::ScrollDown => self.scroll_down(),
-            _ => {}
+        if self.has_popup() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.popup_scroll = self.popup_scroll.saturating_sub(2);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.popup_scroll = self.popup_scroll.saturating_add(2);
+                }
+                _ => {}
+            }
+        } else {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => self.scroll_up(),
+                MouseEventKind::ScrollDown => self.scroll_down(),
+                _ => {}
+            }
         }
     }
 
@@ -441,6 +497,85 @@ impl ShellApp {
 
         // Input line
         self.render_input_line(frame, chunks[3]);
+
+        // Popup overlay (rendered on top of everything)
+        if let Some(ref content) = self.popup {
+            self.render_popup(frame, content);
+        }
+    }
+
+    fn render_popup(&self, frame: &mut Frame, content: &str) {
+        let area = frame.area();
+
+        // Center the popup: 80% width, 70% height
+        let popup_width = (area.width as f32 * 0.80) as u16;
+        let popup_height = (area.height as f32 * 0.70) as u16;
+        let x = (area.width.saturating_sub(popup_width)) / 2;
+        let y = (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+        // Semi-transparent background (clear the area)
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        // Render markdown content inside the popup
+        let opts = tui_markdown::Options::new(ArmadaiStyleSheet);
+        let md_text = tui_markdown::from_str_with_options(content, &opts);
+
+        // Post-process headings (same as messages)
+        let mut lines: Vec<Line> = Vec::new();
+        for line in md_text.lines {
+            let first_span_str: String = line
+                .spans
+                .first()
+                .map(|s| s.content.to_string())
+                .unwrap_or_default();
+            if first_span_str.starts_with('#') {
+                let line_style = line.style;
+                lines.push(Line::from(""));
+                let hash_count = first_span_str.chars().take_while(|c| *c == '#').count();
+                let mut heading_text = String::new();
+                for s in &line.spans {
+                    let c = s.content.to_string();
+                    if c.starts_with('#') {
+                        heading_text.push_str(c.trim_start_matches('#').trim_start());
+                    } else {
+                        heading_text.push_str(&c);
+                    }
+                }
+                let heading_style = ArmadaiStyleSheet
+                    .heading(hash_count as u8)
+                    .patch(line_style);
+                lines.push(Line::from(Span::styled(heading_text, heading_style)));
+                if hash_count <= 3 {
+                    lines.push(Line::from(Span::styled(
+                        "─".repeat(popup_width.saturating_sub(4) as usize),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+            } else {
+                lines.push(line);
+            }
+        }
+
+        // Footer hint
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Esc to close │ ↑↓ scroll",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        let popup = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan))
+                    .title(" ArmadAI ")
+                    .title_style(Style::default().fg(Color::Cyan).bold()),
+            )
+            .wrap(Wrap { trim: true })
+            .scroll((self.popup_scroll, 0));
+
+        frame.render_widget(popup, popup_area);
     }
 
     fn render_messages_area(&self, frame: &mut Frame, area: Rect) {
@@ -478,14 +613,41 @@ impl ShellApp {
             )]));
 
             if msg.is_system {
-                // System messages: dim text
-                for line in msg.content.lines() {
-                    lines.push(Line::from(Span::styled(
-                        line.to_string(),
-                        Style::default()
-                            .fg(Color::DarkGray)
-                            .add_modifier(Modifier::DIM),
-                    )));
+                // System messages: render as markdown (same as assistant)
+                let opts = tui_markdown::Options::new(ArmadaiStyleSheet);
+                let md_text = tui_markdown::from_str_with_options(&msg.content, &opts);
+                for line in md_text.lines {
+                    let first_span_str: String = line
+                        .spans
+                        .first()
+                        .map(|s| s.content.to_string())
+                        .unwrap_or_default();
+                    if first_span_str.starts_with('#') {
+                        let line_style = line.style;
+                        lines.push(Line::from(""));
+                        let hash_count = first_span_str.chars().take_while(|c| *c == '#').count();
+                        let mut heading_text = String::new();
+                        for s in &line.spans {
+                            let content = s.content.to_string();
+                            if content.starts_with('#') {
+                                heading_text.push_str(content.trim_start_matches('#').trim_start());
+                            } else {
+                                heading_text.push_str(&content);
+                            }
+                        }
+                        let heading_style = ArmadaiStyleSheet
+                            .heading(hash_count as u8)
+                            .patch(line_style);
+                        lines.push(Line::from(Span::styled(heading_text, heading_style)));
+                        if hash_count <= 3 {
+                            lines.push(Line::from(Span::styled(
+                                "─".repeat(50),
+                                Style::default().fg(Color::DarkGray),
+                            )));
+                        }
+                    } else {
+                        lines.push(line);
+                    }
                 }
             } else if msg.is_user {
                 // User messages: plain text

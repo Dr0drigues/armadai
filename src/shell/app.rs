@@ -121,12 +121,11 @@ async fn event_loop(
             use super::commands::CommandResult;
             match result {
                 CommandResult::Display(text) => {
-                    app.add_system_message(&text);
+                    app.show_popup(text);
                 }
                 CommandResult::Clear => {
                     app.clear_conversation();
                     runner.clear();
-                    app.add_system_message("Conversation cleared.");
                 }
                 CommandResult::Quit => {
                     break;
