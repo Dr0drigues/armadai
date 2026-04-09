@@ -7,6 +7,13 @@ use axum::{
 };
 use tower_http::cors::CorsLayer;
 
+/// Wait for Ctrl+C signal.
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to listen for ctrl+c");
+}
+
 /// Serve the web UI on the given port.
 pub async fn serve(port: u16) -> anyhow::Result<()> {
     let app = Router::new()
@@ -32,9 +39,14 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
 
     let addr = format!("0.0.0.0:{port}");
     println!("Web UI available at: http://localhost:{port}");
+    println!("Press Ctrl+C to stop.");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    println!("\nWeb UI stopped.");
     Ok(())
 }
 
