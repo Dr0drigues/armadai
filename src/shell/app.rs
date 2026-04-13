@@ -141,7 +141,8 @@ pub async fn run_shell() -> Result<()> {
         &session_id,
         &project_dir,
         &provider_name,
-        &wizard_result.model_name,
+        &resolved_model,
+        &shell_config,
     )
     .await;
 
@@ -161,6 +162,7 @@ pub async fn run_shell() -> Result<()> {
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut ShellApp,
@@ -169,6 +171,7 @@ async fn event_loop(
     project_dir: &str,
     provider_name: &str,
     model_name: &str,
+    shell_config: &super::config::ShellConfig,
 ) -> Result<()> {
     loop {
         // Render
@@ -207,7 +210,7 @@ async fn event_loop(
 
         // Check for slash commands first
         if let Some(result) =
-            super::commands::try_execute(&input, runner, app.provider_name(), app.model_name())
+            super::commands::try_execute(&input, runner, app.provider_name(), app.model_name(), shell_config)
         {
             use super::commands::CommandResult;
             match result {

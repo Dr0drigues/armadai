@@ -124,6 +124,7 @@ pub fn try_execute(
     runner: &ShellRunner,
     provider_name: &str,
     model_name: &str,
+    shell_config: &super::config::ShellConfig,
 ) -> Option<CommandResult> {
     let trimmed = input.trim();
     if !trimmed.starts_with('/') {
@@ -162,9 +163,15 @@ pub fn try_execute(
         Some(c) if c.name == "tandem" => {
             let arg = trimmed[1..].split_whitespace().nth(1).unwrap_or("");
             if arg.is_empty() {
-                Some(CommandResult::Display(
-                    "Usage: `/tandem provider1,provider2`\n\nExample: `/tandem gemini,claude`\n\nSends your next message to both providers in parallel and shows both responses.\n\nUse `/providers` to see available providers.".to_string()
-                ))
+                // Use config defaults if available
+                if !shell_config.tandem.is_empty() {
+                    let providers = shell_config.tandem.iter().map(|e| e.provider.clone()).collect();
+                    Some(CommandResult::Tandem(providers))
+                } else {
+                    Some(CommandResult::Display(
+                        "# Tandem Mode\n\nUsage: `/tandem provider1,provider2`\n\nOr configure defaults in `armadai.yaml`:\n\n```yaml\nshell:\n  tandem:\n    - provider: gemini\n      model: latest:fast\n    - provider: claude\n      model: latest:pro\n```\n\nUse `/providers` to see available providers.".to_string()
+                    ))
+                }
             } else {
                 let providers: Vec<String> = arg.split(',').map(|s| s.trim().to_string()).collect();
                 Some(CommandResult::Tandem(providers))
@@ -173,9 +180,22 @@ pub fn try_execute(
         Some(c) if c.name == "pipeline" => {
             let arg = trimmed[1..].split_whitespace().nth(1).unwrap_or("");
             if arg.is_empty() {
-                Some(CommandResult::Display(
-                    "Usage: `/pipeline provider1,provider2`\n\nExample: `/pipeline gemini,claude`\n\nSends your message to provider1, then passes its response to provider2 for review.\n\nUse `/providers` to see available providers.".to_string()
-                ))
+                // Use config defaults if available
+                if let Some(ref pipeline) = shell_config.pipeline {
+                    if !pipeline.steps.is_empty() {
+                        // Flatten step providers into a list for the pipeline executor
+                        let providers = pipeline.steps.iter()
+                            .flat_map(|step| step.providers.iter().map(|e| e.provider.clone()))
+                            .collect();
+                        Some(CommandResult::Pipeline(providers))
+                    } else {
+                        Some(CommandResult::Display("Pipeline configured but has no steps.".to_string()))
+                    }
+                } else {
+                    Some(CommandResult::Display(
+                        "# Pipeline Mode\n\nUsage: `/pipeline provider1,provider2`\n\nOr configure defaults in `armadai.yaml`:\n\n```yaml\nshell:\n  pipeline:\n    steps:\n      - name: analyze\n        prompt: \"Analyze this request\"\n        providers:\n          - provider: gemini\n      - name: review\n        prompt: \"Review the analysis\"\n        providers:\n          - provider: claude\n```\n\nUse `/providers` to see available providers.".to_string()
+                    ))
+                }
             } else {
                 let providers: Vec<String> = arg.split(',').map(|s| s.trim().to_string()).collect();
                 Some(CommandResult::Pipeline(providers))
@@ -649,7 +669,8 @@ prompts: []
     #[test]
     fn test_try_execute_unknown_command() {
         let runner = ShellRunner::new(Default::default());
-        let result = try_execute("/unknown", &runner, "Gemini", "gemini-2.5-flash");
+        let shell_config = crate::shell::config::ShellConfig::default();
+        let result = try_execute("/unknown", &runner, "Gemini", "gemini-2.5-flash", &shell_config);
         assert!(result.is_some());
         match result.unwrap() {
             CommandResult::Display(text) => {
