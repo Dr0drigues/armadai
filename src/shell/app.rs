@@ -73,12 +73,32 @@ pub async fn run_shell() -> Result<()> {
     // Run wizard to ensure project is ready
     let wizard_result = super::wizard::ensure_project_ready()?;
 
-    // Use wizard result for provider config
+    // Load shell config from project config (if available)
+    let shell_config = crate::core::project::find_project_config()
+        .and_then(|(_, cfg)| cfg.shell)
+        .unwrap_or_default();
+
+    // Build runner config: project config overrides wizard defaults
+    let command = shell_config
+        .default_provider
+        .clone()
+        .unwrap_or(wizard_result.provider_command.clone());
+    let base_args = super::detect::args_for_provider(&command);
+
+    // Resolve model and inject CLI flags if needed
+    let model_str = shell_config
+        .default_model
+        .as_deref()
+        .unwrap_or("latest:pro");
+    let resolved_model = super::config::resolve_shell_model(&command, model_str);
+    let mut args = base_args;
+    args.extend(super::config::model_cli_args(&command, &resolved_model));
+
     let config = super::runner::RunnerConfig {
-        command: wizard_result.provider_command.clone(),
-        args: wizard_result.provider_args,
-        max_history_turns: 5,
-        timeout: std::time::Duration::from_secs(120),
+        command: command.clone(),
+        args,
+        max_history_turns: shell_config.effective_max_history(),
+        timeout: shell_config.effective_timeout(),
     };
 
     let provider_name = super::detect::provider_display_name(&config.command).to_string();
@@ -110,7 +130,7 @@ pub async fn run_shell() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = ShellApp::new(provider_name.clone());
-    app.set_model_name(wizard_result.model_name.clone());
+    app.set_model_name(resolved_model.clone());
     let mut runner = ShellRunner::new(config);
 
     // Event loop

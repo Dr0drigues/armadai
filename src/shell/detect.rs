@@ -108,6 +108,21 @@ pub fn is_command_available(command: &str) -> bool {
     }
 }
 
+/// Get the base CLI args for a provider (before model flags).
+pub fn args_for_provider(command: &str) -> Vec<String> {
+    match command {
+        "gemini" => vec!["-p".to_string()],
+        "claude" => vec![
+            "-p".to_string(),
+            "--output-format".to_string(),
+            "text".to_string(),
+        ],
+        "aider" => vec!["--yes".to_string(), "--message".to_string()],
+        "codex" => vec!["--quiet".to_string(), "--full-auto".to_string()],
+        _ => vec![],
+    }
+}
+
 /// Get the provider display name for the statusbar.
 pub fn provider_display_name(command: &str) -> &str {
     match command {
