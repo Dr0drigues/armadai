@@ -73,6 +73,16 @@ pub const COMMANDS: &[SlashCommand] = &[
         description: "Force save current session",
     },
     SlashCommand {
+        name: "tandem",
+        aliases: &["t"],
+        description: "Send next message to N providers in parallel (e.g. /tandem gemini,claude)",
+    },
+    SlashCommand {
+        name: "pipeline",
+        aliases: &["pipe"],
+        description: "Chain providers: A generates, B reviews (e.g. /pipeline gemini,claude)",
+    },
+    SlashCommand {
         name: "quit",
         aliases: &["q", "exit"],
         description: "Exit the shell",
@@ -94,6 +104,10 @@ pub enum CommandResult {
     ResumeSession(String),
     /// Save current session
     SaveSession,
+    /// Tandem mode: send next message to multiple providers in parallel
+    Tandem(Vec<String>),
+    /// Pipeline mode: chain providers sequentially (A generates → B reviews)
+    Pipeline(Vec<String>),
 }
 
 /// Find a command by name or alias
@@ -145,6 +159,28 @@ pub fn try_execute(
             }
         }
         Some(c) if c.name == "save" => Some(CommandResult::SaveSession),
+        Some(c) if c.name == "tandem" => {
+            let arg = trimmed[1..].split_whitespace().nth(1).unwrap_or("");
+            if arg.is_empty() {
+                Some(CommandResult::Display(
+                    "Usage: `/tandem provider1,provider2`\n\nExample: `/tandem gemini,claude`\n\nSends your next message to both providers in parallel and shows both responses.\n\nUse `/providers` to see available providers.".to_string()
+                ))
+            } else {
+                let providers: Vec<String> = arg.split(',').map(|s| s.trim().to_string()).collect();
+                Some(CommandResult::Tandem(providers))
+            }
+        }
+        Some(c) if c.name == "pipeline" => {
+            let arg = trimmed[1..].split_whitespace().nth(1).unwrap_or("");
+            if arg.is_empty() {
+                Some(CommandResult::Display(
+                    "Usage: `/pipeline provider1,provider2`\n\nExample: `/pipeline gemini,claude`\n\nSends your message to provider1, then passes its response to provider2 for review.\n\nUse `/providers` to see available providers.".to_string()
+                ))
+            } else {
+                let providers: Vec<String> = arg.split(',').map(|s| s.trim().to_string()).collect();
+                Some(CommandResult::Pipeline(providers))
+            }
+        }
         Some(c) if c.name == "quit" => Some(CommandResult::Quit),
         _ => Some(CommandResult::Display(format!(
             "Unknown command: /{cmd_part}\nType /help for available commands."

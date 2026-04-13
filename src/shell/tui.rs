@@ -101,6 +101,10 @@ pub struct ShellApp {
     last_duration: Duration,
     /// Whether user has manually scrolled (disables auto-scroll to bottom)
     manual_scroll: bool,
+    /// Pending tandem providers (used for next message)
+    tandem_providers: Option<Vec<String>>,
+    /// Pending pipeline providers (used for next message)
+    pipeline_providers: Option<Vec<String>>,
     /// Overlay popup content (shown on top of messages, dismissed with Esc)
     popup: Option<String>,
     /// Popup scroll offset
@@ -124,6 +128,8 @@ impl ShellApp {
             history_index: None,
             saved_input: String::new(),
             manual_scroll: false,
+            tandem_providers: None,
+            pipeline_providers: None,
             popup: None,
             popup_scroll: 0,
             provider_name,
@@ -157,6 +163,18 @@ impl ShellApp {
             is_system: false,
         });
         // Reset to auto-scroll on new content
+        self.manual_scroll = false;
+        self.scroll = 0;
+    }
+
+    /// Add an assistant response with a custom label (for tandem/pipeline mode)
+    pub fn add_assistant_message_with_label(&mut self, label: &str, content: &str) {
+        self.messages.push(DisplayMessage {
+            role: label.to_string(),
+            content: content.to_string(),
+            is_user: false,
+            is_system: false,
+        });
         self.manual_scroll = false;
         self.scroll = 0;
     }
@@ -216,6 +234,26 @@ impl ShellApp {
     /// Check if loading
     pub fn is_loading(&self) -> bool {
         self.loading
+    }
+
+    /// Set tandem mode for the next message
+    pub fn set_tandem(&mut self, providers: Vec<String>) {
+        self.tandem_providers = Some(providers);
+    }
+
+    /// Set pipeline mode for the next message
+    pub fn set_pipeline(&mut self, providers: Vec<String>) {
+        self.pipeline_providers = Some(providers);
+    }
+
+    /// Take tandem providers (consumes the setting)
+    pub fn take_tandem(&mut self) -> Option<Vec<String>> {
+        self.tandem_providers.take()
+    }
+
+    /// Take pipeline providers (consumes the setting)
+    pub fn take_pipeline(&mut self) -> Option<Vec<String>> {
+        self.pipeline_providers.take()
     }
 
     /// Show a popup overlay (dismissed with Esc or any key)

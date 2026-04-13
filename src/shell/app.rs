@@ -281,6 +281,23 @@ async fn event_loop(
                     }
                     continue;
                 }
+                CommandResult::Tandem(providers) => {
+                    app.set_tandem(providers.clone());
+                    app.show_popup(format!(
+                        "# Tandem Mode\n\nNext message will be sent to **{}** in parallel.\n\nType your message and press Enter.",
+                        providers.join(", ")
+                    ));
+                    continue;
+                }
+                CommandResult::Pipeline(providers) => {
+                    app.set_pipeline(providers.clone());
+                    app.show_popup(format!(
+                        "# Pipeline Mode\n\nNext message: **{}** generates → **{}** reviews.\n\nType your message and press Enter.",
+                        providers.first().unwrap_or(&"?".to_string()),
+                        providers.get(1).unwrap_or(&"?".to_string()),
+                    ));
+                    continue;
+                }
                 CommandResult::SaveSession => {
                     match save_current_session(
                         session_id,
@@ -306,6 +323,18 @@ async fn event_loop(
         }
 
         app.add_user_message(&input);
+
+        // Check for tandem or pipeline mode
+        if let Some(provider_names) = app.take_tandem() {
+            execute_tandem(terminal, app, runner, &input, &provider_names, session_id, project_dir, provider_name, model_name).await?;
+            continue;
+        }
+        if let Some(provider_names) = app.take_pipeline() {
+            execute_pipeline(terminal, app, runner, &input, &provider_names, session_id, project_dir, provider_name, model_name).await?;
+            continue;
+        }
+
+        // Normal single-provider execution
         app.set_loading(true);
         app.start_streaming_response();
 
@@ -420,5 +449,210 @@ async fn event_loop(
             }
         }
     }
+    Ok(())
+}
+
+/// Execute tandem mode: send to N providers in parallel, show all responses.
+#[allow(clippy::too_many_arguments)]
+async fn execute_tandem(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ShellApp,
+    runner: &mut ShellRunner,
+    input: &str,
+    provider_names: &[String],
+    session_id: &str,
+    project_dir: &str,
+    provider_name: &str,
+    model_name: &str,
+) -> Result<()> {
+    use super::detect::list_providers;
+
+    let all_providers = list_providers();
+    let start_time = std::time::Instant::now();
+
+    // Resolve provider infos
+    let mut resolved = Vec::new();
+    for name in provider_names {
+        if let Some(p) = all_providers.iter().find(|p| {
+            p.command == *name || p.display_name.to_lowercase() == name.to_lowercase()
+        }) {
+            if p.available {
+                resolved.push(p.clone());
+            } else {
+                app.add_system_message(&format!("Provider '{}' not installed — skipped", name));
+            }
+        } else {
+            app.add_system_message(&format!("Unknown provider '{}' — skipped", name));
+        }
+    }
+
+    if resolved.is_empty() {
+        app.add_system_message("No valid providers for tandem. Use /providers to see available ones.");
+        return Ok(());
+    }
+
+    app.set_loading(true);
+    let prompt = runner.build_prompt_for(input);
+
+    // Spawn all providers in parallel
+    let mut handles = Vec::new();
+    for provider in &resolved {
+        let cmd = provider.command.clone();
+        let args = provider.args.clone();
+        let prompt = prompt.clone();
+        let display_name = provider.display_name.clone();
+
+        handles.push(tokio::spawn(async move {
+            let output = tokio::process::Command::new(&cmd)
+                .args(&args)
+                .arg(&prompt)
+                .output()
+                .await;
+            (display_name, output)
+        }));
+    }
+
+    // Show spinner while waiting
+    app.add_system_message(&format!(
+        "⚡ Tandem: sending to {} in parallel...",
+        resolved.iter().map(|p| p.display_name.as_str()).collect::<Vec<_>>().join(" + ")
+    ));
+    terminal.draw(|f| app.render(f))?;
+
+    // Collect results
+    let mut combined_content = String::new();
+    for handle in handles {
+        let (name, output_result) = handle.await.map_err(|e| anyhow::anyhow!("Join error: {e}"))?;
+        match output_result {
+            Ok(output) if output.status.success() => {
+                let raw = String::from_utf8_lossy(&output.stdout).to_string();
+                let parsed = super::parser::parse_response(&raw);
+                app.add_assistant_message_with_label(&name, &parsed.content);
+                combined_content.push_str(&parsed.content);
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                app.add_assistant_message_with_label(&name, &format!("Error: {}", stderr));
+            }
+            Err(e) => {
+                app.add_assistant_message_with_label(&name, &format!("Error: {}", e));
+            }
+        }
+        terminal.draw(|f| app.render(f))?;
+    }
+
+    let duration = start_time.elapsed();
+    runner.record_turn(input, &combined_content, duration);
+    let metrics = runner.session_metrics();
+    app.set_session_metrics(
+        metrics.total_tokens_in,
+        metrics.total_tokens_out,
+        metrics.total_cost_estimate,
+        metrics.turn_count,
+        duration,
+    );
+    app.set_loading(false);
+
+    let _ = save_current_session(session_id, project_dir, provider_name, model_name, runner);
+    Ok(())
+}
+
+/// Execute pipeline mode: provider A generates → provider B reviews sequentially.
+#[allow(clippy::too_many_arguments)]
+async fn execute_pipeline(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ShellApp,
+    runner: &mut ShellRunner,
+    input: &str,
+    provider_names: &[String],
+    session_id: &str,
+    project_dir: &str,
+    provider_name: &str,
+    model_name: &str,
+) -> Result<()> {
+    use super::detect::list_providers;
+
+    let all_providers = list_providers();
+    let start_time = std::time::Instant::now();
+
+    let mut resolved = Vec::new();
+    for name in provider_names {
+        if let Some(p) = all_providers.iter().find(|p| {
+            p.command == *name || p.display_name.to_lowercase() == name.to_lowercase()
+        })
+            && p.available
+        {
+            resolved.push(p.clone());
+        }
+    }
+
+    if resolved.len() < 2 {
+        app.add_system_message("Pipeline needs at least 2 available providers. Use /providers to check.");
+        return Ok(());
+    }
+
+    app.set_loading(true);
+    let mut current_input = input.to_string();
+
+    for (i, provider) in resolved.iter().enumerate() {
+        let is_last = i == resolved.len() - 1;
+        let stage = if i == 0 { "generating" } else { "reviewing" };
+
+        app.add_system_message(&format!(
+            "⚙ Pipeline stage {}/{}: {} ({})...",
+            i + 1, resolved.len(), provider.display_name, stage
+        ));
+        terminal.draw(|f| app.render(f))?;
+
+        // Build the prompt — for stage 2+, wrap the previous output as context
+        let prompt = if i == 0 {
+            runner.build_prompt_for(&current_input)
+        } else {
+            format!(
+                "Review and improve the following response:\n\n---\n{}\n---\n\nOriginal request: {}",
+                current_input, input
+            )
+        };
+
+        let output = tokio::process::Command::new(&provider.command)
+            .args(&provider.args)
+            .arg(&prompt)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            let raw = String::from_utf8_lossy(&output.stdout).to_string();
+            let parsed = super::parser::parse_response(&raw);
+            let label = if is_last {
+                format!("{} (final)", provider.display_name)
+            } else {
+                format!("{} (stage {})", provider.display_name, i + 1)
+            };
+            app.add_assistant_message_with_label(&label, &parsed.content);
+            current_input = parsed.content;
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            app.add_assistant_message_with_label(
+                &provider.display_name,
+                &format!("Error: {}", stderr),
+            );
+            break;
+        }
+        terminal.draw(|f| app.render(f))?;
+    }
+
+    let duration = start_time.elapsed();
+    runner.record_turn(input, &current_input, duration);
+    let metrics = runner.session_metrics();
+    app.set_session_metrics(
+        metrics.total_tokens_in,
+        metrics.total_tokens_out,
+        metrics.total_cost_estimate,
+        metrics.turn_count,
+        duration,
+    );
+    app.set_loading(false);
+
+    let _ = save_current_session(session_id, project_dir, provider_name, model_name, runner);
     Ok(())
 }
