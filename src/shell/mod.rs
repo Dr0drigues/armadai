@@ -3,6 +3,7 @@
 //! This module provides the parser and protocol support for the ArmadAI shell,
 //! including marker detection for end-of-response, delegation, and metadata extraction.
 
+pub mod config;
 pub mod detect;
 pub mod parser;
 pub mod runner;

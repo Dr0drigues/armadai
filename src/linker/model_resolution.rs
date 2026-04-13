@@ -42,9 +42,9 @@ pub enum ModelTier {
 /// Syntax: `latest` (defaults to Pro), `latest:fast`, `latest:pro`, `latest:max`.
 pub fn parse_latest_placeholder(model: &str) -> Option<ModelTier> {
     match model.trim() {
-        "latest" | "latest:pro" => Some(ModelTier::Pro),
-        "latest:fast" => Some(ModelTier::Fast),
-        "latest:max" => Some(ModelTier::Max),
+        "latest" | "latest:pro" | "latest:medium" => Some(ModelTier::Pro),
+        "latest:fast" | "latest:low" => Some(ModelTier::Fast),
+        "latest:max" | "latest:high" => Some(ModelTier::Max),
         _ => None,
     }
 }
