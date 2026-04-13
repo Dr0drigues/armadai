@@ -177,6 +177,24 @@ pub struct ErrorResponse {
 }
 
 fn load_agents() -> Vec<Agent> {
+    use crate::core::config::is_force_global;
+    use crate::core::project;
+
+    // If in a project context (and not forced global), resolve from project config
+    if !is_force_global()
+        && let Some((root, config)) = project::find_project_config()
+        && !config.agents.is_empty()
+    {
+        let (paths, _) = project::resolve_all_agents(&config, &root);
+        let mut agents = Vec::new();
+        for path in &paths {
+            if let Ok(agent) = crate::parser::parse_agent_file(path) {
+                agents.push(agent);
+            }
+        }
+        return agents;
+    }
+
     let agents_dir = crate::core::config::AppPaths::resolve().agents_dir;
     Agent::load_all(&agents_dir).unwrap_or_default()
 }
@@ -327,10 +345,18 @@ pub async fn get_costs() -> Json<Vec<CostSummary>> {
 }
 
 pub async fn list_prompts() -> Json<Vec<PromptSummary>> {
-    use crate::core::config::user_prompts_dir;
-    use crate::core::prompt::load_all_prompts;
+    use crate::core::config::{is_force_global, user_prompts_dir};
+    use crate::core::prompt::{Prompt, load_all_prompts};
 
-    let prompts = load_all_prompts(&user_prompts_dir());
+    let prompts: Vec<Prompt> = if !is_force_global()
+        && let Some((root, config)) = crate::core::project::find_project_config()
+        && !config.prompts.is_empty()
+    {
+        let (paths, _) = crate::core::project::resolve_all_prompts(&config, &root);
+        paths.iter().filter_map(|p| Prompt::load(p).ok()).collect()
+    } else {
+        load_all_prompts(&user_prompts_dir())
+    };
     let summaries = prompts
         .into_iter()
         .map(|p| PromptSummary {
@@ -344,10 +370,22 @@ pub async fn list_prompts() -> Json<Vec<PromptSummary>> {
 }
 
 pub async fn list_skills() -> Json<Vec<SkillSummary>> {
-    use crate::core::config::user_skills_dir;
+    use crate::core::config::{is_force_global, user_skills_dir};
     use crate::core::skill::load_all_skills;
 
-    let skills = load_all_skills(&user_skills_dir());
+    let skills = if !is_force_global()
+        && let Some((root, config)) = crate::core::project::find_project_config()
+        && !config.skills.is_empty()
+    {
+        let (paths, _) = crate::core::project::resolve_all_skills(&config, &root);
+        let mut result = Vec::new();
+        for path in &paths {
+            result.extend(load_all_skills(path));
+        }
+        result
+    } else {
+        load_all_skills(&user_skills_dir())
+    };
     let summaries = skills
         .into_iter()
         .map(|s| SkillSummary {
