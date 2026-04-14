@@ -342,6 +342,12 @@ async fn event_loop(
                     ));
                     continue;
                 }
+                CommandResult::ToggleWorkroom => {
+                    app.workroom.toggle_pin();
+                    let status = if app.workroom.is_pinned() { "pinned (always visible)" } else { "auto (visible during orchestration)" };
+                    app.show_popup(format!("# Workroom\n\nPanel is now **{}**.", status));
+                    continue;
+                }
                 CommandResult::TogglePty => {
                     app.toggle_pty_mode();
                     if app.is_pty_mode() {
@@ -473,15 +479,18 @@ async fn event_loop(
                             if let Some(m) = model {
                                 app.set_model_name(m);
                             }
-                            for agent in &agents {
-                                app.workroom.on_delegate(agent);
-                            }
+                            // Set agents from init (filtered, not all set to Working)
+                            app.workroom.set_agents_from_init(&agents);
+                            app.workroom.set_visible(true);
                         }
                         StreamEvent::Delta(text) => {
+                            // Detect agent mentions in streamed text
+                            app.workroom.detect_mentions(&text);
                             app.append_to_streaming(&text);
                             got_data = true;
                         }
                         StreamEvent::Message(text) => {
+                            app.workroom.detect_mentions(&text);
                             app.append_to_streaming(&text);
                             got_data = true;
                         }

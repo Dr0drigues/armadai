@@ -51,6 +51,7 @@ const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 pub struct Workroom {
     agents: Vec<TrackedAgent>,
     visible: bool,
+    pinned: bool,
 }
 
 impl Workroom {
@@ -58,6 +59,7 @@ impl Workroom {
         Self {
             agents: Vec::new(),
             visible: false,
+            pinned: false,
         }
     }
 
@@ -146,7 +148,39 @@ impl Workroom {
         }
     }
 
-    /// Notify that a delegation to an agent was detected
+    /// Set agents from the stream-json init event.
+    /// Filters out Claude Code internal agents and deduplicates.
+    pub fn set_agents_from_init(&mut self, agent_names: &[String]) {
+        // Internal agents from Claude Code / Gemini that aren't ours
+        const INTERNAL_AGENTS: &[&str] = &[
+            "general-purpose",
+            "statusline-setup",
+            "Explore",
+            "Plan",
+            "claude-code-guide",
+        ];
+
+        for name in agent_names {
+            if INTERNAL_AGENTS.contains(&name.as_str()) {
+                continue;
+            }
+            // Skip if already present (from config)
+            if self.agents.iter().any(|a| a.name == *name) {
+                continue;
+            }
+            self.agents.push(TrackedAgent {
+                name: name.clone(),
+                state: AgentState::Idle,
+                role: AgentRole::Agent,
+                started_at: None,
+                finished_at: None,
+                spinner_frame: 0,
+            });
+        }
+    }
+
+    /// Notify that a delegation to an agent was detected (from text analysis).
+    /// Only sets the specific mentioned agent to Working.
     pub fn on_delegate(&mut self, agent_name: &str) {
         // Set coordinator to delegating
         if let Some(coord) = self.agents.iter_mut().find(|a| a.role == AgentRole::Coordinator)
@@ -156,21 +190,14 @@ impl Workroom {
             coord.started_at = Some(Instant::now());
         }
 
-        // Set target agent to working
-        if let Some(agent) = self.agents.iter_mut().find(|a| a.name == agent_name) {
+        // Set ONLY the target agent to working (not all agents)
+        if let Some(agent) = self.agents.iter_mut().find(|a| a.name == agent_name)
+            && agent.state == AgentState::Idle
+        {
             agent.state = AgentState::Working;
             agent.started_at = Some(Instant::now());
-        } else {
-            // Unknown agent — add dynamically
-            self.agents.push(TrackedAgent {
-                name: agent_name.to_string(),
-                state: AgentState::Working,
-                role: AgentRole::Agent,
-                started_at: Some(Instant::now()),
-                finished_at: None,
-                spinner_frame: 0,
-            });
         }
+        // Don't add unknown agents dynamically — too noisy
 
         self.visible = true;
     }
@@ -185,14 +212,31 @@ impl Workroom {
         }
     }
 
-    /// Reset all agents to idle for next turn
+    /// Reset all agents to idle for next turn.
+    /// Keeps visibility if pinned.
     pub fn reset(&mut self) {
         for agent in &mut self.agents {
             agent.state = AgentState::Idle;
             agent.started_at = None;
             agent.finished_at = None;
         }
-        self.visible = false;
+        // Don't hide if pinned — user wants to see it permanently
+        if !self.pinned {
+            self.visible = false;
+        }
+    }
+
+    /// Toggle pinned visibility (always visible even between turns).
+    pub fn toggle_pin(&mut self) {
+        self.pinned = !self.pinned;
+        if self.pinned {
+            self.visible = true;
+        }
+    }
+
+    /// Whether the workroom is pinned (always visible).
+    pub fn is_pinned(&self) -> bool {
+        self.pinned
     }
 
     /// Advance spinner animations
@@ -207,6 +251,29 @@ impl Workroom {
     /// Whether the workroom panel should be shown
     pub fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    /// Set visibility directly
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+
+    /// Detect agent mentions in streamed text (e.g., "Shell Scripting Expert")
+    /// and set them to Working state.
+    pub fn detect_mentions(&mut self, text: &str) {
+        let text_lower = text.to_lowercase();
+        for agent in &mut self.agents {
+            if agent.state != AgentState::Idle {
+                continue;
+            }
+            // Check if agent name appears in text (case-insensitive, with or without hyphens)
+            let name_lower = agent.name.to_lowercase();
+            let name_spaces = name_lower.replace('-', " ");
+            if text_lower.contains(&name_lower) || text_lower.contains(&name_spaces) {
+                agent.state = AgentState::Working;
+                agent.started_at = Some(Instant::now());
+            }
+        }
     }
 
     /// Parse a streaming line for delegate markers
@@ -300,14 +367,20 @@ impl Workroom {
 mod tests {
     use super::*;
 
+    fn setup_workroom() -> Workroom {
+        let config = "orchestration:\n  coordinator: coordinator\n  teams:\n    - agents:\n        - agent-a\n        - agent-b\n";
+        let mut wr = Workroom::new();
+        wr.init_from_config(config);
+        wr
+    }
+
     #[test]
     fn test_parse_delegate_marker() {
-        let mut wr = Workroom::new();
-        wr.parse_streaming_line("Some text <!--ARMADAI_DELEGATE:shell-expert--> more text");
+        let mut wr = setup_workroom();
+        wr.parse_streaming_line("Some text <!--ARMADAI_DELEGATE:agent-a--> more text");
         assert!(wr.is_visible());
-        assert_eq!(wr.agents.len(), 1);
-        assert_eq!(wr.agents[0].name, "shell-expert");
-        assert_eq!(wr.agents[0].state, AgentState::Working);
+        let agent = wr.agents.iter().find(|a| a.name == "agent-a").unwrap();
+        assert_eq!(agent.state, AgentState::Working);
     }
 
     #[test]
@@ -332,20 +405,61 @@ orchestration:
 
     #[test]
     fn test_on_complete_resets_working() {
-        let mut wr = Workroom::new();
+        let mut wr = setup_workroom();
         wr.on_delegate("agent-a");
-        assert_eq!(wr.agents[0].state, AgentState::Working);
+        let agent = wr.agents.iter().find(|a| a.name == "agent-a").unwrap();
+        assert_eq!(agent.state, AgentState::Working);
         wr.on_complete();
-        assert_eq!(wr.agents[0].state, AgentState::Done);
+        let agent = wr.agents.iter().find(|a| a.name == "agent-a").unwrap();
+        assert_eq!(agent.state, AgentState::Done);
     }
 
     #[test]
     fn test_reset() {
-        let mut wr = Workroom::new();
+        let mut wr = setup_workroom();
         wr.on_delegate("agent-a");
         wr.on_complete();
         wr.reset();
-        assert_eq!(wr.agents[0].state, AgentState::Idle);
+        let agent = wr.agents.iter().find(|a| a.name == "agent-a").unwrap();
+        assert_eq!(agent.state, AgentState::Idle);
         assert!(!wr.is_visible());
+    }
+
+    #[test]
+    fn test_detect_mentions() {
+        let mut wr = setup_workroom();
+        wr.detect_mentions("I'll delegate to agent-a for this task");
+        let agent = wr.agents.iter().find(|a| a.name == "agent-a").unwrap();
+        assert_eq!(agent.state, AgentState::Working);
+        // agent-b should still be idle
+        let agent_b = wr.agents.iter().find(|a| a.name == "agent-b").unwrap();
+        assert_eq!(agent_b.state, AgentState::Idle);
+    }
+
+    #[test]
+    fn test_set_agents_from_init_filters_internals() {
+        let mut wr = Workroom::new();
+        let agents = vec![
+            "shell-expert".to_string(),
+            "general-purpose".to_string(), // internal — should be filtered
+            "Explore".to_string(),         // internal
+            "container-expert".to_string(),
+        ];
+        wr.set_agents_from_init(&agents);
+        assert_eq!(wr.agents.len(), 2);
+        assert!(wr.agents.iter().any(|a| a.name == "shell-expert"));
+        assert!(wr.agents.iter().any(|a| a.name == "container-expert"));
+    }
+
+    #[test]
+    fn test_pinned_workroom_stays_visible() {
+        let mut wr = setup_workroom();
+        wr.toggle_pin();
+        assert!(wr.is_pinned());
+        wr.on_delegate("agent-a");
+        wr.on_complete();
+        wr.reset();
+        // Should still be visible because pinned
+        assert!(wr.is_visible());
     }
 }

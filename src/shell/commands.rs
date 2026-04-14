@@ -73,6 +73,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         description: "Force save current session",
     },
     SlashCommand {
+        name: "workroom",
+        aliases: &["wr"],
+        description: "Toggle workroom panel (show/hide agent status)",
+    },
+    SlashCommand {
         name: "pty",
         aliases: &[],
         description: "Toggle PTY mode [experimental] (interactive CLI — may hang with some CLIs)",
@@ -115,6 +120,8 @@ pub enum CommandResult {
     Pipeline(Vec<String>),
     /// Toggle PTY mode
     TogglePty,
+    /// Toggle workroom panel
+    ToggleWorkroom,
 }
 
 /// Find a command by name or alias
@@ -166,6 +173,7 @@ pub fn try_execute(
                 Some(CommandResult::ResumeSession(arg.to_string()))
             }
         }
+        Some(c) if c.name == "workroom" => Some(CommandResult::ToggleWorkroom),
         Some(c) if c.name == "pty" => Some(CommandResult::TogglePty),
         Some(c) if c.name == "save" => Some(CommandResult::SaveSession),
         Some(c) if c.name == "tandem" => {
