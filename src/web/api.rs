@@ -617,6 +617,60 @@ pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {
     (StatusCode::OK, headers, yaml)
 }
 
+/// Get orchestration execution traces from storage.
+pub async fn get_orchestration_trace() -> Json<serde_json::Value> {
+    #[cfg(feature = "storage")]
+    {
+        use crate::storage::{init_db, queries};
+        if let Ok(db) = init_db() {
+            if let Ok(runs) = queries::get_orchestration_runs(&db, 50) {
+                let traces: Vec<serde_json::Value> = runs
+                    .iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "id": r.run_id,
+                            "pattern": r.pattern,
+                            "config": r.config_json,
+                            "outcome": r.outcome_json,
+                            "rounds": r.rounds,
+                            "halt_reason": r.halt_reason,
+                        })
+                    })
+                    .collect();
+                return Json(serde_json::json!({ "traces": traces }));
+            }
+        }
+    }
+
+    // Also include shell session traces
+    let sessions = crate::shell::session::list_sessions();
+    let session_traces: Vec<serde_json::Value> = sessions
+        .iter()
+        .take(50)
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "provider": s.provider,
+                "model": s.model,
+                "project_dir": s.project_dir,
+                "turns": s.turn_count,
+                "tokens_in": s.total_tokens_in,
+                "tokens_out": s.total_tokens_out,
+                "cost": s.total_cost,
+                "created_at": s.created_at,
+                "updated_at": s.updated_at,
+                "messages_count": s.messages.len(),
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "traces": [],
+        "sessions": session_traces,
+    }))
+}
+
 pub async fn get_orchestration_topology() -> Json<serde_json::Value> {
     use crate::core::project::find_project_config;
 
