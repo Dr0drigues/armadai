@@ -461,56 +461,100 @@ async fn event_loop(
                 break;
             }
 
-            // Drain all available lines
+            // Drain all available lines and parse as stream events
             let mut got_data = false;
+            let mut result_event: Option<super::json_runner::CliResponse> = None;
+
             while let Ok(line) = stream_rx.try_recv() {
-                app.workroom.parse_streaming_line(&line);
-                app.append_to_streaming(&line);
-                got_data = true;
+                if is_json_mode {
+                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    match parse_stream_event(&cmd, &line) {
+                        StreamEvent::Init { model, agents } => {
+                            if let Some(m) = model {
+                                app.set_model_name(m);
+                            }
+                            for agent in &agents {
+                                app.workroom.on_delegate(agent);
+                            }
+                        }
+                        StreamEvent::Delta(text) => {
+                            app.append_to_streaming(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Message(text) => {
+                            app.append_to_streaming(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Result(resp) => {
+                            result_event = Some(resp);
+                        }
+                        StreamEvent::Error(msg) => {
+                            app.append_to_streaming(&format!("\n\nError: {}", msg));
+                            got_data = true;
+                        }
+                        StreamEvent::Ignored => {}
+                    }
+                } else {
+                    // Text mode fallback
+                    app.workroom.parse_streaming_line(&line);
+                    app.append_to_streaming(&line);
+                    got_data = true;
+                }
             }
 
-            // If we got data, force a re-render for smoother streaming
             if got_data {
                 terminal.draw(|f| app.render(f))?;
             }
 
             // Check if child process has finished
             if let Ok(Some(_status)) = child.try_wait() {
-                // Drain any remaining lines
+                // Drain remaining
                 while let Ok(line) = stream_rx.try_recv() {
-                    app.append_to_streaming(&line);
-                }
-                let duration = start_time.elapsed();
-
-                let raw_content = app.get_last_assistant_content();
-
-                if is_json_mode {
-                    // Parse JSON response for real metrics
-                    let cli_resp = super::json_runner::parse_json_response(&cmd, &raw_content);
-                    app.update_last_assistant(&cli_resp.content);
-
-                    // Update model name if discovered
-                    if let Some(ref model) = cli_resp.model {
-                        app.set_model_name(model.clone());
+                    if is_json_mode {
+                        use super::json_runner::{StreamEvent, parse_stream_event};
+                        match parse_stream_event(&cmd, &line) {
+                            StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                                app.append_to_streaming(&text);
+                            }
+                            StreamEvent::Result(resp) => {
+                                result_event = Some(resp);
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        app.append_to_streaming(&line);
                     }
+                }
 
-                    // Use real metrics when available, fall back to estimates
-                    let tokens_in = cli_resp.tokens_in.unwrap_or_else(|| {
+                let duration = start_time.elapsed();
+                let content = app.get_last_assistant_content();
+
+                // Clean markers from content
+                let parsed = super::parser::parse_response(&content);
+                app.update_last_assistant(&parsed.content);
+
+                if let Some(resp) = result_event {
+                    // Use real metrics from stream result event
+                    let tokens_in = resp.tokens_in.unwrap_or_else(|| {
                         super::runner::ShellRunner::estimate_tokens(&prompt) as u64
                     });
-                    let tokens_out = cli_resp.tokens_out.unwrap_or_else(|| {
-                        super::runner::ShellRunner::estimate_tokens(&cli_resp.content) as u64
+                    let tokens_out = resp.tokens_out.unwrap_or_else(|| {
+                        super::runner::ShellRunner::estimate_tokens(&parsed.content) as u64
                     });
-                    let cost = cli_resp.cost_usd.unwrap_or(0.0);
-                    let real_duration = cli_resp.duration_ms
+                    let cost = resp.cost_usd.unwrap_or(0.0);
+                    let real_duration = resp.duration_ms
                         .map(Duration::from_millis)
                         .unwrap_or(duration);
 
-                    runner.record_turn_exact(&input_clone, &cli_resp.content, real_duration, tokens_in, tokens_out, cost);
+                    if let Some(ref model) = resp.model {
+                        app.set_model_name(model.clone());
+                    }
+
+                    runner.record_turn_exact(
+                        &input_clone, &parsed.content, real_duration,
+                        tokens_in, tokens_out, cost,
+                    );
                 } else {
-                    // Text mode: parse markers, use estimates
-                    let parsed = super::parser::parse_response(&raw_content);
-                    app.update_last_assistant(&parsed.content);
                     runner.record_turn(&input_clone, &parsed.content, duration);
                 }
 
@@ -523,13 +567,8 @@ async fn event_loop(
                     duration,
                 );
 
-                // Auto-save session
                 let _ = save_current_session(
-                    session_id,
-                    project_dir,
-                    provider_name,
-                    model_name,
-                    runner,
+                    session_id, project_dir, provider_name, model_name, runner,
                 );
 
                 app.workroom.on_complete();

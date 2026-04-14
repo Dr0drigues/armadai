@@ -54,20 +54,22 @@ pub fn json_output_flags(provider: &str) -> Option<Vec<String>> {
     }
 }
 
-/// Get the base CLI args for a provider in JSON mode.
-/// This replaces the text-mode args (e.g., `-p --output-format text` becomes `-p --output-format json`).
+/// Get the base CLI args for a provider in stream-JSON mode.
+/// Uses stream-json when available for real-time JSONL event streaming.
 pub fn json_mode_args(provider: &str) -> Vec<String> {
     match provider {
         "claude" => vec![
             "-p".to_string(),
             "--output-format".to_string(),
-            "json".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
         ],
-        "gemini" => vec!["-p".to_string(), "-o".to_string(), "json".to_string()],
-        "codex" => vec![
-            "exec".to_string(),
-            "--json".to_string(),
+        "gemini" => vec![
+            "-p".to_string(),
+            "-o".to_string(),
+            "stream-json".to_string(),
         ],
+        "codex" => vec!["exec".to_string(), "--json".to_string()],
         "copilot" => vec![
             "-p".to_string(),
             "--output-format".to_string(),
@@ -87,6 +89,264 @@ pub fn json_mode_args(provider: &str) -> Vec<String> {
 /// Check if a provider supports JSON output.
 pub fn supports_json(provider: &str) -> bool {
     json_output_flags(provider).is_some()
+}
+
+/// A streaming event parsed from a single JSONL line.
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// Init event with metadata (agents, model, etc.)
+    Init {
+        model: Option<String>,
+        agents: Vec<String>,
+    },
+    /// Text delta — append to the current response
+    Delta(String),
+    /// Complete message text (non-delta)
+    Message(String),
+    /// Result/completion with metrics
+    Result(CliResponse),
+    /// Error event
+    Error(String),
+    /// Unknown/ignored event
+    Ignored,
+}
+
+/// Parse a single JSONL line into a StreamEvent.
+pub fn parse_stream_event(provider: &str, line: &str) -> StreamEvent {
+    let line = line.trim();
+    if line.is_empty() {
+        return StreamEvent::Ignored;
+    }
+    let Ok(json) = serde_json::from_str::<Value>(line) else {
+        return StreamEvent::Ignored;
+    };
+
+    let event_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    match provider {
+        "claude" => parse_claude_stream_event(event_type, &json),
+        "gemini" => parse_gemini_stream_event(event_type, &json),
+        "codex" => parse_codex_stream_event(event_type, &json),
+        "copilot" => parse_copilot_stream_event(event_type, &json),
+        "opencode" => parse_copilot_stream_event(event_type, &json), // similar format
+        _ => StreamEvent::Ignored,
+    }
+}
+
+fn parse_claude_stream_event(event_type: &str, json: &Value) -> StreamEvent {
+    match event_type {
+        "system" if json.get("subtype").and_then(|v| v.as_str()) == Some("init") => {
+            let model = json.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let agents = json
+                .get("agents")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            StreamEvent::Init { model, agents }
+        }
+        "assistant" => {
+            if let Some(message) = json.get("message")
+                && let Some(content) = message.get("content").and_then(|v| v.as_array())
+            {
+                let text: String = content
+                    .iter()
+                    .filter_map(|c| {
+                        if c.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            c.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                if !text.is_empty() {
+                    return StreamEvent::Delta(text);
+                }
+            }
+            StreamEvent::Ignored
+        }
+        "result" => {
+            let resp = parse_claude_json(json);
+            StreamEvent::Result(resp)
+        }
+        "error" => {
+            let msg = json
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error")
+                .to_string();
+            StreamEvent::Error(msg)
+        }
+        _ => StreamEvent::Ignored,
+    }
+}
+
+fn parse_gemini_stream_event(event_type: &str, json: &Value) -> StreamEvent {
+    match event_type {
+        "init" => {
+            let model = json.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
+            StreamEvent::Init {
+                model,
+                agents: vec![],
+            }
+        }
+        "message"
+            if json.get("role").and_then(|v| v.as_str()) == Some("assistant") =>
+        {
+            let content = json
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let is_delta = json.get("delta").and_then(|v| v.as_bool()).unwrap_or(false);
+            if is_delta {
+                StreamEvent::Delta(content)
+            } else {
+                StreamEvent::Message(content)
+            }
+        }
+        "result" => {
+            let resp = parse_gemini_result(json);
+            StreamEvent::Result(resp)
+        }
+        "error" => {
+            let msg = json
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error")
+                .to_string();
+            StreamEvent::Error(msg)
+        }
+        _ => StreamEvent::Ignored,
+    }
+}
+
+fn parse_gemini_result(json: &Value) -> CliResponse {
+    let stats = json.get("stats");
+    let tokens_in = stats.and_then(|s| s.get("input_tokens")).and_then(|v| v.as_u64());
+    let tokens_out = stats.and_then(|s| s.get("output_tokens")).and_then(|v| v.as_u64());
+    let duration_ms = stats.and_then(|s| s.get("duration_ms")).and_then(|v| v.as_u64());
+
+    let model = stats
+        .and_then(|s| s.get("models"))
+        .and_then(|m| m.as_object())
+        .and_then(|obj| obj.keys().next().cloned());
+
+    CliResponse {
+        content: String::new(), // content already streamed via deltas
+        tokens_in,
+        tokens_out,
+        cost_usd: None,
+        duration_ms,
+        model,
+        session_id: json.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        from_json: true,
+    }
+}
+
+fn parse_codex_stream_event(event_type: &str, json: &Value) -> StreamEvent {
+    match event_type {
+        "thread.started" => StreamEvent::Init {
+            model: None,
+            agents: vec![],
+        },
+        "item.completed" => {
+            let text = json
+                .get("item")
+                .and_then(|i| i.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            StreamEvent::Message(text)
+        }
+        "turn.completed" => {
+            let usage = json.get("usage");
+            StreamEvent::Result(CliResponse {
+                content: String::new(),
+                tokens_in: usage.and_then(|u| u.get("input_tokens")).and_then(|v| v.as_u64()),
+                tokens_out: usage.and_then(|u| u.get("output_tokens")).and_then(|v| v.as_u64()),
+                cost_usd: None,
+                duration_ms: None,
+                model: None,
+                session_id: None,
+                from_json: true,
+            })
+        }
+        "error" => {
+            let msg = json
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error")
+                .to_string();
+            StreamEvent::Error(msg)
+        }
+        _ => StreamEvent::Ignored,
+    }
+}
+
+fn parse_copilot_stream_event(event_type: &str, json: &Value) -> StreamEvent {
+    match event_type {
+        "session.tools_updated" => {
+            let model = json
+                .get("data")
+                .and_then(|d| d.get("model"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            StreamEvent::Init {
+                model,
+                agents: vec![],
+            }
+        }
+        "assistant.message_delta" => {
+            let delta = json
+                .get("data")
+                .and_then(|d| d.get("deltaContent"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            StreamEvent::Delta(delta)
+        }
+        "assistant.message" => {
+            let content = json
+                .get("data")
+                .and_then(|d| d.get("content"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            StreamEvent::Message(content)
+        }
+        "result" => {
+            let usage = json.get("usage");
+            let duration = usage
+                .and_then(|u| u.get("totalApiDurationMs"))
+                .and_then(|v| v.as_u64());
+            StreamEvent::Result(CliResponse {
+                content: String::new(),
+                tokens_in: None,
+                tokens_out: None,
+                cost_usd: None,
+                duration_ms: duration,
+                model: None,
+                session_id: json.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                from_json: true,
+            })
+        }
+        "error" => {
+            let msg = json
+                .get("data")
+                .and_then(|d| d.get("message"))
+                .or(json.get("error").and_then(|e| e.get("message")))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error")
+                .to_string();
+            StreamEvent::Error(msg)
+        }
+        _ => StreamEvent::Ignored,
+    }
 }
 
 /// Parse CLI JSON output into a unified CliResponse.
@@ -374,11 +634,12 @@ mod tests {
     fn test_json_mode_args() {
         let args = json_mode_args("claude");
         assert!(args.contains(&"--output-format".to_string()));
-        assert!(args.contains(&"json".to_string()));
+        assert!(args.contains(&"stream-json".to_string()));
+        assert!(args.contains(&"--verbose".to_string()));
 
         let args = json_mode_args("gemini");
         assert!(args.contains(&"-o".to_string()));
-        assert!(args.contains(&"json".to_string()));
+        assert!(args.contains(&"stream-json".to_string()));
 
         let args = json_mode_args("aider");
         assert!(args.contains(&"--message".to_string())); // text fallback
