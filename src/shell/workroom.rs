@@ -146,12 +146,17 @@ impl Workroom {
                 in_agents = false;
             }
         }
+
+        // Auto-show workroom if agents were found in an orchestrated project
+        if self.agents.len() > 1 {
+            self.visible = true;
+            self.pinned = true;
+        }
     }
 
     /// Set agents from the stream-json init event.
     /// Filters out Claude Code internal agents and deduplicates.
     pub fn set_agents_from_init(&mut self, agent_names: &[String]) {
-        // Internal agents from Claude Code / Gemini that aren't ours
         const INTERNAL_AGENTS: &[&str] = &[
             "general-purpose",
             "statusline-setup",
@@ -164,8 +169,8 @@ impl Workroom {
             if INTERNAL_AGENTS.contains(&name.as_str()) {
                 continue;
             }
-            // Skip if already present (from config)
-            if self.agents.iter().any(|a| a.name == *name) {
+            // Skip if already present — case-insensitive match
+            if self.agents.iter().any(|a| a.name.to_lowercase() == name.to_lowercase()) {
                 continue;
             }
             self.agents.push(TrackedAgent {
@@ -258,20 +263,51 @@ impl Workroom {
         self.visible = visible;
     }
 
-    /// Detect agent mentions in streamed text (e.g., "Shell Scripting Expert")
-    /// and set them to Working state.
+    /// Detect agent mentions in streamed text and set them to Working.
+    /// Matches: exact name, name with spaces, partial keywords.
     pub fn detect_mentions(&mut self, text: &str) {
         let text_lower = text.to_lowercase();
+
+        // First pass: also detect coordinator delegating
+        let is_delegation = text_lower.contains("déléguer")
+            || text_lower.contains("delegat")
+            || text_lower.contains("spécialiste")
+            || text_lower.contains("specialist");
+
+        if is_delegation
+            && let Some(coord) = self.agents.iter_mut().find(|a| a.role == AgentRole::Coordinator)
+            && coord.state == AgentState::Idle
+        {
+            coord.state = AgentState::Delegating;
+            coord.started_at = Some(Instant::now());
+        }
+
         for agent in &mut self.agents {
             if agent.state != AgentState::Idle {
                 continue;
             }
-            // Check if agent name appears in text (case-insensitive, with or without hyphens)
             let name_lower = agent.name.to_lowercase();
-            let name_spaces = name_lower.replace('-', " ");
-            if text_lower.contains(&name_lower) || text_lower.contains(&name_spaces) {
+            // Match: "shell-scripting-expert"
+            if text_lower.contains(&name_lower) {
                 agent.state = AgentState::Working;
                 agent.started_at = Some(Instant::now());
+                continue;
+            }
+            // Match: "shell scripting expert"
+            let name_spaces = name_lower.replace('-', " ");
+            if text_lower.contains(&name_spaces) {
+                agent.state = AgentState::Working;
+                agent.started_at = Some(Instant::now());
+                continue;
+            }
+            // Match: key parts — e.g., "shell scripting" from "shell-scripting-expert"
+            let parts: Vec<&str> = name_lower.split('-').collect();
+            if parts.len() >= 2 {
+                let key = format!("{} {}", parts[0], parts[1]);
+                if text_lower.contains(&key) {
+                    agent.state = AgentState::Working;
+                    agent.started_at = Some(Instant::now());
+                }
             }
         }
     }
@@ -416,13 +452,22 @@ orchestration:
 
     #[test]
     fn test_reset() {
-        let mut wr = setup_workroom();
+        let mut wr = Workroom::new();
+        // Manually add an agent (without init_from_config which auto-pins)
+        wr.agents.push(TrackedAgent {
+            name: "agent-a".to_string(),
+            state: AgentState::Idle,
+            role: AgentRole::Agent,
+            started_at: None,
+            finished_at: None,
+            spinner_frame: 0,
+        });
         wr.on_delegate("agent-a");
         wr.on_complete();
         wr.reset();
         let agent = wr.agents.iter().find(|a| a.name == "agent-a").unwrap();
         assert_eq!(agent.state, AgentState::Idle);
-        assert!(!wr.is_visible());
+        assert!(!wr.is_visible()); // not pinned, so hidden
     }
 
     #[test]
@@ -454,7 +499,7 @@ orchestration:
     #[test]
     fn test_pinned_workroom_stays_visible() {
         let mut wr = setup_workroom();
-        wr.toggle_pin();
+        // setup_workroom auto-pins, verify
         assert!(wr.is_pinned());
         wr.on_delegate("agent-a");
         wr.on_complete();
