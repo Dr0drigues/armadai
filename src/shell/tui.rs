@@ -111,6 +111,8 @@ pub struct ShellApp {
     popup_scroll: u16,
     /// Should quit
     should_quit: bool,
+    /// PTY mode enabled
+    pty_mode: bool,
     /// Agent workroom panel
     pub workroom: super::workroom::Workroom,
 }
@@ -142,6 +144,7 @@ impl ShellApp {
             cost: 0.0,
             last_duration: Duration::from_secs(0),
             should_quit: false,
+            pty_mode: false,
             workroom: super::workroom::Workroom::new(),
         }
     }
@@ -567,6 +570,14 @@ impl ShellApp {
     }
 
     /// Set the provider name (used when switching providers)
+    pub fn toggle_pty_mode(&mut self) {
+        self.pty_mode = !self.pty_mode;
+    }
+
+    pub fn is_pty_mode(&self) -> bool {
+        self.pty_mode
+    }
+
     pub fn set_provider_name(&mut self, name: String) {
         self.provider_name = name;
     }
@@ -589,7 +600,8 @@ impl ShellApp {
         } else {
             format!("{} ({})", self.provider_name, self.model_name)
         };
-        let header_text = format!("ArmadAI Shell — {} — Turn #{}", model_info, self.turn_count);
+        let pty_indicator = if self.pty_mode { " [PTY]" } else { "" };
+        let header_text = format!("ArmadAI Shell — {}{} — Turn #{}", model_info, pty_indicator, self.turn_count);
         let header = Paragraph::new(header_text).style(
             Style::default()
                 .fg(Color::Cyan)

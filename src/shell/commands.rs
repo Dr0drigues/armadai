@@ -73,6 +73,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         description: "Force save current session",
     },
     SlashCommand {
+        name: "pty",
+        aliases: &[],
+        description: "Toggle PTY mode (interactive CLI with native agent delegation)",
+    },
+    SlashCommand {
         name: "tandem",
         aliases: &["t"],
         description: "Send next message to N providers in parallel (e.g. /tandem gemini,claude)",
@@ -108,6 +113,8 @@ pub enum CommandResult {
     Tandem(Vec<String>),
     /// Pipeline mode: chain providers sequentially (A generates → B reviews)
     Pipeline(Vec<String>),
+    /// Toggle PTY mode
+    TogglePty,
 }
 
 /// Find a command by name or alias
@@ -159,6 +166,7 @@ pub fn try_execute(
                 Some(CommandResult::ResumeSession(arg.to_string()))
             }
         }
+        Some(c) if c.name == "pty" => Some(CommandResult::TogglePty),
         Some(c) if c.name == "save" => Some(CommandResult::SaveSession),
         Some(c) if c.name == "tandem" => {
             let arg = trimmed[1..].split_whitespace().nth(1).unwrap_or("");

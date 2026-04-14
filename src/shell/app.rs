@@ -342,6 +342,15 @@ async fn event_loop(
                     ));
                     continue;
                 }
+                CommandResult::TogglePty => {
+                    app.toggle_pty_mode();
+                    if app.is_pty_mode() {
+                        app.show_popup("# PTY Mode Enabled\n\nMessages will be sent through interactive CLI.\nThe CLI reads project agents and can delegate natively.\n\n**Note:** Response parsing may include CLI UI artifacts.".to_string());
+                    } else {
+                        app.show_popup("# PTY Mode Disabled\n\nBack to one-shot mode with JSON metrics.".to_string());
+                    }
+                    continue;
+                }
                 CommandResult::SaveSession => {
                     match save_current_session(
                         session_id,
@@ -367,6 +376,12 @@ async fn event_loop(
         }
 
         app.add_user_message(&input);
+
+        // PTY mode execution
+        if app.is_pty_mode() {
+            execute_pty_turn(terminal, app, runner, &input, session_id, project_dir, provider_name, model_name).await?;
+            continue;
+        }
 
         // Check for tandem or pipeline mode
         if let Some(provider_names) = app.take_tandem() {
@@ -729,6 +744,125 @@ async fn execute_pipeline(
     );
     app.set_loading(false);
 
+    let _ = save_current_session(session_id, project_dir, provider_name, model_name, runner);
+    Ok(())
+}
+
+/// Execute a turn in PTY mode — interactive CLI with native agent delegation.
+#[allow(clippy::too_many_arguments)]
+async fn execute_pty_turn(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ShellApp,
+    runner: &mut ShellRunner,
+    input: &str,
+    session_id: &str,
+    project_dir: &str,
+    provider_name: &str,
+    model_name: &str,
+) -> Result<()> {
+    use super::pty_runner::{PtyConfig, PtySession, detect_agent_activity, filter_startup_noise};
+    use std::time::Instant;
+
+    let cmd = runner.command().to_string();
+    let config = PtyConfig {
+        command: cmd.clone(),
+        width: terminal.size()?.width,
+        height: 40,
+    };
+
+    app.set_loading(true);
+    app.start_streaming_response();
+    let start_time = Instant::now();
+
+    let mut pty = match PtySession::spawn(&config) {
+        Ok(pty) => pty,
+        Err(e) => {
+            app.update_last_assistant(&format!("Error spawning PTY for {}: {}", cmd, e));
+            app.set_loading(false);
+            return Ok(());
+        }
+    };
+
+    // Wait for startup noise
+    let _startup = pty.drain_until_silence(Duration::from_secs(3));
+
+    // Send the user's message
+    if let Err(e) = pty.send(input) {
+        app.update_last_assistant(&format!("Error sending to PTY: {}", e));
+        app.set_loading(false);
+        return Ok(());
+    }
+
+    // Stream output
+    let silence_timeout = Duration::from_secs(5);
+    let mut last_data_time = Instant::now();
+    let mut full_response = String::new();
+
+    loop {
+        app.tick_spinner();
+        app.workroom.tick();
+        terminal.draw(|f| app.render(f))?;
+
+        // Check for cancel
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && (key.code == KeyCode::Esc
+                || (key.code == KeyCode::Char('c')
+                    && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
+        {
+            pty.kill();
+            app.append_to_streaming("\n\n[Cancelled]");
+            app.set_loading(false);
+            break;
+        }
+
+        let (new_text, done) = pty.drain();
+
+        if !new_text.is_empty() {
+            last_data_time = Instant::now();
+            let clean = filter_startup_noise(&new_text);
+            if !clean.is_empty() {
+                for agent in &detect_agent_activity(&clean) {
+                    app.workroom.on_delegate(agent);
+                }
+                app.append_to_streaming(&clean);
+                full_response.push_str(&clean);
+                terminal.draw(|f| app.render(f))?;
+            }
+        }
+
+        if done || !pty.is_running() {
+            let (remaining, _) = pty.drain();
+            if !remaining.is_empty() {
+                let clean = filter_startup_noise(&remaining);
+                app.append_to_streaming(&clean);
+                full_response.push_str(&clean);
+            }
+            break;
+        }
+
+        if last_data_time.elapsed() > silence_timeout && !full_response.is_empty() {
+            break;
+        }
+    }
+
+    let duration = start_time.elapsed();
+    let parsed = super::parser::parse_response(&full_response);
+    app.update_last_assistant(&parsed.content);
+    runner.record_turn(input, &parsed.content, duration);
+
+    let metrics = runner.session_metrics();
+    app.set_session_metrics(
+        metrics.total_tokens_in,
+        metrics.total_tokens_out,
+        metrics.total_cost_estimate,
+        metrics.turn_count,
+        duration,
+    );
+
+    app.workroom.on_complete();
+    app.set_loading(false);
     let _ = save_current_session(session_id, project_dir, provider_name, model_name, runner);
     Ok(())
 }

@@ -25,6 +25,8 @@ pub mod app;
 pub mod session;
 
 #[cfg(feature = "tui")]
+pub mod pty_runner;
+#[cfg(feature = "tui")]
 pub mod workroom;
 
 // Re-exported for external use when shell command is implemented
