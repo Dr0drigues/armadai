@@ -131,6 +131,14 @@ pub async fn run_shell() -> Result<()> {
 
     let mut app = ShellApp::new(provider_name.clone());
     app.set_model_name(resolved_model.clone());
+
+    // Initialize workroom from project orchestration config
+    if let Ok(config_content) = std::fs::read_to_string(".armadai/config.yaml")
+        .or_else(|_| std::fs::read_to_string("armadai.yaml"))
+    {
+        app.workroom.init_from_config(&config_content);
+    }
+
     let mut runner = ShellRunner::new(config);
 
     // Event loop
@@ -407,6 +415,7 @@ async fn event_loop(
         // Render loop: drain stream chunks + handle cancel
         loop {
             app.tick_spinner();
+            app.workroom.tick();
             terminal.draw(|f| app.render(f))?;
 
             // Check for cancel
@@ -426,6 +435,7 @@ async fn event_loop(
             // Drain all available lines
             let mut got_data = false;
             while let Ok(line) = stream_rx.try_recv() {
+                app.workroom.parse_streaming_line(&line);
                 app.append_to_streaming(&line);
                 got_data = true;
             }
@@ -467,10 +477,13 @@ async fn event_loop(
                     runner,
                 );
 
+                app.workroom.on_complete();
                 app.set_loading(false);
                 break;
             }
         }
+        // Reset workroom for next turn
+        app.workroom.reset();
     }
     Ok(())
 }

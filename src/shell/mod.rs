@@ -23,6 +23,9 @@ pub mod app;
 #[cfg(feature = "tui")]
 pub mod session;
 
+#[cfg(feature = "tui")]
+pub mod workroom;
+
 // Re-exported for external use when shell command is implemented
 #[allow(unused_imports)]
 pub use parser::{ParsedResponse, parse_response};

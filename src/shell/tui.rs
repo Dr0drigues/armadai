@@ -111,6 +111,8 @@ pub struct ShellApp {
     popup_scroll: u16,
     /// Should quit
     should_quit: bool,
+    /// Agent workroom panel
+    pub workroom: super::workroom::Workroom,
 }
 
 impl ShellApp {
@@ -140,6 +142,7 @@ impl ShellApp {
             cost: 0.0,
             last_duration: Duration::from_secs(0),
             should_quit: false,
+            workroom: super::workroom::Workroom::new(),
         }
     }
 
@@ -578,8 +581,20 @@ impl ShellApp {
         );
         frame.render_widget(header, chunks[0]);
 
-        // Messages area
-        self.render_messages_area(frame, chunks[1]);
+        // Messages area (with optional workroom panel)
+        if self.workroom.is_visible() {
+            let h_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Min(0),          // Messages (main)
+                    Constraint::Length(35),       // Workroom panel
+                ])
+                .split(chunks[1]);
+            self.render_messages_area(frame, h_chunks[0]);
+            self.workroom.render(frame, h_chunks[1]);
+        } else {
+            self.render_messages_area(frame, chunks[1]);
+        }
 
         // Status bar
         self.render_statusbar(frame, chunks[2]);
