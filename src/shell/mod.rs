@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod detect;
+pub mod json_runner;
 pub mod parser;
 pub mod runner;
 

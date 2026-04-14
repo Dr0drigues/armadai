@@ -373,6 +373,7 @@ async fn event_loop(
         let cmd = runner.command().to_string();
         let args: Vec<String> = runner.args().to_vec();
         let prompt = runner.build_prompt_for(&input_clone);
+        let is_json_mode = super::json_runner::supports_json(&cmd);
 
         // Spawn CLI with piped stdout for streaming
         let start_time = std::time::Instant::now();
@@ -453,12 +454,38 @@ async fn event_loop(
                 }
                 let duration = start_time.elapsed();
 
-                // Parse markers from full content
                 let raw_content = app.get_last_assistant_content();
-                let parsed = super::parser::parse_response(&raw_content);
-                app.update_last_assistant(&parsed.content);
 
-                runner.record_turn(&input_clone, &parsed.content, duration);
+                if is_json_mode {
+                    // Parse JSON response for real metrics
+                    let cli_resp = super::json_runner::parse_json_response(&cmd, &raw_content);
+                    app.update_last_assistant(&cli_resp.content);
+
+                    // Update model name if discovered
+                    if let Some(ref model) = cli_resp.model {
+                        app.set_model_name(model.clone());
+                    }
+
+                    // Use real metrics when available, fall back to estimates
+                    let tokens_in = cli_resp.tokens_in.unwrap_or_else(|| {
+                        super::runner::ShellRunner::estimate_tokens(&prompt) as u64
+                    });
+                    let tokens_out = cli_resp.tokens_out.unwrap_or_else(|| {
+                        super::runner::ShellRunner::estimate_tokens(&cli_resp.content) as u64
+                    });
+                    let cost = cli_resp.cost_usd.unwrap_or(0.0);
+                    let real_duration = cli_resp.duration_ms
+                        .map(Duration::from_millis)
+                        .unwrap_or(duration);
+
+                    runner.record_turn_exact(&input_clone, &cli_resp.content, real_duration, tokens_in, tokens_out, cost);
+                } else {
+                    // Text mode: parse markers, use estimates
+                    let parsed = super::parser::parse_response(&raw_content);
+                    app.update_last_assistant(&parsed.content);
+                    runner.record_turn(&input_clone, &parsed.content, duration);
+                }
+
                 let metrics = runner.session_metrics();
                 app.set_session_metrics(
                     metrics.total_tokens_in,
