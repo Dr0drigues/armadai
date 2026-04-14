@@ -75,7 +75,7 @@ pub const COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "pty",
         aliases: &[],
-        description: "Toggle PTY mode (interactive CLI with native agent delegation)",
+        description: "Toggle PTY mode [experimental] (interactive CLI — may hang with some CLIs)",
     },
     SlashCommand {
         name: "tandem",
