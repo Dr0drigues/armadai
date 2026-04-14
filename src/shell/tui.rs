@@ -855,9 +855,17 @@ impl ShellApp {
             )]));
         }
 
-        // Calculate scroll position
+        // Calculate scroll position — account for line wrapping
         let visible_height = area.height.saturating_sub(2) as usize; // minus borders
-        let total_lines = lines.len();
+        let inner_width = area.width.saturating_sub(2) as usize; // minus borders
+        let total_lines: usize = if inner_width > 0 {
+            lines.iter().map(|line| {
+                let char_count: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+                (char_count / inner_width) + 1
+            }).sum()
+        } else {
+            lines.len()
+        };
         let max_scroll = if total_lines > visible_height {
             (total_lines - visible_height) as u16
         } else {

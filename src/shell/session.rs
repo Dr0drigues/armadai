@@ -103,6 +103,19 @@ pub fn save_session(session: &ShellSession) -> Result<()> {
     Ok(())
 }
 
+/// Append a raw stream event to the session debug log.
+pub fn log_stream_event(session_id: &str, event: &str) {
+    let path = sessions_dir().join(format!("{}.log", session_id));
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{}", event);
+    }
+}
+
 /// Load a session from disk.
 pub fn load_session(id: &str) -> Result<ShellSession> {
     let path = sessions_dir().join(format!("{}.json", id));

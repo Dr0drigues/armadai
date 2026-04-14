@@ -472,6 +472,9 @@ async fn event_loop(
             let mut result_event: Option<super::json_runner::CliResponse> = None;
 
             while let Ok(line) = stream_rx.try_recv() {
+                // Log raw stream event for debugging
+                super::session::log_stream_event(session_id, line.trim());
+
                 if is_json_mode {
                     use super::json_runner::{StreamEvent, parse_stream_event};
                     match parse_stream_event(&cmd, &line) {
