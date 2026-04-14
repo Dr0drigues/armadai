@@ -62,6 +62,7 @@ fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = execute!(
         io::stdout(),
+        crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
         LeaveAlternateScreen,
         crossterm::cursor::Show
@@ -124,7 +125,8 @@ pub async fn run_shell() -> Result<()> {
         stdout,
         EnterAlternateScreen,
         crossterm::cursor::Hide,
-        crossterm::event::EnableMouseCapture
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableBracketedPaste
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -191,6 +193,17 @@ async fn event_loop(
         }
 
         let evt = event::read()?;
+
+        // Handle paste (bracketed paste mode)
+        if let Event::Paste(text) = &evt {
+            // Replace newlines with spaces for single-line input
+            let clean = text.replace('\n', " ").replace('\r', "");
+            for c in clean.chars() {
+                let byte_idx = app.char_to_byte_pub(app.cursor_pos());
+                app.insert_char_at(byte_idx, c);
+            }
+            continue;
+        }
 
         // Handle mouse scroll
         if let Event::Mouse(mouse) = &evt {

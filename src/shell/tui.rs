@@ -239,6 +239,22 @@ impl ShellApp {
         self.loading
     }
 
+    /// Get current cursor position (char-based)
+    pub fn cursor_pos(&self) -> usize {
+        self.cursor
+    }
+
+    /// Convert char position to byte index (public for paste handling)
+    pub fn char_to_byte_pub(&self, char_pos: usize) -> usize {
+        self.char_to_byte(char_pos)
+    }
+
+    /// Insert a char at byte position and advance cursor
+    pub fn insert_char_at(&mut self, byte_idx: usize, c: char) {
+        self.input.insert(byte_idx, c);
+        self.cursor += 1;
+    }
+
     /// Set tandem mode for the next message
     pub fn set_tandem(&mut self, providers: Vec<String>) {
         self.tandem_providers = Some(providers);
@@ -563,7 +579,7 @@ impl ShellApp {
                 Constraint::Length(1), // Header
                 Constraint::Min(0),    // Messages area
                 Constraint::Length(1), // Statusbar
-                Constraint::Length(3), // Input line (with borders)
+                Constraint::Length(self.input_height(frame.area().width)), // Input (dynamic)
             ])
             .split(frame.area());
 
@@ -676,7 +692,7 @@ impl ShellApp {
                     .title(" ArmadAI ")
                     .title_style(Style::default().fg(Color::Cyan).bold()),
             )
-            .wrap(Wrap { trim: true })
+            .wrap(Wrap { trim: false })
             .scroll((self.popup_scroll, 0));
 
         frame.render_widget(popup, popup_area);
@@ -686,7 +702,7 @@ impl ShellApp {
         if self.messages.is_empty() {
             let placeholder = Paragraph::new("Welcome to ArmadAI Shell!\n\nType your message and press Enter to get started. Press Ctrl+L to clear conversation, Ctrl+C or Esc to quit.")
                 .block(Block::default().borders(Borders::ALL))
-                .wrap(Wrap { trim: true });
+                .wrap(Wrap { trim: false });
             frame.render_widget(placeholder, area);
             return;
         }
@@ -846,7 +862,7 @@ impl ShellApp {
         // Create paragraph with message content
         let messages_text = Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL))
-            .wrap(Wrap { trim: true })
+            .wrap(Wrap { trim: false })
             .scroll((scroll, 0));
 
         frame.render_widget(messages_text, area);
@@ -884,14 +900,32 @@ impl ShellApp {
         frame.render_widget(statusbar, area);
     }
 
+    /// Calculate dynamic input height based on content and terminal width.
+    fn input_height(&self, terminal_width: u16) -> u16 {
+        let inner_width = terminal_width.saturating_sub(4) as usize; // borders + prompt char
+        if inner_width == 0 {
+            return 3;
+        }
+        let text_len = self.input.chars().count() + 2; // +2 for "> "
+        let lines = (text_len / inner_width) + 1;
+        // Min 3 (for borders + 1 line), max 8
+        (lines as u16 + 2).clamp(3, 8)
+    }
+
     fn render_input_line(&self, frame: &mut Frame, area: Rect) {
         let cursor_indicator = if self.loading { "..." } else { ">" };
 
-        // Build the input display with cursor
-        let mut input_spans = vec![Span::raw(format!("{} ", cursor_indicator))];
+        // Build plain text for wrapping, then render with cursor highlight
+        let display_text = format!("{} {}", cursor_indicator, self.input);
 
-        for (i, c) in self.input.chars().enumerate() {
-            if i == self.cursor {
+        // For cursor position in the display text: offset by prompt prefix length
+        let prefix_len = cursor_indicator.len() + 1; // "> " or "... "
+        let cursor_display_pos = prefix_len + self.cursor;
+
+        // Build spans with cursor highlight
+        let mut input_spans = Vec::new();
+        for (i, c) in display_text.chars().enumerate() {
+            if i == cursor_display_pos && !self.loading {
                 input_spans.push(Span::styled(
                     c.to_string(),
                     Style::default().bg(Color::White).fg(Color::Black),
@@ -901,23 +935,25 @@ impl ShellApp {
             }
         }
 
-        // If cursor is at end, show cursor
-        if self.cursor >= self.input.chars().count() && !self.loading {
+        // If cursor at end, add cursor block
+        if cursor_display_pos >= display_text.chars().count() && !self.loading {
             input_spans.push(Span::styled(
                 " ",
                 Style::default().bg(Color::White).fg(Color::Black),
             ));
         }
 
-        let input_line = Paragraph::new(Line::from(input_spans)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Input ")
-                .title_style(Style::default().fg(Color::Cyan)),
-        );
+        let input_paragraph = Paragraph::new(Line::from(input_spans))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(" Input ")
+                    .title_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false });
 
-        frame.render_widget(input_line, area);
+        frame.render_widget(input_paragraph, area);
     }
 }
 
