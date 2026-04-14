@@ -67,10 +67,12 @@ impl Workroom {
     pub fn init_from_config(&mut self, config_yaml: &str) {
         self.agents.clear();
 
-        // Parse coordinator
+        // Parse coordinator (take first occurrence only)
         for line in config_yaml.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with("coordinator:") {
+            if trimmed.starts_with("coordinator:")
+                && !self.agents.iter().any(|a| a.role == AgentRole::Coordinator)
+            {
                 let name = trimmed
                     .strip_prefix("coordinator:")
                     .unwrap()
