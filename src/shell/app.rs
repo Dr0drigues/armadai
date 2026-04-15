@@ -389,13 +389,24 @@ async fn event_loop(
             continue;
         }
 
-        // Check for tandem or pipeline mode
+        // Check for explicit tandem/pipeline mode (from /tandem or /pipeline command)
         if let Some(provider_names) = app.take_tandem() {
             execute_tandem(terminal, app, runner, &input, &provider_names, session_id, project_dir, provider_name, model_name).await?;
             continue;
         }
         if let Some(provider_names) = app.take_pipeline() {
             execute_pipeline(terminal, app, runner, &input, &provider_names, session_id, project_dir, provider_name, model_name).await?;
+            continue;
+        }
+
+        // Auto-pipeline from config (if pipeline steps are configured)
+        if let Some(ref pipeline) = shell_config.pipeline
+            && !pipeline.steps.is_empty()
+        {
+            let providers: Vec<String> = pipeline.steps.iter()
+                .flat_map(|step| step.providers.iter().map(|e| e.provider.clone()))
+                .collect();
+            execute_pipeline(terminal, app, runner, &input, &providers, session_id, project_dir, provider_name, model_name).await?;
             continue;
         }
 
