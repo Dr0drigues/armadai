@@ -767,29 +767,71 @@ async fn execute_pipeline(
             )
         };
 
-        let output = tokio::process::Command::new(&provider.command)
-            .args(&provider.args)
-            .arg(&prompt)
-            .output()
-            .await?;
+        // Spawn CLI in background so we can render spinner
+        let cmd = provider.command.clone();
+        let args = provider.args.clone();
+        let prompt_clone = prompt.clone();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
 
-        if output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stdout).to_string();
-            let parsed = super::parser::parse_response(&raw);
-            let label = if is_last {
-                format!("{} (final)", provider.display_name)
-            } else {
-                format!("{} (stage {})", provider.display_name, i + 1)
-            };
-            app.add_assistant_message_with_label(&label, &parsed.content);
-            current_input = parsed.content;
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            app.add_assistant_message_with_label(
-                &provider.display_name,
-                &format!("Error: {}", stderr),
-            );
-            break;
+        tokio::spawn(async move {
+            let output = tokio::process::Command::new(&cmd)
+                .args(&args)
+                .arg(&prompt_clone)
+                .output()
+                .await;
+            let _ = tx.send(output);
+        });
+
+        // Render loop with spinner while waiting
+        loop {
+            app.tick_spinner();
+            terminal.draw(|f| app.render(f))?;
+
+            if event::poll(Duration::from_millis(80))?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+                && (key.code == KeyCode::Esc
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
+            {
+                app.add_system_message("[Pipeline cancelled]");
+                app.set_loading(false);
+                return Ok(());
+            }
+
+            if let Ok(output_result) = rx.try_recv() {
+                match output_result {
+                    Ok(output) if output.status.success() => {
+                        let raw = String::from_utf8_lossy(&output.stdout).to_string();
+                        let parsed = super::parser::parse_response(&raw);
+                        let label = if is_last {
+                            format!("{} (final)", provider.display_name)
+                        } else {
+                            format!("{} (stage {})", provider.display_name, i + 1)
+                        };
+                        app.add_assistant_message_with_label(&label, &parsed.content);
+                        current_input = parsed.content;
+                    }
+                    Ok(output) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                        app.add_assistant_message_with_label(
+                            &provider.display_name,
+                            &format!("Error: {}", stderr),
+                        );
+                        app.set_loading(false);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        app.add_assistant_message_with_label(
+                            &provider.display_name,
+                            &format!("Error: {}", e),
+                        );
+                        app.set_loading(false);
+                        return Ok(());
+                    }
+                }
+                break;
+            }
         }
         terminal.draw(|f| app.render(f))?;
     }
