@@ -64,10 +64,12 @@ pub fn json_mode_args(provider: &str) -> Vec<String> {
             "stream-json".to_string(),
             "--verbose".to_string(),
         ],
+        // NOTE: For Gemini, -p must be followed immediately by the prompt value.
+        // The prompt is appended as the last arg by the caller, so we put -o BEFORE -p.
         "gemini" => vec![
-            "-p".to_string(),
             "-o".to_string(),
             "stream-json".to_string(),
+            "-p".to_string(),
         ],
         "codex" => vec!["exec".to_string(), "--json".to_string()],
         "copilot" => vec![
