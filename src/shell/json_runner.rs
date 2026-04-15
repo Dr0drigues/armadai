@@ -72,10 +72,11 @@ pub fn json_mode_args(provider: &str) -> Vec<String> {
             "-p".to_string(),
         ],
         "codex" => vec!["exec".to_string(), "--json".to_string()],
+        // Copilot: -p takes a value, so put other flags before -p
         "copilot" => vec![
-            "-p".to_string(),
             "--output-format".to_string(),
             "json".to_string(),
+            "-p".to_string(),
         ],
         "opencode" => vec![
             "run".to_string(),
