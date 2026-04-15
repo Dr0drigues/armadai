@@ -14,47 +14,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::time::{Duration, Instant};
-use tui_markdown::StyleSheet;
-
-/// Custom stylesheet for ArmadAI shell — designed for dark terminal themes.
-#[derive(Clone, Copy, Debug, Default)]
-struct ArmadaiStyleSheet;
-
-impl tui_markdown::StyleSheet for ArmadaiStyleSheet {
-    fn heading(&self, level: u8) -> Style {
-        match level {
-            1 => Style::new()
-                .fg(Color::Rgb(88, 166, 255))
-                .bold()
-                .underlined(),
-            2 => Style::new().fg(Color::Rgb(63, 185, 80)).bold(),
-            3 => Style::new().fg(Color::Rgb(210, 153, 34)).bold(),
-            _ => Style::new().fg(Color::Rgb(139, 148, 158)).italic(),
-        }
-    }
-
-    fn code(&self) -> Style {
-        Style::new()
-            .fg(Color::Rgb(230, 237, 243))
-            .bg(Color::Rgb(55, 62, 71))
-    }
-
-    fn link(&self) -> Style {
-        Style::new().fg(Color::Rgb(88, 166, 255)).underlined()
-    }
-
-    fn blockquote(&self) -> Style {
-        Style::new().fg(Color::Rgb(139, 148, 158)).italic()
-    }
-
-    fn heading_meta(&self) -> Style {
-        Style::new().dim()
-    }
-
-    fn metadata_block(&self) -> Style {
-        Style::new().fg(Color::Rgb(210, 153, 34))
-    }
-}
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -649,45 +608,8 @@ impl ShellApp {
         // Semi-transparent background (clear the area)
         frame.render_widget(ratatui::widgets::Clear, popup_area);
 
-        // Render markdown content inside the popup
-        let opts = tui_markdown::Options::new(ArmadaiStyleSheet);
-        let md_text = tui_markdown::from_str_with_options(content, &opts);
-
-        // Post-process headings (same as messages)
-        let mut lines: Vec<Line> = Vec::new();
-        for line in md_text.lines {
-            let first_span_str: String = line
-                .spans
-                .first()
-                .map(|s| s.content.to_string())
-                .unwrap_or_default();
-            if first_span_str.starts_with('#') {
-                let line_style = line.style;
-                lines.push(Line::from(""));
-                let hash_count = first_span_str.chars().take_while(|c| *c == '#').count();
-                let mut heading_text = String::new();
-                for s in &line.spans {
-                    let c = s.content.to_string();
-                    if c.starts_with('#') {
-                        heading_text.push_str(c.trim_start_matches('#').trim_start());
-                    } else {
-                        heading_text.push_str(&c);
-                    }
-                }
-                let heading_style = ArmadaiStyleSheet
-                    .heading(hash_count as u8)
-                    .patch(line_style);
-                lines.push(Line::from(Span::styled(heading_text, heading_style)));
-                if hash_count <= 3 {
-                    lines.push(Line::from(Span::styled(
-                        "─".repeat(popup_width.saturating_sub(4) as usize),
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                }
-            } else {
-                lines.push(line);
-            }
-        }
+        // Render markdown content using our custom renderer
+        let mut lines: Vec<Line> = super::md_render::render_markdown(content);
 
         // Footer hint
         lines.push(Line::from(""));
@@ -744,96 +666,14 @@ impl ShellApp {
                 role_style,
             )]));
 
-            if msg.is_system {
-                // System messages: render as markdown (same as assistant)
-                let opts = tui_markdown::Options::new(ArmadaiStyleSheet);
-                let md_text = tui_markdown::from_str_with_options(&msg.content, &opts);
-                for line in md_text.lines {
-                    let first_span_str: String = line
-                        .spans
-                        .first()
-                        .map(|s| s.content.to_string())
-                        .unwrap_or_default();
-                    if first_span_str.starts_with('#') {
-                        let line_style = line.style;
-                        lines.push(Line::from(""));
-                        let hash_count = first_span_str.chars().take_while(|c| *c == '#').count();
-                        let mut heading_text = String::new();
-                        for s in &line.spans {
-                            let content = s.content.to_string();
-                            if content.starts_with('#') {
-                                heading_text.push_str(content.trim_start_matches('#').trim_start());
-                            } else {
-                                heading_text.push_str(&content);
-                            }
-                        }
-                        let heading_style = ArmadaiStyleSheet
-                            .heading(hash_count as u8)
-                            .patch(line_style);
-                        lines.push(Line::from(Span::styled(heading_text, heading_style)));
-                        if hash_count <= 3 {
-                            lines.push(Line::from(Span::styled(
-                                "─".repeat(50),
-                                Style::default().fg(Color::DarkGray),
-                            )));
-                        }
-                    } else {
-                        lines.push(line);
-                    }
-                }
-            } else if msg.is_user {
+            if msg.is_user {
                 // User messages: plain text
                 for line in msg.content.lines() {
                     lines.push(Line::from(line.to_string()));
                 }
             } else {
-                // Assistant messages: rich markdown rendering
-                let opts = tui_markdown::Options::new(ArmadaiStyleSheet);
-                let md_text = tui_markdown::from_str_with_options(&msg.content, &opts);
-                for line in md_text.lines {
-                    // Post-process: strip leading ### markers from headings,
-                    // replace with clean styled text
-                    let first_span_str: String = line
-                        .spans
-                        .first()
-                        .map(|s| s.content.to_string())
-                        .unwrap_or_default();
-                    if first_span_str.starts_with('#') {
-                        // It's a heading line — strip the # prefix, keep the original line style
-                        let line_style = line.style;
-                        lines.push(Line::from(""));
-
-                        // Determine heading level for separator
-                        let hash_count = first_span_str.chars().take_while(|c| *c == '#').count();
-
-                        // Build the cleaned heading text
-                        let mut heading_text = String::new();
-                        for s in &line.spans {
-                            let content = s.content.to_string();
-                            if content.starts_with('#') {
-                                heading_text.push_str(content.trim_start_matches('#').trim_start());
-                            } else {
-                                heading_text.push_str(&content);
-                            }
-                        }
-
-                        // Apply heading style from our stylesheet
-                        let heading_style = ArmadaiStyleSheet
-                            .heading(hash_count as u8)
-                            .patch(line_style);
-                        lines.push(Line::from(Span::styled(heading_text, heading_style)));
-
-                        // Add separator after H1/H2/H3
-                        if hash_count <= 3 {
-                            lines.push(Line::from(Span::styled(
-                                "─".repeat(50),
-                                Style::default().fg(Color::DarkGray),
-                            )));
-                        }
-                    } else {
-                        lines.push(line);
-                    }
-                }
+                // System + Assistant messages: custom markdown rendering
+                lines.extend(super::md_render::render_markdown(&msg.content));
             }
 
             // Add blank line between messages
