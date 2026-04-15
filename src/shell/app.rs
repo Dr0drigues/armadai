@@ -661,7 +661,7 @@ async fn execute_tandem(
                 .arg(&prompt)
                 .output()
                 .await;
-            (display_name, output)
+            (display_name, cmd, output)
         }));
     }
 
@@ -675,13 +675,37 @@ async fn execute_tandem(
     // Collect results
     let mut combined_content = String::new();
     for handle in handles {
-        let (name, output_result) = handle.await.map_err(|e| anyhow::anyhow!("Join error: {e}"))?;
+        let (name, cmd, output_result) = handle.await.map_err(|e| anyhow::anyhow!("Join error: {e}"))?;
         match output_result {
             Ok(output) if output.status.success() => {
                 let raw = String::from_utf8_lossy(&output.stdout).to_string();
-                let parsed = super::parser::parse_response(&raw);
-                app.add_assistant_message_with_label(&name, &parsed.content);
-                combined_content.push_str(&parsed.content);
+
+                // Parse JSONL stream to extract clean text
+                let content = if super::json_runner::supports_json(&cmd) {
+                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    let mut text = String::new();
+                    for line in raw.lines() {
+                        match parse_stream_event(&cmd, line) {
+                            StreamEvent::Delta(t) | StreamEvent::Message(t) => {
+                                text.push_str(&t);
+                            }
+                            StreamEvent::Result(resp) if !resp.content.is_empty() => {
+                                text.push_str(&resp.content);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if text.is_empty() {
+                        super::parser::parse_response(&raw).content
+                    } else {
+                        super::parser::parse_response(&text).content
+                    }
+                } else {
+                    super::parser::parse_response(&raw).content
+                };
+
+                app.add_assistant_message_with_label(&name, &content);
+                combined_content.push_str(&content);
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -803,14 +827,39 @@ async fn execute_pipeline(
                 match output_result {
                     Ok(output) if output.status.success() => {
                         let raw = String::from_utf8_lossy(&output.stdout).to_string();
-                        let parsed = super::parser::parse_response(&raw);
+
+                        // Parse JSONL stream events to extract clean text content
+                        let content = if super::json_runner::supports_json(&provider.command) {
+                            use super::json_runner::{StreamEvent, parse_stream_event};
+                            let mut text = String::new();
+                            for line in raw.lines() {
+                                match parse_stream_event(&provider.command, line) {
+                                    StreamEvent::Delta(t) | StreamEvent::Message(t) => {
+                                        text.push_str(&t);
+                                    }
+                                    StreamEvent::Result(resp) if !resp.content.is_empty() => {
+                                        text.push_str(&resp.content);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // Fallback: if no events parsed, try the legacy parser
+                            if text.is_empty() {
+                                super::parser::parse_response(&raw).content
+                            } else {
+                                super::parser::parse_response(&text).content
+                            }
+                        } else {
+                            super::parser::parse_response(&raw).content
+                        };
+
                         let label = if is_last {
                             format!("{} (final)", provider.display_name)
                         } else {
                             format!("{} (stage {})", provider.display_name, i + 1)
                         };
-                        app.add_assistant_message_with_label(&label, &parsed.content);
-                        current_input = parsed.content;
+                        app.add_assistant_message_with_label(&label, &content);
+                        current_input = content;
                     }
                     Ok(output) => {
                         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
