@@ -765,29 +765,11 @@ async fn execute_tandem(
         match output_result {
             Ok(output) if output.status.success() => {
                 let raw = String::from_utf8_lossy(&output.stdout).to_string();
-
-                // Parse JSONL stream to extract clean text
-                let content = if super::json_runner::supports_json(&cmd) {
-                    use super::json_runner::{StreamEvent, parse_stream_event};
-                    let mut text = String::new();
-                    for line in raw.lines() {
-                        match parse_stream_event(&cmd, line) {
-                            StreamEvent::Delta(t) | StreamEvent::Message(t) => {
-                                text.push_str(&t);
-                            }
-                            StreamEvent::Result(resp) if !resp.content.is_empty() => {
-                                text.push_str(&resp.content);
-                            }
-                            _ => {}
-                        }
-                    }
-                    if text.is_empty() {
-                        super::parser::parse_response(&raw).content
-                    } else {
-                        super::parser::parse_response(&text).content
-                    }
-                } else {
+                let text = super::json_runner::collect_text_from_jsonl(&cmd, &raw);
+                let content = if text.is_empty() {
                     super::parser::parse_response(&raw).content
+                } else {
+                    super::parser::parse_response(&text).content
                 };
 
                 app.add_assistant_message_with_label(&name, &content);
@@ -987,27 +969,11 @@ async fn execute_pipeline_steps(
                 match output_result {
                     Ok(output) if output.status.success() => {
                         let raw = String::from_utf8_lossy(&output.stdout).to_string();
-                        let content = if super::json_runner::supports_json(&resolved.cmd) {
-                            use super::json_runner::{StreamEvent, parse_stream_event};
-                            let mut text = String::new();
-                            for line in raw.lines() {
-                                match parse_stream_event(&resolved.cmd, line) {
-                                    StreamEvent::Delta(t) | StreamEvent::Message(t) => {
-                                        text.push_str(&t);
-                                    }
-                                    StreamEvent::Result(resp) if !resp.content.is_empty() => {
-                                        text.push_str(&resp.content);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            if text.is_empty() {
-                                super::parser::parse_response(&raw).content
-                            } else {
-                                super::parser::parse_response(&text).content
-                            }
-                        } else {
+                        let text = super::json_runner::collect_text_from_jsonl(&resolved.cmd, &raw);
+                        let content = if text.is_empty() {
                             super::parser::parse_response(&raw).content
+                        } else {
+                            super::parser::parse_response(&text).content
                         };
 
                         let label = if is_last {
