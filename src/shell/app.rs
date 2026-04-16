@@ -16,6 +16,13 @@ use super::runner::ShellRunner;
 use super::session::{SessionMessage, ShellSession};
 use super::tui::ShellApp;
 
+/// Check if a key event is a cancel key (Esc or Ctrl+C).
+fn is_cancel_key(key: &event::KeyEvent) -> bool {
+    key.code == KeyCode::Esc
+        || (key.code == KeyCode::Char('c')
+            && key.modifiers == crossterm::event::KeyModifiers::CONTROL)
+}
+
 /// Helper to save the current session state.
 fn save_current_session(
     session_id: &str,
@@ -531,9 +538,7 @@ async fn event_loop(
             if event::poll(Duration::from_millis(30))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
-                && (key.code == KeyCode::Esc
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
+                && is_cancel_key(&key)
             {
                 let _ = child.kill().await;
                 app.append_to_streaming("\n\n[Cancelled]");
@@ -971,9 +976,7 @@ async fn execute_pipeline_steps(
             if event::poll(Duration::from_millis(80))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
-                && (key.code == KeyCode::Esc
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
+                && is_cancel_key(&key)
             {
                 app.add_system_message("[Pipeline cancelled]");
                 app.set_loading(false);
@@ -1114,9 +1117,7 @@ async fn execute_pty_turn(
         if event::poll(Duration::from_millis(50))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && (key.code == KeyCode::Esc
-                || (key.code == KeyCode::Char('c')
-                    && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
+            && is_cancel_key(&key)
         {
             pty.kill();
             app.append_to_streaming("\n\n[Cancelled]");
