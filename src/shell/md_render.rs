@@ -132,12 +132,10 @@ impl MdRenderer {
                 self.heading_level = Some(lvl);
                 self.base_style = heading_style(lvl);
             }
-            Tag::Paragraph => {
-                // Start a new paragraph (blank line before if not first)
-                if !self.lines.is_empty() && !self.in_table {
-                    self.flush_line();
-                }
+            Tag::Paragraph if !self.lines.is_empty() && !self.in_table => {
+                self.flush_line();
             }
+            Tag::Paragraph => {}
             Tag::CodeBlock(kind) => {
                 self.flush_line();
                 self.in_code_block = true;
