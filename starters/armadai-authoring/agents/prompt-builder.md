@@ -1,7 +1,7 @@
 # Prompt Builder
 
 ## Metadata
-- provider: cli claude
+- provider: claude
 - model: latest:pro
 - temperature: 0.3
 - max_tokens: 8192

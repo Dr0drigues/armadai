@@ -1,7 +1,7 @@
 # Starter Builder
 
 ## Metadata
-- provider: cli claude
+- provider: claude
 - model: latest:pro
 - temperature: 0.3
 - max_tokens: 8192
@@ -64,9 +64,64 @@ skills: [custom-skill, builtin-skill-reference]
 When a pack includes a coordinator agent (tagged `coordinator`), `armadai init --pack` auto-generates an `orchestration:` block in the project config. Coordinators should use the `@agent-name: task` delegation protocol in their system prompt.
 
 Available orchestration patterns:
+- **Direct**: single agent, no orchestration
 - **Hierarchical**: Coordinator delegates to specialists via `@agent:` syntax (default for coordinator packs)
 - **Blackboard**: Parallel reactive agents with shared state (agents need `## Triggers`)
 - **Ring**: Sequential token-passing with consensus voting (agents need `## Ring Config`)
+
+**Hierarchical sub-teams** (v0.12+): when the pack has distinct domains or >6 agents, group specialists under team leads:
+
+```yaml
+orchestration:
+  pattern: hierarchical
+  coordinator: architect
+  teams:
+    - agents: [shared-specialist-1, shared-specialist-2]  # direct reports
+    - lead: test-lead                                      # sub-team
+      agents: [vm-tester-linux, vm-tester-macos]
+```
+
+Refer to the `armadai-orchestration-patterns` skill for the decision matrix.
+
+### Shell configuration (v0.12+)
+
+Packs can preconfigure the `armadai shell` experience by shipping a `shell:` section in the generated config:
+
+```yaml
+shell:
+  default_provider: gemini
+  default_model: latest:pro
+  tandem:
+    - provider: gemini
+      model: latest:fast
+    - provider: claude
+      model: latest:pro
+  pipeline:
+    steps:
+      - name: analyze
+        prompt: "Analyze this request"
+        providers:
+          - provider: gemini
+            model: latest:fast
+      - name: review
+        prompt: "Review and improve"
+        providers:
+          - provider: claude
+            model: latest:pro
+```
+
+Pipeline steps also accept `agent: <name>` to reference a project agent directly — the agent's `## System Prompt` and metadata provider/model drive the step, no duplication:
+
+```yaml
+pipeline:
+  steps:
+    - name: plan
+      providers: [{agent: architect}]
+    - name: review
+      providers: [{agent: reviewer}]
+```
+
+Ship this when the pack has a recommended workflow (e.g., analyze-then-review, comparative analysis). Refer to the `armadai-shell-config` skill for all options.
 
 ## Instructions
 
