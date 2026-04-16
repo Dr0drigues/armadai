@@ -427,12 +427,25 @@ async fn event_loop(
             continue;
         }
         if let Some(provider_names) = app.take_pipeline() {
-            execute_pipeline(
+            // Build implicit steps from provider names (one step per provider, no agent, no custom prompt)
+            let steps: Vec<super::config::PipelineStep> = provider_names
+                .iter()
+                .map(|p| super::config::PipelineStep {
+                    name: p.clone(),
+                    prompt: None,
+                    providers: vec![super::config::ShellProviderEntry {
+                        provider: p.clone(),
+                        model: None,
+                        agent: None,
+                    }],
+                })
+                .collect();
+            execute_pipeline_steps(
                 terminal,
                 app,
                 runner,
                 &input,
-                &provider_names,
+                &steps,
                 session_id,
                 project_dir,
                 provider_name,
@@ -446,17 +459,12 @@ async fn event_loop(
         if let Some(ref pipeline) = shell_config.pipeline
             && !pipeline.steps.is_empty()
         {
-            let providers: Vec<String> = pipeline
-                .steps
-                .iter()
-                .flat_map(|step| step.providers.iter().map(|e| e.provider.clone()))
-                .collect();
-            execute_pipeline(
+            execute_pipeline_steps(
                 terminal,
                 app,
                 runner,
                 &input,
-                &providers,
+                &pipeline.steps,
                 session_id,
                 project_dir,
                 provider_name,
@@ -807,84 +815,155 @@ async fn execute_tandem(
     Ok(())
 }
 
-/// Execute pipeline mode: provider A generates → provider B reviews sequentially.
+/// Resolve an agent file path by name from the current project config.
+fn resolve_project_agent(name: &str) -> Option<std::path::PathBuf> {
+    let (root, config) = crate::core::project::find_project_config()?;
+    for agent_ref in &config.agents {
+        let agent_name = match agent_ref {
+            crate::core::project::AgentRef::Named { name: n } => n.clone(),
+            crate::core::project::AgentRef::Path { path } => path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+            _ => continue,
+        };
+        if agent_name == name {
+            return crate::core::project::resolve_agent(agent_ref, &root).ok();
+        }
+    }
+    None
+}
+
+/// Resolved step data: command, args, combined prompt, display label.
+struct ResolvedStep {
+    cmd: String,
+    args: Vec<String>,
+    display_label: String,
+}
+
+/// Execute pipeline from a list of PipelineStep (supports both `provider:` and `agent:`).
 #[allow(clippy::too_many_arguments)]
-async fn execute_pipeline(
+async fn execute_pipeline_steps(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut ShellApp,
     runner: &mut ShellRunner,
     input: &str,
-    provider_names: &[String],
+    steps: &[super::config::PipelineStep],
     session_id: &str,
     project_dir: &str,
     provider_name: &str,
     model_name: &str,
 ) -> Result<()> {
-    use super::detect::list_providers;
-
-    let all_providers = list_providers();
-    let start_time = std::time::Instant::now();
-
-    let mut resolved = Vec::new();
-    for name in provider_names {
-        if let Some(p) = all_providers
-            .iter()
-            .find(|p| p.command == *name || p.display_name.to_lowercase() == name.to_lowercase())
-            && p.available
-        {
-            resolved.push(p.clone());
-        }
-    }
-
-    if resolved.len() < 2 {
-        app.add_system_message(
-            "Pipeline needs at least 2 available providers. Use /providers to check.",
-        );
+    if steps.is_empty() {
+        app.add_system_message("Pipeline has no steps configured.");
         return Ok(());
     }
 
+    let start_time = std::time::Instant::now();
     app.set_loading(true);
+
     let mut current_input = input.to_string();
+    let total_steps = steps.len();
 
-    for (i, provider) in resolved.iter().enumerate() {
-        let is_last = i == resolved.len() - 1;
-        let stage = if i == 0 { "generating" } else { "reviewing" };
+    for (i, step) in steps.iter().enumerate() {
+        let is_last = i == total_steps - 1;
 
+        // Each step may have multiple provider/agent entries — take the first for now
+        let Some(entry) = step.providers.first() else {
+            app.add_system_message(&format!("Step '{}' has no providers, skipping.", step.name));
+            continue;
+        };
+
+        // Resolve entry to cmd + args + optional agent system prompt
+        let (cmd, args, agent_system_prompt, display_label) = if let Some(agent_name) = &entry.agent
+        {
+            // Agent mode: load the agent from project config
+            match resolve_project_agent(agent_name) {
+                Some(path) => match crate::parser::parse_agent_file(&path) {
+                    Ok(agent) => {
+                        let cmd = agent.metadata.provider.clone();
+                        let args = super::detect::args_for_provider(&cmd);
+                        let label = format!("{} [{}]", agent_name, cmd);
+                        (cmd, args, Some(agent.system_prompt.clone()), label)
+                    }
+                    Err(e) => {
+                        app.add_system_message(&format!(
+                            "Failed to parse agent '{agent_name}': {e}"
+                        ));
+                        continue;
+                    }
+                },
+                None => {
+                    app.add_system_message(&format!(
+                        "Agent '{agent_name}' not found in project config"
+                    ));
+                    continue;
+                }
+            }
+        } else if !entry.provider.is_empty() {
+            // Provider mode: raw CLI invocation
+            let cmd = entry.provider.clone();
+            let args = super::detect::args_for_provider(&cmd);
+            (cmd, args, None, entry.provider.clone())
+        } else {
+            app.add_system_message(&format!(
+                "Step '{}' has neither agent nor provider set, skipping.",
+                step.name
+            ));
+            continue;
+        };
+
+        let resolved = ResolvedStep {
+            cmd: cmd.clone(),
+            args: args.clone(),
+            display_label: display_label.clone(),
+        };
+
+        let stage_label = if i == 0 { "starting" } else { "chained" };
         app.add_system_message(&format!(
-            "⚙ Pipeline stage {}/{}: {} ({})...",
+            "⚙ Pipeline step {}/{}: {} — {} ({})",
             i + 1,
-            resolved.len(),
-            provider.display_name,
-            stage
+            total_steps,
+            step.name,
+            display_label,
+            stage_label
         ));
         terminal.draw(|f| app.render(f))?;
 
-        // Build the prompt — for stage 2+, wrap the previous output as context
-        let prompt = if i == 0 {
-            runner.build_prompt_for(&current_input)
+        // Build the prompt: (agent system prompt)? + (step prompt)? + current input
+        let mut full_prompt = String::new();
+        if let Some(sp) = &agent_system_prompt {
+            full_prompt.push_str(sp);
+            full_prompt.push_str("\n\n");
+        }
+        if let Some(step_prompt) = &step.prompt {
+            full_prompt.push_str(step_prompt);
+            full_prompt.push_str("\n\n");
+        }
+        if i == 0 {
+            full_prompt.push_str(&current_input);
         } else {
-            format!(
-                "Review and improve the following response:\n\n---\n{}\n---\n\nOriginal request: {}",
+            full_prompt.push_str(&format!(
+                "Previous step output:\n---\n{}\n---\n\nOriginal request: {}",
                 current_input, input
-            )
-        };
+            ));
+        }
 
-        // Spawn CLI in background so we can render spinner
-        let cmd = provider.command.clone();
-        let args = provider.args.clone();
-        let prompt_clone = prompt.clone();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let cmd_clone = resolved.cmd.clone();
+        let args_clone = resolved.args.clone();
+        let prompt_clone = full_prompt.clone();
 
         tokio::spawn(async move {
-            let output = tokio::process::Command::new(&cmd)
-                .args(&args)
+            let output = tokio::process::Command::new(&cmd_clone)
+                .args(&args_clone)
                 .arg(&prompt_clone)
                 .output()
                 .await;
             let _ = tx.send(output);
         });
 
-        // Render loop with spinner while waiting
         loop {
             app.tick_spinner();
             terminal.draw(|f| app.render(f))?;
@@ -905,13 +984,11 @@ async fn execute_pipeline(
                 match output_result {
                     Ok(output) if output.status.success() => {
                         let raw = String::from_utf8_lossy(&output.stdout).to_string();
-
-                        // Parse JSONL stream events to extract clean text content
-                        let content = if super::json_runner::supports_json(&provider.command) {
+                        let content = if super::json_runner::supports_json(&resolved.cmd) {
                             use super::json_runner::{StreamEvent, parse_stream_event};
                             let mut text = String::new();
                             for line in raw.lines() {
-                                match parse_stream_event(&provider.command, line) {
+                                match parse_stream_event(&resolved.cmd, line) {
                                     StreamEvent::Delta(t) | StreamEvent::Message(t) => {
                                         text.push_str(&t);
                                     }
@@ -921,7 +998,6 @@ async fn execute_pipeline(
                                     _ => {}
                                 }
                             }
-                            // Fallback: if no events parsed, try the legacy parser
                             if text.is_empty() {
                                 super::parser::parse_response(&raw).content
                             } else {
@@ -932,9 +1008,9 @@ async fn execute_pipeline(
                         };
 
                         let label = if is_last {
-                            format!("{} (final)", provider.display_name)
+                            format!("{} (final)", resolved.display_label)
                         } else {
-                            format!("{} (stage {})", provider.display_name, i + 1)
+                            format!("{} (step {})", resolved.display_label, i + 1)
                         };
                         app.add_assistant_message_with_label(&label, &content);
                         current_input = content;
@@ -942,7 +1018,7 @@ async fn execute_pipeline(
                     Ok(output) => {
                         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                         app.add_assistant_message_with_label(
-                            &provider.display_name,
+                            &resolved.display_label,
                             &format!("Error: {}", stderr),
                         );
                         app.set_loading(false);
@@ -950,7 +1026,7 @@ async fn execute_pipeline(
                     }
                     Err(e) => {
                         app.add_assistant_message_with_label(
-                            &provider.display_name,
+                            &resolved.display_label,
                             &format!("Error: {}", e),
                         );
                         app.set_loading(false);
