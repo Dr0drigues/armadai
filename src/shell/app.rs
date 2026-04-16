@@ -16,6 +16,13 @@ use super::runner::ShellRunner;
 use super::session::{SessionMessage, ShellSession};
 use super::tui::ShellApp;
 
+/// Check if a key event is a cancel key (Esc or Ctrl+C).
+fn is_cancel_key(key: &event::KeyEvent) -> bool {
+    key.code == KeyCode::Esc
+        || (key.code == KeyCode::Char('c')
+            && key.modifiers == crossterm::event::KeyModifiers::CONTROL)
+}
+
 /// Helper to save the current session state.
 fn save_current_session(
     session_id: &str,
@@ -531,9 +538,7 @@ async fn event_loop(
             if event::poll(Duration::from_millis(30))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
-                && (key.code == KeyCode::Esc
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
+                && is_cancel_key(&key)
             {
                 let _ = child.kill().await;
                 app.append_to_streaming("\n\n[Cancelled]");
@@ -760,29 +765,11 @@ async fn execute_tandem(
         match output_result {
             Ok(output) if output.status.success() => {
                 let raw = String::from_utf8_lossy(&output.stdout).to_string();
-
-                // Parse JSONL stream to extract clean text
-                let content = if super::json_runner::supports_json(&cmd) {
-                    use super::json_runner::{StreamEvent, parse_stream_event};
-                    let mut text = String::new();
-                    for line in raw.lines() {
-                        match parse_stream_event(&cmd, line) {
-                            StreamEvent::Delta(t) | StreamEvent::Message(t) => {
-                                text.push_str(&t);
-                            }
-                            StreamEvent::Result(resp) if !resp.content.is_empty() => {
-                                text.push_str(&resp.content);
-                            }
-                            _ => {}
-                        }
-                    }
-                    if text.is_empty() {
-                        super::parser::parse_response(&raw).content
-                    } else {
-                        super::parser::parse_response(&text).content
-                    }
-                } else {
+                let text = super::json_runner::collect_text_from_jsonl(&cmd, &raw);
+                let content = if text.is_empty() {
                     super::parser::parse_response(&raw).content
+                } else {
+                    super::parser::parse_response(&text).content
                 };
 
                 app.add_assistant_message_with_label(&name, &content);
@@ -971,9 +958,7 @@ async fn execute_pipeline_steps(
             if event::poll(Duration::from_millis(80))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
-                && (key.code == KeyCode::Esc
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
+                && is_cancel_key(&key)
             {
                 app.add_system_message("[Pipeline cancelled]");
                 app.set_loading(false);
@@ -984,27 +969,11 @@ async fn execute_pipeline_steps(
                 match output_result {
                     Ok(output) if output.status.success() => {
                         let raw = String::from_utf8_lossy(&output.stdout).to_string();
-                        let content = if super::json_runner::supports_json(&resolved.cmd) {
-                            use super::json_runner::{StreamEvent, parse_stream_event};
-                            let mut text = String::new();
-                            for line in raw.lines() {
-                                match parse_stream_event(&resolved.cmd, line) {
-                                    StreamEvent::Delta(t) | StreamEvent::Message(t) => {
-                                        text.push_str(&t);
-                                    }
-                                    StreamEvent::Result(resp) if !resp.content.is_empty() => {
-                                        text.push_str(&resp.content);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            if text.is_empty() {
-                                super::parser::parse_response(&raw).content
-                            } else {
-                                super::parser::parse_response(&text).content
-                            }
-                        } else {
+                        let text = super::json_runner::collect_text_from_jsonl(&resolved.cmd, &raw);
+                        let content = if text.is_empty() {
                             super::parser::parse_response(&raw).content
+                        } else {
+                            super::parser::parse_response(&text).content
                         };
 
                         let label = if is_last {
@@ -1114,9 +1083,7 @@ async fn execute_pty_turn(
         if event::poll(Duration::from_millis(50))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && (key.code == KeyCode::Esc
-                || (key.code == KeyCode::Char('c')
-                    && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
+            && is_cancel_key(&key)
         {
             pty.kill();
             app.append_to_streaming("\n\n[Cancelled]");
