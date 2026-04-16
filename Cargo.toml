@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [features]
 default = ["tui", "web", "storage", "providers-api"]
-tui = ["dep:ratatui", "dep:crossterm", "dep:tui-markdown"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:tui-markdown", "dep:portable-pty", "dep:strip-ansi-escapes"]
 web = ["dep:axum", "dep:tower-http"]
 storage = ["dep:rusqlite"]
 providers-api = ["dep:reqwest"]
@@ -65,6 +65,10 @@ include_dir = "0.7"
 # Utils
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# PTY support (for interactive shell mode)
+portable-pty = { version = "0.8", optional = true }
+strip-ansi-escapes = { version = "0.2", optional = true }
 regex = "1"
 
 [dev-dependencies]

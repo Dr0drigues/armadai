@@ -62,6 +62,8 @@ pub struct ProjectConfig {
     pub defaults: ProjectDefaults,
     /// Top-level orchestration configuration (teams, coordinator, pattern).
     pub orchestration: Option<Box<OrchestrationConfig>>,
+    /// Shell configuration (default provider, tandem, pipeline).
+    pub shell: Option<crate::shell::config::ShellConfig>,
 }
 
 /// Reference to an agent — resolved at runtime.
@@ -157,6 +159,7 @@ impl ProjectConfig {
             link: None,
             defaults: ProjectDefaults::default(),
             orchestration: None,
+            shell: None,
         }
     }
 }

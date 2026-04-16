@@ -498,6 +498,7 @@ async function viewStarter(name) {
 
   // Fetch and parse YAML config for orchestration info
   let orchestrationHtml = '';
+  let diagramHtml = '';
   try {
     const configRes = await fetch(`/api/starters/${encodeURIComponent(name)}/config`);
     const configYaml = await configRes.text();
@@ -508,6 +509,9 @@ async function viewStarter(name) {
         if (orchEnd === -1) orchEnd = configYaml.length;
         const orchSection = configYaml.substring(orchStart, orchEnd).trim();
         orchestrationHtml = `<div class="list-section"><h3>Orchestration Configuration</h3><div class="yaml-block">${escapeHtmlContent(orchSection)}</div></div>`;
+
+        // Generate Mermaid diagram from the orchestration section
+        diagramHtml = generateStarterOrchDiagram(orchSection);
       }
     }
   } catch (e) {
@@ -526,7 +530,13 @@ async function viewStarter(name) {
       ${s.prompts.length ? `<div class="list-section"><h3>Prompts (${s.prompts.length})</h3><ul>${s.prompts.map(p => `<li>${p}</li>`).join('')}</ul></div>` : ''}
       ${s.skills.length ? `<div class="list-section"><h3>Skills (${s.skills.length})</h3><ul>${s.skills.map(sk => `<li>${sk}</li>`).join('')}</ul></div>` : ''}
       ${orchestrationHtml}
+      ${diagramHtml}
     </div>`;
+
+  // Render any mermaid diagrams added to the starter detail
+  if (diagramHtml) {
+    mermaid.run();
+  }
 }
 
 function backToList() {
@@ -734,6 +744,67 @@ function generateDirectDiagram(data) {
   const agent = data.coordinator || (data.agents.length > 0 ? data.agents[0] : 'agent');
   const mermaidCode = `flowchart TD\nUser([User])-->${agent}["${agent}"]`;
   return `<div class="mermaid">${escapeHtml(mermaidCode)}</div>`;
+}
+
+function generateStarterOrchDiagram(orchSection) {
+  // Parse coordinator
+  const coordinatorMatch = orchSection.match(/coordinator:\s*(\S+)/);
+  const coordinator = coordinatorMatch ? coordinatorMatch[1] : null;
+  if (!coordinator) return '';
+
+  // Parse pattern
+  const patternMatch = orchSection.match(/pattern:\s*(\S+)/);
+  const pattern = patternMatch ? patternMatch[1] : 'hierarchical';
+
+  // Parse teams with leads and agents
+  const teamBlocks = orchSection.split(/\n\s*- lead:/).slice(1);
+  const teams = [];
+
+  if (teamBlocks.length > 0) {
+    // Has team structure with leads
+    for (const block of teamBlocks) {
+      const leadMatch = block.match(/^\s*(\S+)/);
+      const lead = leadMatch ? leadMatch[1] : null;
+      const agentMatches = [...block.matchAll(/- (\S+)/g)];
+      // Skip the first match if it matches the lead name inside "agents:" section
+      const agents = agentMatches.map(m => m[1]).filter(a => a !== 'lead:' && a !== lead);
+      teams.push({ lead, agents });
+    }
+  } else {
+    // Flat agents list under teams
+    const agentsSection = orchSection.match(/agents:\s*\n((?:\s+- \S+\n?)+)/);
+    if (agentsSection) {
+      const agentMatches = [...agentsSection[1].matchAll(/- (\S+)/g)];
+      teams.push({ lead: null, agents: agentMatches.map(m => m[1]) });
+    }
+  }
+
+  if (teams.length === 0 && !coordinator) return '';
+
+  // Build mermaid diagram reusing existing patterns
+  if (pattern === 'hierarchical' && teams.length > 0) {
+    let nodes = `User([User])-->coordinator["${coordinator}<br/>Coordinator"]`;
+    let styles = `\nstyle coordinator fill:#e74c3c,color:#fff`;
+    teams.forEach(team => {
+      if (team.lead) {
+        nodes += `\ncoordinator-->${team.lead}["${team.lead}<br/>Lead"]`;
+        styles += `\nstyle ${team.lead} fill:#f39c12,color:#fff`;
+        team.agents.forEach(agent => {
+          nodes += `\n${team.lead}-->${agent}["${agent}"]`;
+        });
+      } else {
+        team.agents.forEach(agent => {
+          nodes += `\ncoordinator-->${agent}["${agent}"]`;
+        });
+      }
+    });
+    const mermaidCode = `flowchart TD\n${nodes}${styles}`;
+    return `<div class="list-section"><h3>Orchestration Topology</h3><div class="mermaid">${escapeHtml(mermaidCode)}</div></div>`;
+  }
+
+  // Fallback: simple coordinator diagram
+  const mermaidCode = `flowchart TD\nUser([User])-->${coordinator}["${coordinator}"]`;
+  return `<div class="list-section"><h3>Orchestration Topology</h3><div class="mermaid">${escapeHtml(mermaidCode)}</div></div>`;
 }
 
 function escapeHtml(text) {

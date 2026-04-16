@@ -32,6 +32,10 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/models", get(api::list_models))
         .route("/api/models/refresh", post(api::refresh_models))
         .route(
+            "/api/orchestration/trace",
+            get(api::get_orchestration_trace),
+        )
+        .route(
             "/api/orchestration/topology",
             get(api::get_orchestration_topology),
         )

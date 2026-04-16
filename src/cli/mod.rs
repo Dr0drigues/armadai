@@ -39,7 +39,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -108,6 +108,9 @@ pub enum Command {
         /// Filter by stack
         #[arg(long)]
         stack: Option<String>,
+        /// Show agents from the global library (~/.config/armadai/) only
+        #[arg(long)]
+        global: bool,
     },
     /// Inspect an agent's parsed configuration
     #[command(long_about = "Inspect an agent's parsed configuration.\n\n\
@@ -175,7 +178,11 @@ pub enum Command {
             Interactive terminal interface for browsing agents, viewing history and costs. \
             Use Tab/Shift+Tab or 1-4 to switch views, j/k to navigate, Enter for details, \
             : or Ctrl+P for command palette, q to quit.")]
-    Tui,
+    Tui {
+        /// Show agents from the global library (~/.config/armadai/) only
+        #[arg(long)]
+        global: bool,
+    },
     /// Launch the web UI
     #[cfg(feature = "web")]
     #[command(
@@ -190,6 +197,9 @@ pub enum Command {
         /// Port to listen on
         #[arg(long, short, default_value = "3000")]
         port: u16,
+        /// Show agents from the global library (~/.config/armadai/) only
+        #[arg(long)]
+        global: bool,
     },
     /// Start infrastructure services (Docker Compose)
     #[command(long_about = "Start infrastructure services (Docker Compose).\n\n\
@@ -378,7 +388,20 @@ pub enum Command {
 }
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
-    match cli.command {
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            // No subcommand — launch the interactive shell
+            #[cfg(feature = "tui")]
+            return crate::shell::app::run_shell().await;
+            #[cfg(not(feature = "tui"))]
+            anyhow::bail!(
+                "Shell requires the 'tui' feature. Use `armadai shell` or `armadai --help`."
+            );
+        }
+    };
+
+    match command {
         Command::Run {
             agent,
             input,
@@ -392,7 +415,14 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             description,
             interactive,
         } => new::execute(name, template, stack, description, interactive).await,
-        Command::List { tags, stack } => list::execute(tags, stack).await,
+        Command::List {
+            tags,
+            stack,
+            global,
+        } => {
+            crate::core::config::set_force_global(global);
+            list::execute(tags, stack).await
+        }
         Command::Inspect { agent } => inspect::execute(agent).await,
         Command::Validate { agent } => validate::execute(agent).await,
         Command::History { agent } => history::execute(agent).await,
@@ -401,9 +431,15 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         #[cfg(feature = "tui")]
         Command::Shell => crate::shell::app::run_shell().await,
         #[cfg(feature = "tui")]
-        Command::Tui => crate::tui::run().await,
+        Command::Tui { global } => {
+            crate::core::config::set_force_global(global);
+            crate::tui::run().await
+        }
         #[cfg(feature = "web")]
-        Command::Web { port } => crate::web::serve(port).await,
+        Command::Web { port, global } => {
+            crate::core::config::set_force_global(global);
+            crate::web::serve(port).await
+        }
         Command::Models(action) => models::execute(action).await,
         Command::Fleet(action) => fleet::execute(action).await,
         Command::Registry(action) => registry::execute(action).await,

@@ -14,47 +14,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::time::{Duration, Instant};
-use tui_markdown::StyleSheet;
-
-/// Custom stylesheet for ArmadAI shell — designed for dark terminal themes.
-#[derive(Clone, Copy, Debug, Default)]
-struct ArmadaiStyleSheet;
-
-impl tui_markdown::StyleSheet for ArmadaiStyleSheet {
-    fn heading(&self, level: u8) -> Style {
-        match level {
-            1 => Style::new()
-                .fg(Color::Rgb(88, 166, 255))
-                .bold()
-                .underlined(),
-            2 => Style::new().fg(Color::Rgb(63, 185, 80)).bold(),
-            3 => Style::new().fg(Color::Rgb(210, 153, 34)).bold(),
-            _ => Style::new().fg(Color::Rgb(139, 148, 158)).italic(),
-        }
-    }
-
-    fn code(&self) -> Style {
-        Style::new()
-            .fg(Color::Rgb(230, 237, 243))
-            .bg(Color::Rgb(55, 62, 71))
-    }
-
-    fn link(&self) -> Style {
-        Style::new().fg(Color::Rgb(88, 166, 255)).underlined()
-    }
-
-    fn blockquote(&self) -> Style {
-        Style::new().fg(Color::Rgb(139, 148, 158)).italic()
-    }
-
-    fn heading_meta(&self) -> Style {
-        Style::new().dim()
-    }
-
-    fn metadata_block(&self) -> Style {
-        Style::new().fg(Color::Rgb(210, 153, 34))
-    }
-}
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -101,12 +60,20 @@ pub struct ShellApp {
     last_duration: Duration,
     /// Whether user has manually scrolled (disables auto-scroll to bottom)
     manual_scroll: bool,
+    /// Pending tandem providers (used for next message)
+    tandem_providers: Option<Vec<String>>,
+    /// Pending pipeline providers (used for next message)
+    pipeline_providers: Option<Vec<String>>,
     /// Overlay popup content (shown on top of messages, dismissed with Esc)
     popup: Option<String>,
     /// Popup scroll offset
     popup_scroll: u16,
     /// Should quit
     should_quit: bool,
+    /// PTY mode enabled
+    pty_mode: bool,
+    /// Agent workroom panel
+    pub workroom: super::workroom::Workroom,
 }
 
 impl ShellApp {
@@ -124,6 +91,8 @@ impl ShellApp {
             history_index: None,
             saved_input: String::new(),
             manual_scroll: false,
+            tandem_providers: None,
+            pipeline_providers: None,
             popup: None,
             popup_scroll: 0,
             provider_name,
@@ -134,6 +103,8 @@ impl ShellApp {
             cost: 0.0,
             last_duration: Duration::from_secs(0),
             should_quit: false,
+            pty_mode: false,
+            workroom: super::workroom::Workroom::new(),
         }
     }
 
@@ -161,6 +132,18 @@ impl ShellApp {
         self.scroll = 0;
     }
 
+    /// Add an assistant response with a custom label (for tandem/pipeline mode)
+    pub fn add_assistant_message_with_label(&mut self, label: &str, content: &str) {
+        self.messages.push(DisplayMessage {
+            role: label.to_string(),
+            content: content.to_string(),
+            is_user: false,
+            is_system: false,
+        });
+        self.manual_scroll = false;
+        self.scroll = 0;
+    }
+
     /// Add a system message (from slash commands, etc.)
     pub fn add_system_message(&mut self, content: &str) {
         self.messages.push(DisplayMessage {
@@ -170,6 +153,93 @@ impl ShellApp {
             is_system: true,
         });
         self.scroll_to_bottom();
+    }
+
+    /// Start a new streaming assistant response
+    pub fn start_streaming_response(&mut self) {
+        self.messages.push(DisplayMessage {
+            role: self.provider_name.clone(),
+            content: String::new(),
+            is_user: false,
+            is_system: false,
+        });
+        self.manual_scroll = false;
+        self.scroll = 0;
+    }
+
+    /// Append text to the current streaming response
+    pub fn append_to_streaming(&mut self, text: &str) {
+        if let Some(last) = self.messages.last_mut()
+            && !last.is_user
+            && !last.is_system
+        {
+            last.content.push_str(text);
+            self.manual_scroll = false;
+            self.scroll = 0;
+        }
+    }
+
+    /// Get content of the last assistant message
+    pub fn get_last_assistant_content(&self) -> String {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| !m.is_user && !m.is_system)
+            .map(|m| m.content.clone())
+            .unwrap_or_default()
+    }
+
+    /// Update the last assistant message content (after marker stripping)
+    pub fn update_last_assistant(&mut self, content: &str) {
+        if let Some(last) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| !m.is_user && !m.is_system)
+        {
+            last.content = content.to_string();
+        }
+    }
+
+    /// Check if loading
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
+    /// Get current cursor position (char-based)
+    pub fn cursor_pos(&self) -> usize {
+        self.cursor
+    }
+
+    /// Convert char position to byte index (public for paste handling)
+    pub fn char_to_byte_pub(&self, char_pos: usize) -> usize {
+        self.char_to_byte(char_pos)
+    }
+
+    /// Insert a char at byte position and advance cursor
+    pub fn insert_char_at(&mut self, byte_idx: usize, c: char) {
+        self.input.insert(byte_idx, c);
+        self.cursor += 1;
+    }
+
+    /// Set tandem mode for the next message
+    pub fn set_tandem(&mut self, providers: Vec<String>) {
+        self.tandem_providers = Some(providers);
+    }
+
+    /// Set pipeline mode for the next message
+    pub fn set_pipeline(&mut self, providers: Vec<String>) {
+        self.pipeline_providers = Some(providers);
+    }
+
+    /// Take tandem providers (consumes the setting)
+    pub fn take_tandem(&mut self) -> Option<Vec<String>> {
+        self.tandem_providers.take()
+    }
+
+    /// Take pipeline providers (consumes the setting)
+    pub fn take_pipeline(&mut self) -> Option<Vec<String>> {
+        self.pipeline_providers.take()
     }
 
     /// Show a popup overlay (dismissed with Esc or any key)
@@ -464,6 +534,14 @@ impl ShellApp {
     }
 
     /// Set the provider name (used when switching providers)
+    pub fn toggle_pty_mode(&mut self) {
+        self.pty_mode = !self.pty_mode;
+    }
+
+    pub fn is_pty_mode(&self) -> bool {
+        self.pty_mode
+    }
+
     pub fn set_provider_name(&mut self, name: String) {
         self.provider_name = name;
     }
@@ -473,10 +551,10 @@ impl ShellApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // Header
-                Constraint::Min(0),    // Messages area
-                Constraint::Length(1), // Statusbar
-                Constraint::Length(3), // Input line (with borders)
+                Constraint::Length(1),                                     // Header
+                Constraint::Min(0),                                        // Messages area
+                Constraint::Length(1),                                     // Statusbar
+                Constraint::Length(self.input_height(frame.area().width)), // Input (dynamic)
             ])
             .split(frame.area());
 
@@ -486,7 +564,11 @@ impl ShellApp {
         } else {
             format!("{} ({})", self.provider_name, self.model_name)
         };
-        let header_text = format!("ArmadAI Shell — {} — Turn #{}", model_info, self.turn_count);
+        let pty_indicator = if self.pty_mode { " [PTY]" } else { "" };
+        let header_text = format!(
+            "ArmadAI Shell — {}{} — Turn #{}",
+            model_info, pty_indicator, self.turn_count
+        );
         let header = Paragraph::new(header_text).style(
             Style::default()
                 .fg(Color::Cyan)
@@ -494,8 +576,20 @@ impl ShellApp {
         );
         frame.render_widget(header, chunks[0]);
 
-        // Messages area
-        self.render_messages_area(frame, chunks[1]);
+        // Messages area (with optional workroom panel)
+        if self.workroom.is_visible() {
+            let h_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Min(0),     // Messages (main)
+                    Constraint::Length(35), // Workroom panel
+                ])
+                .split(chunks[1]);
+            self.render_messages_area(frame, h_chunks[0]);
+            self.workroom.render(frame, h_chunks[1]);
+        } else {
+            self.render_messages_area(frame, chunks[1]);
+        }
 
         // Status bar
         self.render_statusbar(frame, chunks[2]);
@@ -522,45 +616,8 @@ impl ShellApp {
         // Semi-transparent background (clear the area)
         frame.render_widget(ratatui::widgets::Clear, popup_area);
 
-        // Render markdown content inside the popup
-        let opts = tui_markdown::Options::new(ArmadaiStyleSheet);
-        let md_text = tui_markdown::from_str_with_options(content, &opts);
-
-        // Post-process headings (same as messages)
-        let mut lines: Vec<Line> = Vec::new();
-        for line in md_text.lines {
-            let first_span_str: String = line
-                .spans
-                .first()
-                .map(|s| s.content.to_string())
-                .unwrap_or_default();
-            if first_span_str.starts_with('#') {
-                let line_style = line.style;
-                lines.push(Line::from(""));
-                let hash_count = first_span_str.chars().take_while(|c| *c == '#').count();
-                let mut heading_text = String::new();
-                for s in &line.spans {
-                    let c = s.content.to_string();
-                    if c.starts_with('#') {
-                        heading_text.push_str(c.trim_start_matches('#').trim_start());
-                    } else {
-                        heading_text.push_str(&c);
-                    }
-                }
-                let heading_style = ArmadaiStyleSheet
-                    .heading(hash_count as u8)
-                    .patch(line_style);
-                lines.push(Line::from(Span::styled(heading_text, heading_style)));
-                if hash_count <= 3 {
-                    lines.push(Line::from(Span::styled(
-                        "─".repeat(popup_width.saturating_sub(4) as usize),
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                }
-            } else {
-                lines.push(line);
-            }
-        }
+        // Render markdown content using our custom renderer
+        let mut lines: Vec<Line> = super::md_render::render_markdown(content);
 
         // Footer hint
         lines.push(Line::from(""));
@@ -577,7 +634,7 @@ impl ShellApp {
                     .title(" ArmadAI ")
                     .title_style(Style::default().fg(Color::Cyan).bold()),
             )
-            .wrap(Wrap { trim: true })
+            .wrap(Wrap { trim: false })
             .scroll((self.popup_scroll, 0));
 
         frame.render_widget(popup, popup_area);
@@ -587,7 +644,7 @@ impl ShellApp {
         if self.messages.is_empty() {
             let placeholder = Paragraph::new("Welcome to ArmadAI Shell!\n\nType your message and press Enter to get started. Press Ctrl+L to clear conversation, Ctrl+C or Esc to quit.")
                 .block(Block::default().borders(Borders::ALL))
-                .wrap(Wrap { trim: true });
+                .wrap(Wrap { trim: false });
             frame.render_widget(placeholder, area);
             return;
         }
@@ -617,96 +674,14 @@ impl ShellApp {
                 role_style,
             )]));
 
-            if msg.is_system {
-                // System messages: render as markdown (same as assistant)
-                let opts = tui_markdown::Options::new(ArmadaiStyleSheet);
-                let md_text = tui_markdown::from_str_with_options(&msg.content, &opts);
-                for line in md_text.lines {
-                    let first_span_str: String = line
-                        .spans
-                        .first()
-                        .map(|s| s.content.to_string())
-                        .unwrap_or_default();
-                    if first_span_str.starts_with('#') {
-                        let line_style = line.style;
-                        lines.push(Line::from(""));
-                        let hash_count = first_span_str.chars().take_while(|c| *c == '#').count();
-                        let mut heading_text = String::new();
-                        for s in &line.spans {
-                            let content = s.content.to_string();
-                            if content.starts_with('#') {
-                                heading_text.push_str(content.trim_start_matches('#').trim_start());
-                            } else {
-                                heading_text.push_str(&content);
-                            }
-                        }
-                        let heading_style = ArmadaiStyleSheet
-                            .heading(hash_count as u8)
-                            .patch(line_style);
-                        lines.push(Line::from(Span::styled(heading_text, heading_style)));
-                        if hash_count <= 3 {
-                            lines.push(Line::from(Span::styled(
-                                "─".repeat(50),
-                                Style::default().fg(Color::DarkGray),
-                            )));
-                        }
-                    } else {
-                        lines.push(line);
-                    }
-                }
-            } else if msg.is_user {
+            if msg.is_user {
                 // User messages: plain text
                 for line in msg.content.lines() {
                     lines.push(Line::from(line.to_string()));
                 }
             } else {
-                // Assistant messages: rich markdown rendering
-                let opts = tui_markdown::Options::new(ArmadaiStyleSheet);
-                let md_text = tui_markdown::from_str_with_options(&msg.content, &opts);
-                for line in md_text.lines {
-                    // Post-process: strip leading ### markers from headings,
-                    // replace with clean styled text
-                    let first_span_str: String = line
-                        .spans
-                        .first()
-                        .map(|s| s.content.to_string())
-                        .unwrap_or_default();
-                    if first_span_str.starts_with('#') {
-                        // It's a heading line — strip the # prefix, keep the original line style
-                        let line_style = line.style;
-                        lines.push(Line::from(""));
-
-                        // Determine heading level for separator
-                        let hash_count = first_span_str.chars().take_while(|c| *c == '#').count();
-
-                        // Build the cleaned heading text
-                        let mut heading_text = String::new();
-                        for s in &line.spans {
-                            let content = s.content.to_string();
-                            if content.starts_with('#') {
-                                heading_text.push_str(content.trim_start_matches('#').trim_start());
-                            } else {
-                                heading_text.push_str(&content);
-                            }
-                        }
-
-                        // Apply heading style from our stylesheet
-                        let heading_style = ArmadaiStyleSheet
-                            .heading(hash_count as u8)
-                            .patch(line_style);
-                        lines.push(Line::from(Span::styled(heading_text, heading_style)));
-
-                        // Add separator after H1/H2/H3
-                        if hash_count <= 3 {
-                            lines.push(Line::from(Span::styled(
-                                "─".repeat(50),
-                                Style::default().fg(Color::DarkGray),
-                            )));
-                        }
-                    } else {
-                        lines.push(line);
-                    }
-                }
+                // System + Assistant messages: custom markdown rendering
+                lines.extend(super::md_render::render_markdown(&msg.content));
             }
 
             // Add blank line between messages
@@ -728,9 +703,21 @@ impl ShellApp {
             )]));
         }
 
-        // Calculate scroll position
+        // Calculate scroll position — account for line wrapping
         let visible_height = area.height.saturating_sub(2) as usize; // minus borders
-        let total_lines = lines.len();
+        let inner_width = area.width.saturating_sub(2) as usize; // minus borders
+        let total_lines: usize = if inner_width > 0 {
+            lines
+                .iter()
+                .map(|line| {
+                    let char_count: usize =
+                        line.spans.iter().map(|s| s.content.chars().count()).sum();
+                    (char_count / inner_width) + 1
+                })
+                .sum()
+        } else {
+            lines.len()
+        };
         let max_scroll = if total_lines > visible_height {
             (total_lines - visible_height) as u16
         } else {
@@ -747,7 +734,7 @@ impl ShellApp {
         // Create paragraph with message content
         let messages_text = Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL))
-            .wrap(Wrap { trim: true })
+            .wrap(Wrap { trim: false })
             .scroll((scroll, 0));
 
         frame.render_widget(messages_text, area);
@@ -785,14 +772,32 @@ impl ShellApp {
         frame.render_widget(statusbar, area);
     }
 
+    /// Calculate dynamic input height based on content and terminal width.
+    fn input_height(&self, terminal_width: u16) -> u16 {
+        let inner_width = terminal_width.saturating_sub(4) as usize; // borders + prompt char
+        if inner_width == 0 {
+            return 3;
+        }
+        let text_len = self.input.chars().count() + 2; // +2 for "> "
+        let lines = (text_len / inner_width) + 1;
+        // Min 3 (for borders + 1 line), max 8
+        (lines as u16 + 2).clamp(3, 8)
+    }
+
     fn render_input_line(&self, frame: &mut Frame, area: Rect) {
         let cursor_indicator = if self.loading { "..." } else { ">" };
 
-        // Build the input display with cursor
-        let mut input_spans = vec![Span::raw(format!("{} ", cursor_indicator))];
+        // Build plain text for wrapping, then render with cursor highlight
+        let display_text = format!("{} {}", cursor_indicator, self.input);
 
-        for (i, c) in self.input.chars().enumerate() {
-            if i == self.cursor {
+        // For cursor position in the display text: offset by prompt prefix length
+        let prefix_len = cursor_indicator.len() + 1; // "> " or "... "
+        let cursor_display_pos = prefix_len + self.cursor;
+
+        // Build spans with cursor highlight
+        let mut input_spans = Vec::new();
+        for (i, c) in display_text.chars().enumerate() {
+            if i == cursor_display_pos && !self.loading {
                 input_spans.push(Span::styled(
                     c.to_string(),
                     Style::default().bg(Color::White).fg(Color::Black),
@@ -802,23 +807,25 @@ impl ShellApp {
             }
         }
 
-        // If cursor is at end, show cursor
-        if self.cursor >= self.input.chars().count() && !self.loading {
+        // If cursor at end, add cursor block
+        if cursor_display_pos >= display_text.chars().count() && !self.loading {
             input_spans.push(Span::styled(
                 " ",
                 Style::default().bg(Color::White).fg(Color::Black),
             ));
         }
 
-        let input_line = Paragraph::new(Line::from(input_spans)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Input ")
-                .title_style(Style::default().fg(Color::Cyan)),
-        );
+        let input_paragraph = Paragraph::new(Line::from(input_spans))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(" Input ")
+                    .title_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false });
 
-        frame.render_widget(input_line, area);
+        frame.render_widget(input_paragraph, area);
     }
 }
 

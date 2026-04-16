@@ -177,6 +177,24 @@ pub struct ErrorResponse {
 }
 
 fn load_agents() -> Vec<Agent> {
+    use crate::core::config::is_force_global;
+    use crate::core::project;
+
+    // If in a project context (and not forced global), resolve from project config
+    if !is_force_global()
+        && let Some((root, config)) = project::find_project_config()
+        && !config.agents.is_empty()
+    {
+        let (paths, _) = project::resolve_all_agents(&config, &root);
+        let mut agents = Vec::new();
+        for path in &paths {
+            if let Ok(agent) = crate::parser::parse_agent_file(path) {
+                agents.push(agent);
+            }
+        }
+        return agents;
+    }
+
     let agents_dir = crate::core::config::AppPaths::resolve().agents_dir;
     Agent::load_all(&agents_dir).unwrap_or_default()
 }
@@ -327,10 +345,18 @@ pub async fn get_costs() -> Json<Vec<CostSummary>> {
 }
 
 pub async fn list_prompts() -> Json<Vec<PromptSummary>> {
-    use crate::core::config::user_prompts_dir;
-    use crate::core::prompt::load_all_prompts;
+    use crate::core::config::{is_force_global, user_prompts_dir};
+    use crate::core::prompt::{Prompt, load_all_prompts};
 
-    let prompts = load_all_prompts(&user_prompts_dir());
+    let prompts: Vec<Prompt> = if !is_force_global()
+        && let Some((root, config)) = crate::core::project::find_project_config()
+        && !config.prompts.is_empty()
+    {
+        let (paths, _) = crate::core::project::resolve_all_prompts(&config, &root);
+        paths.iter().filter_map(|p| Prompt::load(p).ok()).collect()
+    } else {
+        load_all_prompts(&user_prompts_dir())
+    };
     let summaries = prompts
         .into_iter()
         .map(|p| PromptSummary {
@@ -344,10 +370,22 @@ pub async fn list_prompts() -> Json<Vec<PromptSummary>> {
 }
 
 pub async fn list_skills() -> Json<Vec<SkillSummary>> {
-    use crate::core::config::user_skills_dir;
+    use crate::core::config::{is_force_global, user_skills_dir};
     use crate::core::skill::load_all_skills;
 
-    let skills = load_all_skills(&user_skills_dir());
+    let skills = if !is_force_global()
+        && let Some((root, config)) = crate::core::project::find_project_config()
+        && !config.skills.is_empty()
+    {
+        let (paths, _) = crate::core::project::resolve_all_skills(&config, &root);
+        let mut result = Vec::new();
+        for path in &paths {
+            result.extend(load_all_skills(path));
+        }
+        result
+    } else {
+        load_all_skills(&user_skills_dir())
+    };
     let summaries = skills
         .into_iter()
         .map(|s| SkillSummary {
@@ -577,6 +615,60 @@ pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {
         HeaderValue::from_static("attachment; filename=\"config.yaml\""),
     );
     (StatusCode::OK, headers, yaml)
+}
+
+/// Get orchestration execution traces from storage.
+pub async fn get_orchestration_trace() -> Json<serde_json::Value> {
+    #[cfg(feature = "storage")]
+    {
+        use crate::storage::{init_db, queries};
+        if let Ok(db) = init_db() {
+            if let Ok(runs) = queries::get_orchestration_runs(&db, 50) {
+                let traces: Vec<serde_json::Value> = runs
+                    .iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "id": r.run_id,
+                            "pattern": r.pattern,
+                            "config": r.config_json,
+                            "outcome": r.outcome_json,
+                            "rounds": r.rounds,
+                            "halt_reason": r.halt_reason,
+                        })
+                    })
+                    .collect();
+                return Json(serde_json::json!({ "traces": traces }));
+            }
+        }
+    }
+
+    // Also include shell session traces
+    let sessions = crate::shell::session::list_sessions();
+    let session_traces: Vec<serde_json::Value> = sessions
+        .iter()
+        .take(50)
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "provider": s.provider,
+                "model": s.model,
+                "project_dir": s.project_dir,
+                "turns": s.turn_count,
+                "tokens_in": s.total_tokens_in,
+                "tokens_out": s.total_tokens_out,
+                "cost": s.total_cost,
+                "created_at": s.created_at,
+                "updated_at": s.updated_at,
+                "messages_count": s.messages.len(),
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "traces": [],
+        "sessions": session_traces,
+    }))
 }
 
 pub async fn get_orchestration_topology() -> Json<serde_json::Value> {

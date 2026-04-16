@@ -62,6 +62,7 @@ fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = execute!(
         io::stdout(),
+        crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
         LeaveAlternateScreen,
         crossterm::cursor::Show
@@ -73,12 +74,32 @@ pub async fn run_shell() -> Result<()> {
     // Run wizard to ensure project is ready
     let wizard_result = super::wizard::ensure_project_ready()?;
 
-    // Use wizard result for provider config
+    // Load shell config from project config (if available)
+    let shell_config = crate::core::project::find_project_config()
+        .and_then(|(_, cfg)| cfg.shell)
+        .unwrap_or_default();
+
+    // Build runner config: project config overrides wizard defaults
+    let command = shell_config
+        .default_provider
+        .clone()
+        .unwrap_or(wizard_result.provider_command.clone());
+    let base_args = super::detect::args_for_provider(&command);
+
+    // Resolve model and inject CLI flags if needed
+    let model_str = shell_config
+        .default_model
+        .as_deref()
+        .unwrap_or("latest:pro");
+    let resolved_model = super::config::resolve_shell_model(&command, model_str);
+    let mut args = base_args;
+    args.extend(super::config::model_cli_args(&command, &resolved_model));
+
     let config = super::runner::RunnerConfig {
-        command: wizard_result.provider_command.clone(),
-        args: wizard_result.provider_args,
-        max_history_turns: 5,
-        timeout: std::time::Duration::from_secs(120),
+        command: command.clone(),
+        args,
+        max_history_turns: shell_config.effective_max_history(),
+        timeout: shell_config.effective_timeout(),
     };
 
     let provider_name = super::detect::provider_display_name(&config.command).to_string();
@@ -104,13 +125,22 @@ pub async fn run_shell() -> Result<()> {
         stdout,
         EnterAlternateScreen,
         crossterm::cursor::Hide,
-        crossterm::event::EnableMouseCapture
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableBracketedPaste
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = ShellApp::new(provider_name.clone());
-    app.set_model_name(wizard_result.model_name.clone());
+    app.set_model_name(resolved_model.clone());
+
+    // Initialize workroom from project orchestration config
+    if let Ok(config_content) = std::fs::read_to_string(".armadai/config.yaml")
+        .or_else(|_| std::fs::read_to_string("armadai.yaml"))
+    {
+        app.workroom.init_from_config(&config_content);
+    }
+
     let mut runner = ShellRunner::new(config);
 
     // Event loop
@@ -121,7 +151,8 @@ pub async fn run_shell() -> Result<()> {
         &session_id,
         &project_dir,
         &provider_name,
-        &wizard_result.model_name,
+        &resolved_model,
+        &shell_config,
     )
     .await;
 
@@ -141,6 +172,7 @@ pub async fn run_shell() -> Result<()> {
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut ShellApp,
@@ -149,6 +181,7 @@ async fn event_loop(
     project_dir: &str,
     provider_name: &str,
     model_name: &str,
+    shell_config: &super::config::ShellConfig,
 ) -> Result<()> {
     loop {
         // Render
@@ -160,6 +193,17 @@ async fn event_loop(
         }
 
         let evt = event::read()?;
+
+        // Handle paste (bracketed paste mode)
+        if let Event::Paste(text) = &evt {
+            // Replace newlines with spaces for single-line input
+            let clean = text.replace('\n', " ").replace('\r', "");
+            for c in clean.chars() {
+                let byte_idx = app.char_to_byte_pub(app.cursor_pos());
+                app.insert_char_at(byte_idx, c);
+            }
+            continue;
+        }
 
         // Handle mouse scroll
         if let Event::Mouse(mouse) = &evt {
@@ -186,9 +230,13 @@ async fn event_loop(
         };
 
         // Check for slash commands first
-        if let Some(result) =
-            super::commands::try_execute(&input, runner, app.provider_name(), app.model_name())
-        {
+        if let Some(result) = super::commands::try_execute(
+            &input,
+            runner,
+            app.provider_name(),
+            app.model_name(),
+            shell_config,
+        ) {
             use super::commands::CommandResult;
             match result {
                 CommandResult::Display(text) => {
@@ -281,6 +329,45 @@ async fn event_loop(
                     }
                     continue;
                 }
+                CommandResult::Tandem(providers) => {
+                    app.set_tandem(providers.clone());
+                    app.show_popup(format!(
+                        "# Tandem Mode\n\nNext message will be sent to **{}** in parallel.\n\nType your message and press Enter.",
+                        providers.join(", ")
+                    ));
+                    continue;
+                }
+                CommandResult::Pipeline(providers) => {
+                    app.set_pipeline(providers.clone());
+                    app.show_popup(format!(
+                        "# Pipeline Mode\n\nNext message: **{}** generates → **{}** reviews.\n\nType your message and press Enter.",
+                        providers.first().unwrap_or(&"?".to_string()),
+                        providers.get(1).unwrap_or(&"?".to_string()),
+                    ));
+                    continue;
+                }
+                CommandResult::ToggleWorkroom => {
+                    app.workroom.toggle_pin();
+                    let status = if app.workroom.is_pinned() {
+                        "pinned (always visible)"
+                    } else {
+                        "auto (visible during orchestration)"
+                    };
+                    app.show_popup(format!("# Workroom\n\nPanel is now **{}**.", status));
+                    continue;
+                }
+                CommandResult::TogglePty => {
+                    app.toggle_pty_mode();
+                    if app.is_pty_mode() {
+                        app.show_popup("# PTY Mode Enabled\n\nMessages will be sent through interactive CLI.\nThe CLI reads project agents and can delegate natively.\n\n**Note:** Response parsing may include CLI UI artifacts.".to_string());
+                    } else {
+                        app.show_popup(
+                            "# PTY Mode Disabled\n\nBack to one-shot mode with JSON metrics."
+                                .to_string(),
+                        );
+                    }
+                    continue;
+                }
                 CommandResult::SaveSession => {
                     match save_current_session(
                         session_id,
@@ -306,33 +393,502 @@ async fn event_loop(
         }
 
         app.add_user_message(&input);
+
+        // PTY mode execution
+        if app.is_pty_mode() {
+            execute_pty_turn(
+                terminal,
+                app,
+                runner,
+                &input,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
+            continue;
+        }
+
+        // Check for explicit tandem/pipeline mode (from /tandem or /pipeline command)
+        if let Some(provider_names) = app.take_tandem() {
+            execute_tandem(
+                terminal,
+                app,
+                runner,
+                &input,
+                &provider_names,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
+            continue;
+        }
+        if let Some(provider_names) = app.take_pipeline() {
+            execute_pipeline(
+                terminal,
+                app,
+                runner,
+                &input,
+                &provider_names,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
+            continue;
+        }
+
+        // Auto-pipeline from config (if pipeline steps are configured)
+        if let Some(ref pipeline) = shell_config.pipeline
+            && !pipeline.steps.is_empty()
+        {
+            let providers: Vec<String> = pipeline
+                .steps
+                .iter()
+                .flat_map(|step| step.providers.iter().map(|e| e.provider.clone()))
+                .collect();
+            execute_pipeline(
+                terminal,
+                app,
+                runner,
+                &input,
+                &providers,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
+            continue;
+        }
+
+        // Normal single-provider execution
         app.set_loading(true);
+        app.start_streaming_response();
 
         let input_clone = input.clone();
-        let (tx, mut rx) = tokio::sync::oneshot::channel();
-
         let cmd = runner.command().to_string();
         let args: Vec<String> = runner.args().to_vec();
         let prompt = runner.build_prompt_for(&input_clone);
-        let prompt_for_spawn = prompt.clone();
+        let is_json_mode = super::json_runner::supports_json(&cmd);
 
-        // Spawn the CLI call in background
-        let handle = tokio::spawn(async move {
-            let start = std::time::Instant::now();
-            let output = tokio::process::Command::new(&cmd)
-                .args(&args)
-                .arg(&prompt_for_spawn)
-                .output()
-                .await;
-            let _ = tx.send((output, start.elapsed()));
+        // Spawn CLI with piped stdout for streaming
+        let start_time = std::time::Instant::now();
+        let mut child = match tokio::process::Command::new(&cmd)
+            .args(&args)
+            .arg(&prompt)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                app.update_last_assistant(&format!("Error spawning {}: {}", cmd, e));
+                app.set_loading(false);
+                continue;
+            }
+        };
+
+        // Stream stdout line by line via channel
+        let stdout = child.stdout.take().unwrap();
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let _ = stream_tx.send(line.clone());
+                    }
+                    Err(_) => break,
+                }
+            }
         });
 
-        // Keep rendering while waiting (spinner animation)
+        // Render loop: drain stream chunks + handle cancel
+        loop {
+            app.tick_spinner();
+            app.workroom.tick();
+            terminal.draw(|f| app.render(f))?;
+
+            // Check for cancel
+            if event::poll(Duration::from_millis(30))?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+                && (key.code == KeyCode::Esc
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
+            {
+                let _ = child.kill().await;
+                app.append_to_streaming("\n\n[Cancelled]");
+                app.set_loading(false);
+                break;
+            }
+
+            // Drain all available lines and parse as stream events
+            let mut got_data = false;
+            let mut result_event: Option<super::json_runner::CliResponse> = None;
+
+            while let Ok(line) = stream_rx.try_recv() {
+                // Log raw stream event for debugging
+                super::session::log_stream_event(session_id, line.trim());
+
+                if is_json_mode {
+                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    match parse_stream_event(&cmd, &line) {
+                        StreamEvent::Init { model, agents } => {
+                            if let Some(m) = model {
+                                app.set_model_name(m);
+                            }
+                            // Set agents from init (filtered, not all set to Working)
+                            app.workroom.set_agents_from_init(&agents);
+                            app.workroom.set_visible(true);
+                        }
+                        StreamEvent::Delta(text) => {
+                            // Detect agent mentions in streamed text
+                            app.workroom.detect_mentions(&text);
+                            app.append_to_streaming(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Message(text) => {
+                            app.workroom.detect_mentions(&text);
+                            app.append_to_streaming(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Result(resp) => {
+                            result_event = Some(resp);
+                        }
+                        StreamEvent::Error(msg) => {
+                            app.append_to_streaming(&format!("\n\nError: {}", msg));
+                            got_data = true;
+                        }
+                        StreamEvent::Ignored => {}
+                    }
+                } else {
+                    // Text mode fallback
+                    app.workroom.parse_streaming_line(&line);
+                    app.append_to_streaming(&line);
+                    got_data = true;
+                }
+            }
+
+            if got_data {
+                terminal.draw(|f| app.render(f))?;
+            }
+
+            // Check if child process has finished
+            if let Ok(Some(_status)) = child.try_wait() {
+                // Drain remaining
+                while let Ok(line) = stream_rx.try_recv() {
+                    if is_json_mode {
+                        use super::json_runner::{StreamEvent, parse_stream_event};
+                        match parse_stream_event(&cmd, &line) {
+                            StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                                app.append_to_streaming(&text);
+                            }
+                            StreamEvent::Result(resp) => {
+                                result_event = Some(resp);
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        app.append_to_streaming(&line);
+                    }
+                }
+
+                let duration = start_time.elapsed();
+                let content = app.get_last_assistant_content();
+
+                // Clean markers from content
+                let parsed = super::parser::parse_response(&content);
+                app.update_last_assistant(&parsed.content);
+
+                if let Some(resp) = result_event {
+                    // Use real metrics from stream result event
+                    let tokens_in = resp.tokens_in.unwrap_or_else(|| {
+                        super::runner::ShellRunner::estimate_tokens(&prompt) as u64
+                    });
+                    let tokens_out = resp.tokens_out.unwrap_or_else(|| {
+                        super::runner::ShellRunner::estimate_tokens(&parsed.content) as u64
+                    });
+                    let cost = resp.cost_usd.unwrap_or(0.0);
+                    let real_duration = resp
+                        .duration_ms
+                        .map(Duration::from_millis)
+                        .unwrap_or(duration);
+
+                    if let Some(ref model) = resp.model {
+                        app.set_model_name(model.clone());
+                    }
+
+                    runner.record_turn_exact(
+                        &input_clone,
+                        &parsed.content,
+                        real_duration,
+                        tokens_in,
+                        tokens_out,
+                        cost,
+                    );
+                } else {
+                    runner.record_turn(&input_clone, &parsed.content, duration);
+                }
+
+                let metrics = runner.session_metrics();
+                app.set_session_metrics(
+                    metrics.total_tokens_in,
+                    metrics.total_tokens_out,
+                    metrics.total_cost_estimate,
+                    metrics.turn_count,
+                    duration,
+                );
+
+                let _ = save_current_session(
+                    session_id,
+                    project_dir,
+                    provider_name,
+                    model_name,
+                    runner,
+                );
+
+                app.workroom.on_complete();
+                app.set_loading(false);
+                break;
+            }
+        }
+        // Reset workroom for next turn
+        app.workroom.reset();
+    }
+    Ok(())
+}
+
+/// Execute tandem mode: send to N providers in parallel, show all responses.
+#[allow(clippy::too_many_arguments)]
+async fn execute_tandem(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ShellApp,
+    runner: &mut ShellRunner,
+    input: &str,
+    provider_names: &[String],
+    session_id: &str,
+    project_dir: &str,
+    provider_name: &str,
+    model_name: &str,
+) -> Result<()> {
+    use super::detect::list_providers;
+
+    let all_providers = list_providers();
+    let start_time = std::time::Instant::now();
+
+    // Resolve provider infos
+    let mut resolved = Vec::new();
+    for name in provider_names {
+        if let Some(p) = all_providers
+            .iter()
+            .find(|p| p.command == *name || p.display_name.to_lowercase() == name.to_lowercase())
+        {
+            if p.available {
+                resolved.push(p.clone());
+            } else {
+                app.add_system_message(&format!("Provider '{}' not installed — skipped", name));
+            }
+        } else {
+            app.add_system_message(&format!("Unknown provider '{}' — skipped", name));
+        }
+    }
+
+    if resolved.is_empty() {
+        app.add_system_message(
+            "No valid providers for tandem. Use /providers to see available ones.",
+        );
+        return Ok(());
+    }
+
+    app.set_loading(true);
+    let prompt = runner.build_prompt_for(input);
+
+    // Spawn all providers in parallel
+    let mut handles = Vec::new();
+    for provider in &resolved {
+        let cmd = provider.command.clone();
+        let args = provider.args.clone();
+        let prompt = prompt.clone();
+        let display_name = provider.display_name.clone();
+
+        handles.push(tokio::spawn(async move {
+            let output = tokio::process::Command::new(&cmd)
+                .args(&args)
+                .arg(&prompt)
+                .output()
+                .await;
+            (display_name, cmd, output)
+        }));
+    }
+
+    // Show spinner while waiting
+    app.add_system_message(&format!(
+        "⚡ Tandem: sending to {} in parallel...",
+        resolved
+            .iter()
+            .map(|p| p.display_name.as_str())
+            .collect::<Vec<_>>()
+            .join(" + ")
+    ));
+    terminal.draw(|f| app.render(f))?;
+
+    // Collect results
+    let mut combined_content = String::new();
+    for handle in handles {
+        let (name, cmd, output_result) = handle
+            .await
+            .map_err(|e| anyhow::anyhow!("Join error: {e}"))?;
+        match output_result {
+            Ok(output) if output.status.success() => {
+                let raw = String::from_utf8_lossy(&output.stdout).to_string();
+
+                // Parse JSONL stream to extract clean text
+                let content = if super::json_runner::supports_json(&cmd) {
+                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    let mut text = String::new();
+                    for line in raw.lines() {
+                        match parse_stream_event(&cmd, line) {
+                            StreamEvent::Delta(t) | StreamEvent::Message(t) => {
+                                text.push_str(&t);
+                            }
+                            StreamEvent::Result(resp) if !resp.content.is_empty() => {
+                                text.push_str(&resp.content);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if text.is_empty() {
+                        super::parser::parse_response(&raw).content
+                    } else {
+                        super::parser::parse_response(&text).content
+                    }
+                } else {
+                    super::parser::parse_response(&raw).content
+                };
+
+                app.add_assistant_message_with_label(&name, &content);
+                combined_content.push_str(&content);
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                app.add_assistant_message_with_label(&name, &format!("Error: {}", stderr));
+            }
+            Err(e) => {
+                app.add_assistant_message_with_label(&name, &format!("Error: {}", e));
+            }
+        }
+        terminal.draw(|f| app.render(f))?;
+    }
+
+    let duration = start_time.elapsed();
+    runner.record_turn(input, &combined_content, duration);
+    let metrics = runner.session_metrics();
+    app.set_session_metrics(
+        metrics.total_tokens_in,
+        metrics.total_tokens_out,
+        metrics.total_cost_estimate,
+        metrics.turn_count,
+        duration,
+    );
+    app.set_loading(false);
+
+    let _ = save_current_session(session_id, project_dir, provider_name, model_name, runner);
+    Ok(())
+}
+
+/// Execute pipeline mode: provider A generates → provider B reviews sequentially.
+#[allow(clippy::too_many_arguments)]
+async fn execute_pipeline(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ShellApp,
+    runner: &mut ShellRunner,
+    input: &str,
+    provider_names: &[String],
+    session_id: &str,
+    project_dir: &str,
+    provider_name: &str,
+    model_name: &str,
+) -> Result<()> {
+    use super::detect::list_providers;
+
+    let all_providers = list_providers();
+    let start_time = std::time::Instant::now();
+
+    let mut resolved = Vec::new();
+    for name in provider_names {
+        if let Some(p) = all_providers
+            .iter()
+            .find(|p| p.command == *name || p.display_name.to_lowercase() == name.to_lowercase())
+            && p.available
+        {
+            resolved.push(p.clone());
+        }
+    }
+
+    if resolved.len() < 2 {
+        app.add_system_message(
+            "Pipeline needs at least 2 available providers. Use /providers to check.",
+        );
+        return Ok(());
+    }
+
+    app.set_loading(true);
+    let mut current_input = input.to_string();
+
+    for (i, provider) in resolved.iter().enumerate() {
+        let is_last = i == resolved.len() - 1;
+        let stage = if i == 0 { "generating" } else { "reviewing" };
+
+        app.add_system_message(&format!(
+            "⚙ Pipeline stage {}/{}: {} ({})...",
+            i + 1,
+            resolved.len(),
+            provider.display_name,
+            stage
+        ));
+        terminal.draw(|f| app.render(f))?;
+
+        // Build the prompt — for stage 2+, wrap the previous output as context
+        let prompt = if i == 0 {
+            runner.build_prompt_for(&current_input)
+        } else {
+            format!(
+                "Review and improve the following response:\n\n---\n{}\n---\n\nOriginal request: {}",
+                current_input, input
+            )
+        };
+
+        // Spawn CLI in background so we can render spinner
+        let cmd = provider.command.clone();
+        let args = provider.args.clone();
+        let prompt_clone = prompt.clone();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            let output = tokio::process::Command::new(&cmd)
+                .args(&args)
+                .arg(&prompt_clone)
+                .output()
+                .await;
+            let _ = tx.send(output);
+        });
+
+        // Render loop with spinner while waiting
         loop {
             app.tick_spinner();
             terminal.draw(|f| app.render(f))?;
 
-            // Check for cancel during loading
             if event::poll(Duration::from_millis(80))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
@@ -340,55 +896,204 @@ async fn event_loop(
                     || (key.code == KeyCode::Char('c')
                         && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
             {
-                handle.abort();
+                app.add_system_message("[Pipeline cancelled]");
                 app.set_loading(false);
-                app.add_assistant_message("[Cancelled]");
+                return Ok(());
+            }
+
+            if let Ok(output_result) = rx.try_recv() {
+                match output_result {
+                    Ok(output) if output.status.success() => {
+                        let raw = String::from_utf8_lossy(&output.stdout).to_string();
+
+                        // Parse JSONL stream events to extract clean text content
+                        let content = if super::json_runner::supports_json(&provider.command) {
+                            use super::json_runner::{StreamEvent, parse_stream_event};
+                            let mut text = String::new();
+                            for line in raw.lines() {
+                                match parse_stream_event(&provider.command, line) {
+                                    StreamEvent::Delta(t) | StreamEvent::Message(t) => {
+                                        text.push_str(&t);
+                                    }
+                                    StreamEvent::Result(resp) if !resp.content.is_empty() => {
+                                        text.push_str(&resp.content);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // Fallback: if no events parsed, try the legacy parser
+                            if text.is_empty() {
+                                super::parser::parse_response(&raw).content
+                            } else {
+                                super::parser::parse_response(&text).content
+                            }
+                        } else {
+                            super::parser::parse_response(&raw).content
+                        };
+
+                        let label = if is_last {
+                            format!("{} (final)", provider.display_name)
+                        } else {
+                            format!("{} (stage {})", provider.display_name, i + 1)
+                        };
+                        app.add_assistant_message_with_label(&label, &content);
+                        current_input = content;
+                    }
+                    Ok(output) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                        app.add_assistant_message_with_label(
+                            &provider.display_name,
+                            &format!("Error: {}", stderr),
+                        );
+                        app.set_loading(false);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        app.add_assistant_message_with_label(
+                            &provider.display_name,
+                            &format!("Error: {}", e),
+                        );
+                        app.set_loading(false);
+                        return Ok(());
+                    }
+                }
                 break;
             }
+        }
+        terminal.draw(|f| app.render(f))?;
+    }
 
-            // Check if response arrived
-            let Ok((output_result, duration)) = rx.try_recv() else {
-                continue;
-            };
+    let duration = start_time.elapsed();
+    runner.record_turn(input, &current_input, duration);
+    let metrics = runner.session_metrics();
+    app.set_session_metrics(
+        metrics.total_tokens_in,
+        metrics.total_tokens_out,
+        metrics.total_cost_estimate,
+        metrics.turn_count,
+        duration,
+    );
+    app.set_loading(false);
 
-            match output_result {
-                Ok(output) if output.status.success() => {
-                    let raw = String::from_utf8_lossy(&output.stdout).to_string();
-                    let parsed = super::parser::parse_response(&raw);
-                    runner.record_turn(&input_clone, &parsed.content, duration);
-                    let metrics = runner.session_metrics();
-                    app.add_assistant_message(&parsed.content);
-                    app.set_session_metrics(
-                        metrics.total_tokens_in,
-                        metrics.total_tokens_out,
-                        metrics.total_cost_estimate,
-                        metrics.turn_count,
-                        duration,
-                    );
+    let _ = save_current_session(session_id, project_dir, provider_name, model_name, runner);
+    Ok(())
+}
 
-                    // Auto-save session after each turn
-                    let _ = save_current_session(
-                        session_id,
-                        project_dir,
-                        provider_name,
-                        model_name,
-                        runner,
-                    );
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    app.add_assistant_message(&format!(
-                        "Error (exit {}): {}",
-                        output.status, stderr
-                    ));
-                }
-                Err(e) => {
-                    app.add_assistant_message(&format!("Error: {e}"));
-                }
-            }
+/// Execute a turn in PTY mode — interactive CLI with native agent delegation.
+#[allow(clippy::too_many_arguments)]
+async fn execute_pty_turn(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ShellApp,
+    runner: &mut ShellRunner,
+    input: &str,
+    session_id: &str,
+    project_dir: &str,
+    provider_name: &str,
+    model_name: &str,
+) -> Result<()> {
+    use super::pty_runner::{PtyConfig, PtySession, detect_agent_activity, filter_startup_noise};
+    use std::time::Instant;
+
+    let cmd = runner.command().to_string();
+    let config = PtyConfig {
+        command: cmd.clone(),
+        width: terminal.size()?.width,
+        height: 40,
+    };
+
+    app.set_loading(true);
+    app.start_streaming_response();
+    let start_time = Instant::now();
+
+    let mut pty = match PtySession::spawn(&config) {
+        Ok(pty) => pty,
+        Err(e) => {
+            app.update_last_assistant(&format!("Error spawning PTY for {}: {}", cmd, e));
+            app.set_loading(false);
+            return Ok(());
+        }
+    };
+
+    // Wait for startup noise
+    let _startup = pty.drain_until_silence(Duration::from_secs(3));
+
+    // Send the user's message
+    if let Err(e) = pty.send(input) {
+        app.update_last_assistant(&format!("Error sending to PTY: {}", e));
+        app.set_loading(false);
+        return Ok(());
+    }
+
+    // Stream output
+    let silence_timeout = Duration::from_secs(5);
+    let mut last_data_time = Instant::now();
+    let mut full_response = String::new();
+
+    loop {
+        app.tick_spinner();
+        app.workroom.tick();
+        terminal.draw(|f| app.render(f))?;
+
+        // Check for cancel
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && (key.code == KeyCode::Esc
+                || (key.code == KeyCode::Char('c')
+                    && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
+        {
+            pty.kill();
+            app.append_to_streaming("\n\n[Cancelled]");
             app.set_loading(false);
             break;
         }
+
+        let (new_text, done) = pty.drain();
+
+        if !new_text.is_empty() {
+            last_data_time = Instant::now();
+            let clean = filter_startup_noise(&new_text);
+            if !clean.is_empty() {
+                for agent in &detect_agent_activity(&clean) {
+                    app.workroom.on_delegate(agent);
+                }
+                app.append_to_streaming(&clean);
+                full_response.push_str(&clean);
+                terminal.draw(|f| app.render(f))?;
+            }
+        }
+
+        if done || !pty.is_running() {
+            let (remaining, _) = pty.drain();
+            if !remaining.is_empty() {
+                let clean = filter_startup_noise(&remaining);
+                app.append_to_streaming(&clean);
+                full_response.push_str(&clean);
+            }
+            break;
+        }
+
+        if last_data_time.elapsed() > silence_timeout && !full_response.is_empty() {
+            break;
+        }
     }
+
+    let duration = start_time.elapsed();
+    let parsed = super::parser::parse_response(&full_response);
+    app.update_last_assistant(&parsed.content);
+    runner.record_turn(input, &parsed.content, duration);
+
+    let metrics = runner.session_metrics();
+    app.set_session_metrics(
+        metrics.total_tokens_in,
+        metrics.total_tokens_out,
+        metrics.total_cost_estimate,
+        metrics.turn_count,
+        duration,
+    );
+
+    app.workroom.on_complete();
+    app.set_loading(false);
+    let _ = save_current_session(session_id, project_dir, provider_name, model_name, runner);
     Ok(())
 }

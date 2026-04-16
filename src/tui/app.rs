@@ -337,6 +337,25 @@ impl App {
     }
 
     pub fn load_agents(&mut self) {
+        use crate::core::config::is_force_global;
+        use crate::core::project;
+
+        // Project-aware agent loading
+        if !is_force_global()
+            && let Some((root, config)) = project::find_project_config()
+            && !config.agents.is_empty()
+        {
+            let (paths, _) = project::resolve_all_agents(&config, &root);
+            let mut agents = Vec::new();
+            for path in &paths {
+                if let Ok(agent) = crate::parser::parse_agent_file(path) {
+                    agents.push(agent);
+                }
+            }
+            self.agents = agents;
+            return;
+        }
+
         let agents_dir = crate::core::config::AppPaths::resolve().agents_dir;
         match Agent::load_all_with_skipped(&agents_dir) {
             Ok((agents, skipped)) => {
@@ -355,14 +374,38 @@ impl App {
     }
 
     pub fn load_prompts(&mut self) {
-        use crate::core::config::user_prompts_dir;
-        use crate::core::prompt::load_all_prompts;
+        use crate::core::config::{is_force_global, user_prompts_dir};
+        use crate::core::prompt::{Prompt, load_all_prompts};
+
+        if !is_force_global()
+            && let Some((root, config)) = crate::core::project::find_project_config()
+            && !config.prompts.is_empty()
+        {
+            let (paths, _) = crate::core::project::resolve_all_prompts(&config, &root);
+            self.prompts = paths.iter().filter_map(|p| Prompt::load(p).ok()).collect();
+            return;
+        }
+
         self.prompts = load_all_prompts(&user_prompts_dir());
     }
 
     pub fn load_skills(&mut self) {
-        use crate::core::config::user_skills_dir;
+        use crate::core::config::{is_force_global, user_skills_dir};
         use crate::core::skill::load_all_skills;
+
+        if !is_force_global()
+            && let Some((root, config)) = crate::core::project::find_project_config()
+            && !config.skills.is_empty()
+        {
+            let (paths, _) = crate::core::project::resolve_all_skills(&config, &root);
+            let mut skills = Vec::new();
+            for path in &paths {
+                skills.extend(load_all_skills(path));
+            }
+            self.skills = skills;
+            return;
+        }
+
         self.skills = load_all_skills(&user_skills_dir());
     }
 

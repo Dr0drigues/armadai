@@ -86,8 +86,10 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
 
 /// Load agents: if a project config is found, resolve only declared agents.
 /// Otherwise, load all agents from the default directory.
+/// When `--global` is active, always load from the global library.
 fn load_agents() -> anyhow::Result<Vec<Agent>> {
-    if let Some((root, config)) = project::find_project_config()
+    if !crate::core::config::is_force_global()
+        && let Some((root, config)) = project::find_project_config()
         && !config.agents.is_empty()
     {
         let (paths, errors) = project::resolve_all_agents(&config, &root);

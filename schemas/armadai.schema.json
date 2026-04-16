@@ -42,6 +42,12 @@
         },
         "defaults": {
           "$ref": "#/$defs/ProjectDefaults"
+        },
+        "orchestration": {
+          "$ref": "#/$defs/OrchestrationConfig"
+        },
+        "shell": {
+          "$ref": "#/$defs/ShellConfig"
         }
       },
       "not": {
@@ -245,6 +251,97 @@
           "description": "Default interaction mode. 'guided' makes agents ask clarifying questions before responding."
         }
       },
+      "additionalProperties": false
+    },
+    "OrchestrationConfig": {
+      "type": "object",
+      "title": "Orchestration Configuration",
+      "description": "Multi-agent orchestration settings.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "pattern": { "type": "string", "enum": ["direct", "blackboard", "ring", "hierarchical", "auto"] },
+        "coordinator": { "type": "string" },
+        "teams": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "lead": { "type": "string" },
+              "agents": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "max_depth": { "type": "integer", "minimum": 1 },
+        "max_iterations": { "type": "integer", "minimum": 1 },
+        "timeout": { "type": "integer", "minimum": 1 },
+        "max_rounds": { "type": "integer", "minimum": 1 },
+        "max_laps": { "type": "integer", "minimum": 1 },
+        "consensus_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "token_budget": { "type": "integer", "minimum": 1 },
+        "cost_limit": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "ShellConfig": {
+      "type": "object",
+      "title": "Shell Configuration",
+      "description": "Interactive shell settings for armadai shell.",
+      "properties": {
+        "default_provider": {
+          "type": "string",
+          "description": "Default CLI tool (gemini, claude, aider, codex)."
+        },
+        "default_model": {
+          "type": "string",
+          "description": "Default model tier (latest:fast, latest:pro, latest:max) or concrete model name.",
+          "examples": ["latest:pro", "latest:fast", "gemini-2.5-flash"]
+        },
+        "timeout": { "type": "integer", "minimum": 1, "default": 120, "description": "CLI timeout in seconds." },
+        "max_history": { "type": "integer", "minimum": 1, "default": 5, "description": "Max conversation turns to keep in prompt context." },
+        "auto_save": { "type": "boolean", "default": true, "description": "Auto-save sessions after each turn." },
+        "tandem": {
+          "type": "array",
+          "description": "Providers for tandem mode (parallel execution).",
+          "items": { "$ref": "#/$defs/ShellProviderEntry" }
+        },
+        "pipeline": { "$ref": "#/$defs/ShellPipelineConfig" }
+      },
+      "additionalProperties": false
+    },
+    "ShellProviderEntry": {
+      "type": "object",
+      "description": "A provider with optional model tier for shell tandem/pipeline.",
+      "properties": {
+        "provider": { "type": "string", "description": "CLI tool name (gemini, claude, aider, codex)." },
+        "model": { "type": "string", "description": "Model tier (latest:fast/pro/max) or concrete model name." }
+      },
+      "required": ["provider"],
+      "additionalProperties": false
+    },
+    "ShellPipelineConfig": {
+      "type": "object",
+      "description": "Pipeline configuration with named, ordered steps.",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "description": "Ordered list of pipeline steps.",
+          "items": { "$ref": "#/$defs/PipelineStep" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "PipelineStep": {
+      "type": "object",
+      "description": "A single pipeline step with a name, role prompt, and providers.",
+      "properties": {
+        "name": { "type": "string", "description": "Step name (e.g., analyze, generate, review)." },
+        "prompt": { "type": "string", "description": "Role prompt describing what this step does." },
+        "providers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ShellProviderEntry" }
+        }
+      },
+      "required": ["name", "providers"],
       "additionalProperties": false
     }
   }
