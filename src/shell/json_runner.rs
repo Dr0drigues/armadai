@@ -26,14 +26,6 @@ pub struct CliResponse {
     pub from_json: bool,
 }
 
-/// Provider-specific JSON output flags.
-pub struct JsonFlags {
-    /// The CLI flag to enable JSON output
-    pub flag: &'static str,
-    /// The value for the flag (if needed)
-    pub value: Option<&'static str>,
-}
-
 /// Get the JSON output flags for a provider.
 /// Returns None if the provider doesn't support JSON output.
 pub fn json_output_flags(provider: &str) -> Option<Vec<String>> {
@@ -368,26 +360,6 @@ fn parse_copilot_stream_event(event_type: &str, json: &Value) -> StreamEvent {
     }
 }
 
-/// Parse CLI JSON output into a unified CliResponse.
-pub fn parse_json_response(provider: &str, raw: &str) -> CliResponse {
-    // Try to parse as JSON first
-    if let Ok(json) = serde_json::from_str::<Value>(raw) {
-        match provider {
-            "claude" => parse_claude_json(&json),
-            "gemini" => parse_gemini_json(&json),
-            "codex" => parse_codex_json(raw),
-            "copilot" => parse_copilot_json(raw),
-            "opencode" => parse_opencode_json(raw),
-            _ => text_fallback(raw),
-        }
-    } else if provider == "codex" || provider == "copilot" || provider == "opencode" {
-        // These use JSONL (one JSON per line) — parse last meaningful line
-        parse_jsonl_response(provider, raw)
-    } else {
-        text_fallback(raw)
-    }
-}
-
 /// Parse Claude Code JSON response.
 fn parse_claude_json(json: &Value) -> CliResponse {
     let content = json
@@ -489,7 +461,6 @@ fn parse_jsonl_response(provider: &str, raw: &str) -> CliResponse {
     let mut tokens_in: Option<u64> = None;
     let mut tokens_out: Option<u64> = None;
     let mut cost_usd: Option<f64> = None;
-    let duration_ms: Option<u64> = None;
     let mut model: Option<String> = None;
     let mut session_id: Option<String> = None;
 
@@ -589,23 +560,11 @@ fn parse_jsonl_response(provider: &str, raw: &str) -> CliResponse {
         tokens_in,
         tokens_out,
         cost_usd,
-        duration_ms,
+        duration_ms: None,
         model,
         session_id,
         from_json: !raw.is_empty(),
     }
-}
-
-fn parse_codex_json(raw: &str) -> CliResponse {
-    parse_jsonl_response("codex", raw)
-}
-
-fn parse_copilot_json(raw: &str) -> CliResponse {
-    parse_jsonl_response("copilot", raw)
-}
-
-fn parse_opencode_json(raw: &str) -> CliResponse {
-    parse_jsonl_response("opencode", raw)
 }
 
 /// Text fallback for CLIs without JSON support.
@@ -626,6 +585,24 @@ fn text_fallback(raw: &str) -> CliResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Test-only helpers to exercise the underlying parsers
+    fn parse_json_response(provider: &str, raw: &str) -> CliResponse {
+        if let Ok(json) = serde_json::from_str::<Value>(raw) {
+            match provider {
+                "claude" => parse_claude_json(&json),
+                "gemini" => parse_gemini_json(&json),
+                "codex" => parse_jsonl_response("codex", raw),
+                "copilot" => parse_jsonl_response("copilot", raw),
+                "opencode" => parse_jsonl_response("opencode", raw),
+                _ => text_fallback(raw),
+            }
+        } else if provider == "codex" || provider == "copilot" || provider == "opencode" {
+            parse_jsonl_response(provider, raw)
+        } else {
+            text_fallback(raw)
+        }
+    }
 
     #[test]
     fn test_parse_claude_json() {
