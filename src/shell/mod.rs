@@ -5,9 +5,9 @@
 
 pub mod config;
 pub mod detect;
+pub mod json_runner;
 #[cfg(feature = "tui")]
 pub mod md_render;
-pub mod json_runner;
 pub mod parser;
 pub mod runner;
 

@@ -165,10 +165,8 @@ impl MdRenderer {
                     self.list_item_index += 1;
                     format!("{indent}{idx}. ")
                 };
-                self.current_spans.push(Span::styled(
-                    bullet,
-                    Style::default().fg(SEPARATOR_COLOR),
-                ));
+                self.current_spans
+                    .push(Span::styled(bullet, Style::default().fg(SEPARATOR_COLOR)));
             }
             Tag::Emphasis => {
                 self.style_stack.push(self.base_style);
@@ -348,7 +346,10 @@ impl MdRenderer {
 
         // Top border
         self.lines.push(Line::from(Span::styled(
-            format!("┌{lang_label}{}┐", "─".repeat(48_usize.saturating_sub(lang_label.len()))),
+            format!(
+                "┌{lang_label}{}┐",
+                "─".repeat(48_usize.saturating_sub(lang_label.len()))
+            ),
             Style::default().fg(SEPARATOR_COLOR),
         )));
 
@@ -460,7 +461,10 @@ mod tests {
     #[test]
     fn test_render_code_block() {
         let lines = render_markdown("```rust\nfn main() {}\n```");
-        let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect();
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
         assert!(text.contains("fn main()"));
     }
 
@@ -468,7 +472,10 @@ mod tests {
     fn test_render_table() {
         let md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |";
         let lines = render_markdown(md);
-        let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect();
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
         assert!(text.contains("A"));
         assert!(text.contains("1"));
     }
@@ -476,7 +483,10 @@ mod tests {
     #[test]
     fn test_render_inline_code() {
         let lines = render_markdown("Use `cargo build` here");
-        let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect();
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
         assert!(text.contains("cargo build"));
     }
 
@@ -495,9 +505,9 @@ mod tests {
     #[test]
     fn test_render_rule() {
         let lines = render_markdown("above\n\n---\n\nbelow");
-        let has_rule = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content.contains("───"))
-        });
+        let has_rule = lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains("───")));
         assert!(has_rule);
     }
 }

@@ -103,9 +103,7 @@ impl Workroom {
                     .unwrap()
                     .trim()
                     .trim_matches('"');
-                if !name.is_empty()
-                    && !self.agents.iter().any(|a| a.name == name)
-                {
+                if !name.is_empty() && !self.agents.iter().any(|a| a.name == name) {
                     self.agents.push(TrackedAgent {
                         name: name.to_string(),
                         state: AgentState::Idle,
@@ -126,10 +124,7 @@ impl Workroom {
                 continue;
             }
 
-            if in_agents
-                && trimmed.starts_with("- ")
-                && !trimmed.contains(':')
-            {
+            if in_agents && trimmed.starts_with("- ") && !trimmed.contains(':') {
                 let name = trimmed.strip_prefix("- ").unwrap().trim().trim_matches('"');
                 if !name.is_empty() && !self.agents.iter().any(|a| a.name == name) {
                     self.agents.push(TrackedAgent {
@@ -144,7 +139,11 @@ impl Workroom {
             }
 
             // Exit agents list on non-indented, non-dash line
-            if in_agents && !trimmed.is_empty() && !trimmed.starts_with('-') && !trimmed.starts_with(' ') {
+            if in_agents
+                && !trimmed.is_empty()
+                && !trimmed.starts_with('-')
+                && !trimmed.starts_with(' ')
+            {
                 in_agents = false;
             }
         }
@@ -172,7 +171,11 @@ impl Workroom {
                 continue;
             }
             // Skip if already present — case-insensitive match
-            if self.agents.iter().any(|a| a.name.to_lowercase() == name.to_lowercase()) {
+            if self
+                .agents
+                .iter()
+                .any(|a| a.name.to_lowercase() == name.to_lowercase())
+            {
                 continue;
             }
             self.agents.push(TrackedAgent {
@@ -190,7 +193,10 @@ impl Workroom {
     /// Only sets the specific mentioned agent to Working.
     pub fn on_delegate(&mut self, agent_name: &str) {
         // Set coordinator to delegating
-        if let Some(coord) = self.agents.iter_mut().find(|a| a.role == AgentRole::Coordinator)
+        if let Some(coord) = self
+            .agents
+            .iter_mut()
+            .find(|a| a.role == AgentRole::Coordinator)
             && coord.state == AgentState::Idle
         {
             coord.state = AgentState::Delegating;
@@ -277,7 +283,10 @@ impl Workroom {
             || text_lower.contains("specialist");
 
         if is_delegation
-            && let Some(coord) = self.agents.iter_mut().find(|a| a.role == AgentRole::Coordinator)
+            && let Some(coord) = self
+                .agents
+                .iter_mut()
+                .find(|a| a.role == AgentRole::Coordinator)
             && coord.state == AgentState::Idle
         {
             coord.state = AgentState::Delegating;
@@ -363,9 +372,9 @@ impl Workroom {
             };
 
             let role_color = match agent.role {
-                AgentRole::Coordinator => Color::Rgb(231, 76, 60),   // red
-                AgentRole::Lead => Color::Rgb(243, 156, 18),         // orange
-                AgentRole::Agent => Color::Rgb(88, 166, 255),        // blue
+                AgentRole::Coordinator => Color::Rgb(231, 76, 60), // red
+                AgentRole::Lead => Color::Rgb(243, 156, 18),       // orange
+                AgentRole::Agent => Color::Rgb(88, 166, 255),      // blue
             };
 
             let indent = match agent.role {

@@ -38,16 +38,10 @@ pub struct JsonFlags {
 /// Returns None if the provider doesn't support JSON output.
 pub fn json_output_flags(provider: &str) -> Option<Vec<String>> {
     match provider {
-        "claude" => Some(vec![
-            "--output-format".to_string(),
-            "json".to_string(),
-        ]),
+        "claude" => Some(vec!["--output-format".to_string(), "json".to_string()]),
         "gemini" => Some(vec!["-o".to_string(), "json".to_string()]),
         "codex" => Some(vec!["--json".to_string()]),
-        "copilot" => Some(vec![
-            "--output-format".to_string(),
-            "json".to_string(),
-        ]),
+        "copilot" => Some(vec!["--output-format".to_string(), "json".to_string()]),
         "opencode" => Some(vec!["--format".to_string(), "json".to_string()]),
         // Aider and unknown CLIs: no JSON support
         _ => None,
@@ -139,7 +133,10 @@ pub fn parse_stream_event(provider: &str, line: &str) -> StreamEvent {
 fn parse_claude_stream_event(event_type: &str, json: &Value) -> StreamEvent {
     match event_type {
         "system" if json.get("subtype").and_then(|v| v.as_str()) == Some("init") => {
-            let model = json.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let model = json
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             let agents = json
                 .get("agents")
                 .and_then(|v| v.as_array())
@@ -159,7 +156,9 @@ fn parse_claude_stream_event(event_type: &str, json: &Value) -> StreamEvent {
                     .iter()
                     .filter_map(|c| {
                         if c.get("type").and_then(|t| t.as_str()) == Some("text") {
-                            c.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                            c.get("text")
+                                .and_then(|t| t.as_str())
+                                .map(|s| s.to_string())
                         } else {
                             None
                         }
@@ -191,15 +190,16 @@ fn parse_claude_stream_event(event_type: &str, json: &Value) -> StreamEvent {
 fn parse_gemini_stream_event(event_type: &str, json: &Value) -> StreamEvent {
     match event_type {
         "init" => {
-            let model = json.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let model = json
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             StreamEvent::Init {
                 model,
                 agents: vec![],
             }
         }
-        "message"
-            if json.get("role").and_then(|v| v.as_str()) == Some("assistant") =>
-        {
+        "message" if json.get("role").and_then(|v| v.as_str()) == Some("assistant") => {
             let content = json
                 .get("content")
                 .and_then(|v| v.as_str())
@@ -230,9 +230,15 @@ fn parse_gemini_stream_event(event_type: &str, json: &Value) -> StreamEvent {
 
 fn parse_gemini_result(json: &Value) -> CliResponse {
     let stats = json.get("stats");
-    let tokens_in = stats.and_then(|s| s.get("input_tokens")).and_then(|v| v.as_u64());
-    let tokens_out = stats.and_then(|s| s.get("output_tokens")).and_then(|v| v.as_u64());
-    let duration_ms = stats.and_then(|s| s.get("duration_ms")).and_then(|v| v.as_u64());
+    let tokens_in = stats
+        .and_then(|s| s.get("input_tokens"))
+        .and_then(|v| v.as_u64());
+    let tokens_out = stats
+        .and_then(|s| s.get("output_tokens"))
+        .and_then(|v| v.as_u64());
+    let duration_ms = stats
+        .and_then(|s| s.get("duration_ms"))
+        .and_then(|v| v.as_u64());
 
     let model = stats
         .and_then(|s| s.get("models"))
@@ -246,7 +252,10 @@ fn parse_gemini_result(json: &Value) -> CliResponse {
         cost_usd: None,
         duration_ms,
         model,
-        session_id: json.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        session_id: json
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         from_json: true,
     }
 }
@@ -270,8 +279,12 @@ fn parse_codex_stream_event(event_type: &str, json: &Value) -> StreamEvent {
             let usage = json.get("usage");
             StreamEvent::Result(CliResponse {
                 content: String::new(),
-                tokens_in: usage.and_then(|u| u.get("input_tokens")).and_then(|v| v.as_u64()),
-                tokens_out: usage.and_then(|u| u.get("output_tokens")).and_then(|v| v.as_u64()),
+                tokens_in: usage
+                    .and_then(|u| u.get("input_tokens"))
+                    .and_then(|v| v.as_u64()),
+                tokens_out: usage
+                    .and_then(|u| u.get("output_tokens"))
+                    .and_then(|v| v.as_u64()),
                 cost_usd: None,
                 duration_ms: None,
                 model: None,
@@ -334,7 +347,10 @@ fn parse_copilot_stream_event(event_type: &str, json: &Value) -> StreamEvent {
                 cost_usd: None,
                 duration_ms: duration,
                 model: None,
-                session_id: json.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                session_id: json
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
                 from_json: true,
             })
         }
@@ -389,8 +405,12 @@ fn parse_claude_json(json: &Value) -> CliResponse {
 
     // Extract tokens from usage
     let usage = json.get("usage");
-    let tokens_in = usage.and_then(|u| u.get("input_tokens")).and_then(|v| v.as_u64());
-    let tokens_out = usage.and_then(|u| u.get("output_tokens")).and_then(|v| v.as_u64());
+    let tokens_in = usage
+        .and_then(|u| u.get("input_tokens"))
+        .and_then(|v| v.as_u64());
+    let tokens_out = usage
+        .and_then(|u| u.get("output_tokens"))
+        .and_then(|v| v.as_u64());
 
     // Extract model from modelUsage keys
     let model = json
@@ -399,11 +419,7 @@ fn parse_claude_json(json: &Value) -> CliResponse {
         .and_then(|obj| {
             // Pick the model with the most output tokens (main model)
             obj.iter()
-                .max_by_key(|(_, v)| {
-                    v.get("outputTokens")
-                        .and_then(|t| t.as_u64())
-                        .unwrap_or(0)
-                })
+                .max_by_key(|(_, v)| v.get("outputTokens").and_then(|t| t.as_u64()).unwrap_or(0))
                 .map(|(k, _)| k.clone())
         });
 
@@ -434,27 +450,26 @@ fn parse_gemini_json(json: &Value) -> CliResponse {
 
     // Extract from stats.models (first model entry)
     let stats = json.get("stats").and_then(|s| s.get("models"));
-    let (tokens_in, tokens_out, duration_ms, model) = if let Some(models) = stats
-        .and_then(|m| m.as_object())
-    {
-        if let Some((model_name, model_data)) = models.iter().next() {
-            let tokens = model_data.get("tokens");
-            let api = model_data.get("api");
-            (
-                tokens.and_then(|t| t.get("input")).and_then(|v| v.as_u64()),
-                tokens
-                    .and_then(|t| t.get("candidates"))
-                    .and_then(|v| v.as_u64()),
-                api.and_then(|a| a.get("totalLatencyMs"))
-                    .and_then(|v| v.as_u64()),
-                Some(model_name.clone()),
-            )
+    let (tokens_in, tokens_out, duration_ms, model) =
+        if let Some(models) = stats.and_then(|m| m.as_object()) {
+            if let Some((model_name, model_data)) = models.iter().next() {
+                let tokens = model_data.get("tokens");
+                let api = model_data.get("api");
+                (
+                    tokens.and_then(|t| t.get("input")).and_then(|v| v.as_u64()),
+                    tokens
+                        .and_then(|t| t.get("candidates"))
+                        .and_then(|v| v.as_u64()),
+                    api.and_then(|a| a.get("totalLatencyMs"))
+                        .and_then(|v| v.as_u64()),
+                    Some(model_name.clone()),
+                )
+            } else {
+                (None, None, None, None)
+            }
         } else {
             (None, None, None, None)
-        }
-    } else {
-        (None, None, None, None)
-    };
+        };
 
     CliResponse {
         content,
@@ -496,39 +511,63 @@ fn parse_jsonl_response(provider: &str, raw: &str) -> CliResponse {
                         content.push_str(text);
                     }
                     if msg_type == "usage" || msg_type == "stats" {
-                        tokens_in = event.get("input_tokens").and_then(|v| v.as_u64()).or(tokens_in);
-                        tokens_out = event.get("output_tokens").and_then(|v| v.as_u64()).or(tokens_out);
+                        tokens_in = event
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .or(tokens_in);
+                        tokens_out = event
+                            .get("output_tokens")
+                            .and_then(|v| v.as_u64())
+                            .or(tokens_out);
                     }
                 }
                 if session_id.is_none() {
-                    session_id = event.get("session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    session_id = event
+                        .get("session_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                 }
             }
             "copilot" | "opencode" => {
                 if let Some(msg_type) = event.get("type").and_then(|v| v.as_str()) {
                     if (msg_type == "result" || msg_type == "response")
-                        && let Some(text) = event.get("result").or(event.get("response")).and_then(|v| v.as_str())
+                        && let Some(text) = event
+                            .get("result")
+                            .or(event.get("response"))
+                            .and_then(|v| v.as_str())
                     {
                         content = text.to_string();
                     }
                     if msg_type == "usage" {
-                        tokens_in = event.get("inputTokens").and_then(|v| v.as_u64())
+                        tokens_in = event
+                            .get("inputTokens")
+                            .and_then(|v| v.as_u64())
                             .or(event.get("input_tokens").and_then(|v| v.as_u64()))
                             .or(tokens_in);
-                        tokens_out = event.get("outputTokens").and_then(|v| v.as_u64())
+                        tokens_out = event
+                            .get("outputTokens")
+                            .and_then(|v| v.as_u64())
                             .or(event.get("output_tokens").and_then(|v| v.as_u64()))
                             .or(tokens_out);
-                        cost_usd = event.get("cost").and_then(|v| v.as_f64())
+                        cost_usd = event
+                            .get("cost")
+                            .and_then(|v| v.as_f64())
                             .or(event.get("total_cost_usd").and_then(|v| v.as_f64()))
                             .or(cost_usd);
                     }
                 }
                 if session_id.is_none() {
-                    session_id = event.get("sessionID").or(event.get("session_id"))
-                        .and_then(|v| v.as_str()).map(|s| s.to_string());
+                    session_id = event
+                        .get("sessionID")
+                        .or(event.get("session_id"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                 }
                 if model.is_none() {
-                    model = event.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    model = event
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                 }
             }
             _ => {}

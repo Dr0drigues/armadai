@@ -191,7 +191,12 @@ impl ShellApp {
 
     /// Update the last assistant message content (after marker stripping)
     pub fn update_last_assistant(&mut self, content: &str) {
-        if let Some(last) = self.messages.iter_mut().rev().find(|m| !m.is_user && !m.is_system) {
+        if let Some(last) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| !m.is_user && !m.is_system)
+        {
             last.content = content.to_string();
         }
     }
@@ -546,9 +551,9 @@ impl ShellApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // Header
-                Constraint::Min(0),    // Messages area
-                Constraint::Length(1), // Statusbar
+                Constraint::Length(1),                                     // Header
+                Constraint::Min(0),                                        // Messages area
+                Constraint::Length(1),                                     // Statusbar
                 Constraint::Length(self.input_height(frame.area().width)), // Input (dynamic)
             ])
             .split(frame.area());
@@ -560,7 +565,10 @@ impl ShellApp {
             format!("{} ({})", self.provider_name, self.model_name)
         };
         let pty_indicator = if self.pty_mode { " [PTY]" } else { "" };
-        let header_text = format!("ArmadAI Shell — {}{} — Turn #{}", model_info, pty_indicator, self.turn_count);
+        let header_text = format!(
+            "ArmadAI Shell — {}{} — Turn #{}",
+            model_info, pty_indicator, self.turn_count
+        );
         let header = Paragraph::new(header_text).style(
             Style::default()
                 .fg(Color::Cyan)
@@ -573,8 +581,8 @@ impl ShellApp {
             let h_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Min(0),          // Messages (main)
-                    Constraint::Length(35),       // Workroom panel
+                    Constraint::Min(0),     // Messages (main)
+                    Constraint::Length(35), // Workroom panel
                 ])
                 .split(chunks[1]);
             self.render_messages_area(frame, h_chunks[0]);
@@ -699,10 +707,14 @@ impl ShellApp {
         let visible_height = area.height.saturating_sub(2) as usize; // minus borders
         let inner_width = area.width.saturating_sub(2) as usize; // minus borders
         let total_lines: usize = if inner_width > 0 {
-            lines.iter().map(|line| {
-                let char_count: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-                (char_count / inner_width) + 1
-            }).sum()
+            lines
+                .iter()
+                .map(|line| {
+                    let char_count: usize =
+                        line.spans.iter().map(|s| s.content.chars().count()).sum();
+                    (char_count / inner_width) + 1
+                })
+                .sum()
         } else {
             lines.len()
         };

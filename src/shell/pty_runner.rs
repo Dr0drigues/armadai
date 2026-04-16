@@ -266,7 +266,8 @@ mod tests {
 
     #[test]
     fn test_filter_startup_noise() {
-        let input = "Keychain initialization error\nLoaded cached credentials\nActual response here\n";
+        let input =
+            "Keychain initialization error\nLoaded cached credentials\nActual response here\n";
         let filtered = filter_startup_noise(input);
         assert!(filtered.contains("Actual response here"));
         assert!(!filtered.contains("Keychain"));

@@ -395,7 +395,9 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             #[cfg(feature = "tui")]
             return crate::shell::app::run_shell().await;
             #[cfg(not(feature = "tui"))]
-            anyhow::bail!("Shell requires the 'tui' feature. Use `armadai shell` or `armadai --help`.");
+            anyhow::bail!(
+                "Shell requires the 'tui' feature. Use `armadai shell` or `armadai --help`."
+            );
         }
     };
 

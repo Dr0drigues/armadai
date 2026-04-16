@@ -183,6 +183,9 @@ pipeline:
         let pipeline = config.pipeline.unwrap();
         assert_eq!(pipeline.steps.len(), 2);
         assert_eq!(pipeline.steps[0].name, "analyze");
-        assert_eq!(pipeline.steps[1].providers[0].model, Some("latest:max".to_string()));
+        assert_eq!(
+            pipeline.steps[1].providers[0].model,
+            Some("latest:max".to_string())
+        );
     }
 }

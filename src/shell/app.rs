@@ -230,9 +230,13 @@ async fn event_loop(
         };
 
         // Check for slash commands first
-        if let Some(result) =
-            super::commands::try_execute(&input, runner, app.provider_name(), app.model_name(), shell_config)
-        {
+        if let Some(result) = super::commands::try_execute(
+            &input,
+            runner,
+            app.provider_name(),
+            app.model_name(),
+            shell_config,
+        ) {
             use super::commands::CommandResult;
             match result {
                 CommandResult::Display(text) => {
@@ -344,7 +348,11 @@ async fn event_loop(
                 }
                 CommandResult::ToggleWorkroom => {
                     app.workroom.toggle_pin();
-                    let status = if app.workroom.is_pinned() { "pinned (always visible)" } else { "auto (visible during orchestration)" };
+                    let status = if app.workroom.is_pinned() {
+                        "pinned (always visible)"
+                    } else {
+                        "auto (visible during orchestration)"
+                    };
                     app.show_popup(format!("# Workroom\n\nPanel is now **{}**.", status));
                     continue;
                 }
@@ -353,7 +361,10 @@ async fn event_loop(
                     if app.is_pty_mode() {
                         app.show_popup("# PTY Mode Enabled\n\nMessages will be sent through interactive CLI.\nThe CLI reads project agents and can delegate natively.\n\n**Note:** Response parsing may include CLI UI artifacts.".to_string());
                     } else {
-                        app.show_popup("# PTY Mode Disabled\n\nBack to one-shot mode with JSON metrics.".to_string());
+                        app.show_popup(
+                            "# PTY Mode Disabled\n\nBack to one-shot mode with JSON metrics."
+                                .to_string(),
+                        );
                     }
                     continue;
                 }
@@ -385,17 +396,49 @@ async fn event_loop(
 
         // PTY mode execution
         if app.is_pty_mode() {
-            execute_pty_turn(terminal, app, runner, &input, session_id, project_dir, provider_name, model_name).await?;
+            execute_pty_turn(
+                terminal,
+                app,
+                runner,
+                &input,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
             continue;
         }
 
         // Check for explicit tandem/pipeline mode (from /tandem or /pipeline command)
         if let Some(provider_names) = app.take_tandem() {
-            execute_tandem(terminal, app, runner, &input, &provider_names, session_id, project_dir, provider_name, model_name).await?;
+            execute_tandem(
+                terminal,
+                app,
+                runner,
+                &input,
+                &provider_names,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
             continue;
         }
         if let Some(provider_names) = app.take_pipeline() {
-            execute_pipeline(terminal, app, runner, &input, &provider_names, session_id, project_dir, provider_name, model_name).await?;
+            execute_pipeline(
+                terminal,
+                app,
+                runner,
+                &input,
+                &provider_names,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
             continue;
         }
 
@@ -403,10 +446,23 @@ async fn event_loop(
         if let Some(ref pipeline) = shell_config.pipeline
             && !pipeline.steps.is_empty()
         {
-            let providers: Vec<String> = pipeline.steps.iter()
+            let providers: Vec<String> = pipeline
+                .steps
+                .iter()
                 .flat_map(|step| step.providers.iter().map(|e| e.provider.clone()))
                 .collect();
-            execute_pipeline(terminal, app, runner, &input, &providers, session_id, project_dir, provider_name, model_name).await?;
+            execute_pipeline(
+                terminal,
+                app,
+                runner,
+                &input,
+                &providers,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
             continue;
         }
 
@@ -439,8 +495,7 @@ async fn event_loop(
 
         // Stream stdout line by line via channel
         let stdout = child.stdout.take().unwrap();
-        let (stream_tx, mut stream_rx) =
-            tokio::sync::mpsc::unbounded_channel::<String>();
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
         tokio::spawn(async move {
             use tokio::io::AsyncBufReadExt;
@@ -565,7 +620,8 @@ async fn event_loop(
                         super::runner::ShellRunner::estimate_tokens(&parsed.content) as u64
                     });
                     let cost = resp.cost_usd.unwrap_or(0.0);
-                    let real_duration = resp.duration_ms
+                    let real_duration = resp
+                        .duration_ms
                         .map(Duration::from_millis)
                         .unwrap_or(duration);
 
@@ -574,8 +630,12 @@ async fn event_loop(
                     }
 
                     runner.record_turn_exact(
-                        &input_clone, &parsed.content, real_duration,
-                        tokens_in, tokens_out, cost,
+                        &input_clone,
+                        &parsed.content,
+                        real_duration,
+                        tokens_in,
+                        tokens_out,
+                        cost,
                     );
                 } else {
                     runner.record_turn(&input_clone, &parsed.content, duration);
@@ -591,7 +651,11 @@ async fn event_loop(
                 );
 
                 let _ = save_current_session(
-                    session_id, project_dir, provider_name, model_name, runner,
+                    session_id,
+                    project_dir,
+                    provider_name,
+                    model_name,
+                    runner,
                 );
 
                 app.workroom.on_complete();
@@ -626,9 +690,10 @@ async fn execute_tandem(
     // Resolve provider infos
     let mut resolved = Vec::new();
     for name in provider_names {
-        if let Some(p) = all_providers.iter().find(|p| {
-            p.command == *name || p.display_name.to_lowercase() == name.to_lowercase()
-        }) {
+        if let Some(p) = all_providers
+            .iter()
+            .find(|p| p.command == *name || p.display_name.to_lowercase() == name.to_lowercase())
+        {
             if p.available {
                 resolved.push(p.clone());
             } else {
@@ -640,7 +705,9 @@ async fn execute_tandem(
     }
 
     if resolved.is_empty() {
-        app.add_system_message("No valid providers for tandem. Use /providers to see available ones.");
+        app.add_system_message(
+            "No valid providers for tandem. Use /providers to see available ones.",
+        );
         return Ok(());
     }
 
@@ -668,14 +735,20 @@ async fn execute_tandem(
     // Show spinner while waiting
     app.add_system_message(&format!(
         "⚡ Tandem: sending to {} in parallel...",
-        resolved.iter().map(|p| p.display_name.as_str()).collect::<Vec<_>>().join(" + ")
+        resolved
+            .iter()
+            .map(|p| p.display_name.as_str())
+            .collect::<Vec<_>>()
+            .join(" + ")
     ));
     terminal.draw(|f| app.render(f))?;
 
     // Collect results
     let mut combined_content = String::new();
     for handle in handles {
-        let (name, cmd, output_result) = handle.await.map_err(|e| anyhow::anyhow!("Join error: {e}"))?;
+        let (name, cmd, output_result) = handle
+            .await
+            .map_err(|e| anyhow::anyhow!("Join error: {e}"))?;
         match output_result {
             Ok(output) if output.status.success() => {
                 let raw = String::from_utf8_lossy(&output.stdout).to_string();
@@ -754,9 +827,9 @@ async fn execute_pipeline(
 
     let mut resolved = Vec::new();
     for name in provider_names {
-        if let Some(p) = all_providers.iter().find(|p| {
-            p.command == *name || p.display_name.to_lowercase() == name.to_lowercase()
-        })
+        if let Some(p) = all_providers
+            .iter()
+            .find(|p| p.command == *name || p.display_name.to_lowercase() == name.to_lowercase())
             && p.available
         {
             resolved.push(p.clone());
@@ -764,7 +837,9 @@ async fn execute_pipeline(
     }
 
     if resolved.len() < 2 {
-        app.add_system_message("Pipeline needs at least 2 available providers. Use /providers to check.");
+        app.add_system_message(
+            "Pipeline needs at least 2 available providers. Use /providers to check.",
+        );
         return Ok(());
     }
 
@@ -777,7 +852,10 @@ async fn execute_pipeline(
 
         app.add_system_message(&format!(
             "⚙ Pipeline stage {}/{}: {} ({})...",
-            i + 1, resolved.len(), provider.display_name, stage
+            i + 1,
+            resolved.len(),
+            provider.display_name,
+            stage
         ));
         terminal.draw(|f| app.render(f))?;
 

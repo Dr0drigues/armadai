@@ -181,7 +181,11 @@ pub fn try_execute(
             if arg.is_empty() {
                 // Use config defaults if available
                 if !shell_config.tandem.is_empty() {
-                    let providers = shell_config.tandem.iter().map(|e| e.provider.clone()).collect();
+                    let providers = shell_config
+                        .tandem
+                        .iter()
+                        .map(|e| e.provider.clone())
+                        .collect();
                     Some(CommandResult::Tandem(providers))
                 } else {
                     Some(CommandResult::Display(
@@ -200,12 +204,16 @@ pub fn try_execute(
                 if let Some(ref pipeline) = shell_config.pipeline {
                     if !pipeline.steps.is_empty() {
                         // Flatten step providers into a list for the pipeline executor
-                        let providers = pipeline.steps.iter()
+                        let providers = pipeline
+                            .steps
+                            .iter()
                             .flat_map(|step| step.providers.iter().map(|e| e.provider.clone()))
                             .collect();
                         Some(CommandResult::Pipeline(providers))
                     } else {
-                        Some(CommandResult::Display("Pipeline configured but has no steps.".to_string()))
+                        Some(CommandResult::Display(
+                            "Pipeline configured but has no steps.".to_string(),
+                        ))
                     }
                 } else {
                     Some(CommandResult::Display(
@@ -686,7 +694,13 @@ prompts: []
     fn test_try_execute_unknown_command() {
         let runner = ShellRunner::new(Default::default());
         let shell_config = crate::shell::config::ShellConfig::default();
-        let result = try_execute("/unknown", &runner, "Gemini", "gemini-2.5-flash", &shell_config);
+        let result = try_execute(
+            "/unknown",
+            &runner,
+            "Gemini",
+            "gemini-2.5-flash",
+            &shell_config,
+        );
         assert!(result.is_some());
         match result.unwrap() {
             CommandResult::Display(text) => {
