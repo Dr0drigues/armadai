@@ -80,6 +80,26 @@ pub fn supports_json(provider: &str) -> bool {
     json_output_flags(provider).is_some()
 }
 
+/// Extract the visible text from a CLI's raw JSONL stdout.
+///
+/// Returns the raw stdout unchanged if the CLI does not emit JSON (e.g. `aider`).
+/// Returns an empty string if the CLI emits JSON but no text events matched —
+/// callers can then fall back to text parsing on the raw stdout.
+pub fn collect_text_from_jsonl(cmd: &str, raw: &str) -> String {
+    if !supports_json(cmd) {
+        return raw.to_string();
+    }
+    let mut text = String::new();
+    for line in raw.lines() {
+        match parse_stream_event(cmd, line) {
+            StreamEvent::Delta(t) | StreamEvent::Message(t) => text.push_str(&t),
+            StreamEvent::Result(resp) if !resp.content.is_empty() => text.push_str(&resp.content),
+            _ => {}
+        }
+    }
+    text
+}
+
 /// A streaming event parsed from a single JSONL line.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
@@ -602,6 +622,31 @@ mod tests {
         } else {
             text_fallback(raw)
         }
+    }
+
+    #[test]
+    fn test_collect_text_from_jsonl_non_json_returns_raw() {
+        let raw = "just plain text from aider";
+        assert_eq!(collect_text_from_jsonl("aider", raw), raw);
+    }
+
+    #[test]
+    fn test_collect_text_from_jsonl_claude_concatenates_deltas() {
+        let jsonl = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":", "}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"world"}]}}"#,
+        );
+        assert_eq!(collect_text_from_jsonl("claude", jsonl), "Hello, world");
+    }
+
+    #[test]
+    fn test_collect_text_from_jsonl_empty_when_no_text_events() {
+        // Valid JSON for claude but no delta/message/result text events
+        let jsonl = r#"{"type":"system","subtype":"init","session_id":"x","tools":[]}"#;
+        assert_eq!(collect_text_from_jsonl("claude", jsonl), "");
     }
 
     #[test]
