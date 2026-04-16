@@ -19,11 +19,22 @@ pub struct ShellConfig {
     pub pipeline: Option<ShellPipelineConfig>,
 }
 
-/// A single provider + model entry (used in tandem and pipeline stages).
-#[derive(Debug, Clone, Deserialize)]
+/// A single entry in tandem or pipeline stages.
+///
+/// Two usage modes:
+/// - **Provider mode**: `provider:` + optional `model:` — invokes the CLI directly
+///   with a system prompt defined at the step level
+/// - **Agent mode**: `agent:` — loads a project agent (from `agents:` list), uses its
+///   system prompt, metadata provider/model, and adds the step's `prompt:` as extra context
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct ShellProviderEntry {
+    #[serde(default)]
     pub provider: String,
     pub model: Option<String>,
+    /// Agent name (from the project's `agents:` list) — when set, loads the agent's
+    /// system prompt and metadata. Takes precedence over `provider`/`model` for config
+    /// (the agent's metadata defines the actual provider used).
+    pub agent: Option<String>,
 }
 
 /// Pipeline configuration with named, ordered steps.
@@ -147,6 +158,33 @@ mod tests {
         assert_eq!(config.effective_timeout().as_secs(), 120);
         assert_eq!(config.effective_max_history(), 5);
         assert!(config.effective_auto_save());
+    }
+
+    #[test]
+    fn test_pipeline_step_with_agent() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: plan
+      prompt: "Context"
+      providers:
+        - agent: architect
+    - name: review
+      providers:
+        - agent: reviewer
+"#;
+        let config: ShellConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let pipeline = config.pipeline.unwrap();
+        assert_eq!(pipeline.steps.len(), 2);
+        assert_eq!(
+            pipeline.steps[0].providers[0].agent,
+            Some("architect".to_string())
+        );
+        assert_eq!(pipeline.steps[0].providers[0].provider, "");
+        assert_eq!(
+            pipeline.steps[1].providers[0].agent,
+            Some("reviewer".to_string())
+        );
     }
 
     #[test]

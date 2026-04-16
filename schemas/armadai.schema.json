@@ -310,12 +310,12 @@
     },
     "ShellProviderEntry": {
       "type": "object",
-      "description": "A provider with optional model tier for shell tandem/pipeline.",
+      "description": "An entry for shell tandem/pipeline — either a provider (direct CLI) or an agent (from the project's agents: list).",
       "properties": {
-        "provider": { "type": "string", "description": "CLI tool name (gemini, claude, aider, codex)." },
-        "model": { "type": "string", "description": "Model tier (latest:fast/pro/max) or concrete model name." }
+        "provider": { "type": "string", "description": "CLI tool name (gemini, claude, aider, codex). Ignored when agent: is set." },
+        "model": { "type": "string", "description": "Model tier (latest:fast/pro/max) or concrete model name. Ignored when agent: is set." },
+        "agent": { "type": "string", "description": "Agent name (from the project's agents: list). When set, loads the agent's system prompt and uses its metadata provider/model." }
       },
-      "required": ["provider"],
       "additionalProperties": false
     },
     "ShellPipelineConfig": {
