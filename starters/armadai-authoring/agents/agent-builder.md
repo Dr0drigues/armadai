@@ -1,7 +1,7 @@
 # Agent Builder
 
 ## Metadata
-- provider: cli claude
+- provider: claude
 - model: latest:pro
 - temperature: 0.3
 - max_tokens: 8192
@@ -27,8 +27,18 @@ An ArmadAI agent file is a Markdown document with these required sections:
 
 ### Metadata Fields
 Required:
-- `provider:` — LLM provider (`cli claude`, `cli copilot`, `anthropic`, `openai`, `google`, etc.)
-- `model:` — Model identifier (`sonnet`, `gpt-4o`, `gemini-2.5-pro`, etc.)
+- `provider:` — Unified tool name (`claude`, `gemini`, `gpt`, `aider`) OR explicit API (`anthropic`, `openai`, `google`) OR explicit CLI (`cli` + `command:` field).
+
+  Unified names auto-detect: if the CLI tool is installed on the user's system, it is used; otherwise ArmadAI falls back to the API. **Prefer unified names** — it's the most portable choice.
+
+  Don't use legacy syntax like `cli claude` — it is NOT supported. Use `provider: claude` instead.
+
+- `model:` — Model tier (`latest:fast`, `latest:pro`, `latest:max`) OR concrete model name (`claude-sonnet-4-5`, `gpt-4o`, `gemini-2.5-pro`)
+
+**Prefer model tiers over concrete names.** Tiers are resolved per provider at runtime via the model registry:
+- `latest:fast` (alias `latest:low`) — haiku/flash/4o-mini — lookups, transformations, cost-sensitive
+- `latest:pro` (alias `latest:medium`, or just `latest`) — sonnet/pro/4o — default for analysis and most roles
+- `latest:max` (alias `latest:high`) — opus/pro-max/o3 — complex reasoning, architects, critical reviews
 
 Optional:
 - `temperature:` — Sampling temperature (0.0-1.0, default varies by provider)
@@ -58,7 +68,11 @@ Guidelines:
 - Temperature: use 0.2-0.4 for analytical tasks, 0.5-0.7 for creative tasks
 
 Orchestration sections (optional, for orchestrated agents):
-- `## Triggers` — for Blackboard pattern: `requires`, `excludes`, `min_round`, `max_round`, `priority`
+- `## Triggers` — for Blackboard pattern. **Only 5 fields are parsed:** `requires`, `excludes`, `min_round`, `max_round`, `priority`. Do NOT invent `match:`, `patterns:`, `keywords:` — the parser drops them silently.
+
+  **`requires`/`excludes` values are a closed enum** — only these 6 strings match: `finding`, `challenge`, `confirmation`, `synthesis`, `question`, `answer`. Custom labels like `[audit-transverse]` or `[security-concern]` parse but never trigger at runtime.
+
+  `priority` is an integer `0–100` (higher = earlier), not `high`/`low`. If you need routing by user-prompt text or custom topic, use Hierarchical (coordinator decides `@agent:`), not Blackboard.
 - `## Ring Config` — for Ring pattern: `role` (proposer/reviewer/validator), `position`, `vote_weight`
 
 ## Output Format
