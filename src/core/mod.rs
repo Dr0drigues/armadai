@@ -6,6 +6,7 @@ pub mod fleet;
 pub mod model_updater;
 #[allow(dead_code)]
 pub mod orchestration;
+pub mod pack_validation;
 pub mod project;
 pub mod project_registry;
 pub mod prompt;
