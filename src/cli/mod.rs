@@ -120,15 +120,20 @@ pub enum Command {
         /// Agent name
         agent: String,
     },
-    /// Validate agent config without making API calls (dry-run)
+    /// Validate starter pack or project config
     #[command(
-        long_about = "Validate agent config without making API calls (dry-run).\n\n\
-            Checks that the Markdown file parses correctly and all required fields are present. \
-            If no agent name is given, validates all agents in the agents/ directory."
+        long_about = "Validate starter pack or project config.\n\n\
+            Auto-detects whether the target is a starter pack (pack.yaml) or project \
+            (armadai.yaml / .armadai/config.yaml) and runs the appropriate validation. \
+            Checks agent/prompt/skill references, orchestration config, and trigger sections.",
+        after_help = "Examples:\n  \
+            armadai validate\n  \
+            armadai validate starters/armadai-authoring\n  \
+            armadai validate /path/to/project"
     )]
     Validate {
-        /// Agent name (validates all if omitted)
-        agent: Option<String>,
+        /// Path to pack or project directory (default: current directory)
+        path: Option<std::path::PathBuf>,
     },
     /// View execution history
     #[command(after_help = "Examples:\n  \
@@ -424,7 +429,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             list::execute(tags, stack).await
         }
         Command::Inspect { agent } => inspect::execute(agent).await,
-        Command::Validate { agent } => validate::execute(agent).await,
+        Command::Validate { path } => validate::execute(path).await,
         Command::History { agent } => history::execute(agent).await,
         Command::Costs { agent, from } => costs::execute(agent, from).await,
         Command::Config { action } => config::execute(action).await,
