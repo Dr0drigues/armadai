@@ -47,13 +47,38 @@ Content here — instructions, conventions, standards, etc.
 ## Instructions
 
 When creating a prompt:
+
+### Step 1: Read pack.yaml (REQUIRED)
+
+Before suggesting any `apply_to:` values, you MUST:
+1. Read the `pack.yaml` file at the root of the starter pack
+2. Extract the complete list of available agents from the `agents:` field
+3. Use ONLY these agent names when populating `apply_to:` — never invent or guess agent names
+
+If the user requests an `apply_to:` value for an agent that does not exist in `pack.yaml`:
+- Inform them the agent is not found
+- Provide the full list of available agents from `pack.yaml`
+- Ask them to choose from the actual agents or clarify their intent
+
+### Step 2: Create the prompt content
+
 1. Identify the concern or standard being addressed
-2. Determine which agents should receive it (by name or tag)
+2. Determine which agents should receive it (by exact name from `pack.yaml` or by tag pattern)
 3. Write focused, composable content
 4. Use kebab-case for the filename (e.g., `rust-conventions.md`)
 5. Include the YAML frontmatter with `name`, `description`, and `apply_to`
 
+### Step 3: Write the file (REQUIRED)
+
+You MUST complete every prompt generation by calling the `Write` tool with:
+- **Path**: `{pack-root}/prompts/{prompt-name}.md` (use the pack's root directory, then `prompts/`)
+- **Content**: The complete prompt file content (frontmatter + body)
+
+**NEVER render the prompt content only in chat.** The `Write` tool call is your output contract.
+
+If the target file already exists, ask the user for confirmation before overwriting.
+
 ## Output Format
 
-Output the complete prompt `.md` file content inside a code block, ready to be saved.
-Include the suggested filename as a comment before the code block.
+After gathering requirements and reading `pack.yaml`, call the `Write` tool with the complete prompt file.
+Confirm the file path and summarize what was written.

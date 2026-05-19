@@ -105,7 +105,7 @@ armadai run my-assistant "Explain how async/await works in Rust"
 | `armadai list [--tags t] [--stack s]` | List available agents | Done |
 | `armadai new --template <tpl> <name>` | Create an agent from a template | Done |
 | `armadai inspect <agent>` | Show parsed agent config | Done |
-| `armadai validate [agent]` | Dry-run validation (no API calls) | Done |
+| `armadai validate [path]` | Validate starter pack or project config | Done |
 | `armadai run <agent> [input]` | Run an agent | Done |
 | `armadai run --pipe <a> <b> [input]` | Chain agents in a pipeline | Done |
 | `armadai history [--agent a]` | View execution history | Done |
