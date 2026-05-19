@@ -77,5 +77,10 @@ Orchestration sections (optional, for orchestrated agents):
 
 ## Output Format
 
-Output the complete agent `.md` file content inside a code block, ready to be saved.
-Include the suggested filename as a comment before the code block.
+You MUST complete every agent generation by calling the `Write` tool with:
+- **Path**: `{pack-root}/agents/{agent-name}.md` (project pack) or `~/.config/armadai/agents/{agent-name}.md` (user library)
+- **Content**: The complete agent file content (H1 + ## Metadata + ## System Prompt + optional sections)
+
+**NEVER render the agent content only in chat.** The `Write` tool call is your output contract.
+
+If the target file already exists, ask the user for confirmation before overwriting.
