@@ -1,13 +1,13 @@
 # ArmadAI
 
-AI agent fleet orchestrator — define, manage and run specialized agents from Markdown files.
+AI agent orchestrator — define, manage and run specialized agents from Markdown files.
 
 [![CI](https://github.com/Dr0drigues/swarm-festai/actions/workflows/ci.yml/badge.svg)](https://github.com/Dr0drigues/swarm-festai/actions/workflows/ci.yml)
 [![Security Audit](https://github.com/Dr0drigues/swarm-festai/actions/workflows/audit.yml/badge.svg)](https://github.com/Dr0drigues/swarm-festai/actions/workflows/audit.yml)
 
 ## Overview
 
-ArmadAI lets you build a fleet of specialized AI agents, each configured with a simple Markdown file. It works with any LLM provider (Claude, GPT, Gemini) and any CLI tool (Claude Code, aider, etc.) through a unified interface.
+ArmadAI lets you build a team of specialized AI agents, each configured with a simple Markdown file. It works with any LLM provider (Claude, GPT, Gemini) and any CLI tool (Claude Code, aider, etc.) through a unified interface.
 
 ```
 armadai run code-reviewer "Review this PR for security issues"
@@ -21,7 +21,7 @@ armadai tui
 - **Multi-provider** — unified tool names (`claude`, `gemini`, `gpt`, `aider`) auto-detect CLI vs API; explicit API/CLI/proxy modes also supported
 - **Multi-pattern orchestration** — Direct (single-shot), Blackboard (parallel shared-state), Ring (sequential consensus), Hierarchical (coordinator → leads → agents)
 - **Pipeline mode** — chain agents sequentially (output A becomes input B)
-- **TUI dashboard** — fleet management with agent browser, detail view, history, costs, and command palette
+- **TUI dashboard** — agent library management with browser, detail view, history, costs, and command palette
 - **Shell completion** — auto-complete for bash, zsh, fish, powershell, elvish
 - **Cost tracking** — per-agent, per-run cost monitoring stored in SQLite
 
@@ -117,7 +117,6 @@ armadai run my-assistant "Explain how async/await works in Rust"
 | `armadai config starters-dir list\|add\|remove` | Manage custom starter directories | Done |
 | `armadai init [--force] [--project]` | Initialize ArmadAI configuration (.armadai/) | Done |
 | `armadai init --pack <name>` | Install a starter pack (rust-dev, fullstack) | Done |
-| `armadai fleet create/link/list/show` | Manage agent fleets | Done |
 | `armadai link --target <t> [--dry-run]` | Generate native AI assistant configs | Done |
 | `armadai registry sync/search/list/add` | Browse and import community agents | Done |
 | `armadai prompts list/show` | Manage composable prompts | Done |
@@ -270,7 +269,7 @@ armadai completion fish > ~/.config/fish/completions/armadai.fish
 
 ## TUI Dashboard
 
-Launch with `armadai tui`. The dashboard provides fleet management views:
+Launch with `armadai tui`. The dashboard provides agent library management views:
 
 | Tab | Description |
 |---|---|
@@ -304,7 +303,7 @@ armadai web              # http://localhost:3000
 armadai web --port 8080  # custom port
 ```
 
-The web UI provides a read-only dashboard for your agent fleet:
+The web UI provides a read-only dashboard for your agent library:
 
 - **Agents** — browse all loaded agents, click to view full configuration
 - **Prompts** — browse composable prompt fragments with full content

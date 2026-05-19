@@ -2,7 +2,7 @@
 
 ## Example 1: Coordinator Agent (Hierarchical Orchestration)
 
-A coordinator that orchestrates a code analysis fleet using the `@agent:` delegation protocol:
+A coordinator that orchestrates a code analysis team using the `@agent:` delegation protocol:
 
 ```markdown
 # Code Analysis Captain
@@ -16,7 +16,7 @@ A coordinator that orchestrates a code analysis fleet using the `@agent:` delega
 
 ## System Prompt
 
-You are the coordinator for a code analysis fleet.
+You are the coordinator for a code analysis team.
 
 Your team:
 | Agent | Role |

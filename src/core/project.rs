@@ -5,7 +5,6 @@ use serde::Deserialize;
 
 use super::agent::AgentMode;
 use super::config::{registry_cache_dir, user_agents_dir, user_prompts_dir, user_skills_dir};
-use super::fleet::FleetDefinition;
 use super::orchestration::OrchestrationConfig;
 
 // ---------------------------------------------------------------------------
@@ -111,56 +110,12 @@ pub struct LinkOverride {
 // Loading
 // ---------------------------------------------------------------------------
 
-/// Intermediate struct used to detect the legacy fleet format.
-/// If the YAML contains a `fleet` key, it's the old format.
-#[derive(Deserialize)]
-struct FormatProbe {
-    fleet: Option<String>,
-}
-
 impl ProjectConfig {
     /// Load a project config from the given path.
-    /// Supports both the new format and the legacy fleet format.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-
-        // Detect format: if there's a `fleet:` key, it's the old format
-        let probe: FormatProbe =
-            serde_yaml_ng::from_str(&content).unwrap_or(FormatProbe { fleet: None });
-
-        if probe.fleet.is_some() {
-            tracing::warn!(
-                "Legacy fleet format detected in {}. \
-                 Migrate to the modern armadai.yaml format (see `armadai init --project`). \
-                 Fleet support will be removed in a future release.",
-                path.display()
-            );
-            let fleet: FleetDefinition = serde_yaml_ng::from_str(&content)?;
-            Ok(Self::from_legacy_fleet(&fleet))
-        } else {
-            let config: ProjectConfig = serde_yaml_ng::from_str(&content)?;
-            Ok(config)
-        }
-    }
-
-    /// Convert a legacy `FleetDefinition` into a `ProjectConfig`.
-    pub fn from_legacy_fleet(fleet: &FleetDefinition) -> Self {
-        let agents = fleet
-            .agents
-            .iter()
-            .map(|name| AgentRef::Named { name: name.clone() })
-            .collect();
-
-        Self {
-            agents,
-            prompts: Vec::new(),
-            skills: Vec::new(),
-            sources: Vec::new(),
-            link: None,
-            defaults: ProjectDefaults::default(),
-            orchestration: None,
-            shell: None,
-        }
+        let config: ProjectConfig = serde_yaml_ng::from_str(&content)?;
+        Ok(config)
     }
 }
 
@@ -617,56 +572,6 @@ link:
         let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap_or_default();
         assert!(config.agents.is_empty());
         assert!(config.prompts.is_empty());
-    }
-
-    #[test]
-    fn test_from_legacy_fleet() {
-        let fleet = FleetDefinition {
-            fleet: "my-fleet".to_string(),
-            agents: vec!["code-reviewer".to_string(), "test-writer".to_string()],
-            source: PathBuf::from("/home/user/armadai"),
-        };
-
-        let config = ProjectConfig::from_legacy_fleet(&fleet);
-        assert_eq!(config.agents.len(), 2);
-        assert_eq!(
-            config.agents[0],
-            AgentRef::Named {
-                name: "code-reviewer".to_string()
-            }
-        );
-        assert_eq!(
-            config.agents[1],
-            AgentRef::Named {
-                name: "test-writer".to_string()
-            }
-        );
-        assert!(config.prompts.is_empty());
-        assert!(config.link.is_none());
-    }
-
-    #[test]
-    fn test_legacy_format_detection() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("armadai.yaml");
-
-        let legacy_yaml = "\
-fleet: my-fleet
-agents:
-  - code-reviewer
-  - test-writer
-source: /home/user/armadai
-";
-        std::fs::write(&path, legacy_yaml).unwrap();
-
-        let config = ProjectConfig::load(&path).unwrap();
-        assert_eq!(config.agents.len(), 2);
-        assert_eq!(
-            config.agents[0],
-            AgentRef::Named {
-                name: "code-reviewer".to_string()
-            }
-        );
     }
 
     #[test]

@@ -56,10 +56,6 @@ pub fn user_skills_dir() -> PathBuf {
     config_dir().join("skills")
 }
 
-pub fn user_fleets_dir() -> PathBuf {
-    config_dir().join("fleets")
-}
-
 pub fn user_starters_dir() -> PathBuf {
     config_dir().join("starters")
 }
@@ -87,7 +83,6 @@ pub fn ensure_config_dirs() -> anyhow::Result<()> {
         user_agents_dir(),
         user_prompts_dir(),
         user_skills_dir(),
-        user_fleets_dir(),
         registry_cache_dir(),
     ];
     for dir in &dirs {
@@ -553,7 +548,6 @@ providers:
             std::env::set_var("ARMADAI_CONFIG_DIR", "/tmp/armadai-test");
         }
         assert_eq!(user_agents_dir(), PathBuf::from("/tmp/armadai-test/agents"));
-        assert_eq!(user_fleets_dir(), PathBuf::from("/tmp/armadai-test/fleets"));
         assert_eq!(
             registry_cache_dir(),
             PathBuf::from("/tmp/armadai-test/registry")

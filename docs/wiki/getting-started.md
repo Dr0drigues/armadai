@@ -134,7 +134,7 @@ armadai completion fish > ~/.config/fish/completions/armadai.fish
 
 ## TUI Dashboard
 
-Browse and manage your agent fleet visually:
+Browse and manage your agent library visually:
 
 ```bash
 armadai tui
