@@ -1,6 +1,5 @@
 mod config;
 mod costs;
-mod fleet;
 mod history;
 pub mod init;
 mod inspect;
@@ -23,8 +22,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "armadai",
-    about = "AI agent fleet orchestrator",
-    long_about = "AI agent fleet orchestrator — define, manage and run specialized agents from Markdown files.\n\n\
+    about = "AI agent orchestrator",
+    long_about = "AI agent orchestrator — define, manage and run specialized agents from Markdown files.\n\n\
         Each agent is a .md file in agents/ with metadata, system prompt, and optional instructions.\n\
         Supports any LLM provider (Claude, GPT, Gemini) via CLI tools or API.",
     version,
@@ -209,20 +208,6 @@ pub enum Command {
     #[command(long_about = "Stop infrastructure services (Docker Compose).\n\n\
         Stops and removes the containers started by 'armadai up'.")]
     Down,
-    /// [deprecated] Manage agent fleets
-    #[command(
-        subcommand,
-        long_about = "[DEPRECATED] Manage agent fleets.\n\n\
-            This command uses the legacy fleet format which will be removed in a future release.\n\
-            Use `armadai init --project` to create a modern .armadai/config.yaml instead.\n\n\
-            Create named groups of agents and link them to project directories.",
-        after_help = "Examples:\n  \
-            armadai fleet create my-fleet --all\n  \
-            armadai fleet link my-fleet\n  \
-            armadai fleet list\n  \
-            armadai fleet show my-fleet"
-    )]
-    Fleet(fleet::FleetAction),
     /// Manage model deprecations and project registry
     #[command(
         subcommand,
@@ -307,7 +292,7 @@ pub enum Command {
     #[command(
         long_about = "Initialize ArmadAI configuration.\n\n\
             Creates ~/.config/armadai/ with default config.yaml, providers.yaml, \
-            and subdirectories (agents/, prompts/, skills/, fleets/, registry/).\n\n\
+            and subdirectories (agents/, prompts/, skills/, registry/).\n\n\
             Use --project to create a .armadai/ directory with config.yaml and \
             subdirectories (agents/, prompts/, skills/, starters/).",
         after_help = "Examples:\n  \
@@ -441,7 +426,6 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             crate::web::serve(port).await
         }
         Command::Models(action) => models::execute(action).await,
-        Command::Fleet(action) => fleet::execute(action).await,
         Command::Registry(action) => registry::execute(action).await,
         Command::Prompts(action) => prompts::execute(action).await,
         Command::Skills(action) => skills::execute(action).await,

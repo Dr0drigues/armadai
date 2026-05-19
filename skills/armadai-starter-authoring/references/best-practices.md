@@ -53,7 +53,7 @@ Including too many agents dilutes the pack's focus and makes coordination harder
 
 ## Naming Guidelines
 
-- Pack name should describe the domain: `rust-dev`, `devops-fleet`, `data-pipeline`
+- Pack name should describe the domain: `rust-dev`, `devops-team`, `data-pipeline`
 - Agent names should describe the role: `code-reviewer`, `test-writer`, `lead-analyst`
 - Avoid generic names: prefer `rust-security` over `security-agent`
 - Coordinators: use `lead`, `captain`, or domain-specific titles

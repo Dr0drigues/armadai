@@ -3,7 +3,6 @@ use std::time::Instant;
 
 use crate::core::agent::{Agent, AgentMode};
 use crate::core::config::AppPaths;
-use crate::core::fleet::FleetDefinition;
 use crate::core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
 use crate::providers::factory::create_provider;
 use crate::providers::rate_limiter::RateLimiter;
@@ -95,8 +94,6 @@ enum AgentResolution {
         root: PathBuf,
         config: Box<ProjectConfig>,
     },
-    /// Legacy fleet format
-    Fleet(FleetDefinition),
     /// No project config found — use default paths
     Default(PathBuf),
 }
@@ -119,19 +116,6 @@ fn resolve_agent_path(resolution: &AgentResolution, agent_name: &str) -> anyhow:
                 name: agent_name.to_string(),
             };
             project::resolve_agent(&fallback_ref, root)
-        }
-        AgentResolution::Fleet(fleet) => {
-            if !fleet.contains_agent(agent_name) {
-                anyhow::bail!(
-                    "Agent '{agent_name}' is not in fleet '{}'. Available: {}",
-                    fleet.fleet,
-                    fleet.agents.join(", ")
-                );
-            }
-            let agents_dir = fleet.agents_dir();
-            Agent::find_file(&agents_dir, agent_name).ok_or_else(|| {
-                anyhow::anyhow!("Agent '{agent_name}' not found in {}", agents_dir.display())
-            })
         }
         AgentResolution::Default(agents_dir) => Agent::find_file(agents_dir, agent_name)
             .ok_or_else(|| {
@@ -352,28 +336,7 @@ fn resolve_agents_dir() -> AgentResolution {
         };
     }
 
-    // 2. Check for legacy fleet file in cwd (deprecated)
-    let fleet_path = Path::new("armadai.yaml");
-    if fleet_path.exists()
-        && let Ok(fleet) = FleetDefinition::load(fleet_path)
-    {
-        let dir = fleet.agents_dir();
-        if dir.exists() {
-            tracing::warn!(
-                "Using deprecated fleet format from '{}'. \
-                 Migrate to the modern armadai.yaml format (see `armadai init --project`).",
-                fleet.fleet
-            );
-            return AgentResolution::Fleet(fleet);
-        }
-        tracing::warn!(
-            "Fleet '{}' source agents dir not found: {}",
-            fleet.fleet,
-            dir.display()
-        );
-    }
-
-    // 3. Default fallback
+    // 2. Default fallback
     AgentResolution::Default(AppPaths::resolve().agents_dir)
 }
 
@@ -870,9 +833,6 @@ mod tests {
             AgentResolution::Project { root, config } => {
                 assert!(!root.to_string_lossy().is_empty());
                 assert!(!config.agents.is_empty());
-            }
-            AgentResolution::Fleet(fleet) => {
-                assert!(!fleet.fleet.is_empty());
             }
             AgentResolution::Default(dir) => {
                 assert!(!dir.to_string_lossy().is_empty());

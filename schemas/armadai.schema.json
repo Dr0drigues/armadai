@@ -2,16 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/Dr0drigues/armadai/develop/schemas/armadai.schema.json",
   "title": "ArmadAI Project Configuration",
-  "description": "Configuration file for ArmadAI projects (armadai.yaml). Supports both the current ProjectConfig format and the legacy FleetDefinition format.",
-  "oneOf": [
-    { "$ref": "#/$defs/ProjectConfig" },
-    { "$ref": "#/$defs/FleetDefinition" }
-  ],
+  "description": "Configuration file for ArmadAI projects (armadai.yaml).",
+  "$ref": "#/$defs/ProjectConfig",
   "$defs": {
     "ProjectConfig": {
       "type": "object",
       "title": "Project Configuration",
-      "description": "Modern ArmadAI project configuration format.",
+      "description": "ArmadAI project configuration format.",
       "properties": {
         "agents": {
           "type": "array",
@@ -50,35 +47,6 @@
           "$ref": "#/$defs/ShellConfig"
         }
       },
-      "not": {
-        "required": ["fleet"]
-      },
-      "additionalProperties": false
-    },
-    "FleetDefinition": {
-      "type": "object",
-      "title": "Fleet Definition (legacy, deprecated)",
-      "description": "DEPRECATED: Legacy fleet format. Detected when a 'fleet' key is present. Automatically converted to ProjectConfig at load time. Will be removed in a future release. Migrate to the modern ProjectConfig format using `armadai init --project`.",
-      "deprecated": true,
-      "properties": {
-        "fleet": {
-          "type": "string",
-          "title": "Fleet name",
-          "description": "Name of the agent fleet."
-        },
-        "agents": {
-          "type": "array",
-          "title": "Agent names",
-          "description": "List of agent names (file stems without .md extension).",
-          "items": { "type": "string" }
-        },
-        "source": {
-          "type": "string",
-          "title": "Source directory",
-          "description": "Absolute path to the ArmadAI source directory."
-        }
-      },
-      "required": ["fleet", "agents", "source"],
       "additionalProperties": false
     },
     "AgentRef": {

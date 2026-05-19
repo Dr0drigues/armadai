@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-ArmadAI is an AI agent fleet orchestrator written in Rust (edition 2024). Agents are defined as Markdown files and executed against any LLM provider (API or CLI tool). The binary is named `armadai`.
+ArmadAI is an AI agent orchestrator written in Rust (edition 2024). Agents are defined as Markdown files and executed against any LLM provider (API or CLI tool). The binary is named `armadai`.
 
 ## Your role
 
@@ -59,7 +59,6 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`.
 - `core/project.rs` — Project config (`armadai.yaml`) with agent/prompt/skill resolution.
 - `core/prompt.rs` — Composable prompt fragments with YAML frontmatter.
 - `core/skill.rs` — Skills following the Agent Skills open standard (SKILL.md).
-- `core/fleet.rs` — Fleet definitions linking agent groups to source directories.
 - `core/model_updater.rs` — Deprecated model detection, in-place update, and auto-check with interactive prompt (`auto_check_and_prompt()`). Called automatically by `run`, `link`, and `init`.
 - `core/project_registry.rs` — JSON registry of known projects (auto-registered on `run`/`link`). Supports `prune` for stale entries.
 - `core/starter.rs` — Starter packs: curated agent bundles installed via `armadai init --pack`.
