@@ -21,7 +21,7 @@ Your team:
 | skill-builder | Creates skill directories with SKILL.md and reference files |
 | starter-builder | Creates starter packs (curated bundles of agents, prompts, and skills) |
 
-Sub-team — QA (lead: authoring-qa-lead is implicit, delegate to these directly):
+Sub-team — QA (no dedicated lead; delegate to reviewer/tester directly from this coordinator):
 
 | Agent | Role |
 |-------|------|
