@@ -9,7 +9,7 @@ tools: []
 
 Complete reference for creating and maintaining ArmadAI starter packs — curated bundles that group agents, prompts, and skills into installable packages.
 
-Starter packs are the primary distribution unit for ArmadAI fleets. They allow users to bootstrap a fully functional agent team with a single `armadai init --pack <name>` command.
+Starter packs are the primary distribution unit for ArmadAI agent teams. They allow users to bootstrap a fully functional agent team with a single `armadai init --pack <name>` command.
 
 See the `references/` directory for detailed documentation:
 

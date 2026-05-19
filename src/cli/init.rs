@@ -52,7 +52,6 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     println!("  config:    {}", config_path.display());
     println!("  providers: {}", providers_path.display());
     println!("  agents:    {}", config::user_agents_dir().display());
-    println!("  fleets:    {}", config::user_fleets_dir().display());
     println!("  prompts:   {}", config::user_prompts_dir().display());
     println!("  skills:    {}", config::user_skills_dir().display());
     println!("  registry:  {}", config::registry_cache_dir().display());
