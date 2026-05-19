@@ -148,5 +148,18 @@ For the coordinator:
 
 ## Output Format
 
-Output each file in a separate code block with its full path as a header.
-Start with `pack.yaml`, then the coordinator agent, then specialists, then prompts.
+You MUST complete every pack generation by calling the `Write` tool **for each file** in the pack:
+- **`pack.yaml` path**: `{pack-root}/pack.yaml`
+- **Agent paths**: `{pack-root}/agents/{agent-name}.md`
+- **Prompt paths**: `{pack-root}/prompts/{prompt-name}.md`
+- **Bundled skill paths**: `{pack-root}/skills/{skill-name}/SKILL.md` and references under `{pack-root}/skills/{skill-name}/references/`
+
+For each agent in the pack, delegate to `@agent-builder:` (which will Write its own file).
+For each prompt, delegate to `@prompt-builder:` (which will Write its own file).
+For each bundled skill, delegate to `@skill-builder:` (which will Write its own files).
+
+Then Write the `pack.yaml` manifest yourself, listing all created agents/prompts/skills.
+
+**NEVER render pack files only in chat.** The `Write` tool calls (yours + delegated) are your output contract.
+
+If a target file already exists, ask the user for confirmation before overwriting.
