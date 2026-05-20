@@ -166,18 +166,35 @@ pub struct Selection {
     pub skills: Vec<Skill>,
 }
 
+/// Return the file-stem (kebab-case) identifier of a resource — this is what
+/// `pack.yaml`, `armadai run`, and other CLI commands use to refer to it.
+fn file_stem(p: &Path) -> String {
+    p.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Match a CLI-supplied identifier against a resource: file-stem first
+/// (canonical), then display name fallback (so `--agents "Dev Lead"` also
+/// works for users who copy the H1 instead of the filename).
+fn matches_id(arg_list: &[String], file: &Path, display_name: &str) -> bool {
+    let stem = file_stem(file);
+    arg_list.iter().any(|a| a == &stem || a == display_name)
+}
+
 pub fn select_resources(args: &ExtractArgs, pool: &SourcePool) -> Selection {
     let agents: Vec<Agent> = pool
         .agents
         .iter()
-        .filter(|a| args.agents.contains(&a.name))
+        .filter(|a| matches_id(&args.agents, &a.source, &a.name))
         .cloned()
         .collect();
 
     let mut prompts: Vec<Prompt> = pool
         .prompts
         .iter()
-        .filter(|p| args.prompts.contains(&p.name))
+        .filter(|p| matches_id(&args.prompts, &p.source, &p.name))
         .cloned()
         .collect();
 
@@ -193,7 +210,7 @@ pub fn select_resources(args: &ExtractArgs, pool: &SourcePool) -> Selection {
     let skills: Vec<Skill> = pool
         .skills
         .iter()
-        .filter(|s| args.skills.contains(&s.name))
+        .filter(|s| matches_id(&args.skills, &s.source, &s.name))
         .cloned()
         .collect();
 
@@ -272,9 +289,27 @@ fn write_pack_yaml(
     source_label: &str,
     selected: &Selection,
 ) -> anyhow::Result<()> {
-    let agents_yaml = list_yaml("agents", selected.agents.iter().map(|a| a.name.as_str()));
-    let prompts_yaml = list_yaml("prompts", selected.prompts.iter().map(|p| p.name.as_str()));
-    let skills_yaml = list_yaml("skills", selected.skills.iter().map(|s| s.name.as_str()));
+    // pack.yaml references resources by their file-stem (canonical id), not
+    // the H1 display name.
+    let agent_ids: Vec<String> = selected
+        .agents
+        .iter()
+        .map(|a| file_stem(&a.source))
+        .collect();
+    let prompt_ids: Vec<String> = selected
+        .prompts
+        .iter()
+        .map(|p| file_stem(&p.source))
+        .collect();
+    let skill_ids: Vec<String> = selected
+        .skills
+        .iter()
+        .map(|s| file_stem(&s.source))
+        .collect();
+
+    let agents_yaml = list_yaml("agents", agent_ids.iter().map(String::as_str));
+    let prompts_yaml = list_yaml("prompts", prompt_ids.iter().map(String::as_str));
+    let skills_yaml = list_yaml("skills", skill_ids.iter().map(String::as_str));
 
     let manifest = format!(
         "name: {pack_name}\ndescription: \"Extracted from {source_label}\"\n{agents_yaml}{prompts_yaml}{skills_yaml}"
@@ -417,11 +452,18 @@ mod tests {
     use super::*;
 
     fn write_agent(dir: &Path, name: &str) {
+        write_agent_with_h1(dir, name, name);
+    }
+
+    /// Create an agent file `<file_stem>.md` whose H1 (the parser-reported name)
+    /// is `display_name`. Lets us exercise the file-stem-vs-display-name
+    /// matching path that `armadai extract` relies on.
+    fn write_agent_with_h1(dir: &Path, file_stem: &str, display_name: &str) {
         fs::create_dir_all(dir).unwrap();
         let content = format!(
-            "# {name}\n\n## Metadata\n- provider: claude\n- model: latest:pro\n\n## System Prompt\n\nYou are {name}.\n"
+            "# {display_name}\n\n## Metadata\n- provider: claude\n- model: latest:pro\n\n## System Prompt\n\nYou are {display_name}.\n"
         );
-        fs::write(dir.join(format!("{name}.md")), content).unwrap();
+        fs::write(dir.join(format!("{file_stem}.md")), content).unwrap();
     }
 
     fn write_prompt(dir: &Path, name: &str, apply_to: &[&str]) {
@@ -534,6 +576,36 @@ mod tests {
             .filter(|p| p.name == "rust-conv")
             .count();
         assert_eq!(rust_conv_count, 1);
+    }
+
+    #[test]
+    fn matches_file_stem_when_h1_differs() {
+        // Mirrors the real-world case where dev-lead.md has H1 "Dev Lead":
+        // users pass the file-stem (the canonical id used in pack.yaml/apply_to),
+        // not the display name.
+        let tmp = tempfile::tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let prompts_dir = tmp.path().join("prompts");
+        write_agent_with_h1(&agents_dir, "dev-lead", "Dev Lead");
+        write_prompt(&prompts_dir, "rust-conv", &["dev-lead"]);
+
+        let pool = SourcePool {
+            agents: Agent::load_all(&agents_dir).unwrap(),
+            prompts: load_all_prompts(&prompts_dir),
+            skills: vec![],
+        };
+        let args = ExtractArgs {
+            agents: vec!["dev-lead".into()],
+            with_deps: true,
+            ..Default::default()
+        };
+
+        let selected = select_resources(&args, &pool);
+
+        assert_eq!(selected.agents.len(), 1);
+        assert_eq!(selected.agents[0].name, "Dev Lead");
+        assert_eq!(selected.prompts.len(), 1, "deps must follow apply_to id");
+        assert_eq!(selected.prompts[0].name, "rust-conv");
     }
 
     #[test]

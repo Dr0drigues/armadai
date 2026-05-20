@@ -31,7 +31,15 @@ pub fn resolve_dependencies(agents: &[Agent], available_prompts: &[Prompt]) -> R
     let mut prompts = Vec::new();
 
     for agent in agents {
-        for p in matching_prompts(available_prompts, &agent.name) {
+        // `apply_to:` in prompts uses the file-stem (kebab-case), not the H1
+        // display name. Fall back to `name` for in-memory agents without a path.
+        let agent_id = agent
+            .source
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&agent.name);
+
+        for p in matching_prompts(available_prompts, agent_id) {
             if seen.insert(p.source.clone()) {
                 prompts.push(p.clone());
             }
