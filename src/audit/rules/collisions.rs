@@ -101,6 +101,118 @@ pub(super) fn c03_activation_overlap(ctx: &AuditContext) -> Vec<Finding> {
     findings
 }
 
+/// Prefix of a glob up to its first wildcard — a cheap, dependency-free
+/// overlap test: two globs can match a common path iff one literal prefix
+/// contains the other.
+fn glob_prefix(g: &str) -> &str {
+    let idx = g.find(['*', '?', '[']).unwrap_or(g.len());
+    &g[..idx]
+}
+
+fn globs_overlap(a: &str, b: &str) -> bool {
+    let (pa, pb) = (glob_prefix(a), glob_prefix(b));
+    pa.starts_with(pb) || pb.starts_with(pa)
+}
+
+fn scoped_agents<'a>(
+    ctx: &'a AuditContext,
+) -> Vec<(&'a crate::audit::reverse::ImportedAgent, Vec<String>)> {
+    ctx.config
+        .agents
+        .iter()
+        .filter(|a| a.issues.is_empty())
+        .filter_map(|a| {
+            let globs = a.metadata.scope_globs();
+            (!globs.is_empty()).then_some((a, globs))
+        })
+        .collect()
+}
+
+fn overlapping_pairs(
+    scoped: &[(&crate::audit::reverse::ImportedAgent, Vec<String>)],
+) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    for i in 0..scoped.len() {
+        for j in (i + 1)..scoped.len() {
+            let overlap = scoped[i]
+                .1
+                .iter()
+                .any(|ga| scoped[j].1.iter().any(|gb| globs_overlap(ga, gb)));
+            if overlap {
+                pairs.push((i, j));
+            }
+        }
+    }
+    pairs
+}
+
+/// C02 — agents claim overlapping path scopes (custom `paths:` field),
+/// clustered like A06.
+pub(super) fn c02_scope_overlap(ctx: &AuditContext) -> Vec<Finding> {
+    let scoped = scoped_agents(ctx);
+    let pairs = overlapping_pairs(&scoped);
+    let mut uf = super::UnionFind::new(scoped.len());
+    for &(i, j) in &pairs {
+        uf.union(i, j);
+    }
+    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..scoped.len() {
+        clusters.entry(uf.find(i)).or_default().push(i);
+    }
+    clusters
+        .into_values()
+        .filter(|members| members.len() >= 2)
+        .map(|members| {
+            let names: Vec<&str> = members.iter().map(|&i| scoped[i].0.name.as_str()).collect();
+            Finding {
+                rule: "C02",
+                severity: Severity::Warning,
+                file: scoped[members[0]].0.source_path.clone(),
+                related: members[1..]
+                    .iter()
+                    .map(|&i| scoped[i].0.source_path.clone())
+                    .collect(),
+                message: format!(
+                    "{} agents claim overlapping path scopes: {}",
+                    members.len(),
+                    names.join(", ")
+                ),
+                suggestion: Some(
+                    "split the scopes or make the ownership hierarchy explicit".to_string(),
+                ),
+            }
+        })
+        .collect()
+}
+
+/// C05 — same scope, inconsistent tool restriction (one locked, one open).
+pub(super) fn c05_inconsistent_tools(ctx: &AuditContext) -> Vec<Finding> {
+    fn permissive(tools: &Option<Vec<String>>) -> bool {
+        match tools {
+            None => true,
+            Some(t) => t.iter().any(|x| x == "*"),
+        }
+    }
+    let scoped = scoped_agents(ctx);
+    overlapping_pairs(&scoped)
+        .into_iter()
+        .filter(|&(i, j)| {
+            permissive(&scoped[i].0.metadata.tools) != permissive(&scoped[j].0.metadata.tools)
+        })
+        .map(|(i, j)| Finding {
+            rule: "C05",
+            severity: Severity::Info,
+            file: scoped[i].0.source_path.clone(),
+            related: vec![scoped[j].0.source_path.clone()],
+            message: format!(
+                "agents '{}' and '{}' share a path scope but one restricts tools and the other does not",
+                scoped[i].0.name, scoped[j].0.name
+            ),
+            suggestion: Some("align the tool policies of agents working on the same files".to_string()),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +312,61 @@ mod tests {
             settings: &settings,
         });
         assert_eq!(f.len(), 1);
+    }
+
+    #[test]
+    fn globs_overlap_by_prefix() {
+        assert!(globs_overlap("src/**", "src/cli/**"));
+        assert!(globs_overlap("src/cli/mod.rs", "src/**"));
+        assert!(!globs_overlap("src/**", "docs/**"));
+        assert!(globs_overlap("**", "docs/**")); // catch-all overlaps everything
+    }
+
+    #[test]
+    fn c02_clusters_agents_with_overlapping_paths() {
+        use serde_yaml_ng::Value;
+        let mut a = agent("wide", "Body");
+        a.metadata
+            .extra
+            .insert("paths".into(), Value::String("src/**".into()));
+        let mut b = agent("narrow", "Body");
+        b.metadata
+            .extra
+            .insert("paths".into(), Value::String("src/cli/**".into()));
+        let mut c = agent("docs", "Body");
+        c.metadata
+            .extra
+            .insert("paths".into(), Value::String("docs/**".into()));
+        let config = config_with(vec![a, b, c]);
+        let settings = AuditSettings::default();
+        let f = c02_scope_overlap(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert!(f[0].message.contains("wide") && f[0].message.contains("narrow"));
+        assert!(!f[0].message.contains("docs"));
+    }
+
+    #[test]
+    fn c05_flags_inconsistent_tools_on_shared_scope() {
+        use serde_yaml_ng::Value;
+        let mut a = agent("locked", "Body"); // tools: [Read]
+        a.metadata
+            .extra
+            .insert("paths".into(), Value::String("src/**".into()));
+        let mut b = agent("open", "Body");
+        b.metadata.tools = None;
+        b.metadata
+            .extra
+            .insert("paths".into(), Value::String("src/cli/**".into()));
+        let config = config_with(vec![a, b]);
+        let settings = AuditSettings::default();
+        let f = c05_inconsistent_tools(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].severity, Severity::Info);
     }
 }
