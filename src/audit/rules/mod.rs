@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use super::reverse::ImportedConfig;
 
 mod assets;
+mod models;
 
 /// Finding severity. Ordering: Critical < Warning < Info (sort shows critical first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -57,7 +58,12 @@ type RuleFn = fn(&AuditContext) -> Vec<Finding>;
 
 /// Static rule registry: adding a rule = one module + one entry here.
 fn registry() -> Vec<RuleFn> {
-    vec![assets::a01_unparsable, assets::a02_missing_fields]
+    vec![
+        assets::a01_unparsable,
+        assets::a02_missing_fields,
+        models::a03_deprecated_model,
+        models::a04_unknown_model,
+    ]
 }
 
 /// Run every registered rule and return findings sorted by severity then file.
