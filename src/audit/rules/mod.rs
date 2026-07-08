@@ -51,6 +51,37 @@ impl Default for AuditSettings {
     }
 }
 
+impl AuditSettings {
+    /// Read the optional `audit:` section of the project config, if any.
+    /// Missing file, missing section or unreadable YAML all yield defaults.
+    pub fn from_project(root: &std::path::Path) -> Self {
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct AuditYaml {
+            audit: Option<AuditSection>,
+        }
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct AuditSection {
+            prompt_token_threshold: Option<usize>,
+        }
+        let mut settings = Self::default();
+        for candidate in ["armadai.yaml", ".armadai/config.yaml"] {
+            let Ok(raw) = std::fs::read_to_string(root.join(candidate)) else {
+                continue;
+            };
+            if let Ok(parsed) = serde_yaml_ng::from_str::<AuditYaml>(&raw)
+                && let Some(section) = parsed.audit
+                && let Some(t) = section.prompt_token_threshold
+            {
+                settings.prompt_token_threshold = t;
+            }
+            break;
+        }
+        settings
+    }
+}
+
 pub struct AuditContext<'a> {
     pub config: &'a ImportedConfig,
     pub settings: &'a AuditSettings,
@@ -92,13 +123,11 @@ pub(crate) mod test_support {
     use std::path::PathBuf;
 
     use crate::audit::reverse::*;
-    use crate::linker::LinkTarget;
 
     pub fn agent(name: &str, prompt: &str) -> ImportedAgent {
         ImportedAgent {
             name: name.to_string(),
             source_path: PathBuf::from(format!(".claude/agents/{name}.md")),
-            source_format: LinkTarget::Claude,
             metadata: PartialMetadata {
                 description: Some(format!("{name} description")),
                 model: Some("claude-sonnet-5".to_string()),
@@ -141,5 +170,24 @@ mod tests {
             settings: &settings,
         };
         assert!(run_rules(&ctx).is_empty());
+    }
+
+    #[test]
+    fn from_project_reads_audit_section() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("armadai.yaml"),
+            "audit:\n  prompt_token_threshold: 1234\n",
+        )
+        .unwrap();
+        let s = AuditSettings::from_project(dir.path());
+        assert_eq!(s.prompt_token_threshold, 1234);
+    }
+
+    #[test]
+    fn from_project_defaults_without_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = AuditSettings::from_project(dir.path());
+        assert_eq!(s.prompt_token_threshold, 4000);
     }
 }

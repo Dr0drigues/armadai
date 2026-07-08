@@ -6,7 +6,6 @@ use super::{
     ImportedAgent, ImportedConfig, ImportedInstructions, ImportedSkill, ParseIssue,
     PartialMetadata, ReverseLinker,
 };
-use crate::linker::LinkTarget;
 use crate::parser::frontmatter::extract_frontmatter;
 
 /// Reads native Claude Code configuration surfaces.
@@ -161,7 +160,6 @@ fn parse_agent_file(path: &Path) -> ImportedAgent {
     ImportedAgent {
         name: fm.name.unwrap_or(stem),
         source_path: path.to_path_buf(),
-        source_format: LinkTarget::Claude,
         metadata: PartialMetadata {
             description: fm.description,
             model: fm.model,

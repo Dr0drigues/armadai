@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use crate::linker::LinkTarget;
-
 pub mod claude;
 
 /// Metadata recovered from a native agent file. Everything is optional:
@@ -26,7 +24,6 @@ pub struct ParseIssue {
 pub struct ImportedAgent {
     pub name: String,
     pub source_path: PathBuf,
-    pub source_format: LinkTarget,
     pub metadata: PartialMetadata,
     pub system_prompt: String,
     pub issues: Vec<ParseIssue>,
