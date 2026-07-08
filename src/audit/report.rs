@@ -61,10 +61,10 @@ impl AuditReport {
                 "{remappable} deprecated model(s) remapped automatically (model aliases)"
             ));
         }
-        let dedupable = self.findings.iter().filter(|f| f.rule == "A06").count();
-        if dedupable > 0 {
+        let clusters = self.findings.iter().filter(|f| f.rule == "A06").count();
+        if clusters > 0 {
             lines.push(format!(
-                "{dedupable} duplicated block(s) turned into shared prompt fragments"
+                "{clusters} shared content cluster(s) factored into reusable prompt fragments"
             ));
         }
         let oversized = self.findings.iter().filter(|f| f.rule == "A05").count();
@@ -379,6 +379,13 @@ mod tests {
         assert!(md.contains("1 critical"));
         assert!(md.contains("What ArmadAI would give you"));
         assert!(md.contains("1 deprecated model(s) remapped automatically"));
+    }
+
+    #[test]
+    fn funnel_counts_clusters_not_pairs() {
+        let r = report_with(vec![finding("A06", Severity::Warning)]);
+        let md = r.to_markdown();
+        assert!(md.contains("1 shared content cluster(s)"));
     }
 
     #[test]
