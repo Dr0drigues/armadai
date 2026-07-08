@@ -203,8 +203,8 @@ impl AuditReport {
                     f.rule,
                     self.rel(&f.file),
                     related,
-                    f.message,
-                    f.suggestion.as_deref().unwrap_or("—")
+                    md_cell(&f.message),
+                    md_cell(f.suggestion.as_deref().unwrap_or("—"))
                 );
             }
             let _ = writeln!(md);
@@ -223,6 +223,29 @@ impl AuditReport {
                 }
                 let _ = writeln!(md, "\n</details>\n");
             }
+        }
+        let collisions: Vec<&Finding> = self
+            .findings
+            .iter()
+            .filter(|f| f.rule.starts_with('C'))
+            .collect();
+        if !collisions.is_empty() {
+            let _ = writeln!(md, "## Collision matrix\n");
+            let _ = writeln!(md, "| Rule | Assets | Claim | Suggestion |");
+            let _ = writeln!(md, "|---|---|---|---|");
+            for f in &collisions {
+                let mut assets = vec![self.rel(&f.file)];
+                assets.extend(f.related.iter().map(|p| self.rel(p)));
+                let _ = writeln!(
+                    md,
+                    "| {} | `{}` | {} | {} |",
+                    f.rule,
+                    assets.join("`, `"),
+                    md_cell(&f.message),
+                    md_cell(f.suggestion.as_deref().unwrap_or("—"))
+                );
+            }
+            let _ = writeln!(md);
         }
         let funnel = self.funnel_lines();
         if !funnel.is_empty() {
@@ -337,6 +360,53 @@ impl AuditReport {
             html.push_str("</tbody>\n</table>\n");
         }
 
+        let collisions: Vec<&Finding> = self
+            .findings
+            .iter()
+            .filter(|f| f.rule.starts_with('C'))
+            .collect();
+        if !collisions.is_empty() {
+            html.push_str(
+                r#"<h2>Collision matrix</h2>
+<table>
+<thead>
+<tr><th>Rule</th><th>Assets</th><th>Claim</th><th>Suggestion</th></tr>
+</thead>
+<tbody>
+"#,
+            );
+            for f in &collisions {
+                let mut assets = format!(
+                    "<code class=\"path\">{}</code>",
+                    html_escape(&self.rel(&f.file))
+                );
+                for p in &f.related {
+                    let _ = write!(
+                        assets,
+                        ", <code class=\"path\">{}</code>",
+                        html_escape(&self.rel(p))
+                    );
+                }
+                let _ = writeln!(
+                    html,
+                    r#"<tr>
+<td>{rule}</td>
+<td>{assets}</td>
+<td>{claim}</td>
+<td>{suggestion}</td>
+</tr>"#,
+                    rule = html_escape(f.rule),
+                    claim = html_escape(&f.message),
+                    suggestion = f
+                        .suggestion
+                        .as_deref()
+                        .map(html_escape)
+                        .unwrap_or_else(|| "—".to_string()),
+                );
+            }
+            html.push_str("</tbody>\n</table>\n");
+        }
+
         let funnel = self.funnel_lines();
         if !funnel.is_empty() {
             html.push_str(
@@ -432,6 +502,11 @@ footer {
   font-size: 0.85rem;
 }
 "#;
+
+/// Escape a string for a GFM table cell: pipes and newlines break rows.
+fn md_cell(s: &str) -> String {
+    s.replace('|', "\\|").replace('\n', " ")
+}
 
 /// Escape the five HTML special characters so untrusted findings text
 /// (file paths, messages, suggestions) can never break out of markup.
@@ -576,5 +651,33 @@ mod tests {
         assert!(html.contains("&amp;"));
         assert!(html.contains("&quot;"));
         assert!(!html.contains("<b>"));
+    }
+
+    #[test]
+    fn markdown_escapes_pipes_in_cells() {
+        let mut f = finding("A01", Severity::Critical);
+        f.message = "value contains | a pipe".into();
+        let r = report_with(vec![f]);
+        let md = r.to_markdown();
+        assert!(md.contains("value contains \\| a pipe"));
+    }
+
+    #[test]
+    fn collision_matrix_lists_c_findings() {
+        let mut c = finding("C02", Severity::Warning);
+        c.related = vec![".claude/agents/b.md".into()];
+        let a = finding("A01", Severity::Critical);
+        let r = report_with(vec![a, c]);
+        let md = r.to_markdown();
+        assert!(md.contains("## Collision matrix"));
+        assert!(md.contains("| C02 |"));
+        let html = r.to_html();
+        assert!(html.contains("Collision matrix"));
+    }
+
+    #[test]
+    fn no_collision_matrix_without_c_findings() {
+        let r = report_with(vec![finding("A01", Severity::Critical)]);
+        assert!(!r.to_markdown().contains("Collision matrix"));
     }
 }
