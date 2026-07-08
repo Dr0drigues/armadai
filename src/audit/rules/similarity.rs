@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use super::{AuditContext, Finding, Severity};
+use super::{AuditContext, Finding, Severity, UnionFind};
 
 pub(super) const DUPLICATION_WINDOW: usize = 8;
 pub(super) const REDUNDANCY_THRESHOLD: f64 = 0.8;
@@ -37,32 +37,6 @@ pub(super) fn jaccard(a: &str, b: &str) -> f64 {
     let inter = sa.intersection(&sb).count() as f64;
     let union = sa.union(&sb).count() as f64;
     inter / union
-}
-
-/// Minimal union-find over agent indices (no dependency needed).
-struct UnionFind {
-    parent: Vec<usize>,
-}
-
-impl UnionFind {
-    fn new(n: usize) -> Self {
-        Self {
-            parent: (0..n).collect(),
-        }
-    }
-    fn find(&mut self, i: usize) -> usize {
-        if self.parent[i] != i {
-            let root = self.find(self.parent[i]);
-            self.parent[i] = root;
-        }
-        self.parent[i]
-    }
-    fn union(&mut self, a: usize, b: usize) {
-        let (ra, rb) = (self.find(a), self.find(b));
-        if ra != rb {
-            self.parent[rb] = ra;
-        }
-    }
 }
 
 /// A06 — duplicated content, one finding per connected cluster of agents
