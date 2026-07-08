@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use crate::audit::{rules::AuditSettings, run_audit};
+use crate::audit::{
+    rules::{AuditSettings, Severity},
+    run_audit,
+};
 
 pub async fn execute(path: Option<PathBuf>, report: Option<PathBuf>) -> anyhow::Result<()> {
     let root = match path {
@@ -19,7 +22,7 @@ pub async fn execute(path: Option<PathBuf>, report: Option<PathBuf>) -> anyhow::
         );
         return Ok(());
     }
-    audit.print_terminal();
+    audit.print_terminal(Severity::Info);
     if let Some(out) = report {
         let is_html = out
             .extension()
