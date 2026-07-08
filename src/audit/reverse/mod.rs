@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub mod claude;
@@ -10,6 +11,27 @@ pub struct PartialMetadata {
     pub model: Option<String>,
     /// `None` means the agent inherits all tools (no restriction declared).
     pub tools: Option<Vec<String>>,
+    /// Frontmatter fields we do not type (kept verbatim for --propose and
+    /// custom-field rules). Never populated by salvage.
+    pub extra: BTreeMap<String, serde_yaml_ng::Value>,
+}
+
+impl PartialMetadata {
+    /// Path claims from the non-standard `paths:` field (YAML list or CSV string).
+    pub fn scope_globs(&self) -> Vec<String> {
+        match self.extra.get("paths") {
+            Some(serde_yaml_ng::Value::Sequence(seq)) => seq
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            Some(serde_yaml_ng::Value::String(s)) => s
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Something in a native file that could not be mapped.
@@ -38,6 +60,9 @@ pub struct ImportedSkill {
     pub has_skill_md: bool,
     pub has_frontmatter: bool,
     pub issues: Vec<ParseIssue>,
+    /// Frontmatter fields we do not type (kept verbatim for --propose and
+    /// custom-field rules). Never populated by salvage.
+    pub extra: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
 /// Root instructions file (e.g. CLAUDE.md).
@@ -75,5 +100,35 @@ mod tests {
         assert!(config.agents.is_empty());
         assert!(config.skills.is_empty());
         assert!(config.instructions.is_none());
+    }
+
+    #[test]
+    fn scope_globs_reads_yaml_list_csv_string_or_absent() {
+        use serde_yaml_ng::Value;
+
+        let mut with_list = PartialMetadata::default();
+        with_list.extra.insert(
+            "paths".into(),
+            Value::Sequence(vec![
+                Value::String("src/cli/**".into()),
+                Value::String("docs/".into()),
+            ]),
+        );
+        assert_eq!(
+            with_list.scope_globs(),
+            vec!["src/cli/**".to_string(), "docs/".to_string()]
+        );
+
+        let mut with_csv = PartialMetadata::default();
+        with_csv
+            .extra
+            .insert("paths".into(), Value::String("src/**, tests/".into()));
+        assert_eq!(
+            with_csv.scope_globs(),
+            vec!["src/**".to_string(), "tests/".to_string()]
+        );
+
+        let absent = PartialMetadata::default();
+        assert!(absent.scope_globs().is_empty());
     }
 }

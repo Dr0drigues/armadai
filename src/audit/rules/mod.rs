@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use super::reverse::ImportedConfig;
 
 mod assets;
+mod collisions;
 mod models;
 mod references;
 mod similarity;
@@ -43,12 +44,16 @@ pub struct Finding {
 pub struct AuditSettings {
     /// A05: estimated token count above which a prompt is flagged.
     pub prompt_token_threshold: usize,
+    /// C03: Jaccard similarity above which two activation descriptions are
+    /// considered ambiguous for routing.
+    pub activation_similarity: f64,
 }
 
 impl Default for AuditSettings {
     fn default() -> Self {
         Self {
             prompt_token_threshold: 4000,
+            activation_similarity: 0.6,
         }
     }
 }
@@ -66,6 +71,7 @@ impl AuditSettings {
         #[serde(default)]
         struct AuditSection {
             prompt_token_threshold: Option<usize>,
+            activation_similarity: Option<f64>,
         }
         let mut settings = Self::default();
         for candidate in ["armadai.yaml", ".armadai/config.yaml"] {
@@ -74,13 +80,43 @@ impl AuditSettings {
             };
             if let Ok(parsed) = serde_yaml_ng::from_str::<AuditYaml>(&raw)
                 && let Some(section) = parsed.audit
-                && let Some(t) = section.prompt_token_threshold
             {
-                settings.prompt_token_threshold = t;
+                if let Some(t) = section.prompt_token_threshold {
+                    settings.prompt_token_threshold = t;
+                }
+                if let Some(s) = section.activation_similarity {
+                    settings.activation_similarity = s;
+                }
             }
             break;
         }
         settings
+    }
+}
+
+/// Minimal union-find over asset indices (no dependency needed).
+pub(super) struct UnionFind {
+    parent: Vec<usize>,
+}
+
+impl UnionFind {
+    pub(super) fn new(n: usize) -> Self {
+        Self {
+            parent: (0..n).collect(),
+        }
+    }
+    pub(super) fn find(&mut self, i: usize) -> usize {
+        if self.parent[i] != i {
+            let root = self.find(self.parent[i]);
+            self.parent[i] = root;
+        }
+        self.parent[i]
+    }
+    pub(super) fn union(&mut self, a: usize, b: usize) {
+        let (ra, rb) = (self.find(a), self.find(b));
+        if ra != rb {
+            self.parent[rb] = ra;
+        }
     }
 }
 
@@ -105,6 +141,12 @@ fn registry() -> Vec<RuleFn> {
         assets::a09_malformed_skill,
         references::a10_broken_references,
         references::a11_plaintext_secret,
+        assets::a12_nonstandard_fields,
+        collisions::c01_name_collisions,
+        collisions::c02_scope_overlap,
+        collisions::c03_activation_overlap,
+        collisions::c04_double_ownership,
+        collisions::c05_inconsistent_tools,
     ]
 }
 
@@ -122,6 +164,7 @@ pub(crate) fn estimate_tokens(text: &str) -> usize {
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     use crate::audit::reverse::*;
@@ -134,6 +177,7 @@ pub(crate) mod test_support {
                 description: Some(format!("{name} description")),
                 model: Some("claude-sonnet-5".to_string()),
                 tools: Some(vec!["Read".to_string()]),
+                extra: BTreeMap::new(),
             },
             system_prompt: prompt.to_string(),
             issues: Vec::new(),
@@ -179,11 +223,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("armadai.yaml"),
-            "audit:\n  prompt_token_threshold: 1234\n",
+            "audit:\n  prompt_token_threshold: 1234\n  activation_similarity: 0.75\n",
         )
         .unwrap();
         let s = AuditSettings::from_project(dir.path());
         assert_eq!(s.prompt_token_threshold, 1234);
+        assert!((s.activation_similarity - 0.75).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -191,6 +236,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = AuditSettings::from_project(dir.path());
         assert_eq!(s.prompt_token_threshold, 4000);
+        assert!((s.activation_similarity - 0.6).abs() < f64::EPSILON);
     }
 
     #[test]

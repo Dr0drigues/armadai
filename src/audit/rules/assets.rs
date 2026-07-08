@@ -144,6 +144,105 @@ pub(super) fn a09_malformed_skill(ctx: &AuditContext) -> Vec<Finding> {
         .collect()
 }
 
+/// Frontmatter fields documented by Claude Code (beyond the typed ones).
+const DOCUMENTED_AGENT_FIELDS: &[&str] = &[
+    "effort",
+    "color",
+    "permissionMode",
+    "disallowedTools",
+    "maxTurns",
+    "skills",
+    "hooks",
+    "memory",
+    "mcpServers",
+    "background",
+    "isolation",
+    "initialPrompt",
+];
+// `tools` is deliberately excluded from the skill allowlist: it is
+// non-standard for skills (Claude Code ignores it there) — `allowed-tools`
+// is the documented field for restricting a skill's tool access.
+const DOCUMENTED_SKILL_FIELDS: &[&str] = &[
+    "version",
+    "allowed-tools",
+    "license",
+    "metadata",
+    "argument-hint",
+    "model",
+    "context",
+    "agent",
+    "disable-model-invocation",
+    "user-invocable",
+    "disallowed-tools",
+    "effort",
+    "hooks",
+    "paths",
+    "shell",
+    "when_to_use",
+    "arguments",
+    "compatibility",
+];
+
+/// A12 — non-standard frontmatter fields, one aggregated Info finding.
+/// They are kept verbatim (`extra`) so `--propose` can round-trip them;
+/// this rule only surfaces their existence.
+pub(super) fn a12_nonstandard_fields(ctx: &AuditContext) -> Vec<Finding> {
+    use std::collections::BTreeMap;
+    let mut per_field: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let agent_fields = ctx
+        .config
+        .agents
+        .iter()
+        .filter(|a| a.issues.is_empty())
+        .flat_map(|a| {
+            a.metadata
+                .extra
+                .keys()
+                .filter(|k| !DOCUMENTED_AGENT_FIELDS.contains(&k.as_str()))
+                .map(|k| (k.as_str(), a.source_path.clone()))
+        });
+    let skill_fields = ctx
+        .config
+        .skills
+        .iter()
+        .filter(|s| s.issues.is_empty())
+        .flat_map(|s| {
+            s.extra
+                .keys()
+                .filter(|k| !DOCUMENTED_SKILL_FIELDS.contains(&k.as_str()))
+                .map(|k| (k.as_str(), s.source_path.clone()))
+        });
+    for (field, path) in agent_fields.chain(skill_fields) {
+        *per_field.entry(field).or_insert(0) += 1;
+        if seen.insert(path.clone()) {
+            files.push(path);
+        }
+    }
+    let Some(first) = files.first().cloned() else {
+        return Vec::new();
+    };
+    let breakdown: Vec<String> = per_field
+        .iter()
+        .map(|(field, count)| format!("{field} ({count})"))
+        .collect();
+    vec![Finding {
+        rule: "A12",
+        severity: Severity::Info,
+        file: first,
+        related: files[1..].to_vec(),
+        message: format!(
+            "non-standard frontmatter field(s) across {} file(s): {}",
+            files.len(),
+            breakdown.join(", ")
+        ),
+        suggestion: Some(
+            "fields are kept as-is; document them or align with Claude Code standards".to_string(),
+        ),
+    }]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +335,7 @@ mod tests {
     #[test]
     fn a09_flags_broken_skills_once_each() {
         use crate::audit::reverse::{ImportedConfig, ImportedSkill};
+        use std::collections::BTreeMap;
         let config = ImportedConfig {
             skills: vec![
                 ImportedSkill {
@@ -245,6 +345,7 @@ mod tests {
                     has_skill_md: false,
                     has_frontmatter: false,
                     issues: Vec::new(),
+                    extra: BTreeMap::new(),
                 },
                 ImportedSkill {
                     name: "fine".into(),
@@ -253,6 +354,7 @@ mod tests {
                     has_skill_md: true,
                     has_frontmatter: true,
                     issues: Vec::new(),
+                    extra: BTreeMap::new(),
                 },
             ],
             ..Default::default()
@@ -269,6 +371,7 @@ mod tests {
     #[test]
     fn a09_missing_skill_md_does_not_stack_missing_description() {
         use crate::audit::reverse::{ImportedConfig, ImportedSkill};
+        use std::collections::BTreeMap;
         let config = ImportedConfig {
             skills: vec![ImportedSkill {
                 name: "no-md".into(),
@@ -277,6 +380,7 @@ mod tests {
                 has_skill_md: false,
                 has_frontmatter: false,
                 issues: Vec::new(),
+                extra: BTreeMap::new(),
             }],
             ..Default::default()
         };
@@ -293,6 +397,7 @@ mod tests {
     #[test]
     fn a01_covers_skill_parse_issues() {
         use crate::audit::reverse::{ImportedConfig, ImportedSkill, ParseIssue};
+        use std::collections::BTreeMap;
         let config = ImportedConfig {
             skills: vec![ImportedSkill {
                 name: "triage".into(),
@@ -304,6 +409,7 @@ mod tests {
                     file: ".claude/skills/triage/SKILL.md".into(),
                     message: "unquoted value".into(),
                 }],
+                extra: BTreeMap::new(),
             }],
             ..Default::default()
         };
@@ -319,6 +425,7 @@ mod tests {
     #[test]
     fn a09_does_not_double_report_parse_broken_skills() {
         use crate::audit::reverse::{ImportedConfig, ImportedSkill, ParseIssue};
+        use std::collections::BTreeMap;
         let config = ImportedConfig {
             skills: vec![
                 // Parse-broken skill: A01's job, A09 stays silent.
@@ -332,6 +439,7 @@ mod tests {
                         file: ".claude/skills/broken/SKILL.md".into(),
                         message: "bad".into(),
                     }],
+                    extra: BTreeMap::new(),
                 },
                 // No frontmatter at all: A09 Warning.
                 ImportedSkill {
@@ -341,6 +449,7 @@ mod tests {
                     has_skill_md: true,
                     has_frontmatter: false,
                     issues: Vec::new(),
+                    extra: BTreeMap::new(),
                 },
             ],
             ..Default::default()
@@ -372,5 +481,36 @@ mod tests {
         };
         assert!(a02_missing_fields(&ctx).is_empty());
         assert!(a08_permissive_tools(&ctx).is_empty());
+    }
+
+    #[test]
+    fn a12_aggregates_nonstandard_fields_fleet_wide() {
+        use serde_yaml_ng::Value;
+        let mut a = agent("one", "Body");
+        a.metadata
+            .extra
+            .insert("paths".into(), Value::String("src/**".into()));
+        a.metadata
+            .extra
+            .insert("effort".into(), Value::String("medium".into())); // documented
+        let mut b = agent("two", "Body");
+        b.metadata
+            .extra
+            .insert("paths".into(), Value::String("docs/**".into()));
+        b.metadata
+            .extra
+            .insert("phase".into(), Value::String("2".into()));
+        let config = config_with(vec![a, b]);
+        let settings = AuditSettings::default();
+        let f = a12_nonstandard_fields(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].severity, Severity::Info);
+        assert!(f[0].message.contains("paths (2)"));
+        assert!(f[0].message.contains("phase (1)"));
+        assert!(!f[0].message.contains("effort"));
+        assert_eq!(f[0].related.len(), 1);
     }
 }
