@@ -143,6 +143,7 @@ fn registry() -> Vec<RuleFn> {
         references::a11_plaintext_secret,
         assets::a12_nonstandard_fields,
         collisions::c01_name_collisions,
+        collisions::c03_activation_overlap,
     ]
 }
 
