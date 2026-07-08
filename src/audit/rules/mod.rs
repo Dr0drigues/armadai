@@ -67,6 +67,8 @@ fn registry() -> Vec<RuleFn> {
         assets::a05_oversized_prompt,
         similarity::a06_duplicated_blocks,
         similarity::a07_redundant_agents,
+        assets::a08_permissive_tools,
+        assets::a09_malformed_skill,
     ]
 }
 

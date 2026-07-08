@@ -57,6 +57,54 @@ pub(super) fn a05_oversized_prompt(ctx: &AuditContext) -> Vec<Finding> {
         .collect()
 }
 
+/// A08 — agent has no tool restriction at all.
+pub(super) fn a08_permissive_tools(ctx: &AuditContext) -> Vec<Finding> {
+    ctx.config
+        .agents
+        .iter()
+        .filter(|a| match &a.metadata.tools {
+            None => true,
+            Some(tools) => tools.iter().any(|t| t == "*"),
+        })
+        .map(|a| Finding {
+            rule: "A08",
+            severity: Severity::Info,
+            file: a.source_path.clone(),
+            message: format!("agent '{}' inherits all tools (no restriction)", a.name),
+            suggestion: Some("declare the minimal `tools:` list this agent needs".to_string()),
+        })
+        .collect()
+}
+
+/// A09 — skill directory does not follow the Agent Skills standard.
+pub(super) fn a09_malformed_skill(ctx: &AuditContext) -> Vec<Finding> {
+    ctx.config
+        .skills
+        .iter()
+        .filter_map(|s| {
+            let mut problems = Vec::new();
+            if !s.has_skill_md {
+                problems.push("missing SKILL.md");
+            } else if !s.frontmatter_ok {
+                problems.push("invalid or missing frontmatter");
+            }
+            if s.description.is_none() {
+                problems.push("missing description");
+            }
+            (!problems.is_empty()).then(|| Finding {
+                rule: "A09",
+                severity: Severity::Warning,
+                file: s.source_path.clone(),
+                message: format!("skill '{}': {}", s.name, problems.join(", ")),
+                suggestion: Some(
+                    "follow the Agent Skills standard: SKILL.md with name + description"
+                        .to_string(),
+                ),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +156,52 @@ mod tests {
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A05");
+    }
+
+    #[test]
+    fn a08_flags_unrestricted_tools() {
+        let mut a = agent("wild", "Body");
+        a.metadata.tools = None;
+        let mut b = agent("star", "Body");
+        b.metadata.tools = Some(vec!["*".to_string()]);
+        let c = agent("ok", "Body"); // tools: [Read]
+        let config = config_with(vec![a, b, c]);
+        let settings = AuditSettings::default();
+        let f = a08_permissive_tools(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 2);
+    }
+
+    #[test]
+    fn a09_flags_broken_skills_once_each() {
+        use crate::audit::reverse::{ImportedConfig, ImportedSkill};
+        let config = ImportedConfig {
+            skills: vec![
+                ImportedSkill {
+                    name: "no-md".into(),
+                    source_path: ".claude/skills/no-md".into(),
+                    description: None,
+                    has_skill_md: false,
+                    frontmatter_ok: false,
+                },
+                ImportedSkill {
+                    name: "fine".into(),
+                    source_path: ".claude/skills/fine/SKILL.md".into(),
+                    description: Some("ok".into()),
+                    has_skill_md: true,
+                    frontmatter_ok: true,
+                },
+            ],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = a09_malformed_skill(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].rule, "A09");
     }
 }
