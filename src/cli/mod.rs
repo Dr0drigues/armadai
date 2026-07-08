@@ -1,3 +1,4 @@
+mod audit;
 mod config;
 mod costs;
 mod history;
@@ -133,6 +134,19 @@ pub enum Command {
     Validate {
         /// Path to pack or project directory (default: current directory)
         path: Option<std::path::PathBuf>,
+    },
+    /// Audit native agentic configs (Claude Code) and report issues
+    #[command(long_about = "Audit native agentic configs and report issues.\n\n\
+            Scans .claude/agents/, .claude/skills/ and CLAUDE.md (no ArmadAI setup \
+            required), runs static rules (deprecated models, oversized prompts, \
+            duplicated blocks, broken references, plaintext secrets...) and prints \
+            an actionable report. Exits non-zero if critical findings exist.")]
+    Audit {
+        /// Project directory to audit (defaults to current directory)
+        path: Option<std::path::PathBuf>,
+        /// Write a report to this file (markdown, or HTML if the extension is .html)
+        #[arg(long)]
+        report: Option<std::path::PathBuf>,
     },
     /// View execution history
     #[command(after_help = "Examples:\n  \
@@ -415,6 +429,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Inspect { agent } => inspect::execute(agent).await,
         Command::Validate { path } => validate::execute(path).await,
+        Command::Audit { path, report } => audit::execute(path, report).await,
         Command::History { agent } => history::execute(agent).await,
         Command::Costs { agent, from } => costs::execute(agent, from).await,
         Command::Config { action } => config::execute(action).await,

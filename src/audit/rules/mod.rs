@@ -1,0 +1,193 @@
+use std::path::PathBuf;
+
+use super::reverse::ImportedConfig;
+
+mod assets;
+mod models;
+mod references;
+mod similarity;
+
+/// Finding severity. Ordering: Critical < Warning < Info (sort shows critical first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    Critical,
+    Warning,
+    Info,
+}
+
+impl Severity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Severity::Critical => "CRIT",
+            Severity::Warning => "WARN",
+            Severity::Info => "INFO",
+        }
+    }
+}
+
+/// One audit finding. `suggestion` is a concrete, human-applicable fix.
+#[derive(Debug, Clone)]
+pub struct Finding {
+    pub rule: &'static str,
+    pub severity: Severity,
+    pub file: PathBuf,
+    pub message: String,
+    pub suggestion: Option<String>,
+}
+
+/// Tunable thresholds (spec §8). Defaults are embedded; the optional
+/// `audit:` section of armadai.yaml overrides them (Task 11).
+#[derive(Debug, Clone)]
+pub struct AuditSettings {
+    /// A05: estimated token count above which a prompt is flagged.
+    pub prompt_token_threshold: usize,
+}
+
+impl Default for AuditSettings {
+    fn default() -> Self {
+        Self {
+            prompt_token_threshold: 4000,
+        }
+    }
+}
+
+impl AuditSettings {
+    /// Read the optional `audit:` section of the project config, if any.
+    /// Missing file, missing section or unreadable YAML all yield defaults.
+    pub fn from_project(root: &std::path::Path) -> Self {
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct AuditYaml {
+            audit: Option<AuditSection>,
+        }
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct AuditSection {
+            prompt_token_threshold: Option<usize>,
+        }
+        let mut settings = Self::default();
+        for candidate in ["armadai.yaml", ".armadai/config.yaml"] {
+            let Ok(raw) = std::fs::read_to_string(root.join(candidate)) else {
+                continue;
+            };
+            if let Ok(parsed) = serde_yaml_ng::from_str::<AuditYaml>(&raw)
+                && let Some(section) = parsed.audit
+                && let Some(t) = section.prompt_token_threshold
+            {
+                settings.prompt_token_threshold = t;
+            }
+            break;
+        }
+        settings
+    }
+}
+
+pub struct AuditContext<'a> {
+    pub config: &'a ImportedConfig,
+    pub settings: &'a AuditSettings,
+}
+
+type RuleFn = fn(&AuditContext) -> Vec<Finding>;
+
+/// Static rule registry: adding a rule = one module + one entry here.
+fn registry() -> Vec<RuleFn> {
+    vec![
+        assets::a01_unparsable,
+        assets::a02_missing_fields,
+        models::a03_deprecated_model,
+        models::a04_unknown_model,
+        assets::a05_oversized_prompt,
+        similarity::a06_duplicated_blocks,
+        similarity::a07_redundant_agents,
+        assets::a08_permissive_tools,
+        assets::a09_malformed_skill,
+        references::a10_broken_references,
+        references::a11_plaintext_secret,
+    ]
+}
+
+/// Run every registered rule and return findings sorted by severity then file.
+pub fn run_rules(ctx: &AuditContext) -> Vec<Finding> {
+    let mut findings: Vec<Finding> = registry().iter().flat_map(|rule| rule(ctx)).collect();
+    findings.sort_by(|a, b| (a.severity, &a.file, a.rule).cmp(&(b.severity, &b.file, b.rule)));
+    findings
+}
+
+/// Rough token estimate (chars / 4) — good enough for thresholds and savings.
+pub(crate) fn estimate_tokens(text: &str) -> usize {
+    text.chars().count() / 4
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::PathBuf;
+
+    use crate::audit::reverse::*;
+
+    pub fn agent(name: &str, prompt: &str) -> ImportedAgent {
+        ImportedAgent {
+            name: name.to_string(),
+            source_path: PathBuf::from(format!(".claude/agents/{name}.md")),
+            metadata: PartialMetadata {
+                description: Some(format!("{name} description")),
+                model: Some("claude-sonnet-5".to_string()),
+                tools: Some(vec!["Read".to_string()]),
+            },
+            system_prompt: prompt.to_string(),
+            issues: Vec::new(),
+        }
+    }
+
+    pub fn config_with(agents: Vec<ImportedAgent>) -> ImportedConfig {
+        ImportedConfig {
+            agents,
+            ..Default::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn severity_orders_critical_first() {
+        assert!(Severity::Critical < Severity::Warning);
+        assert!(Severity::Warning < Severity::Info);
+    }
+
+    #[test]
+    fn estimate_tokens_is_chars_over_four() {
+        assert_eq!(estimate_tokens("abcdefgh"), 2);
+    }
+
+    #[test]
+    fn run_rules_on_empty_config_is_empty() {
+        let config = crate::audit::reverse::ImportedConfig::default();
+        let settings = AuditSettings::default();
+        let ctx = AuditContext {
+            config: &config,
+            settings: &settings,
+        };
+        assert!(run_rules(&ctx).is_empty());
+    }
+
+    #[test]
+    fn from_project_reads_audit_section() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("armadai.yaml"),
+            "audit:\n  prompt_token_threshold: 1234\n",
+        )
+        .unwrap();
+        let s = AuditSettings::from_project(dir.path());
+        assert_eq!(s.prompt_token_threshold, 1234);
+    }
+
+    #[test]
+    fn from_project_defaults_without_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = AuditSettings::from_project(dir.path());
+        assert_eq!(s.prompt_token_threshold, 4000);
+    }
+}
