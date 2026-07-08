@@ -22,6 +22,9 @@ pub(super) fn a02_missing_fields(ctx: &AuditContext) -> Vec<Finding> {
     ctx.config
         .agents
         .iter()
+        // Anti-cascade: parse-broken agents are A01's job (one root cause,
+        // one finding); their fields are unreliable defaults.
+        .filter(|a| a.issues.is_empty())
         .filter(|a| a.metadata.description.is_none())
         .map(|a| Finding {
             rule: "A02",
@@ -41,6 +44,9 @@ pub(super) fn a05_oversized_prompt(ctx: &AuditContext) -> Vec<Finding> {
     ctx.config
         .agents
         .iter()
+        // Anti-cascade: parse-broken agents are A01's job (one root cause,
+        // one finding); their fields are unreliable defaults.
+        .filter(|a| a.issues.is_empty())
         .filter_map(|a| {
             let estimate = super::estimate_tokens(&a.system_prompt);
             (estimate > ctx.settings.prompt_token_threshold).then(|| Finding {
@@ -65,6 +71,9 @@ pub(super) fn a08_permissive_tools(ctx: &AuditContext) -> Vec<Finding> {
     ctx.config
         .agents
         .iter()
+        // Anti-cascade: parse-broken agents are A01's job (one root cause,
+        // one finding); their fields are unreliable defaults.
+        .filter(|a| a.issues.is_empty())
         .filter(|a| match &a.metadata.tools {
             None => true,
             Some(tools) => tools.iter().any(|t| t == "*"),
@@ -278,5 +287,24 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert!(f[0].message.contains("bare"));
         assert!(f[0].message.contains("missing frontmatter"));
+    }
+
+    #[test]
+    fn field_rules_skip_agents_with_parse_issues() {
+        let mut a = agent("broken", "Body");
+        a.metadata.description = None;
+        a.metadata.tools = None;
+        a.issues.push(ParseIssue {
+            file: a.source_path.clone(),
+            message: "invalid".into(),
+        });
+        let config = config_with(vec![a]);
+        let settings = AuditSettings::default();
+        let ctx = AuditContext {
+            config: &config,
+            settings: &settings,
+        };
+        assert!(a02_missing_fields(&ctx).is_empty());
+        assert!(a08_permissive_tools(&ctx).is_empty());
     }
 }
