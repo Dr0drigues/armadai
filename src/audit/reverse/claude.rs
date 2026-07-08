@@ -210,15 +210,32 @@ fn parse_agent_file(path: &Path) -> ImportedAgent {
 
 /// Best-effort recovery of one simple top-level `key: value` line from a
 /// frontmatter that strict YAML rejected. Broken flow scalars (`[`, `{`)
-/// are skipped so historical fallbacks (file stem) keep working.
+/// and block scalars (`|`, `>`) are skipped so historical fallbacks (file
+/// stem) keep working, and indented lines (nested keys, block-scalar
+/// bodies) never masquerade as a top-level key.
 fn salvage_field(raw: &str, key: &str) -> Option<String> {
     raw.lines().find_map(|line| {
+        // A top-level key starts at column 0: nested keys and block-scalar
+        // bodies are indented and must not match.
+        if line.starts_with(char::is_whitespace) {
+            return None;
+        }
         let (k, v) = line.split_once(':')?;
         if k.trim() != key {
             return None;
         }
+        // Strip a trailing YAML comment before any further processing.
+        let v = match v.find(" #") {
+            Some(idx) => &v[..idx],
+            None => v,
+        };
         let v = v.trim();
-        if v.is_empty() || v.starts_with('[') || v.starts_with('{') {
+        if v.is_empty()
+            || v.starts_with('[')
+            || v.starts_with('{')
+            || v.starts_with('|')
+            || v.starts_with('>')
+        {
             return None;
         }
         Some(v.trim_matches('"').trim_matches('\'').to_string())
@@ -432,6 +449,17 @@ mod tests {
             salvage_field("desc: \"quoted\"", "desc"),
             Some("quoted".to_string())
         );
+    }
+
+    #[test]
+    fn salvage_skips_block_scalars_comments_and_indented_keys() {
+        assert_eq!(salvage_field("description: >-", "description"), None);
+        assert_eq!(salvage_field("description: |", "description"), None);
+        assert_eq!(
+            salvage_field("model: opus # fast", "model"),
+            Some("opus".to_string())
+        );
+        assert_eq!(salvage_field("  model: nested", "model"), None);
     }
 
     #[test]

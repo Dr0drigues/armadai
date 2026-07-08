@@ -143,7 +143,9 @@ impl AuditReport {
             .count();
         println!();
         println!("  Summary: {}", self.summary_line());
-        println!("  Breakdown: {}", self.breakdown_line());
+        if !self.findings.is_empty() {
+            println!("  Breakdown: {}", self.breakdown_line());
+        }
         if hidden > 0 {
             println!("  ({hidden} finding(s) hidden below the severity threshold)");
         }
@@ -169,7 +171,9 @@ impl AuditReport {
             self.skill_count
         );
         let _ = writeln!(md, "**Summary: {}**\n", self.summary_line());
-        let _ = writeln!(md, "Breakdown: {}\n", self.breakdown_line());
+        if !self.findings.is_empty() {
+            let _ = writeln!(md, "Breakdown: {}\n", self.breakdown_line());
+        }
         for severity in [Severity::Critical, Severity::Warning, Severity::Info] {
             let group: Vec<&Finding> = self
                 .findings
@@ -261,11 +265,13 @@ impl AuditReport {
             summary = html_escape(&self.summary_line()),
         );
 
-        let _ = writeln!(
-            html,
-            r#"<p class="summary">Breakdown: {}</p>"#,
-            html_escape(&self.breakdown_line())
-        );
+        if !self.findings.is_empty() {
+            let _ = writeln!(
+                html,
+                r#"<p class="summary">Breakdown: {}</p>"#,
+                html_escape(&self.breakdown_line())
+            );
+        }
         for severity in [Severity::Critical, Severity::Warning, Severity::Info] {
             let group: Vec<&Finding> = self
                 .findings

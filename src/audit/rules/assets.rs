@@ -103,7 +103,7 @@ pub(super) fn a08_permissive_tools(ctx: &AuditContext) -> Vec<Finding> {
             .map(|a| a.source_path.clone())
             .collect(),
         message: format!(
-            "{}/{} agents inherit all tools (no restriction)",
+            "{}/{} parsed agents inherit all tools (no restriction)",
             offenders.len(),
             agents.len()
         ),
@@ -264,6 +264,30 @@ mod tests {
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A09");
+    }
+
+    #[test]
+    fn a09_missing_skill_md_does_not_stack_missing_description() {
+        use crate::audit::reverse::{ImportedConfig, ImportedSkill};
+        let config = ImportedConfig {
+            skills: vec![ImportedSkill {
+                name: "no-md".into(),
+                source_path: ".claude/skills/no-md".into(),
+                description: None,
+                has_skill_md: false,
+                has_frontmatter: false,
+                issues: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = a09_malformed_skill(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert!(f[0].message.contains("missing SKILL.md"));
+        assert!(!f[0].message.contains("missing description"));
     }
 
     #[test]
