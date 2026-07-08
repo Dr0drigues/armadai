@@ -34,6 +34,29 @@ pub(super) fn a02_missing_fields(ctx: &AuditContext) -> Vec<Finding> {
         .collect()
 }
 
+/// A05 — system prompt exceeds the configured token estimate.
+pub(super) fn a05_oversized_prompt(ctx: &AuditContext) -> Vec<Finding> {
+    ctx.config
+        .agents
+        .iter()
+        .filter_map(|a| {
+            let estimate = super::estimate_tokens(&a.system_prompt);
+            (estimate > ctx.settings.prompt_token_threshold).then(|| Finding {
+                rule: "A05",
+                severity: Severity::Warning,
+                file: a.source_path.clone(),
+                message: format!(
+                    "agent '{}' prompt is ~{estimate} tokens (threshold {})",
+                    a.name, ctx.settings.prompt_token_threshold
+                ),
+                suggestion: Some(
+                    "split shared conventions into a reusable prompt fragment".to_string(),
+                ),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,5 +95,18 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A02");
         assert_eq!(f[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn a05_flags_prompt_over_threshold() {
+        let a = agent("fat", &"word ".repeat(5000)); // ~6250 tokens estimés
+        let config = config_with(vec![a]);
+        let settings = AuditSettings::default(); // seuil 4000
+        let f = a05_oversized_prompt(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].rule, "A05");
     }
 }

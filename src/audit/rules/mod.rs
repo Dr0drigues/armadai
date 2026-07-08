@@ -4,6 +4,7 @@ use super::reverse::ImportedConfig;
 
 mod assets;
 mod models;
+mod similarity;
 
 /// Finding severity. Ordering: Critical < Warning < Info (sort shows critical first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -63,6 +64,9 @@ fn registry() -> Vec<RuleFn> {
         assets::a02_missing_fields,
         models::a03_deprecated_model,
         models::a04_unknown_model,
+        assets::a05_oversized_prompt,
+        similarity::a06_duplicated_blocks,
+        similarity::a07_redundant_agents,
     ]
 }
 
