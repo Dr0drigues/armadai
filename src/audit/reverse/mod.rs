@@ -36,7 +36,8 @@ pub struct ImportedSkill {
     pub source_path: PathBuf,
     pub description: Option<String>,
     pub has_skill_md: bool,
-    pub frontmatter_ok: bool,
+    pub has_frontmatter: bool,
+    pub issues: Vec<ParseIssue>,
 }
 
 /// Root instructions file (e.g. CLAUDE.md).

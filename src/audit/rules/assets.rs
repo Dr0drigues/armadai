@@ -2,17 +2,17 @@ use super::{AuditContext, Finding, Severity};
 
 /// A01 — a native file could not be fully parsed.
 pub(super) fn a01_unparsable(ctx: &AuditContext) -> Vec<Finding> {
-    ctx.config
-        .agents
-        .iter()
-        .flat_map(|a| a.issues.iter())
+    let agent_issues = ctx.config.agents.iter().flat_map(|a| a.issues.iter());
+    let skill_issues = ctx.config.skills.iter().flat_map(|s| s.issues.iter());
+    agent_issues
+        .chain(skill_issues)
         .map(|i| Finding {
             rule: "A01",
             severity: Severity::Critical,
             file: i.file.clone(),
             related: Vec::new(),
             message: i.message.clone(),
-            suggestion: Some("fix the YAML frontmatter so tools can read this agent".to_string()),
+            suggestion: Some("fix the YAML frontmatter so tools can read this file".to_string()),
         })
         .collect()
 }
@@ -81,18 +81,21 @@ pub(super) fn a08_permissive_tools(ctx: &AuditContext) -> Vec<Finding> {
 }
 
 /// A09 — skill directory does not follow the Agent Skills standard.
+/// Parse failures are A01's job: a skill carrying a ParseIssue is skipped
+/// here so one root cause yields one finding.
 pub(super) fn a09_malformed_skill(ctx: &AuditContext) -> Vec<Finding> {
     ctx.config
         .skills
         .iter()
+        .filter(|s| s.issues.is_empty())
         .filter_map(|s| {
             let mut problems = Vec::new();
             if !s.has_skill_md {
                 problems.push("missing SKILL.md");
-            } else if !s.frontmatter_ok {
-                problems.push("invalid or missing frontmatter");
+            } else if !s.has_frontmatter {
+                problems.push("missing frontmatter");
             }
-            if s.description.is_none() {
+            if s.has_skill_md && s.description.is_none() {
                 problems.push("missing description");
             }
             (!problems.is_empty()).then(|| Finding {
@@ -189,14 +192,16 @@ mod tests {
                     source_path: ".claude/skills/no-md".into(),
                     description: None,
                     has_skill_md: false,
-                    frontmatter_ok: false,
+                    has_frontmatter: false,
+                    issues: Vec::new(),
                 },
                 ImportedSkill {
                     name: "fine".into(),
                     source_path: ".claude/skills/fine/SKILL.md".into(),
                     description: Some("ok".into()),
                     has_skill_md: true,
-                    frontmatter_ok: true,
+                    has_frontmatter: true,
+                    issues: Vec::new(),
                 },
             ],
             ..Default::default()
@@ -208,5 +213,70 @@ mod tests {
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A09");
+    }
+
+    #[test]
+    fn a01_covers_skill_parse_issues() {
+        use crate::audit::reverse::{ImportedConfig, ImportedSkill, ParseIssue};
+        let config = ImportedConfig {
+            skills: vec![ImportedSkill {
+                name: "triage".into(),
+                source_path: ".claude/skills/triage/SKILL.md".into(),
+                description: Some("salvaged".into()),
+                has_skill_md: true,
+                has_frontmatter: true,
+                issues: vec![ParseIssue {
+                    file: ".claude/skills/triage/SKILL.md".into(),
+                    message: "unquoted value".into(),
+                }],
+            }],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = a01_unparsable(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn a09_does_not_double_report_parse_broken_skills() {
+        use crate::audit::reverse::{ImportedConfig, ImportedSkill, ParseIssue};
+        let config = ImportedConfig {
+            skills: vec![
+                // Parse-broken skill: A01's job, A09 stays silent.
+                ImportedSkill {
+                    name: "broken".into(),
+                    source_path: ".claude/skills/broken/SKILL.md".into(),
+                    description: None,
+                    has_skill_md: true,
+                    has_frontmatter: true,
+                    issues: vec![ParseIssue {
+                        file: ".claude/skills/broken/SKILL.md".into(),
+                        message: "bad".into(),
+                    }],
+                },
+                // No frontmatter at all: A09 Warning.
+                ImportedSkill {
+                    name: "bare".into(),
+                    source_path: ".claude/skills/bare/SKILL.md".into(),
+                    description: None,
+                    has_skill_md: true,
+                    has_frontmatter: false,
+                    issues: Vec::new(),
+                },
+            ],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = a09_malformed_skill(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert!(f[0].message.contains("bare"));
+        assert!(f[0].message.contains("missing frontmatter"));
     }
 }

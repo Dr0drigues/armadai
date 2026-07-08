@@ -124,20 +124,32 @@ fn parse_skill_dir(dir: &Path) -> ImportedSkill {
             source_path: dir.to_path_buf(),
             description: None,
             has_skill_md: false,
-            frontmatter_ok: false,
+            has_frontmatter: false,
+            issues: Vec::new(),
         };
     };
+    let mut issues = Vec::new();
     let (fm_raw, _body) = extract_frontmatter(&content);
-    let (fm, frontmatter_ok) = match fm_raw.map(serde_yaml_ng::from_str::<SkillFm>) {
-        Some(Ok(fm)) => (fm, true),
-        Some(Err(_)) | None => (SkillFm::default(), false),
+    let (fm, has_frontmatter) = match fm_raw {
+        Some(raw) => {
+            let fm = serde_yaml_ng::from_str::<SkillFm>(raw).unwrap_or_else(|e| {
+                issues.push(issue(&skill_md, describe_yaml_error(raw, &e)));
+                SkillFm {
+                    name: salvage_field(raw, "name"),
+                    description: salvage_field(raw, "description"),
+                }
+            });
+            (fm, true)
+        }
+        None => (SkillFm::default(), false),
     };
     ImportedSkill {
         name: fm.name.unwrap_or(dir_name),
         source_path: skill_md,
         description: fm.description,
         has_skill_md: true,
-        frontmatter_ok,
+        has_frontmatter,
+        issues,
     }
 }
 
@@ -368,7 +380,7 @@ mod tests {
         let config = ClaudeReverseLinker.parse(dir.path());
         assert_eq!(config.skills.len(), 2);
         let deploy = config.skills.iter().find(|s| s.name == "deploy").unwrap();
-        assert!(deploy.has_skill_md && deploy.frontmatter_ok);
+        assert!(deploy.has_skill_md && deploy.has_frontmatter && deploy.issues.is_empty());
         assert_eq!(deploy.description.as_deref(), Some("Deploys the app"));
         let empty = config
             .skills
@@ -423,18 +435,43 @@ mod tests {
     }
 
     #[test]
-    fn skill_with_invalid_yaml_falls_back_to_dir_name() {
+    fn skill_with_invalid_yaml_gets_issue_and_salvage() {
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
-            ".claude/skills/broken-skill/SKILL.md",
-            "---\nname: [unclosed\n---\nBody",
+            ".claude/skills/triage/SKILL.md",
+            "---\nname: triage\ndescription: triage is HUMAN — the skill : just assists\n---\nBody",
         );
         let config = ClaudeReverseLinker.parse(dir.path());
-        assert_eq!(config.skills.len(), 1);
         let skill = &config.skills[0];
-        assert!(skill.has_skill_md);
-        assert!(!skill.frontmatter_ok);
-        assert_eq!(skill.name, "broken-skill");
+        assert!(skill.has_skill_md && skill.has_frontmatter);
+        assert_eq!(skill.issues.len(), 1);
+        assert!(
+            skill.issues[0]
+                .message
+                .contains("wrap the value in double quotes")
+        );
+        assert_eq!(skill.name, "triage"); // salvaged
+        assert!(
+            skill
+                .description
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("triage is HUMAN")
+        );
+    }
+
+    #[test]
+    fn skill_without_frontmatter_has_no_issue() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            ".claude/skills/bare/SKILL.md",
+            "# Just a title\nBody.",
+        );
+        let config = ClaudeReverseLinker.parse(dir.path());
+        let skill = &config.skills[0];
+        assert!(skill.has_skill_md && !skill.has_frontmatter);
+        assert!(skill.issues.is_empty()); // standard violation, not a parse error
     }
 }
