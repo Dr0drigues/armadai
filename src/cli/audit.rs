@@ -5,7 +5,23 @@ use crate::audit::{
     run_audit,
 };
 
-pub async fn execute(path: Option<PathBuf>, report: Option<PathBuf>) -> anyhow::Result<()> {
+pub(crate) fn min_severity_from(flag: &str, quiet: bool) -> Severity {
+    if quiet {
+        return Severity::Warning;
+    }
+    match flag {
+        "crit" => Severity::Critical,
+        "warn" => Severity::Warning,
+        _ => Severity::Info,
+    }
+}
+
+pub async fn execute(
+    path: Option<PathBuf>,
+    report: Option<PathBuf>,
+    min_severity: String,
+    quiet: bool,
+) -> anyhow::Result<()> {
     let root = match path {
         Some(p) => p,
         None => std::env::current_dir()?,
@@ -22,7 +38,7 @@ pub async fn execute(path: Option<PathBuf>, report: Option<PathBuf>) -> anyhow::
         );
         return Ok(());
     }
-    audit.print_terminal(Severity::Info);
+    audit.print_terminal(min_severity_from(&min_severity, quiet));
     if let Some(out) = report {
         let is_html = out
             .extension()
@@ -47,9 +63,24 @@ pub async fn execute(path: Option<PathBuf>, report: Option<PathBuf>) -> anyhow::
 mod tests {
     use super::*;
 
+    #[test]
+    fn min_severity_mapping() {
+        use crate::audit::rules::Severity;
+        assert_eq!(min_severity_from("info", false), Severity::Info);
+        assert_eq!(min_severity_from("warn", false), Severity::Warning);
+        assert_eq!(min_severity_from("crit", false), Severity::Critical);
+        assert_eq!(min_severity_from("info", true), Severity::Warning); // --quiet wins
+    }
+
     #[tokio::test]
     async fn execute_fails_on_missing_path() {
-        let result = execute(Some(PathBuf::from("/nonexistent/xyz")), None).await;
+        let result = execute(
+            Some(PathBuf::from("/nonexistent/xyz")),
+            None,
+            "info".to_string(),
+            false,
+        )
+        .await;
         assert!(result.is_err());
     }
 
@@ -59,7 +90,13 @@ mod tests {
         let agents = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
         std::fs::write(agents.join("bad.md"), "---\nname: [broken\n---\nBody").unwrap();
-        let result = execute(Some(dir.path().to_path_buf()), None).await;
+        let result = execute(
+            Some(dir.path().to_path_buf()),
+            None,
+            "info".to_string(),
+            false,
+        )
+        .await;
         assert!(result.is_err()); // A01 critical -> non-zero exit
     }
 
@@ -74,7 +111,13 @@ mod tests {
         )
         .unwrap();
         let report_path = dir.path().join("audit.md");
-        let result = execute(Some(dir.path().to_path_buf()), Some(report_path.clone())).await;
+        let result = execute(
+            Some(dir.path().to_path_buf()),
+            Some(report_path.clone()),
+            "info".to_string(),
+            false,
+        )
+        .await;
         assert!(result.is_ok());
         let md = std::fs::read_to_string(report_path).unwrap();
         assert!(md.contains("# armadai audit"));
@@ -91,7 +134,13 @@ mod tests {
         )
         .unwrap();
         let report_path = dir.path().join("audit.html");
-        let result = execute(Some(dir.path().to_path_buf()), Some(report_path.clone())).await;
+        let result = execute(
+            Some(dir.path().to_path_buf()),
+            Some(report_path.clone()),
+            "info".to_string(),
+            false,
+        )
+        .await;
         assert!(result.is_ok());
         let html = std::fs::read_to_string(report_path).unwrap();
         assert!(html.starts_with("<!doctype html>"));
