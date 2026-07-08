@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use super::reverse::ImportedConfig;
 
+mod assets;
+
 /// Finding severity. Ordering: Critical < Warning < Info (sort shows critical first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -55,7 +57,7 @@ type RuleFn = fn(&AuditContext) -> Vec<Finding>;
 
 /// Static rule registry: adding a rule = one module + one entry here.
 fn registry() -> Vec<RuleFn> {
-    vec![]
+    vec![assets::a01_unparsable, assets::a02_missing_fields]
 }
 
 /// Run every registered rule and return findings sorted by severity then file.
@@ -68,6 +70,36 @@ pub fn run_rules(ctx: &AuditContext) -> Vec<Finding> {
 /// Rough token estimate (chars / 4) — good enough for thresholds and savings.
 pub(crate) fn estimate_tokens(text: &str) -> usize {
     text.chars().count() / 4
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::PathBuf;
+
+    use crate::audit::reverse::*;
+    use crate::linker::LinkTarget;
+
+    pub fn agent(name: &str, prompt: &str) -> ImportedAgent {
+        ImportedAgent {
+            name: name.to_string(),
+            source_path: PathBuf::from(format!(".claude/agents/{name}.md")),
+            source_format: LinkTarget::Claude,
+            metadata: PartialMetadata {
+                description: Some(format!("{name} description")),
+                model: Some("claude-sonnet-5".to_string()),
+                tools: Some(vec!["Read".to_string()]),
+            },
+            system_prompt: prompt.to_string(),
+            issues: Vec::new(),
+        }
+    }
+
+    pub fn config_with(agents: Vec<ImportedAgent>) -> ImportedConfig {
+        ImportedConfig {
+            agents,
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(test)]
