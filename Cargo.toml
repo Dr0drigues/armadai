@@ -26,7 +26,7 @@ async-trait = "0.1"
 # CLI
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
-dialoguer = "0.12"
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 
 # TUI (optional — enable with `tui` feature)
 ratatui = { version = "0.30", optional = true }

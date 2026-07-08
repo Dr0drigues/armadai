@@ -1,6 +1,7 @@
 mod audit;
 mod config;
 mod costs;
+mod extract;
 mod history;
 pub mod init;
 mod inspect;
@@ -154,6 +155,19 @@ pub enum Command {
         #[arg(long, conflicts_with = "min_severity")]
         quiet: bool,
     },
+    /// Extract agents, prompts, and skills with dependency resolution
+    #[command(
+        long_about = "Extract agents, prompts, and skills with dependency resolution.\n\n\
+            Pulls resources from a starter pack, the user library, or the current project, \
+            optionally including prompts that target the selected agents via `apply_to`. \
+            When called with no flags, walks you through an interactive wizard.",
+        after_help = "Examples:\n  \
+            armadai extract\n  \
+            armadai extract -i\n  \
+            armadai extract --from armadai-authoring --agents authoring-lead --with-deps\n  \
+            armadai extract --from user --agents dev-lead --out ./snapshot --as-pack"
+    )]
+    Extract(extract::ExtractArgs),
     /// View execution history
     #[command(after_help = "Examples:\n  \
         armadai history\n  \
@@ -457,6 +471,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             crate::web::serve(port).await
         }
         Command::Models(action) => models::execute(action).await,
+        Command::Extract(args) => extract::execute(args).await,
         Command::Registry(action) => registry::execute(action).await,
         Command::Prompts(action) => prompts::execute(action).await,
         Command::Skills(action) => skills::execute(action).await,

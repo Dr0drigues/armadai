@@ -86,7 +86,6 @@ pub fn load_all_prompts(dir: &Path) -> Vec<Prompt> {
 }
 
 /// Filter prompts that match a given agent name via `apply_to`.
-#[allow(dead_code)]
 pub fn matching_prompts<'a>(prompts: &'a [Prompt], agent_name: &str) -> Vec<&'a Prompt> {
     prompts
         .iter()
