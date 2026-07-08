@@ -124,20 +124,32 @@ fn parse_skill_dir(dir: &Path) -> ImportedSkill {
             source_path: dir.to_path_buf(),
             description: None,
             has_skill_md: false,
-            frontmatter_ok: false,
+            has_frontmatter: false,
+            issues: Vec::new(),
         };
     };
+    let mut issues = Vec::new();
     let (fm_raw, _body) = extract_frontmatter(&content);
-    let (fm, frontmatter_ok) = match fm_raw.map(serde_yaml_ng::from_str::<SkillFm>) {
-        Some(Ok(fm)) => (fm, true),
-        Some(Err(_)) | None => (SkillFm::default(), false),
+    let (fm, has_frontmatter) = match fm_raw {
+        Some(raw) => {
+            let fm = serde_yaml_ng::from_str::<SkillFm>(raw).unwrap_or_else(|e| {
+                issues.push(issue(&skill_md, describe_yaml_error(raw, &e)));
+                SkillFm {
+                    name: salvage_field(raw, "name"),
+                    description: salvage_field(raw, "description"),
+                }
+            });
+            (fm, true)
+        }
+        None => (SkillFm::default(), false),
     };
     ImportedSkill {
         name: fm.name.unwrap_or(dir_name),
         source_path: skill_md,
         description: fm.description,
         has_skill_md: true,
-        frontmatter_ok,
+        has_frontmatter,
+        issues,
     }
 }
 
@@ -170,8 +182,13 @@ fn parse_agent_file(path: &Path) -> ImportedAgent {
     let (fm_raw, body) = extract_frontmatter(&content);
     let fm: ClaudeAgentFrontmatter = match fm_raw {
         Some(raw) => serde_yaml_ng::from_str(raw).unwrap_or_else(|e| {
-            issues.push(issue(path, format!("invalid YAML frontmatter: {e}")));
-            ClaudeAgentFrontmatter::default()
+            issues.push(issue(path, describe_yaml_error(raw, &e)));
+            ClaudeAgentFrontmatter {
+                name: salvage_field(raw, "name"),
+                description: salvage_field(raw, "description"),
+                model: salvage_field(raw, "model"),
+                tools: salvage_field(raw, "tools").map(ToolsField::Csv),
+            }
         }),
         None => {
             issues.push(issue(path, "missing YAML frontmatter".to_string()));
@@ -189,6 +206,61 @@ fn parse_agent_file(path: &Path) -> ImportedAgent {
         system_prompt: body.trim().to_string(),
         issues,
     }
+}
+
+/// Best-effort recovery of one simple top-level `key: value` line from a
+/// frontmatter that strict YAML rejected. Broken flow scalars (`[`, `{`)
+/// and block scalars (`|`, `>`) are skipped so historical fallbacks (file
+/// stem) keep working, and indented lines (nested keys, block-scalar
+/// bodies) never masquerade as a top-level key.
+fn salvage_field(raw: &str, key: &str) -> Option<String> {
+    raw.lines().find_map(|line| {
+        // A top-level key starts at column 0: nested keys and block-scalar
+        // bodies are indented and must not match.
+        if line.starts_with(char::is_whitespace) {
+            return None;
+        }
+        let (k, v) = line.split_once(':')?;
+        if k.trim() != key {
+            return None;
+        }
+        // Strip a trailing YAML comment before any further processing.
+        let v = match v.find(" #") {
+            Some(idx) => &v[..idx],
+            None => v,
+        };
+        let v = v.trim();
+        if v.is_empty()
+            || v.starts_with('[')
+            || v.starts_with('{')
+            || v.starts_with('|')
+            || v.starts_with('>')
+        {
+            return None;
+        }
+        Some(v.trim_matches('"').trim_matches('\'').to_string())
+    })
+}
+
+/// Turn a strict-YAML error into a message the Markdown-writing user can
+/// act on. The dominant real-world failure is an unquoted value containing
+/// `: `, which YAML and Claude Code both reject.
+fn describe_yaml_error(raw: &str, err: &serde_yaml_ng::Error) -> String {
+    if let Some(loc) = err.location() {
+        // +1: the opening `---` line precedes the frontmatter in the file.
+        let file_line = loc.line() + 1;
+        if let Some(line) = raw.lines().nth(loc.line().saturating_sub(1))
+            && let Some((key, value)) = line.split_once(':')
+            && value.contains(": ")
+        {
+            return format!(
+                "unquoted '{}:' value contains ': ' (line {file_line}) — wrap the value in double quotes (YAML and Claude Code both reject it as-is)",
+                key.trim()
+            );
+        }
+        return format!("invalid YAML frontmatter (line {file_line}): {err}");
+    }
+    format!("invalid YAML frontmatter: {err}")
 }
 
 fn issue(path: &Path, message: String) -> ParseIssue {
@@ -325,7 +397,7 @@ mod tests {
         let config = ClaudeReverseLinker.parse(dir.path());
         assert_eq!(config.skills.len(), 2);
         let deploy = config.skills.iter().find(|s| s.name == "deploy").unwrap();
-        assert!(deploy.has_skill_md && deploy.frontmatter_ok);
+        assert!(deploy.has_skill_md && deploy.has_frontmatter && deploy.issues.is_empty());
         assert_eq!(deploy.description.as_deref(), Some("Deploys the app"));
         let empty = config
             .skills
@@ -337,18 +409,97 @@ mod tests {
     }
 
     #[test]
-    fn skill_with_invalid_yaml_falls_back_to_dir_name() {
+    fn unquoted_colon_gets_pedagogical_message_and_salvage() {
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
-            ".claude/skills/broken-skill/SKILL.md",
-            "---\nname: [unclosed\n---\nBody",
+            ".claude/agents/gate.md",
+            "---\nname: gate\nmodel: opus\ndescription: wraps both phases (one engine : selection + cache)\n---\nBody",
         );
         let config = ClaudeReverseLinker.parse(dir.path());
-        assert_eq!(config.skills.len(), 1);
+        let a = &config.agents[0];
+        assert_eq!(a.issues.len(), 1);
+        assert!(
+            a.issues[0]
+                .message
+                .contains("wrap the value in double quotes")
+        );
+        // Salvage recovered the real fields despite the strict-YAML failure.
+        assert_eq!(a.name, "gate");
+        assert_eq!(a.metadata.model.as_deref(), Some("opus"));
+        assert!(
+            a.metadata
+                .description
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("wraps both phases")
+        );
+    }
+
+    #[test]
+    fn salvage_skips_broken_flow_scalars() {
+        // `name: [unclosed` must NOT be salvaged into the agent name —
+        // keeps the historical stem fallback intact.
+        assert_eq!(salvage_field("name: [unclosed", "name"), None);
+        assert_eq!(
+            salvage_field("model: opus", "model"),
+            Some("opus".to_string())
+        );
+        assert_eq!(
+            salvage_field("desc: \"quoted\"", "desc"),
+            Some("quoted".to_string())
+        );
+    }
+
+    #[test]
+    fn salvage_skips_block_scalars_comments_and_indented_keys() {
+        assert_eq!(salvage_field("description: >-", "description"), None);
+        assert_eq!(salvage_field("description: |", "description"), None);
+        assert_eq!(
+            salvage_field("model: opus # fast", "model"),
+            Some("opus".to_string())
+        );
+        assert_eq!(salvage_field("  model: nested", "model"), None);
+    }
+
+    #[test]
+    fn skill_with_invalid_yaml_gets_issue_and_salvage() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            ".claude/skills/triage/SKILL.md",
+            "---\nname: triage\ndescription: triage is HUMAN — the skill : just assists\n---\nBody",
+        );
+        let config = ClaudeReverseLinker.parse(dir.path());
         let skill = &config.skills[0];
-        assert!(skill.has_skill_md);
-        assert!(!skill.frontmatter_ok);
-        assert_eq!(skill.name, "broken-skill");
+        assert!(skill.has_skill_md && skill.has_frontmatter);
+        assert_eq!(skill.issues.len(), 1);
+        assert!(
+            skill.issues[0]
+                .message
+                .contains("wrap the value in double quotes")
+        );
+        assert_eq!(skill.name, "triage"); // salvaged
+        assert!(
+            skill
+                .description
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("triage is HUMAN")
+        );
+    }
+
+    #[test]
+    fn skill_without_frontmatter_has_no_issue() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            ".claude/skills/bare/SKILL.md",
+            "# Just a title\nBody.",
+        );
+        let config = ClaudeReverseLinker.parse(dir.path());
+        let skill = &config.skills[0];
+        assert!(skill.has_skill_md && !skill.has_frontmatter);
+        assert!(skill.issues.is_empty()); // standard violation, not a parse error
     }
 }

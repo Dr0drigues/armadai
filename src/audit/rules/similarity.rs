@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use super::{AuditContext, Finding, Severity};
@@ -39,31 +39,87 @@ pub(super) fn jaccard(a: &str, b: &str) -> f64 {
     inter / union
 }
 
-/// A06 — the same block of lines appears in two or more agent prompts.
+/// Minimal union-find over agent indices (no dependency needed).
+struct UnionFind {
+    parent: Vec<usize>,
+}
+
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        Self {
+            parent: (0..n).collect(),
+        }
+    }
+    fn find(&mut self, i: usize) -> usize {
+        if self.parent[i] != i {
+            let root = self.find(self.parent[i]);
+            self.parent[i] = root;
+        }
+        self.parent[i]
+    }
+    fn union(&mut self, a: usize, b: usize) {
+        let (ra, rb) = (self.find(a), self.find(b));
+        if ra != rb {
+            self.parent[rb] = ra;
+        }
+    }
+}
+
+/// A06 — duplicated content, one finding per connected cluster of agents
+/// (pairwise output explodes in O(n²) on real fleets — cls-monorepo showed
+/// 6 findings for one shared block across 4 gate agents).
 pub(super) fn a06_duplicated_blocks(ctx: &AuditContext) -> Vec<Finding> {
     let agents = &ctx.config.agents;
     let hashes: Vec<HashSet<u64>> = agents
         .iter()
         .map(|a| window_hashes(&a.system_prompt, DUPLICATION_WINDOW))
         .collect();
-    let mut findings = Vec::new();
+    let mut uf = UnionFind::new(agents.len());
+    let mut pairs = Vec::new();
     for i in 0..agents.len() {
         for j in (i + 1)..agents.len() {
             let shared = hashes[i].intersection(&hashes[j]).count();
             if shared > 0 {
-                findings.push(Finding {
-                    rule: "A06",
-                    severity: Severity::Warning,
-                    file: agents[i].source_path.clone(),
-                    message: format!("agents '{}' and '{}' share duplicated content ({shared} matching {DUPLICATION_WINDOW}-line window(s))", agents[i].name, agents[j].name),
-                    suggestion: Some(
-                        "extract the shared block into one reusable prompt fragment".to_string(),
-                    ),
-                });
+                uf.union(i, j);
+                pairs.push((i, shared));
             }
         }
     }
-    findings
+    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..agents.len() {
+        clusters.entry(uf.find(i)).or_default().push(i);
+    }
+    let mut max_shared: HashMap<usize, usize> = HashMap::new();
+    for (i, shared) in pairs {
+        let root = uf.find(i);
+        let entry = max_shared.entry(root).or_insert(0);
+        *entry = (*entry).max(shared);
+    }
+    clusters
+        .into_iter()
+        .filter(|(_, members)| members.len() >= 2)
+        .map(|(root, members)| {
+            let names: Vec<&str> = members.iter().map(|&i| agents[i].name.as_str()).collect();
+            let strength = max_shared.get(&root).copied().unwrap_or(0);
+            Finding {
+                rule: "A06",
+                severity: Severity::Warning,
+                file: agents[members[0]].source_path.clone(),
+                related: members[1..]
+                    .iter()
+                    .map(|&i| agents[i].source_path.clone())
+                    .collect(),
+                message: format!(
+                    "{} agents share duplicated content: {} (up to {strength} matching {DUPLICATION_WINDOW}-line windows)",
+                    members.len(),
+                    names.join(", ")
+                ),
+                suggestion: Some(
+                    "extract the shared block into one reusable prompt fragment".to_string(),
+                ),
+            }
+        })
+        .collect()
 }
 
 /// A07 — two agents look interchangeable (near-identical descriptions).
@@ -83,6 +139,7 @@ pub(super) fn a07_redundant_agents(ctx: &AuditContext) -> Vec<Finding> {
                     rule: "A07",
                     severity: Severity::Info,
                     file: agents[i].source_path.clone(),
+                    related: Vec::new(),
                     message: format!(
                         "agents '{}' and '{}' have near-identical descriptions",
                         agents[i].name, agents[j].name
@@ -121,6 +178,45 @@ mod tests {
         });
         assert_eq!(f.len(), 1);
         assert!(f[0].message.contains("one") && f[0].message.contains("two"));
+    }
+
+    #[test]
+    fn a06_clusters_four_agents_into_one_finding() {
+        let block = shared_block();
+        let agents: Vec<_> = ["doc", "perf", "quality", "security"]
+            .iter()
+            .map(|n| agent(n, &format!("{block}Specific to {n}.")))
+            .collect();
+        let config = config_with(agents);
+        let settings = AuditSettings::default();
+        let f = a06_duplicated_blocks(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].related.len(), 3);
+        assert!(f[0].message.contains("4 agents"));
+        assert!(f[0].message.contains("quality"));
+    }
+
+    #[test]
+    fn a06_keeps_disjoint_clusters_separate() {
+        let block_a = shared_block();
+        let block_b: String = (1..=10)
+            .map(|i| format!("Other convention {i}\n"))
+            .collect();
+        let config = config_with(vec![
+            agent("a1", &block_a),
+            agent("a2", &block_a),
+            agent("b1", &block_b),
+            agent("b2", &block_b),
+        ]);
+        let settings = AuditSettings::default();
+        let f = a06_duplicated_blocks(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 2);
     }
 
     #[test]

@@ -147,6 +147,12 @@ pub enum Command {
         /// Write a report to this file (markdown, or HTML if the extension is .html)
         #[arg(long)]
         report: Option<std::path::PathBuf>,
+        /// Only display findings at or above this severity (exit code still counts everything)
+        #[arg(long, value_parser = ["crit", "warn", "info"], default_value = "info")]
+        min_severity: String,
+        /// Shortcut for --min-severity warn
+        #[arg(long, conflicts_with = "min_severity")]
+        quiet: bool,
     },
     /// View execution history
     #[command(after_help = "Examples:\n  \
@@ -429,7 +435,12 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Inspect { agent } => inspect::execute(agent).await,
         Command::Validate { path } => validate::execute(path).await,
-        Command::Audit { path, report } => audit::execute(path, report).await,
+        Command::Audit {
+            path,
+            report,
+            min_severity,
+            quiet,
+        } => audit::execute(path, report, min_severity, quiet).await,
         Command::History { agent } => history::execute(agent).await,
         Command::Costs { agent, from } => costs::execute(agent, from).await,
         Command::Config { action } => config::execute(action).await,

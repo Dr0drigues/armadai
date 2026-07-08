@@ -1,17 +1,19 @@
 use super::{AuditContext, Finding, Severity};
+use crate::audit::reverse::ImportedAgent;
 
 /// A01 — a native file could not be fully parsed.
 pub(super) fn a01_unparsable(ctx: &AuditContext) -> Vec<Finding> {
-    ctx.config
-        .agents
-        .iter()
-        .flat_map(|a| a.issues.iter())
+    let agent_issues = ctx.config.agents.iter().flat_map(|a| a.issues.iter());
+    let skill_issues = ctx.config.skills.iter().flat_map(|s| s.issues.iter());
+    agent_issues
+        .chain(skill_issues)
         .map(|i| Finding {
             rule: "A01",
             severity: Severity::Critical,
             file: i.file.clone(),
+            related: Vec::new(),
             message: i.message.clone(),
-            suggestion: Some("fix the YAML frontmatter so tools can read this agent".to_string()),
+            suggestion: Some("fix the YAML frontmatter so tools can read this file".to_string()),
         })
         .collect()
 }
@@ -21,11 +23,15 @@ pub(super) fn a02_missing_fields(ctx: &AuditContext) -> Vec<Finding> {
     ctx.config
         .agents
         .iter()
+        // Anti-cascade: parse-broken agents are A01's job (one root cause,
+        // one finding); their fields are unreliable defaults.
+        .filter(|a| a.issues.is_empty())
         .filter(|a| a.metadata.description.is_none())
         .map(|a| Finding {
             rule: "A02",
             severity: Severity::Warning,
             file: a.source_path.clone(),
+            related: Vec::new(),
             message: format!("agent '{}' has no description", a.name),
             suggestion: Some(
                 "add a `description:` field (used for routing and discovery)".to_string(),
@@ -39,12 +45,16 @@ pub(super) fn a05_oversized_prompt(ctx: &AuditContext) -> Vec<Finding> {
     ctx.config
         .agents
         .iter()
+        // Anti-cascade: parse-broken agents are A01's job (one root cause,
+        // one finding); their fields are unreliable defaults.
+        .filter(|a| a.issues.is_empty())
         .filter_map(|a| {
             let estimate = super::estimate_tokens(&a.system_prompt);
             (estimate > ctx.settings.prompt_token_threshold).then(|| Finding {
                 rule: "A05",
                 severity: Severity::Warning,
                 file: a.source_path.clone(),
+                related: Vec::new(),
                 message: format!(
                     "agent '{}' prompt is ~{estimate} tokens (threshold {})",
                     a.name, ctx.settings.prompt_token_threshold
@@ -57,44 +67,73 @@ pub(super) fn a05_oversized_prompt(ctx: &AuditContext) -> Vec<Finding> {
         .collect()
 }
 
-/// A08 — agent has no tool restriction at all.
+/// A08 — agents without any tool restriction, aggregated fleet-level.
+/// A uniform fleet is an assumed team choice (Info); a mixed fleet is a
+/// real inconsistency (Warning).
 pub(super) fn a08_permissive_tools(ctx: &AuditContext) -> Vec<Finding> {
-    ctx.config
+    // Anti-cascade: parse-broken agents are A01's job.
+    let agents: Vec<&ImportedAgent> = ctx
+        .config
         .agents
         .iter()
+        .filter(|a| a.issues.is_empty())
+        .collect();
+    let offenders: Vec<&ImportedAgent> = agents
+        .iter()
+        .copied()
         .filter(|a| match &a.metadata.tools {
             None => true,
             Some(tools) => tools.iter().any(|t| t == "*"),
         })
-        .map(|a| Finding {
-            rule: "A08",
-            severity: Severity::Info,
-            file: a.source_path.clone(),
-            message: format!("agent '{}' inherits all tools (no restriction)", a.name),
-            suggestion: Some("declare the minimal `tools:` list this agent needs".to_string()),
-        })
-        .collect()
+        .collect();
+    let Some(first) = offenders.first() else {
+        return Vec::new();
+    };
+    let severity = if offenders.len() == agents.len() {
+        Severity::Info
+    } else {
+        Severity::Warning
+    };
+    vec![Finding {
+        rule: "A08",
+        severity,
+        file: first.source_path.clone(),
+        related: offenders[1..]
+            .iter()
+            .map(|a| a.source_path.clone())
+            .collect(),
+        message: format!(
+            "{}/{} parsed agents inherit all tools (no restriction)",
+            offenders.len(),
+            agents.len()
+        ),
+        suggestion: Some("declare the minimal `tools:` list each agent needs".to_string()),
+    }]
 }
 
 /// A09 — skill directory does not follow the Agent Skills standard.
+/// Parse failures are A01's job: a skill carrying a ParseIssue is skipped
+/// here so one root cause yields one finding.
 pub(super) fn a09_malformed_skill(ctx: &AuditContext) -> Vec<Finding> {
     ctx.config
         .skills
         .iter()
+        .filter(|s| s.issues.is_empty())
         .filter_map(|s| {
             let mut problems = Vec::new();
             if !s.has_skill_md {
                 problems.push("missing SKILL.md");
-            } else if !s.frontmatter_ok {
-                problems.push("invalid or missing frontmatter");
+            } else if !s.has_frontmatter {
+                problems.push("missing frontmatter");
             }
-            if s.description.is_none() {
+            if s.has_skill_md && s.description.is_none() {
                 problems.push("missing description");
             }
             (!problems.is_empty()).then(|| Finding {
                 rule: "A09",
                 severity: Severity::Warning,
                 file: s.source_path.clone(),
+                related: Vec::new(),
                 message: format!("skill '{}': {}", s.name, problems.join(", ")),
                 suggestion: Some(
                     "follow the Agent Skills standard: SKILL.md with name + description"
@@ -159,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn a08_flags_unrestricted_tools() {
+    fn a08_aggregates_mixed_fleet_as_warning() {
         let mut a = agent("wild", "Body");
         a.metadata.tools = None;
         let mut b = agent("star", "Body");
@@ -171,7 +210,27 @@ mod tests {
             config: &config,
             settings: &settings,
         });
-        assert_eq!(f.len(), 2);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].severity, Severity::Warning); // mixed fleet
+        assert!(f[0].message.contains("2/3"));
+        assert_eq!(f[0].related.len(), 1);
+    }
+
+    #[test]
+    fn a08_uniform_fleet_is_single_info() {
+        let mut a = agent("one", "Body");
+        a.metadata.tools = None;
+        let mut b = agent("two", "Body");
+        b.metadata.tools = None;
+        let config = config_with(vec![a, b]);
+        let settings = AuditSettings::default();
+        let f = a08_permissive_tools(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].severity, Severity::Info);
+        assert!(f[0].message.contains("2/2"));
     }
 
     #[test]
@@ -184,14 +243,16 @@ mod tests {
                     source_path: ".claude/skills/no-md".into(),
                     description: None,
                     has_skill_md: false,
-                    frontmatter_ok: false,
+                    has_frontmatter: false,
+                    issues: Vec::new(),
                 },
                 ImportedSkill {
                     name: "fine".into(),
                     source_path: ".claude/skills/fine/SKILL.md".into(),
                     description: Some("ok".into()),
                     has_skill_md: true,
-                    frontmatter_ok: true,
+                    has_frontmatter: true,
+                    issues: Vec::new(),
                 },
             ],
             ..Default::default()
@@ -203,5 +264,113 @@ mod tests {
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A09");
+    }
+
+    #[test]
+    fn a09_missing_skill_md_does_not_stack_missing_description() {
+        use crate::audit::reverse::{ImportedConfig, ImportedSkill};
+        let config = ImportedConfig {
+            skills: vec![ImportedSkill {
+                name: "no-md".into(),
+                source_path: ".claude/skills/no-md".into(),
+                description: None,
+                has_skill_md: false,
+                has_frontmatter: false,
+                issues: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = a09_malformed_skill(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert!(f[0].message.contains("missing SKILL.md"));
+        assert!(!f[0].message.contains("missing description"));
+    }
+
+    #[test]
+    fn a01_covers_skill_parse_issues() {
+        use crate::audit::reverse::{ImportedConfig, ImportedSkill, ParseIssue};
+        let config = ImportedConfig {
+            skills: vec![ImportedSkill {
+                name: "triage".into(),
+                source_path: ".claude/skills/triage/SKILL.md".into(),
+                description: Some("salvaged".into()),
+                has_skill_md: true,
+                has_frontmatter: true,
+                issues: vec![ParseIssue {
+                    file: ".claude/skills/triage/SKILL.md".into(),
+                    message: "unquoted value".into(),
+                }],
+            }],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = a01_unparsable(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn a09_does_not_double_report_parse_broken_skills() {
+        use crate::audit::reverse::{ImportedConfig, ImportedSkill, ParseIssue};
+        let config = ImportedConfig {
+            skills: vec![
+                // Parse-broken skill: A01's job, A09 stays silent.
+                ImportedSkill {
+                    name: "broken".into(),
+                    source_path: ".claude/skills/broken/SKILL.md".into(),
+                    description: None,
+                    has_skill_md: true,
+                    has_frontmatter: true,
+                    issues: vec![ParseIssue {
+                        file: ".claude/skills/broken/SKILL.md".into(),
+                        message: "bad".into(),
+                    }],
+                },
+                // No frontmatter at all: A09 Warning.
+                ImportedSkill {
+                    name: "bare".into(),
+                    source_path: ".claude/skills/bare/SKILL.md".into(),
+                    description: None,
+                    has_skill_md: true,
+                    has_frontmatter: false,
+                    issues: Vec::new(),
+                },
+            ],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = a09_malformed_skill(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert!(f[0].message.contains("bare"));
+        assert!(f[0].message.contains("missing frontmatter"));
+    }
+
+    #[test]
+    fn field_rules_skip_agents_with_parse_issues() {
+        let mut a = agent("broken", "Body");
+        a.metadata.description = None;
+        a.metadata.tools = None;
+        a.issues.push(ParseIssue {
+            file: a.source_path.clone(),
+            message: "invalid".into(),
+        });
+        let config = config_with(vec![a]);
+        let settings = AuditSettings::default();
+        let ctx = AuditContext {
+            config: &config,
+            settings: &settings,
+        };
+        assert!(a02_missing_fields(&ctx).is_empty());
+        assert!(a08_permissive_tools(&ctx).is_empty());
     }
 }

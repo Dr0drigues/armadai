@@ -30,6 +30,44 @@ impl AuditReport {
         )
     }
 
+    /// Findings paths relative to the audited root (falls back to the raw path).
+    fn rel(&self, p: &std::path::Path) -> String {
+        p.strip_prefix(&self.root)
+            .unwrap_or(p)
+            .display()
+            .to_string()
+    }
+
+    fn severity_title(s: Severity) -> &'static str {
+        match s {
+            Severity::Critical => "Critical",
+            Severity::Warning => "Warning",
+            Severity::Info => "Info",
+        }
+    }
+
+    /// Per-rule counts, e.g. `A01×2  A06×1(+3)  A08×1(+23)`.
+    fn breakdown_line(&self) -> String {
+        let mut per_rule: std::collections::BTreeMap<&str, (usize, usize)> =
+            std::collections::BTreeMap::new();
+        for f in &self.findings {
+            let entry = per_rule.entry(f.rule).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += f.related.len();
+        }
+        per_rule
+            .into_iter()
+            .map(|(rule, (count, related))| {
+                if related > 0 {
+                    format!("{rule}×{count}(+{related})")
+                } else {
+                    format!("{rule}×{count}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+    }
+
     /// Funnel block: what adopting ArmadAI would fix automatically.
     fn funnel_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
@@ -39,10 +77,10 @@ impl AuditReport {
                 "{remappable} deprecated model(s) remapped automatically (model aliases)"
             ));
         }
-        let dedupable = self.findings.iter().filter(|f| f.rule == "A06").count();
-        if dedupable > 0 {
+        let clusters = self.findings.iter().filter(|f| f.rule == "A06").count();
+        if clusters > 0 {
             lines.push(format!(
-                "{dedupable} duplicated block(s) turned into shared prompt fragments"
+                "{clusters} shared content cluster(s) factored into reusable prompt fragments"
             ));
         }
         let oversized = self.findings.iter().filter(|f| f.rule == "A05").count();
@@ -58,7 +96,7 @@ impl AuditReport {
     /// (findings are already sorted by run_rules). The CLI's final
     /// `anyhow::bail!` on critical findings is what signals errors on
     /// stderr, so this only ever writes to stdout.
-    pub fn print_terminal(&self) {
+    pub fn print_terminal(&self, min_severity: Severity) {
         println!("armadai audit - {}", self.root.display());
         println!(
             "  Detected: {} ({} agent(s), {} skill(s))",
@@ -66,22 +104,51 @@ impl AuditReport {
             self.agent_count,
             self.skill_count
         );
-        println!();
-        for f in &self.findings {
-            let line = format!(
-                "  {:<5} {:<4} {:<40} {}",
-                f.severity.label(),
-                f.rule,
-                f.file.display(),
-                f.message
-            );
-            println!("{line}");
-            if let Some(s) = &f.suggestion {
-                println!("        -> {s}");
+        for severity in [Severity::Critical, Severity::Warning, Severity::Info] {
+            if severity > min_severity {
+                continue;
+            }
+            let group: Vec<&Finding> = self
+                .findings
+                .iter()
+                .filter(|f| f.severity == severity)
+                .collect();
+            if group.is_empty() {
+                continue;
+            }
+            println!();
+            println!("  {} ({})", Self::severity_title(severity), group.len());
+            for f in group {
+                let related = if f.related.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (+{} others)", f.related.len())
+                };
+                println!(
+                    "    {:<4} {}{}  {}",
+                    f.rule,
+                    self.rel(&f.file),
+                    related,
+                    f.message
+                );
+                if let Some(s) = &f.suggestion {
+                    println!("         -> {s}");
+                }
             }
         }
+        let hidden = self
+            .findings
+            .iter()
+            .filter(|f| f.severity > min_severity)
+            .count();
         println!();
         println!("  Summary: {}", self.summary_line());
+        if !self.findings.is_empty() {
+            println!("  Breakdown: {}", self.breakdown_line());
+        }
+        if hidden > 0 {
+            println!("  ({hidden} finding(s) hidden below the severity threshold)");
+        }
         let funnel = self.funnel_lines();
         if !funnel.is_empty() {
             println!();
@@ -104,22 +171,62 @@ impl AuditReport {
             self.skill_count
         );
         let _ = writeln!(md, "**Summary: {}**\n", self.summary_line());
-        let _ = writeln!(md, "| Severity | Rule | File | Message | Suggestion |");
-        let _ = writeln!(md, "|---|---|---|---|---|");
-        for f in &self.findings {
+        if !self.findings.is_empty() {
+            let _ = writeln!(md, "Breakdown: {}\n", self.breakdown_line());
+        }
+        for severity in [Severity::Critical, Severity::Warning, Severity::Info] {
+            let group: Vec<&Finding> = self
+                .findings
+                .iter()
+                .filter(|f| f.severity == severity)
+                .collect();
+            if group.is_empty() {
+                continue;
+            }
             let _ = writeln!(
                 md,
-                "| {} | {} | `{}` | {} | {} |",
-                f.severity.label(),
-                f.rule,
-                f.file.display(),
-                f.message,
-                f.suggestion.as_deref().unwrap_or("—")
+                "## {} ({})\n",
+                Self::severity_title(severity),
+                group.len()
             );
+            let _ = writeln!(md, "| Rule | File | Related | Message | Suggestion |");
+            let _ = writeln!(md, "|---|---|---|---|---|");
+            for f in &group {
+                let related = if f.related.is_empty() {
+                    "—".to_string()
+                } else {
+                    format!("+{}", f.related.len())
+                };
+                let _ = writeln!(
+                    md,
+                    "| {} | `{}` | {} | {} | {} |",
+                    f.rule,
+                    self.rel(&f.file),
+                    related,
+                    f.message,
+                    f.suggestion.as_deref().unwrap_or("—")
+                );
+            }
+            let _ = writeln!(md);
+            for f in &group {
+                if f.related.is_empty() {
+                    continue;
+                }
+                let _ = writeln!(
+                    md,
+                    "<details><summary>{} — {} related file(s)</summary>\n",
+                    f.rule,
+                    f.related.len()
+                );
+                for p in &f.related {
+                    let _ = writeln!(md, "- `{}`", self.rel(p));
+                }
+                let _ = writeln!(md, "\n</details>\n");
+            }
         }
         let funnel = self.funnel_lines();
         if !funnel.is_empty() {
-            let _ = writeln!(md, "\n## What ArmadAI would give you\n");
+            let _ = writeln!(md, "## What ArmadAI would give you\n");
             for l in funnel {
                 let _ = writeln!(md, "- {l}");
             }
@@ -151,11 +258,6 @@ impl AuditReport {
 <p class="detected">Detected: {detected} ({agent_count} agent(s), {skill_count} skill(s))</p>
 </header>
 <p class="summary"><strong>Summary: {summary}</strong></p>
-<table>
-<thead>
-<tr><th>Severity</th><th>Rule</th><th>File</th><th>Message</th><th>Suggestion</th></tr>
-</thead>
-<tbody>
 "#,
             css = HTML_CSS,
             agent_count = self.agent_count,
@@ -163,35 +265,77 @@ impl AuditReport {
             summary = html_escape(&self.summary_line()),
         );
 
-        for f in &self.findings {
-            let badge_class = match f.severity {
+        if !self.findings.is_empty() {
+            let _ = writeln!(
+                html,
+                r#"<p class="summary">Breakdown: {}</p>"#,
+                html_escape(&self.breakdown_line())
+            );
+        }
+        for severity in [Severity::Critical, Severity::Warning, Severity::Info] {
+            let group: Vec<&Finding> = self
+                .findings
+                .iter()
+                .filter(|f| f.severity == severity)
+                .collect();
+            if group.is_empty() {
+                continue;
+            }
+            let badge_class = match severity {
                 Severity::Critical => "badge-crit",
                 Severity::Warning => "badge-warn",
                 Severity::Info => "badge-info",
             };
             let _ = writeln!(
                 html,
-                r#"<tr>
-<td><span class="badge {badge_class}">{severity}</span></td>
+                r#"<h2><span class="badge {badge_class}">{}</span> {} ({})</h2>
+<table>
+<thead>
+<tr><th>Rule</th><th>File</th><th>Message</th><th>Suggestion</th></tr>
+</thead>
+<tbody>"#,
+                html_escape(severity.label()),
+                html_escape(Self::severity_title(severity)),
+                group.len()
+            );
+            for f in &group {
+                let related_html = if f.related.is_empty() {
+                    String::new()
+                } else {
+                    let mut d = format!(
+                        "<details><summary>+{} related</summary><ul>",
+                        f.related.len()
+                    );
+                    for p in &f.related {
+                        let _ = write!(
+                            d,
+                            "<li><code class=\"path\">{}</code></li>",
+                            html_escape(&self.rel(p))
+                        );
+                    }
+                    d.push_str("</ul></details>");
+                    d
+                };
+                let _ = writeln!(
+                    html,
+                    r#"<tr>
 <td>{rule}</td>
-<td><code class="path">{file}</code></td>
+<td><code class="path">{file}</code>{related_html}</td>
 <td>{message}</td>
 <td>{suggestion}</td>
 </tr>"#,
-                badge_class = badge_class,
-                severity = html_escape(f.severity.label()),
-                rule = html_escape(f.rule),
-                file = html_escape(&f.file.display().to_string()),
-                message = html_escape(&f.message),
-                suggestion = f
-                    .suggestion
-                    .as_deref()
-                    .map(html_escape)
-                    .unwrap_or_else(|| "—".to_string()),
-            );
+                    rule = html_escape(f.rule),
+                    file = html_escape(&self.rel(&f.file)),
+                    message = html_escape(&f.message),
+                    suggestion = f
+                        .suggestion
+                        .as_deref()
+                        .map(html_escape)
+                        .unwrap_or_else(|| "—".to_string()),
+                );
+            }
+            html.push_str("</tbody>\n</table>\n");
         }
-
-        html.push_str("</tbody>\n</table>\n");
 
         let funnel = self.funnel_lines();
         if !funnel.is_empty() {
@@ -278,6 +422,8 @@ code.path {
 .badge-crit { background: var(--crit-bg); color: var(--crit-fg); }
 .badge-warn { background: var(--warn-bg); color: var(--warn-fg); }
 .badge-info { background: var(--info-bg); color: var(--info-fg); }
+h2 { font-size: 1.05rem; margin-top: 1.5rem; }
+details ul { margin: 0.25rem 0 0 1rem; padding: 0; }
 .funnel { margin-top: 1.5rem; }
 .funnel h2 { font-size: 1.05rem; }
 footer {
@@ -324,9 +470,63 @@ mod tests {
             rule,
             severity,
             file: ".claude/agents/x.md".into(),
+            related: Vec::new(),
             message: "msg".into(),
             suggestion: Some("fix".into()),
         }
+    }
+
+    fn finding_with_related(rule: &'static str, severity: Severity, related: usize) -> Finding {
+        Finding {
+            rule,
+            severity,
+            file: ".claude/agents/x.md".into(),
+            related: (0..related)
+                .map(|i| format!(".claude/agents/r{i}.md").into())
+                .collect(),
+            message: "msg".into(),
+            suggestion: Some("fix".into()),
+        }
+    }
+
+    #[test]
+    fn markdown_groups_by_severity_with_counts() {
+        let r = report_with(vec![
+            finding("A01", Severity::Critical),
+            finding_with_related("A08", Severity::Info, 3),
+        ]);
+        let md = r.to_markdown();
+        assert!(md.contains("## Critical (1)"));
+        assert!(md.contains("## Info (1)"));
+        assert!(md.contains("Breakdown:"));
+        assert!(md.contains("A08×1(+3)"));
+    }
+
+    #[test]
+    fn html_lists_related_files_in_details() {
+        let r = report_with(vec![finding_with_related("A06", Severity::Warning, 2)]);
+        let html = r.to_html();
+        assert!(html.contains("<details>"));
+        assert!(html.contains("r0.md"));
+        assert!(html.contains("+2"));
+    }
+
+    #[test]
+    fn paths_are_relative_to_root() {
+        let mut r = report_with(vec![finding("A01", Severity::Critical)]);
+        r.root = PathBuf::from("/repo");
+        r.findings[0].file = PathBuf::from("/repo/.claude/agents/x.md");
+        let md = r.to_markdown();
+        assert!(md.contains("`.claude/agents/x.md`"));
+        assert!(!md.contains("`/repo/.claude"));
+    }
+
+    #[test]
+    fn markdown_contains_breakdown_line() {
+        let mut f = finding("A08", Severity::Info);
+        f.related = vec!["r1.md".into(), "r2.md".into()];
+        let r = report_with(vec![f]);
+        assert!(r.to_markdown().contains("Breakdown: A08×1(+2)"));
     }
 
     #[test]
@@ -347,6 +547,13 @@ mod tests {
         assert!(md.contains("1 critical"));
         assert!(md.contains("What ArmadAI would give you"));
         assert!(md.contains("1 deprecated model(s) remapped automatically"));
+    }
+
+    #[test]
+    fn funnel_counts_clusters_not_pairs() {
+        let r = report_with(vec![finding("A06", Severity::Warning)]);
+        let md = r.to_markdown();
+        assert!(md.contains("1 shared content cluster(s)"));
     }
 
     #[test]

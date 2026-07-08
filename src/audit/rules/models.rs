@@ -1,6 +1,8 @@
 use super::{AuditContext, Finding, Severity};
 
 /// A03 — model is a known deprecated alias.
+/// Deliberately fires on salvaged values too: a deprecated model is a
+/// distinct root cause worth reporting even on a parse-broken file.
 pub(super) fn a03_deprecated_model(ctx: &AuditContext) -> Vec<Finding> {
     a03_with_resolver(ctx, &crate::linker::model_aliases::resolve_alias)
 }
@@ -19,6 +21,7 @@ pub(super) fn a03_with_resolver(
                 rule: "A03",
                 severity: Severity::Critical,
                 file: a.source_path.clone(),
+                related: Vec::new(),
                 message: format!("agent '{}' uses deprecated model '{model}'", a.name),
                 suggestion: Some(format!("replace with '{replacement}'")),
             })
@@ -48,6 +51,8 @@ pub(super) fn a04_with_catalog<F: Fn(&str) -> bool>(
     ctx.config
         .agents
         .iter()
+        // Anti-cascade: salvaged fields on parse-broken agents are unreliable.
+        .filter(|a| a.issues.is_empty())
         .filter_map(|a| {
             let model = a.metadata.model.as_deref()?;
             // Portable tiers and deprecated aliases are handled elsewhere.
@@ -61,6 +66,7 @@ pub(super) fn a04_with_catalog<F: Fn(&str) -> bool>(
                 rule: "A04",
                 severity: Severity::Warning,
                 file: a.source_path.clone(),
+                related: Vec::new(),
                 message: format!("agent '{}' uses unknown model '{model}'", a.name),
                 suggestion: Some("check the spelling against `armadai models`".to_string()),
             })
@@ -71,6 +77,7 @@ pub(super) fn a04_with_catalog<F: Fn(&str) -> bool>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::reverse::ParseIssue;
     use crate::audit::rules::test_support::{agent, config_with};
     use crate::audit::rules::{AuditContext, AuditSettings, Severity};
 
@@ -106,6 +113,24 @@ mod tests {
         let f = a04_with_catalog(&ctx, Some(&known));
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A04");
+    }
+
+    #[test]
+    fn a04_skips_parse_broken_agents() {
+        let mut a = agent("broken", "Body");
+        a.metadata.model = Some("whatever-unknown".to_string());
+        a.issues.push(ParseIssue {
+            file: a.source_path.clone(),
+            message: "invalid".into(),
+        });
+        let config = config_with(vec![a]);
+        let settings = AuditSettings::default();
+        let ctx = AuditContext {
+            config: &config,
+            settings: &settings,
+        };
+        let known = |_: &str| false;
+        assert!(a04_with_catalog(&ctx, Some(&known)).is_empty());
     }
 
     #[test]

@@ -31,6 +31,8 @@ pub struct Finding {
     pub rule: &'static str,
     pub severity: Severity,
     pub file: PathBuf,
+    /// Other files carried by an aggregated finding; `file` stays the anchor.
+    pub related: Vec<PathBuf>,
     pub message: String,
     pub suggestion: Option<String>,
 }
@@ -189,5 +191,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = AuditSettings::from_project(dir.path());
         assert_eq!(s.prompt_token_threshold, 4000);
+    }
+
+    #[test]
+    fn finding_carries_related_files() {
+        let f = Finding {
+            rule: "A06",
+            severity: Severity::Warning,
+            file: "a.md".into(),
+            related: vec!["b.md".into(), "c.md".into()],
+            message: String::new(),
+            suggestion: None,
+        };
+        assert_eq!(f.related.len(), 2);
     }
 }
