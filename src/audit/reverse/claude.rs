@@ -56,8 +56,8 @@ impl ReverseLinker for ClaudeReverseLinker {
     fn parse(&self, root: &Path) -> ImportedConfig {
         ImportedConfig {
             agents: parse_agents(&root.join(".claude/agents")),
-            skills: Vec::new(), // Task 3
-            instructions: None, // Task 3
+            skills: parse_skills(&root.join(".claude/skills")),
+            instructions: parse_instructions(&root.join("CLAUDE.md")),
         }
     }
 }
@@ -74,6 +74,64 @@ fn parse_agents(dir: &Path) -> Vec<ImportedAgent> {
         .collect();
     agents.sort_by(|a, b| a.name.cmp(&b.name));
     agents
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct SkillFm {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+fn parse_skills(dir: &Path) -> Vec<ImportedSkill> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut skills: Vec<ImportedSkill> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .map(|p| parse_skill_dir(&p))
+        .collect();
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    skills
+}
+
+fn parse_skill_dir(dir: &Path) -> ImportedSkill {
+    let dir_name = dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let skill_md = dir.join("SKILL.md");
+    let Ok(content) = std::fs::read_to_string(&skill_md) else {
+        return ImportedSkill {
+            name: dir_name,
+            source_path: dir.to_path_buf(),
+            description: None,
+            has_skill_md: false,
+            frontmatter_ok: false,
+        };
+    };
+    let (fm_raw, _body) = extract_frontmatter(&content);
+    let (fm, frontmatter_ok) = match fm_raw.map(serde_yaml_ng::from_str::<SkillFm>) {
+        Some(Ok(fm)) => (fm, true),
+        Some(Err(_)) | None => (SkillFm::default(), false),
+    };
+    ImportedSkill {
+        name: fm.name.unwrap_or(dir_name),
+        source_path: skill_md,
+        description: fm.description,
+        has_skill_md: true,
+        frontmatter_ok,
+    }
+}
+
+fn parse_instructions(path: &Path) -> Option<ImportedInstructions> {
+    let content = std::fs::read_to_string(path).ok()?;
+    Some(ImportedInstructions {
+        source_path: path.to_path_buf(),
+        content,
+    })
 }
 
 fn parse_agent_file(path: &Path) -> ImportedAgent {
@@ -195,5 +253,33 @@ mod tests {
         assert_eq!(config.agents.len(), 1);
         assert_eq!(config.agents[0].name, "broken");
         assert_eq!(config.agents[0].issues.len(), 1);
+    }
+
+    #[test]
+    fn parse_skills_and_instructions() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "CLAUDE.md",
+            "# Project\nUse @reviewer for reviews.",
+        );
+        write(
+            dir.path(),
+            ".claude/skills/deploy/SKILL.md",
+            "---\nname: deploy\ndescription: Deploys the app\n---\nSteps.",
+        );
+        std::fs::create_dir_all(dir.path().join(".claude/skills/empty-skill")).unwrap();
+        let config = ClaudeReverseLinker.parse(dir.path());
+        assert_eq!(config.skills.len(), 2);
+        let deploy = config.skills.iter().find(|s| s.name == "deploy").unwrap();
+        assert!(deploy.has_skill_md && deploy.frontmatter_ok);
+        assert_eq!(deploy.description.as_deref(), Some("Deploys the app"));
+        let empty = config
+            .skills
+            .iter()
+            .find(|s| s.name == "empty-skill")
+            .unwrap();
+        assert!(!empty.has_skill_md);
+        assert!(config.instructions.unwrap().content.contains("@reviewer"));
     }
 }
