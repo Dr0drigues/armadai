@@ -1,4 +1,5 @@
 use super::{AuditContext, Finding, Severity};
+use crate::audit::reverse::ImportedAgent;
 
 /// A01 — a native file could not be fully parsed.
 pub(super) fn a01_unparsable(ctx: &AuditContext) -> Vec<Finding> {
@@ -66,27 +67,48 @@ pub(super) fn a05_oversized_prompt(ctx: &AuditContext) -> Vec<Finding> {
         .collect()
 }
 
-/// A08 — agent has no tool restriction at all.
+/// A08 — agents without any tool restriction, aggregated fleet-level.
+/// A uniform fleet is an assumed team choice (Info); a mixed fleet is a
+/// real inconsistency (Warning).
 pub(super) fn a08_permissive_tools(ctx: &AuditContext) -> Vec<Finding> {
-    ctx.config
+    // Anti-cascade: parse-broken agents are A01's job.
+    let agents: Vec<&ImportedAgent> = ctx
+        .config
         .agents
         .iter()
-        // Anti-cascade: parse-broken agents are A01's job (one root cause,
-        // one finding); their fields are unreliable defaults.
         .filter(|a| a.issues.is_empty())
+        .collect();
+    let offenders: Vec<&ImportedAgent> = agents
+        .iter()
+        .copied()
         .filter(|a| match &a.metadata.tools {
             None => true,
             Some(tools) => tools.iter().any(|t| t == "*"),
         })
-        .map(|a| Finding {
-            rule: "A08",
-            severity: Severity::Info,
-            file: a.source_path.clone(),
-            related: Vec::new(),
-            message: format!("agent '{}' inherits all tools (no restriction)", a.name),
-            suggestion: Some("declare the minimal `tools:` list this agent needs".to_string()),
-        })
-        .collect()
+        .collect();
+    let Some(first) = offenders.first() else {
+        return Vec::new();
+    };
+    let severity = if offenders.len() == agents.len() {
+        Severity::Info
+    } else {
+        Severity::Warning
+    };
+    vec![Finding {
+        rule: "A08",
+        severity,
+        file: first.source_path.clone(),
+        related: offenders[1..]
+            .iter()
+            .map(|a| a.source_path.clone())
+            .collect(),
+        message: format!(
+            "{}/{} agents inherit all tools (no restriction)",
+            offenders.len(),
+            agents.len()
+        ),
+        suggestion: Some("declare the minimal `tools:` list each agent needs".to_string()),
+    }]
 }
 
 /// A09 — skill directory does not follow the Agent Skills standard.
@@ -176,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn a08_flags_unrestricted_tools() {
+    fn a08_aggregates_mixed_fleet_as_warning() {
         let mut a = agent("wild", "Body");
         a.metadata.tools = None;
         let mut b = agent("star", "Body");
@@ -188,7 +210,27 @@ mod tests {
             config: &config,
             settings: &settings,
         });
-        assert_eq!(f.len(), 2);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].severity, Severity::Warning); // mixed fleet
+        assert!(f[0].message.contains("2/3"));
+        assert_eq!(f[0].related.len(), 1);
+    }
+
+    #[test]
+    fn a08_uniform_fleet_is_single_info() {
+        let mut a = agent("one", "Body");
+        a.metadata.tools = None;
+        let mut b = agent("two", "Body");
+        b.metadata.tools = None;
+        let config = config_with(vec![a, b]);
+        let settings = AuditSettings::default();
+        let f = a08_permissive_tools(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].severity, Severity::Info);
+        assert!(f[0].message.contains("2/2"));
     }
 
     #[test]
