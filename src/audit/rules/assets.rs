@@ -10,6 +10,7 @@ pub(super) fn a01_unparsable(ctx: &AuditContext) -> Vec<Finding> {
             rule: "A01",
             severity: Severity::Critical,
             file: i.file.clone(),
+            related: Vec::new(),
             message: i.message.clone(),
             suggestion: Some("fix the YAML frontmatter so tools can read this agent".to_string()),
         })
@@ -26,6 +27,7 @@ pub(super) fn a02_missing_fields(ctx: &AuditContext) -> Vec<Finding> {
             rule: "A02",
             severity: Severity::Warning,
             file: a.source_path.clone(),
+            related: Vec::new(),
             message: format!("agent '{}' has no description", a.name),
             suggestion: Some(
                 "add a `description:` field (used for routing and discovery)".to_string(),
@@ -45,6 +47,7 @@ pub(super) fn a05_oversized_prompt(ctx: &AuditContext) -> Vec<Finding> {
                 rule: "A05",
                 severity: Severity::Warning,
                 file: a.source_path.clone(),
+                related: Vec::new(),
                 message: format!(
                     "agent '{}' prompt is ~{estimate} tokens (threshold {})",
                     a.name, ctx.settings.prompt_token_threshold
@@ -70,6 +73,7 @@ pub(super) fn a08_permissive_tools(ctx: &AuditContext) -> Vec<Finding> {
             rule: "A08",
             severity: Severity::Info,
             file: a.source_path.clone(),
+            related: Vec::new(),
             message: format!("agent '{}' inherits all tools (no restriction)", a.name),
             suggestion: Some("declare the minimal `tools:` list this agent needs".to_string()),
         })
@@ -95,6 +99,7 @@ pub(super) fn a09_malformed_skill(ctx: &AuditContext) -> Vec<Finding> {
                 rule: "A09",
                 severity: Severity::Warning,
                 file: s.source_path.clone(),
+                related: Vec::new(),
                 message: format!("skill '{}': {}", s.name, problems.join(", ")),
                 suggestion: Some(
                     "follow the Agent Skills standard: SKILL.md with name + description"

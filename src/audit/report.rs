@@ -30,6 +30,28 @@ impl AuditReport {
         )
     }
 
+    /// Per-rule counts, e.g. `A01×2  A06×1(+3)  A08×1(+23)`.
+    fn breakdown_line(&self) -> String {
+        let mut per_rule: std::collections::BTreeMap<&str, (usize, usize)> =
+            std::collections::BTreeMap::new();
+        for f in &self.findings {
+            let entry = per_rule.entry(f.rule).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += f.related.len();
+        }
+        per_rule
+            .into_iter()
+            .map(|(rule, (count, related))| {
+                if related > 0 {
+                    format!("{rule}×{count}(+{related})")
+                } else {
+                    format!("{rule}×{count}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+    }
+
     /// Funnel block: what adopting ArmadAI would fix automatically.
     fn funnel_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
@@ -104,6 +126,7 @@ impl AuditReport {
             self.skill_count
         );
         let _ = writeln!(md, "**Summary: {}**\n", self.summary_line());
+        let _ = writeln!(md, "Breakdown: {}\n", self.breakdown_line());
         let _ = writeln!(md, "| Severity | Rule | File | Message | Suggestion |");
         let _ = writeln!(md, "|---|---|---|---|---|");
         for f in &self.findings {
@@ -324,9 +347,18 @@ mod tests {
             rule,
             severity,
             file: ".claude/agents/x.md".into(),
+            related: Vec::new(),
             message: "msg".into(),
             suggestion: Some("fix".into()),
         }
+    }
+
+    #[test]
+    fn markdown_contains_breakdown_line() {
+        let mut f = finding("A08", Severity::Info);
+        f.related = vec!["r1.md".into(), "r2.md".into()];
+        let r = report_with(vec![f]);
+        assert!(r.to_markdown().contains("Breakdown: A08×1(+2)"));
     }
 
     #[test]

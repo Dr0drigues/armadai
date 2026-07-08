@@ -19,6 +19,7 @@ pub(super) fn a03_with_resolver(
                 rule: "A03",
                 severity: Severity::Critical,
                 file: a.source_path.clone(),
+                related: Vec::new(),
                 message: format!("agent '{}' uses deprecated model '{model}'", a.name),
                 suggestion: Some(format!("replace with '{replacement}'")),
             })
@@ -61,6 +62,7 @@ pub(super) fn a04_with_catalog<F: Fn(&str) -> bool>(
                 rule: "A04",
                 severity: Severity::Warning,
                 file: a.source_path.clone(),
+                related: Vec::new(),
                 message: format!("agent '{}' uses unknown model '{model}'", a.name),
                 suggestion: Some("check the spelling against `armadai models`".to_string()),
             })

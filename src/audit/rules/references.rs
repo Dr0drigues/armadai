@@ -50,6 +50,7 @@ pub(super) fn a10_broken_references(ctx: &AuditContext) -> Vec<Finding> {
             rule: "A10",
             severity: Severity::Warning,
             file: instructions.source_path.clone(),
+            related: Vec::new(),
             message: format!("mentions '@{slug}' but no such agent exists"),
             suggestion: Some("create the agent or remove the stale mention".to_string()),
         })
@@ -78,6 +79,7 @@ pub(super) fn a11_plaintext_secret(ctx: &AuditContext) -> Vec<Finding> {
             rule: "A11",
             severity: Severity::Critical,
             file: path.to_path_buf(),
+            related: Vec::new(),
             message: "contains what looks like a plaintext API key".to_string(),
             suggestion: Some("move the secret to an env var or a secrets manager".to_string()),
         })

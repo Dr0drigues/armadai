@@ -55,6 +55,7 @@ pub(super) fn a06_duplicated_blocks(ctx: &AuditContext) -> Vec<Finding> {
                     rule: "A06",
                     severity: Severity::Warning,
                     file: agents[i].source_path.clone(),
+                    related: Vec::new(),
                     message: format!("agents '{}' and '{}' share duplicated content ({shared} matching {DUPLICATION_WINDOW}-line window(s))", agents[i].name, agents[j].name),
                     suggestion: Some(
                         "extract the shared block into one reusable prompt fragment".to_string(),
@@ -83,6 +84,7 @@ pub(super) fn a07_redundant_agents(ctx: &AuditContext) -> Vec<Finding> {
                     rule: "A07",
                     severity: Severity::Info,
                     file: agents[i].source_path.clone(),
+                    related: Vec::new(),
                     message: format!(
                         "agents '{}' and '{}' have near-identical descriptions",
                         agents[i].name, agents[j].name
