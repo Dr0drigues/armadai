@@ -1,0 +1,98 @@
+use std::path::PathBuf;
+
+use super::reverse::ImportedConfig;
+
+/// Finding severity. Ordering: Critical < Warning < Info (sort shows critical first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    Critical,
+    Warning,
+    Info,
+}
+
+impl Severity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Severity::Critical => "CRIT",
+            Severity::Warning => "WARN",
+            Severity::Info => "INFO",
+        }
+    }
+}
+
+/// One audit finding. `suggestion` is a concrete, human-applicable fix.
+#[derive(Debug, Clone)]
+pub struct Finding {
+    pub rule: &'static str,
+    pub severity: Severity,
+    pub file: PathBuf,
+    pub message: String,
+    pub suggestion: Option<String>,
+}
+
+/// Tunable thresholds (spec §8). Defaults are embedded; the optional
+/// `audit:` section of armadai.yaml overrides them (Task 11).
+#[derive(Debug, Clone)]
+pub struct AuditSettings {
+    /// A05: estimated token count above which a prompt is flagged.
+    pub prompt_token_threshold: usize,
+}
+
+impl Default for AuditSettings {
+    fn default() -> Self {
+        Self {
+            prompt_token_threshold: 4000,
+        }
+    }
+}
+
+pub struct AuditContext<'a> {
+    pub config: &'a ImportedConfig,
+    pub settings: &'a AuditSettings,
+}
+
+type RuleFn = fn(&AuditContext) -> Vec<Finding>;
+
+/// Static rule registry: adding a rule = one module + one entry here.
+fn registry() -> Vec<RuleFn> {
+    vec![]
+}
+
+/// Run every registered rule and return findings sorted by severity then file.
+pub fn run_rules(ctx: &AuditContext) -> Vec<Finding> {
+    let mut findings: Vec<Finding> = registry().iter().flat_map(|rule| rule(ctx)).collect();
+    findings.sort_by(|a, b| (a.severity, &a.file, a.rule).cmp(&(b.severity, &b.file, b.rule)));
+    findings
+}
+
+/// Rough token estimate (chars / 4) — good enough for thresholds and savings.
+pub(crate) fn estimate_tokens(text: &str) -> usize {
+    text.chars().count() / 4
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn severity_orders_critical_first() {
+        assert!(Severity::Critical < Severity::Warning);
+        assert!(Severity::Warning < Severity::Info);
+    }
+
+    #[test]
+    fn estimate_tokens_is_chars_over_four() {
+        assert_eq!(estimate_tokens("abcdefgh"), 2);
+    }
+
+    #[test]
+    fn run_rules_on_empty_config_is_empty() {
+        let config = crate::audit::reverse::ImportedConfig::default();
+        let settings = AuditSettings::default();
+        let ctx = AuditContext {
+            config: &config,
+            settings: &settings,
+        };
+        assert!(run_rules(&ctx).is_empty());
+    }
+}
