@@ -109,9 +109,19 @@ fn glob_prefix(g: &str) -> &str {
     &g[..idx]
 }
 
+fn prefix_contains(short: &str, long: &str) -> bool {
+    if !long.starts_with(short) {
+        return false;
+    }
+    short.is_empty()
+        || short.ends_with('/')
+        || long.len() == short.len()
+        || long[short.len()..].starts_with('/')
+}
+
 fn globs_overlap(a: &str, b: &str) -> bool {
     let (pa, pb) = (glob_prefix(a), glob_prefix(b));
-    pa.starts_with(pb) || pb.starts_with(pa)
+    prefix_contains(pa, pb) || prefix_contains(pb, pa)
 }
 
 fn scoped_agents<'a>(
@@ -379,6 +389,10 @@ mod tests {
         assert!(globs_overlap("src/cli/mod.rs", "src/**"));
         assert!(!globs_overlap("src/**", "docs/**"));
         assert!(globs_overlap("**", "docs/**")); // catch-all overlaps everything
+        assert!(!globs_overlap("api", "api-gateway/**"));
+        assert!(!globs_overlap("src/cli", "src/climate/**"));
+        assert!(globs_overlap("src/", "src/cli/**"));
+        assert!(globs_overlap("src/cli", "src/cli/**"));
     }
 
     #[test]

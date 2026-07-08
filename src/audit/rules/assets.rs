@@ -154,13 +154,33 @@ const DOCUMENTED_AGENT_FIELDS: &[&str] = &[
     "skills",
     "hooks",
     "memory",
+    "mcpServers",
+    "background",
+    "isolation",
+    "initialPrompt",
 ];
+// `tools` is deliberately excluded from the skill allowlist: it is
+// non-standard for skills (Claude Code ignores it there) — `allowed-tools`
+// is the documented field for restricting a skill's tool access.
 const DOCUMENTED_SKILL_FIELDS: &[&str] = &[
     "version",
     "allowed-tools",
     "license",
     "metadata",
     "argument-hint",
+    "model",
+    "context",
+    "agent",
+    "disable-model-invocation",
+    "user-invocable",
+    "disallowed-tools",
+    "effort",
+    "hooks",
+    "paths",
+    "shell",
+    "when_to_use",
+    "arguments",
+    "compatibility",
 ];
 
 /// A12 — non-standard frontmatter fields, one aggregated Info finding.
