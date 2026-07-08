@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [features]
 default = ["tui", "web", "storage", "providers-api"]
-tui = ["dep:ratatui", "dep:crossterm", "dep:tui-markdown", "dep:portable-pty", "dep:strip-ansi-escapes"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:portable-pty", "dep:strip-ansi-escapes"]
 web = ["dep:axum", "dep:tower-http"]
 storage = ["dep:rusqlite"]
 providers-api = ["dep:reqwest"]
@@ -49,7 +49,6 @@ rusqlite = { version = "0.39", features = ["bundled"], optional = true }
 
 # Markdown parsing
 pulldown-cmark = "0.13"
-tui-markdown = { version = "0.3", optional = true }
 
 # Logging
 tracing = "0.1"
