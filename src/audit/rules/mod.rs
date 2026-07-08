@@ -145,6 +145,7 @@ fn registry() -> Vec<RuleFn> {
         collisions::c01_name_collisions,
         collisions::c02_scope_overlap,
         collisions::c03_activation_overlap,
+        collisions::c04_double_ownership,
         collisions::c05_inconsistent_tools,
     ]
 }

@@ -213,6 +213,65 @@ pub(super) fn c05_inconsistent_tools(ctx: &AuditContext) -> Vec<Finding> {
         .collect()
 }
 
+/// C04 — two agents are declared owners of the same module in CLAUDE.md
+/// coordination tables. Deliberately strict (exact agent-name cell + a
+/// path-looking cell on the same row): low recall, near-zero noise.
+pub(super) fn c04_double_ownership(ctx: &AuditContext) -> Vec<Finding> {
+    let Some(instructions) = &ctx.config.instructions else {
+        return Vec::new();
+    };
+    let known: std::collections::HashSet<&str> = ctx
+        .config
+        .agents
+        .iter()
+        .filter(|a| a.issues.is_empty())
+        .map(|a| a.name.as_str())
+        .collect();
+    if known.is_empty() {
+        return Vec::new();
+    }
+    let mut claims: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for line in instructions.content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('|') {
+            continue;
+        }
+        let cells: Vec<&str> = trimmed.split('|').map(str::trim).collect();
+        let Some(agent) = cells.iter().find(|c| known.contains(**c)).copied() else {
+            continue;
+        };
+        for cell in &cells {
+            if cell.contains('/') && !cell.contains(' ') && !cell.is_empty() {
+                let owners = claims.entry(*cell).or_default();
+                if !owners.contains(&agent) {
+                    owners.push(agent);
+                }
+            }
+        }
+    }
+    claims
+        .into_iter()
+        .filter(|(_, owners)| owners.len() > 1)
+        .map(|(path, owners)| Finding {
+            rule: "C04",
+            severity: Severity::Warning,
+            file: instructions.source_path.clone(),
+            related: Vec::new(),
+            message: format!(
+                "agents {} are all declared owners of '{path}'",
+                owners
+                    .iter()
+                    .map(|o| format!("'{o}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            suggestion: Some(
+                "pick a single owner per module or document the shared ownership".to_string(),
+            ),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,5 +427,32 @@ mod tests {
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn c04_flags_two_agents_owning_the_same_module() {
+        use crate::audit::reverse::{ImportedConfig, ImportedInstructions};
+        let config = ImportedConfig {
+            agents: vec![agent("core-dev", "Body"), agent("cli-dev", "Body")],
+            instructions: Some(ImportedInstructions {
+                source_path: "CLAUDE.md".into(),
+                content: "\
+| Agent | Scope |\n\
+|---|---|\n\
+| core-dev | src/core/ |\n\
+| cli-dev | src/core/ |\n\
+| cli-dev | src/cli/ |\n"
+                    .into(),
+            }),
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = c04_double_ownership(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert!(f[0].message.contains("src/core/"));
+        assert!(f[0].message.contains("core-dev") && f[0].message.contains("cli-dev"));
     }
 }
