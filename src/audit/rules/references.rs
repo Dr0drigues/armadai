@@ -17,10 +17,11 @@ fn secret_res() -> &'static [Regex] {
     static RES: OnceLock<Vec<Regex>> = OnceLock::new();
     RES.get_or_init(|| {
         [
-            r"sk-ant-[A-Za-z0-9_-]{20,}",
-            r"sk-[A-Za-z0-9]{20,}",
-            r"AIza[0-9A-Za-z_-]{35}",
-            r"ghp_[A-Za-z0-9]{36}",
+            r"\bsk-ant-[A-Za-z0-9_-]{20,}",
+            r"\bsk-proj-[A-Za-z0-9_-]{20,}",
+            r"\bsk-[A-Za-z0-9]{20,}",
+            r"\bAIza[0-9A-Za-z_-]{35}",
+            r"\bghp_[A-Za-z0-9]{36}",
         ]
         .iter()
         .filter_map(|p| Regex::new(p).ok())
@@ -137,6 +138,36 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A11");
         // Never echo the secret back in the finding.
+        assert!(!f[0].message.contains(&key));
+    }
+
+    #[test]
+    fn a11_does_not_flag_lookalike_identifiers() {
+        let a = agent(
+            "clean",
+            "Run task-abcdefghij0123456789 then check disk-Cache01234567890123456.",
+        );
+        let config = config_with(vec![a]);
+        let settings = AuditSettings::default();
+        let f = a11_plaintext_secret(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert!(f.is_empty());
+    }
+
+    #[test]
+    fn a11_flags_openai_project_key() {
+        let key = format!("sk-proj-{}", "b".repeat(24));
+        let a = agent("leaky-openai", &format!("Use key {key} for calls."));
+        let config = config_with(vec![a]);
+        let settings = AuditSettings::default();
+        let f = a11_plaintext_secret(&AuditContext {
+            config: &config,
+            settings: &settings,
+        });
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].rule, "A11");
         assert!(!f[0].message.contains(&key));
     }
 }

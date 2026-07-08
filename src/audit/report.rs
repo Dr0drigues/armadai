@@ -54,8 +54,10 @@ impl AuditReport {
         lines
     }
 
-    /// Plain aligned output, findings on stderr-style severity ordering
-    /// (findings are already sorted by run_rules).
+    /// Plain aligned output on stdout, findings ordered by severity
+    /// (findings are already sorted by run_rules). The CLI's final
+    /// `anyhow::bail!` on critical findings is what signals errors on
+    /// stderr, so this only ever writes to stdout.
     pub fn print_terminal(&self) {
         println!("armadai audit - {}", self.root.display());
         println!(
@@ -73,10 +75,7 @@ impl AuditReport {
                 f.file.display(),
                 f.message
             );
-            match f.severity {
-                Severity::Critical => eprintln!("{line}"),
-                _ => println!("{line}"),
-            }
+            println!("{line}");
             if let Some(s) = &f.suggestion {
                 println!("        -> {s}");
             }

@@ -7,6 +7,9 @@ pub async fn execute(path: Option<PathBuf>, report: Option<PathBuf>) -> anyhow::
         Some(p) => p,
         None => std::env::current_dir()?,
     };
+    if !root.is_dir() {
+        anyhow::bail!("not a directory: {}", root.display());
+    }
     let settings = AuditSettings::from_project(&root);
     let audit = run_audit(&root, &settings);
     if audit.detected.is_empty() {
@@ -30,6 +33,12 @@ pub async fn execute(path: Option<PathBuf>, report: Option<PathBuf>) -> anyhow::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn execute_fails_on_missing_path() {
+        let result = execute(Some(PathBuf::from("/nonexistent/xyz")), None).await;
+        assert!(result.is_err());
+    }
 
     #[tokio::test]
     async fn execute_fails_on_critical_finding() {
