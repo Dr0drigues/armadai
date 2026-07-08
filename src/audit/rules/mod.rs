@@ -4,6 +4,7 @@ use super::reverse::ImportedConfig;
 
 mod assets;
 mod models;
+mod references;
 mod similarity;
 
 /// Finding severity. Ordering: Critical < Warning < Info (sort shows critical first).
@@ -69,6 +70,8 @@ fn registry() -> Vec<RuleFn> {
         similarity::a07_redundant_agents,
         assets::a08_permissive_tools,
         assets::a09_malformed_skill,
+        references::a10_broken_references,
+        references::a11_plaintext_secret,
     ]
 }
 
