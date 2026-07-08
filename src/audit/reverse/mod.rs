@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub mod claude;
@@ -10,6 +11,9 @@ pub struct PartialMetadata {
     pub model: Option<String>,
     /// `None` means the agent inherits all tools (no restriction declared).
     pub tools: Option<Vec<String>>,
+    /// Frontmatter fields we do not type (kept verbatim for --propose and
+    /// custom-field rules). Never populated by salvage.
+    pub extra: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
 /// Something in a native file that could not be mapped.
@@ -38,6 +42,9 @@ pub struct ImportedSkill {
     pub has_skill_md: bool,
     pub has_frontmatter: bool,
     pub issues: Vec<ParseIssue>,
+    /// Frontmatter fields we do not type (kept verbatim for --propose and
+    /// custom-field rules). Never populated by salvage.
+    pub extra: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
 /// Root instructions file (e.g. CLAUDE.md).

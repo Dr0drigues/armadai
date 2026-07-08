@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -18,6 +19,8 @@ struct ClaudeAgentFrontmatter {
     description: Option<String>,
     model: Option<String>,
     tools: Option<ToolsField>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
 /// Claude Code accepts `tools: Read, Grep` (CSV) or a YAML list.
@@ -96,6 +99,8 @@ fn collect_agent_files(dir: &Path, depth: u32, out: &mut Vec<std::path::PathBuf>
 struct SkillFm {
     name: Option<String>,
     description: Option<String>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
 fn parse_skills(dir: &Path) -> Vec<ImportedSkill> {
@@ -126,6 +131,7 @@ fn parse_skill_dir(dir: &Path) -> ImportedSkill {
             has_skill_md: false,
             has_frontmatter: false,
             issues: Vec::new(),
+            extra: BTreeMap::new(),
         };
     };
     let mut issues = Vec::new();
@@ -137,6 +143,7 @@ fn parse_skill_dir(dir: &Path) -> ImportedSkill {
                 SkillFm {
                     name: salvage_field(raw, "name"),
                     description: salvage_field(raw, "description"),
+                    extra: BTreeMap::new(),
                 }
             });
             (fm, true)
@@ -150,6 +157,7 @@ fn parse_skill_dir(dir: &Path) -> ImportedSkill {
         has_skill_md: true,
         has_frontmatter,
         issues,
+        extra: fm.extra,
     }
 }
 
@@ -188,6 +196,7 @@ fn parse_agent_file(path: &Path) -> ImportedAgent {
                 description: salvage_field(raw, "description"),
                 model: salvage_field(raw, "model"),
                 tools: salvage_field(raw, "tools").map(ToolsField::Csv),
+                extra: BTreeMap::new(),
             }
         }),
         None => {
@@ -202,6 +211,7 @@ fn parse_agent_file(path: &Path) -> ImportedAgent {
             description: fm.description,
             model: fm.model,
             tools: fm.tools.map(ToolsField::into_vec),
+            extra: fm.extra,
         },
         system_prompt: body.trim().to_string(),
         issues,
@@ -501,5 +511,20 @@ mod tests {
         let skill = &config.skills[0];
         assert!(skill.has_skill_md && !skill.has_frontmatter);
         assert!(skill.issues.is_empty()); // standard violation, not a parse error
+    }
+
+    #[test]
+    fn unknown_frontmatter_fields_are_kept_in_extra() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            ".claude/agents/scoped.md",
+            "---\nname: scoped\ndescription: d\npaths:\n  - src/cli/**\n  - docs/\neffort: medium\n---\nBody",
+        );
+        let config = ClaudeReverseLinker.parse(dir.path());
+        let a = &config.agents[0];
+        assert!(a.metadata.extra.contains_key("effort"));
+        assert!(a.metadata.extra.contains_key("paths"));
+        assert!(!a.metadata.extra.contains_key("name")); // typed fields never land in extra
     }
 }

@@ -105,6 +105,7 @@ fn registry() -> Vec<RuleFn> {
         assets::a09_malformed_skill,
         references::a10_broken_references,
         references::a11_plaintext_secret,
+        assets::a12_nonstandard_fields,
     ]
 }
 
@@ -122,6 +123,7 @@ pub(crate) fn estimate_tokens(text: &str) -> usize {
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     use crate::audit::reverse::*;
@@ -134,6 +136,7 @@ pub(crate) mod test_support {
                 description: Some(format!("{name} description")),
                 model: Some("claude-sonnet-5".to_string()),
                 tools: Some(vec!["Read".to_string()]),
+                extra: BTreeMap::new(),
             },
             system_prompt: prompt.to_string(),
             issues: Vec::new(),
