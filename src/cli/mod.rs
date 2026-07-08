@@ -144,7 +144,7 @@ pub enum Command {
     Audit {
         /// Project directory to audit (defaults to current directory)
         path: Option<std::path::PathBuf>,
-        /// Write a markdown report to this file
+        /// Write a report to this file (markdown, or HTML if the extension is .html)
         #[arg(long)]
         report: Option<std::path::PathBuf>,
     },

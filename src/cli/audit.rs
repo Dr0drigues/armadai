@@ -21,8 +21,18 @@ pub async fn execute(path: Option<PathBuf>, report: Option<PathBuf>) -> anyhow::
     }
     audit.print_terminal();
     if let Some(out) = report {
-        std::fs::write(&out, audit.to_markdown())?;
-        println!("\n  Markdown report written to {}", out.display());
+        let is_html = out
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+            .unwrap_or(false);
+        if is_html {
+            std::fs::write(&out, audit.to_html())?;
+            println!("\n  HTML report written to {}", out.display());
+        } else {
+            std::fs::write(&out, audit.to_markdown())?;
+            println!("\n  Markdown report written to {}", out.display());
+        }
     }
     if audit.critical_count() > 0 {
         anyhow::bail!("{} critical finding(s)", audit.critical_count());
@@ -65,5 +75,22 @@ mod tests {
         assert!(result.is_ok());
         let md = std::fs::read_to_string(report_path).unwrap();
         assert!(md.contains("# armadai audit"));
+    }
+
+    #[tokio::test]
+    async fn execute_writes_html_when_extension_is_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("ok.md"),
+            "---\nname: ok\ndescription: Fine agent\nmodel: latest:pro\ntools: Read\n---\nShort prompt.",
+        )
+        .unwrap();
+        let report_path = dir.path().join("audit.html");
+        let result = execute(Some(dir.path().to_path_buf()), Some(report_path.clone())).await;
+        assert!(result.is_ok());
+        let html = std::fs::read_to_string(report_path).unwrap();
+        assert!(html.starts_with("<!doctype html>"));
     }
 }
