@@ -47,7 +47,7 @@ pub(super) fn a10_broken_references(ctx: &AuditContext) -> Vec<Finding> {
         .filter(|slug| !known.contains(slug) && seen.insert(slug.to_string()))
         .map(|slug| Finding {
             rule: "A10",
-            severity: Severity::Critical,
+            severity: Severity::Warning,
             file: instructions.source_path.clone(),
             message: format!("mentions '@{slug}' but no such agent exists"),
             suggestion: Some("create the agent or remove the stale mention".to_string()),
@@ -104,7 +104,7 @@ mod tests {
         });
         assert_eq!(f.len(), 1);
         assert!(f[0].message.contains("ghost-agent"));
-        assert_eq!(f[0].severity, Severity::Critical);
+        assert_eq!(f[0].severity, Severity::Warning);
     }
 
     #[test]
