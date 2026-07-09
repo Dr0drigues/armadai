@@ -333,18 +333,6 @@ pub fn list_available_packs() -> Vec<String> {
     packs
 }
 
-/// Clap value parser that provides completion for available starter pack names.
-pub fn pack_value_parser() -> clap::builder::PossibleValuesParser {
-    let names = list_available_packs();
-    // Leak strings to get 'static references needed by clap's PossibleValuesParser.
-    // This is called once at startup, so the leak is negligible.
-    let leaked: Vec<&'static str> = names
-        .into_iter()
-        .map(|s| &*Box::leak(s.into_boxed_str()))
-        .collect();
-    clap::builder::PossibleValuesParser::new(leaked)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

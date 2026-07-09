@@ -18,7 +18,6 @@ use super::starter::StarterPack;
 
 /// Severity level of a validation issue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Severity {
     Error,
     Warning,
@@ -26,7 +25,6 @@ pub enum Severity {
 
 /// A validation issue found during linting.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ValidationIssue {
     pub severity: Severity,
     pub location: String,
@@ -58,7 +56,6 @@ impl ValidationIssue {
 ///
 /// # Returns
 /// List of validation issues (empty = valid)
-#[allow(dead_code)]
 pub fn validate_pack(pack_root: &Path) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
 
