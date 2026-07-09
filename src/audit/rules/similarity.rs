@@ -1,7 +1,8 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use super::{AuditContext, Finding, Severity, UnionFind};
+use crate::audit::reverse::ImportedAgent;
 
 pub(super) const DUPLICATION_WINDOW: usize = 8;
 pub(super) const REDUNDANCY_THRESHOLD: f64 = 0.8;
@@ -39,6 +40,33 @@ pub(super) fn jaccard(a: &str, b: &str) -> f64 {
     inter / union
 }
 
+/// Connected components of agents sharing at least one `DUPLICATION_WINDOW`-line
+/// window, computed via union-find over pairwise window-hash intersections.
+/// Only components with 2+ members are kept; components are sorted by their
+/// lowest member index. Shared by A06 and `--propose`'s fragment extraction.
+pub(crate) fn duplication_clusters(agents: &[ImportedAgent]) -> Vec<Vec<usize>> {
+    let hashes: Vec<HashSet<u64>> = agents
+        .iter()
+        .map(|a| window_hashes(&a.system_prompt, DUPLICATION_WINDOW))
+        .collect();
+    let mut uf = UnionFind::new(agents.len());
+    for i in 0..agents.len() {
+        for j in (i + 1)..agents.len() {
+            if hashes[i].intersection(&hashes[j]).next().is_some() {
+                uf.union(i, j);
+            }
+        }
+    }
+    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..agents.len() {
+        clusters.entry(uf.find(i)).or_default().push(i);
+    }
+    clusters
+        .into_values()
+        .filter(|members| members.len() >= 2)
+        .collect()
+}
+
 /// A06 — duplicated content, one finding per connected cluster of agents
 /// (pairwise output explodes in O(n²) on real fleets — cls-monorepo showed
 /// 6 findings for one shared block across 4 gate agents).
@@ -48,33 +76,16 @@ pub(super) fn a06_duplicated_blocks(ctx: &AuditContext) -> Vec<Finding> {
         .iter()
         .map(|a| window_hashes(&a.system_prompt, DUPLICATION_WINDOW))
         .collect();
-    let mut uf = UnionFind::new(agents.len());
-    let mut pairs = Vec::new();
-    for i in 0..agents.len() {
-        for j in (i + 1)..agents.len() {
-            let shared = hashes[i].intersection(&hashes[j]).count();
-            if shared > 0 {
-                uf.union(i, j);
-                pairs.push((i, shared));
-            }
-        }
-    }
-    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for i in 0..agents.len() {
-        clusters.entry(uf.find(i)).or_default().push(i);
-    }
-    let mut max_shared: HashMap<usize, usize> = HashMap::new();
-    for (i, shared) in pairs {
-        let root = uf.find(i);
-        let entry = max_shared.entry(root).or_insert(0);
-        *entry = (*entry).max(shared);
-    }
-    clusters
+    duplication_clusters(agents)
         .into_iter()
-        .filter(|(_, members)| members.len() >= 2)
-        .map(|(root, members)| {
+        .map(|members| {
             let names: Vec<&str> = members.iter().map(|&i| agents[i].name.as_str()).collect();
-            let strength = max_shared.get(&root).copied().unwrap_or(0);
+            let mut strength = 0;
+            for (pos, &i) in members.iter().enumerate() {
+                for &j in &members[pos + 1..] {
+                    strength = strength.max(hashes[i].intersection(&hashes[j]).count());
+                }
+            }
             Finding {
                 rule: "A06",
                 severity: Severity::Warning,

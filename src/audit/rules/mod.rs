@@ -8,6 +8,8 @@ mod models;
 mod references;
 mod similarity;
 
+pub(crate) use similarity::duplication_clusters;
+
 /// Finding severity. Ordering: Critical < Warning < Info (sort shows critical first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
