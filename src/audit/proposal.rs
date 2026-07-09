@@ -1,5 +1,6 @@
 //! Generation of an ArmadAI proposal pack from imported native configs.
 use std::fmt::Write as _;
+use std::path::Path;
 
 use super::reverse::ImportedAgent;
 use crate::linker::model_aliases::resolve_alias;
@@ -179,6 +180,82 @@ pub(crate) fn render_prompt(f: &SharedFragment) -> String {
     md
 }
 
+/// Rewrite a `SKILL.md` frontmatter (a) `tools:` -> `allowed-tools:` (the
+/// field Claude Code actually reads) and (b) quote `description:`/`name:`
+/// values that contain `: ` unquoted (would otherwise break YAML parsing).
+/// Only lines between the first two `---` delimiters are touched.
+pub(crate) fn fix_skill_md(content: &str) -> (String, Vec<&'static str>) {
+    let mut fixes = Vec::new();
+    let mut in_frontmatter = false;
+    let mut seen_delims = 0u8;
+    let lines: Vec<String> = content
+        .lines()
+        .map(|line| {
+            if line.trim() == "---" && seen_delims < 2 {
+                seen_delims += 1;
+                in_frontmatter = seen_delims == 1;
+                return line.to_string();
+            }
+            if !in_frontmatter || seen_delims != 1 {
+                return line.to_string();
+            }
+            if let Some(rest) = line.strip_prefix("tools:") {
+                fixes.push("tools->allowed-tools");
+                return format!("allowed-tools:{rest}");
+            }
+            if let Some((key, value)) = line.split_once(':')
+                && matches!(key.trim(), "description" | "name")
+            {
+                let v = value.trim();
+                if v.contains(": ") && !v.starts_with('"') && !v.starts_with('\'') {
+                    fixes.push("quoted-value");
+                    return format!("{}: \"{v}\"", key.trim_end());
+                }
+            }
+            line.to_string()
+        })
+        .collect();
+    (
+        lines.join("\n") + if content.ends_with('\n') { "\n" } else { "" },
+        fixes,
+    )
+}
+
+/// Recursively copy a skill directory (depth <= 5), applying `fix_skill_md`
+/// to the root `SKILL.md`. Returns the list of fixes applied.
+pub(crate) fn copy_skill_dir(src: &Path, dest: &Path) -> anyhow::Result<Vec<&'static str>> {
+    fn copy_dir_recursive(src: &Path, dest: &Path, depth: u8) -> anyhow::Result<()> {
+        if depth > 5 {
+            return Ok(());
+        }
+        std::fs::create_dir_all(dest)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let path = entry.path();
+            let dest_path = dest.join(entry.file_name());
+            if path.is_dir() {
+                copy_dir_recursive(&path, &dest_path, depth + 1)?;
+            } else {
+                std::fs::copy(&path, &dest_path)?;
+            }
+        }
+        Ok(())
+    }
+
+    copy_dir_recursive(src, dest, 0)?;
+
+    let skill_md = dest.join("SKILL.md");
+    let fixes = if skill_md.is_file() {
+        let content = std::fs::read_to_string(&skill_md)?;
+        let (fixed, fixes) = fix_skill_md(&content);
+        std::fs::write(&skill_md, fixed)?;
+        fixes
+    } else {
+        Vec::new()
+    };
+    Ok(fixes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +338,42 @@ mod tests {
         assert!(md.starts_with("---\n"));
         assert!(md.contains("apply_to:\n  - g1\n  - g2"));
         assert!(md.contains("Some shared text."));
+    }
+
+    #[test]
+    fn fix_skill_md_renames_tools_and_quotes_colons() {
+        let content = "---\nname: triage\ndescription: triage is HUMAN — the skill : just assists\ntools: Read, Grep\n---\nBody";
+        let (fixed, fixes) = fix_skill_md(content);
+        assert!(fixed.contains("allowed-tools: Read, Grep"));
+        assert!(fixed.contains("description: \"triage is HUMAN — the skill : just assists\""));
+        assert!(!fixed.contains("\ntools:"));
+        assert_eq!(fixes.len(), 2);
+    }
+
+    #[test]
+    fn fix_skill_md_leaves_clean_files_alone() {
+        let content = "---\nname: ok\ndescription: fine\nallowed-tools: Read\n---\nBody";
+        let (fixed, fixes) = fix_skill_md(content);
+        assert_eq!(fixed, content);
+        assert!(fixes.is_empty());
+    }
+
+    #[test]
+    fn copy_skill_dir_copies_recursively_and_fixes() {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join("references")).unwrap();
+        std::fs::write(
+            src.path().join("SKILL.md"),
+            "---\nname: s\ndescription: d\ntools: Read\n---\nBody",
+        )
+        .unwrap();
+        std::fs::write(src.path().join("references/ref.md"), "ref").unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let dest_dir = dest.path().join("s");
+        let fixes = copy_skill_dir(src.path(), &dest_dir).unwrap();
+        assert_eq!(fixes, vec!["tools->allowed-tools"]);
+        assert!(dest_dir.join("references/ref.md").exists());
+        let skill = std::fs::read_to_string(dest_dir.join("SKILL.md")).unwrap();
+        assert!(skill.contains("allowed-tools: Read"));
     }
 }
