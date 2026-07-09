@@ -11,8 +11,9 @@ use std::path::Path;
 use report::AuditReport;
 use reverse::ReverseLinker;
 
-/// Detect, import and analyse every native surface under `root`.
-pub fn run_audit(root: &Path, settings: &rules::AuditSettings) -> AuditReport {
+/// Detect and parse every native surface under `root`.
+/// Shared by the audit run and `--propose` (which needs the raw imports).
+pub fn import_surfaces(root: &Path) -> (Vec<String>, reverse::ImportedConfig) {
     let linkers: Vec<Box<dyn ReverseLinker>> = vec![Box::new(reverse::claude::ClaudeReverseLinker)];
     let mut detected = Vec::new();
     let mut config = reverse::ImportedConfig::default();
@@ -27,6 +28,12 @@ pub fn run_audit(root: &Path, settings: &rules::AuditSettings) -> AuditReport {
             }
         }
     }
+    (detected, config)
+}
+
+/// Detect, import and analyse every native surface under `root`.
+pub fn run_audit(root: &Path, settings: &rules::AuditSettings) -> AuditReport {
+    let (detected, config) = import_surfaces(root);
     let ctx = rules::AuditContext {
         config: &config,
         settings,
@@ -37,5 +44,25 @@ pub fn run_audit(root: &Path, settings: &rules::AuditSettings) -> AuditReport {
         agent_count: config.agents.len(),
         skill_count: config.skills.len(),
         findings: rules::run_rules(&ctx),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn import_surfaces_returns_detected_and_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("a.md"),
+            "---\nname: a\ndescription: d\n---\nBody",
+        )
+        .unwrap();
+        let (detected, config) = import_surfaces(dir.path());
+        assert_eq!(detected, vec!["claude".to_string()]);
+        assert_eq!(config.agents.len(), 1);
     }
 }
