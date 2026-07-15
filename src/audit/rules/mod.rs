@@ -5,7 +5,7 @@ use super::reverse::ImportedConfig;
 mod assets;
 mod collisions;
 mod models;
-mod references;
+pub(crate) mod references;
 mod similarity;
 
 pub(crate) use similarity::{DUPLICATION_WINDOW, duplication_clusters};

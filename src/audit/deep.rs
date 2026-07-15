@@ -12,10 +12,17 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 
 use super::reverse::ImportedConfig;
+use super::rules::references::secret_res;
 use super::rules::{Finding, Severity};
 
 /// CLI tools that can act as the deep-pass auditor, in preference order.
-const DEEP_CLIS: [&str; 6] = ["claude", "gemini", "codex", "copilot", "opencode", "aider"];
+///
+/// Limited to CLIs verified to run non-interactively and read-only via the
+/// `-p` flag (unified-tool path in `providers::factory`): `codex`/`copilot`/
+/// `opencode` invoked bare (no subcommand/flags) open an interactive/TUI
+/// mode that hangs until timeout, and `aider` auto-commits edits to the
+/// audited repo, which is unacceptable during a read-only audit.
+const DEEP_CLIS: [&str; 2] = ["claude", "gemini"];
 
 #[cfg(not(windows))]
 fn cli_is_available(cli: &str) -> bool {
@@ -85,6 +92,26 @@ fn truncate_chars(text: &str, n: usize) -> String {
     text.chars().take(n).collect()
 }
 
+/// Redact plaintext secrets from `text` before it leaves the process.
+///
+/// Reuses the exact patterns A11 (`rules::references::secret_res`) uses to
+/// *detect* secrets, so the deep pass never sends to an external LLM CLI a
+/// secret that the static pass simultaneously flags as leaked.
+fn redact_secrets(text: &str) -> String {
+    let mut redacted = text.to_string();
+    for re in secret_res() {
+        redacted = re.replace_all(&redacted, "[REDACTED]").into_owned();
+    }
+    redacted
+}
+
+/// Redact secrets, then truncate to at most `n` characters. Redaction must
+/// happen first: truncating before redacting could cut a secret in half,
+/// leaving a still-sensitive fragment in the payload.
+fn sanitize_excerpt(text: &str, n: usize) -> String {
+    truncate_chars(&redact_secrets(text), n)
+}
+
 fn severity_label(severity: Severity) -> &'static str {
     match severity {
         Severity::Critical => "critical",
@@ -111,7 +138,7 @@ pub(crate) fn build_payload(
             model: a.metadata.model.clone(),
             tools: a.metadata.tools.clone(),
             scope: a.metadata.scope_globs(),
-            prompt_excerpt: truncate_chars(&a.system_prompt, truncation),
+            prompt_excerpt: sanitize_excerpt(&a.system_prompt, truncation),
         })
         .collect();
 
@@ -127,7 +154,7 @@ pub(crate) fn build_payload(
     let instructions_excerpt = config
         .instructions
         .as_ref()
-        .map(|i| truncate_chars(&i.content, truncation));
+        .map(|i| sanitize_excerpt(&i.content, truncation));
 
     let static_findings = findings
         .iter()
@@ -286,6 +313,22 @@ mod tests {
             100
         );
         assert_eq!(v["static_findings"][0]["rule"], "A08");
+    }
+
+    #[test]
+    fn build_payload_redacts_secret_patterns() {
+        let fake_key = "sk-ant-abcdefghijklmnopqrstuvwx"; // matches A11's sk-ant- pattern
+        let a = agent(
+            "leaky",
+            &format!("Do not leak this: {fake_key}\nEnd of prompt."),
+        );
+        let config = config_with(vec![a]);
+        let json = build_payload(&config, &[], 5000);
+        assert!(json.contains("[REDACTED]"), "payload was: {json}");
+        assert!(
+            !json.contains(fake_key),
+            "payload leaked the secret: {json}"
+        );
     }
 
     #[test]

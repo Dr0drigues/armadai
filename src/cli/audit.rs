@@ -24,23 +24,17 @@ pub(crate) fn min_severity_from(flag: &str, quiet: bool) -> Severity {
 
 /// Build the in-memory auditor agent for the given detected CLI.
 ///
-/// Known unified tool names (`claude`, `gemini`, `aider`) go through the
-/// standard tool resolution (correct CLI flags via `providers::factory`).
-/// Other detected CLIs (`codex`, `copilot`, `opencode`) are not in that
-/// registry, so they are wired via the explicit `cli` provider with no
-/// extra flags.
+/// Only `claude` and `gemini` are supported (see `deep::DEEP_CLIS`), both
+/// through the standard unified-tool resolution (`provider = cli`, no
+/// explicit `command`), which invokes them non-interactively via `-p`.
 fn build_deep_auditor(cli: &str) -> Agent {
-    let (provider, command) = match cli {
-        "claude" | "gemini" | "aider" => (cli.to_string(), None),
-        other => ("cli".to_string(), Some(other.to_string())),
-    };
     Agent {
         name: "deep-auditor".to_string(),
         source: PathBuf::from("<in-memory>"),
         metadata: AgentMetadata {
-            provider,
+            provider: cli.to_string(),
             model: Some("latest:pro".to_string()),
-            command,
+            command: None,
             args: None,
             temperature: 0.2,
             max_tokens: None,
@@ -102,13 +96,12 @@ async fn apply_deep_pass(
     cli: Option<&str>,
 ) -> anyhow::Result<()> {
     let Some(cli) = cli else {
-        anyhow::bail!(
-            "--deep requires an LLM CLI (claude, gemini, codex, copilot, opencode, aider); none found in PATH"
-        );
+        anyhow::bail!("--deep requires an LLM CLI (claude, gemini); none found in PATH");
     };
     let (_, config) = import_surfaces(root);
     let agent = build_deep_auditor(cli);
     let run = |prompt: &str| call_deep_auditor(&agent, prompt);
+    eprintln!("  Note: --deep sends (secret-redacted) prompt excerpts to the '{cli}' CLI.");
     match run_deep(
         &config,
         &audit.findings,

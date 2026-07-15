@@ -157,7 +157,7 @@ pub enum Command {
         /// Generate an installable ArmadAI pack from the audited config (.armadai-proposal/)
         #[arg(long)]
         propose: bool,
-        /// Run an optional LLM pass (needs an installed CLI: claude, gemini, ...) for semantic findings
+        /// Run an optional LLM pass (needs an installed CLI: claude, gemini): sends prompt excerpts (with detected secrets redacted) to the CLI
         #[arg(long)]
         deep: bool,
     },

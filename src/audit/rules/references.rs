@@ -13,7 +13,10 @@ fn mention_re() -> &'static Regex {
     })
 }
 
-fn secret_res() -> &'static [Regex] {
+/// Compiled plaintext-secret patterns used by A11. Also reused by the deep
+/// pass (`audit::deep`) to redact secrets from prompt excerpts before they
+/// are sent to an external LLM CLI.
+pub(crate) fn secret_res() -> &'static [Regex] {
     static RES: OnceLock<Vec<Regex>> = OnceLock::new();
     RES.get_or_init(|| {
         [
