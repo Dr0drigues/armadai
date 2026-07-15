@@ -49,6 +49,9 @@ pub struct AuditSettings {
     /// C03: Jaccard similarity above which two activation descriptions are
     /// considered ambiguous for routing.
     pub activation_similarity: f64,
+    /// Deep pass: max characters kept per prompt/instructions excerpt sent
+    /// to the LLM auditor payload.
+    pub deep_prompt_truncation: usize,
 }
 
 impl Default for AuditSettings {
@@ -56,6 +59,7 @@ impl Default for AuditSettings {
         Self {
             prompt_token_threshold: 4000,
             activation_similarity: 0.6,
+            deep_prompt_truncation: 2000,
         }
     }
 }
@@ -74,6 +78,7 @@ impl AuditSettings {
         struct AuditSection {
             prompt_token_threshold: Option<usize>,
             activation_similarity: Option<f64>,
+            deep_prompt_truncation: Option<usize>,
         }
         let mut settings = Self::default();
         for candidate in ["armadai.yaml", ".armadai/config.yaml"] {
@@ -88,6 +93,9 @@ impl AuditSettings {
                 }
                 if let Some(s) = section.activation_similarity {
                     settings.activation_similarity = s;
+                }
+                if let Some(t) = section.deep_prompt_truncation {
+                    settings.deep_prompt_truncation = t;
                 }
             }
             break;
@@ -225,12 +233,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("armadai.yaml"),
-            "audit:\n  prompt_token_threshold: 1234\n  activation_similarity: 0.75\n",
+            "audit:\n  prompt_token_threshold: 1234\n  activation_similarity: 0.75\n  deep_prompt_truncation: 500\n",
         )
         .unwrap();
         let s = AuditSettings::from_project(dir.path());
         assert_eq!(s.prompt_token_threshold, 1234);
         assert!((s.activation_similarity - 0.75).abs() < f64::EPSILON);
+        assert_eq!(s.deep_prompt_truncation, 500);
     }
 
     #[test]
@@ -239,6 +248,7 @@ mod tests {
         let s = AuditSettings::from_project(dir.path());
         assert_eq!(s.prompt_token_threshold, 4000);
         assert!((s.activation_similarity - 0.6).abs() < f64::EPSILON);
+        assert_eq!(s.deep_prompt_truncation, 2000);
     }
 
     #[test]

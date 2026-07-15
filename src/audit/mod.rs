@@ -2,6 +2,7 @@
 //!
 //! Reads native CLI configs (Claude Code first) through `ReverseLinker`s,
 //! runs static rules over the imported assets and produces an `AuditReport`.
+pub mod deep;
 pub mod proposal;
 pub mod report;
 pub mod reverse;
