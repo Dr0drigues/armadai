@@ -89,6 +89,45 @@ fn call_deep_auditor(agent: &Agent, prompt: &str) -> anyhow::Result<String> {
     Ok(response.content)
 }
 
+/// Run the `--deep` LLM analysis pass and merge its outcome into `audit`.
+///
+/// `cli` is the already-detected CLI name (or `None` if no supported LLM CLI
+/// was found in `PATH`); it is passed in rather than re-detected here so
+/// callers (and tests) can inject the detection result instead of mutating
+/// the process environment.
+async fn apply_deep_pass(
+    audit: &mut crate::audit::report::AuditReport,
+    root: &std::path::Path,
+    settings: &AuditSettings,
+    cli: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(cli) = cli else {
+        anyhow::bail!(
+            "--deep requires an LLM CLI (claude, gemini, codex, copilot, opencode, aider); none found in PATH"
+        );
+    };
+    let (_, config) = import_surfaces(root);
+    let agent = build_deep_auditor(cli);
+    let run = |prompt: &str| call_deep_auditor(&agent, prompt);
+    match run_deep(
+        &config,
+        &audit.findings,
+        settings.deep_prompt_truncation,
+        run,
+    )? {
+        DeepOutcome::Findings(v) => {
+            audit.findings.extend(v);
+            audit
+                .findings
+                .sort_by(|a, b| (a.severity, &a.file, a.rule).cmp(&(b.severity, &b.file, b.rule)));
+        }
+        DeepOutcome::Raw(s) => {
+            audit.deep_raw = Some(s);
+        }
+    }
+    Ok(())
+}
+
 pub async fn execute(
     path: Option<PathBuf>,
     report: Option<PathBuf>,
@@ -114,30 +153,7 @@ pub async fn execute(
         return Ok(());
     }
     if deep {
-        let Some(cli) = available_cli() else {
-            anyhow::bail!(
-                "--deep requires an LLM CLI (claude, gemini, codex, copilot, opencode, aider); none found in PATH"
-            );
-        };
-        let (_, config) = import_surfaces(&root);
-        let agent = build_deep_auditor(cli);
-        let run = |prompt: &str| call_deep_auditor(&agent, prompt);
-        match run_deep(
-            &config,
-            &audit.findings,
-            settings.deep_prompt_truncation,
-            run,
-        )? {
-            DeepOutcome::Findings(v) => {
-                audit.findings.extend(v);
-                audit.findings.sort_by(|a, b| {
-                    (a.severity, &a.file, a.rule).cmp(&(b.severity, &b.file, b.rule))
-                });
-            }
-            DeepOutcome::Raw(s) => {
-                audit.deep_raw = Some(s);
-            }
-        }
+        apply_deep_pass(&mut audit, &root, &settings, available_cli()).await?;
     }
     audit.print_terminal(min_severity_from(&min_severity, quiet));
     if let Some(out) = report {
@@ -301,44 +317,17 @@ mod tests {
         assert!(dir.path().join(".armadai-proposal/agents/ok.md").is_file());
     }
 
-    // Plain `#[test]` (not `#[tokio::test]`) with a manual runtime: holding
-    // `ENV_MUTEX` across an `.await` trips `clippy::await_holding_lock`, and
-    // this codebase's `ENV_MUTEX` is a plain `std::sync::Mutex` shared with
-    // other sync tests (see `core::config`), so it is not changed here.
-    // Driving the future via `block_on` from sync code keeps the guard held
-    // for the whole PATH mutation without an `.await` expression.
-    #[test]
-    fn deep_without_cli_errors_explicitly() {
-        // Force PATH empty so no CLI is found.
-        // Serialised via ENV_MUTEX to avoid data races with other tests
-        // that spawn subprocesses relying on PATH.
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+    #[tokio::test]
+    async fn deep_pass_without_cli_errors_explicitly() {
         let dir = tempfile::tempdir().unwrap();
         let agents = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
         std::fs::write(agents.join("a.md"), "---\nname: a\ndescription: d\n---\nP.").unwrap();
-        // SAFETY: guarded by ENV_MUTEX above; restore PATH after.
-        let old = std::env::var_os("PATH");
-        unsafe { std::env::set_var("PATH", "") };
-        let result = tokio::runtime::Runtime::new().unwrap().block_on(execute(
-            Some(dir.path().to_path_buf()),
-            None,
-            "info".into(),
-            false,
-            false,
-            true,
-        ));
-        unsafe {
-            if let Some(p) = old {
-                std::env::set_var("PATH", p)
-            }
-        }
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("--deep requires an LLM CLI")
-        );
+        let settings = AuditSettings::from_project(dir.path());
+        let mut audit = run_audit(dir.path(), &settings);
+        let err = apply_deep_pass(&mut audit, dir.path(), &settings, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("--deep requires an LLM CLI"));
     }
 }

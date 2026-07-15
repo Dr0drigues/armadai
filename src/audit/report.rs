@@ -266,7 +266,8 @@ impl AuditReport {
         }
         if let Some(raw) = &self.deep_raw {
             let _ = writeln!(md, "## Deep analysis (unstructured)\n");
-            let _ = writeln!(md, "```\n{raw}\n```\n");
+            let fence = "`".repeat(fence_len_for(raw));
+            let _ = writeln!(md, "{fence}\n{raw}\n{fence}\n");
         }
         md
     }
@@ -530,6 +531,24 @@ fn md_cell(s: &str) -> String {
     s.replace('|', "\\|").replace('\n', " ")
 }
 
+/// Length of the code fence needed to safely wrap `text` in a Markdown code
+/// block: at least 3 backticks, and longer than any run of consecutive
+/// backticks already present in `text` (otherwise an inner run could close
+/// the fence early and corrupt the rendered report).
+fn fence_len_for(text: &str) -> usize {
+    let mut longest_run = 0;
+    let mut current_run = 0;
+    for c in text.chars() {
+        if c == '`' {
+            current_run += 1;
+            longest_run = longest_run.max(current_run);
+        } else {
+            current_run = 0;
+        }
+    }
+    (longest_run + 1).max(3)
+}
+
 /// Escape the five HTML special characters so untrusted findings text
 /// (file paths, messages, suggestions) can never break out of markup.
 fn html_escape(s: &str) -> String {
@@ -720,5 +739,18 @@ mod tests {
         let r = report_with(vec![finding("D01", Severity::Warning)]);
         let md = r.to_markdown();
         assert!(md.contains("| D01 |"));
+    }
+
+    #[test]
+    fn deep_raw_with_backtick_fence_uses_longer_outer_fence() {
+        let mut r = report_with(vec![]);
+        let raw = "before\n```\nnested code block\n```\nafter";
+        r.deep_raw = Some(raw.to_string());
+        let md = r.to_markdown();
+        // The full raw text (including its own ``` fence) must survive intact.
+        assert!(md.contains(raw));
+        // The outer fence must be longer than the longest inner backtick run (3).
+        assert!(md.contains("````\n"));
+        assert!(!md.contains("`````"));
     }
 }
