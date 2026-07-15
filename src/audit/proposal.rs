@@ -13,6 +13,12 @@ pub(crate) fn portable_model(model: Option<&str>) -> String {
     let Some(model) = model else {
         return "latest:pro".to_string();
     };
+    if model.trim().eq_ignore_ascii_case("inherit") {
+        // "inherit" means "use whatever the host CLI defaults to" — there is
+        // no portable equivalent, so fall back to the same default as "no
+        // model specified".
+        return "latest:pro".to_string();
+    }
     if is_latest_placeholder(model) {
         return model.to_string();
     }
@@ -26,32 +32,85 @@ pub(crate) fn portable_model(model: Option<&str>) -> String {
     }
 }
 
+/// Collapse any whitespace (incl. newlines) to single spaces so a description
+/// is safe on one blockquote line and one `- description:` metadata line.
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// The ArmadAI agent format terminates a section at every markdown heading,
 /// so a system prompt cannot contain headings. Native Claude Code prompts are
 /// often full markdown documents with headings (including literal `## Metadata`
 /// / `## System Prompt` lines that would otherwise clobber the agent's real
 /// sections on re-parse). Demote ATX headings to bold text: content and visual
 /// emphasis are preserved, and no heading survives to break section parsing.
+///
+/// Fenced code blocks (``` or ~~~) are left completely untouched — a line
+/// starting with `#` inside a fence is code, not a heading. Setext headings
+/// (`Title` followed by a line of only `=` or only `-`) are handled too:
+/// they truncate the ArmadAI parser's System Prompt section just as ATX
+/// headings do, so the underline is dropped and the title line is bolded in
+/// place, unless the previous line doesn't look like a plain paragraph (e.g.
+/// it is blank, a list/quote/table line, or already a heading/underline) —
+/// in that case a `---`/`===` line is left alone as a real thematic break.
 fn demote_headings(prompt: &str) -> String {
-    prompt
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            // ATX heading: 1-6 leading '#', then a space, then the title.
-            if let Some(rest) = trimmed.strip_prefix('#') {
-                let hashes = 1 + rest.chars().take_while(|&c| c == '#').count();
-                let after = &trimmed[hashes..];
-                if hashes <= 6 && after.starts_with(' ') {
-                    let title = after.trim().trim_end_matches('#').trim();
-                    if !title.is_empty() {
-                        return format!("**{title}**");
+    let mut out: Vec<String> = Vec::new();
+    let mut in_fence = false;
+
+    for line in prompt.lines() {
+        let trimmed = line.trim();
+
+        // Fenced code blocks: toggle state, never transform their contents.
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push(line.to_string());
+            continue;
+        }
+        if in_fence {
+            out.push(line.to_string());
+            continue;
+        }
+
+        // Setext heading: current line is all '=' or all '-', and the
+        // previously emitted line is a plain paragraph line.
+        let is_all_eq = !trimmed.is_empty() && trimmed.chars().all(|c| c == '=');
+        let is_all_dash = !trimmed.is_empty() && trimmed.chars().all(|c| c == '-');
+        if is_all_eq || is_all_dash {
+            if let Some(prev) = out.last() {
+                let is_plain_paragraph = !prev.is_empty()
+                    && !prev.starts_with(char::is_whitespace)
+                    && !prev.starts_with(['#', '-', '*', '>', '|'])
+                    && !prev.chars().all(|c| c == '=')
+                    && !prev.chars().all(|c| c == '-');
+                if is_plain_paragraph {
+                    let title = prev.trim().to_string();
+                    if let Some(last) = out.last_mut() {
+                        *last = format!("**{title}**");
                     }
+                    continue; // drop the underline line
                 }
             }
-            line.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+            out.push(line.to_string());
+            continue;
+        }
+
+        // ATX heading: 1-6 leading '#', then a space, then the title.
+        let trimmed_start = line.trim_start();
+        if let Some(rest) = trimmed_start.strip_prefix('#') {
+            let hashes = 1 + rest.chars().take_while(|&c| c == '#').count();
+            let after = &trimmed_start[hashes..];
+            if hashes <= 6 && after.starts_with(' ') {
+                let title = after.trim().trim_end_matches('#').trim();
+                if !title.is_empty() {
+                    out.push(format!("**{title}**"));
+                    continue;
+                }
+            }
+        }
+        out.push(line.to_string());
+    }
+
+    out.join("\n")
 }
 
 /// Render an imported agent in the ArmadAI agent format
@@ -64,6 +123,9 @@ pub(crate) fn render_agent(agent: &ImportedAgent) -> String {
         .description
         .as_deref()
         .unwrap_or("Imported from native Claude Code configuration.");
+    // Native descriptions can be multiline (e.g. YAML `description: |` blocks);
+    // collapse to one line so it stays a single blockquote / metadata line.
+    let description = one_line(description);
     let _ = writeln!(md, "> {description}\n");
     let _ = writeln!(md, "## Metadata");
     let _ = writeln!(md, "- provider: claude");
@@ -134,10 +196,16 @@ fn contains_run(haystack: &[&str], needle: &[&str]) -> bool {
 }
 
 /// Find the longest block of lines (≥8) common to every agent in `agents`,
-/// and turn it into a named `SharedFragment`. Returns `None` when no common
-/// block reaches the minimum window.
+/// and turn it into a named `SharedFragment`. `slugs` must be parallel to
+/// `agents` and contain each member's final agent slug: the fragment's
+/// `apply_to` must reference slugs (matched against the generated agent's
+/// H1/name), not raw display names, or runtime prompt matching
+/// (`core::prompt`) and pack.yaml validation (R5, matched against
+/// pack.yaml's agent slug list) would disagree on what an agent is called.
+/// Returns `None` when no common block reaches the minimum window.
 pub(crate) fn extract_shared_fragment(
     agents: &[&ImportedAgent],
+    slugs: &[&str],
     index: usize,
 ) -> Option<SharedFragment> {
     let members: Vec<Vec<&str>> = agents
@@ -150,7 +218,7 @@ pub(crate) fn extract_shared_fragment(
     }
     Some(SharedFragment {
         name: format!("shared-conventions-{}", index + 1),
-        apply_to: agents.iter().map(|a| a.name.clone()).collect(),
+        apply_to: slugs.iter().map(|s| s.to_string()).collect(),
         body: block.join("\n"),
     })
 }
@@ -286,7 +354,19 @@ pub(crate) fn copy_skill_dir(src: &Path, dest: &Path) -> anyhow::Result<Vec<&'st
 
 /// Return a slug guaranteed not to already be in `used`. On collision,
 /// appends `-2`, `-3`, ... until a free slug is found, then reserves it.
-fn unique_slug(base: String, used: &mut std::collections::HashSet<String>) -> String {
+/// Falls back to `fallback` (e.g. `"agent"` / `"skill"`) when `base` is
+/// empty — e.g. a fully non-Latin name slugifies to `""` — so we never
+/// write a bare `.md` file or an empty pack.yaml entry.
+fn unique_slug(
+    base: String,
+    used: &mut std::collections::HashSet<String>,
+    fallback: &str,
+) -> String {
+    let base = if base.is_empty() {
+        fallback.to_string()
+    } else {
+        base
+    };
     if used.insert(base.clone()) {
         return base;
     }
@@ -340,8 +420,29 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
         })
         .collect();
 
-    // Shared fragments from duplication clusters (guard very large prompts).
     let owned: Vec<ImportedAgent> = convertible.iter().map(|a| (*a).clone()).collect();
+
+    // Compute each agent's final slug once, disambiguating collisions (e.g. a
+    // `name:` frontmatter and a filename-stem fallback both slugifying to the
+    // same value). Both the fragment `apply_to` lists and the agent-write
+    // loop reuse this exact pairing: the generated agent's H1/name is set to
+    // its slug (not its raw display name), because runtime prompt matching
+    // (`core::prompt`) matches `apply_to` against the H1 name while pack.yaml
+    // validation (R5) matches it against the pack's slug list — the two can
+    // only agree if H1 == slug.
+    let mut used_agent_slugs = std::collections::HashSet::new();
+    let agent_slugs: Vec<String> = owned
+        .iter()
+        .map(|a| {
+            unique_slug(
+                crate::linker::slugify(&a.name),
+                &mut used_agent_slugs,
+                "agent",
+            )
+        })
+        .collect();
+
+    // Shared fragments from duplication clusters (guard very large prompts).
     let clusters = crate::audit::rules::duplication_clusters(&owned);
     let mut fragments: Vec<SharedFragment> = Vec::new();
     for (i, members) in clusters.iter().enumerate() {
@@ -352,27 +453,22 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
         {
             continue;
         }
-        if let Some(f) = extract_shared_fragment(&refs, i) {
+        let slugs: Vec<&str> = members.iter().map(|&m| agent_slugs[m].as_str()).collect();
+        if let Some(f) = extract_shared_fragment(&refs, &slugs, i) {
             fragments.push(f);
         }
     }
 
-    // Compute each agent's final slug once, disambiguating collisions (e.g. a
-    // `name:` frontmatter and a filename-stem fallback both slugifying to the
-    // same value). The agent-write loop and the pack.yaml `agents:` list must
-    // reuse this exact pairing so a slug always points at the file it named.
-    let mut used_agent_slugs = std::collections::HashSet::new();
-    let agent_slugs: Vec<String> = owned
-        .iter()
-        .map(|a| unique_slug(crate::linker::slugify(&a.name), &mut used_agent_slugs))
-        .collect();
-
     std::fs::create_dir_all(out_dir.join("agents"))?;
-    // Agents: render with their shared fragments stripped out.
+    // Agents: render with their shared fragments stripped out. The clone's
+    // name is set to its slug BEFORE the strip loop so `apply_to` (slugs)
+    // matches, and BEFORE `render_agent` so the H1 is the slug too. The
+    // original display name stays visible via `metadata.description`.
     for (a, slug) in owned.iter().zip(agent_slugs.iter()) {
         let mut agent = a.clone();
+        agent.name = slug.clone();
         for f in &fragments {
-            if f.apply_to.iter().any(|n| n == &agent.name) {
+            if f.apply_to.iter().any(|n| n == slug) {
                 agent.system_prompt = strip_fragment(&agent.system_prompt, &f.body);
             }
         }
@@ -398,7 +494,13 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
     let mut used_skill_slugs = std::collections::HashSet::new();
     let skill_slugs: Vec<String> = installable_skills
         .iter()
-        .map(|s| unique_slug(crate::linker::slugify(&s.name), &mut used_skill_slugs))
+        .map(|s| {
+            unique_slug(
+                crate::linker::slugify(&s.name),
+                &mut used_skill_slugs,
+                "skill",
+            )
+        })
         .collect();
     if !installable_skills.is_empty() {
         std::fs::create_dir_all(out_dir.join("skills"))?;
@@ -443,12 +545,36 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
     std::fs::write(out_dir.join("pack.yaml"), pack)?;
 
     // Invariant: the generator never ships an invalid pack.
-    let errors: Vec<String> = crate::core::pack_validation::validate_pack(&out_dir)
+    let mut errors: Vec<String> = crate::core::pack_validation::validate_pack(&out_dir)
         .into_iter()
         .filter(|i| matches!(i.severity, crate::core::pack_validation::Severity::Error))
         .map(|i| format!("{}: {}", i.location, i.message))
         .collect();
+
+    // Behavioral round-trip gate: pack_validation only checks structure/YAML,
+    // not that the real ArmadAI parser can still make sense of each agent
+    // (this is the backstop for any future regression in one_line/
+    // demote_headings). Every generated agent must re-parse, and must not
+    // have lost its whole system prompt in the process.
+    for (a, slug) in owned.iter().zip(agent_slugs.iter()) {
+        let file = out_dir.join("agents").join(format!("{slug}.md"));
+        match crate::parser::parse_agent_file(&file) {
+            Ok(parsed) => {
+                if parsed.system_prompt.trim().is_empty() && !a.system_prompt.trim().is_empty() {
+                    errors.push(format!(
+                        "agents/{slug}.md: system prompt became empty on re-parse"
+                    ));
+                }
+            }
+            Err(e) => errors.push(format!("agents/{slug}.md: failed to re-parse: {e}")),
+        }
+    }
+
     if !errors.is_empty() {
+        // Never leave a broken or partial proposal on disk: a leftover
+        // `.armadai-proposal/` would also block any retry (the generator
+        // refuses to overwrite an existing directory).
+        let _ = std::fs::remove_dir_all(&out_dir);
         anyhow::bail!(
             "generated proposal failed validation:\n{}",
             errors.join("\n")
@@ -468,7 +594,7 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audit::rules::test_support::agent;
+    use crate::audit::rules::test_support::{agent, config_with};
 
     #[test]
     fn portable_model_maps_concrete_models_to_tiers() {
@@ -478,6 +604,24 @@ mod tests {
         assert_eq!(portable_model(None), "latest:pro");
         // Deprecated alias resolved first, then classified.
         assert_eq!(portable_model(Some("gemini-3.0-pro")), "latest:pro");
+    }
+
+    #[test]
+    fn portable_model_treats_inherit_as_default() {
+        assert_eq!(portable_model(Some("inherit")), "latest:pro");
+        assert_eq!(portable_model(Some("  Inherit  ")), "latest:pro");
+        assert_eq!(portable_model(Some("INHERIT")), "latest:pro");
+    }
+
+    #[test]
+    fn demote_headings_handles_setext_and_skips_fences() {
+        let input = "Workflow\n---\nkeep me\n\n```bash\n# not a heading\n```\n\nTitle\n===";
+        let out = demote_headings(input);
+        assert!(out.contains("**Workflow**"));
+        assert!(!out.lines().any(|l| l.trim() == "---")); // setext underline dropped
+        assert!(out.contains("keep me"));
+        assert!(out.contains("# not a heading")); // untouched inside fence
+        assert!(out.contains("**Title**"));
     }
 
     #[test]
@@ -538,7 +682,7 @@ mod tests {
         let a1 = agent("g1", &format!("Intro one.\n\n{b}Outro one."));
         let a2 = agent("g2", &format!("{b}Outro two."));
         let refs: Vec<&ImportedAgent> = vec![&a1, &a2];
-        let f = extract_shared_fragment(&refs, 0).unwrap();
+        let f = extract_shared_fragment(&refs, &["g1", "g2"], 0).unwrap();
         assert_eq!(f.name, "shared-conventions-1");
         assert_eq!(f.apply_to, vec!["g1".to_string(), "g2".to_string()]);
         assert!(f.body.contains("Convention line 1"));
@@ -552,7 +696,7 @@ mod tests {
         let a2 = agent("s2", "short\ncommon\ntext");
         let refs: Vec<&ImportedAgent> = vec![&a1, &a2];
         // 3 common lines < 8-line window: not worth a shared fragment.
-        assert!(extract_shared_fragment(&refs, 0).is_none());
+        assert!(extract_shared_fragment(&refs, &["s1", "s2"], 0).is_none());
     }
 
     #[test]
@@ -697,5 +841,87 @@ mod tests {
         let pack = std::fs::read_to_string(dir.path().join(".armadai-proposal/pack.yaml")).unwrap();
         assert!(pack.contains("- gate-a\n"));
         assert!(pack.contains("- gate-a-2\n"));
+    }
+
+    // --- Adversarial round-trip tests (through the REAL parser) ---------
+
+    #[test]
+    fn generate_proposal_collapses_multiline_description_without_corrupting_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = agent(
+            "multiline-desc",
+            "Line one of the prompt.\n\nLine two of the prompt, long enough to matter.",
+        );
+        // A multiline description containing something that looks like a
+        // metadata key on its own line: if emitted verbatim this would be
+        // parsed as a bogus `- mode: strict` metadata entry.
+        a.metadata.description =
+            Some("Handles triage.\n- mode: strict\nAlso reviews PRs.".to_string());
+        let config = config_with(vec![a]);
+
+        let summary = generate_proposal(dir.path(), &config).unwrap();
+        assert_eq!(summary.agents, 1);
+
+        let out = dir.path().join(".armadai-proposal");
+        let parsed =
+            crate::parser::parse_agent_file(&out.join("agents/multiline-desc.md")).unwrap();
+        assert_eq!(parsed.metadata.provider, "claude");
+    }
+
+    #[test]
+    fn generate_proposal_setext_heading_does_not_truncate_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = agent("setext-agent", "Intro\n\nWorkflow\n---\nSENTINEL_TAIL");
+        let config = config_with(vec![a]);
+
+        let summary = generate_proposal(dir.path(), &config).unwrap();
+        assert_eq!(summary.agents, 1);
+
+        let out = dir.path().join(".armadai-proposal");
+        let parsed = crate::parser::parse_agent_file(&out.join("agents/setext-agent.md")).unwrap();
+        assert!(parsed.system_prompt.contains("SENTINEL_TAIL"));
+    }
+
+    #[test]
+    fn generate_proposal_shared_fragment_apply_to_uses_slugs_not_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = block();
+        let a1 = agent("Gate Alpha", &format!("Intro alpha.\n\n{b}Outro alpha."));
+        let a2 = agent("Gate Beta", &format!("{b}Outro beta."));
+        let config = config_with(vec![a1, a2]);
+
+        let summary = generate_proposal(dir.path(), &config).unwrap();
+        assert_eq!(summary.agents, 2);
+        assert_eq!(summary.prompts, 1);
+
+        let out = dir.path().join(".armadai-proposal");
+        let pack = std::fs::read_to_string(out.join("pack.yaml")).unwrap();
+        assert!(pack.contains("- gate-alpha\n"));
+        assert!(pack.contains("- gate-beta\n"));
+
+        let prompt = std::fs::read_to_string(out.join("prompts/shared-conventions-1.md")).unwrap();
+        assert!(prompt.contains("apply_to:\n  - gate-alpha\n  - gate-beta"));
+
+        // Both generated agents parse and the shared block was stripped.
+        for slug in ["gate-alpha", "gate-beta"] {
+            let parsed =
+                crate::parser::parse_agent_file(&out.join(format!("agents/{slug}.md"))).unwrap();
+            assert_eq!(parsed.metadata.provider, "claude");
+        }
+    }
+
+    #[test]
+    fn generate_proposal_inherit_model_becomes_default_tier() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = agent("inherit-agent", "Does the thing on behalf of the user.");
+        a.metadata.model = Some("inherit".to_string());
+        let config = config_with(vec![a]);
+
+        let summary = generate_proposal(dir.path(), &config).unwrap();
+        assert_eq!(summary.agents, 1);
+
+        let out = dir.path().join(".armadai-proposal");
+        let content = std::fs::read_to_string(out.join("agents/inherit-agent.md")).unwrap();
+        assert!(content.contains("- model: latest:pro"));
     }
 }
