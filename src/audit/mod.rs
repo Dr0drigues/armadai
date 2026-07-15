@@ -46,6 +46,7 @@ pub fn run_audit(root: &Path, settings: &rules::AuditSettings) -> AuditReport {
         agent_count: config.agents.len(),
         skill_count: config.skills.len(),
         findings: rules::run_rules(&ctx),
+        deep_raw: None,
     }
 }
 
