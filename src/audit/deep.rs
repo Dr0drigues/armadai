@@ -7,10 +7,40 @@
 //! team topology suggestions, CLAUDE.md contradictions) that a purely
 //! syntactic pass cannot see.
 
+use std::process::{Command, Stdio};
+
 use serde::{Deserialize, Serialize};
 
 use super::reverse::ImportedConfig;
 use super::rules::{Finding, Severity};
+
+/// CLI tools that can act as the deep-pass auditor, in preference order.
+const DEEP_CLIS: [&str; 6] = ["claude", "gemini", "codex", "copilot", "opencode", "aider"];
+
+#[cfg(not(windows))]
+fn cli_is_available(cli: &str) -> bool {
+    Command::new("which")
+        .arg(cli)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[cfg(windows)]
+fn cli_is_available(cli: &str) -> bool {
+    Command::new("where")
+        .arg(cli)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Detect the first available CLI tool usable as the deep-pass auditor.
+pub(crate) fn available_cli() -> Option<&'static str> {
+    DEEP_CLIS.into_iter().find(|cli| cli_is_available(cli))
+}
 
 /// Embedded instructions for the deep-pass auditor persona.
 const AUDITOR_INSTRUCTIONS: &str = include_str!("deep_auditor.md");
@@ -208,6 +238,24 @@ pub(crate) fn parse_deep_response(text: &str) -> DeepOutcome {
     DeepOutcome::Findings(findings)
 }
 
+/// Run the deep pass: build the payload/prompt from `config`/`findings`,
+/// invoke `run` to obtain the auditor's raw response, and parse it.
+///
+/// A failure of `run` itself (e.g. the CLI could not be invoked) is
+/// propagated as an error, distinct from an invalid/unparsable response
+/// which is surfaced as `DeepOutcome::Raw`.
+pub(crate) fn run_deep(
+    config: &ImportedConfig,
+    findings: &[Finding],
+    truncation: usize,
+    run: impl Fn(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<DeepOutcome> {
+    let payload = build_payload(config, findings, truncation);
+    let prompt = build_prompt(&payload);
+    let output = run(&prompt)?;
+    Ok(parse_deep_response(&output))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +316,25 @@ mod tests {
             panic!("expected raw");
         };
         assert!(r.contains("looks fine"));
+    }
+
+    #[test]
+    fn run_deep_with_fake_runner_returns_findings() {
+        let config = config_with(vec![agent("a", "prompt")]);
+        let run = |_prompt: &str| {
+            Ok("{\"findings\":[{\"kind\":\"D02\",\"severity\":\"info\",\"file\":\"a.md\",\"message\":\"vague\"}]}".to_string())
+        };
+        let outcome = run_deep(&config, &[], 2000, run).unwrap();
+        let DeepOutcome::Findings(f) = outcome else {
+            panic!("expected findings")
+        };
+        assert_eq!(f[0].rule, "D02");
+    }
+
+    #[test]
+    fn run_deep_propagates_runner_error() {
+        let config = config_with(vec![agent("a", "prompt")]);
+        let run = |_: &str| Err(anyhow::anyhow!("cli not found"));
+        assert!(run_deep(&config, &[], 2000, run).is_err());
     }
 }
