@@ -165,9 +165,11 @@ fn norm_lines(text: &str) -> Vec<&str> {
 
 /// Longest contiguous run of normalized lines from `base` that appears
 /// (as a contiguous run) in every other member. O(n²·m) on small prompts.
-fn longest_common_block<'a>(members: &[Vec<&'a str>]) -> Vec<&'a str> {
+/// Returns `(start, lines)`: `start` is the run's position within `base`
+/// (needed to map back to `base`'s raw, non-normalized source lines).
+fn longest_common_block<'a>(members: &[Vec<&'a str>]) -> (usize, Vec<&'a str>) {
     let Some((base, others)) = members.split_first() else {
-        return Vec::new();
+        return (0, Vec::new());
     };
     let mut best: (usize, usize) = (0, 0); // (start, len)
     let n = base.len();
@@ -185,7 +187,7 @@ fn longest_common_block<'a>(members: &[Vec<&'a str>]) -> Vec<&'a str> {
             len -= 1;
         }
     }
-    base[best.0..best.0 + best.1].to_vec()
+    (best.0, base[best.0..best.0 + best.1].to_vec())
 }
 
 fn contains_run(haystack: &[&str], needle: &[&str]) -> bool {
@@ -195,13 +197,41 @@ fn contains_run(haystack: &[&str], needle: &[&str]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-/// Find the longest block of lines (≥8) common to every agent in `agents`,
-/// and turn it into a named `SharedFragment`. `slugs` must be parallel to
-/// `agents` and contain each member's final agent slug: the fragment's
-/// `apply_to` must reference slugs (matched against the generated agent's
-/// H1/name), not raw display names, or runtime prompt matching
-/// (`core::prompt`) and pack.yaml validation (R5, matched against
-/// pack.yaml's agent slug list) would disagree on what an agent is called.
+/// Map a `[start, start+len)` window of `text`'s normalized (trimmed,
+/// non-empty) lines back to the corresponding raw line span, and join that
+/// raw span verbatim. This is the same non-empty-line-index technique
+/// `strip_fragment` uses, applied in the opposite direction: it recovers
+/// indentation, nested-list structure and blank lines that normalization
+/// would otherwise flatten away.
+fn raw_span(text: &str, start: usize, len: usize) -> String {
+    let raw: Vec<&str> = text.lines().collect();
+    let idx: Vec<usize> = raw
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    if len == 0 || start + len > idx.len() {
+        return String::new();
+    }
+    let (from, to) = (idx[start], idx[start + len - 1]);
+    raw[from..=to].join("\n")
+}
+
+/// Find the longest block of lines (≥ [`crate::audit::rules::DUPLICATION_WINDOW`])
+/// common to every agent in `agents`, and turn it into a named
+/// `SharedFragment`. `slugs` must be parallel to `agents` and contain each
+/// member's final agent slug: the fragment's `apply_to` must reference
+/// slugs (matched against the generated agent's H1/name), not raw display
+/// names, or runtime prompt matching (`core::prompt`) and pack.yaml
+/// validation (R5, matched against pack.yaml's agent slug list) would
+/// disagree on what an agent is called.
+///
+/// The fragment body is the RAW span from `agents[0]` (indentation, nested
+/// lists and blank lines preserved), not the normalized/trimmed lines used
+/// to find the common block — `strip_fragment` re-normalizes before
+/// matching, so this doesn't affect stripping.
+///
 /// Returns `None` when no common block reaches the minimum window.
 pub(crate) fn extract_shared_fragment(
     agents: &[&ImportedAgent],
@@ -212,14 +242,15 @@ pub(crate) fn extract_shared_fragment(
         .iter()
         .map(|a| norm_lines(&a.system_prompt))
         .collect();
-    let block = longest_common_block(&members);
-    if block.len() < 8 {
+    let (start, block) = longest_common_block(&members);
+    if block.len() < crate::audit::rules::DUPLICATION_WINDOW {
         return None;
     }
+    let body = raw_span(&agents[0].system_prompt, start, block.len());
     Some(SharedFragment {
         name: format!("shared-conventions-{}", index + 1),
         apply_to: slugs.iter().map(|s| s.to_string()).collect(),
-        body: block.join("\n"),
+        body,
     })
 }
 
@@ -688,6 +719,43 @@ mod tests {
         assert!(f.body.contains("Convention line 1"));
         assert!(f.body.contains("Convention line 10"));
         assert!(!f.body.contains("Intro"));
+    }
+
+    /// A shared block containing an indented nested-list line and a blank
+    /// line — both would be lost if the fragment body were rebuilt from
+    /// normalized (trimmed, non-empty) lines instead of the raw source.
+    fn indented_block() -> String {
+        "Step 1: prepare\n  - nested detail one\n  - nested detail two\n\nStep 2: execute\nStep 3: verify\nStep 4: report\nStep 5: archive\nStep 6: cleanup\n".to_string()
+    }
+
+    #[test]
+    fn extract_shared_fragment_preserves_raw_indentation_and_blank_lines() {
+        let b = indented_block();
+        let a1 = agent("indent-a", &format!("Intro A.\n\n{b}Outro A."));
+        let a2 = agent("indent-b", &format!("{b}Outro B."));
+        let refs: Vec<&ImportedAgent> = vec![&a1, &a2];
+        let f = extract_shared_fragment(&refs, &["indent-a", "indent-b"], 0).unwrap();
+        assert!(f.body.contains("  - nested detail one"));
+        assert!(f.body.contains("  - nested detail two"));
+        // The blank line between the nested list and "Step 2" survives too.
+        assert!(f.body.contains("nested detail two\n\nStep 2: execute"));
+    }
+
+    #[test]
+    fn generate_proposal_preserves_indentation_in_generated_prompt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = indented_block();
+        let a1 = agent("indent-agent-a", &format!("Intro A.\n\n{b}Outro A."));
+        let a2 = agent("indent-agent-b", &format!("{b}Outro B."));
+        let config = config_with(vec![a1, a2]);
+
+        let summary = generate_proposal(dir.path(), &config).unwrap();
+        assert_eq!(summary.prompts, 1);
+
+        let out = dir.path().join(".armadai-proposal");
+        let prompt = std::fs::read_to_string(out.join("prompts/shared-conventions-1.md")).unwrap();
+        assert!(prompt.contains("  - nested detail one"));
+        assert!(prompt.contains("  - nested detail two"));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use super::{AuditContext, Finding, Severity, UnionFind};
 use crate::audit::reverse::ImportedAgent;
 
-pub(super) const DUPLICATION_WINDOW: usize = 8;
+pub(crate) const DUPLICATION_WINDOW: usize = 8;
 pub(super) const REDUNDANCY_THRESHOLD: f64 = 0.8;
 
 /// Hashes of every window of `window` consecutive non-empty trimmed lines.
