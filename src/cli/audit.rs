@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 
 use crate::audit::{
+    deep::{DeepOutcome, available_cli, run_deep},
     import_surfaces,
     proposal::generate_proposal,
     rules::{AuditSettings, Severity},
     run_audit,
 };
+use crate::core::agent::{Agent, AgentMetadata};
+use crate::providers::factory::create_provider;
+use crate::providers::traits::{ChatMessage, CompletionRequest};
 
 pub(crate) fn min_severity_from(flag: &str, quiet: bool) -> Severity {
     if quiet {
@@ -18,12 +22,80 @@ pub(crate) fn min_severity_from(flag: &str, quiet: bool) -> Severity {
     }
 }
 
+/// Build the in-memory auditor agent for the given detected CLI.
+///
+/// Known unified tool names (`claude`, `gemini`, `aider`) go through the
+/// standard tool resolution (correct CLI flags via `providers::factory`).
+/// Other detected CLIs (`codex`, `copilot`, `opencode`) are not in that
+/// registry, so they are wired via the explicit `cli` provider with no
+/// extra flags.
+fn build_deep_auditor(cli: &str) -> Agent {
+    let (provider, command) = match cli {
+        "claude" | "gemini" | "aider" => (cli.to_string(), None),
+        other => ("cli".to_string(), Some(other.to_string())),
+    };
+    Agent {
+        name: "deep-auditor".to_string(),
+        source: PathBuf::from("<in-memory>"),
+        metadata: AgentMetadata {
+            provider,
+            model: Some("latest:pro".to_string()),
+            command,
+            args: None,
+            temperature: 0.2,
+            max_tokens: None,
+            timeout: None,
+            tags: vec![],
+            stacks: vec![],
+            scope: vec![],
+            model_fallback: vec![],
+            cost_limit: None,
+            rate_limit: None,
+            context_window: None,
+            mode: None,
+            orchestration: None,
+            triggers: None,
+            ring_config: None,
+        },
+        system_prompt: String::new(),
+        instructions: None,
+        output_format: None,
+        pipeline: None,
+        context: None,
+    }
+}
+
+/// Call the deep-pass auditor synchronously, bridging into the async
+/// provider API. `execute` runs on the tokio multi-thread runtime installed
+/// by `#[tokio::main]`, so `block_in_place` + `Handle::current().block_on`
+/// is safe here (it is only reached once a real CLI has been detected —
+/// the `deep_without_cli_errors_explicitly` test bails out before this
+/// point and never exercises it on the single-threaded test runtime).
+fn call_deep_auditor(agent: &Agent, prompt: &str) -> anyhow::Result<String> {
+    let provider = create_provider(agent)?;
+    let request = CompletionRequest {
+        model: agent.metadata.model.clone().unwrap_or_default(),
+        system_prompt: String::new(),
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        }],
+        temperature: 0.2,
+        max_tokens: None,
+    };
+    let response = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(provider.complete(request))
+    })?;
+    Ok(response.content)
+}
+
 pub async fn execute(
     path: Option<PathBuf>,
     report: Option<PathBuf>,
     min_severity: String,
     quiet: bool,
     propose: bool,
+    deep: bool,
 ) -> anyhow::Result<()> {
     let root = match path {
         Some(p) => p,
@@ -33,13 +105,39 @@ pub async fn execute(
         anyhow::bail!("not a directory: {}", root.display());
     }
     let settings = AuditSettings::from_project(&root);
-    let audit = run_audit(&root, &settings);
+    let mut audit = run_audit(&root, &settings);
     if audit.detected.is_empty() {
         println!(
             "No native agentic configuration detected in {}.",
             root.display()
         );
         return Ok(());
+    }
+    if deep {
+        let Some(cli) = available_cli() else {
+            anyhow::bail!(
+                "--deep requires an LLM CLI (claude, gemini, codex, copilot, opencode, aider); none found in PATH"
+            );
+        };
+        let (_, config) = import_surfaces(&root);
+        let agent = build_deep_auditor(cli);
+        let run = |prompt: &str| call_deep_auditor(&agent, prompt);
+        match run_deep(
+            &config,
+            &audit.findings,
+            settings.deep_prompt_truncation,
+            run,
+        )? {
+            DeepOutcome::Findings(v) => {
+                audit.findings.extend(v);
+                audit.findings.sort_by(|a, b| {
+                    (a.severity, &a.file, a.rule).cmp(&(b.severity, &b.file, b.rule))
+                });
+            }
+            DeepOutcome::Raw(s) => {
+                audit.deep_raw = Some(s);
+            }
+        }
     }
     audit.print_terminal(min_severity_from(&min_severity, quiet));
     if let Some(out) = report {
@@ -105,6 +203,7 @@ mod tests {
             "info".to_string(),
             false,
             false,
+            false,
         )
         .await;
         assert!(result.is_err());
@@ -120,6 +219,7 @@ mod tests {
             Some(dir.path().to_path_buf()),
             None,
             "info".to_string(),
+            false,
             false,
             false,
         )
@@ -142,6 +242,7 @@ mod tests {
             Some(dir.path().to_path_buf()),
             Some(report_path.clone()),
             "info".to_string(),
+            false,
             false,
             false,
         )
@@ -168,6 +269,7 @@ mod tests {
             "info".to_string(),
             false,
             false,
+            false,
         )
         .await;
         assert!(result.is_ok());
@@ -191,10 +293,52 @@ mod tests {
             "info".to_string(),
             false,
             true,
+            false,
         )
         .await;
         assert!(result.is_ok());
         assert!(dir.path().join(".armadai-proposal/pack.yaml").is_file());
         assert!(dir.path().join(".armadai-proposal/agents/ok.md").is_file());
+    }
+
+    // Plain `#[test]` (not `#[tokio::test]`) with a manual runtime: holding
+    // `ENV_MUTEX` across an `.await` trips `clippy::await_holding_lock`, and
+    // this codebase's `ENV_MUTEX` is a plain `std::sync::Mutex` shared with
+    // other sync tests (see `core::config`), so it is not changed here.
+    // Driving the future via `block_on` from sync code keeps the guard held
+    // for the whole PATH mutation without an `.await` expression.
+    #[test]
+    fn deep_without_cli_errors_explicitly() {
+        // Force PATH empty so no CLI is found.
+        // Serialised via ENV_MUTEX to avoid data races with other tests
+        // that spawn subprocesses relying on PATH.
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("a.md"), "---\nname: a\ndescription: d\n---\nP.").unwrap();
+        // SAFETY: guarded by ENV_MUTEX above; restore PATH after.
+        let old = std::env::var_os("PATH");
+        unsafe { std::env::set_var("PATH", "") };
+        let result = tokio::runtime::Runtime::new().unwrap().block_on(execute(
+            Some(dir.path().to_path_buf()),
+            None,
+            "info".into(),
+            false,
+            false,
+            true,
+        ));
+        unsafe {
+            if let Some(p) = old {
+                std::env::set_var("PATH", p)
+            }
+        }
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("--deep requires an LLM CLI")
+        );
     }
 }

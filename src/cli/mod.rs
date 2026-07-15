@@ -157,6 +157,9 @@ pub enum Command {
         /// Generate an installable ArmadAI pack from the audited config (.armadai-proposal/)
         #[arg(long)]
         propose: bool,
+        /// Run an optional LLM pass (needs an installed CLI: claude, gemini, ...) for semantic findings
+        #[arg(long)]
+        deep: bool,
     },
     /// Extract agents, prompts, and skills with dependency resolution
     #[command(
@@ -458,7 +461,8 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             min_severity,
             quiet,
             propose,
-        } => audit::execute(path, report, min_severity, quiet, propose).await,
+            deep,
+        } => audit::execute(path, report, min_severity, quiet, propose, deep).await,
         Command::History { agent } => history::execute(agent).await,
         Command::Costs { agent, from } => costs::execute(agent, from).await,
         Command::Config { action } => config::execute(action).await,
