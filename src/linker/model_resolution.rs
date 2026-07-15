@@ -58,7 +58,7 @@ pub fn is_latest_placeholder(model: &str) -> bool {
 ///
 /// Returns `None` for non-chat models (embeddings, TTS, image, etc.)
 /// or unrecognised naming patterns.
-fn classify_model_tier(id: &str, provider: &str) -> Option<ModelTier> {
+pub(crate) fn classify_model_tier(id: &str, provider: &str) -> Option<ModelTier> {
     // Filter out non-chat models
     if id.contains("embedding")
         || id.contains("-tts")
@@ -103,6 +103,15 @@ fn classify_model_tier(id: &str, provider: &str) -> Option<ModelTier> {
             }
         }
         _ => None,
+    }
+}
+
+/// The portable placeholder string for a tier (inverse of `parse_latest_placeholder`).
+pub(crate) fn tier_placeholder(tier: ModelTier) -> &'static str {
+    match tier {
+        ModelTier::Fast => "latest:fast",
+        ModelTier::Pro => "latest:pro",
+        ModelTier::Max => "latest:max",
     }
 }
 

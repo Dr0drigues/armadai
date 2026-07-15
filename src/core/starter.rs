@@ -71,6 +71,10 @@ impl StarterPack {
 
         // Install agents
         for name in &self.agents {
+            if is_unsafe_pack_component(name) {
+                eprintln!("  warn: skipping agent '{name}': unsafe path component");
+                continue;
+            }
             let filename = if name.ends_with(".md") {
                 name.clone()
             } else {
@@ -99,6 +103,10 @@ impl StarterPack {
 
         // Install prompts
         for name in &self.prompts {
+            if is_unsafe_pack_component(name) {
+                eprintln!("  warn: skipping prompt '{name}': unsafe path component");
+                continue;
+            }
             let filename = if name.ends_with(".md") {
                 name.clone()
             } else {
@@ -127,6 +135,10 @@ impl StarterPack {
 
         // Install skills (directories)
         for name in &self.skills {
+            if is_unsafe_pack_component(name) {
+                eprintln!("  warn: skipping skill '{name}': unsafe path component");
+                continue;
+            }
             let src = skills_src.join(name);
             let dst = skills_dst.join(name);
 
@@ -147,6 +159,17 @@ impl StarterPack {
 
         Ok((agents_count, prompts_count, skills_count))
     }
+}
+
+/// Reject pack-provided agent/prompt/skill names that could escape the
+/// intended install directory (`~/.config/armadai/{agents,prompts,skills}/`)
+/// when joined onto a destination path. `armadai init --pack <dir>` accepts
+/// an arbitrary local directory, so a crafted `pack.yaml` is untrusted
+/// input: without this guard, a name like `../../evil` (or an absolute
+/// path, or a Windows-style `..\evil`) would let `Path::join` write outside
+/// the target dir entirely.
+fn is_unsafe_pack_component(name: &str) -> bool {
+    name.contains('/') || name.contains('\\') || name.contains("..")
 }
 
 /// Recursively copy a directory tree from `src` to `dst`.
@@ -333,18 +356,6 @@ pub fn list_available_packs() -> Vec<String> {
     packs
 }
 
-/// Clap value parser that provides completion for available starter pack names.
-pub fn pack_value_parser() -> clap::builder::PossibleValuesParser {
-    let names = list_available_packs();
-    // Leak strings to get 'static references needed by clap's PossibleValuesParser.
-    // This is called once at startup, so the leak is negligible.
-    let leaked: Vec<&'static str> = names
-        .into_iter()
-        .map(|s| &*Box::leak(s.into_boxed_str()))
-        .collect();
-    clap::builder::PossibleValuesParser::new(leaked)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -488,6 +499,48 @@ skills:
             let (_, _, skills) = pack.install(pack_dir.path(), false).unwrap();
             assert_eq!(skills, 0);
         }
+
+        // SAFETY: Cleaning up env state at end of test scope.
+        unsafe {
+            std::env::remove_var("ARMADAI_CONFIG_DIR");
+        }
+    }
+
+    #[test]
+    fn test_install_rejects_path_traversal_agent_name() {
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+
+        // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
+        // Serialised via ENV_MUTEX to avoid data races with other tests.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", config_dir.path());
+        }
+
+        let pack_dir = tempfile::tempdir().unwrap();
+        let yaml = "\
+name: evil-pack
+description: A crafted local pack attempting a path-traversal write
+agents:
+  - ../evil
+";
+        std::fs::write(pack_dir.path().join("pack.yaml"), yaml).unwrap();
+        // `agents_dst.join("../evil.md")` would resolve outside the target
+        // `agents/` dir (into `config_dir` itself) if the guard were absent.
+        // Plant the file at that exact escaped location so the assertion
+        // below actually proves nothing was written there.
+        std::fs::write(pack_dir.path().join("evil.md"), "# Evil\n").unwrap();
+
+        let pack = StarterPack::load(pack_dir.path()).unwrap();
+        let (agents, prompts, skills) = pack.install(pack_dir.path(), false).unwrap();
+        assert_eq!(agents, 0, "traversal agent name must be skipped");
+        assert_eq!(prompts, 0);
+        assert_eq!(skills, 0);
+
+        // Nothing escaped: neither the intended agents dir nor its parent
+        // (the traversal target) received a copy.
+        assert!(!config_dir.path().join("agents/evil.md").exists());
+        assert!(!config_dir.path().join("evil.md").exists());
 
         // SAFETY: Cleaning up env state at end of test scope.
         unsafe {

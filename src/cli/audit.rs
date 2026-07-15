@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
 use crate::audit::{
+    import_surfaces,
+    proposal::generate_proposal,
     rules::{AuditSettings, Severity},
     run_audit,
 };
@@ -21,6 +23,7 @@ pub async fn execute(
     report: Option<PathBuf>,
     min_severity: String,
     quiet: bool,
+    propose: bool,
 ) -> anyhow::Result<()> {
     let root = match path {
         Some(p) => p,
@@ -53,6 +56,28 @@ pub async fn execute(
             println!("\n  Markdown report written to {}", out.display());
         }
     }
+    if propose {
+        let (_, config) = import_surfaces(&root);
+        let summary = generate_proposal(&root, &config)?;
+        println!();
+        println!("  Proposal written to {}/", summary.out_dir.display());
+        println!(
+            "    {} agent(s), {} shared prompt(s), {} skill(s) ({} fixed)",
+            summary.agents, summary.prompts, summary.skills, summary.skill_fixes
+        );
+        if !summary.skipped_agents.is_empty() {
+            println!(
+                "    {} agent(s) skipped (unreadable): {}",
+                summary.skipped_agents.len(),
+                summary.skipped_agents.join(", ")
+            );
+        }
+        println!("  Install it with:");
+        println!(
+            "    armadai init --pack {} --project",
+            summary.out_dir.display()
+        );
+    }
     if audit.critical_count() > 0 {
         anyhow::bail!("{} critical finding(s)", audit.critical_count());
     }
@@ -79,6 +104,7 @@ mod tests {
             None,
             "info".to_string(),
             false,
+            false,
         )
         .await;
         assert!(result.is_err());
@@ -94,6 +120,7 @@ mod tests {
             Some(dir.path().to_path_buf()),
             None,
             "info".to_string(),
+            false,
             false,
         )
         .await;
@@ -115,6 +142,7 @@ mod tests {
             Some(dir.path().to_path_buf()),
             Some(report_path.clone()),
             "info".to_string(),
+            false,
             false,
         )
         .await;
@@ -139,10 +167,34 @@ mod tests {
             Some(report_path.clone()),
             "info".to_string(),
             false,
+            false,
         )
         .await;
         assert!(result.is_ok());
         let html = std::fs::read_to_string(report_path).unwrap();
         assert!(html.starts_with("<!doctype html>"));
+    }
+
+    #[tokio::test]
+    async fn execute_with_propose_writes_proposal() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("ok.md"),
+            "---\nname: ok\ndescription: Fine\nmodel: latest:pro\ntools: Read\n---\nShort prompt.",
+        )
+        .unwrap();
+        let result = execute(
+            Some(dir.path().to_path_buf()),
+            None,
+            "info".to_string(),
+            false,
+            true,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert!(dir.path().join(".armadai-proposal/pack.yaml").is_file());
+        assert!(dir.path().join(".armadai-proposal/agents/ok.md").is_file());
     }
 }

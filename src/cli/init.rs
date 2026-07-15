@@ -62,9 +62,19 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Install a starter pack by name. Returns the loaded pack definition.
+/// Resolve a pack reference: a local directory containing `pack.yaml`
+/// takes precedence, otherwise fall back to the named starter pack lookup.
+pub(crate) fn resolve_pack_dir(name: &str) -> Option<std::path::PathBuf> {
+    let candidate = std::path::Path::new(name);
+    if candidate.join("pack.yaml").is_file() {
+        return Some(candidate.to_path_buf());
+    }
+    find_pack_dir(name)
+}
+
+/// Install a starter pack by name or local path. Returns the loaded pack definition.
 fn install_pack(name: &str, force: bool) -> anyhow::Result<StarterPack> {
-    let pack_dir = match find_pack_dir(name) {
+    let pack_dir = match resolve_pack_dir(name) {
         Some(dir) => dir,
         None => {
             let available = list_available_packs();
@@ -290,7 +300,7 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
 /// Detect a coordinator agent from a pack by scanning agent files for a
 /// `tags: [... coordinator ...]` metadata entry.
 fn detect_pack_coordinator(pack: &StarterPack, pack_name: &str) -> Option<String> {
-    let agents_dir = find_pack_dir(pack_name)?.join("agents");
+    let agents_dir = resolve_pack_dir(pack_name)?.join("agents");
     if !agents_dir.is_dir() {
         return None;
     }
@@ -320,7 +330,7 @@ fn detect_pack_coordinator(pack: &StarterPack, pack_name: &str) -> Option<String
 
 /// Try to detect the primary provider used by a pack's agents.
 fn detect_pack_provider(pack_name: &str) -> Option<String> {
-    let agents_dir = find_pack_dir(pack_name)?.join("agents");
+    let agents_dir = resolve_pack_dir(pack_name)?.join("agents");
     if !agents_dir.is_dir() {
         return None;
     }
@@ -362,4 +372,21 @@ fn write_if_missing_or_force(
         println!("  created:       {}", path.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_pack_dir_accepts_local_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pack.yaml"),
+            "name: local-pack\ndescription: d\n",
+        )
+        .unwrap();
+        let resolved = resolve_pack_dir(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(resolved, dir.path());
+    }
 }

@@ -156,7 +156,7 @@ impl AuditReport {
             for l in funnel {
                 println!("    - {l}");
             }
-            println!("    Run `armadai audit --propose` (coming soon) to generate the config.");
+            println!("    Run `armadai audit --propose` to generate the config.");
         }
     }
 

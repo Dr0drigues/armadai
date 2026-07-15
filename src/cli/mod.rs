@@ -154,6 +154,9 @@ pub enum Command {
         /// Shortcut for --min-severity warn
         #[arg(long, conflicts_with = "min_severity")]
         quiet: bool,
+        /// Generate an installable ArmadAI pack from the audited config (.armadai-proposal/)
+        #[arg(long)]
+        propose: bool,
     },
     /// Extract agents, prompts, and skills with dependency resolution
     #[command(
@@ -348,8 +351,8 @@ pub enum Command {
         /// Create a project-local .armadai/ directory with config.yaml
         #[arg(long)]
         project: bool,
-        /// Install a starter pack (e.g. rust-dev, fullstack)
-        #[arg(long, value_parser = crate::core::starter::pack_value_parser())]
+        /// Starter pack name, or path to a directory containing pack.yaml
+        #[arg(long)]
         pack: Option<String>,
     },
     /// Browse and import agents from the community registry
@@ -454,7 +457,8 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             report,
             min_severity,
             quiet,
-        } => audit::execute(path, report, min_severity, quiet).await,
+            propose,
+        } => audit::execute(path, report, min_severity, quiet, propose).await,
         Command::History { agent } => history::execute(agent).await,
         Command::Costs { agent, from } => costs::execute(agent, from).await,
         Command::Config { action } => config::execute(action).await,
