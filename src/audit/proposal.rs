@@ -52,7 +52,17 @@ fn one_line(s: &str) -> String {
 /// headings do, so the underline is dropped and the title line is bolded in
 /// place, unless the previous line doesn't look like a plain paragraph (e.g.
 /// it is blank, a list/quote/table line, or already a heading/underline) —
-/// in that case a `---`/`===` line is left alone as a real thematic break.
+/// in that case the `---`/`===` line is kept, but CommonMark doesn't only
+/// treat "plain paragraphs" as valid setext-underline targets: list items,
+/// blockquotes, table rows, and even the `**bold**` lines this function
+/// itself emits can all still form a setext heading with a `=`/`-` line
+/// directly below them. So whenever such a line is kept verbatim (not
+/// demoted), a blank line is inserted first if the previously emitted line
+/// is non-empty — a `=`/`-` line preceded by a blank line can never be
+/// interpreted as a setext underline (it becomes a thematic break or plain
+/// text instead), which closes the whole class of residual setext headings
+/// while leaving real thematic breaks (already preceded by a blank line)
+/// untouched.
 fn demote_headings(prompt: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut in_fence = false;
@@ -88,6 +98,12 @@ fn demote_headings(prompt: &str) -> String {
                         *last = format!("**{title}**");
                     }
                     continue; // drop the underline line
+                }
+                // Keeping this line verbatim: guard against it being read as
+                // a setext underline of whatever non-"plain paragraph" line
+                // precedes it (see the doc comment above).
+                if !prev.is_empty() {
+                    out.push(String::new());
                 }
             }
             out.push(line.to_string());
@@ -134,10 +150,13 @@ pub(crate) fn render_agent(agent: &ImportedAgent) -> String {
         "- model: {}",
         portable_model(agent.metadata.model.as_deref())
     );
-    if agent.metadata.description.is_some() {
-        // Ignored by today's parser (unknown key -> debug log); forward-compatible.
-        let _ = writeln!(md, "- description: {description}");
-    }
+    // Always emitted (ignored by today's parser as an unknown key -> debug
+    // log; forward-compatible): the H1 is the slug, so this is what keeps
+    // the original human-readable display name discoverable in the file
+    // when the source had no description at all (the caller synthesizes
+    // one from the original name in that case, before the H1 is
+    // overwritten with the slug — see `generate_proposal`).
+    let _ = writeln!(md, "- description: {description}");
     let _ = writeln!(md, "- tags: [imported]");
     let globs = agent.metadata.scope_globs();
     if !globs.is_empty() {
@@ -437,189 +456,231 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
             out_dir.display()
         );
     }
-    // Convertible agents: salvage must have recovered the essentials.
-    let mut skipped_agents = Vec::new();
-    let convertible: Vec<&ImportedAgent> = config
-        .agents
-        .iter()
-        .filter(|a| {
-            let ok = !a.name.is_empty() && !a.system_prompt.is_empty();
-            if !ok {
-                skipped_agents.push(a.name.clone());
-            }
-            ok
-        })
-        .collect();
 
-    let owned: Vec<ImportedAgent> = convertible.iter().map(|a| (*a).clone()).collect();
-
-    // Compute each agent's final slug once, disambiguating collisions (e.g. a
-    // `name:` frontmatter and a filename-stem fallback both slugifying to the
-    // same value). Both the fragment `apply_to` lists and the agent-write
-    // loop reuse this exact pairing: the generated agent's H1/name is set to
-    // its slug (not its raw display name), because runtime prompt matching
-    // (`core::prompt`) matches `apply_to` against the H1 name while pack.yaml
-    // validation (R5) matches it against the pack's slug list — the two can
-    // only agree if H1 == slug.
-    let mut used_agent_slugs = std::collections::HashSet::new();
-    let agent_slugs: Vec<String> = owned
-        .iter()
-        .map(|a| {
-            unique_slug(
-                crate::linker::slugify(&a.name),
-                &mut used_agent_slugs,
-                "agent",
-            )
-        })
-        .collect();
-
-    // Shared fragments from duplication clusters (guard very large prompts).
-    let clusters = crate::audit::rules::duplication_clusters(&owned);
-    let mut fragments: Vec<SharedFragment> = Vec::new();
-    for (i, members) in clusters.iter().enumerate() {
-        let refs: Vec<&ImportedAgent> = members.iter().map(|&m| &owned[m]).collect();
-        if refs
+    // Everything below either creates `out_dir` or writes inside it. Any
+    // error from this point on must not leave a partial proposal on disk —
+    // it would silently corrupt the output and also block any retry (the
+    // generator above refuses to overwrite an existing directory) — so the
+    // whole generation body runs in a closure and gets cleaned up on error.
+    let result: anyhow::Result<ProposalSummary> = (|| {
+        // Convertible agents: salvage must have recovered the essentials.
+        let mut skipped_agents = Vec::new();
+        let convertible: Vec<&ImportedAgent> = config
+            .agents
             .iter()
-            .any(|a| a.system_prompt.len() > MAX_PROMPT_CHARS_FOR_EXTRACTION)
-        {
-            continue;
-        }
-        let slugs: Vec<&str> = members.iter().map(|&m| agent_slugs[m].as_str()).collect();
-        if let Some(f) = extract_shared_fragment(&refs, &slugs, i) {
-            fragments.push(f);
-        }
-    }
+            .filter(|a| {
+                let ok = !a.name.is_empty() && !a.system_prompt.is_empty();
+                if !ok {
+                    skipped_agents.push(a.name.clone());
+                }
+                ok
+            })
+            .collect();
 
-    std::fs::create_dir_all(out_dir.join("agents"))?;
-    // Agents: render with their shared fragments stripped out. The clone's
-    // name is set to its slug BEFORE the strip loop so `apply_to` (slugs)
-    // matches, and BEFORE `render_agent` so the H1 is the slug too. The
-    // original display name stays visible via `metadata.description`.
-    for (a, slug) in owned.iter().zip(agent_slugs.iter()) {
-        let mut agent = a.clone();
-        agent.name = slug.clone();
-        for f in &fragments {
-            if f.apply_to.iter().any(|n| n == slug) {
-                agent.system_prompt = strip_fragment(&agent.system_prompt, &f.body);
+        let owned: Vec<ImportedAgent> = convertible.iter().map(|a| (*a).clone()).collect();
+
+        // Compute each agent's final slug once, disambiguating collisions (e.g. a
+        // `name:` frontmatter and a filename-stem fallback both slugifying to the
+        // same value). Both the fragment `apply_to` lists and the agent-write
+        // loop reuse this exact pairing: the generated agent's H1/name is set to
+        // its slug (not its raw display name), because runtime prompt matching
+        // (`core::prompt`) matches `apply_to` against the H1 name while pack.yaml
+        // validation (R5) matches it against the pack's slug list — the two can
+        // only agree if H1 == slug.
+        let mut used_agent_slugs = std::collections::HashSet::new();
+        let agent_slugs: Vec<String> = owned
+            .iter()
+            .map(|a| {
+                unique_slug(
+                    crate::linker::slugify(&a.name),
+                    &mut used_agent_slugs,
+                    "agent",
+                )
+            })
+            .collect();
+
+        // Shared fragments from duplication clusters (guard very large prompts).
+        let clusters = crate::audit::rules::duplication_clusters(&owned);
+        let mut fragments: Vec<SharedFragment> = Vec::new();
+        for (i, members) in clusters.iter().enumerate() {
+            let refs: Vec<&ImportedAgent> = members.iter().map(|&m| &owned[m]).collect();
+            if refs
+                .iter()
+                .any(|a| a.system_prompt.len() > MAX_PROMPT_CHARS_FOR_EXTRACTION)
+            {
+                continue;
+            }
+            let slugs: Vec<&str> = members.iter().map(|&m| agent_slugs[m].as_str()).collect();
+            if let Some(f) = extract_shared_fragment(&refs, &slugs, i) {
+                fragments.push(f);
             }
         }
-        let file = out_dir.join("agents").join(format!("{slug}.md"));
-        std::fs::write(file, render_agent(&agent))?;
-    }
-    // Prompts.
-    if !fragments.is_empty() {
-        std::fs::create_dir_all(out_dir.join("prompts"))?;
-        for f in &fragments {
-            std::fs::write(
-                out_dir.join("prompts").join(format!("{}.md", f.name)),
-                render_prompt(f),
-            )?;
-        }
-    }
-    // Skills. Slugs are computed once (same disambiguation strategy as
-    // agents) and reused for both the destination directory and the
-    // pack.yaml `skills:` list.
-    let mut skill_fixes = 0usize;
-    let installable_skills: Vec<&super::reverse::ImportedSkill> =
-        config.skills.iter().filter(|s| s.has_skill_md).collect();
-    let mut used_skill_slugs = std::collections::HashSet::new();
-    let skill_slugs: Vec<String> = installable_skills
-        .iter()
-        .map(|s| {
-            unique_slug(
-                crate::linker::slugify(&s.name),
-                &mut used_skill_slugs,
-                "skill",
-            )
-        })
-        .collect();
-    if !installable_skills.is_empty() {
-        std::fs::create_dir_all(out_dir.join("skills"))?;
-        for (s, slug) in installable_skills.iter().zip(skill_slugs.iter()) {
-            // source_path points at SKILL.md; the skill dir is its parent.
-            let src = s
-                .source_path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| s.source_path.clone());
-            let dest = out_dir.join("skills").join(slug);
-            skill_fixes += copy_skill_dir(&src, &dest)?.len();
-        }
-    }
-    // pack.yaml
-    let pack_name = root
-        .file_name()
-        .map(|n| crate::linker::slugify(&n.to_string_lossy()))
-        .unwrap_or_else(|| "imported".to_string());
-    let mut pack = String::new();
-    let _ = writeln!(pack, "name: {pack_name}-agents");
-    let _ = writeln!(
-        pack,
-        "description: \"Generated by `armadai audit --propose` from the native Claude Code configuration\""
-    );
-    let _ = writeln!(pack, "agents:");
-    for slug in &agent_slugs {
-        let _ = writeln!(pack, "  - {slug}");
-    }
-    if !fragments.is_empty() {
-        let _ = writeln!(pack, "prompts:");
-        for f in &fragments {
-            let _ = writeln!(pack, "  - {}", f.name);
-        }
-    }
-    if !installable_skills.is_empty() {
-        let _ = writeln!(pack, "skills:");
-        for slug in &skill_slugs {
-            let _ = writeln!(pack, "  - {slug}");
-        }
-    }
-    std::fs::write(out_dir.join("pack.yaml"), pack)?;
 
-    // Invariant: the generator never ships an invalid pack.
-    let mut errors: Vec<String> = crate::core::pack_validation::validate_pack(&out_dir)
-        .into_iter()
-        .filter(|i| matches!(i.severity, crate::core::pack_validation::Severity::Error))
-        .map(|i| format!("{}: {}", i.location, i.message))
-        .collect();
-
-    // Behavioral round-trip gate: pack_validation only checks structure/YAML,
-    // not that the real ArmadAI parser can still make sense of each agent
-    // (this is the backstop for any future regression in one_line/
-    // demote_headings). Every generated agent must re-parse, and must not
-    // have lost its whole system prompt in the process.
-    for (a, slug) in owned.iter().zip(agent_slugs.iter()) {
-        let file = out_dir.join("agents").join(format!("{slug}.md"));
-        match crate::parser::parse_agent_file(&file) {
-            Ok(parsed) => {
-                if parsed.system_prompt.trim().is_empty() && !a.system_prompt.trim().is_empty() {
-                    errors.push(format!(
-                        "agents/{slug}.md: system prompt became empty on re-parse"
-                    ));
+        std::fs::create_dir_all(out_dir.join("agents"))?;
+        // Agents: render with their shared fragments stripped out. The clone's
+        // name is set to its slug BEFORE the strip loop so `apply_to` (slugs)
+        // matches, and BEFORE `render_agent` so the H1 is the slug too. The
+        // original display name stays visible via `metadata.description`.
+        //
+        // `prompt_tails` records, per slug, the last non-empty line of the
+        // exact text written to that agent's System Prompt section (after
+        // fragment-stripping and heading demotion) — the round-trip gate
+        // below uses it as a sentinel to detect partial truncation.
+        let mut prompt_tails: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for (a, slug) in owned.iter().zip(agent_slugs.iter()) {
+            let mut agent = a.clone();
+            if agent.metadata.description.is_none() {
+                // The H1 is about to become the slug: synthesize a
+                // description from the original human-readable name so it
+                // stays discoverable in the file (render_agent always emits
+                // the `- description:` metadata line).
+                agent.metadata.description = Some(agent.name.clone());
+            }
+            agent.name = slug.clone();
+            for f in &fragments {
+                if f.apply_to.iter().any(|n| n == slug) {
+                    agent.system_prompt = strip_fragment(&agent.system_prompt, &f.body);
                 }
             }
-            Err(e) => errors.push(format!("agents/{slug}.md: failed to re-parse: {e}")),
+            let written_prompt = demote_headings(&agent.system_prompt);
+            if let Some(tail) = written_prompt.lines().rev().find(|l| !l.trim().is_empty()) {
+                prompt_tails.insert(slug.clone(), tail.trim().to_string());
+            }
+            let file = out_dir.join("agents").join(format!("{slug}.md"));
+            std::fs::write(file, render_agent(&agent))?;
         }
-    }
-
-    if !errors.is_empty() {
-        // Never leave a broken or partial proposal on disk: a leftover
-        // `.armadai-proposal/` would also block any retry (the generator
-        // refuses to overwrite an existing directory).
-        let _ = std::fs::remove_dir_all(&out_dir);
-        anyhow::bail!(
-            "generated proposal failed validation:\n{}",
-            errors.join("\n")
+        // Prompts.
+        if !fragments.is_empty() {
+            std::fs::create_dir_all(out_dir.join("prompts"))?;
+            for f in &fragments {
+                std::fs::write(
+                    out_dir.join("prompts").join(format!("{}.md", f.name)),
+                    render_prompt(f),
+                )?;
+            }
+        }
+        // Skills. Slugs are computed once (same disambiguation strategy as
+        // agents) and reused for both the destination directory and the
+        // pack.yaml `skills:` list.
+        let mut skill_fixes = 0usize;
+        let installable_skills: Vec<&super::reverse::ImportedSkill> =
+            config.skills.iter().filter(|s| s.has_skill_md).collect();
+        let mut used_skill_slugs = std::collections::HashSet::new();
+        let skill_slugs: Vec<String> = installable_skills
+            .iter()
+            .map(|s| {
+                unique_slug(
+                    crate::linker::slugify(&s.name),
+                    &mut used_skill_slugs,
+                    "skill",
+                )
+            })
+            .collect();
+        if !installable_skills.is_empty() {
+            std::fs::create_dir_all(out_dir.join("skills"))?;
+            for (s, slug) in installable_skills.iter().zip(skill_slugs.iter()) {
+                // source_path points at SKILL.md; the skill dir is its parent.
+                let src = s
+                    .source_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| s.source_path.clone());
+                let dest = out_dir.join("skills").join(slug);
+                skill_fixes += copy_skill_dir(&src, &dest)?.len();
+            }
+        }
+        // pack.yaml
+        let pack_name = root
+            .file_name()
+            .map(|n| crate::linker::slugify(&n.to_string_lossy()))
+            .unwrap_or_else(|| "imported".to_string());
+        let mut pack = String::new();
+        let _ = writeln!(pack, "name: {pack_name}-agents");
+        let _ = writeln!(
+            pack,
+            "description: \"Generated by `armadai audit --propose` from the native Claude Code configuration\""
         );
-    }
+        let _ = writeln!(pack, "agents:");
+        for slug in &agent_slugs {
+            let _ = writeln!(pack, "  - {slug}");
+        }
+        if !fragments.is_empty() {
+            let _ = writeln!(pack, "prompts:");
+            for f in &fragments {
+                let _ = writeln!(pack, "  - {}", f.name);
+            }
+        }
+        if !installable_skills.is_empty() {
+            let _ = writeln!(pack, "skills:");
+            for slug in &skill_slugs {
+                let _ = writeln!(pack, "  - {slug}");
+            }
+        }
+        std::fs::write(out_dir.join("pack.yaml"), pack)?;
 
-    Ok(ProposalSummary {
-        out_dir,
-        agents: owned.len(),
-        prompts: fragments.len(),
-        skills: installable_skills.len(),
-        skill_fixes,
-        skipped_agents,
-    })
+        // Invariant: the generator never ships an invalid pack.
+        let mut errors: Vec<String> = crate::core::pack_validation::validate_pack(&out_dir)
+            .into_iter()
+            .filter(|i| matches!(i.severity, crate::core::pack_validation::Severity::Error))
+            .map(|i| format!("{}: {}", i.location, i.message))
+            .collect();
+
+        // Behavioral round-trip gate: pack_validation only checks structure/YAML,
+        // not that the real ArmadAI parser can still make sense of each agent
+        // (this is the backstop for any future regression in one_line/
+        // demote_headings). Every generated agent must re-parse, must not have
+        // lost its whole system prompt in the process, and must not have lost
+        // its final line either — a missing tail means the parser stopped
+        // partway through (e.g. on a residual heading), even if some prompt
+        // text remains.
+        for (a, slug) in owned.iter().zip(agent_slugs.iter()) {
+            let file = out_dir.join("agents").join(format!("{slug}.md"));
+            match crate::parser::parse_agent_file(&file) {
+                Ok(parsed) => {
+                    if parsed.system_prompt.trim().is_empty() && !a.system_prompt.trim().is_empty()
+                    {
+                        errors.push(format!(
+                            "agents/{slug}.md: system prompt became empty on re-parse"
+                        ));
+                    } else if let Some(tail) = prompt_tails.get(slug)
+                        && !tail.is_empty()
+                        && !parsed.system_prompt.contains(tail.as_str())
+                    {
+                        errors.push(format!(
+                            "agents/{slug}.md: system prompt lost its final line on re-parse \
+                             (partial truncation)"
+                        ));
+                    }
+                }
+                Err(e) => errors.push(format!("agents/{slug}.md: failed to re-parse: {e}")),
+            }
+        }
+
+        if !errors.is_empty() {
+            anyhow::bail!(
+                "generated proposal failed validation:\n{}",
+                errors.join("\n")
+            );
+        }
+
+        Ok(ProposalSummary {
+            out_dir: out_dir.clone(),
+            agents: owned.len(),
+            prompts: fragments.len(),
+            skills: installable_skills.len(),
+            skill_fixes,
+            skipped_agents,
+        })
+    })();
+
+    if result.is_err() {
+        // Never leave a broken or partial proposal on disk, whether generation
+        // failed the validation/round-trip gate above or errored out on an I/O
+        // problem partway through (e.g. disk full while writing a skill file).
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -665,6 +726,25 @@ mod tests {
         assert!(out.contains("**Deep**"));
         assert!(out.contains("some text"));
         assert!(out.contains("- provider: x")); // list items untouched
+    }
+
+    #[test]
+    fn demote_headings_defuses_setext_after_bold_and_atx_rule() {
+        // ATX heading immediately followed by a rule: after ATX->bold, the `---`
+        // must NOT become a setext underline of the bold line.
+        let out = demote_headings("# Setup\n---\nTAIL_MUST_SURVIVE");
+        // No line pair forms a setext heading: the `---` is preceded by a blank line.
+        assert!(out.contains("**Setup**"));
+        assert!(out.contains("TAIL_MUST_SURVIVE"));
+        // Round-trip: the tail survives re-parsing as an ArmadAI agent.
+        use crate::audit::rules::test_support::agent;
+        let a = agent("x", &out);
+        let md = render_agent(&a);
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.md");
+        std::fs::write(&f, &md).unwrap();
+        let parsed = crate::parser::parse_agent_file(&f).unwrap();
+        assert!(parsed.system_prompt.contains("TAIL_MUST_SURVIVE"));
     }
 
     #[test]
@@ -948,6 +1028,26 @@ mod tests {
         let out = dir.path().join(".armadai-proposal");
         let parsed = crate::parser::parse_agent_file(&out.join("agents/setext-agent.md")).unwrap();
         assert!(parsed.system_prompt.contains("SENTINEL_TAIL"));
+    }
+
+    #[test]
+    fn generate_proposal_full_prompt_round_trips_end_to_end() {
+        // Two agents so a full pack (agents + pack.yaml) is produced. One of
+        // them has the ATX-heading-then-rule shape that used to silently
+        // truncate the System Prompt at re-parse time: the behavioral gate in
+        // `generate_proposal` must guarantee the full prompt (including its
+        // final line) survives, or the whole proposal must be rejected.
+        let dir = tempfile::tempdir().unwrap();
+        let a1 = agent("plain-agent", "Just a normal prompt with no headings.");
+        let a2 = agent("heading-agent", "# Setup\n---\nEND_OF_PROMPT_TAIL");
+        let config = config_with(vec![a1, a2]);
+
+        let summary = generate_proposal(dir.path(), &config).unwrap();
+        assert_eq!(summary.agents, 2);
+
+        let out = dir.path().join(".armadai-proposal");
+        let parsed = crate::parser::parse_agent_file(&out.join("agents/heading-agent.md")).unwrap();
+        assert!(parsed.system_prompt.contains("END_OF_PROMPT_TAIL"));
     }
 
     #[test]
