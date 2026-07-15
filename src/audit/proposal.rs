@@ -26,6 +26,34 @@ pub(crate) fn portable_model(model: Option<&str>) -> String {
     }
 }
 
+/// The ArmadAI agent format terminates a section at every markdown heading,
+/// so a system prompt cannot contain headings. Native Claude Code prompts are
+/// often full markdown documents with headings (including literal `## Metadata`
+/// / `## System Prompt` lines that would otherwise clobber the agent's real
+/// sections on re-parse). Demote ATX headings to bold text: content and visual
+/// emphasis are preserved, and no heading survives to break section parsing.
+fn demote_headings(prompt: &str) -> String {
+    prompt
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            // ATX heading: 1-6 leading '#', then a space, then the title.
+            if let Some(rest) = trimmed.strip_prefix('#') {
+                let hashes = 1 + rest.chars().take_while(|&c| c == '#').count();
+                let after = &trimmed[hashes..];
+                if hashes <= 6 && after.starts_with(' ') {
+                    let title = after.trim().trim_end_matches('#').trim();
+                    if !title.is_empty() {
+                        return format!("**{title}**");
+                    }
+                }
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Render an imported agent in the ArmadAI agent format
 /// (H1 + `## Metadata` list + `## System Prompt`).
 pub(crate) fn render_agent(agent: &ImportedAgent) -> String {
@@ -54,7 +82,7 @@ pub(crate) fn render_agent(agent: &ImportedAgent) -> String {
         let _ = writeln!(md, "- scope: [{}]", globs.join(", "));
     }
     let _ = writeln!(md, "\n## System Prompt\n");
-    let _ = writeln!(md, "{}", agent.system_prompt);
+    let _ = writeln!(md, "{}", demote_headings(&agent.system_prompt));
     md
 }
 
@@ -450,6 +478,36 @@ mod tests {
         assert_eq!(portable_model(None), "latest:pro");
         // Deprecated alias resolved first, then classified.
         assert_eq!(portable_model(Some("gemini-3.0-pro")), "latest:pro");
+    }
+
+    #[test]
+    fn demote_headings_neutralizes_atx_headings() {
+        let input = "# Title\n\nsome text\n\n## Metadata\n- provider: x\n\n### Deep\nmore";
+        let out = demote_headings(input);
+        assert!(!out.contains("# Title"));
+        assert!(out.contains("**Title**"));
+        assert!(out.contains("**Metadata**"));
+        assert!(out.contains("**Deep**"));
+        assert!(out.contains("some text"));
+        assert!(out.contains("- provider: x")); // list items untouched
+    }
+
+    #[test]
+    fn render_agent_survives_headings_in_system_prompt() {
+        let mut a = agent(
+            "doc",
+            "# Overview\n\nDoes things.\n\n## Metadata\n- fake: value\n\n## System Prompt\nnested",
+        );
+        a.metadata.model = Some("latest:pro".to_string());
+        let md = render_agent(&a);
+        // Write + re-parse through the real ArmadAI parser: metadata must survive.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("doc.md");
+        std::fs::write(&file, &md).unwrap();
+        let parsed = crate::parser::parse_agent_file(&file).unwrap();
+        assert_eq!(parsed.metadata.provider, "claude");
+        assert!(parsed.system_prompt.contains("Does things."));
+        assert!(parsed.system_prompt.contains("**Overview**"));
     }
 
     #[test]
