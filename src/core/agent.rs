@@ -98,7 +98,7 @@ impl Agent {
         let mut agents = Vec::new();
         let mut skipped = Vec::new();
         Self::load_from_dir(agents_dir, &mut agents, &mut skipped)?;
-        agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        agents.sort_by_key(|a| a.name.to_lowercase());
         for msg in &skipped {
             tracing::debug!("{msg}");
         }
@@ -112,7 +112,7 @@ impl Agent {
         let mut agents = Vec::new();
         let mut skipped = Vec::new();
         Self::load_from_dir(agents_dir, &mut agents, &mut skipped)?;
-        agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        agents.sort_by_key(|a| a.name.to_lowercase());
         Ok((agents, skipped))
     }
 
