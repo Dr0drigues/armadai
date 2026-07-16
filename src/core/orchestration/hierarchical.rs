@@ -142,7 +142,10 @@ impl HierarchicalEngine {
         )
         .await?;
 
-        let mut state = self.state.lock().expect("engine state mutex poisoned");
+        let mut state = self.state.lock().unwrap_or_else(|e| {
+            tracing::warn!("Mutex poisoned in run(), recovering: {:?}", e);
+            e.into_inner()
+        });
         Ok(OrchestrationResult {
             content: result,
             trace: std::mem::take(&mut state.trace),
@@ -171,7 +174,9 @@ fn invoke_agent(
     Box::pin(async move {
         // ── Safety checks (lock briefly, then release) ──────────
         {
-            let s = state.lock().expect("engine state mutex poisoned");
+            let s = state
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Mutex poisoned during safety checks: {:?}", e))?;
             if depth >= ctx.config.max_depth() {
                 anyhow::bail!(
                     "Max delegation depth ({}) reached at agent '{agent_name}'",
@@ -209,7 +214,13 @@ fn invoke_agent(
 
         // ── Update state: iteration count, trace, conversation ──
         {
-            let mut s = state.lock().expect("engine state mutex poisoned");
+            let mut s = state.lock().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Mutex poisoned in invoke_agent (update state), recovering: {:?}",
+                    e
+                );
+                e.into_inner()
+            });
             s.iteration_count += 1;
             s.trace.push(DelegationEvent {
                 from: sender.clone(),
@@ -232,7 +243,13 @@ fn invoke_agent(
 
         // ── Record assistant response ───────────────────────────
         {
-            let mut s = state.lock().expect("engine state mutex poisoned");
+            let mut s = state.lock().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Mutex poisoned in invoke_agent (record response), recovering: {:?}",
+                    e
+                );
+                e.into_inner()
+            });
             let conv = s.conversations.entry(agent_name.clone()).or_default();
             conv.push(ChatMessage {
                 role: "assistant".to_string(),
@@ -316,7 +333,13 @@ fn invoke_agent(
         // ── Re-inject results and ask for synthesis ─────────────
         let results_message = format_results(&results);
         {
-            let mut s = state.lock().expect("engine state mutex poisoned");
+            let mut s = state.lock().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Mutex poisoned in invoke_agent (re-inject results), recovering: {:?}",
+                    e
+                );
+                e.into_inner()
+            });
             let conv = s.conversations.entry(agent_name.clone()).or_default();
             conv.push(ChatMessage {
                 role: "user".to_string(),
@@ -327,7 +350,13 @@ fn invoke_agent(
         let synthesis = call_llm(&ctx, &state, &agent_name, &system_prompt).await?;
 
         {
-            let mut s = state.lock().expect("engine state mutex poisoned");
+            let mut s = state.lock().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Mutex poisoned in invoke_agent (record synthesis), recovering: {:?}",
+                    e
+                );
+                e.into_inner()
+            });
             let conv = s.conversations.entry(agent_name.clone()).or_default();
             conv.push(ChatMessage {
                 role: "assistant".to_string(),
@@ -409,7 +438,9 @@ async fn call_llm(
         .ok_or_else(|| anyhow::anyhow!("Agent '{agent_name}' not found"))?;
 
     let messages = {
-        let s = state.lock().expect("engine state mutex poisoned");
+        let s = state.lock().map_err(|e| {
+            anyhow::anyhow!("Mutex poisoned in call_llm (read conversation): {:?}", e)
+        })?;
         s.conversations.get(agent_name).cloned().unwrap_or_default()
     }; // unlock before async call
 
@@ -431,7 +462,13 @@ async fn call_llm(
 
     // Update metrics
     {
-        let mut s = state.lock().expect("engine state mutex poisoned");
+        let mut s = state.lock().unwrap_or_else(|e| {
+            tracing::warn!(
+                "Mutex poisoned in call_llm (update metrics), recovering: {:?}",
+                e
+            );
+            e.into_inner()
+        });
         s.total_tokens_in += response.tokens_in;
         s.total_tokens_out += response.tokens_out;
         s.total_cost += response.cost;
@@ -1065,5 +1102,104 @@ mod tests {
         assert_eq!(result.invocation_count, 5);
         // Trace: user→coord, coord→a, coord→b, coord→c = at least 4
         assert!(result.trace.len() >= 4);
+    }
+
+    #[tokio::test]
+    async fn test_mutex_poison_recovery() {
+        // Regression test for B3: verify that poisoned mutex is handled gracefully
+        let config = sample_config();
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "You coordinate."),
+        );
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(MockProvider::new(vec!["Direct answer."])),
+        );
+
+        let mut engine = HierarchicalEngine::new(config, agents, providers);
+
+        // Poison the mutex by panicking while holding the lock
+        let state = Arc::clone(&engine.state);
+        let poison_result = std::panic::catch_unwind(|| {
+            let _guard = state.lock().unwrap();
+            panic!("Intentional panic to poison mutex");
+        });
+        assert!(poison_result.is_err(), "Panic should have occurred");
+
+        // Verify the mutex is poisoned
+        assert!(
+            engine.state.lock().is_err(),
+            "Mutex should be poisoned after panic"
+        );
+
+        // The engine should still be able to extract results via recovery
+        // (run() uses unwrap_or_else on the final lock)
+        // However, invoke_agent will fail on the safety checks lock (which uses map_err)
+        let result = engine.run("test").await;
+
+        // The call will fail at the safety checks (line 174) because that lock uses Result
+        assert!(
+            result.is_err(),
+            "Should fail when mutex is poisoned at safety checks"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Mutex poisoned") || err_msg.contains("poisoned"),
+            "Error should mention mutex poisoning, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mutex_poison_recovery_after_invocation() {
+        // Test recovery when mutex gets poisoned AFTER safety checks but during execution
+        let config = sample_config();
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "You coordinate."),
+        );
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(MockProvider::new(vec!["Answer"])),
+        );
+
+        let engine = HierarchicalEngine::new(config, agents, providers);
+
+        // Start with a clean state - run once to populate it
+        let state = Arc::clone(&engine.state);
+        {
+            let mut s = state.lock().unwrap();
+            s.total_tokens_in = 100;
+            s.total_tokens_out = 200;
+            s.total_cost = 0.05;
+            s.invocation_count = 5;
+        }
+
+        // Now poison it
+        let poison_result = std::panic::catch_unwind(|| {
+            let _guard = state.lock().unwrap();
+            panic!("Poison after data");
+        });
+        assert!(poison_result.is_err());
+
+        // Access with recovery (simulating what run() does at line 145)
+        let recovered_state = state.lock().unwrap_or_else(|e| {
+            tracing::warn!("Test: recovering poisoned mutex");
+            e.into_inner()
+        });
+
+        // Should be able to read the data that was there before poisoning
+        assert_eq!(recovered_state.total_tokens_in, 100);
+        assert_eq!(recovered_state.total_tokens_out, 200);
+        assert!((recovered_state.total_cost - 0.05).abs() < f64::EPSILON);
+        assert_eq!(recovered_state.invocation_count, 5);
     }
 }
