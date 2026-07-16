@@ -208,7 +208,14 @@ impl Provider for AnthropicProvider {
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ = tx.send(Err(anyhow::anyhow!("Stream error: {e}"))).await;
+                        if let Err(send_err) =
+                            tx.send(Err(anyhow::anyhow!("Stream error: {e}"))).await
+                        {
+                            tracing::debug!(
+                                "Failed to send stream error (receiver dropped): {:?}",
+                                send_err
+                            );
+                        }
                         return;
                     }
                 };

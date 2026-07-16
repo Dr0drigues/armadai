@@ -98,8 +98,12 @@ impl Provider for CliProvider {
             .await;
 
             if result.is_err() {
-                let _ = tx.send(Err(anyhow::anyhow!("CLI command timed out"))).await;
-                let _ = child.kill().await;
+                if let Err(e) = tx.send(Err(anyhow::anyhow!("CLI command timed out"))).await {
+                    tracing::debug!("Failed to send timeout error (receiver dropped): {:?}", e);
+                }
+                if let Err(e) = child.kill().await {
+                    tracing::debug!("Failed to kill timed-out CLI command: {:?}", e);
+                }
             }
 
             let _ = child.wait().await;

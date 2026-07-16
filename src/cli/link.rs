@@ -23,7 +23,9 @@ pub async fn execute(
         )
     })?;
 
-    let _ = crate::core::project_registry::register_project(&root);
+    if let Err(e) = crate::core::project_registry::register_project(&root) {
+        tracing::warn!("Failed to register project in registry: {:?}", e);
+    }
     crate::core::model_updater::auto_check_and_prompt(&root, std::io::stdin().is_terminal());
 
     if config.agents.is_empty() {

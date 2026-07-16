@@ -14,7 +14,9 @@ pub(crate) fn needs_update(dest: &Path) -> bool {
 
 /// Write the current binary version into `.armadai-version` inside `dest`.
 pub(crate) fn write_version_marker(dest: &Path) {
-    let _ = std::fs::write(dest.join(".armadai-version"), env!("CARGO_PKG_VERSION"));
+    if let Err(e) = std::fs::write(dest.join(".armadai-version"), env!("CARGO_PKG_VERSION")) {
+        tracing::warn!("Failed to write version marker: {:?}", e);
+    }
 }
 
 #[cfg(test)]

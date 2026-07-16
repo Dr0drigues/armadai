@@ -76,7 +76,9 @@ pub async fn execute() -> anyhow::Result<()> {
 
     if !status.success() {
         // Clean up
-        let _ = std::fs::remove_file(&tmp_path);
+        if let Err(e) = std::fs::remove_file(&tmp_path) {
+            tracing::debug!("Failed to remove temporary download file: {:?}", e);
+        }
         anyhow::bail!(
             "Download failed. Check your network connection or try: VERSION=v{latest_version} install.sh"
         );
