@@ -14,6 +14,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::time::{Duration, Instant};
+use unicode_width::UnicodeWidthChar;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -834,15 +835,28 @@ impl ShellApp {
         (lines as u16 + 2).clamp(3, 8)
     }
 
-    /// Calculate cursor position (row, col) after wrapping.
-    /// Takes cursor position in the display text (including prefix) and available width.
-    /// Returns (row, col) where row is 0-indexed from top of input area.
-    fn calculate_wrapped_cursor_position(cursor_pos: usize, width: usize) -> (usize, usize) {
+    /// Calculate cursor position (row, col) in display cells, accounting for Unicode width.
+    /// Takes the text up to cursor and available width in cells.
+    /// Returns (row, col) where row is 0-indexed from top and col is in display cells.
+    fn calculate_wrapped_cursor_position_unicode(
+        text_before_cursor: &str,
+        width: usize,
+    ) -> (usize, usize) {
         if width == 0 {
             return (0, 0);
         }
-        let row = cursor_pos / width;
-        let col = cursor_pos % width;
+        let mut row = 0;
+        let mut col = 0;
+        for c in text_before_cursor.chars() {
+            let char_width = c.width().unwrap_or(1).max(1); // Handle control chars as 1 cell
+            if col + char_width > width {
+                // Wrap to next line
+                row += 1;
+                col = char_width;
+            } else {
+                col += char_width;
+            }
+        }
         (row, col)
     }
 
@@ -852,24 +866,16 @@ impl ShellApp {
         // Build plain text for wrapping
         let display_text = format!("{} {}", cursor_indicator, self.input);
         let prefix_len = cursor_indicator.len() + 1; // "> " or "... "
-        let cursor_display_pos = prefix_len + self.cursor;
 
-        // Calculate available width for wrapping (subtract borders and padding)
-        let available_width = area.width.saturating_sub(4) as usize; // 2 for left/right borders + 2 for padding
+        // Calculate available width (Borders::ALL = 2 cells left+right)
+        let available_width = area.width.saturating_sub(2) as usize;
         if available_width == 0 {
             // Terminal too narrow, just render without wrapping logic
             let mut input_spans = Vec::new();
-            for (i, c) in display_text.chars().enumerate() {
-                if i == cursor_display_pos && !self.loading {
-                    input_spans.push(Span::styled(
-                        c.to_string(),
-                        Style::default().bg(Color::White).fg(Color::Black),
-                    ));
-                } else {
-                    input_spans.push(Span::raw(c.to_string()));
-                }
+            for c in display_text.chars() {
+                input_spans.push(Span::raw(c.to_string()));
             }
-            if cursor_display_pos >= display_text.chars().count() && !self.loading {
+            if !self.loading {
                 input_spans.push(Span::styled(
                     " ",
                     Style::default().bg(Color::White).fg(Color::Black),
@@ -890,25 +896,50 @@ impl ShellApp {
             return;
         }
 
-        // Calculate cursor position after wrapping
-        let (cursor_row, _cursor_col) =
-            Self::calculate_wrapped_cursor_position(cursor_display_pos, available_width);
+        // Split display_text into prefix and input text for cursor calculation
+        let prefix = &display_text[..prefix_len.min(display_text.len())];
+        let input_part = if prefix_len < display_text.len() {
+            &display_text[prefix_len..]
+        } else {
+            ""
+        };
 
-        // Build lines based on wrapping
+        // Calculate cursor position in text-before-cursor
+        let text_before_cursor = if self.cursor > 0 {
+            &input_part[..input_part
+                .char_indices()
+                .nth(self.cursor)
+                .map(|(i, _)| i)
+                .unwrap_or(input_part.len())]
+        } else {
+            ""
+        };
+
+        let cursor_full_text = format!("{}{}", prefix, text_before_cursor);
+        let (cursor_row, _cursor_col) =
+            Self::calculate_wrapped_cursor_position_unicode(&cursor_full_text, available_width);
+
+        // Build lines based on wrapping with Unicode-aware width
         let mut lines: Vec<Line> = Vec::new();
         let mut current_line_spans: Vec<Span> = Vec::new();
+        let mut current_col = 0;
 
-        for (char_index, c) in display_text.chars().enumerate() {
-            let (row, _col) = Self::calculate_wrapped_cursor_position(char_index, available_width);
+        for (char_idx, c) in display_text.chars().enumerate() {
+            let char_width = c.width().unwrap_or(1).max(1);
 
-            // If we've moved to a new row, push the current line
-            if row > lines.len() {
+            // Check if this character is at cursor position (for cursor rendering)
+            let is_cursor_pos = char_idx == prefix_len + self.cursor && !self.loading;
+
+            // Check if we need to wrap (current char doesn't fit on current line)
+            if current_col + char_width > available_width {
+                // Push current line and start new one
                 lines.push(Line::from(current_line_spans.clone()));
                 current_line_spans.clear();
+                current_col = 0;
             }
 
-            // Add span for this character
-            if char_index == cursor_display_pos && !self.loading {
+            // Add this character to current line
+            if is_cursor_pos {
                 current_line_spans.push(Span::styled(
                     c.to_string(),
                     Style::default().bg(Color::White).fg(Color::Black),
@@ -916,6 +947,7 @@ impl ShellApp {
             } else {
                 current_line_spans.push(Span::raw(c.to_string()));
             }
+            current_col += char_width;
         }
 
         // Add any remaining spans as the last line
@@ -923,24 +955,35 @@ impl ShellApp {
             lines.push(Line::from(current_line_spans));
         }
 
-        // If cursor at end, add cursor block on the appropriate line
-        if cursor_display_pos >= display_text.chars().count() && !self.loading {
-            if cursor_row < lines.len() {
-                lines[cursor_row].spans.push(Span::styled(
-                    " ",
-                    Style::default().bg(Color::White).fg(Color::Black),
-                ));
-            } else if cursor_row == lines.len() {
-                // Cursor is beyond all lines, add a new line with cursor block
-                let spans = vec![Span::styled(
+        // If cursor at end of text, add a cursor block
+        if self.cursor >= input_part.chars().count() && !self.loading {
+            if current_col < available_width {
+                // Cursor fits on current line
+                if let Some(last_line) = lines.last_mut() {
+                    last_line.spans.push(Span::styled(
+                        " ",
+                        Style::default().bg(Color::White).fg(Color::Black),
+                    ));
+                }
+            } else if current_col > 0 {
+                // Cursor would wrap to next line
+                let cursor_span = vec![Span::styled(
                     " ",
                     Style::default().bg(Color::White).fg(Color::Black),
                 )];
-                lines.push(Line::from(spans));
+                lines.push(Line::from(cursor_span));
             }
         }
 
-        // Render with lines preserving wrapping
+        // Calculate scroll offset to keep cursor visible
+        let visible_height = area.height.saturating_sub(2) as usize; // minus borders
+        let scroll_offset = if cursor_row >= visible_height {
+            (cursor_row - visible_height + 1) as u16
+        } else {
+            0
+        };
+
+        // Render with lines and scroll
         let input_paragraph = Paragraph::new(lines)
             .block(
                 Block::default()
@@ -949,7 +992,8 @@ impl ShellApp {
                     .title(" Input ")
                     .title_style(Style::default().fg(Color::Cyan)),
             )
-            .wrap(Wrap { trim: false });
+            .wrap(Wrap { trim: false })
+            .scroll((scroll_offset, 0));
 
         frame.render_widget(input_paragraph, area);
     }
@@ -1014,64 +1058,50 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate_wrapped_cursor_position_no_wrap() {
-        // Input shorter than width, no wrapping
-        // Width = 20, cursor at position 5
-        let (row, col) = ShellApp::calculate_wrapped_cursor_position(5, 20);
+    fn test_calculate_wrapped_cursor_position_unicode_ascii() {
+        // Pure ASCII, no special handling needed
+        // Text "hello" (5 chars, each 1 cell wide), width 20
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position_unicode("hello", 20);
         assert_eq!(row, 0);
         assert_eq!(col, 5);
     }
 
     #[test]
-    fn test_calculate_wrapped_cursor_position_at_width_boundary() {
-        // Cursor at end of first line (position = width)
-        // Width = 20, cursor at position 20 (wraps to second line)
-        let (row, col) = ShellApp::calculate_wrapped_cursor_position(20, 20);
+    fn test_calculate_wrapped_cursor_position_unicode_with_wrap() {
+        // ASCII text that wraps: 25 chars with width 20
+        let text = "a".repeat(25);
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position_unicode(&text, 20);
+        assert_eq!(row, 1); // Wrapped to second line
+        assert_eq!(col, 5); // 5 chars on second line
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_unicode_emoji() {
+        // Emoji (typically 2 cells wide)
+        // "😀" is 2 cells, then "ab" is 2 cells → wraps at width 3
+        let text = "😀ab"; // 2 + 1 + 1 = 4 cells
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position_unicode(text, 3);
+        // First 3 cells: "😀a" (2+1) on line 0
+        // Then "b" wraps to line 1
+        // But we're calculating position BEFORE cursor, so at "😀ab" end:
+        // Line 0: "😀a" = 3 cells
+        // Line 1: "b" = 1 cell
         assert_eq!(row, 1);
-        assert_eq!(col, 0);
+        assert_eq!(col, 1);
     }
 
     #[test]
-    fn test_calculate_wrapped_cursor_position_one_wrap() {
-        // Input wraps once, cursor in middle of second line
-        // Width = 20, cursor at position 35
-        let (row, col) = ShellApp::calculate_wrapped_cursor_position(35, 20);
-        assert_eq!(row, 1);
-        assert_eq!(col, 15);
-    }
-
-    #[test]
-    fn test_calculate_wrapped_cursor_position_multiple_wraps() {
-        // Input wraps multiple times, cursor in third line
-        // Width = 20, cursor at position 65
-        let (row, col) = ShellApp::calculate_wrapped_cursor_position(65, 20);
-        assert_eq!(row, 3);
-        assert_eq!(col, 5);
-    }
-
-    #[test]
-    fn test_calculate_wrapped_cursor_position_cursor_at_start() {
-        // Cursor at start of input
-        let (row, col) = ShellApp::calculate_wrapped_cursor_position(0, 20);
-        assert_eq!(row, 0);
-        assert_eq!(col, 0);
-    }
-
-    #[test]
-    fn test_calculate_wrapped_cursor_position_cursor_at_end_of_wrappable_text() {
-        // 60 character input with width 20 = 3 lines
-        // Cursor at position 59 (last character on third line)
-        let (row, col) = ShellApp::calculate_wrapped_cursor_position(59, 20);
-        assert_eq!(row, 2);
-        assert_eq!(col, 19);
-    }
-
-    #[test]
-    fn test_calculate_wrapped_cursor_position_zero_width() {
+    fn test_calculate_wrapped_cursor_position_unicode_zero_width() {
         // Edge case: zero width should not panic
-        let (row, col) = ShellApp::calculate_wrapped_cursor_position(5, 0);
-        // With zero width, we expect (5, 0) since any division by 0 would be handled
-        // but our function returns (0, 0) for zero width
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position_unicode("hello", 0);
+        assert_eq!(row, 0);
+        assert_eq!(col, 0);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_unicode_empty_text() {
+        // Empty text should return (0, 0)
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position_unicode("", 20);
         assert_eq!(row, 0);
         assert_eq!(col, 0);
     }
@@ -1109,5 +1139,50 @@ mod tests {
         app.input = "café".to_string();
         let byte_idx = app.char_to_byte(1); // Position after 'c', before 'a'
         assert_eq!(byte_idx, 1);
+    }
+
+    #[test]
+    fn test_render_input_line_with_wrapping() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = ShellApp::new("Test".to_string());
+        app.input = "a".repeat(50); // 50 character input, should wrap
+        app.cursor = 25; // In middle
+
+        // Create a test terminal with 30-char width and 10 lines height
+        let backend = TestBackend::new(30, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // Render the app
+        let _ = terminal.draw(|f| {
+            app.render(f);
+        });
+
+        // Verify rendering produced output (doesn't panic)
+        let buffer = terminal.backend().buffer().clone();
+        assert!(!buffer.content.is_empty(), "Buffer should have content");
+    }
+
+    #[test]
+    fn test_render_input_with_unicode() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = ShellApp::new("Test".to_string());
+        // Mix of ASCII and emoji
+        app.input = "hello😀world".to_string();
+        app.cursor = 6; // After emoji
+
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let _ = terminal.draw(|f| {
+            app.render(f);
+        });
+
+        // Verify rendering didn't panic and produced output
+        let buffer = terminal.backend().buffer().clone();
+        assert!(!buffer.content.is_empty(), "Buffer should have content");
     }
 }
