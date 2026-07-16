@@ -10,6 +10,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::runner::ShellRunner;
@@ -740,6 +741,7 @@ async fn execute_tandem(
         child: tokio::process::Child,
         stream_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
         result_event: Option<super::json_runner::CliResponse>,
+        stderr_buffer: Arc<Mutex<String>>,
     }
 
     let mut streams = Vec::new();
@@ -784,6 +786,10 @@ async fn execute_tandem(
             }
         });
 
+        // Buffer to capture stderr for error reporting
+        let stderr_buffer = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = stderr_buffer.clone();
+
         // Spawn reader task for stderr (to prevent buffer deadlock)
         tokio::spawn(async move {
             use tokio::io::AsyncReadExt;
@@ -792,8 +798,10 @@ async fn execute_tandem(
             loop {
                 match stderr.read(&mut buf).await {
                     Ok(0) | Err(_) => break,
-                    Ok(_n) => {
-                        // Discard stderr during streaming (errors handled via status code)
+                    Ok(n) => {
+                        if let Ok(s) = String::from_utf8(buf[..n].to_vec()) {
+                            stderr_buf.lock().unwrap().push_str(&s);
+                        }
                     }
                 }
             }
@@ -808,6 +816,7 @@ async fn execute_tandem(
             child,
             stream_rx,
             result_event: None,
+            stderr_buffer,
         });
     }
 
@@ -945,10 +954,13 @@ async fn execute_tandem(
                 combined_content.push_str(&parsed.content);
             }
             Ok(status) => {
-                app.append_to_tandem_stream(
-                    &stream.display_name,
-                    &format!("\n\n[Failed with status: {}]", status),
-                );
+                let stderr_content = stream.stderr_buffer.lock().unwrap();
+                let error_msg = if stderr_content.is_empty() {
+                    format!("\n\n[Failed with status: {}]", status)
+                } else {
+                    format!("\n\n[Failed with status: {}]\n{}", status, stderr_content)
+                };
+                app.append_to_tandem_stream(&stream.display_name, &error_msg);
             }
             Err(e) => {
                 app.append_to_tandem_stream(&stream.display_name, &format!("\n\n[Error: {}]", e));
@@ -1151,6 +1163,10 @@ async fn execute_pipeline_steps(
             }
         });
 
+        // Buffer to capture stderr for error reporting
+        let stderr_buffer = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = stderr_buffer.clone();
+
         // Spawn reader task for stderr (to prevent buffer deadlock)
         tokio::spawn(async move {
             use tokio::io::AsyncReadExt;
@@ -1159,8 +1175,10 @@ async fn execute_pipeline_steps(
             loop {
                 match stderr.read(&mut buf).await {
                     Ok(0) | Err(_) => break,
-                    Ok(_n) => {
-                        // Discard stderr during streaming (errors handled via status code)
+                    Ok(n) => {
+                        if let Ok(s) = String::from_utf8(buf[..n].to_vec()) {
+                            stderr_buf.lock().unwrap().push_str(&s);
+                        }
                     }
                 }
             }
@@ -1264,10 +1282,19 @@ async fn execute_pipeline_steps(
                         current_input = parsed.content;
                     } else {
                         // Process failed
-                        app.append_to_streaming(&format!(
-                            "\n\n[Pipeline step '{}' failed with status: {}]",
-                            step.name, status
-                        ));
+                        let stderr_content = stderr_buffer.lock().unwrap();
+                        let error_msg = if stderr_content.is_empty() {
+                            format!(
+                                "\n\n[Pipeline step '{}' failed with status: {}]",
+                                step.name, status
+                            )
+                        } else {
+                            format!(
+                                "\n\n[Pipeline step '{}' failed with status: {}]\n{}",
+                                step.name, status, stderr_content
+                            )
+                        };
+                        app.append_to_streaming(&error_msg);
                         app.set_loading(false);
                         return Ok(());
                     }
