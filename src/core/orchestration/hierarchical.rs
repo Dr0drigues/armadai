@@ -1154,9 +1154,70 @@ mod tests {
         );
     }
 
+    /// Provider that poisons a mutex during execution to test recovery paths
+    struct PoisoningProvider {
+        response: String,
+        target_mutex: Arc<Mutex<EngineState>>,
+    }
+
+    impl PoisoningProvider {
+        fn new(response: &str, target_mutex: Arc<Mutex<EngineState>>) -> Self {
+            Self {
+                response: response.to_string(),
+                target_mutex,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for PoisoningProvider {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> anyhow::Result<CompletionResponse> {
+            // Poison the target mutex by panicking in a spawned thread while holding the lock
+            let mutex = Arc::clone(&self.target_mutex);
+            let handle = std::thread::spawn(move || {
+                let _guard = mutex.lock().unwrap();
+                panic!("Intentional poison during provider execution");
+            });
+
+            // Wait for the poison to happen (the thread will panic)
+            let _ = handle.join();
+
+            // Verify mutex is now poisoned
+            assert!(
+                self.target_mutex.lock().is_err(),
+                "Mutex should be poisoned after thread panic"
+            );
+
+            // Provider still returns successfully (the provider itself didn't panic)
+            Ok(CompletionResponse {
+                content: self.response.clone(),
+                model: "poisoning-mock".to_string(),
+                tokens_in: 15,
+                tokens_out: 25,
+                cost: 0.002,
+            })
+        }
+
+        async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("Streaming not supported by PoisoningProvider")
+        }
+
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "poisoning-mock".to_string(),
+                models: vec!["poisoning-mock".to_string()],
+                supports_streaming: false,
+            }
+        }
+    }
+
     #[tokio::test]
-    async fn test_mutex_poison_recovery_after_invocation() {
-        // Test recovery when mutex gets poisoned AFTER safety checks but during execution
+    async fn test_mutex_poison_recovery_during_execution() {
+        // Test recovery when mutex gets poisoned DURING execution (after safety checks).
+        // This exercises the unwrap_or_else recovery sites in invoke_agent at L217, L246, etc.
         let config = sample_config();
 
         let mut agents = HashMap::new();
@@ -1165,41 +1226,88 @@ mod tests {
             make_agent("coordinator", "You coordinate."),
         );
 
+        // Build agents_info like new() does
+        let agents_info = agents
+            .iter()
+            .map(|(name, agent)| {
+                let description = agent
+                    .system_prompt
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .map(|l| l.trim().to_string());
+                (
+                    name.clone(),
+                    AgentInfo {
+                        name: name.clone(),
+                        description,
+                    },
+                )
+            })
+            .collect();
+
+        // Create state first so we can pass it to PoisoningProvider
+        let state = Arc::new(Mutex::new(EngineState {
+            conversations: HashMap::new(),
+            trace: Vec::new(),
+            iteration_count: 0,
+            total_tokens_in: 0,
+            total_tokens_out: 0,
+            total_cost: 0.0,
+            invocation_count: 0,
+        }));
+
         let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+
+        // Use PoisoningProvider that will poison the mutex during its execution
         providers.insert(
             "coordinator".to_string(),
-            Arc::new(MockProvider::new(vec!["Answer"])),
+            Arc::new(PoisoningProvider::new(
+                "Response after poisoning",
+                Arc::clone(&state),
+            )),
         );
 
-        let engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine {
+            ctx: Arc::new(EngineContext {
+                config,
+                agents,
+                providers,
+                agents_info,
+            }),
+            state,
+        };
 
-        // Start with a clean state - run once to populate it
-        let state = Arc::clone(&engine.state);
-        {
-            let mut s = state.lock().unwrap();
-            s.total_tokens_in = 100;
-            s.total_tokens_out = 200;
-            s.total_cost = 0.05;
-            s.invocation_count = 5;
-        }
+        // Call run() - the provider will poison the mutex during execution,
+        // then invoke_agent will hit the recovery sites when it tries to update state (L217)
+        // or record the response (L246), or when run() tries to build the final result (L145)
+        let result = engine.run("test input").await;
 
-        // Now poison it
-        let poison_result = std::panic::catch_unwind(|| {
-            let _guard = state.lock().unwrap();
-            panic!("Poison after data");
-        });
-        assert!(poison_result.is_err());
+        // The execution should complete despite the poisoning, thanks to recovery sites
+        assert!(
+            result.is_ok(),
+            "Should recover from poisoned mutex during execution, got error: {:?}",
+            result.err()
+        );
 
-        // Access with recovery (simulating what run() does at line 145)
-        let recovered_state = state.lock().unwrap_or_else(|e| {
-            tracing::warn!("Test: recovering poisoned mutex");
-            e.into_inner()
-        });
+        let result = result.unwrap();
 
-        // Should be able to read the data that was there before poisoning
-        assert_eq!(recovered_state.total_tokens_in, 100);
-        assert_eq!(recovered_state.total_tokens_out, 200);
-        assert!((recovered_state.total_cost - 0.05).abs() < f64::EPSILON);
-        assert_eq!(recovered_state.invocation_count, 5);
+        // Verify we got a meaningful response (the provider did execute)
+        assert!(
+            result.content.contains("Response after poisoning"),
+            "Should have received provider response: {}",
+            result.content
+        );
+
+        // Verify metrics were captured despite poisoning
+        assert!(
+            result.total_tokens_in > 0,
+            "Should have captured input tokens"
+        );
+        assert!(
+            result.total_tokens_out > 0,
+            "Should have captured output tokens"
+        );
+        assert!(result.total_cost > 0.0, "Should have captured cost");
+        assert_eq!(result.invocation_count, 1, "Should have one invocation");
     }
 }
