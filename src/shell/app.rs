@@ -733,60 +733,192 @@ async fn execute_tandem(
     app.set_loading(true);
     let prompt = runner.build_prompt_for(input);
 
-    // Spawn all providers in parallel
-    let mut handles = Vec::new();
+    // Spawn all providers in parallel with streaming
+    struct ProviderStream {
+        display_name: String,
+        cmd: String,
+        child: tokio::process::Child,
+        stream_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+        accumulated_text: String,
+    }
+
+    let mut streams = Vec::new();
     for provider in &resolved {
         let cmd = provider.command.clone();
         let args = provider.args.clone();
         let prompt = prompt.clone();
         let display_name = provider.display_name.clone();
 
-        handles.push(tokio::spawn(async move {
-            let output = tokio::process::Command::new(&cmd)
-                .args(&args)
-                .arg(&prompt)
-                .output()
-                .await;
-            (display_name, cmd, output)
-        }));
+        let mut child = match tokio::process::Command::new(&cmd)
+            .args(&args)
+            .arg(&prompt)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                app.add_system_message(&format!("Failed to spawn {}: {}", display_name, e));
+                continue;
+            }
+        };
+
+        let stdout = child.stdout.take().unwrap();
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        // Spawn reader task for this provider
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let _ = stream_tx.send(line.clone());
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        streams.push(ProviderStream {
+            display_name,
+            cmd,
+            child,
+            stream_rx,
+            accumulated_text: String::new(),
+        });
+    }
+
+    if streams.is_empty() {
+        app.add_system_message("No providers could be started for tandem.");
+        app.set_loading(false);
+        return Ok(());
     }
 
     // Show spinner while waiting
     app.add_system_message(&format!(
         "⚡ Tandem: sending to {} in parallel...",
-        resolved
+        streams
             .iter()
-            .map(|p| p.display_name.as_str())
+            .map(|s| s.display_name.as_str())
             .collect::<Vec<_>>()
             .join(" + ")
     ));
     terminal.draw(|f| app.render(f))?;
 
-    // Collect results
-    let mut combined_content = String::new();
-    for handle in handles {
-        let (name, cmd, output_result) = handle
-            .await
-            .map_err(|e| anyhow::anyhow!("Join error: {e}"))?;
-        match output_result {
-            Ok(output) if output.status.success() => {
-                let raw = String::from_utf8_lossy(&output.stdout).to_string();
-                let text = super::json_runner::collect_text_from_jsonl(&cmd, &raw);
-                let content = if text.is_empty() {
-                    super::parser::parse_response(&raw).content
+    // Stream loop: drain all channels and render incrementally
+    let mut active_streams = streams.len();
+    while active_streams > 0 {
+        app.tick_spinner();
+        app.workroom.tick();
+        terminal.draw(|f| app.render(f))?;
+
+        // Check for cancel
+        if event::poll(Duration::from_millis(30))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && is_cancel_key(&key)
+        {
+            for stream in &mut streams {
+                let _ = stream.child.kill().await;
+            }
+            app.add_system_message("[Tandem cancelled]");
+            app.set_loading(false);
+            return Ok(());
+        }
+
+        // Drain all provider streams
+        let mut got_data = false;
+        for stream in &mut streams {
+            while let Ok(line) = stream.stream_rx.try_recv() {
+                let is_json_mode = super::json_runner::supports_json(&stream.cmd);
+                if is_json_mode {
+                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    match parse_stream_event(&stream.cmd, &line) {
+                        StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                            stream.accumulated_text.push_str(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Result(resp) if !resp.content.is_empty() => {
+                            stream.accumulated_text.push_str(&resp.content);
+                            got_data = true;
+                        }
+                        _ => {}
+                    }
                 } else {
-                    super::parser::parse_response(&text).content
+                    // Text mode fallback
+                    stream.accumulated_text.push_str(&line);
+                    got_data = true;
+                }
+            }
+        }
+
+        if got_data {
+            terminal.draw(|f| app.render(f))?;
+        }
+
+        // Check if any child has finished
+        active_streams = 0;
+        for stream in &mut streams {
+            match stream.child.try_wait() {
+                Ok(Some(_status)) => {
+                    // Child finished, continue to next
+                }
+                Ok(None) => {
+                    // Still running
+                    active_streams += 1;
+                }
+                Err(_) => {
+                    // Error checking status, assume finished
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    // Wait for all children to complete and collect final results
+    let mut combined_content = String::new();
+    for mut stream in streams {
+        match stream.child.wait().await {
+            Ok(status) if status.success() => {
+                let content = if stream.accumulated_text.is_empty() {
+                    // Fallback: read from final output if nothing was streamed
+                    let stderr = stream.child.stderr.take();
+                    if let Some(mut stderr) = stderr {
+                        use tokio::io::AsyncReadExt;
+                        let mut stderr_text = String::new();
+                        let _ = stderr.read_to_string(&mut stderr_text).await;
+                        super::parser::parse_response(&stderr_text).content
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    super::parser::parse_response(&stream.accumulated_text).content
                 };
 
-                app.add_assistant_message_with_label(&name, &content);
+                app.add_assistant_message_with_label(&stream.display_name, &content);
                 combined_content.push_str(&content);
             }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                app.add_assistant_message_with_label(&name, &format!("Error: {}", stderr));
+            Ok(_status) => {
+                let mut stderr_text = String::new();
+                if let Some(mut stderr) = stream.child.stderr.take() {
+                    use tokio::io::AsyncReadExt;
+                    let _ = stderr.read_to_string(&mut stderr_text).await;
+                }
+                app.add_assistant_message_with_label(
+                    &stream.display_name,
+                    &format!("Error: {}", stderr_text),
+                );
             }
             Err(e) => {
-                app.add_assistant_message_with_label(&name, &format!("Error: {}", e));
+                app.add_assistant_message_with_label(
+                    &stream.display_name,
+                    &format!("Error: {}", e),
+                );
             }
         }
         terminal.draw(|f| app.render(f))?;
@@ -946,43 +1078,100 @@ async fn execute_pipeline_steps(
             ));
         }
 
-        let (tx, mut rx) = tokio::sync::oneshot::channel();
-        let cmd_clone = resolved.cmd.clone();
-        let args_clone = resolved.args.clone();
-        let prompt_clone = full_prompt.clone();
+        // Spawn process with streaming stdout
+        let mut child = match tokio::process::Command::new(&resolved.cmd)
+            .args(&resolved.args)
+            .arg(&full_prompt)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                app.add_assistant_message_with_label(
+                    &resolved.display_label,
+                    &format!("Failed to spawn: {}", e),
+                );
+                app.set_loading(false);
+                return Ok(());
+            }
+        };
 
+        let stdout = child.stdout.take().unwrap();
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        // Spawn reader task
         tokio::spawn(async move {
-            let output = tokio::process::Command::new(&cmd_clone)
-                .args(&args_clone)
-                .arg(&prompt_clone)
-                .output()
-                .await;
-            let _ = tx.send(output);
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let _ = stream_tx.send(line.clone());
+                    }
+                    Err(_) => break,
+                }
+            }
         });
 
+        let mut accumulated_text = String::new();
+        let is_json_mode = super::json_runner::supports_json(&resolved.cmd);
+
+        // Stream loop
         loop {
             app.tick_spinner();
+            app.workroom.tick();
             terminal.draw(|f| app.render(f))?;
 
-            if event::poll(Duration::from_millis(80))?
+            if event::poll(Duration::from_millis(30))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
                 && is_cancel_key(&key)
             {
+                let _ = child.kill().await;
                 app.add_system_message("[Pipeline cancelled]");
                 app.set_loading(false);
                 return Ok(());
             }
 
-            if let Ok(output_result) = rx.try_recv() {
-                match output_result {
-                    Ok(output) if output.status.success() => {
-                        let raw = String::from_utf8_lossy(&output.stdout).to_string();
-                        let text = super::json_runner::collect_text_from_jsonl(&resolved.cmd, &raw);
-                        let content = if text.is_empty() {
-                            super::parser::parse_response(&raw).content
+            // Drain stream and accumulate text
+            let mut got_data = false;
+            while let Ok(line) = stream_rx.try_recv() {
+                if is_json_mode {
+                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    match parse_stream_event(&resolved.cmd, &line) {
+                        StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                            accumulated_text.push_str(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Result(resp) if !resp.content.is_empty() => {
+                            accumulated_text.push_str(&resp.content);
+                            got_data = true;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    accumulated_text.push_str(&line);
+                    got_data = true;
+                }
+            }
+
+            if got_data {
+                terminal.draw(|f| app.render(f))?;
+            }
+
+            // Check if child finished
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.success() {
+                        let content = if accumulated_text.is_empty() {
+                            // Fallback if nothing was streamed
+                            String::new()
                         } else {
-                            super::parser::parse_response(&text).content
+                            super::parser::parse_response(&accumulated_text).content
                         };
 
                         let label = if is_last {
@@ -992,27 +1181,35 @@ async fn execute_pipeline_steps(
                         };
                         app.add_assistant_message_with_label(&label, &content);
                         current_input = content;
-                    }
-                    Ok(output) => {
-                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    } else {
+                        let mut stderr_text = String::new();
+                        if let Some(mut stderr) = child.stderr.take() {
+                            use tokio::io::AsyncReadExt;
+                            let _ = stderr.read_to_string(&mut stderr_text).await;
+                        }
                         app.add_assistant_message_with_label(
                             &resolved.display_label,
-                            &format!("Error: {}", stderr),
+                            &format!("Error: {}", stderr_text),
                         );
                         app.set_loading(false);
                         return Ok(());
                     }
-                    Err(e) => {
-                        app.add_assistant_message_with_label(
-                            &resolved.display_label,
-                            &format!("Error: {}", e),
-                        );
-                        app.set_loading(false);
-                        return Ok(());
-                    }
+                    break;
                 }
-                break;
+                Ok(None) => {
+                    // Still running, continue loop
+                }
+                Err(e) => {
+                    app.add_assistant_message_with_label(
+                        &resolved.display_label,
+                        &format!("Error checking process: {}", e),
+                    );
+                    app.set_loading(false);
+                    return Ok(());
+                }
             }
+
+            tokio::time::sleep(Duration::from_millis(30)).await;
         }
         terminal.draw(|f| app.render(f))?;
     }
