@@ -544,7 +544,7 @@ async fn run_orchestrated(
             let mut agent_map: HashMap<String, crate::core::agent::Agent> = HashMap::new();
             let mut provider_map: HashMap<String, Arc<dyn Provider>> = HashMap::new();
 
-            for (agent, provider) in agents.into_iter().zip(providers.into_iter()) {
+            for (agent, provider) in agents.into_iter().zip(providers) {
                 provider_map.insert(agent.name.clone(), provider);
                 agent_map.insert(agent.name.clone(), agent);
             }
