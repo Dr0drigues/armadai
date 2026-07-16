@@ -179,12 +179,49 @@ impl ShellApp {
         }
     }
 
+    /// Start a streaming response for a specific provider in tandem mode
+    pub fn start_tandem_stream(&mut self, provider_label: &str) {
+        self.messages.push(DisplayMessage {
+            role: provider_label.to_string(),
+            content: String::new(),
+            is_user: false,
+            is_system: false,
+        });
+        self.manual_scroll = false;
+        self.scroll = 0;
+    }
+
+    /// Append text to a specific provider's streaming response in tandem mode
+    pub fn append_to_tandem_stream(&mut self, provider_label: &str, text: &str) {
+        // Find the message with matching role (search from end for latest)
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == provider_label && !m.is_user && !m.is_system)
+        {
+            msg.content.push_str(text);
+            self.manual_scroll = false;
+            self.scroll = 0;
+        }
+    }
+
     /// Get content of the last assistant message
     pub fn get_last_assistant_content(&self) -> String {
         self.messages
             .iter()
             .rev()
             .find(|m| !m.is_user && !m.is_system)
+            .map(|m| m.content.clone())
+            .unwrap_or_default()
+    }
+
+    /// Get content of an assistant message by label (for tandem mode)
+    pub fn get_assistant_content_by_label(&self, label: &str) -> String {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.role == label && !m.is_user && !m.is_system)
             .map(|m| m.content.clone())
             .unwrap_or_default()
     }
@@ -197,6 +234,19 @@ impl ShellApp {
             .rev()
             .find(|m| !m.is_user && !m.is_system)
         {
+            last.content = content.to_string();
+        }
+    }
+
+    /// Update the last assistant message label and content
+    pub fn update_last_assistant_with_label(&mut self, label: &str, content: &str) {
+        if let Some(last) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| !m.is_user && !m.is_system)
+        {
+            last.role = label.to_string();
             last.content = content.to_string();
         }
     }
