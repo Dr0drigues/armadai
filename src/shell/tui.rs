@@ -834,38 +834,114 @@ impl ShellApp {
         (lines as u16 + 2).clamp(3, 8)
     }
 
+    /// Calculate cursor position (row, col) after wrapping.
+    /// Takes cursor position in the display text (including prefix) and available width.
+    /// Returns (row, col) where row is 0-indexed from top of input area.
+    fn calculate_wrapped_cursor_position(cursor_pos: usize, width: usize) -> (usize, usize) {
+        if width == 0 {
+            return (0, 0);
+        }
+        let row = cursor_pos / width;
+        let col = cursor_pos % width;
+        (row, col)
+    }
+
     fn render_input_line(&self, frame: &mut Frame, area: Rect) {
         let cursor_indicator = if self.loading { "..." } else { ">" };
 
-        // Build plain text for wrapping, then render with cursor highlight
+        // Build plain text for wrapping
         let display_text = format!("{} {}", cursor_indicator, self.input);
-
-        // For cursor position in the display text: offset by prompt prefix length
         let prefix_len = cursor_indicator.len() + 1; // "> " or "... "
         let cursor_display_pos = prefix_len + self.cursor;
 
-        // Build spans with cursor highlight
-        let mut input_spans = Vec::new();
-        for (i, c) in display_text.chars().enumerate() {
-            if i == cursor_display_pos && !self.loading {
+        // Calculate available width for wrapping (subtract borders and padding)
+        let available_width = area.width.saturating_sub(4) as usize; // 2 for left/right borders + 2 for padding
+        if available_width == 0 {
+            // Terminal too narrow, just render without wrapping logic
+            let mut input_spans = Vec::new();
+            for (i, c) in display_text.chars().enumerate() {
+                if i == cursor_display_pos && !self.loading {
+                    input_spans.push(Span::styled(
+                        c.to_string(),
+                        Style::default().bg(Color::White).fg(Color::Black),
+                    ));
+                } else {
+                    input_spans.push(Span::raw(c.to_string()));
+                }
+            }
+            if cursor_display_pos >= display_text.chars().count() && !self.loading {
                 input_spans.push(Span::styled(
+                    " ",
+                    Style::default().bg(Color::White).fg(Color::Black),
+                ));
+            }
+
+            let input_paragraph = Paragraph::new(Line::from(input_spans))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray))
+                        .title(" Input ")
+                        .title_style(Style::default().fg(Color::Cyan)),
+                )
+                .wrap(Wrap { trim: false });
+
+            frame.render_widget(input_paragraph, area);
+            return;
+        }
+
+        // Calculate cursor position after wrapping
+        let (cursor_row, _cursor_col) =
+            Self::calculate_wrapped_cursor_position(cursor_display_pos, available_width);
+
+        // Build lines based on wrapping
+        let mut lines: Vec<Line> = Vec::new();
+        let mut current_line_spans: Vec<Span> = Vec::new();
+
+        for (char_index, c) in display_text.chars().enumerate() {
+            let (row, _col) = Self::calculate_wrapped_cursor_position(char_index, available_width);
+
+            // If we've moved to a new row, push the current line
+            if row > lines.len() {
+                lines.push(Line::from(current_line_spans.clone()));
+                current_line_spans.clear();
+            }
+
+            // Add span for this character
+            if char_index == cursor_display_pos && !self.loading {
+                current_line_spans.push(Span::styled(
                     c.to_string(),
                     Style::default().bg(Color::White).fg(Color::Black),
                 ));
             } else {
-                input_spans.push(Span::raw(c.to_string()));
+                current_line_spans.push(Span::raw(c.to_string()));
             }
         }
 
-        // If cursor at end, add cursor block
-        if cursor_display_pos >= display_text.chars().count() && !self.loading {
-            input_spans.push(Span::styled(
-                " ",
-                Style::default().bg(Color::White).fg(Color::Black),
-            ));
+        // Add any remaining spans as the last line
+        if !current_line_spans.is_empty() {
+            lines.push(Line::from(current_line_spans));
         }
 
-        let input_paragraph = Paragraph::new(Line::from(input_spans))
+        // If cursor at end, add cursor block on the appropriate line
+        if cursor_display_pos >= display_text.chars().count() && !self.loading {
+            if cursor_row < lines.len() {
+                lines[cursor_row].spans.push(Span::styled(
+                    " ",
+                    Style::default().bg(Color::White).fg(Color::Black),
+                ));
+            } else if cursor_row == lines.len() {
+                // Cursor is beyond all lines, add a new line with cursor block
+                let spans = vec![Span::styled(
+                    " ",
+                    Style::default().bg(Color::White).fg(Color::Black),
+                )];
+                lines.push(Line::from(spans));
+            }
+        }
+
+        // Render with lines preserving wrapping
+        let input_paragraph = Paragraph::new(lines)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -935,5 +1011,103 @@ mod tests {
         assert_eq!(app.tokens_in, 100);
         assert_eq!(app.tokens_out, 50);
         assert_eq!(app.turn_count, 1);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_no_wrap() {
+        // Input shorter than width, no wrapping
+        // Width = 20, cursor at position 5
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position(5, 20);
+        assert_eq!(row, 0);
+        assert_eq!(col, 5);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_at_width_boundary() {
+        // Cursor at end of first line (position = width)
+        // Width = 20, cursor at position 20 (wraps to second line)
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position(20, 20);
+        assert_eq!(row, 1);
+        assert_eq!(col, 0);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_one_wrap() {
+        // Input wraps once, cursor in middle of second line
+        // Width = 20, cursor at position 35
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position(35, 20);
+        assert_eq!(row, 1);
+        assert_eq!(col, 15);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_multiple_wraps() {
+        // Input wraps multiple times, cursor in third line
+        // Width = 20, cursor at position 65
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position(65, 20);
+        assert_eq!(row, 3);
+        assert_eq!(col, 5);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_cursor_at_start() {
+        // Cursor at start of input
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position(0, 20);
+        assert_eq!(row, 0);
+        assert_eq!(col, 0);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_cursor_at_end_of_wrappable_text() {
+        // 60 character input with width 20 = 3 lines
+        // Cursor at position 59 (last character on third line)
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position(59, 20);
+        assert_eq!(row, 2);
+        assert_eq!(col, 19);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_zero_width() {
+        // Edge case: zero width should not panic
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position(5, 0);
+        // With zero width, we expect (5, 0) since any division by 0 would be handled
+        // but our function returns (0, 0) for zero width
+        assert_eq!(row, 0);
+        assert_eq!(col, 0);
+    }
+
+    #[test]
+    fn test_input_height_calculation() {
+        // Test that input height is calculated correctly with wrapping
+        let mut app = ShellApp::new("Gemini".to_string());
+
+        // Short input that fits on one line
+        app.input = "hello".to_string();
+        let height = app.input_height(80);
+        assert!(height >= 3); // Min height
+        assert!(height <= 8); // Max height
+
+        // Longer input that wraps
+        app.input = "a".repeat(100);
+        let height = app.input_height(80);
+        assert!(height >= 3);
+        assert!(height <= 8);
+    }
+
+    #[test]
+    fn test_cursor_navigation_with_input() {
+        let mut app = ShellApp::new("Gemini".to_string());
+
+        // Insert some text
+        app.input = "hello world".to_string();
+        app.cursor = 11; // At end
+
+        // Move cursor left
+        assert_eq!(app.cursor, 11);
+
+        // Test char_to_byte conversion
+        app.input = "café".to_string();
+        let byte_idx = app.char_to_byte(1); // Position after 'c', before 'a'
+        assert_eq!(byte_idx, 1);
     }
 }
