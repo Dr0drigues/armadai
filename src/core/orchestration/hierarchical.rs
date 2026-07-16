@@ -142,7 +142,10 @@ impl HierarchicalEngine {
         )
         .await?;
 
-        let mut state = self.state.lock().expect("engine state mutex poisoned");
+        let mut state = self.state.lock().unwrap_or_else(|e| {
+            tracing::warn!("Mutex poisoned in run(), recovering: {:?}", e);
+            e.into_inner()
+        });
         Ok(OrchestrationResult {
             content: result,
             trace: std::mem::take(&mut state.trace),
@@ -171,7 +174,9 @@ fn invoke_agent(
     Box::pin(async move {
         // ── Safety checks (lock briefly, then release) ──────────
         {
-            let s = state.lock().expect("engine state mutex poisoned");
+            let s = state
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Mutex poisoned during safety checks: {:?}", e))?;
             if depth >= ctx.config.max_depth() {
                 anyhow::bail!(
                     "Max delegation depth ({}) reached at agent '{agent_name}'",
@@ -209,7 +214,13 @@ fn invoke_agent(
 
         // ── Update state: iteration count, trace, conversation ──
         {
-            let mut s = state.lock().expect("engine state mutex poisoned");
+            let mut s = state.lock().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Mutex poisoned in invoke_agent (update state), recovering: {:?}",
+                    e
+                );
+                e.into_inner()
+            });
             s.iteration_count += 1;
             s.trace.push(DelegationEvent {
                 from: sender.clone(),
@@ -232,7 +243,13 @@ fn invoke_agent(
 
         // ── Record assistant response ───────────────────────────
         {
-            let mut s = state.lock().expect("engine state mutex poisoned");
+            let mut s = state.lock().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Mutex poisoned in invoke_agent (record response), recovering: {:?}",
+                    e
+                );
+                e.into_inner()
+            });
             let conv = s.conversations.entry(agent_name.clone()).or_default();
             conv.push(ChatMessage {
                 role: "assistant".to_string(),
@@ -316,7 +333,13 @@ fn invoke_agent(
         // ── Re-inject results and ask for synthesis ─────────────
         let results_message = format_results(&results);
         {
-            let mut s = state.lock().expect("engine state mutex poisoned");
+            let mut s = state.lock().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Mutex poisoned in invoke_agent (re-inject results), recovering: {:?}",
+                    e
+                );
+                e.into_inner()
+            });
             let conv = s.conversations.entry(agent_name.clone()).or_default();
             conv.push(ChatMessage {
                 role: "user".to_string(),
@@ -327,7 +350,13 @@ fn invoke_agent(
         let synthesis = call_llm(&ctx, &state, &agent_name, &system_prompt).await?;
 
         {
-            let mut s = state.lock().expect("engine state mutex poisoned");
+            let mut s = state.lock().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Mutex poisoned in invoke_agent (record synthesis), recovering: {:?}",
+                    e
+                );
+                e.into_inner()
+            });
             let conv = s.conversations.entry(agent_name.clone()).or_default();
             conv.push(ChatMessage {
                 role: "assistant".to_string(),
@@ -409,7 +438,9 @@ async fn call_llm(
         .ok_or_else(|| anyhow::anyhow!("Agent '{agent_name}' not found"))?;
 
     let messages = {
-        let s = state.lock().expect("engine state mutex poisoned");
+        let s = state.lock().map_err(|e| {
+            anyhow::anyhow!("Mutex poisoned in call_llm (read conversation): {:?}", e)
+        })?;
         s.conversations.get(agent_name).cloned().unwrap_or_default()
     }; // unlock before async call
 
@@ -431,7 +462,13 @@ async fn call_llm(
 
     // Update metrics
     {
-        let mut s = state.lock().expect("engine state mutex poisoned");
+        let mut s = state.lock().unwrap_or_else(|e| {
+            tracing::warn!(
+                "Mutex poisoned in call_llm (update metrics), recovering: {:?}",
+                e
+            );
+            e.into_inner()
+        });
         s.total_tokens_in += response.tokens_in;
         s.total_tokens_out += response.tokens_out;
         s.total_cost += response.cost;
@@ -1065,5 +1102,212 @@ mod tests {
         assert_eq!(result.invocation_count, 5);
         // Trace: user→coord, coord→a, coord→b, coord→c = at least 4
         assert!(result.trace.len() >= 4);
+    }
+
+    #[tokio::test]
+    async fn test_mutex_poison_recovery() {
+        // Regression test for B3: verify that poisoned mutex is handled gracefully
+        let config = sample_config();
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "You coordinate."),
+        );
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(MockProvider::new(vec!["Direct answer."])),
+        );
+
+        let mut engine = HierarchicalEngine::new(config, agents, providers);
+
+        // Poison the mutex by panicking while holding the lock
+        let state = Arc::clone(&engine.state);
+        let poison_result = std::panic::catch_unwind(|| {
+            let _guard = state.lock().unwrap();
+            panic!("Intentional panic to poison mutex");
+        });
+        assert!(poison_result.is_err(), "Panic should have occurred");
+
+        // Verify the mutex is poisoned
+        assert!(
+            engine.state.lock().is_err(),
+            "Mutex should be poisoned after panic"
+        );
+
+        // The engine should still be able to extract results via recovery
+        // (run() uses unwrap_or_else on the final lock)
+        // However, invoke_agent will fail on the safety checks lock (which uses map_err)
+        let result = engine.run("test").await;
+
+        // The call will fail at the safety checks (line 174) because that lock uses Result
+        assert!(
+            result.is_err(),
+            "Should fail when mutex is poisoned at safety checks"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Mutex poisoned") || err_msg.contains("poisoned"),
+            "Error should mention mutex poisoning, got: {err_msg}"
+        );
+    }
+
+    /// Provider that poisons a mutex during execution to test recovery paths
+    struct PoisoningProvider {
+        response: String,
+        target_mutex: Arc<Mutex<EngineState>>,
+    }
+
+    impl PoisoningProvider {
+        fn new(response: &str, target_mutex: Arc<Mutex<EngineState>>) -> Self {
+            Self {
+                response: response.to_string(),
+                target_mutex,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for PoisoningProvider {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> anyhow::Result<CompletionResponse> {
+            // Poison the target mutex by panicking in a spawned thread while holding the lock
+            let mutex = Arc::clone(&self.target_mutex);
+            let handle = std::thread::spawn(move || {
+                let _guard = mutex.lock().unwrap();
+                panic!("Intentional poison during provider execution");
+            });
+
+            // Wait for the poison to happen (the thread will panic)
+            let _ = handle.join();
+
+            // Verify mutex is now poisoned
+            assert!(
+                self.target_mutex.lock().is_err(),
+                "Mutex should be poisoned after thread panic"
+            );
+
+            // Provider still returns successfully (the provider itself didn't panic)
+            Ok(CompletionResponse {
+                content: self.response.clone(),
+                model: "poisoning-mock".to_string(),
+                tokens_in: 15,
+                tokens_out: 25,
+                cost: 0.002,
+            })
+        }
+
+        async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("Streaming not supported by PoisoningProvider")
+        }
+
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "poisoning-mock".to_string(),
+                models: vec!["poisoning-mock".to_string()],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mutex_poison_recovery_during_execution() {
+        // Test recovery when mutex gets poisoned DURING execution (after safety checks).
+        // This exercises the unwrap_or_else recovery sites in invoke_agent at L217, L246, etc.
+        let config = sample_config();
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "You coordinate."),
+        );
+
+        // Build agents_info like new() does
+        let agents_info = agents
+            .iter()
+            .map(|(name, agent)| {
+                let description = agent
+                    .system_prompt
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .map(|l| l.trim().to_string());
+                (
+                    name.clone(),
+                    AgentInfo {
+                        name: name.clone(),
+                        description,
+                    },
+                )
+            })
+            .collect();
+
+        // Create state first so we can pass it to PoisoningProvider
+        let state = Arc::new(Mutex::new(EngineState {
+            conversations: HashMap::new(),
+            trace: Vec::new(),
+            iteration_count: 0,
+            total_tokens_in: 0,
+            total_tokens_out: 0,
+            total_cost: 0.0,
+            invocation_count: 0,
+        }));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+
+        // Use PoisoningProvider that will poison the mutex during its execution
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(PoisoningProvider::new(
+                "Response after poisoning",
+                Arc::clone(&state),
+            )),
+        );
+
+        let mut engine = HierarchicalEngine {
+            ctx: Arc::new(EngineContext {
+                config,
+                agents,
+                providers,
+                agents_info,
+            }),
+            state,
+        };
+
+        // Call run() - the provider will poison the mutex during execution,
+        // then invoke_agent will hit the recovery sites when it tries to update state (L217)
+        // or record the response (L246), or when run() tries to build the final result (L145)
+        let result = engine.run("test input").await;
+
+        // The execution should complete despite the poisoning, thanks to recovery sites
+        assert!(
+            result.is_ok(),
+            "Should recover from poisoned mutex during execution, got error: {:?}",
+            result.err()
+        );
+
+        let result = result.unwrap();
+
+        // Verify we got a meaningful response (the provider did execute)
+        assert!(
+            result.content.contains("Response after poisoning"),
+            "Should have received provider response: {}",
+            result.content
+        );
+
+        // Verify metrics were captured despite poisoning
+        assert!(
+            result.total_tokens_in > 0,
+            "Should have captured input tokens"
+        );
+        assert!(
+            result.total_tokens_out > 0,
+            "Should have captured output tokens"
+        );
+        assert!(result.total_cost > 0.0, "Should have captured cost");
+        assert_eq!(result.invocation_count, 1, "Should have one invocation");
     }
 }
