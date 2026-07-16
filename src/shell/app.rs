@@ -10,6 +10,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::runner::ShellRunner;
@@ -733,60 +734,236 @@ async fn execute_tandem(
     app.set_loading(true);
     let prompt = runner.build_prompt_for(input);
 
-    // Spawn all providers in parallel
-    let mut handles = Vec::new();
+    // Spawn all providers in parallel with streaming
+    struct ProviderStream {
+        display_name: String,
+        cmd: String,
+        child: tokio::process::Child,
+        stream_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+        result_event: Option<super::json_runner::CliResponse>,
+        stderr_buffer: Arc<Mutex<String>>,
+    }
+
+    let mut streams = Vec::new();
     for provider in &resolved {
         let cmd = provider.command.clone();
         let args = provider.args.clone();
         let prompt = prompt.clone();
         let display_name = provider.display_name.clone();
 
-        handles.push(tokio::spawn(async move {
-            let output = tokio::process::Command::new(&cmd)
-                .args(&args)
-                .arg(&prompt)
-                .output()
-                .await;
-            (display_name, cmd, output)
-        }));
+        let mut child = match tokio::process::Command::new(&cmd)
+            .args(&args)
+            .arg(&prompt)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                app.add_system_message(&format!("Failed to spawn {}: {}", display_name, e));
+                continue;
+            }
+        };
+
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        // Spawn reader task for stdout
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let _ = stream_tx.send(line.clone());
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // Buffer to capture stderr for error reporting
+        let stderr_buffer = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = stderr_buffer.clone();
+
+        // Spawn reader task for stderr (to prevent buffer deadlock)
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut stderr = stderr;
+            let mut buf = vec![0u8; 4096];
+            loop {
+                match stderr.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(s) = String::from_utf8(buf[..n].to_vec()) {
+                            stderr_buf.lock().unwrap().push_str(&s);
+                        }
+                    }
+                }
+            }
+        });
+
+        // Create empty streaming message for this provider
+        app.start_tandem_stream(&display_name);
+
+        streams.push(ProviderStream {
+            display_name,
+            cmd,
+            child,
+            stream_rx,
+            result_event: None,
+            stderr_buffer,
+        });
+    }
+
+    if streams.is_empty() {
+        app.add_system_message("No providers could be started for tandem.");
+        app.set_loading(false);
+        return Ok(());
     }
 
     // Show spinner while waiting
     app.add_system_message(&format!(
         "⚡ Tandem: sending to {} in parallel...",
-        resolved
+        streams
             .iter()
-            .map(|p| p.display_name.as_str())
+            .map(|s| s.display_name.as_str())
             .collect::<Vec<_>>()
             .join(" + ")
     ));
     terminal.draw(|f| app.render(f))?;
 
-    // Collect results
-    let mut combined_content = String::new();
-    for handle in handles {
-        let (name, cmd, output_result) = handle
-            .await
-            .map_err(|e| anyhow::anyhow!("Join error: {e}"))?;
-        match output_result {
-            Ok(output) if output.status.success() => {
-                let raw = String::from_utf8_lossy(&output.stdout).to_string();
-                let text = super::json_runner::collect_text_from_jsonl(&cmd, &raw);
-                let content = if text.is_empty() {
-                    super::parser::parse_response(&raw).content
-                } else {
-                    super::parser::parse_response(&text).content
-                };
+    // Stream loop: drain all channels and render incrementally
+    let mut active_streams = streams.len();
+    while active_streams > 0 {
+        app.tick_spinner();
+        app.workroom.tick();
+        terminal.draw(|f| app.render(f))?;
 
-                app.add_assistant_message_with_label(&name, &content);
-                combined_content.push_str(&content);
+        // Check for cancel
+        if event::poll(Duration::from_millis(30))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && is_cancel_key(&key)
+        {
+            for stream in &mut streams {
+                let _ = stream.child.kill().await;
             }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                app.add_assistant_message_with_label(&name, &format!("Error: {}", stderr));
+            app.add_system_message("[Tandem cancelled]");
+            app.set_loading(false);
+            return Ok(());
+        }
+
+        // Drain all provider streams and append progressively
+        let mut got_data = false;
+        for stream in &mut streams {
+            while let Ok(line) = stream.stream_rx.try_recv() {
+                super::session::log_stream_event(session_id, line.trim());
+
+                let is_json_mode = super::json_runner::supports_json(&stream.cmd);
+                if is_json_mode {
+                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    match parse_stream_event(&stream.cmd, &line) {
+                        StreamEvent::Delta(text) => {
+                            app.workroom.detect_mentions(&text);
+                            app.append_to_tandem_stream(&stream.display_name, &text);
+                            got_data = true;
+                        }
+                        StreamEvent::Message(text) => {
+                            app.workroom.detect_mentions(&text);
+                            app.append_to_tandem_stream(&stream.display_name, &text);
+                            got_data = true;
+                        }
+                        StreamEvent::Result(resp) => {
+                            // Store result event for metrics, do NOT append content
+                            stream.result_event = Some(resp);
+                        }
+                        StreamEvent::Error(msg) => {
+                            app.append_to_tandem_stream(
+                                &stream.display_name,
+                                &format!("\n\nError: {}", msg),
+                            );
+                            got_data = true;
+                        }
+                        StreamEvent::Ignored | StreamEvent::Init { .. } => {}
+                    }
+                } else {
+                    // Text mode fallback
+                    app.workroom.parse_streaming_line(&line);
+                    app.append_to_tandem_stream(&stream.display_name, &line);
+                    got_data = true;
+                }
+            }
+        }
+
+        if got_data {
+            terminal.draw(|f| app.render(f))?;
+        }
+
+        // Check if any child has finished
+        active_streams = 0;
+        for stream in &mut streams {
+            match stream.child.try_wait() {
+                Ok(Some(_status)) => {
+                    // Child finished, continue to next
+                }
+                Ok(None) => {
+                    // Still running
+                    active_streams += 1;
+                }
+                Err(_) => {
+                    // Error checking status, assume finished
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    // Finalize: drain remaining events and wait for all children to complete
+    let mut combined_content = String::new();
+    for mut stream in streams {
+        // Drain any remaining stream events
+        let is_json_mode = super::json_runner::supports_json(&stream.cmd);
+        while let Ok(line) = stream.stream_rx.try_recv() {
+            if is_json_mode {
+                use super::json_runner::{StreamEvent, parse_stream_event};
+                match parse_stream_event(&stream.cmd, &line) {
+                    StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                        app.append_to_tandem_stream(&stream.display_name, &text);
+                    }
+                    StreamEvent::Result(resp) => {
+                        stream.result_event = Some(resp);
+                    }
+                    _ => {}
+                }
+            } else {
+                app.append_to_tandem_stream(&stream.display_name, &line);
+            }
+        }
+
+        match stream.child.wait().await {
+            Ok(status) if status.success() => {
+                // Content was already streamed progressively, just parse and clean markers
+                let content = app.get_assistant_content_by_label(&stream.display_name);
+                let parsed = super::parser::parse_response(&content);
+                combined_content.push_str(&parsed.content);
+            }
+            Ok(status) => {
+                let stderr_content = stream.stderr_buffer.lock().unwrap();
+                let error_msg = if stderr_content.is_empty() {
+                    format!("\n\n[Failed with status: {}]", status)
+                } else {
+                    format!("\n\n[Failed with status: {}]\n{}", status, stderr_content)
+                };
+                app.append_to_tandem_stream(&stream.display_name, &error_msg);
             }
             Err(e) => {
-                app.add_assistant_message_with_label(&name, &format!("Error: {}", e));
+                app.append_to_tandem_stream(&stream.display_name, &format!("\n\n[Error: {}]", e));
             }
         }
         terminal.draw(|f| app.render(f))?;
@@ -946,73 +1123,194 @@ async fn execute_pipeline_steps(
             ));
         }
 
-        let (tx, mut rx) = tokio::sync::oneshot::channel();
-        let cmd_clone = resolved.cmd.clone();
-        let args_clone = resolved.args.clone();
-        let prompt_clone = full_prompt.clone();
+        // Start streaming for this step
+        app.start_streaming_response();
 
+        // Spawn process with streaming stdout
+        let mut child = match tokio::process::Command::new(&resolved.cmd)
+            .args(&resolved.args)
+            .arg(&full_prompt)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                app.update_last_assistant(&format!("Failed to spawn: {}", e));
+                app.set_loading(false);
+                return Ok(());
+            }
+        };
+
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        // Spawn reader task for stdout
         tokio::spawn(async move {
-            let output = tokio::process::Command::new(&cmd_clone)
-                .args(&args_clone)
-                .arg(&prompt_clone)
-                .output()
-                .await;
-            let _ = tx.send(output);
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let _ = stream_tx.send(line.clone());
+                    }
+                    Err(_) => break,
+                }
+            }
         });
 
+        // Buffer to capture stderr for error reporting
+        let stderr_buffer = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = stderr_buffer.clone();
+
+        // Spawn reader task for stderr (to prevent buffer deadlock)
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut stderr = stderr;
+            let mut buf = vec![0u8; 4096];
+            loop {
+                match stderr.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(s) = String::from_utf8(buf[..n].to_vec()) {
+                            stderr_buf.lock().unwrap().push_str(&s);
+                        }
+                    }
+                }
+            }
+        });
+
+        let is_json_mode = super::json_runner::supports_json(&resolved.cmd);
+        // Store result event (currently unused, could be used for per-step metrics in future)
+        let mut _result_event: Option<super::json_runner::CliResponse> = None;
+
+        // Stream loop
         loop {
             app.tick_spinner();
+            app.workroom.tick();
             terminal.draw(|f| app.render(f))?;
 
-            if event::poll(Duration::from_millis(80))?
+            if event::poll(Duration::from_millis(30))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
                 && is_cancel_key(&key)
             {
-                app.add_system_message("[Pipeline cancelled]");
+                let _ = child.kill().await;
+                app.append_to_streaming("\n\n[Pipeline cancelled]");
                 app.set_loading(false);
                 return Ok(());
             }
 
-            if let Ok(output_result) = rx.try_recv() {
-                match output_result {
-                    Ok(output) if output.status.success() => {
-                        let raw = String::from_utf8_lossy(&output.stdout).to_string();
-                        let text = super::json_runner::collect_text_from_jsonl(&resolved.cmd, &raw);
-                        let content = if text.is_empty() {
-                            super::parser::parse_response(&raw).content
-                        } else {
-                            super::parser::parse_response(&text).content
-                        };
+            // Drain stream and append to UI progressively
+            let mut got_data = false;
+            while let Ok(line) = stream_rx.try_recv() {
+                super::session::log_stream_event(session_id, line.trim());
 
+                if is_json_mode {
+                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    match parse_stream_event(&resolved.cmd, &line) {
+                        StreamEvent::Delta(text) => {
+                            app.workroom.detect_mentions(&text);
+                            app.append_to_streaming(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Message(text) => {
+                            app.workroom.detect_mentions(&text);
+                            app.append_to_streaming(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Result(resp) => {
+                            // Store result event for metrics, do NOT append content
+                            _result_event = Some(resp);
+                        }
+                        StreamEvent::Error(msg) => {
+                            app.append_to_streaming(&format!("\n\nError: {}", msg));
+                            got_data = true;
+                        }
+                        StreamEvent::Ignored | StreamEvent::Init { .. } => {}
+                    }
+                } else {
+                    // Text mode fallback
+                    app.workroom.parse_streaming_line(&line);
+                    app.append_to_streaming(&line);
+                    got_data = true;
+                }
+            }
+
+            if got_data {
+                terminal.draw(|f| app.render(f))?;
+            }
+
+            // Check if child finished
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    // Drain remaining stream events
+                    while let Ok(line) = stream_rx.try_recv() {
+                        if is_json_mode {
+                            use super::json_runner::{StreamEvent, parse_stream_event};
+                            match parse_stream_event(&resolved.cmd, &line) {
+                                StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                                    app.append_to_streaming(&text);
+                                }
+                                StreamEvent::Result(resp) => {
+                                    _result_event = Some(resp);
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            app.append_to_streaming(&line);
+                        }
+                    }
+
+                    if status.success() {
+                        // Get the streamed content
+                        let content = app.get_last_assistant_content();
+                        let parsed = super::parser::parse_response(&content);
+
+                        // Update message with label and parsed content
                         let label = if is_last {
                             format!("{} (final)", resolved.display_label)
                         } else {
                             format!("{} (step {})", resolved.display_label, i + 1)
                         };
-                        app.add_assistant_message_with_label(&label, &content);
-                        current_input = content;
-                    }
-                    Ok(output) => {
-                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                        app.add_assistant_message_with_label(
-                            &resolved.display_label,
-                            &format!("Error: {}", stderr),
-                        );
+
+                        app.update_last_assistant_with_label(&label, &parsed.content);
+                        current_input = parsed.content;
+                    } else {
+                        // Process failed
+                        let stderr_content = stderr_buffer.lock().unwrap();
+                        let error_msg = if stderr_content.is_empty() {
+                            format!(
+                                "\n\n[Pipeline step '{}' failed with status: {}]",
+                                step.name, status
+                            )
+                        } else {
+                            format!(
+                                "\n\n[Pipeline step '{}' failed with status: {}]\n{}",
+                                step.name, status, stderr_content
+                            )
+                        };
+                        app.append_to_streaming(&error_msg);
                         app.set_loading(false);
                         return Ok(());
                     }
-                    Err(e) => {
-                        app.add_assistant_message_with_label(
-                            &resolved.display_label,
-                            &format!("Error: {}", e),
-                        );
-                        app.set_loading(false);
-                        return Ok(());
-                    }
+                    break;
                 }
-                break;
+                Ok(None) => {
+                    // Still running, continue loop
+                }
+                Err(e) => {
+                    app.update_last_assistant(&format!("Error checking process: {}", e));
+                    app.set_loading(false);
+                    return Ok(());
+                }
             }
+
+            tokio::time::sleep(Duration::from_millis(30)).await;
         }
         terminal.draw(|f| app.render(f))?;
     }
