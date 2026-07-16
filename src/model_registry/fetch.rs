@@ -130,11 +130,15 @@ fn load_cache_from(path: &Path) -> Option<CachedRegistry> {
 
 #[cfg(any(feature = "providers-api", test))]
 fn save_cache_to(path: &Path, registry: &CachedRegistry) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!("Failed to create model registry cache directory: {:?}", e);
     }
-    if let Ok(json) = serde_json::to_string(registry) {
-        let _ = std::fs::write(path, json);
+    if let Ok(json) = serde_json::to_string(registry)
+        && let Err(e) = std::fs::write(path, json)
+    {
+        tracing::warn!("Failed to write model registry cache: {:?}", e);
     }
 }
 

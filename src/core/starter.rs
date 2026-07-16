@@ -228,7 +228,9 @@ pub fn builtin_starters_dir() -> PathBuf {
         {
             let dest = config_starters.join(name);
             if !dest.exists() || super::embedded::needs_update(&dest) {
-                let _ = crate::core::skill::extract_embedded_dir(dir, &dest);
+                if let Err(e) = crate::core::skill::extract_embedded_dir(dir, &dest) {
+                    tracing::warn!("Failed to extract embedded starter '{}': {:?}", name, e);
+                }
                 super::embedded::write_version_marker(&dest);
             }
         }

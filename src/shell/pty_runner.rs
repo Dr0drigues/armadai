@@ -174,7 +174,9 @@ impl PtySession {
 
     /// Kill the PTY process.
     pub fn kill(&mut self) {
-        let _ = self.child.kill();
+        if let Err(e) = self.child.kill() {
+            tracing::debug!("Failed to kill PTY process: {:?}", e);
+        }
     }
 
     /// Check if the child process is still running.

@@ -328,7 +328,9 @@ fn resolve_agents_dir() -> AgentResolution {
             root.display(),
             config.agents.len()
         );
-        let _ = crate::core::project_registry::register_project(&root);
+        if let Err(e) = crate::core::project_registry::register_project(&root) {
+            tracing::warn!("Failed to register project in registry: {:?}", e);
+        }
         crate::core::model_updater::auto_check_and_prompt(&root, !atty_is_pipe());
         return AgentResolution::Project {
             root,

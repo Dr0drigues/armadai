@@ -144,7 +144,9 @@ fn setup_path() {
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false)
         {
-            let _ = std::fs::remove_file(&link_path);
+            if let Err(e) = std::fs::remove_file(&link_path) {
+                tracing::debug!("Failed to remove existing symlink: {:?}", e);
+            }
         } else {
             eprintln!(
                 "  [PATH] {} already exists and is not a symlink — skipping.",

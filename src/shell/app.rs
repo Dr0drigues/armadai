@@ -66,14 +66,18 @@ fn save_current_session(
 
 /// Restore the terminal to normal state. Called on exit and on panic.
 fn restore_terminal() {
-    let _ = disable_raw_mode();
-    let _ = execute!(
+    if let Err(e) = disable_raw_mode() {
+        tracing::warn!("Failed to disable raw mode: {:?}", e);
+    }
+    if let Err(e) = execute!(
         io::stdout(),
         crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
         LeaveAlternateScreen,
         crossterm::cursor::Show
-    );
+    ) {
+        tracing::warn!("Failed to restore terminal state: {:?}", e);
+    }
 }
 
 /// Main shell entry point.
@@ -164,13 +168,15 @@ pub async fn run_shell() -> Result<()> {
     .await;
 
     // Final save on exit
-    let _ = save_current_session(
+    if let Err(e) = save_current_session(
         &session_id,
         &project_dir,
         &provider_name,
         &wizard_result.model_name,
         &runner,
-    );
+    ) {
+        tracing::warn!("Failed to save session on exit: {:?}", e);
+    }
 
     // Cleanup
     restore_terminal();
@@ -540,7 +546,9 @@ async fn event_loop(
                 && key.kind == KeyEventKind::Press
                 && is_cancel_key(&key)
             {
-                let _ = child.kill().await;
+                if let Err(e) = child.kill().await {
+                    tracing::debug!("Failed to kill cancelled command: {:?}", e);
+                }
                 app.append_to_streaming("\n\n[Cancelled]");
                 app.set_loading(false);
                 break;
@@ -663,13 +671,11 @@ async fn event_loop(
                     duration,
                 );
 
-                let _ = save_current_session(
-                    session_id,
-                    project_dir,
-                    provider_name,
-                    model_name,
-                    runner,
-                );
+                if let Err(e) =
+                    save_current_session(session_id, project_dir, provider_name, model_name, runner)
+                {
+                    tracing::warn!("Failed to save session: {:?}", e);
+                }
 
                 app.workroom.on_complete();
                 app.set_loading(false);
@@ -798,7 +804,10 @@ async fn execute_tandem(
     );
     app.set_loading(false);
 
-    let _ = save_current_session(session_id, project_dir, provider_name, model_name, runner);
+    if let Err(e) = save_current_session(session_id, project_dir, provider_name, model_name, runner)
+    {
+        tracing::warn!("Failed to save session: {:?}", e);
+    }
     Ok(())
 }
 
@@ -1020,7 +1029,10 @@ async fn execute_pipeline_steps(
     );
     app.set_loading(false);
 
-    let _ = save_current_session(session_id, project_dir, provider_name, model_name, runner);
+    if let Err(e) = save_current_session(session_id, project_dir, provider_name, model_name, runner)
+    {
+        tracing::warn!("Failed to save session: {:?}", e);
+    }
     Ok(())
 }
 
@@ -1137,6 +1149,9 @@ async fn execute_pty_turn(
 
     app.workroom.on_complete();
     app.set_loading(false);
-    let _ = save_current_session(session_id, project_dir, provider_name, model_name, runner);
+    if let Err(e) = save_current_session(session_id, project_dir, provider_name, model_name, runner)
+    {
+        tracing::warn!("Failed to save session: {:?}", e);
+    }
     Ok(())
 }

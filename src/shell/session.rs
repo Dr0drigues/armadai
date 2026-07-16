@@ -111,8 +111,9 @@ pub fn log_stream_event(session_id: &str, event: &str) {
         .create(true)
         .append(true)
         .open(path)
+        && let Err(e) = writeln!(file, "{}", event)
     {
-        let _ = writeln!(file, "{}", event);
+        tracing::warn!("Failed to write session event: {:?}", e);
     }
 }
 
