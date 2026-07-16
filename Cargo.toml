@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [features]
 default = ["tui", "web", "storage", "providers-api"]
-tui = ["dep:ratatui", "dep:crossterm", "dep:portable-pty", "dep:strip-ansi-escapes"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:portable-pty", "dep:strip-ansi-escapes", "dep:unicode-width"]
 web = ["dep:axum", "dep:tower-http"]
 storage = ["dep:rusqlite"]
 providers-api = ["dep:reqwest"]
@@ -31,6 +31,7 @@ dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 # TUI (optional — enable with `tui` feature)
 ratatui = { version = "0.30", optional = true }
 crossterm = { version = "0.29", optional = true }
+unicode-width = { version = "0.2", optional = true }
 
 # HTTP client (optional — enable with `providers-api` feature)
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"], optional = true }
