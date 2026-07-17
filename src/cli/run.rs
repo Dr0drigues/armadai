@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::core::agent::{Agent, AgentMode};
 use crate::core::config::AppPaths;
+use crate::core::events::{EventSink, RunEvent};
 use crate::core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
 use crate::providers::factory::create_provider;
 use crate::providers::rate_limiter::RateLimiter;
@@ -30,8 +32,6 @@ pub async fn execute(
     // headless is implied by json (machine output cannot be interrupted by a prompt)
     let headless = headless || json;
     let sink = crate::core::events::make_sink(json);
-    // ... existing body continues (sink/quiet/max_content wired in Tasks 3-6)
-    let _ = (headless, quiet, max_content, &sink);
 
     let resolution = resolve_agents_dir(headless);
 
@@ -81,19 +81,52 @@ pub async fn execute(
         _ => None,
     };
 
+    sink.emit(&RunEvent::RunStart {
+        v: 1,
+        agents: chain.clone(),
+        prov: String::new(), // filled per-agent in agent_start; kept minimal here
+        model: String::new(),
+        in_chars: current_input.chars().count(),
+    });
+
+    let mut agg_tin = 0u32;
+    let mut agg_tout = 0u32;
+    let mut agg_cost = 0.0f64;
+
     for (i, name) in chain.iter().enumerate() {
-        if chain.len() > 1 {
+        if chain.len() > 1 && !json {
             eprintln!("--- [{}/{} {}] ---", i + 1, chain.len(), name);
         }
 
         let agent_path = resolve_agent_path(&resolution, name)?;
-        let (output, _) =
-            run_single_agent(&agent_path, name, &current_input, project_defaults).await?;
+        let (output, metrics) = run_single_agent(
+            &agent_path,
+            name,
+            &current_input,
+            project_defaults,
+            &sink,
+            quiet,
+            max_content,
+        )
+        .await?;
+        agg_tin += metrics.tokens_in as u32;
+        agg_tout += metrics.tokens_out as u32;
+        agg_cost += metrics.cost;
         current_input = output;
     }
 
-    // Final output to stdout
-    println!("{current_input}");
+    sink.emit(&RunEvent::Result {
+        content: current_input.clone(),
+        tin: agg_tin,
+        tout: agg_tout,
+        cost: agg_cost,
+        agents: chain.len(),
+    });
+
+    // Human/plain output only when not emitting JSON
+    if !json {
+        println!("{current_input}");
+    }
 
     Ok(())
 }
@@ -135,20 +168,32 @@ fn resolve_agent_path(resolution: &AgentResolution, agent_name: &str) -> anyhow:
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_single_agent(
     agent_path: &Path,
     agent_name: &str,
     input: &str,
     project_defaults: Option<&ProjectDefaults>,
+    sink: &Arc<dyn EventSink>,
+    quiet: bool,
+    max_content: Option<usize>,
 ) -> anyhow::Result<(String, RunMetrics)> {
     // 1. Load agent
     let mut agent = crate::parser::parse_agent_file(agent_path)?;
 
     // 1b. Resolve deprecated model aliases
+    let model_before = agent.metadata.model.clone();
     crate::linker::model_aliases::resolve_model_deprecations(
         &mut agent.metadata.model,
         &mut agent.metadata.model_fallback,
     );
+    if agent.metadata.model != model_before {
+        sink.emit(&RunEvent::Warning {
+            code: "deprecated_model".to_string(),
+            from: model_before,
+            to: agent.metadata.model.clone(),
+        });
+    }
     // 1c. Warn if model unknown in registry
     if let Some(ref model) = agent.metadata.model {
         crate::linker::model_resolution::warn_unknown_model(model, &agent.metadata.provider);
@@ -197,6 +242,12 @@ async fn run_single_agent(
         max_tokens: agent.metadata.max_tokens,
     };
 
+    sink.emit(&RunEvent::AgentStart {
+        agent: agent_name.to_string(),
+        prov: agent.metadata.provider.clone(),
+        model: agent.metadata.model.clone().unwrap_or_default(),
+    });
+
     // 6. Execute (with model fallback)
     let start = Instant::now();
     let response = match provider.complete(request.clone()).await {
@@ -225,6 +276,20 @@ async fn run_single_agent(
         Err(err) => return Err(err),
     };
     let duration = start.elapsed();
+
+    let content_out = match max_content {
+        Some(n) if !quiet => response.content.chars().take(n).collect::<String>(),
+        _ => response.content.clone(),
+    };
+    if !quiet {
+        sink.emit(&RunEvent::AgentEnd {
+            agent: agent_name.to_string(),
+            tin: response.tokens_in,
+            tout: response.tokens_out,
+            cost: response.cost,
+            content: content_out,
+        });
+    }
 
     // 7. Print summary to stderr (so stdout is clean for piping)
     let duration_ms = duration.as_millis() as i64;
