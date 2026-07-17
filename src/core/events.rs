@@ -48,6 +48,18 @@ pub enum RunEvent {
         tier: String,
         reason: String,
     },
+    Delegate {
+        from: String,
+        to: String,
+    },
+    Vote {
+        agent: String,
+        conf: f32,
+    },
+    Board {
+        agent: String,
+        kind: String,
+    },
 }
 
 /// Sink for run events. `NullSink` is a zero-cost no-op; `JsonlSink` writes JSONL to a writer.
@@ -210,6 +222,42 @@ mod tests {
         );
         let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
         assert_eq!(last["t"], "result");
+    }
+
+    #[test]
+    fn delegate_serializes_with_short_keys() {
+        let ev = RunEvent::Delegate {
+            from: "dev-lead".into(),
+            to: "core-specialist".into(),
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(
+            s,
+            r#"{"t":"delegate","from":"dev-lead","to":"core-specialist"}"#
+        );
+    }
+
+    #[test]
+    fn vote_serializes_with_short_keys() {
+        let ev = RunEvent::Vote {
+            agent: "reviewer".into(),
+            conf: 0.95,
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(s, r#"{"t":"vote","agent":"reviewer","conf":0.95}"#);
+    }
+
+    #[test]
+    fn board_serializes_with_short_keys() {
+        let ev = RunEvent::Board {
+            agent: "qa-specialist".into(),
+            kind: "passed".into(),
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(
+            s,
+            r#"{"t":"board","agent":"qa-specialist","kind":"passed"}"#
+        );
     }
 
     // Test helper: a Write that appends to a shared buffer.
