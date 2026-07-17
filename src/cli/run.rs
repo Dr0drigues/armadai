@@ -672,7 +672,17 @@ async fn run_orchestrated(
                 result.invocation_count, result.total_tokens_in, result.total_tokens_out
             );
 
-            println!("{}", result.content);
+            if !json {
+                println!("{}", result.content);
+            }
+
+            sink.emit(&RunEvent::Result {
+                content: result.content,
+                tin: result.total_tokens_in,
+                tout: result.total_tokens_out,
+                cost: result.total_cost,
+                agents: agent_names.len(),
+            });
         }
         other => {
             anyhow::bail!(
