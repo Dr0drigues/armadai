@@ -18,6 +18,8 @@ significantly change your approach, ask 2-3 targeted clarifying questions first.
 Only proceed with your complete response once you have enough context to deliver \
 accurate, relevant output.";
 
+/// Execute a run command. Parameters are independent CLI options that map directly to
+/// configuration flags; grouping into a struct would obscure the caller's argument binding.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute(
     agent_name: String,
@@ -86,6 +88,7 @@ fn exit_code_for(err: &anyhow::Error) -> i32 {
 
 /// Core run logic (sequential or orchestrated). Kept separate from [`execute`] so that
 /// all error paths funnel through a single headless error-event + exit-code handler.
+/// Parameters are passed directly from `execute` and represent distinct configuration concerns.
 #[allow(clippy::too_many_arguments)]
 async fn run_inner(
     agent_name: String,
@@ -246,6 +249,9 @@ fn resolve_agent_path(resolution: &AgentResolution, agent_name: &str) -> anyhow:
     }
 }
 
+/// Execute a single agent with given input and configuration. Parameters represent
+/// environment (path, input), configuration (defaults, rules), and I/O (sink, quiet, max_content);
+/// grouping would obscure distinct concerns in request building and provider creation.
 #[allow(clippy::too_many_arguments)]
 async fn run_single_agent(
     agent_path: &Path,

@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 
 /// Structured run events emitted in headless/JSON mode. Short keys for token economy.
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum RunEvent {
@@ -52,24 +51,20 @@ pub enum RunEvent {
 }
 
 /// Sink for run events. `NullSink` is a zero-cost no-op; `JsonlSink` writes JSONL to a writer.
-#[allow(dead_code)]
 pub trait EventSink: Send + Sync {
     fn emit(&self, ev: &RunEvent);
 }
 
-#[allow(dead_code)]
 pub struct NullSink;
 impl EventSink for NullSink {
     fn emit(&self, _ev: &RunEvent) {}
 }
 
-#[allow(dead_code)]
 pub struct JsonlSink {
     pub out: Mutex<Box<dyn std::io::Write + Send>>,
 }
 
 impl JsonlSink {
-    #[allow(dead_code)]
     pub fn stdout() -> Self {
         JsonlSink {
             out: Mutex::new(Box::new(std::io::stdout())),
@@ -88,7 +83,6 @@ impl EventSink for JsonlSink {
 }
 
 /// Build the sink for a run: JSONL to stdout when `json`, otherwise a no-op.
-#[allow(dead_code)]
 pub fn make_sink(json: bool) -> Arc<dyn EventSink> {
     if json {
         Arc::new(JsonlSink::stdout())
