@@ -67,6 +67,18 @@ pub enum Command {
         /// Orchestration pattern for multi-agent execution
         #[arg(long, value_parser = ["blackboard", "ring"])]
         orchestrate: Option<String>,
+        /// Non-interactive mode for CI: no prompts, CI exit codes
+        #[arg(long)]
+        headless: bool,
+        /// Emit a JSONL event stream on stdout (implies non-interactive)
+        #[arg(long)]
+        json: bool,
+        /// With --json: emit only the final `result` event
+        #[arg(long)]
+        quiet: bool,
+        /// With --json: truncate `content` of intermediate events to N chars
+        #[arg(long, value_name = "N")]
+        max_content: Option<usize>,
     },
     /// Create a new agent from a template
     #[command(
@@ -437,7 +449,23 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             input,
             pipe,
             orchestrate,
-        } => run::execute(agent, input, pipe, orchestrate).await,
+            headless,
+            json,
+            quiet,
+            max_content,
+        } => {
+            run::execute(
+                agent,
+                input,
+                pipe,
+                orchestrate,
+                headless,
+                json,
+                quiet,
+                max_content,
+            )
+            .await
+        }
         Command::New {
             name,
             template,

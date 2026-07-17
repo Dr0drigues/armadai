@@ -16,12 +16,23 @@ significantly change your approach, ask 2-3 targeted clarifying questions first.
 Only proceed with your complete response once you have enough context to deliver \
 accurate, relevant output.";
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
     agent_name: String,
     input: Option<String>,
     pipe: Option<Vec<String>>,
     orchestrate: Option<String>,
+    headless: bool,
+    json: bool,
+    quiet: bool,
+    max_content: Option<usize>,
 ) -> anyhow::Result<()> {
+    // headless is implied by json (machine output cannot be interrupted by a prompt)
+    let headless = headless || json;
+    let sink = crate::core::events::make_sink(json);
+    // ... existing body continues (sink/quiet/max_content wired in Tasks 3-6)
+    let _ = (headless, quiet, max_content, &sink);
+
     let resolution = resolve_agents_dir();
 
     // Build the execution chain: primary agent + piped agents
