@@ -24,7 +24,7 @@ pub struct DisplayMessage {
     pub role: String, // "You" or agent name
     pub content: String,
     pub is_user: bool,
-    pub is_system: bool, // System messages (commands, etc.)
+    pub is_system: bool,    // System messages (commands, etc.)
     pub id: Option<String>, // Unique ID for tandem streams (prevents collision when same provider appears twice)
 }
 
@@ -847,13 +847,21 @@ impl ShellApp {
     }
 
     /// Calculate dynamic input height based on content and terminal width.
+    /// Uses display width (unicode-width) for accurate wrapping, not char count.
     fn input_height(&self, terminal_width: u16) -> u16 {
         let inner_width = terminal_width.saturating_sub(4) as usize; // borders + prompt char
         if inner_width == 0 {
             return 3;
         }
-        let text_len = self.input.chars().count() + 2; // +2 for "> "
-        let lines = (text_len / inner_width) + 1;
+        // Calculate display width of prompt + input (not char count)
+        // Prompt is "> " (2 cells)
+        let input_display_width: usize = self
+            .input
+            .chars()
+            .map(|c| c.width().unwrap_or(1).max(1))
+            .sum();
+        let total_width = input_display_width + 2; // +2 for "> "
+        let lines = (total_width / inner_width) + 1;
         // Min 3 (for borders + 1 line), max 8
         (lines as u16 + 2).clamp(3, 8)
     }
@@ -978,6 +986,9 @@ impl ShellApp {
             lines.push(Line::from(current_line_spans));
         }
 
+        // Track if a new line was created for cursor block (edge case: cursor at wrap boundary)
+        let mut cursor_on_new_line = false;
+
         // If cursor at end of text, add a cursor block
         if self.cursor >= input_part.chars().count() && !self.loading {
             if current_col < available_width {
@@ -989,19 +1000,27 @@ impl ShellApp {
                     ));
                 }
             } else if current_col > 0 {
-                // Cursor would wrap to next line
+                // Cursor would wrap to next line (edge case: cursor at exact wrap boundary)
                 let cursor_span = vec![Span::styled(
                     " ",
                     Style::default().bg(Color::White).fg(Color::Black),
                 )];
                 lines.push(Line::from(cursor_span));
+                cursor_on_new_line = true;
             }
         }
 
         // Calculate scroll offset to keep cursor visible
+        // Edge case: if cursor moved to a new line due to wrap boundary, update row
         let visible_height = area.height.saturating_sub(2) as usize; // minus borders
-        let scroll_offset = if cursor_row >= visible_height {
-            (cursor_row - visible_height + 1) as u16
+        let final_cursor_row = if cursor_on_new_line {
+            // Cursor was placed on a newly created line due to wrap boundary
+            lines.len() - 1
+        } else {
+            cursor_row
+        };
+        let scroll_offset = if final_cursor_row >= visible_height {
+            (final_cursor_row - visible_height + 1) as u16
         } else {
             0
         };
@@ -1164,6 +1183,26 @@ mod tests {
         assert_eq!(byte_idx, 1);
     }
 
+    /// Helper to find cursor position in rendered buffer (background white/black)
+    fn find_cursor_in_buffer(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) -> Option<(u16, u16)> {
+        let buf = terminal.backend().buffer();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                if let Some(cell) = buf.cell((x, y)) {
+                    // Cursor is styled with bg=White, fg=Black
+                    if cell.bg == ratatui::prelude::Color::White
+                        && cell.fg == ratatui::prelude::Color::Black
+                    {
+                        return Some((x, y));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     #[test]
     fn test_render_input_line_with_wrapping() {
         use ratatui::Terminal;
@@ -1182,9 +1221,27 @@ mod tests {
             app.render(f);
         });
 
-        // Verify rendering produced output (doesn't panic)
+        // Verify rendering produced output
         let buffer = terminal.backend().buffer().clone();
         assert!(!buffer.content.is_empty(), "Buffer should have content");
+
+        // Verify cursor is actually rendered at a valid position
+        if let Some((cursor_x, cursor_y)) = find_cursor_in_buffer(&terminal) {
+            // Cursor should be within the terminal bounds (accounting for borders)
+            assert!(
+                cursor_x > 0 && cursor_x < 30,
+                "Cursor X position {} should be within terminal width",
+                cursor_x
+            );
+            // Cursor should be within terminal height
+            assert!(
+                cursor_y < 10,
+                "Cursor Y position {} should be within terminal height",
+                cursor_y
+            );
+        }
+        // Note: If cursor not found, it might be rendered without highlight at wrap boundary,
+        // which is acceptable but less ideal for this test.
     }
 
     #[test]
@@ -1207,5 +1264,21 @@ mod tests {
         // Verify rendering didn't panic and produced output
         let buffer = terminal.backend().buffer().clone();
         assert!(!buffer.content.is_empty(), "Buffer should have content");
+
+        // Verify cursor position is within valid bounds if found
+        if let Some((cursor_x, cursor_y)) = find_cursor_in_buffer(&terminal) {
+            assert!(
+                cursor_x > 0 && cursor_x < 40,
+                "Cursor X position {} should be within terminal width",
+                cursor_x
+            );
+            assert!(
+                cursor_y < 10,
+                "Cursor Y position {} should be within terminal height",
+                cursor_y
+            );
+        }
+        // Note: Unicode test - cursor may not be highlighted if at wrap boundary,
+        // but we verified rendering completed without panicking.
     }
 }

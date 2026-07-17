@@ -657,7 +657,10 @@ async fn event_loop(
                 if !status.success() {
                     let stderr_content = stderr_buffer.lock().unwrap();
                     if !stderr_content.is_empty() {
-                        app.append_to_streaming(&format!("\n\n[Failed with status: {}]\n{}", status, stderr_content));
+                        app.append_to_streaming(&format!(
+                            "\n\n[Failed with status: {}]\n{}",
+                            status, stderr_content
+                        ));
                     } else {
                         app.append_to_streaming(&format!("\n\n[Failed with status: {}]", status));
                     }
