@@ -48,8 +48,9 @@ pub async fn execute(
 
     if let Err(e) = result {
         if headless {
+            let code = exit_code_for(&e);
             sink.emit(&RunEvent::Error {
-                code: match exit_code_for(&e) {
+                code: match code {
                     3 => "budget_exceeded",
                     4 => "provider_unavailable",
                     _ => "agent_failed",
@@ -57,7 +58,7 @@ pub async fn execute(
                 .into(),
                 msg: e.to_string(),
             });
-            std::process::exit(exit_code_for(&e));
+            std::process::exit(code);
         }
         return Err(e);
     }
@@ -368,11 +369,11 @@ async fn run_single_agent(
     };
     let duration = start.elapsed();
 
-    let content_out = match max_content {
-        Some(n) if !quiet => response.content.chars().take(n).collect::<String>(),
-        _ => response.content.clone(),
-    };
     if !quiet {
+        let content_out = match max_content {
+            Some(n) => response.content.chars().take(n).collect::<String>(),
+            None => response.content.clone(),
+        };
         sink.emit(&RunEvent::AgentEnd {
             agent: agent_name.to_string(),
             tin: response.tokens_in,
