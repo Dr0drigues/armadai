@@ -517,6 +517,7 @@ async fn event_loop(
 
         // Stream stdout line by line via channel
         let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
         let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
         tokio::spawn(async move {
@@ -531,6 +532,25 @@ async fn event_loop(
                         let _ = stream_tx.send(line.clone());
                     }
                     Err(_) => break,
+                }
+            }
+        });
+
+        // Buffer stderr to prevent blocking (>64KB would cause hang)
+        let stderr_buffer = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = stderr_buffer.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut stderr = stderr;
+            let mut buf = vec![0u8; 4096];
+            loop {
+                match stderr.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(s) = String::from_utf8(buf[..n].to_vec()) {
+                            stderr_buf.lock().unwrap().push_str(&s);
+                        }
+                    }
                 }
             }
         });
@@ -607,7 +627,7 @@ async fn event_loop(
             }
 
             // Check if child process has finished
-            if let Ok(Some(_status)) = child.try_wait() {
+            if let Ok(Some(status)) = child.try_wait() {
                 // Drain remaining
                 while let Ok(line) = stream_rx.try_recv() {
                     if is_json_mode {
@@ -632,6 +652,19 @@ async fn event_loop(
                 // Clean markers from content
                 let parsed = super::parser::parse_response(&content);
                 app.update_last_assistant(&parsed.content);
+
+                // Check for failure and append stderr if present
+                if !status.success() {
+                    let stderr_content = stderr_buffer.lock().unwrap();
+                    if !stderr_content.is_empty() {
+                        app.append_to_streaming(&format!(
+                            "\n\n[Failed with status: {}]\n{}",
+                            status, stderr_content
+                        ));
+                    } else {
+                        app.append_to_streaming(&format!("\n\n[Failed with status: {}]", status));
+                    }
+                }
 
                 if let Some(resp) = result_event {
                     // Use real metrics from stream result event
@@ -737,6 +770,7 @@ async fn execute_tandem(
     // Spawn all providers in parallel with streaming
     struct ProviderStream {
         display_name: String,
+        stream_id: String, // Unique ID to prevent collision when same provider appears twice
         cmd: String,
         child: tokio::process::Child,
         stream_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -807,11 +841,12 @@ async fn execute_tandem(
             }
         });
 
-        // Create empty streaming message for this provider
-        app.start_tandem_stream(&display_name);
+        // Create empty streaming message for this provider and get unique stream ID
+        let stream_id = app.start_tandem_stream(&display_name);
 
         streams.push(ProviderStream {
             display_name,
+            stream_id,
             cmd,
             child,
             stream_rx,
@@ -868,14 +903,22 @@ async fn execute_tandem(
                 if is_json_mode {
                     use super::json_runner::{StreamEvent, parse_stream_event};
                     match parse_stream_event(&stream.cmd, &line) {
+                        StreamEvent::Init { model, agents } => {
+                            if let Some(m) = model {
+                                app.set_model_name(m);
+                            }
+                            // Set agents from init (filtered, not all set to Working)
+                            app.workroom.set_agents_from_init(&agents);
+                            app.workroom.set_visible(true);
+                        }
                         StreamEvent::Delta(text) => {
                             app.workroom.detect_mentions(&text);
-                            app.append_to_tandem_stream(&stream.display_name, &text);
+                            app.append_to_tandem_stream(&stream.stream_id, &text);
                             got_data = true;
                         }
                         StreamEvent::Message(text) => {
                             app.workroom.detect_mentions(&text);
-                            app.append_to_tandem_stream(&stream.display_name, &text);
+                            app.append_to_tandem_stream(&stream.stream_id, &text);
                             got_data = true;
                         }
                         StreamEvent::Result(resp) => {
@@ -884,17 +927,17 @@ async fn execute_tandem(
                         }
                         StreamEvent::Error(msg) => {
                             app.append_to_tandem_stream(
-                                &stream.display_name,
+                                &stream.stream_id,
                                 &format!("\n\nError: {}", msg),
                             );
                             got_data = true;
                         }
-                        StreamEvent::Ignored | StreamEvent::Init { .. } => {}
+                        StreamEvent::Ignored => {}
                     }
                 } else {
                     // Text mode fallback
                     app.workroom.parse_streaming_line(&line);
-                    app.append_to_tandem_stream(&stream.display_name, &line);
+                    app.append_to_tandem_stream(&stream.stream_id, &line);
                     got_data = true;
                 }
             }
@@ -934,7 +977,7 @@ async fn execute_tandem(
                 use super::json_runner::{StreamEvent, parse_stream_event};
                 match parse_stream_event(&stream.cmd, &line) {
                     StreamEvent::Delta(text) | StreamEvent::Message(text) => {
-                        app.append_to_tandem_stream(&stream.display_name, &text);
+                        app.append_to_tandem_stream(&stream.stream_id, &text);
                     }
                     StreamEvent::Result(resp) => {
                         stream.result_event = Some(resp);
@@ -942,15 +985,17 @@ async fn execute_tandem(
                     _ => {}
                 }
             } else {
-                app.append_to_tandem_stream(&stream.display_name, &line);
+                app.append_to_tandem_stream(&stream.stream_id, &line);
             }
         }
 
         match stream.child.wait().await {
             Ok(status) if status.success() => {
-                // Content was already streamed progressively, just parse and clean markers
-                let content = app.get_assistant_content_by_label(&stream.display_name);
+                // Content was already streamed progressively, parse and clean markers
+                let content = app.get_assistant_content_by_stream_id(&stream.stream_id);
                 let parsed = super::parser::parse_response(&content);
+                // Update message with cleaned content (item 4: marker cleanup)
+                app.update_assistant_by_stream_id(&stream.stream_id, &parsed.content);
                 combined_content.push_str(&parsed.content);
             }
             Ok(status) => {
@@ -960,15 +1005,18 @@ async fn execute_tandem(
                 } else {
                     format!("\n\n[Failed with status: {}]\n{}", status, stderr_content)
                 };
-                app.append_to_tandem_stream(&stream.display_name, &error_msg);
+                app.append_to_tandem_stream(&stream.stream_id, &error_msg);
             }
             Err(e) => {
-                app.append_to_tandem_stream(&stream.display_name, &format!("\n\n[Error: {}]", e));
+                app.append_to_tandem_stream(&stream.stream_id, &format!("\n\n[Error: {}]", e));
             }
         }
         terminal.draw(|f| app.render(f))?;
     }
 
+    // TODO(debt): Each stream.result_event contains real metrics, but we use estimated record_turn.
+    // To improve: aggregate result_events (sum tokens_out/cost, use first tokens_in) and call record_turn_exact.
+    // Challenge: streams may have mix of json/text modes, some may fail without result_event.
     let duration = start_time.elapsed();
     runner.record_turn(input, &combined_content, duration);
     let metrics = runner.session_metrics();
@@ -1185,7 +1233,9 @@ async fn execute_pipeline_steps(
         });
 
         let is_json_mode = super::json_runner::supports_json(&resolved.cmd);
-        // Store result event (currently unused, could be used for per-step metrics in future)
+        // TODO(debt): result_event is captured but not used for record_turn_exact.
+        // To use it: accumulate metrics from all steps and call record_turn_exact at L1369.
+        // Challenge: need to aggregate tokens/cost across steps.
         let mut _result_event: Option<super::json_runner::CliResponse> = None;
 
         // Stream loop
@@ -1213,6 +1263,14 @@ async fn execute_pipeline_steps(
                 if is_json_mode {
                     use super::json_runner::{StreamEvent, parse_stream_event};
                     match parse_stream_event(&resolved.cmd, &line) {
+                        StreamEvent::Init { model, agents } => {
+                            if let Some(m) = model {
+                                app.set_model_name(m);
+                            }
+                            // Set agents from init (filtered, not all set to Working)
+                            app.workroom.set_agents_from_init(&agents);
+                            app.workroom.set_visible(true);
+                        }
                         StreamEvent::Delta(text) => {
                             app.workroom.detect_mentions(&text);
                             app.append_to_streaming(&text);
@@ -1231,7 +1289,7 @@ async fn execute_pipeline_steps(
                             app.append_to_streaming(&format!("\n\nError: {}", msg));
                             got_data = true;
                         }
-                        StreamEvent::Ignored | StreamEvent::Init { .. } => {}
+                        StreamEvent::Ignored => {}
                     }
                 } else {
                     // Text mode fallback
