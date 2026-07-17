@@ -585,6 +585,7 @@ async fn run_orchestrated(
 
             // NOTE: token/cost aggregation for orchestration requires engine-level
             // instrumentation (out of scope for beta.3).
+            emit_agent_ends(sink, agent_names);
             sink.emit(&RunEvent::Result {
                 content: outcome_text,
                 tin: 0,
@@ -680,6 +681,7 @@ async fn run_orchestrated(
 
             // NOTE: token/cost aggregation for orchestration requires engine-level
             // instrumentation (out of scope for beta.3).
+            emit_agent_ends(sink, agent_names);
             sink.emit(&RunEvent::Result {
                 content: outcome_text,
                 tin: 0,
@@ -740,6 +742,7 @@ async fn run_orchestrated(
                 println!("{}", result.content);
             }
 
+            emit_agent_ends(sink, agent_names);
             sink.emit(&RunEvent::Result {
                 content: result.content,
                 tin: result.total_tokens_in,
@@ -756,6 +759,29 @@ async fn run_orchestrated(
     }
 
     Ok(())
+}
+
+/// Emit one `AgentEnd` event per agent, in order, restoring the JSONL contract's
+/// start/end symmetry for orchestrated runs (spec §3).
+///
+/// Per-agent completion metrics (tokens, cost) are not available from the
+/// orchestration engines (blackboard/ring/hierarchical aggregate at the run
+/// level only), so each event carries zeroed metrics and empty content — this
+/// is documented out-of-scope, not a bug. Call immediately before emitting the
+/// terminal `Result` event.
+fn emit_agent_ends(
+    sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
+    agent_names: &[String],
+) {
+    for name in agent_names {
+        sink.emit(&RunEvent::AgentEnd {
+            agent: name.clone(),
+            tin: 0,
+            tout: 0,
+            cost: 0.0,
+            content: String::new(),
+        });
+    }
 }
 
 /// Apply project-level orchestration overrides to a BlackboardConfig.
