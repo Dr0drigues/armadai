@@ -24,7 +24,7 @@ pub fn classify_target(target: &str) -> TargetKind {
 // ── Model tiers ──────────────────────────────────────────────────
 
 /// Performance tier for model selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ModelTier {
     /// Cheap and fast (haiku, flash, gpt-4o-mini).
     Fast,
@@ -678,5 +678,12 @@ mod tests {
             // All targets should resolve to a concrete model, not "latest:fast"
             assert!(!model.contains("latest"));
         }
+    }
+
+    #[test]
+    fn model_tier_is_ordered_fast_pro_max() {
+        use ModelTier::*;
+        assert!(Fast < Pro && Pro < Max);
+        assert_eq!([Pro, Fast, Max].iter().copied().max().unwrap(), Max);
     }
 }
