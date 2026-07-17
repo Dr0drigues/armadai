@@ -1,3 +1,26 @@
+## v1.0.0-beta.2 (2026-07-17)
+
+Second beta of the 1.0.0 release. Resolves the four P0 blockers from the
+v1.0.0 review and integrates the RUSTSEC security fixes carried over from the
+dependency syncs.
+
+### Fixed
+
+- **[B1] Real streaming in Pipeline and Tandem modes** (#169): progressive
+  output rendering with a final drain, concurrent stderr capture that is also
+  shown on failure, and removal of the previous output duplication.
+- **[B2] Cursor wrapping on multi-line input** (#170): correct cursor position
+  on wrapped lines using `unicode-width`, with scroll support.
+- **[B3] Poisoned mutex handling in the hierarchical orchestration engine**
+  (#168): recovery and `Result`-based propagation instead of panicking.
+- **[B4] I/O errors are logged instead of silently ignored** (#167): failures
+  are surfaced via `tracing::warn!` / `tracing::debug!`.
+
+### Security
+
+- **RUSTSEC**: transitive advisories in `quick-xml` and `quinn-proto` resolved
+  via dependency sync bumps.
+
 ## v0.12.0 (2026-04-09)
 
 ### New: `armadai shell` — Interactive Conversational TUI
