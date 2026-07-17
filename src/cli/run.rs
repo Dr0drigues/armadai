@@ -49,7 +49,7 @@ pub async fn execute(
         if chain.len() < 2 {
             anyhow::bail!("--orchestrate requires at least 2 agents (use --pipe to add more)");
         }
-        return run_orchestrated(&resolution, &chain, &current_input, &pattern).await;
+        return run_orchestrated(&resolution, &chain, &current_input, &pattern, &sink, json).await;
     }
 
     // Auto-detect orchestration from project config (orchestration.enabled: true)
@@ -70,7 +70,15 @@ pub async fn execute(
             orch_agents.extend(team.agents.iter().cloned());
         }
         if !orch_agents.is_empty() {
-            return run_orchestrated(&resolution, &orch_agents, &current_input, &pattern).await;
+            return run_orchestrated(
+                &resolution,
+                &orch_agents,
+                &current_input,
+                &pattern,
+                &sink,
+                json,
+            )
+            .await;
         }
     }
 
@@ -425,6 +433,8 @@ async fn run_orchestrated(
     agent_names: &[String],
     input: &str,
     pattern: &str,
+    sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
+    json: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
@@ -450,6 +460,14 @@ async fn run_orchestrated(
         _ => OrchestrationDefaults::default(),
     };
 
+    sink.emit(&RunEvent::RunStart {
+        v: 1,
+        agents: agent_names.to_vec(),
+        prov: String::new(),
+        model: pattern.to_string(),
+        in_chars: input.chars().count(),
+    });
+
     for name in agent_names {
         let agent_path = resolve_agent_path(resolution, name)?;
         let mut agent = crate::parser::parse_agent_file(&agent_path)?;
@@ -457,6 +475,11 @@ async fn run_orchestrated(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
         );
+        sink.emit(&RunEvent::AgentStart {
+            agent: name.clone(),
+            prov: agent.metadata.provider.clone(),
+            model: agent.metadata.model.clone().unwrap_or_default(),
+        });
         let provider = create_provider(&agent)?;
         providers.push(Arc::from(provider));
         agents.push(agent);
@@ -485,9 +508,26 @@ async fn run_orchestrated(
             #[cfg(feature = "storage")]
             record_orchestration_blackboard(&board, &config, input);
 
-            for entry in board.entries() {
-                println!("[{}] {}", entry.agent, entry.content);
+            let outcome_text = board
+                .entries()
+                .iter()
+                .map(|entry| format!("[{}] {}", entry.agent, entry.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            if !json {
+                println!("{outcome_text}");
             }
+
+            // NOTE: token/cost aggregation for orchestration requires engine-level
+            // instrumentation (out of scope for beta.3).
+            sink.emit(&RunEvent::Result {
+                content: outcome_text,
+                tin: 0,
+                tout: 0,
+                cost: 0.0,
+                agents: agent_names.len(),
+            });
         }
         "ring" => {
             let ring_agents: Vec<Arc<dyn RingAgent>> = agents
@@ -512,13 +552,16 @@ async fn run_orchestrated(
             #[cfg(feature = "storage")]
             record_orchestration_ring(&token, &config, input);
 
-            match token.status() {
+            let outcome_text = match token.status() {
                 TokenStatus::Done { outcome } => match outcome {
                     RingOutcome::Consensus {
                         resolution, score, ..
                     } => {
                         eprintln!("[ring] Consensus ({:.0}%)", score * 100.0);
-                        println!("{resolution}");
+                        if !json {
+                            println!("{resolution}");
+                        }
+                        resolution.clone()
                     }
                     RingOutcome::Majority {
                         resolution,
@@ -530,15 +573,24 @@ async fn run_orchestrated(
                             score * 100.0,
                             dissents.len()
                         );
-                        println!("{resolution}");
+                        if !json {
+                            println!("{resolution}");
+                        }
+                        resolution.clone()
                     }
                     RingOutcome::NoConsensus { summary, .. } => {
                         eprintln!("[ring] No consensus");
-                        println!("{summary}");
+                        if !json {
+                            println!("{summary}");
+                        }
+                        summary.clone()
                     }
                     RingOutcome::BudgetExhausted { partial_summary } => {
                         eprintln!("[ring] Budget exhausted");
-                        println!("{partial_summary}");
+                        if !json {
+                            println!("{partial_summary}");
+                        }
+                        partial_summary.clone()
                     }
                     RingOutcome::CostLimitExceeded {
                         partial_summary,
@@ -546,16 +598,31 @@ async fn run_orchestrated(
                         limit,
                     } => {
                         eprintln!("[ring] Cost limit exceeded: ${:.4}/${:.4}", spent, limit);
-                        println!("{partial_summary}");
+                        if !json {
+                            println!("{partial_summary}");
+                        }
+                        partial_summary.clone()
                     }
                     RingOutcome::Cancelled => {
                         eprintln!("[ring] Cancelled");
+                        String::new()
                     }
                 },
                 other => {
                     eprintln!("[ring] Unexpected status: {other:?}");
+                    String::new()
                 }
-            }
+            };
+
+            // NOTE: token/cost aggregation for orchestration requires engine-level
+            // instrumentation (out of scope for beta.3).
+            sink.emit(&RunEvent::Result {
+                content: outcome_text,
+                tin: 0,
+                tout: 0,
+                cost: 0.0,
+                agents: agent_names.len(),
+            });
         }
         "hierarchical" => {
             use std::collections::HashMap;
