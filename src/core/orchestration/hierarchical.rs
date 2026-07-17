@@ -236,10 +236,15 @@ fn invoke_agent(
                 message: truncate(&input, 200),
                 depth,
             });
-            ctx.sink.emit(&RunEvent::Delegate {
-                from: sender.clone(),
-                to: agent_name.clone(),
-            });
+            // Only emit `Delegate` for real agent-to-agent delegations. The root
+            // call (`user` -> coordinator) is not a delegation and would otherwise
+            // inflate delegation counts for JSONL consumers.
+            if sender != "user" {
+                ctx.sink.emit(&RunEvent::Delegate {
+                    from: sender.clone(),
+                    to: agent_name.clone(),
+                });
+            }
             let conv = s.conversations.entry(agent_name.clone()).or_default();
             conv.push(ChatMessage {
                 role: "user".to_string(),
@@ -742,19 +747,20 @@ mod tests {
         let _ = engine.run("Do something").await.unwrap();
 
         let events = capture.events();
-        // Entry point: user -> coordinator.
-        assert!(
-            events.iter().any(|e| e.contains(r#""t":"delegate""#)
-                && e.contains(r#""from":"user""#)
-                && e.contains(r#""to":"coordinator""#)),
-            "expected user->coordinator delegate event, got: {events:?}"
-        );
-        // Recursive delegation: coordinator -> agent-a.
+        // Real agent-to-agent delegation: coordinator -> agent-a.
         assert!(
             events.iter().any(|e| e.contains(r#""t":"delegate""#)
                 && e.contains(r#""from":"coordinator""#)
                 && e.contains(r#""to":"agent-a""#)),
             "expected coordinator->agent-a delegate event, got: {events:?}"
+        );
+        // Root call (user -> coordinator) is NOT a real delegation and must not
+        // be emitted as a `Delegate` event.
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.contains(r#""t":"delegate""#) && e.contains(r#""from":"user""#)),
+            "root call user->coordinator should not emit a Delegate event, got: {events:?}"
         );
     }
 
