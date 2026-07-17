@@ -969,6 +969,10 @@ async fn execute_tandem(
 
     // Finalize: drain remaining events and wait for all children to complete
     let mut combined_content = String::new();
+    let mut aggregated_tokens_in: Option<u64> = None;
+    let mut aggregated_tokens_out: u64 = 0;
+    let mut aggregated_cost: f64 = 0.0;
+
     for mut stream in streams {
         // Drain any remaining stream events
         let is_json_mode = super::json_runner::supports_json(&stream.cmd);
@@ -997,6 +1001,19 @@ async fn execute_tandem(
                 // Update message with cleaned content (item 4: marker cleanup)
                 app.update_assistant_by_stream_id(&stream.stream_id, &parsed.content);
                 combined_content.push_str(&parsed.content);
+
+                // Aggregate real metrics from result_event
+                if let Some(resp) = stream.result_event {
+                    if aggregated_tokens_in.is_none() {
+                        aggregated_tokens_in = resp.tokens_in;
+                    }
+                    if let Some(out) = resp.tokens_out {
+                        aggregated_tokens_out += out;
+                    }
+                    if let Some(cost) = resp.cost_usd {
+                        aggregated_cost += cost;
+                    }
+                }
             }
             Ok(status) => {
                 let stderr_content = stream.stderr_buffer.lock().unwrap();
@@ -1014,11 +1031,20 @@ async fn execute_tandem(
         terminal.draw(|f| app.render(f))?;
     }
 
-    // TODO(debt): Each stream.result_event contains real metrics, but we use estimated record_turn.
-    // To improve: aggregate result_events (sum tokens_out/cost, use first tokens_in) and call record_turn_exact.
-    // Challenge: streams may have mix of json/text modes, some may fail without result_event.
+    // Use exact metrics from aggregated result_events, or fall back to estimation
     let duration = start_time.elapsed();
-    runner.record_turn(input, &combined_content, duration);
+    if let Some(tokens_in) = aggregated_tokens_in {
+        runner.record_turn_exact(
+            input,
+            &combined_content,
+            duration,
+            tokens_in,
+            aggregated_tokens_out,
+            aggregated_cost,
+        );
+    } else {
+        runner.record_turn(input, &combined_content, duration);
+    }
     let metrics = runner.session_metrics();
     app.set_session_metrics(
         metrics.total_tokens_in,
@@ -1086,6 +1112,9 @@ async fn execute_pipeline_steps(
 
     let mut current_input = input.to_string();
     let total_steps = steps.len();
+    let mut aggregated_tokens_in: Option<u64> = None;
+    let mut aggregated_tokens_out: u64 = 0;
+    let mut aggregated_cost: f64 = 0.0;
 
     for (i, step) in steps.iter().enumerate() {
         let is_last = i == total_steps - 1;
@@ -1233,10 +1262,7 @@ async fn execute_pipeline_steps(
         });
 
         let is_json_mode = super::json_runner::supports_json(&resolved.cmd);
-        // TODO(debt): result_event is captured but not used for record_turn_exact.
-        // To use it: accumulate metrics from all steps and call record_turn_exact at L1369.
-        // Challenge: need to aggregate tokens/cost across steps.
-        let mut _result_event: Option<super::json_runner::CliResponse> = None;
+        let mut step_result_event: Option<super::json_runner::CliResponse> = None;
 
         // Stream loop
         loop {
@@ -1283,7 +1309,7 @@ async fn execute_pipeline_steps(
                         }
                         StreamEvent::Result(resp) => {
                             // Store result event for metrics, do NOT append content
-                            _result_event = Some(resp);
+                            step_result_event = Some(resp);
                         }
                         StreamEvent::Error(msg) => {
                             app.append_to_streaming(&format!("\n\nError: {}", msg));
@@ -1315,7 +1341,7 @@ async fn execute_pipeline_steps(
                                     app.append_to_streaming(&text);
                                 }
                                 StreamEvent::Result(resp) => {
-                                    _result_event = Some(resp);
+                                    step_result_event = Some(resp);
                                 }
                                 _ => {}
                             }
@@ -1338,6 +1364,19 @@ async fn execute_pipeline_steps(
 
                         app.update_last_assistant_with_label(&label, &parsed.content);
                         current_input = parsed.content;
+
+                        // Aggregate real metrics from result_event
+                        if let Some(resp) = step_result_event {
+                            if aggregated_tokens_in.is_none() {
+                                aggregated_tokens_in = resp.tokens_in;
+                            }
+                            if let Some(out) = resp.tokens_out {
+                                aggregated_tokens_out += out;
+                            }
+                            if let Some(cost) = resp.cost_usd {
+                                aggregated_cost += cost;
+                            }
+                        }
                     } else {
                         // Process failed
                         let stderr_content = stderr_buffer.lock().unwrap();
@@ -1374,7 +1413,18 @@ async fn execute_pipeline_steps(
     }
 
     let duration = start_time.elapsed();
-    runner.record_turn(input, &current_input, duration);
+    if let Some(tokens_in) = aggregated_tokens_in {
+        runner.record_turn_exact(
+            input,
+            &current_input,
+            duration,
+            tokens_in,
+            aggregated_tokens_out,
+            aggregated_cost,
+        );
+    } else {
+        runner.record_turn(input, &current_input, duration);
+    }
     let metrics = runner.session_metrics();
     app.set_session_metrics(
         metrics.total_tokens_in,
