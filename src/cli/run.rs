@@ -601,7 +601,7 @@ async fn run_orchestrated(
                 config.max_rounds
             );
 
-            run_blackboard(&mut board, &board_agents, &providers, &config).await?;
+            run_blackboard(&mut board, &board_agents, &providers, &config, sink).await?;
 
             eprintln!("[blackboard] Halted: {:?}", board.state());
 
@@ -648,7 +648,7 @@ async fn run_orchestrated(
                 config.max_laps
             );
 
-            run_ring(&mut token, &ring_agents, &providers, &config).await?;
+            run_ring(&mut token, &ring_agents, &providers, &config, sink).await?;
 
             #[cfg(feature = "storage")]
             record_orchestration_ring(&token, &config, input);
@@ -766,7 +766,8 @@ async fn run_orchestrated(
                 agent_map.len()
             );
 
-            let mut engine = HierarchicalEngine::new(orch_config, agent_map, provider_map);
+            let mut engine =
+                HierarchicalEngine::new(orch_config, agent_map, provider_map, Arc::clone(sink));
             let result = engine.run(input).await?;
 
             eprintln!(

@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::core::events::{EventSink, RunEvent};
 use crate::providers::traits::Provider;
 
 // ── Data structures ──────────────────────────────────────────────
@@ -70,6 +71,19 @@ pub enum EntryKind {
     Synthesis { sources: Vec<usize> },
     Question,
     Answer { question: usize },
+}
+
+/// Map an `EntryKind` variant to a lowercase name (used for JSONL events and
+/// trigger matching in `llm_agents`).
+pub(crate) fn entry_kind_name(kind: &EntryKind) -> &'static str {
+    match kind {
+        EntryKind::Finding => "finding",
+        EntryKind::Challenge { .. } => "challenge",
+        EntryKind::Confirmation { .. } => "confirmation",
+        EntryKind::Synthesis { .. } => "synthesis",
+        EntryKind::Question => "question",
+        EntryKind::Answer { .. } => "answer",
+    }
 }
 
 /// Token usage and cost for a single contribution.
@@ -482,6 +496,7 @@ pub async fn run_blackboard(
     agents: &[Arc<dyn BoardAgent>],
     providers: &[Arc<dyn Provider>],
     config: &BlackboardConfig,
+    sink: &Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     config.validate()?;
 
@@ -531,8 +546,26 @@ pub async fn run_blackboard(
             match result {
                 Ok(Ok(deltas)) => {
                     for delta in deltas {
-                        if let Err(e) = board.apply(delta) {
-                            tracing::warn!(agent = %agent_name, error = %e, "invalid delta");
+                        // Capture the entry kind before `apply` consumes the delta, so we
+                        // can emit `Board{agent, kind}` only once the entry is actually posted.
+                        let posted_kind = match &delta {
+                            BoardDelta::AddEntry(entry) => {
+                                Some(entry_kind_name(&entry.kind).to_string())
+                            }
+                            _ => None,
+                        };
+                        match board.apply(delta) {
+                            Ok(()) => {
+                                if let Some(kind) = posted_kind {
+                                    sink.emit(&RunEvent::Board {
+                                        agent: agent_name.clone(),
+                                        kind,
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(agent = %agent_name, error = %e, "invalid delta");
+                            }
                         }
                     }
                 }
@@ -600,6 +633,11 @@ pub async fn run_blackboard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No-op sink for tests that don't assert on emitted events.
+    fn null_sink() -> Arc<dyn EventSink> {
+        Arc::new(crate::core::events::NullSink)
+    }
 
     #[test]
     fn test_token_budget_new() {
@@ -1212,7 +1250,7 @@ mod tests {
         let agents: Vec<Arc<dyn BoardAgent>> = vec![];
         let providers: Vec<Arc<dyn Provider>> = vec![];
         let config = BlackboardConfig::default();
-        let result = run_blackboard(&mut board, &agents, &providers, &config).await;
+        let result = run_blackboard(&mut board, &agents, &providers, &config, &null_sink()).await;
         assert!(result.is_err());
     }
 
@@ -1222,7 +1260,7 @@ mod tests {
         let agents: Vec<Arc<dyn BoardAgent>> = vec![];
         let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = BlackboardConfig::default();
-        run_blackboard(&mut board, &agents, &providers, &config)
+        run_blackboard(&mut board, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
         assert_eq!(
@@ -1306,7 +1344,7 @@ mod tests {
         let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = BlackboardConfig::default();
 
-        run_blackboard(&mut board, &agents, &providers, &config)
+        run_blackboard(&mut board, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
@@ -1317,6 +1355,60 @@ mod tests {
             } => {}
             other => panic!("Expected Consensus halt, got {other:?}"),
         }
+    }
+
+    /// A sink that captures every emitted event as its JSONL-serialized form,
+    /// for assertions on which events fired and with what payload.
+    struct CaptureSink(std::sync::Mutex<Vec<String>>);
+
+    impl CaptureSink {
+        fn new() -> Self {
+            Self(std::sync::Mutex::new(Vec::new()))
+        }
+
+        fn events(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl EventSink for CaptureSink {
+        fn emit(&self, ev: &RunEvent) {
+            if let Ok(s) = serde_json::to_string(ev) {
+                self.0.lock().unwrap().push(s);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_blackboard_emits_board_event_on_add_entry() {
+        let mut board = Board::new("review code".to_string(), 50_000);
+        let agents: Vec<Arc<dyn BoardAgent>> = vec![Arc::new(FindThenConfirmAgent {
+            id: "agent-a".into(),
+        })];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
+        let config = BlackboardConfig::default();
+        let capture = Arc::new(CaptureSink::new());
+        let sink: Arc<dyn EventSink> = capture.clone();
+
+        run_blackboard(&mut board, &agents, &providers, &config, &sink)
+            .await
+            .unwrap();
+
+        let events = capture.events();
+        // Round 0: agent-a posts a Finding -> Board{agent:"agent-a", kind:"finding"}.
+        assert!(
+            events.iter().any(|e| e.contains(r#""t":"board""#)
+                && e.contains(r#""agent":"agent-a""#)
+                && e.contains(r#""kind":"finding""#)),
+            "expected a board finding event, got: {events:?}"
+        );
+        // Later rounds: agent-a confirms -> Board{agent:"agent-a", kind:"confirmation"}.
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains(r#""t":"board""#) && e.contains(r#""kind":"confirmation""#)),
+            "expected a board confirmation event, got: {events:?}"
+        );
     }
 
     /// Mock agent that always times out.
@@ -1351,7 +1443,7 @@ mod tests {
             ..Default::default()
         };
 
-        run_blackboard(&mut board, &agents, &providers, &config)
+        run_blackboard(&mut board, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
@@ -1370,7 +1462,7 @@ mod tests {
             ..Default::default()
         };
 
-        run_blackboard(&mut board, &agents, &providers, &config)
+        run_blackboard(&mut board, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
@@ -1391,7 +1483,7 @@ mod tests {
         let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = BlackboardConfig::default();
 
-        run_blackboard(&mut board, &agents, &providers, &config)
+        run_blackboard(&mut board, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
@@ -1481,7 +1573,7 @@ mod tests {
         };
         board.apply(BoardDelta::AddEntry(entry)).unwrap();
 
-        run_blackboard(&mut board, &agents, &providers, &config)
+        run_blackboard(&mut board, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 

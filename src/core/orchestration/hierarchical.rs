@@ -13,6 +13,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use crate::core::agent::Agent;
+use crate::core::events::{EventSink, RunEvent};
 use crate::providers::traits::{ChatMessage, CompletionRequest, CompletionResponse, Provider};
 
 use super::OrchestrationConfig;
@@ -52,6 +53,7 @@ struct EngineContext {
     agents: HashMap<String, Agent>,
     providers: HashMap<String, Arc<dyn Provider>>,
     agents_info: HashMap<String, AgentInfo>,
+    sink: Arc<dyn EventSink>,
 }
 
 /// Mutable state protected by a mutex for concurrent access.
@@ -78,10 +80,15 @@ pub struct HierarchicalEngine {
 
 impl HierarchicalEngine {
     /// Create a new engine from config, agents, and their providers.
+    ///
+    /// `sink` receives `RunEvent::Delegate{from, to}` for every agent invocation
+    /// (initial coordinator call and every recursive delegation/ask-peer/escalate).
+    /// Pass `Arc::new(NullSink)` when JSONL event emission is not needed.
     pub fn new(
         config: OrchestrationConfig,
         agents: HashMap<String, Agent>,
         providers: HashMap<String, Arc<dyn Provider>>,
+        sink: Arc<dyn EventSink>,
     ) -> Self {
         let agents_info = agents
             .iter()
@@ -107,6 +114,7 @@ impl HierarchicalEngine {
                 agents,
                 providers,
                 agents_info,
+                sink,
             }),
             state: Arc::new(Mutex::new(EngineState {
                 conversations: HashMap::new(),
@@ -227,6 +235,10 @@ fn invoke_agent(
                 to: agent_name.clone(),
                 message: truncate(&input, 200),
                 depth,
+            });
+            ctx.sink.emit(&RunEvent::Delegate {
+                from: sender.clone(),
+                to: agent_name.clone(),
             });
             let conv = s.conversations.entry(agent_name.clone()).or_default();
             conv.push(ChatMessage {
@@ -514,10 +526,16 @@ fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::events::NullSink;
     use crate::core::orchestration::TeamConfig;
     use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
     use async_trait::async_trait;
     use std::path::PathBuf;
+
+    /// No-op sink for tests that don't assert on emitted events.
+    fn null_sink() -> Arc<dyn EventSink> {
+        Arc::new(NullSink)
+    }
 
     /// A mock provider that returns scripted responses in order.
     struct MockProvider {
@@ -629,7 +647,7 @@ mod tests {
             Arc::new(MockProvider::new(vec!["The answer is 42."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("What is the answer?").await.unwrap();
 
         assert_eq!(result.content, "The answer is 42.");
@@ -663,12 +681,81 @@ mod tests {
             Arc::new(MockProvider::new(vec!["Result from agent A."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Do something").await.unwrap();
 
         assert_eq!(result.content, "Final synthesis from coord.");
         assert_eq!(result.invocation_count, 3); // coord + agent-a + coord synthesis
         assert!(result.trace.len() >= 2);
+    }
+
+    /// A sink that captures every emitted event as its JSONL-serialized form,
+    /// for assertions on which events fired and with what payload.
+    struct CaptureSink(std::sync::Mutex<Vec<String>>);
+
+    impl CaptureSink {
+        fn new() -> Self {
+            Self(std::sync::Mutex::new(Vec::new()))
+        }
+
+        fn events(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl EventSink for CaptureSink {
+        fn emit(&self, ev: &RunEvent) {
+            if let Ok(s) = serde_json::to_string(ev) {
+                self.0.lock().unwrap().push(s);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_single_delegation_emits_delegate_events() {
+        let config = sample_config();
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "You coordinate."),
+        );
+        agents.insert("agent-a".to_string(), make_agent("agent-a", "You do A."));
+        agents.insert("agent-b".to_string(), make_agent("agent-b", "You do B."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(MockProvider::new(vec![
+                "@agent-a: do the task",
+                "Final synthesis from coord.",
+            ])),
+        );
+        providers.insert(
+            "agent-a".to_string(),
+            Arc::new(MockProvider::new(vec!["Result from agent A."])),
+        );
+
+        let capture = Arc::new(CaptureSink::new());
+        let sink: Arc<dyn EventSink> = capture.clone();
+        let mut engine = HierarchicalEngine::new(config, agents, providers, sink);
+        let _ = engine.run("Do something").await.unwrap();
+
+        let events = capture.events();
+        // Entry point: user -> coordinator.
+        assert!(
+            events.iter().any(|e| e.contains(r#""t":"delegate""#)
+                && e.contains(r#""from":"user""#)
+                && e.contains(r#""to":"coordinator""#)),
+            "expected user->coordinator delegate event, got: {events:?}"
+        );
+        // Recursive delegation: coordinator -> agent-a.
+        assert!(
+            events.iter().any(|e| e.contains(r#""t":"delegate""#)
+                && e.contains(r#""from":"coordinator""#)
+                && e.contains(r#""to":"agent-a""#)),
+            "expected coordinator->agent-a delegate event, got: {events:?}"
+        );
     }
 
     #[tokio::test]
@@ -700,7 +787,7 @@ mod tests {
             Arc::new(MockProvider::new(vec!["B done."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Do both tasks").await.unwrap();
 
         assert_eq!(result.content, "Combined result from both agents.");
@@ -743,7 +830,7 @@ mod tests {
             Arc::new(MockProvider::new(vec!["done"])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let err = engine.run("deep task").await.unwrap_err();
         assert!(err.to_string().contains("Max delegation depth"));
     }
@@ -779,7 +866,7 @@ mod tests {
             Arc::new(MockProvider::new(vec!["done 1"])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let err = engine.run("keep going").await.unwrap_err();
         assert!(err.to_string().contains("Max iterations"));
     }
@@ -802,7 +889,7 @@ mod tests {
             Arc::new(MockProvider::new(vec!["Direct answer."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Simple question").await.unwrap();
 
         assert_eq!(result.total_tokens_in, 10);
@@ -880,7 +967,7 @@ mod tests {
             Arc::new(MockProvider::new(vec!["Result B."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Do both tasks").await.unwrap();
 
         let total_tokens = result.total_tokens_in as u64 + result.total_tokens_out as u64;
@@ -937,7 +1024,7 @@ mod tests {
             Arc::new(MockProvider::new(vec!["Result B."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Do something").await.unwrap();
 
         assert!(
@@ -985,7 +1072,7 @@ mod tests {
             Arc::new(MockProvider::new(vec!["Result A."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Do something").await.unwrap();
 
         assert!(!result.content.contains("Budget exceeded"));
@@ -1032,7 +1119,7 @@ mod tests {
             Arc::new(MockProvider::new(vec!["Done B."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Do both tasks").await;
 
         assert!(result.is_ok(), "Budget limit should return Ok, not Err");
@@ -1091,7 +1178,7 @@ mod tests {
             Arc::new(MockProvider::new(vec!["Gamma result."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Do all three tasks").await.unwrap();
 
         assert_eq!(
@@ -1121,7 +1208,7 @@ mod tests {
             Arc::new(MockProvider::new(vec!["Direct answer."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
 
         // Poison the mutex by panicking while holding the lock
         let state = Arc::clone(&engine.state);
@@ -1273,6 +1360,7 @@ mod tests {
                 agents,
                 providers,
                 agents_info,
+                sink: null_sink(),
             }),
             state,
         };

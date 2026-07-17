@@ -1,24 +1,12 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use super::blackboard::{BoardAgent, BoardDelta, BoardEntry, BoardSnapshot, EntryKind, TokenCount};
+use super::blackboard::{
+    BoardAgent, BoardDelta, BoardEntry, BoardSnapshot, EntryKind, TokenCount, entry_kind_name,
+};
 use super::ring::{Contribution, ContributionAction, RingAgent, RingRole, TokenSnapshot, Vote};
 use crate::core::agent::Agent;
 use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
-
-// ── Helpers ──────────────────────────────────────────────────────
-
-/// Map an `EntryKind` variant to a lowercase name for trigger matching.
-fn entry_kind_name(kind: &EntryKind) -> &str {
-    match kind {
-        EntryKind::Finding => "finding",
-        EntryKind::Challenge { .. } => "challenge",
-        EntryKind::Confirmation { .. } => "confirmation",
-        EntryKind::Synthesis { .. } => "synthesis",
-        EntryKind::Question => "question",
-        EntryKind::Answer { .. } => "answer",
-    }
-}
 
 /// Resolve the model string from agent metadata.
 fn agent_model(agent: &Agent) -> String {
@@ -490,6 +478,7 @@ mod tests {
 
     use super::*;
     use crate::core::agent::{Agent, AgentMetadata};
+    use crate::core::events::{EventSink, NullSink};
     use crate::core::orchestration::blackboard::{
         BlackboardConfig, Board, BoardState, run_blackboard,
     };
@@ -498,6 +487,11 @@ mod tests {
     };
     use crate::core::orchestration::test_helpers::noop_providers;
     use crate::core::orchestration::{AgentRingConfig, TriggerConfig};
+
+    /// No-op sink for tests that don't assert on emitted events.
+    fn null_sink() -> Arc<dyn EventSink> {
+        Arc::new(NullSink)
+    }
 
     fn make_agent(name: &str) -> Agent {
         Agent {
@@ -775,7 +769,7 @@ mod tests {
         };
         let mut board = Board::new("test task".to_string(), config.token_budget);
 
-        run_blackboard(&mut board, &agents, &providers, &config)
+        run_blackboard(&mut board, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
@@ -823,7 +817,7 @@ mod tests {
         let order = vec!["agent-a".to_string(), "agent-b".to_string()];
         let mut token = RingToken::new("test task".to_string(), order, config.token_budget);
 
-        run_ring(&mut token, &agents, &providers, &config)
+        run_ring(&mut token, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 

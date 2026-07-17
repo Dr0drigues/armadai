@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use super::blackboard::TokenBudget;
 use super::blackboard::TokenCount;
+use crate::core::events::{EventSink, RunEvent};
 use crate::providers::traits::Provider;
 
 // ── Data structures ──────────────────────────────────────────────
@@ -472,6 +473,7 @@ pub async fn run_ring(
     agents: &[Arc<dyn RingAgent>],
     providers: &[Arc<dyn Provider>],
     config: &RingConfig,
+    sink: &Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     config.validate()?;
 
@@ -569,6 +571,10 @@ pub async fn run_ring(
 
         match tokio::time::timeout(vote_timeout, agent.vote(&snapshot, provider)).await {
             Ok(Ok(vote)) => {
+                sink.emit(&RunEvent::Vote {
+                    agent: agent.name().to_string(),
+                    conf: vote.confidence,
+                });
                 token.votes.insert(agent.name().to_string(), vote);
             }
             Ok(Err(e)) => {
@@ -593,6 +599,11 @@ pub async fn run_ring(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No-op sink for tests that don't assert on emitted events.
+    fn null_sink() -> Arc<dyn EventSink> {
+        Arc::new(crate::core::events::NullSink)
+    }
 
     #[test]
     fn test_ring_token_new() {
@@ -871,7 +882,7 @@ mod tests {
         let agents: Vec<Arc<dyn RingAgent>> = vec![];
         let providers: Vec<Arc<dyn Provider>> = vec![];
         let config = RingConfig::default();
-        let result = run_ring(&mut token, &agents, &providers, &config).await;
+        let result = run_ring(&mut token, &agents, &providers, &config, &null_sink()).await;
         assert!(result.is_err());
     }
 
@@ -881,7 +892,7 @@ mod tests {
         let agents: Vec<Arc<dyn RingAgent>> = vec![];
         let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = RingConfig::default();
-        run_ring(&mut token, &agents, &providers, &config)
+        run_ring(&mut token, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
@@ -964,7 +975,7 @@ mod tests {
             ..Default::default()
         };
 
-        run_ring(&mut token, &agents, &providers, &config)
+        run_ring(&mut token, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
@@ -976,6 +987,60 @@ mod tests {
                 assert!((score - 1.0).abs() < f32::EPSILON);
             }
             other => panic!("Expected Consensus, got {other:?}"),
+        }
+    }
+
+    /// A sink that captures every emitted event as its JSONL-serialized form,
+    /// for assertions on which events fired and with what payload.
+    struct CaptureSink(std::sync::Mutex<Vec<String>>);
+
+    impl CaptureSink {
+        fn new() -> Self {
+            Self(std::sync::Mutex::new(Vec::new()))
+        }
+
+        fn events(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl EventSink for CaptureSink {
+        fn emit(&self, ev: &RunEvent) {
+            if let Ok(s) = serde_json::to_string(ev) {
+                self.0.lock().unwrap().push(s);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_ring_emits_vote_event_per_agent() {
+        let order = vec!["a".to_string(), "b".to_string()];
+        let mut token = RingToken::new("design API".to_string(), order, 50_000);
+        let agents: Vec<Arc<dyn RingAgent>> = vec![
+            Arc::new(ProposeEnrichEndorseAgent { id: "a".into() }),
+            Arc::new(ProposeEnrichEndorseAgent { id: "b".into() }),
+        ];
+        let providers = crate::core::orchestration::test_helpers::noop_providers();
+        let config = RingConfig {
+            max_laps: 1,
+            ..Default::default()
+        };
+        let capture = Arc::new(CaptureSink::new());
+        let sink: Arc<dyn EventSink> = capture.clone();
+
+        run_ring(&mut token, &agents, &providers, &config, &sink)
+            .await
+            .unwrap();
+
+        let events = capture.events();
+        // ProposeEnrichEndorseAgent::vote() always returns confidence 0.9.
+        for agent in ["a", "b"] {
+            assert!(
+                events.iter().any(|e| e.contains(r#""t":"vote""#)
+                    && e.contains(&format!(r#""agent":"{agent}""#))
+                    && e.contains(r#""conf":0.9"#)),
+                "expected a vote event for agent {agent}, got: {events:?}"
+            );
         }
     }
 
@@ -1030,7 +1095,7 @@ mod tests {
         let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = RingConfig::default();
 
-        run_ring(&mut token, &agents, &providers, &config)
+        run_ring(&mut token, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
@@ -1051,7 +1116,7 @@ mod tests {
             ..Default::default()
         };
 
-        run_ring(&mut token, &agents, &providers, &config)
+        run_ring(&mut token, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
@@ -1068,7 +1133,7 @@ mod tests {
         let providers = crate::core::orchestration::test_helpers::noop_providers();
         let config = RingConfig::default();
 
-        run_ring(&mut token, &agents, &providers, &config)
+        run_ring(&mut token, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
