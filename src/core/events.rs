@@ -151,6 +151,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn result_event_present_and_last() {
+        // JSONL contract: every emitted line parses as JSON, and the `result`
+        // event is always the terminal line of a run (headless consumers can
+        // stop reading once they see `t == "result"`).
+        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let sink = JsonlSink {
+            out: Mutex::new(Box::new(SharedBuf(buf.clone()))),
+        };
+        sink.emit(&RunEvent::RunStart {
+            v: 1,
+            agents: vec!["a".into()],
+            prov: "p".into(),
+            model: "m".into(),
+            in_chars: 3,
+        });
+        sink.emit(&RunEvent::AgentStart {
+            agent: "a".into(),
+            prov: "p".into(),
+            model: "m".into(),
+        });
+        sink.emit(&RunEvent::AgentEnd {
+            agent: "a".into(),
+            tin: 1,
+            tout: 2,
+            cost: 0.0,
+            content: "x".into(),
+        });
+        sink.emit(&RunEvent::Result {
+            content: "x".into(),
+            tin: 1,
+            tout: 2,
+            cost: 0.0,
+            agents: 1,
+        });
+
+        let s = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        let lines: Vec<_> = s.lines().collect();
+        assert_eq!(lines.len(), 4);
+        assert!(
+            lines
+                .iter()
+                .all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok())
+        );
+        let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        assert_eq!(last["t"], "result");
+    }
+
     // Test helper: a Write that appends to a shared buffer.
     struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
     impl std::io::Write for SharedBuf {
