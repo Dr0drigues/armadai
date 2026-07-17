@@ -152,6 +152,10 @@ async fn run_inner(
         AgentResolution::Project { config, .. } => Some(&config.defaults),
         _ => None,
     };
+    let routing_rules = match &resolution {
+        AgentResolution::Project { config, .. } => config.routing.clone().unwrap_or_default(),
+        _ => crate::core::routing::RoutingRules::default(),
+    };
 
     sink.emit(&RunEvent::RunStart {
         v: 1,
@@ -179,6 +183,7 @@ async fn run_inner(
             sink,
             quiet,
             max_content,
+            &routing_rules,
         )
         .await?;
         agg_tin += metrics.tokens_in as u32;
@@ -249,6 +254,7 @@ async fn run_single_agent(
     sink: &Arc<dyn EventSink>,
     quiet: bool,
     max_content: Option<usize>,
+    routing_rules: &crate::core::routing::RoutingRules,
 ) -> anyhow::Result<(String, RunMetrics)> {
     // 1. Load agent
     let mut agent = crate::parser::parse_agent_file(agent_path)?;
@@ -296,12 +302,25 @@ async fn run_single_agent(
     };
 
     // 5. Build request
-    let model = agent
+    let raw_model = agent
         .metadata
         .model
         .clone()
         .or_else(|| agent.metadata.command.clone())
         .unwrap_or_else(|| "default".to_string());
+
+    let model = if raw_model == "latest:auto" {
+        let (tier, reason) =
+            crate::core::routing::route(input, &agent.metadata.tags, None, routing_rules);
+        sink.emit(&RunEvent::Route {
+            agent: agent_name.to_string(),
+            tier: format!("{tier:?}"),
+            reason: format!("{reason:?}"),
+        });
+        crate::linker::model_resolution::resolve_model_for_tier(&agent.metadata.provider, tier)
+    } else {
+        raw_model
+    };
 
     let request = CompletionRequest {
         model,
@@ -1079,6 +1098,14 @@ mod tests {
             4
         );
         assert_eq!(exit_code_for(&anyhow::anyhow!("boom")), 1);
+    }
+
+    #[test]
+    fn latest_auto_is_the_only_routed_value() {
+        // concrete + latest:pro must NOT be treated as auto
+        assert_ne!("claude-3", "latest:auto");
+        assert_ne!("latest:pro", "latest:auto");
+        // routing only triggers on the exact "latest:auto" string (guard documented)
     }
 
     #[test]

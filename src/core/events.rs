@@ -44,6 +44,11 @@ pub enum RunEvent {
         code: String,
         msg: String,
     },
+    Route {
+        agent: String,
+        tier: String,
+        reason: String,
+    },
 }
 
 /// Sink for run events. `NullSink` is a zero-cost no-op; `JsonlSink` writes JSONL to a writer.
@@ -125,6 +130,20 @@ mod tests {
         assert_eq!(
             s,
             r#"{"t":"agent_end","agent":"a","tin":10,"tout":20,"cost":0.001,"content":"hi"}"#
+        );
+    }
+
+    #[test]
+    fn route_serializes_with_short_keys() {
+        let ev = RunEvent::Route {
+            agent: "dev-lead".into(),
+            tier: "Max".into(),
+            reason: "Tag".into(),
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(
+            s,
+            r#"{"t":"route","agent":"dev-lead","tier":"Max","reason":"Tag"}"#
         );
     }
 

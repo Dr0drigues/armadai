@@ -63,6 +63,12 @@ pub struct ProjectConfig {
     pub orchestration: Option<Box<OrchestrationConfig>>,
     /// Shell configuration (default provider, tandem, pipeline).
     pub shell: Option<crate::shell::config::ShellConfig>,
+    /// Dynamic model-router rules (thresholds, keywords, tags, budget cap)
+    /// for `latest:auto` agents. See `crate::core::routing::RoutingRules`.
+    /// Consumed in `cli::run::execute` to build the `RoutingRules` passed to
+    /// `run_single_agent` for `latest:auto` model resolution.
+    #[serde(default)]
+    pub routing: Option<crate::core::routing::RoutingRules>,
 }
 
 /// Reference to an agent — resolved at runtime.
@@ -572,6 +578,29 @@ link:
         let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap_or_default();
         assert!(config.agents.is_empty());
         assert!(config.prompts.is_empty());
+    }
+
+    #[test]
+    fn parses_routing_section() {
+        let yaml = r#"
+agents: []
+routing:
+  length_thresholds: { fast_max: 100, pro_max: 1000 }
+  tags: { hot: max }
+"#;
+        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let r = cfg.routing.expect("routing present");
+        assert_eq!(r.length_thresholds.fast_max, 100);
+        assert_eq!(r.tags.get("hot").map(String::as_str), Some("max"));
+        // absent keys fall back to embedded defaults
+        assert_eq!(r.budget_downgrade_ratio, 0.2);
+    }
+
+    #[test]
+    fn routing_absent_gives_none() {
+        let yaml = "agents: []\n";
+        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(cfg.routing.is_none());
     }
 
     #[test]
