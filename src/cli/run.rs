@@ -791,8 +791,13 @@ async fn run_orchestrated(
                 agent_map.len()
             );
 
-            let mut engine =
-                HierarchicalEngine::new(orch_config, agent_map, provider_map, Arc::clone(sink));
+            let mut engine = HierarchicalEngine::with_routing_rules(
+                orch_config,
+                agent_map,
+                provider_map,
+                Arc::clone(sink),
+                routing_rules,
+            );
             let result = engine.run(input).await?;
 
             eprintln!(

@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::core::agent::Agent;
 use crate::core::events::{EventSink, RunEvent};
+use crate::core::routing::{BudgetState, RoutingRules, route};
 use crate::providers::traits::{ChatMessage, CompletionRequest, CompletionResponse, Provider};
 
 use super::OrchestrationConfig;
@@ -54,6 +55,12 @@ struct EngineContext {
     providers: HashMap<String, Arc<dyn Provider>>,
     agents_info: HashMap<String, AgentInfo>,
     sink: Arc<dyn EventSink>,
+    /// Rules for routing `latest:auto` agents (spec: OH4 router in orchestration,
+    /// mirroring `RoutingCtx` in `llm_agents.rs` for board/ring). Defaults to
+    /// the embedded `RoutingRules::default()` when the engine is built via
+    /// `new()`; `with_routing_rules()` allows callers (e.g. `run_orchestrated`)
+    /// to supply the project's `armadai.yaml` `routing:` section instead.
+    routing_rules: RoutingRules,
 }
 
 /// Mutable state protected by a mutex for concurrent access.
@@ -84,11 +91,32 @@ impl HierarchicalEngine {
     /// `sink` receives `RunEvent::Delegate{from, to}` for every agent invocation
     /// (initial coordinator call and every recursive delegation/ask-peer/escalate).
     /// Pass `Arc::new(NullSink)` when JSONL event emission is not needed.
+    ///
+    /// Uses the embedded `RoutingRules::default()` for any `latest:auto` agent
+    /// in the fleet — use `with_routing_rules` to supply project-configured
+    /// rules instead (see `run_orchestrated` in `cli/run.rs`).
     pub fn new(
         config: OrchestrationConfig,
         agents: HashMap<String, Agent>,
         providers: HashMap<String, Arc<dyn Provider>>,
         sink: Arc<dyn EventSink>,
+    ) -> Self {
+        Self::with_routing_rules(config, agents, providers, sink, RoutingRules::default())
+    }
+
+    /// Like `new`, but with explicit `RoutingRules` for `latest:auto` agents.
+    ///
+    /// Mirrors `RoutingCtx` in `llm_agents.rs` (Task 3): `call_llm` routes
+    /// `latest:auto` through `core::routing::route`, using these rules and a
+    /// `BudgetState` derived from the engine's configured `token_budget` vs.
+    /// tokens consumed so far. Budget only ever *downgrades* the tier — it
+    /// never introduces a new failure/halt path.
+    pub fn with_routing_rules(
+        config: OrchestrationConfig,
+        agents: HashMap<String, Agent>,
+        providers: HashMap<String, Arc<dyn Provider>>,
+        sink: Arc<dyn EventSink>,
+        routing_rules: RoutingRules,
     ) -> Self {
         let agents_info = agents
             .iter()
@@ -115,6 +143,7 @@ impl HierarchicalEngine {
                 providers,
                 agents_info,
                 sink,
+                routing_rules,
             }),
             state: Arc::new(Mutex::new(EngineState {
                 conversations: HashMap::new(),
@@ -454,18 +483,61 @@ async fn call_llm(
         .get(agent_name)
         .ok_or_else(|| anyhow::anyhow!("Agent '{agent_name}' not found"))?;
 
-    let messages = {
+    let (messages, tokens_consumed) = {
         let s = state.lock().map_err(|e| {
             anyhow::anyhow!("Mutex poisoned in call_llm (read conversation): {:?}", e)
         })?;
-        s.conversations.get(agent_name).cloned().unwrap_or_default()
+        let messages = s.conversations.get(agent_name).cloned().unwrap_or_default();
+        let tokens_consumed = s.total_tokens_in as u64 + s.total_tokens_out as u64;
+        (messages, tokens_consumed)
     }; // unlock before async call
 
-    let model = agent
+    let raw_model = agent
         .metadata
         .model
         .clone()
         .unwrap_or_else(|| "default".to_string());
+
+    // Route `latest:auto` the same way `run_single_agent`/board/ring do (OH4
+    // router). Concrete models and `latest:pro/fast/max` placeholders pass
+    // through unchanged — only the exact `latest:auto` string is special-cased,
+    // matching `agent_model` in `llm_agents.rs`.
+    let model = if raw_model == "latest:auto" {
+        // Use the last message in the conversation (the task/message this
+        // call is about to answer — either the incoming delegation or the
+        // re-injected results for synthesis) as the routing input. Falls
+        // back to the system prompt if the conversation is somehow empty.
+        let routing_input = messages
+            .last()
+            .map(|m| m.content.as_str())
+            .unwrap_or(system_prompt);
+
+        // Budget is derived from the engine's *configured* token_budget vs.
+        // tokens consumed so far across the whole run. `None` (no budget
+        // configured, or configured as 0) disables downgrade — `route()` is
+        // still called, just without a `BudgetState`.
+        let budget = ctx.config.token_budget.filter(|&b| b > 0).map(|total| {
+            let remaining = total.saturating_sub(tokens_consumed);
+            BudgetState {
+                remaining_ratio: remaining as f64 / total as f64,
+            }
+        });
+
+        let (tier, reason) = route(
+            routing_input,
+            &agent.metadata.tags,
+            budget,
+            &ctx.routing_rules,
+        );
+        ctx.sink.emit(&RunEvent::Route {
+            agent: agent_name.to_string(),
+            tier: format!("{tier:?}"),
+            reason: format!("{reason:?}"),
+        });
+        crate::linker::model_resolution::resolve_model_for_tier(&agent.metadata.provider, tier)
+    } else {
+        raw_model
+    };
 
     let request = CompletionRequest {
         model,
@@ -761,6 +833,182 @@ mod tests {
                 .iter()
                 .any(|e| e.contains(r#""t":"delegate""#) && e.contains(r#""from":"user""#)),
             "root call user->coordinator should not emit a Delegate event, got: {events:?}"
+        );
+    }
+
+    // ── latest:auto routing in hierarchical (Task 4) ─────────────
+
+    /// Records the `model` of every `CompletionRequest` it receives, so tests
+    /// can assert what `call_llm` resolved `latest:auto` to (mirrors
+    /// `CapturingProvider` in `llm_agents.rs`'s own test module).
+    struct CapturingProvider {
+        models: std::sync::Mutex<Vec<String>>,
+        tokens_in: u32,
+        tokens_out: u32,
+        response: String,
+    }
+
+    impl CapturingProvider {
+        fn new(response: &str, tokens_in: u32, tokens_out: u32) -> Self {
+            Self {
+                models: std::sync::Mutex::new(Vec::new()),
+                tokens_in,
+                tokens_out,
+                response: response.to_string(),
+            }
+        }
+
+        fn models(&self) -> Vec<String> {
+            self.models.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for CapturingProvider {
+        async fn complete(&self, request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            self.models.lock().unwrap().push(request.model.clone());
+            Ok(CompletionResponse {
+                content: self.response.clone(),
+                model: request.model,
+                tokens_in: self.tokens_in,
+                tokens_out: self.tokens_out,
+                cost: 0.0,
+            })
+        }
+
+        async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("streaming not supported in mock")
+        }
+
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "capturing".to_string(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_latest_auto_routes_in_hierarchical_and_downgrades_on_low_budget() {
+        // Coordinator uses a concrete model and delegates to agent-a, which is
+        // configured with `latest:auto` + a "critical" tag (-> Max tier under
+        // default RoutingRules). MockProvider's coordinator response consumes
+        // 10 input + 20 output = 30 tokens before agent-a is ever invoked. A
+        // `token_budget` of 35 therefore leaves only 5 tokens remaining
+        // (ratio ~0.14) once agent-a's `call_llm` runs, under the 0.2
+        // `budget_downgrade_ratio` threshold -- the router must downgrade
+        // agent-a's tag-driven Max tier to Fast and report
+        // `RouteReason::Budget`, exactly as `agent_model` does for board/ring.
+        let mut config = sample_config();
+        config.token_budget = Some(35);
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "You coordinate."),
+        );
+        let mut agent_a = make_agent("agent-a", "You do A.");
+        agent_a.metadata.model = Some("latest:auto".to_string());
+        agent_a.metadata.tags = vec!["critical".to_string()];
+        agents.insert("agent-a".to_string(), agent_a);
+        agents.insert("agent-b".to_string(), make_agent("agent-b", "You do B."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(MockProvider::new(vec![
+                "@agent-a: do the task",
+                "Final synthesis from coord.",
+            ])),
+        );
+        let capturing = Arc::new(CapturingProvider::new("Result from agent A.", 1, 1));
+        providers.insert(
+            "agent-a".to_string(),
+            capturing.clone() as Arc<dyn Provider>,
+        );
+
+        let sink = Arc::new(CaptureSink::new());
+        let mut engine = HierarchicalEngine::with_routing_rules(
+            config,
+            agents,
+            providers,
+            sink.clone() as Arc<dyn EventSink>,
+            RoutingRules::default(),
+        );
+
+        let result = engine.run("Do something").await.unwrap();
+        assert_eq!(result.content, "Final synthesis from coord.");
+
+        let models = capturing.models();
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0],
+            crate::linker::model_resolution::resolve_model_for_tier(
+                "mock",
+                crate::linker::model_resolution::ModelTier::Fast,
+            ),
+            "latest:auto with tag 'critical' (Max) must downgrade to Fast under low budget"
+        );
+
+        let events = sink.events();
+        assert!(
+            events.iter().any(|e| e.contains(r#""t":"route""#)
+                && e.contains(r#""agent":"agent-a""#)
+                && e.contains(r#""tier":"Fast""#)
+                && e.contains(r#""reason":"Budget""#)),
+            "expected a Route event with tier=Fast reason=Budget for agent-a, got: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_concrete_model_and_latest_pro_unaffected_by_hierarchical_routing() {
+        // Non-regression: concrete models and `latest:pro/fast/max` are NOT
+        // routed through `route()` in hierarchical either -- they must reach
+        // the provider unchanged even under the exact budget scenario
+        // (`token_budget: Some(35)`, same as the downgrade test above) that
+        // *would* force a downgrade if agent-a's model were `latest:auto`.
+        // Only the exact `latest:auto` string is special-cased (see `call_llm`).
+        let mut config = sample_config();
+        config.token_budget = Some(35);
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "You coordinate."),
+        );
+        let mut agent_a = make_agent("agent-a", "You do A.");
+        agent_a.metadata.model = Some("latest:pro".to_string());
+        agents.insert("agent-a".to_string(), agent_a);
+        agents.insert("agent-b".to_string(), make_agent("agent-b", "You do B."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(MockProvider::new(vec![
+                "@agent-a: do the task",
+                "Final synthesis from coord.",
+            ])),
+        );
+        let capturing = Arc::new(CapturingProvider::new("Result from agent A.", 1, 1));
+        providers.insert(
+            "agent-a".to_string(),
+            capturing.clone() as Arc<dyn Provider>,
+        );
+
+        let mut engine = HierarchicalEngine::with_routing_rules(
+            config,
+            agents,
+            providers,
+            null_sink(),
+            RoutingRules::default(),
+        );
+        engine.run("Do something").await.unwrap();
+
+        assert_eq!(
+            capturing.models(),
+            vec!["latest:pro".to_string()],
+            "latest:pro must pass through call_llm unchanged"
         );
     }
 
@@ -1367,6 +1615,7 @@ mod tests {
                 providers,
                 agents_info,
                 sink: null_sink(),
+                routing_rules: RoutingRules::default(),
             }),
             state,
         };
