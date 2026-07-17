@@ -3,6 +3,7 @@ pub mod agent;
 pub mod config;
 pub mod dependency_resolver;
 pub(crate) mod embedded;
+pub mod events;
 pub mod model_updater;
 #[allow(dead_code)]
 pub mod orchestration;

@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::core::agent::{Agent, AgentMode};
 use crate::core::config::AppPaths;
+use crate::core::events::{EventSink, RunEvent};
 use crate::core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
 use crate::providers::factory::create_provider;
 use crate::providers::rate_limiter::RateLimiter;
@@ -16,13 +18,86 @@ significantly change your approach, ask 2-3 targeted clarifying questions first.
 Only proceed with your complete response once you have enough context to deliver \
 accurate, relevant output.";
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
     agent_name: String,
     input: Option<String>,
     pipe: Option<Vec<String>>,
     orchestrate: Option<String>,
+    headless: bool,
+    json: bool,
+    quiet: bool,
+    max_content: Option<usize>,
 ) -> anyhow::Result<()> {
-    let resolution = resolve_agents_dir();
+    // headless is implied by json (machine output cannot be interrupted by a prompt)
+    let headless = headless || json;
+    let sink = crate::core::events::make_sink(json);
+
+    let result = run_inner(
+        agent_name,
+        input,
+        pipe,
+        orchestrate,
+        headless,
+        json,
+        quiet,
+        max_content,
+        &sink,
+    )
+    .await;
+
+    if let Err(e) = result {
+        if headless {
+            sink.emit(&RunEvent::Error {
+                code: match exit_code_for(&e) {
+                    3 => "budget_exceeded",
+                    4 => "provider_unavailable",
+                    _ => "agent_failed",
+                }
+                .into(),
+                msg: e.to_string(),
+            });
+            std::process::exit(exit_code_for(&e));
+        }
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// Map a run error to a CI-friendly exit code.
+///
+/// - `0`: success (handled by caller, never produced here)
+/// - `1`: generic execution error
+/// - `2`: usage error (reserved for CLI-level argument validation)
+/// - `3`: budget/cost limit exceeded
+/// - `4`: provider unavailable
+fn exit_code_for(err: &anyhow::Error) -> i32 {
+    let s = err.to_string().to_lowercase();
+    if s.contains("budget") || s.contains("cost limit") {
+        3
+    } else if s.contains("not available") || s.contains("unavailable") {
+        4
+    } else {
+        1
+    }
+}
+
+/// Core run logic (sequential or orchestrated). Kept separate from [`execute`] so that
+/// all error paths funnel through a single headless error-event + exit-code handler.
+#[allow(clippy::too_many_arguments)]
+async fn run_inner(
+    agent_name: String,
+    input: Option<String>,
+    pipe: Option<Vec<String>>,
+    orchestrate: Option<String>,
+    headless: bool,
+    json: bool,
+    quiet: bool,
+    max_content: Option<usize>,
+    sink: &Arc<dyn EventSink>,
+) -> anyhow::Result<()> {
+    let resolution = resolve_agents_dir(headless);
 
     // Build the execution chain: primary agent + piped agents
     let mut chain = vec![agent_name];
@@ -38,7 +113,7 @@ pub async fn execute(
         if chain.len() < 2 {
             anyhow::bail!("--orchestrate requires at least 2 agents (use --pipe to add more)");
         }
-        return run_orchestrated(&resolution, &chain, &current_input, &pattern).await;
+        return run_orchestrated(&resolution, &chain, &current_input, &pattern, sink, json).await;
     }
 
     // Auto-detect orchestration from project config (orchestration.enabled: true)
@@ -59,7 +134,15 @@ pub async fn execute(
             orch_agents.extend(team.agents.iter().cloned());
         }
         if !orch_agents.is_empty() {
-            return run_orchestrated(&resolution, &orch_agents, &current_input, &pattern).await;
+            return run_orchestrated(
+                &resolution,
+                &orch_agents,
+                &current_input,
+                &pattern,
+                sink,
+                json,
+            )
+            .await;
         }
     }
 
@@ -70,19 +153,52 @@ pub async fn execute(
         _ => None,
     };
 
+    sink.emit(&RunEvent::RunStart {
+        v: 1,
+        agents: chain.clone(),
+        prov: String::new(), // filled per-agent in agent_start; kept minimal here
+        model: String::new(),
+        in_chars: current_input.chars().count(),
+    });
+
+    let mut agg_tin = 0u32;
+    let mut agg_tout = 0u32;
+    let mut agg_cost = 0.0f64;
+
     for (i, name) in chain.iter().enumerate() {
-        if chain.len() > 1 {
+        if chain.len() > 1 && !json {
             eprintln!("--- [{}/{} {}] ---", i + 1, chain.len(), name);
         }
 
         let agent_path = resolve_agent_path(&resolution, name)?;
-        let (output, _) =
-            run_single_agent(&agent_path, name, &current_input, project_defaults).await?;
+        let (output, metrics) = run_single_agent(
+            &agent_path,
+            name,
+            &current_input,
+            project_defaults,
+            sink,
+            quiet,
+            max_content,
+        )
+        .await?;
+        agg_tin += metrics.tokens_in as u32;
+        agg_tout += metrics.tokens_out as u32;
+        agg_cost += metrics.cost;
         current_input = output;
     }
 
-    // Final output to stdout
-    println!("{current_input}");
+    sink.emit(&RunEvent::Result {
+        content: current_input.clone(),
+        tin: agg_tin,
+        tout: agg_tout,
+        cost: agg_cost,
+        agents: chain.len(),
+    });
+
+    // Human/plain output only when not emitting JSON
+    if !json {
+        println!("{current_input}");
+    }
 
     Ok(())
 }
@@ -124,20 +240,32 @@ fn resolve_agent_path(resolution: &AgentResolution, agent_name: &str) -> anyhow:
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_single_agent(
     agent_path: &Path,
     agent_name: &str,
     input: &str,
     project_defaults: Option<&ProjectDefaults>,
+    sink: &Arc<dyn EventSink>,
+    quiet: bool,
+    max_content: Option<usize>,
 ) -> anyhow::Result<(String, RunMetrics)> {
     // 1. Load agent
     let mut agent = crate::parser::parse_agent_file(agent_path)?;
 
     // 1b. Resolve deprecated model aliases
+    let model_before = agent.metadata.model.clone();
     crate::linker::model_aliases::resolve_model_deprecations(
         &mut agent.metadata.model,
         &mut agent.metadata.model_fallback,
     );
+    if agent.metadata.model != model_before {
+        sink.emit(&RunEvent::Warning {
+            code: "deprecated_model".to_string(),
+            from: model_before,
+            to: agent.metadata.model.clone(),
+        });
+    }
     // 1c. Warn if model unknown in registry
     if let Some(ref model) = agent.metadata.model {
         crate::linker::model_resolution::warn_unknown_model(model, &agent.metadata.provider);
@@ -186,6 +314,12 @@ async fn run_single_agent(
         max_tokens: agent.metadata.max_tokens,
     };
 
+    sink.emit(&RunEvent::AgentStart {
+        agent: agent_name.to_string(),
+        prov: agent.metadata.provider.clone(),
+        model: agent.metadata.model.clone().unwrap_or_default(),
+    });
+
     // 6. Execute (with model fallback)
     let start = Instant::now();
     let response = match provider.complete(request.clone()).await {
@@ -214,6 +348,20 @@ async fn run_single_agent(
         Err(err) => return Err(err),
     };
     let duration = start.elapsed();
+
+    let content_out = match max_content {
+        Some(n) if !quiet => response.content.chars().take(n).collect::<String>(),
+        _ => response.content.clone(),
+    };
+    if !quiet {
+        sink.emit(&RunEvent::AgentEnd {
+            agent: agent_name.to_string(),
+            tin: response.tokens_in,
+            tout: response.tokens_out,
+            cost: response.cost,
+            content: content_out,
+        });
+    }
 
     // 7. Print summary to stderr (so stdout is clean for piping)
     let duration_ms = duration.as_millis() as i64;
@@ -318,7 +466,7 @@ fn atty_is_pipe() -> bool {
 
 /// Resolve agent source: walk up for `armadai.yaml`, detect format,
 /// and return the appropriate resolution strategy.
-fn resolve_agents_dir() -> AgentResolution {
+fn resolve_agents_dir(headless: bool) -> AgentResolution {
     // 1. Walk-up search for project config (new or legacy format)
     if let Some((root, config)) = project::find_project_config()
         && !config.agents.is_empty()
@@ -331,7 +479,8 @@ fn resolve_agents_dir() -> AgentResolution {
         if let Err(e) = crate::core::project_registry::register_project(&root) {
             tracing::warn!("Failed to register project in registry: {:?}", e);
         }
-        crate::core::model_updater::auto_check_and_prompt(&root, !atty_is_pipe());
+        let interactive = !headless && !atty_is_pipe();
+        crate::core::model_updater::auto_check_and_prompt(&root, interactive);
         return AgentResolution::Project {
             root,
             config: Box::new(config),
@@ -348,6 +497,8 @@ async fn run_orchestrated(
     agent_names: &[String],
     input: &str,
     pattern: &str,
+    sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
+    json: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
@@ -373,6 +524,14 @@ async fn run_orchestrated(
         _ => OrchestrationDefaults::default(),
     };
 
+    sink.emit(&RunEvent::RunStart {
+        v: 1,
+        agents: agent_names.to_vec(),
+        prov: String::new(),
+        model: pattern.to_string(),
+        in_chars: input.chars().count(),
+    });
+
     for name in agent_names {
         let agent_path = resolve_agent_path(resolution, name)?;
         let mut agent = crate::parser::parse_agent_file(&agent_path)?;
@@ -380,6 +539,11 @@ async fn run_orchestrated(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
         );
+        sink.emit(&RunEvent::AgentStart {
+            agent: name.clone(),
+            prov: agent.metadata.provider.clone(),
+            model: agent.metadata.model.clone().unwrap_or_default(),
+        });
         let provider = create_provider(&agent)?;
         providers.push(Arc::from(provider));
         agents.push(agent);
@@ -408,9 +572,27 @@ async fn run_orchestrated(
             #[cfg(feature = "storage")]
             record_orchestration_blackboard(&board, &config, input);
 
-            for entry in board.entries() {
-                println!("[{}] {}", entry.agent, entry.content);
+            let outcome_text = board
+                .entries()
+                .iter()
+                .map(|entry| format!("[{}] {}", entry.agent, entry.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            if !json {
+                println!("{outcome_text}");
             }
+
+            // NOTE: token/cost aggregation for orchestration requires engine-level
+            // instrumentation (out of scope for beta.3).
+            emit_agent_ends(sink, agent_names);
+            sink.emit(&RunEvent::Result {
+                content: outcome_text,
+                tin: 0,
+                tout: 0,
+                cost: 0.0,
+                agents: agent_names.len(),
+            });
         }
         "ring" => {
             let ring_agents: Vec<Arc<dyn RingAgent>> = agents
@@ -435,13 +617,16 @@ async fn run_orchestrated(
             #[cfg(feature = "storage")]
             record_orchestration_ring(&token, &config, input);
 
-            match token.status() {
+            let outcome_text = match token.status() {
                 TokenStatus::Done { outcome } => match outcome {
                     RingOutcome::Consensus {
                         resolution, score, ..
                     } => {
                         eprintln!("[ring] Consensus ({:.0}%)", score * 100.0);
-                        println!("{resolution}");
+                        if !json {
+                            println!("{resolution}");
+                        }
+                        resolution.clone()
                     }
                     RingOutcome::Majority {
                         resolution,
@@ -453,15 +638,24 @@ async fn run_orchestrated(
                             score * 100.0,
                             dissents.len()
                         );
-                        println!("{resolution}");
+                        if !json {
+                            println!("{resolution}");
+                        }
+                        resolution.clone()
                     }
                     RingOutcome::NoConsensus { summary, .. } => {
                         eprintln!("[ring] No consensus");
-                        println!("{summary}");
+                        if !json {
+                            println!("{summary}");
+                        }
+                        summary.clone()
                     }
                     RingOutcome::BudgetExhausted { partial_summary } => {
                         eprintln!("[ring] Budget exhausted");
-                        println!("{partial_summary}");
+                        if !json {
+                            println!("{partial_summary}");
+                        }
+                        partial_summary.clone()
                     }
                     RingOutcome::CostLimitExceeded {
                         partial_summary,
@@ -469,16 +663,32 @@ async fn run_orchestrated(
                         limit,
                     } => {
                         eprintln!("[ring] Cost limit exceeded: ${:.4}/${:.4}", spent, limit);
-                        println!("{partial_summary}");
+                        if !json {
+                            println!("{partial_summary}");
+                        }
+                        partial_summary.clone()
                     }
                     RingOutcome::Cancelled => {
                         eprintln!("[ring] Cancelled");
+                        String::new()
                     }
                 },
                 other => {
                     eprintln!("[ring] Unexpected status: {other:?}");
+                    String::new()
                 }
-            }
+            };
+
+            // NOTE: token/cost aggregation for orchestration requires engine-level
+            // instrumentation (out of scope for beta.3).
+            emit_agent_ends(sink, agent_names);
+            sink.emit(&RunEvent::Result {
+                content: outcome_text,
+                tin: 0,
+                tout: 0,
+                cost: 0.0,
+                agents: agent_names.len(),
+            });
         }
         "hierarchical" => {
             use std::collections::HashMap;
@@ -528,7 +738,18 @@ async fn run_orchestrated(
                 result.invocation_count, result.total_tokens_in, result.total_tokens_out
             );
 
-            println!("{}", result.content);
+            if !json {
+                println!("{}", result.content);
+            }
+
+            emit_agent_ends(sink, agent_names);
+            sink.emit(&RunEvent::Result {
+                content: result.content,
+                tin: result.total_tokens_in,
+                tout: result.total_tokens_out,
+                cost: result.total_cost,
+                agents: agent_names.len(),
+            });
         }
         other => {
             anyhow::bail!(
@@ -538,6 +759,29 @@ async fn run_orchestrated(
     }
 
     Ok(())
+}
+
+/// Emit one `AgentEnd` event per agent, in order, restoring the JSONL contract's
+/// start/end symmetry for orchestrated runs (spec §3).
+///
+/// Per-agent completion metrics (tokens, cost) are not available from the
+/// orchestration engines (blackboard/ring/hierarchical aggregate at the run
+/// level only), so each event carries zeroed metrics and empty content — this
+/// is documented out-of-scope, not a bug. Call immediately before emitting the
+/// terminal `Result` event.
+fn emit_agent_ends(
+    sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
+    agent_names: &[String],
+) {
+    for name in agent_names {
+        sink.emit(&RunEvent::AgentEnd {
+            agent: name.clone(),
+            tin: 0,
+            tout: 0,
+            cost: 0.0,
+            content: String::new(),
+        });
+    }
 }
 
 /// Apply project-level orchestration overrides to a BlackboardConfig.
@@ -828,9 +1072,19 @@ mod tests {
     }
 
     #[test]
+    fn exit_code_mapping() {
+        assert_eq!(exit_code_for(&anyhow::anyhow!("token budget exceeded")), 3);
+        assert_eq!(
+            exit_code_for(&anyhow::anyhow!("provider 'x' not available")),
+            4
+        );
+        assert_eq!(exit_code_for(&anyhow::anyhow!("boom")), 1);
+    }
+
+    #[test]
     fn test_resolve_agents_dir_returns_valid_resolution() {
         // resolve_agents_dir should not panic regardless of cwd state
-        let resolution = resolve_agents_dir();
+        let resolution = resolve_agents_dir(false);
         match resolution {
             AgentResolution::Project { root, config } => {
                 assert!(!root.to_string_lossy().is_empty());
