@@ -18,6 +18,8 @@ significantly change your approach, ask 2-3 targeted clarifying questions first.
 Only proceed with your complete response once you have enough context to deliver \
 accurate, relevant output.";
 
+/// Execute a run command. Parameters are independent CLI options that map directly to
+/// configuration flags; grouping into a struct would obscure the caller's argument binding.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute(
     agent_name: String,
@@ -48,8 +50,9 @@ pub async fn execute(
 
     if let Err(e) = result {
         if headless {
+            let code = exit_code_for(&e);
             sink.emit(&RunEvent::Error {
-                code: match exit_code_for(&e) {
+                code: match code {
                     3 => "budget_exceeded",
                     4 => "provider_unavailable",
                     _ => "agent_failed",
@@ -57,7 +60,7 @@ pub async fn execute(
                 .into(),
                 msg: e.to_string(),
             });
-            std::process::exit(exit_code_for(&e));
+            std::process::exit(code);
         }
         return Err(e);
     }
@@ -85,6 +88,7 @@ fn exit_code_for(err: &anyhow::Error) -> i32 {
 
 /// Core run logic (sequential or orchestrated). Kept separate from [`execute`] so that
 /// all error paths funnel through a single headless error-event + exit-code handler.
+/// Parameters are passed directly from `execute` and represent distinct configuration concerns.
 #[allow(clippy::too_many_arguments)]
 async fn run_inner(
     agent_name: String,
@@ -245,6 +249,9 @@ fn resolve_agent_path(resolution: &AgentResolution, agent_name: &str) -> anyhow:
     }
 }
 
+/// Execute a single agent with given input and configuration. Parameters represent
+/// environment (path, input), configuration (defaults, rules), and I/O (sink, quiet, max_content);
+/// grouping would obscure distinct concerns in request building and provider creation.
 #[allow(clippy::too_many_arguments)]
 async fn run_single_agent(
     agent_path: &Path,
@@ -368,11 +375,11 @@ async fn run_single_agent(
     };
     let duration = start.elapsed();
 
-    let content_out = match max_content {
-        Some(n) if !quiet => response.content.chars().take(n).collect::<String>(),
-        _ => response.content.clone(),
-    };
     if !quiet {
+        let content_out = match max_content {
+            Some(n) => response.content.chars().take(n).collect::<String>(),
+            None => response.content.clone(),
+        };
         sink.emit(&RunEvent::AgentEnd {
             agent: agent_name.to_string(),
             tin: response.tokens_in,
@@ -554,10 +561,20 @@ async fn run_orchestrated(
     for name in agent_names {
         let agent_path = resolve_agent_path(resolution, name)?;
         let mut agent = crate::parser::parse_agent_file(&agent_path)?;
+
+        let model_before = agent.metadata.model.clone();
         crate::linker::model_aliases::resolve_model_deprecations(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
         );
+        if agent.metadata.model != model_before {
+            sink.emit(&RunEvent::Warning {
+                code: "deprecated_model".to_string(),
+                from: model_before,
+                to: agent.metadata.model.clone(),
+            });
+        }
+
         sink.emit(&RunEvent::AgentStart {
             agent: name.clone(),
             prov: agent.metadata.provider.clone(),
