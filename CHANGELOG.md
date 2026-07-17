@@ -1,3 +1,29 @@
+## v1.0.0-rc.1 (2026-07-17)
+
+First release candidate for 1.0.0. Scope frozen (event-sourcing and the
+declarative-engine vision are deferred to 1.1/v2).
+
+### Fixed
+
+- **Beta.2/beta.3 technical debt resolved** (#176): exact metrics from
+  `result_event` now used in Pipeline/Tandem modes (previously
+  approximated), `deprecated_model` warning now emitted consistently in
+  orchestration mode (previously single-agent-only), plus assorted
+  cleanups (`content_out` clone avoidance, duplicate `exit_code_for` call,
+  obsolete `#[allow(dead_code)]` removal, documented lint suppressions,
+  redundant `#[serde(default)]` removal in `ProjectConfig`).
+
+### New: v0 → v1 Migration Guide
+
+- **[`docs/wiki/migration-v0-to-v1.md`](docs/wiki/migration-v0-to-v1.md)**:
+  step-by-step guide covering breaking changes for v0.x users — removal of
+  `fleet`, non-canonical `provider` syntax, deprecated models, the
+  `.armadai/` project format, and diagnostic tooling.
+- **[`scripts/migrate-v0-to-v1.sh`](scripts/migrate-v0-to-v1.sh)**: companion
+  automation script for the mechanical, deterministic parts of the
+  migration. Dry-run by default (nothing is written unless `--apply` is
+  passed), backs up every file it touches, and never deletes anything.
+
 ## v1.0.0-beta.3 (2026-07-17)
 
 Third beta of the 1.0.0 release. Adds two OpenHands-study features: a
