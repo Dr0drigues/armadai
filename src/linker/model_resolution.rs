@@ -346,11 +346,23 @@ pub fn prompt_model_interactive() -> anyhow::Result<String> {
     Ok(model)
 }
 
+/// Whether `warn_unknown_model` should skip its unknown-model warning for `model`.
+///
+/// True for `latest:*` placeholders (resolved at link time, see
+/// [`is_latest_placeholder`]) and for the `latest:auto` routing placeholder used by
+/// the OH4 router (deliberately NOT recognized by [`parse_latest_placeholder`],
+/// since it is resolved by tier-routing logic upstream rather than by the
+/// `latest:*` tier parser — see `run_single_agent` step 5).
+fn should_skip_unknown_model_warning(model: &str) -> bool {
+    is_latest_placeholder(model) || model == "latest:auto"
+}
+
 /// Warn if the model is not found in the cached models.dev registry.
 ///
-/// Skips the warning for `latest:*` placeholders (they are resolved at link time).
+/// Skips the warning for `latest:*` placeholders (they are resolved at link time)
+/// and for `latest:auto` (resolved by the router before the provider call).
 pub fn warn_unknown_model(model: &str, provider: &str) {
-    if is_latest_placeholder(model) {
+    if should_skip_unknown_model_warning(model) {
         return;
     }
     if let Some(entries) = crate::model_registry::fetch::load_models_cached(provider)
@@ -678,6 +690,36 @@ mod tests {
             // All targets should resolve to a concrete model, not "latest:fast"
             assert!(!model.contains("latest"));
         }
+    }
+
+    // ── warn_unknown_model guard ──────────────────────────────────
+
+    #[test]
+    fn test_should_skip_unknown_model_warning_for_latest_auto() {
+        // Regression test: `latest:auto` must be treated as a placeholder to
+        // skip, even though `parse_latest_placeholder`/`is_latest_placeholder`
+        // deliberately do NOT recognize it (it's resolved by router tier
+        // logic, not the `latest:*` tier parser).
+        assert!(should_skip_unknown_model_warning("latest:auto"));
+    }
+
+    #[test]
+    fn test_should_skip_unknown_model_warning_for_latest_placeholders() {
+        assert!(should_skip_unknown_model_warning("latest"));
+        assert!(should_skip_unknown_model_warning("latest:pro"));
+        assert!(should_skip_unknown_model_warning("latest:fast"));
+        assert!(should_skip_unknown_model_warning("latest:max"));
+    }
+
+    #[test]
+    fn test_should_warn_for_concrete_models() {
+        // Concrete/`latest:pro`-resolved models must still get the normal
+        // unknown-model warning path (routing behavior must not change).
+        assert!(!should_skip_unknown_model_warning(
+            "claude-sonnet-4-5-20250929"
+        ));
+        assert!(!should_skip_unknown_model_warning("some-unknown-model"));
+        assert!(!should_skip_unknown_model_warning("latest:autopilot"));
     }
 
     #[test]
