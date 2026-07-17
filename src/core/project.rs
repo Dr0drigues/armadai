@@ -57,7 +57,6 @@ pub struct ProjectConfig {
     pub skills: Vec<SkillRef>,
     pub sources: Vec<String>,
     pub link: Option<LinkConfig>,
-    #[serde(default)]
     pub defaults: ProjectDefaults,
     /// Top-level orchestration configuration (teams, coordinator, pattern).
     pub orchestration: Option<Box<OrchestrationConfig>>,
@@ -67,7 +66,6 @@ pub struct ProjectConfig {
     /// for `latest:auto` agents. See `crate::core::routing::RoutingRules`.
     /// Consumed in `cli::run::execute` to build the `RoutingRules` passed to
     /// `run_single_agent` for `latest:auto` model resolution.
-    #[serde(default)]
     pub routing: Option<crate::core::routing::RoutingRules>,
 }
 
