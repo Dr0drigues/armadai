@@ -65,11 +65,9 @@ pub struct ProjectConfig {
     pub shell: Option<crate::shell::config::ShellConfig>,
     /// Dynamic model-router rules (thresholds, keywords, tags, budget cap)
     /// for `latest:auto` agents. See `crate::core::routing::RoutingRules`.
-    /// Not yet consumed in production code — wiring into `run`/agent
-    /// execution is a follow-up task; `#[allow(dead_code)]` is scoped to
-    /// this field only and should be removed once that lands.
+    /// Consumed in `cli::run::execute` to build the `RoutingRules` passed to
+    /// `run_single_agent` for `latest:auto` model resolution.
     #[serde(default)]
-    #[allow(dead_code)]
     pub routing: Option<crate::core::routing::RoutingRules>,
 }
 
