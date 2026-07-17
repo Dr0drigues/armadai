@@ -555,10 +555,20 @@ async fn run_orchestrated(
     for name in agent_names {
         let agent_path = resolve_agent_path(resolution, name)?;
         let mut agent = crate::parser::parse_agent_file(&agent_path)?;
+
+        let model_before = agent.metadata.model.clone();
         crate::linker::model_aliases::resolve_model_deprecations(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
         );
+        if agent.metadata.model != model_before {
+            sink.emit(&RunEvent::Warning {
+                code: "deprecated_model".to_string(),
+                from: model_before,
+                to: agent.metadata.model.clone(),
+            });
+        }
+
         sink.emit(&RunEvent::AgentStart {
             agent: name.clone(),
             prov: agent.metadata.provider.clone(),
