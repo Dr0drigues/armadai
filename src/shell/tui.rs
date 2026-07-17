@@ -25,6 +25,7 @@ pub struct DisplayMessage {
     pub content: String,
     pub is_user: bool,
     pub is_system: bool, // System messages (commands, etc.)
+    pub id: Option<String>, // Unique ID for tandem streams (prevents collision when same provider appears twice)
 }
 
 /// Application state for the shell TUI
@@ -116,6 +117,7 @@ impl ShellApp {
             content: content.to_string(),
             is_user: true,
             is_system: false,
+            id: None,
         });
         self.scroll_to_bottom();
     }
@@ -127,6 +129,7 @@ impl ShellApp {
             content: content.to_string(),
             is_user: false,
             is_system: false,
+            id: None,
         });
         // Reset to auto-scroll on new content
         self.manual_scroll = false;
@@ -140,6 +143,7 @@ impl ShellApp {
             content: content.to_string(),
             is_user: false,
             is_system: false,
+            id: None,
         });
         self.manual_scroll = false;
         self.scroll = 0;
@@ -152,6 +156,7 @@ impl ShellApp {
             content: content.to_string(),
             is_user: false,
             is_system: true,
+            id: None,
         });
         self.scroll_to_bottom();
     }
@@ -163,6 +168,7 @@ impl ShellApp {
             content: String::new(),
             is_user: false,
             is_system: false,
+            id: None,
         });
         self.manual_scroll = false;
         self.scroll = 0;
@@ -181,25 +187,30 @@ impl ShellApp {
     }
 
     /// Start a streaming response for a specific provider in tandem mode
-    pub fn start_tandem_stream(&mut self, provider_label: &str) {
+    /// Returns a unique ID for this stream to prevent collision when the same provider appears twice
+    pub fn start_tandem_stream(&mut self, provider_label: &str) -> String {
+        let stream_id = uuid::Uuid::new_v4().to_string();
         self.messages.push(DisplayMessage {
             role: provider_label.to_string(),
             content: String::new(),
             is_user: false,
             is_system: false,
+            id: Some(stream_id.clone()),
         });
         self.manual_scroll = false;
         self.scroll = 0;
+        stream_id
     }
 
     /// Append text to a specific provider's streaming response in tandem mode
-    pub fn append_to_tandem_stream(&mut self, provider_label: &str, text: &str) {
-        // Find the message with matching role (search from end for latest)
+    /// stream_id is used to disambiguate when the same provider appears twice
+    pub fn append_to_tandem_stream(&mut self, stream_id: &str, text: &str) {
+        // Find the message with matching stream_id (search from end for latest)
         if let Some(msg) = self
             .messages
             .iter_mut()
             .rev()
-            .find(|m| m.role == provider_label && !m.is_user && !m.is_system)
+            .find(|m| m.id.as_deref() == Some(stream_id) && !m.is_user && !m.is_system)
         {
             msg.content.push_str(text);
             self.manual_scroll = false;
@@ -217,14 +228,26 @@ impl ShellApp {
             .unwrap_or_default()
     }
 
-    /// Get content of an assistant message by label (for tandem mode)
-    pub fn get_assistant_content_by_label(&self, label: &str) -> String {
+    /// Get content of an assistant message by stream ID (for tandem mode)
+    pub fn get_assistant_content_by_stream_id(&self, stream_id: &str) -> String {
         self.messages
             .iter()
             .rev()
-            .find(|m| m.role == label && !m.is_user && !m.is_system)
+            .find(|m| m.id.as_deref() == Some(stream_id) && !m.is_user && !m.is_system)
             .map(|m| m.content.clone())
             .unwrap_or_default()
+    }
+
+    /// Update the content of an assistant message by stream ID (for tandem marker cleanup)
+    pub fn update_assistant_by_stream_id(&mut self, stream_id: &str, content: &str) {
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.id.as_deref() == Some(stream_id) && !m.is_user && !m.is_system)
+        {
+            msg.content = content.to_string();
+        }
     }
 
     /// Update the last assistant message content (after marker stripping)
