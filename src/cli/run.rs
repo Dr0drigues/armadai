@@ -310,10 +310,12 @@ async fn run_single_agent(
         .unwrap_or_else(|| "default".to_string());
 
     let model = if raw_model == "latest:auto" {
-        let tier = crate::core::routing::route(input, &agent.metadata.tags, None, routing_rules);
+        let (tier, reason) =
+            crate::core::routing::route(input, &agent.metadata.tags, None, routing_rules);
         sink.emit(&RunEvent::Route {
             agent: agent_name.to_string(),
             tier: format!("{tier:?}"),
+            reason: format!("{reason:?}"),
         });
         crate::linker::model_resolution::resolve_model_for_tier(&agent.metadata.provider, tier)
     } else {

@@ -47,6 +47,7 @@ pub enum RunEvent {
     Route {
         agent: String,
         tier: String,
+        reason: String,
     },
 }
 
@@ -137,9 +138,13 @@ mod tests {
         let ev = RunEvent::Route {
             agent: "dev-lead".into(),
             tier: "Max".into(),
+            reason: "Tag".into(),
         };
         let s = serde_json::to_string(&ev).unwrap();
-        assert_eq!(s, r#"{"t":"route","agent":"dev-lead","tier":"Max"}"#);
+        assert_eq!(
+            s,
+            r#"{"t":"route","agent":"dev-lead","tier":"Max","reason":"Tag"}"#
+        );
     }
 
     #[test]
