@@ -33,6 +33,70 @@ pub async fn execute(
     let headless = headless || json;
     let sink = crate::core::events::make_sink(json);
 
+    let result = run_inner(
+        agent_name,
+        input,
+        pipe,
+        orchestrate,
+        headless,
+        json,
+        quiet,
+        max_content,
+        &sink,
+    )
+    .await;
+
+    if let Err(e) = result {
+        if headless {
+            sink.emit(&RunEvent::Error {
+                code: match exit_code_for(&e) {
+                    3 => "budget_exceeded",
+                    4 => "provider_unavailable",
+                    _ => "agent_failed",
+                }
+                .into(),
+                msg: e.to_string(),
+            });
+            std::process::exit(exit_code_for(&e));
+        }
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// Map a run error to a CI-friendly exit code.
+///
+/// - `0`: success (handled by caller, never produced here)
+/// - `1`: generic execution error
+/// - `2`: usage error (reserved for CLI-level argument validation)
+/// - `3`: budget/cost limit exceeded
+/// - `4`: provider unavailable
+fn exit_code_for(err: &anyhow::Error) -> i32 {
+    let s = err.to_string().to_lowercase();
+    if s.contains("budget") || s.contains("cost limit") {
+        3
+    } else if s.contains("not available") || s.contains("unavailable") {
+        4
+    } else {
+        1
+    }
+}
+
+/// Core run logic (sequential or orchestrated). Kept separate from [`execute`] so that
+/// all error paths funnel through a single headless error-event + exit-code handler.
+#[allow(clippy::too_many_arguments)]
+async fn run_inner(
+    agent_name: String,
+    input: Option<String>,
+    pipe: Option<Vec<String>>,
+    orchestrate: Option<String>,
+    headless: bool,
+    json: bool,
+    quiet: bool,
+    max_content: Option<usize>,
+    sink: &Arc<dyn EventSink>,
+) -> anyhow::Result<()> {
     let resolution = resolve_agents_dir(headless);
 
     // Build the execution chain: primary agent + piped agents
@@ -49,7 +113,7 @@ pub async fn execute(
         if chain.len() < 2 {
             anyhow::bail!("--orchestrate requires at least 2 agents (use --pipe to add more)");
         }
-        return run_orchestrated(&resolution, &chain, &current_input, &pattern, &sink, json).await;
+        return run_orchestrated(&resolution, &chain, &current_input, &pattern, sink, json).await;
     }
 
     // Auto-detect orchestration from project config (orchestration.enabled: true)
@@ -75,7 +139,7 @@ pub async fn execute(
                 &orch_agents,
                 &current_input,
                 &pattern,
-                &sink,
+                sink,
                 json,
             )
             .await;
@@ -112,7 +176,7 @@ pub async fn execute(
             name,
             &current_input,
             project_defaults,
-            &sink,
+            sink,
             quiet,
             max_content,
         )
@@ -979,6 +1043,16 @@ mod tests {
     fn test_is_model_not_found_rate_limit_429_false() {
         let err = anyhow::anyhow!("429 Too Many Requests: rate limit exceeded");
         assert!(!is_model_not_found(&err));
+    }
+
+    #[test]
+    fn exit_code_mapping() {
+        assert_eq!(exit_code_for(&anyhow::anyhow!("token budget exceeded")), 3);
+        assert_eq!(
+            exit_code_for(&anyhow::anyhow!("provider 'x' not available")),
+            4
+        );
+        assert_eq!(exit_code_for(&anyhow::anyhow!("boom")), 1);
     }
 
     #[test]
