@@ -33,7 +33,7 @@ pub async fn execute(
     // ... existing body continues (sink/quiet/max_content wired in Tasks 3-6)
     let _ = (headless, quiet, max_content, &sink);
 
-    let resolution = resolve_agents_dir();
+    let resolution = resolve_agents_dir(headless);
 
     // Build the execution chain: primary agent + piped agents
     let mut chain = vec![agent_name];
@@ -329,7 +329,7 @@ fn atty_is_pipe() -> bool {
 
 /// Resolve agent source: walk up for `armadai.yaml`, detect format,
 /// and return the appropriate resolution strategy.
-fn resolve_agents_dir() -> AgentResolution {
+fn resolve_agents_dir(headless: bool) -> AgentResolution {
     // 1. Walk-up search for project config (new or legacy format)
     if let Some((root, config)) = project::find_project_config()
         && !config.agents.is_empty()
@@ -342,7 +342,8 @@ fn resolve_agents_dir() -> AgentResolution {
         if let Err(e) = crate::core::project_registry::register_project(&root) {
             tracing::warn!("Failed to register project in registry: {:?}", e);
         }
-        crate::core::model_updater::auto_check_and_prompt(&root, !atty_is_pipe());
+        let interactive = !headless && !atty_is_pipe();
+        crate::core::model_updater::auto_check_and_prompt(&root, interactive);
         return AgentResolution::Project {
             root,
             config: Box::new(config),
@@ -841,7 +842,7 @@ mod tests {
     #[test]
     fn test_resolve_agents_dir_returns_valid_resolution() {
         // resolve_agents_dir should not panic regardless of cwd state
-        let resolution = resolve_agents_dir();
+        let resolution = resolve_agents_dir(false);
         match resolution {
             AgentResolution::Project { root, config } => {
                 assert!(!root.to_string_lossy().is_empty());
