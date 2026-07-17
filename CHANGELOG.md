@@ -1,3 +1,34 @@
+## v1.0.0-beta.3 (2026-07-17)
+
+Third beta of the 1.0.0 release. Adds two OpenHands-study features: a
+CI-first headless mode for `armadai run` and a dynamic model-tier router.
+
+### Feat
+
+- **[OH3] Headless CI mode for `armadai run`** (#173): new `--headless`
+  (non-interactive, CI exit codes, skips the model-updater prompt), `--json`
+  (structured JSONL event stream on stdout), `--quiet` (result event only),
+  and `--max-content N` (truncates intermediate event content) flags.
+  Introduces `RunEvent`/`EventSink` (`NullSink`/`JsonlSink`) in
+  `core/events.rs`, with short JSON keys for token economy. High-level
+  events — `run_start`, `agent_start`, `agent_end`, `warning`, `result`,
+  `error` — are instrumented on the single-agent path, `--pipe`, and
+  orchestration (blackboard/ring/hierarchical) at the per-agent level. CI
+  exit codes: `0` success, `1` execution error, `2` usage error, `3` budget
+  exhaustion (`Err`-propagating paths only — orchestration budget halts
+  remain a graceful partial result with exit `0`), `4` provider unavailable.
+- **[OH4] Dynamic model-tier router (`model: latest:auto`)** (#174): an
+  agent declaring `model: latest:auto` has its tier (`Fast`/`Pro`/`Max`)
+  selected at run time by zero-token static heuristics — input length,
+  keyword matching, agent tags (override), and budget (cap) — then resolved
+  to a concrete model via `resolve_model_for_tier`. Signal precedence:
+  tag override → `max(length, keywords)` → budget cap. Defaults are
+  embedded and overridable per-field via `armadai.yaml > routing:`.
+  `ModelTier` is now orderable (`Fast < Pro < Max`). Emits
+  `RunEvent::Route { agent, tier, reason }` in `--json` mode (OH3 synergy).
+  Scoped to the single-agent/`--pipe` path in this release; orchestration
+  continues to use its own `agent_model` resolution.
+
 ## v1.0.0-beta.2 (2026-07-17)
 
 Second beta of the 1.0.0 release. Resolves the four P0 blockers from the
