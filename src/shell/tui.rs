@@ -433,6 +433,77 @@ impl ShellApp {
         self.manual_scroll = true;
     }
 
+    /// Handle a key pressed WHILE a turn is streaming. Returns true if the
+    /// turn should be cancelled; the caller is responsible for killing the
+    /// child process / PTY and appending a "[Cancelled]" marker. Otherwise
+    /// this applies workroom focus / popup / navigation as a side effect and
+    /// returns false, so drill-down (Ctrl+W + j/k/Enter) works mid-stream,
+    /// not just between turns.
+    ///
+    /// Esc is disambiguated: dismiss popup > exit workroom focus > cancel.
+    pub fn handle_streaming_key(&mut self, key: &KeyEvent) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        // Ctrl+C always cancels, regardless of focus/popup state.
+        if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+            return true;
+        }
+
+        // Ctrl+W toggles workroom focus mode (drill-down), same as handle_key.
+        if key.code == KeyCode::Char('w') && key.modifiers == KeyModifiers::CONTROL {
+            if self.workroom.is_focused() {
+                self.workroom.set_focused(false);
+            } else {
+                if !self.workroom.is_visible() {
+                    self.workroom.set_visible(true);
+                    self.workroom.toggle_pin();
+                }
+                self.workroom.set_focused(true);
+            }
+            return false;
+        }
+
+        // Popup open: Esc/q/Enter dismiss; j/k/arrows/PageUp/PageDown scroll.
+        if self.has_popup() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => self.dismiss_popup(),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.popup_scroll = self.popup_scroll.saturating_sub(2);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.popup_scroll = self.popup_scroll.saturating_add(2);
+                }
+                KeyCode::PageUp => {
+                    self.popup_scroll = self.popup_scroll.saturating_sub(10);
+                }
+                KeyCode::PageDown => {
+                    self.popup_scroll = self.popup_scroll.saturating_add(10);
+                }
+                _ => {}
+            }
+            return false;
+        }
+
+        // Workroom focused: navigate / open detail / exit focus.
+        if self.workroom.is_focused() {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => self.workroom.select_prev(),
+                KeyCode::Down | KeyCode::Char('j') => self.workroom.select_next(),
+                KeyCode::Enter => {
+                    if let Some(md) = self.workroom.selected_detail_markdown() {
+                        self.show_popup(md);
+                    }
+                }
+                KeyCode::Esc => self.workroom.set_focused(false),
+                _ => {}
+            }
+            return false;
+        }
+
+        // Otherwise: Esc cancels the turn (legacy behavior preserved).
+        key.code == KeyCode::Esc
+    }
+
     /// Handle a key event, returns true if should quit
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         use crossterm::event::{KeyCode, KeyModifiers};
@@ -452,6 +523,42 @@ impl ShellApp {
                 }
                 KeyCode::PageDown => {
                     self.popup_scroll = self.popup_scroll.saturating_add(10);
+                }
+                _ => {}
+            }
+            return false;
+        }
+
+        // Ctrl+W toggles workroom focus mode (drill-down). If hidden, show +
+        // pin it and enter focus; if focused, exit focus; if visible but
+        // unfocused, enter focus.
+        if key.code == KeyCode::Char('w') && key.modifiers == KeyModifiers::CONTROL {
+            if self.workroom.is_focused() {
+                self.workroom.set_focused(false);
+            } else {
+                if !self.workroom.is_visible() {
+                    self.workroom.set_visible(true);
+                    self.workroom.toggle_pin();
+                }
+                self.workroom.set_focused(true);
+            }
+            return false;
+        }
+
+        // Gate focus-mode navigation BEFORE the text-input branch below, so
+        // that j/k/Enter/Esc are consumed here instead of being inserted into
+        // the input buffer or triggering submit/quit.
+        if self.workroom.is_focused() {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => self.workroom.select_prev(),
+                KeyCode::Down | KeyCode::Char('j') => self.workroom.select_next(),
+                KeyCode::Enter => {
+                    if let Some(md) = self.workroom.selected_detail_markdown() {
+                        self.show_popup(md);
+                    }
+                }
+                KeyCode::Esc => {
+                    self.workroom.set_focused(false);
                 }
                 _ => {}
             }
@@ -716,7 +823,7 @@ impl ShellApp {
 
     fn render_messages_area(&self, frame: &mut Frame, area: Rect) {
         if self.messages.is_empty() {
-            let placeholder = Paragraph::new("Welcome to ArmadAI Shell!\n\nType your message and press Enter to get started. Press Ctrl+L to clear conversation, Ctrl+C or Esc to quit.")
+            let placeholder = Paragraph::new("Welcome to ArmadAI Shell!\n\nType your message and press Enter to get started. Press Ctrl+L to clear conversation, Ctrl+W to focus the workroom panel, Ctrl+C or Esc to quit.")
                 .block(Block::default().borders(Borders::ALL))
                 .wrap(Wrap { trim: false });
             frame.render_widget(placeholder, area);

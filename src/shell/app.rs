@@ -17,13 +17,6 @@ use super::runner::ShellRunner;
 use super::session::{SessionMessage, ShellSession};
 use super::tui::ShellApp;
 
-/// Check if a key event is a cancel key (Esc or Ctrl+C).
-fn is_cancel_key(key: &event::KeyEvent) -> bool {
-    key.code == KeyCode::Esc
-        || (key.code == KeyCode::Char('c')
-            && key.modifiers == crossterm::event::KeyModifiers::CONTROL)
-}
-
 /// Fold one pipeline step's exact metrics into the running aggregate.
 ///
 /// Pipeline steps run in **series**, each on a different input (step *n*'s
@@ -255,6 +248,12 @@ async fn event_loop(
 
         if app.handle_key(key) {
             break;
+        }
+
+        // While the workroom has drill-down focus, Enter is consumed by
+        // handle_key to open the agent detail popup — never submit input.
+        if app.workroom.is_focused() {
+            continue;
         }
 
         // Check if user submitted input
@@ -592,7 +591,7 @@ async fn event_loop(
             if event::poll(Duration::from_millis(30))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
-                && is_cancel_key(&key)
+                && app.handle_streaming_key(&key)
             {
                 if let Err(e) = child.kill().await {
                     tracing::debug!("Failed to kill cancelled command: {:?}", e);
@@ -911,7 +910,7 @@ async fn execute_tandem(
         if event::poll(Duration::from_millis(30))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && is_cancel_key(&key)
+            && app.handle_streaming_key(&key)
         {
             for stream in &mut streams {
                 let _ = stream.child.kill().await;
@@ -1301,7 +1300,7 @@ async fn execute_pipeline_steps(
             if event::poll(Duration::from_millis(30))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
-                && is_cancel_key(&key)
+                && app.handle_streaming_key(&key)
             {
                 let _ = child.kill().await;
                 app.append_to_streaming("\n\n[Pipeline cancelled]");
@@ -1529,7 +1528,7 @@ async fn execute_pty_turn(
         if event::poll(Duration::from_millis(50))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && is_cancel_key(&key)
+            && app.handle_streaming_key(&key)
         {
             pty.kill();
             app.append_to_streaming("\n\n[Cancelled]");

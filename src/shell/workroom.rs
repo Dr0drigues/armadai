@@ -60,6 +60,10 @@ pub struct Workroom {
     marker_buf: String,
     /// Name of the agent currently holding the token (for END → Done).
     current_agent: Option<String>,
+    /// Index of the selected agent row (drill-down focus mode).
+    selected: usize,
+    /// Whether the workroom currently has keyboard focus (drill-down mode).
+    focused: bool,
 }
 
 impl Workroom {
@@ -70,7 +74,93 @@ impl Workroom {
             pinned: false,
             marker_buf: String::new(),
             current_agent: None,
+            selected: 0,
+            focused: false,
         }
+    }
+
+    /// Set whether the workroom has keyboard focus (drill-down mode).
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    /// Whether the workroom currently has keyboard focus.
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Move the selection to the next agent (wraps around). No-op if empty.
+    pub fn select_next(&mut self) {
+        if self.agents.is_empty() {
+            return;
+        }
+        self.selected = (self.selected + 1) % self.agents.len();
+    }
+
+    /// Move the selection to the previous agent (wraps around). No-op if empty.
+    pub fn select_prev(&mut self) {
+        if self.agents.is_empty() {
+            return;
+        }
+        self.selected = if self.selected == 0 {
+            self.agents.len() - 1
+        } else {
+            self.selected - 1
+        };
+    }
+
+    /// Build a markdown detail view for the currently selected agent
+    /// (name, role, state, elapsed time, last action, and a transition timeline).
+    pub fn selected_detail_markdown(&self) -> Option<String> {
+        let agent = self.agents.get(self.selected)?;
+
+        let role = match agent.role {
+            AgentRole::Coordinator => "coordinator",
+            AgentRole::Lead => "lead",
+            AgentRole::Agent => "agent",
+        };
+        let state = match agent.state {
+            AgentState::Working => "working",
+            AgentState::Delegating => "delegating",
+            AgentState::Done => "done",
+            AgentState::Idle => "idle",
+        };
+
+        let elapsed = match (agent.started_at, agent.finished_at) {
+            (Some(start), Some(finish)) => {
+                format!(
+                    "{:.1}s",
+                    finish.saturating_duration_since(start).as_secs_f64()
+                )
+            }
+            (Some(start), None) => format!("{:.1}s", start.elapsed().as_secs_f64()),
+            (None, _) => "—".to_string(),
+        };
+
+        let last_action = agent.last_action.as_deref().unwrap_or("—");
+
+        let mut md = format!(
+            "# {name}  ({role})\n**State:** {state} · **Elapsed:** {elapsed}\n**Last action:** {last_action}\n\n## Timeline\n",
+            name = agent.name,
+        );
+
+        if agent.transitions.is_empty() {
+            md.push_str("- (no transitions recorded yet)\n");
+        } else {
+            let first = agent.transitions[0].1;
+            for (state, at) in &agent.transitions {
+                let offset = at.saturating_duration_since(first).as_secs_f64();
+                let label = match state {
+                    AgentState::Working => "working",
+                    AgentState::Delegating => "delegating",
+                    AgentState::Done => "done",
+                    AgentState::Idle => "idle",
+                };
+                md.push_str(&format!("- {label}      +{offset:.1}s\n"));
+            }
+        }
+
+        Some(md)
     }
 
     /// Initialize from orchestration config (coordinator + teams)
@@ -416,7 +506,7 @@ impl Workroom {
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         let mut lines: Vec<Line> = Vec::new();
 
-        for agent in &self.agents {
+        for (idx, agent) in self.agents.iter().enumerate() {
             let (icon, state_str, style) = match agent.state {
                 AgentState::Working => {
                     let spinner = SPINNER[agent.spinner_frame];
@@ -458,10 +548,22 @@ impl Workroom {
                 AgentRole::Agent => "    ",
             };
 
+            let is_selected = self.focused && idx == self.selected;
+            let name_style = if is_selected {
+                Style::default()
+                    .fg(role_color)
+                    .bold()
+                    .add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().fg(role_color).bold()
+            };
+            let marker = if is_selected { "▸ " } else { "" };
+
             lines.push(Line::from(vec![
                 Span::raw(indent),
+                Span::raw(marker),
                 Span::styled(format!("{icon} "), style),
-                Span::styled(&agent.name, Style::default().fg(role_color).bold()),
+                Span::styled(&agent.name, name_style),
                 Span::styled(format!("  {state_str}"), style),
             ]));
         }
@@ -469,6 +571,24 @@ impl Workroom {
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No agents configured",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+
+        // Footer hint — compact, panel is only 35 cols wide.
+        lines.push(Line::from(""));
+        if self.focused {
+            lines.push(Line::from(Span::styled(
+                "Ctrl+W exit · j/k select",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "Enter detail",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "Ctrl+W focus",
                 Style::default().fg(Color::DarkGray),
             )));
         }
@@ -769,5 +889,63 @@ orchestration:
             wr.marker_buf_len_for_test() <= 8192,
             "unterminated marker buffer must be capped"
         );
+    }
+
+    #[test]
+    fn test_select_next_prev_wrap() {
+        let mut wr = wr_dev_lead_core(); // 2 agents: dev-lead, core-specialist
+        assert_eq!(wr.selected, 0);
+        wr.select_next();
+        assert_eq!(wr.selected, 1);
+        wr.select_next(); // wraps back to 0
+        assert_eq!(wr.selected, 0);
+        wr.select_prev(); // wraps to last
+        assert_eq!(wr.selected, 1);
+        wr.select_prev();
+        assert_eq!(wr.selected, 0);
+    }
+
+    #[test]
+    fn test_select_next_prev_empty_roster_no_panic() {
+        let mut wr = Workroom::new();
+        assert!(wr.agents_for_test().is_empty());
+        wr.select_next();
+        wr.select_prev();
+        assert_eq!(wr.selected, 0);
+    }
+
+    #[test]
+    fn test_focused_toggle() {
+        let mut wr = Workroom::new();
+        assert!(!wr.is_focused());
+        wr.set_focused(true);
+        assert!(wr.is_focused());
+        wr.set_focused(false);
+        assert!(!wr.is_focused());
+    }
+
+    #[test]
+    fn test_selected_detail_markdown_none_when_empty() {
+        let wr = Workroom::new();
+        assert!(wr.selected_detail_markdown().is_none());
+    }
+
+    #[test]
+    fn test_selected_detail_markdown_has_name_and_timeline() {
+        let mut wr = wr_dev_lead_core();
+        wr.apply_stream_text("<!--ARMADAI_DELEGATE:core-specialist-->");
+        wr.apply_stream_text("<!--ARMADAI_META:status=complete-->");
+        wr.apply_stream_text("<!--ARMADAI_END-->");
+
+        // Select core-specialist explicitly (index depends on config order —
+        // wr_dev_lead_core() yields [dev-lead, core-specialist]).
+        wr.selected = 1;
+        let md = wr.selected_detail_markdown().expect("agent selected");
+        assert!(md.contains("core-specialist"));
+        assert!(md.contains("(agent)"));
+        assert!(md.contains("## Timeline"));
+        assert!(md.contains("working"));
+        assert!(md.contains("done"));
+        assert!(md.contains("Last action:** complete"));
     }
 }
