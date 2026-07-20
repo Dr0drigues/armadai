@@ -453,7 +453,7 @@ impl ShellApp {
                 KeyCode::PageDown => {
                     self.popup_scroll = self.popup_scroll.saturating_add(10);
                 }
-                _ => self.dismiss_popup(),
+                _ => {}
             }
             return false;
         }
