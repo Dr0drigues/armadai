@@ -30,6 +30,9 @@ pub async fn execute(
     json: bool,
     quiet: bool,
     max_content: Option<usize>,
+    route: Option<String>,
+    tags: Option<Vec<String>>,
+    dry_run: bool,
 ) -> anyhow::Result<()> {
     // headless is implied by json (machine output cannot be interrupted by a prompt)
     let headless = headless || json;
@@ -44,6 +47,9 @@ pub async fn execute(
         json,
         quiet,
         max_content,
+        route,
+        tags,
+        dry_run,
         &sink,
     )
     .await;
@@ -99,9 +105,13 @@ async fn run_inner(
     json: bool,
     quiet: bool,
     max_content: Option<usize>,
+    route: Option<String>,
+    tags: Option<Vec<String>>,
+    dry_run: bool,
     sink: &Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     let resolution = resolve_agents_dir(headless);
+    let tags = tags.unwrap_or_default();
 
     // Build the execution chain: primary agent + piped agents
     let mut chain = vec![agent_name];
@@ -117,7 +127,18 @@ async fn run_inner(
         if chain.len() < 2 {
             anyhow::bail!("--orchestrate requires at least 2 agents (use --pipe to add more)");
         }
-        return run_orchestrated(&resolution, &chain, &current_input, &pattern, sink, json).await;
+        return run_orchestrated(
+            &resolution,
+            &chain,
+            &current_input,
+            &pattern,
+            sink,
+            json,
+            route.as_deref(),
+            &tags,
+            dry_run,
+        )
+        .await;
     }
 
     // Auto-detect orchestration from project config (orchestration.enabled: true)
@@ -145,6 +166,9 @@ async fn run_inner(
                 &pattern,
                 sink,
                 json,
+                route.as_deref(),
+                &tags,
+                dry_run,
             )
             .await;
         }
@@ -521,7 +545,6 @@ fn resolve_agents_dir(headless: bool) -> AgentResolution {
 /// filtered and reordered (agents, providers) plus the selection metadata.
 /// Everything operates on the loaded roster: a route naming an agent absent
 /// from the roster is a clear error (the agent must be provided to the run).
-#[allow(dead_code)] // wired into `run_orchestrated` by the CLI flags in C8 Lot B Task 2
 #[allow(clippy::type_complexity)] // (agents, providers, selection) mirrors the loaded-roster shape
 fn apply_agent_selection(
     agents: Vec<crate::core::agent::Agent>,
@@ -582,6 +605,7 @@ fn apply_agent_selection(
 }
 
 /// Run orchestrated multi-agent execution (blackboard or ring).
+#[allow(clippy::too_many_arguments)]
 async fn run_orchestrated(
     resolution: &AgentResolution,
     agent_names: &[String],
@@ -589,6 +613,9 @@ async fn run_orchestrated(
     pattern: &str,
     sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
     json: bool,
+    route: Option<&str>,
+    tags: &[String],
+    dry_run: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
@@ -657,6 +684,79 @@ async fn run_orchestrated(
         providers.push(Arc::from(provider));
         agents.push(agent);
     }
+
+    // ── C8: deterministic agent selection (routes/tags) ────────────────
+    // A route/tag selector filters and reorders the loaded roster above.
+    // Hierarchical delegates its own routing internally, so an explicit
+    // --route/--tags is ignored there (with a warning) rather than silently
+    // shrinking the coordinator's agent pool.
+    let routing_active = route.is_some() || !tags.is_empty();
+    if routing_active && pattern == "hierarchical" {
+        sink.emit(&RunEvent::Warning {
+            code: "routing_ignored_hierarchical".to_string(),
+            from: None,
+            to: None,
+        });
+    } else if routing_active {
+        let routes = match resolution {
+            AgentResolution::Project { config, .. } => config
+                .orchestration
+                .as_ref()
+                .map(|o| o.routes.clone())
+                .unwrap_or_default(),
+            _ => std::collections::BTreeMap::new(),
+        };
+        let (sel_agents, sel_providers, selection) =
+            apply_agent_selection(agents, providers, route, tags, &routes)?;
+        agents = sel_agents;
+        providers = sel_providers;
+
+        sink.emit(&RunEvent::AgentSelect {
+            selected: selection.agents.clone(),
+            reason: selection.reason.clone(),
+        });
+
+        // blackboard/ring need >= 2 agents to make sense; a route/tag filter
+        // that narrows below that is a usage error, not a silent no-op.
+        if (pattern == "blackboard" || pattern == "ring") && agents.len() < 2 {
+            anyhow::bail!(
+                "agent routing selected {} agent(s); pattern '{pattern}' requires >= 2 \
+                 (selection: {})",
+                agents.len(),
+                selection.reason
+            );
+        }
+
+        if dry_run {
+            eprintln!(
+                "[dry-run] pattern '{pattern}' — {} ({} agent(s)): {}",
+                selection.reason,
+                agents.len(),
+                agents
+                    .iter()
+                    .map(|a| a.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            if !json {
+                println!(
+                    "{}",
+                    agents
+                        .iter()
+                        .map(|a| a.name.clone())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+            }
+            return Ok(());
+        }
+    }
+
+    // Reflect the (possibly narrowed/reordered) selection in downstream events
+    // (`AgentEnd`/`Result`); `RunStart` above intentionally stays on the
+    // originally requested roster.
+    let agent_names: Vec<String> = agents.iter().map(|a| a.name.clone()).collect();
+    let agent_names: &[String] = agent_names.as_slice();
 
     match pattern {
         "blackboard" => {
