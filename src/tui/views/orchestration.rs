@@ -3,10 +3,11 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, Borders, Paragraph, Row, Table},
 };
 
+use crate::theme;
 use crate::tui::app::App;
 use crate::tui::filter;
 use crate::tui::widgets::search_bar;
@@ -63,9 +64,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             };
             let halt_reason = r.halt_reason.as_deref().unwrap_or("—");
             let style = if display_i == app.selected_orchestration {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                theme::selection()
             } else {
                 Style::default()
             };

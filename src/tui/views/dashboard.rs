@@ -1,11 +1,12 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Row, Table, Tabs},
 };
 
+use crate::theme;
 use crate::tui::app::{App, Tab};
 use crate::tui::filter;
 use crate::tui::widgets::search_bar;
@@ -29,12 +30,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     let tabs = Tabs::new(titles)
         .block(Block::default().borders(Borders::ALL).title(" ArmadAI "))
         .select(app.tab_index)
-        .style(Style::default().fg(Color::White))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
+        // Was `fg(Color::White)` — white-on-white on a light terminal.
+        // Default terminal fg adapts to either theme.
+        .style(Style::default())
+        .highlight_style(theme::selection());
     frame.render_widget(tabs, chunks[0]);
 
     // Content area — dispatch to the right view
@@ -111,9 +110,7 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
             let agent = &app.agents[agent_i];
             let tags = agent.metadata.tags.join(", ");
             let style = if display_i == app.selected_agent {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                theme::selection()
             } else {
                 Style::default()
             };

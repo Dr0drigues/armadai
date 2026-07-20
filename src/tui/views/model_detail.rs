@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use crate::theme;
 use crate::tui::app::App;
 use crate::tui::format::format_context;
 
@@ -34,12 +35,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Title bar
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!(" {} ", entry.id),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!(" {} ", entry.id), theme::heading()),
         Span::styled(
             format!("  ({})", provider),
             Style::default().fg(Color::DarkGray),

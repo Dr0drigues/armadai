@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::core::skill::read_text_file;
+use crate::theme;
 use crate::tui::app::App;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -62,12 +63,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Title bar
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!(" {} ", skill.name),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!(" {} ", skill.name), theme::heading()),
         Span::styled(
             format!("  ({})", skill.source.display()),
             Style::default().fg(Color::DarkGray),
@@ -139,7 +135,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .title(" SKILL.md ")
                 .title_style(Style::default().add_modifier(Modifier::BOLD)),
         )
-        .style(Style::default().fg(Color::White))
+        // Was `fg(Color::White)` — white-on-white on a light terminal.
+        .style(Style::default())
         .wrap(Wrap { trim: false });
     frame.render_widget(body_widget, chunks[2]);
 
