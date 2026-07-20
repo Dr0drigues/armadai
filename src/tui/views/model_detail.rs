@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::tui::app::App;
+use crate::tui::format::format_context;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let (provider, entry) = match app.selected_model_entry() {
@@ -53,7 +54,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .limit
         .as_ref()
         .and_then(|l| l.context)
-        .map(|c| format!("{}", c))
+        .map(format_context)
         .unwrap_or_else(|| "(unknown)".to_string());
     let max_output = entry
         .limit

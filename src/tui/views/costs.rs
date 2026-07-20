@@ -6,6 +6,7 @@ use ratatui::{
 };
 
 use crate::tui::app::App;
+use crate::tui::format::format_cost;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.costs.is_empty() {
@@ -35,7 +36,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Row::new(vec![
                 c.agent.clone(),
                 c.total_runs.to_string(),
-                format!("${:.6}", c.total_cost),
+                format_cost(c.total_cost),
                 c.total_tokens_in.to_string(),
                 c.total_tokens_out.to_string(),
             ])
@@ -56,7 +57,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" Costs — total: ${total_cost:.4} ")),
+            .title(format!(" Costs — total: {} ", format_cost(total_cost))),
     );
 
     frame.render_widget(table, area);

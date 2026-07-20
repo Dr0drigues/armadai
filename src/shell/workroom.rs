@@ -423,11 +423,7 @@ impl Workroom {
                         Style::default().fg(Color::Yellow),
                     )
                 }
-                AgentState::Done => (
-                    "✓",
-                    "done".to_string(),
-                    Style::default().fg(Color::Green),
-                ),
+                AgentState::Done => ("✓", "done".to_string(), Style::default().fg(Color::Green)),
                 AgentState::Idle => (
                     "○",
                     "idle".to_string(),

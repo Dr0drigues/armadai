@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::tui::app::App;
 use crate::tui::filter;
+use crate::tui::format::{format_context, format_cost};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.models_flat.is_empty() {
@@ -48,19 +49,19 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .limit
                 .as_ref()
                 .and_then(|l| l.context)
-                .map(|c| format!("{}K", c / 1000))
+                .map(format_context)
                 .unwrap_or_else(|| "-".to_string());
             let cost_in = entry
                 .cost
                 .as_ref()
                 .and_then(|c| c.input)
-                .map(|v| format!("${:.2}", v))
+                .map(format_cost)
                 .unwrap_or_else(|| "-".to_string());
             let cost_out = entry
                 .cost
                 .as_ref()
                 .and_then(|c| c.output)
-                .map(|v| format!("${:.2}", v))
+                .map(format_cost)
                 .unwrap_or_else(|| "-".to_string());
             let style = if display_i == app.selected_model {
                 Style::default()

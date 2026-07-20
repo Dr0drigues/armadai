@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::tui::app::App;
 use crate::tui::filter;
+use crate::tui::format::format_cost;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.history.is_empty() {
@@ -63,7 +64,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 model_short,
                 r.tokens_in.to_string(),
                 r.tokens_out.to_string(),
-                format!("{:.4}", r.cost),
+                format_cost(r.cost),
                 r.duration_ms.to_string(),
                 r.status.clone(),
             ])
