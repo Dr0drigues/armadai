@@ -289,58 +289,6 @@ impl Workroom {
         self.visible = visible;
     }
 
-    /// Detect agent mentions in streamed text and set them to Working.
-    /// Matches: exact name, name with spaces, partial keywords.
-    pub fn detect_mentions(&mut self, text: &str) {
-        let text_lower = text.to_lowercase();
-
-        // First pass: also detect coordinator delegating
-        let is_delegation = text_lower.contains("déléguer")
-            || text_lower.contains("delegat")
-            || text_lower.contains("spécialiste")
-            || text_lower.contains("specialist");
-
-        if is_delegation
-            && let Some(coord) = self
-                .agents
-                .iter_mut()
-                .find(|a| a.role == AgentRole::Coordinator)
-            && coord.state == AgentState::Idle
-        {
-            coord.state = AgentState::Delegating;
-            coord.started_at = Some(Instant::now());
-        }
-
-        for agent in &mut self.agents {
-            if agent.state != AgentState::Idle {
-                continue;
-            }
-            let name_lower = agent.name.to_lowercase();
-            // Match: "shell-scripting-expert"
-            if text_lower.contains(&name_lower) {
-                agent.state = AgentState::Working;
-                agent.started_at = Some(Instant::now());
-                continue;
-            }
-            // Match: "shell scripting expert"
-            let name_spaces = name_lower.replace('-', " ");
-            if text_lower.contains(&name_spaces) {
-                agent.state = AgentState::Working;
-                agent.started_at = Some(Instant::now());
-                continue;
-            }
-            // Match: key parts — e.g., "shell scripting" from "shell-scripting-expert"
-            let parts: Vec<&str> = name_lower.split('-').collect();
-            if parts.len() >= 2 {
-                let key = format!("{} {}", parts[0], parts[1]);
-                if text_lower.contains(&key) {
-                    agent.state = AgentState::Working;
-                    agent.started_at = Some(Instant::now());
-                }
-            }
-        }
-    }
-
     /// Push a state transition for an agent, updating timestamps + history.
     fn set_state(&mut self, name: &str, state: AgentState) {
         if let Some(agent) = self.agents.iter_mut().find(|a| a.name == name) {
@@ -596,17 +544,6 @@ orchestration:
         let agent = wr.agents.iter().find(|a| a.name == "agent-a").unwrap();
         assert_eq!(agent.state, AgentState::Idle);
         assert!(!wr.is_visible()); // not pinned, so hidden
-    }
-
-    #[test]
-    fn test_detect_mentions() {
-        let mut wr = setup_workroom();
-        wr.detect_mentions("I'll delegate to agent-a for this task");
-        let agent = wr.agents.iter().find(|a| a.name == "agent-a").unwrap();
-        assert_eq!(agent.state, AgentState::Working);
-        // agent-b should still be idle
-        let agent_b = wr.agents.iter().find(|a| a.name == "agent-b").unwrap();
-        assert_eq!(agent_b.state, AgentState::Idle);
     }
 
     #[test]
