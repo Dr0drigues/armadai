@@ -621,7 +621,56 @@ async fn run_nested_team(
         team_lead: team_lead.to_string(),
     });
 
-    Ok(outcome_text)
+    // Lead arbitrates the aggregated outcome (may accept/refine/override).
+    let arbitrated = arbitrate_nested_outcome(ctx, state, team_lead, task, &outcome_text).await?;
+    Ok(arbitrated)
+}
+
+/// Have the lead arbitrate a nested sub-run's aggregated outcome (C9).
+///
+/// The lead receives the sub-run outcome as a user turn and produces the
+/// team's final answer — it may accept, refine, or override. Reuses the
+/// standard `call_llm` path so budget/metrics accounting stays consistent.
+async fn arbitrate_nested_outcome(
+    ctx: &Arc<EngineContext>,
+    state: &Arc<Mutex<EngineState>>,
+    lead: &str,
+    task: &str,
+    outcome: &str,
+) -> anyhow::Result<String> {
+    let arb_prompt = format!(
+        "You lead a team that produced the following outcome for the task.\n\n\
+         Task:\n{task}\n\n\
+         Team outcome:\n{outcome}\n\n\
+         As the team lead, give the final answer for this task. You may accept \
+         the team's outcome, refine it, or override it with your own judgment."
+    );
+    {
+        let mut s = state.lock().unwrap_or_else(|e| {
+            tracing::warn!("Mutex poisoned queuing arbitration: {:?}", e);
+            e.into_inner()
+        });
+        s.iteration_count += 1;
+        let conv = s.conversations.entry(lead.to_string()).or_default();
+        conv.push(ChatMessage {
+            role: "user".to_string(),
+            content: arb_prompt,
+        });
+    }
+    let system_prompt = build_enriched_prompt(ctx, lead);
+    let verdict = call_llm(ctx, state, lead, &system_prompt).await?;
+    {
+        let mut s = state.lock().unwrap_or_else(|e| {
+            tracing::warn!("Mutex poisoned recording arbitration: {:?}", e);
+            e.into_inner()
+        });
+        let conv = s.conversations.entry(lead.to_string()).or_default();
+        conv.push(ChatMessage {
+            role: "assistant".to_string(),
+            content: verdict.clone(),
+        });
+    }
+    Ok(verdict)
 }
 
 /// Resolve the effective BlackboardConfig for a team (team overrides > global).
@@ -2061,5 +2110,128 @@ mod tests {
             "flat delegation must not emit nested events"
         );
         assert!(!result.content.is_empty());
+    }
+
+    /// Provider for `coordinator` in the arbitration test: delegates once,
+    /// then echoes back the last message it receives (the re-injected team
+    /// result, produced by `format_results` from whatever `run_nested_team`
+    /// returned) as its final answer.
+    ///
+    /// A `FixedProvider` can't model this — it ignores its input, so its
+    /// second (synthesis) call would just repeat the delegation directive
+    /// verbatim and get stripped by `extract_narrative`, making the test pass
+    /// or fail independently of what the nested team/lead actually produced.
+    /// Echoing the injected conversation instead makes the assertion below
+    /// genuinely depend on `run_nested_team`'s return value (raw board text
+    /// pre-arbitration vs. the lead's verdict post-arbitration). The
+    /// coordinator is never invoked concurrently with itself, so a plain
+    /// call counter is safe (no shared state races).
+    struct DelegateThenEchoProvider {
+        delegate_to: String,
+        task: String,
+        call_count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl DelegateThenEchoProvider {
+        fn new(delegate_to: &str, task: &str) -> Self {
+            Self {
+                delegate_to: delegate_to.to_string(),
+                task: task.to_string(),
+                call_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for DelegateThenEchoProvider {
+        async fn complete(&self, request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            let call_index = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let content = if call_index == 0 {
+                format!("@{}: {}", self.delegate_to, self.task)
+            } else {
+                let last = request
+                    .messages
+                    .last()
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default();
+                format!("Final answer based on team result:\n{last}")
+            };
+            Ok(CompletionResponse {
+                content,
+                model: "mock".to_string(),
+                tokens_in: 10,
+                tokens_out: 20,
+                cost: 0.001,
+            })
+        }
+
+        async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("streaming not supported in mock")
+        }
+
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "mock".to_string(),
+                models: vec!["mock".to_string()],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_lead_arbitrates_and_can_override_consensus() {
+        let config = nested_blackboard_config();
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "Coordinate."),
+        );
+        agents.insert(
+            "research-lead".to_string(),
+            make_agent("research-lead", "Lead."),
+        );
+        agents.insert("searcher".to_string(), make_agent("searcher", "Search."));
+        agents.insert("analyst".to_string(), make_agent("analyst", "Analyze."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(DelegateThenEchoProvider::new(
+                "research-lead",
+                "analyze the topic",
+            )),
+        );
+        // The lead OVERRIDES the team consensus with its own verdict.
+        providers.insert(
+            "research-lead".to_string(),
+            Arc::new(FixedProvider::new("ARBITER VERDICT: proceed with option B")),
+        );
+        // Team agents produce a board finding suggesting a DIFFERENT option —
+        // if the raw board text ever surfaced instead of the lead's verdict,
+        // this is what would leak into the final result.
+        let board_action = "ACTION: FINDING\nCONFIDENCE: 0.9\nCONTENT: team suggests option A";
+        providers.insert(
+            "searcher".to_string(),
+            Arc::new(FixedProvider::new(board_action)),
+        );
+        providers.insert(
+            "analyst".to_string(),
+            Arc::new(FixedProvider::new(board_action)),
+        );
+
+        let mut engine = HierarchicalEngine::new(config, agents, providers, Arc::new(NullSink));
+        let result = engine.run("Do research").await.unwrap();
+
+        // The lead's arbitration is what surfaces (not the raw board text).
+        assert!(
+            result
+                .content
+                .contains("ARBITER VERDICT: proceed with option B"),
+            "expected lead arbitration to surface, got: {}",
+            result.content
+        );
     }
 }
