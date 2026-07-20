@@ -969,13 +969,21 @@ async fn run_orchestrated(
                 .as_deref()
                 .unwrap_or(agent_names.first().map(|s| s.as_str()).unwrap_or(""));
 
-            // Build agent map and provider map
+            // Build agent map and provider map, keyed by the ROSTER KEY (the
+            // config name / filename slug in `agent_names`), NOT `agent.name`
+            // (the H1 title). The coordinator and the delegation directives
+            // reference agents by their config key (e.g. `dev-lead`), so keying
+            // by the H1 title (`Dev Lead`) would break the coordinator lookup
+            // and every `@agent` delegation. `agents`/`providers` are in the
+            // same order as `agent_names` (built by the load loop above).
             let mut agent_map: HashMap<String, crate::core::agent::Agent> = HashMap::new();
             let mut provider_map: HashMap<String, Arc<dyn Provider>> = HashMap::new();
 
-            for (agent, provider) in agents.into_iter().zip(providers) {
-                provider_map.insert(agent.name.clone(), provider);
-                agent_map.insert(agent.name.clone(), agent);
+            for (name, (agent, provider)) in
+                agent_names.iter().zip(agents.into_iter().zip(providers))
+            {
+                provider_map.insert(name.clone(), provider);
+                agent_map.insert(name.clone(), agent);
             }
 
             eprintln!(
