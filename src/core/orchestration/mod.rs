@@ -151,7 +151,7 @@ fn default_vote_weight() -> f32 {
 /// Unified orchestration configuration (top-level `orchestration:` key in armadai.yaml).
 ///
 /// Combines PR #91 Blackboard/Ring parameters with Hierarchical topology.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct OrchestrationConfig {
     /// Whether orchestration mode is active.
@@ -209,7 +209,7 @@ impl OrchestrationConfig {
 }
 
 /// A team definition within the hierarchical topology.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TeamConfig {
     /// Optional sub-lead for this team. If absent, agents report
     /// directly to the coordinator.

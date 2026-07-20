@@ -473,7 +473,6 @@ pub fn get_ring_votes(db: &Database, run_id: &str) -> anyhow::Result<Vec<RingVot
 }
 
 /// Insert a delegation event.
-#[allow(dead_code)] // consumed by hierarchical persistence (Lot 2 Task 4)
 pub fn insert_delegation_event(db: &Database, record: DelegationEventRecord) -> anyhow::Result<()> {
     let conn = db
         .lock()
