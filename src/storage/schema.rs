@@ -6,10 +6,12 @@ pub const SCHEMA_VERSION: i64 = 1;
 
 /// Apply the database schema: create base tables (target schema) then run migrations.
 pub fn apply(conn: &Connection) -> anyhow::Result<()> {
-    // NOTE: PRAGMA foreign_keys is intentionally omitted here.  The FK
-    // constraints in the schema below exist for documentation and external
-    // tooling only; enforcing them globally could break existing code paths
-    // that insert into `runs` without a matching orchestration record.
+    // NOTE: SQLite foreign keys ARE enforced by default in this build
+    // (`PRAGMA foreign_keys` is ON). `migrate_to_v1` below temporarily
+    // disables enforcement around its `orchestration_runs` table rebuild
+    // (DROP + RENAME), since child rows in `board_entries`,
+    // `ring_contributions`, and `ring_votes` reference `orchestration_runs`
+    // and would otherwise trip a FOREIGN KEY constraint failure.
     //
     // Base tables. `orchestration_runs` here carries the v1 target schema
     // (relaxed CHECK + parent_run_id); an EXISTING pre-v1 database keeps its
@@ -141,6 +143,13 @@ fn migrate_to_v1(conn: &Connection) -> anyhow::Result<()> {
         |r| r.get::<_, i64>(0),
     )? > 0;
     if !has_parent {
+        // `PRAGMA foreign_keys` is a no-op inside a transaction; `apply()`
+        // runs no explicit transaction around this call, so toggling it here
+        // takes effect for the DROP/RENAME below. Without this, the DROP
+        // TABLE fails with SQLite error 787 (FOREIGN KEY constraint failed)
+        // whenever `board_entries`, `ring_contributions`, or `ring_votes`
+        // hold rows referencing `orchestration_runs`.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
         conn.execute_batch(
             "
             CREATE TABLE orchestration_runs_new (
@@ -163,6 +172,7 @@ fn migrate_to_v1(conn: &Connection) -> anyhow::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_orch_parent ON orchestration_runs(parent_run_id);
             ",
         )?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     }
     Ok(())
 }
@@ -252,6 +262,78 @@ mod tests {
         // hierarchical now accepted.
         conn.execute("INSERT INTO runs (id, agent, input, output, provider, model) VALUES ('h1','a','i','o','p','m')", []).unwrap();
         conn.execute("INSERT INTO orchestration_runs (run_id, pattern, config_json) VALUES ('h1','hierarchical','{}')", []).unwrap();
+    }
+
+    #[test]
+    fn legacy_db_with_child_rows_migrates() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Recreate the PRE-v1 schema (old CHECK, no parent_run_id), user_version 0,
+        // plus the legacy `board_entries` table (not created by the fixture above)
+        // with a row referencing `old1` via its FK on `orchestration_runs(run_id)`.
+        conn.execute_batch(
+            "
+            CREATE TABLE runs (id TEXT PRIMARY KEY, agent TEXT NOT NULL, input TEXT NOT NULL,
+                output TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+                tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0.0, duration_ms INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'success', created_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE TABLE orchestration_runs (
+                run_id TEXT PRIMARY KEY REFERENCES runs(id),
+                pattern TEXT NOT NULL CHECK (pattern IN ('direct','blackboard','ring')),
+                config_json TEXT NOT NULL, outcome_json TEXT,
+                rounds INTEGER NOT NULL DEFAULT 0, halt_reason TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')), finished_at TEXT);
+            CREATE TABLE board_entries (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id      TEXT NOT NULL REFERENCES orchestration_runs(run_id),
+                agent       TEXT NOT NULL,
+                round       INTEGER NOT NULL,
+                kind        TEXT NOT NULL,
+                content     TEXT NOT NULL,
+                refs_json   TEXT NOT NULL DEFAULT '[]',
+                confidence  REAL NOT NULL DEFAULT 0.5,
+                tokens_in   INTEGER NOT NULL DEFAULT 0,
+                tokens_out  INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO runs (id, agent, input, output, provider, model) VALUES ('old1','a','i','o','p','m');
+            INSERT INTO orchestration_runs (run_id, pattern, config_json, rounds) VALUES ('old1','blackboard','{}',3);
+            INSERT INTO board_entries (run_id, agent, round, kind, content) VALUES ('old1','a',1,'note','hello');
+            ",
+        )
+        .unwrap();
+        assert_eq!(user_version(&conn), 0);
+        assert!(!has_column(&conn, "orchestration_runs", "parent_run_id"));
+
+        // This is the assertion that fails without the FK-toggle fix: the
+        // table rebuild's DROP TABLE orchestration_runs trips SQLite error 787
+        // (FOREIGN KEY constraint failed) because `board_entries` still
+        // references 'old1'.
+        apply(&conn).unwrap();
+
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert!(has_column(&conn, "orchestration_runs", "parent_run_id"));
+
+        // Child row survived the rebuild (rowid-preserving INSERT...SELECT + RENAME).
+        let board_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM board_entries WHERE run_id = 'old1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(board_count, 1);
+
+        // Parent row survived too.
+        let (pat, rounds): (String, i64) = conn
+            .query_row(
+                "SELECT pattern, rounds FROM orchestration_runs WHERE run_id='old1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pat, "blackboard");
+        assert_eq!(rounds, 3);
     }
 
     #[test]
