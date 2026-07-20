@@ -79,6 +79,15 @@ pub enum Command {
         /// With --json: truncate `content` of intermediate events to N chars
         #[arg(long, value_name = "N")]
         max_content: Option<usize>,
+        /// C8: select agents by a named route from `orchestration.routes`
+        #[arg(long, value_name = "NAME")]
+        route: Option<String>,
+        /// C8: select agents whose tags/stacks intersect these (comma-separated)
+        #[arg(long, value_name = "TAGS", value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        /// C8: resolve and print the agent selection without executing (0 tokens)
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Create a new agent from a template
     #[command(
@@ -453,6 +462,9 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             json,
             quiet,
             max_content,
+            route,
+            tags,
+            dry_run,
         } => {
             run::execute(
                 agent,
@@ -463,6 +475,9 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
                 json,
                 quiet,
                 max_content,
+                route,
+                tags,
+                dry_run,
             )
             .await
         }

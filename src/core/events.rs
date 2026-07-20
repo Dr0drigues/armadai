@@ -67,7 +67,6 @@ pub enum RunEvent {
     NestedEnd {
         team_lead: String,
     },
-    #[allow(dead_code)] // constructed by the CLI wiring in C8 Lot B (--route/--tags)
     AgentSelect {
         selected: Vec<String>,
         reason: String,

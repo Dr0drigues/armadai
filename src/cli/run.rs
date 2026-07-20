@@ -30,6 +30,9 @@ pub async fn execute(
     json: bool,
     quiet: bool,
     max_content: Option<usize>,
+    route: Option<String>,
+    tags: Option<Vec<String>>,
+    dry_run: bool,
 ) -> anyhow::Result<()> {
     // headless is implied by json (machine output cannot be interrupted by a prompt)
     let headless = headless || json;
@@ -44,6 +47,9 @@ pub async fn execute(
         json,
         quiet,
         max_content,
+        route,
+        tags,
+        dry_run,
         &sink,
     )
     .await;
@@ -99,9 +105,13 @@ async fn run_inner(
     json: bool,
     quiet: bool,
     max_content: Option<usize>,
+    route: Option<String>,
+    tags: Option<Vec<String>>,
+    dry_run: bool,
     sink: &Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     let resolution = resolve_agents_dir(headless);
+    let tags = tags.unwrap_or_default();
 
     // Build the execution chain: primary agent + piped agents
     let mut chain = vec![agent_name];
@@ -117,7 +127,18 @@ async fn run_inner(
         if chain.len() < 2 {
             anyhow::bail!("--orchestrate requires at least 2 agents (use --pipe to add more)");
         }
-        return run_orchestrated(&resolution, &chain, &current_input, &pattern, sink, json).await;
+        return run_orchestrated(
+            &resolution,
+            &chain,
+            &current_input,
+            &pattern,
+            sink,
+            json,
+            route.as_deref(),
+            &tags,
+            dry_run,
+        )
+        .await;
     }
 
     // Auto-detect orchestration from project config (orchestration.enabled: true)
@@ -145,6 +166,9 @@ async fn run_inner(
                 &pattern,
                 sink,
                 json,
+                route.as_deref(),
+                &tags,
+                dry_run,
             )
             .await;
         }
@@ -517,7 +541,95 @@ fn resolve_agents_dir(headless: bool) -> AgentResolution {
     AgentResolution::Default(AppPaths::resolve().agents_dir)
 }
 
+/// Apply C8 agent selection (routes/tags) to a loaded roster, returning the
+/// filtered and reordered (agents, providers) plus the selection metadata.
+///
+/// Identity for routing/tagging purposes is the **roster key** (the filename
+/// slug used by `--pipe`, `orchestration.routes:`, and the roster passed to
+/// `select_agents`) — NOT `agent.name` (the parsed H1 title). The two commonly
+/// differ (e.g. key `backend-dev` / H1 `Backend Developer`); keying on the H1
+/// silently breaks route/tag matching. `keys` must be aligned by index with
+/// `agents`/`providers` (same order the roster was loaded in).
+///
+/// Everything operates on the loaded roster: a route naming a key absent
+/// from the roster is a clear error (the agent must be provided to the run).
+/// The selected roster KEYS are returned alongside the reordered vectors so
+/// callers can keep downstream events (AgentEnd/Result/dry-run) keyed the
+/// same way as AgentStart/RunStart.
+#[allow(clippy::type_complexity)] // (keys, agents, providers, selection) mirrors the loaded-roster shape
+fn apply_agent_selection(
+    keys: &[String],
+    agents: Vec<crate::core::agent::Agent>,
+    providers: Vec<std::sync::Arc<dyn crate::providers::traits::Provider>>,
+    route: Option<&str>,
+    tags: &[String],
+    routes: &std::collections::BTreeMap<String, Vec<String>>,
+) -> anyhow::Result<(
+    Vec<String>,
+    Vec<crate::core::agent::Agent>,
+    Vec<std::sync::Arc<dyn crate::providers::traits::Provider>>,
+    crate::core::orchestration::agent_selection::AgentSelection,
+)> {
+    use std::collections::HashMap;
+
+    debug_assert_eq!(
+        keys.len(),
+        agents.len(),
+        "roster keys must be aligned with the loaded agents"
+    );
+
+    let roster: Vec<String> = keys.to_vec();
+    let mut agent_tags: HashMap<String, Vec<String>> = HashMap::new();
+    for (key, a) in keys.iter().zip(&agents) {
+        let mut t = a.metadata.tags.clone();
+        t.extend(a.metadata.stacks.iter().cloned());
+        agent_tags.insert(key.clone(), t);
+    }
+
+    let selection = crate::core::orchestration::agent_selection::select_agents(
+        &roster,
+        route,
+        tags,
+        routes,
+        &agent_tags,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Index the loaded pairs by roster KEY, then rebuild in selection order.
+    let mut by_name: HashMap<
+        String,
+        (
+            crate::core::agent::Agent,
+            std::sync::Arc<dyn crate::providers::traits::Provider>,
+        ),
+    > = HashMap::new();
+    for ((key, a), p) in keys.iter().cloned().zip(agents).zip(providers) {
+        by_name.insert(key, (a, p));
+    }
+
+    let mut out_agents = Vec::with_capacity(selection.agents.len());
+    let mut out_providers = Vec::with_capacity(selection.agents.len());
+    for name in &selection.agents {
+        let (a, p) = by_name.remove(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "route/selection references agent '{name}' which is not among the run's agents \
+                 (add it via --pipe or the orchestration config)"
+            )
+        })?;
+        out_agents.push(a);
+        out_providers.push(p);
+    }
+
+    Ok((
+        selection.agents.clone(),
+        out_agents,
+        out_providers,
+        selection,
+    ))
+}
+
 /// Run orchestrated multi-agent execution (blackboard or ring).
+#[allow(clippy::too_many_arguments)]
 async fn run_orchestrated(
     resolution: &AgentResolution,
     agent_names: &[String],
@@ -525,6 +637,9 @@ async fn run_orchestrated(
     pattern: &str,
     sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
     json: bool,
+    route: Option<&str>,
+    tags: &[String],
+    dry_run: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
@@ -593,6 +708,77 @@ async fn run_orchestrated(
         providers.push(Arc::from(provider));
         agents.push(agent);
     }
+
+    // ── C8: deterministic agent selection (routes/tags) ────────────────
+    // A route/tag selector filters and reorders the loaded roster above.
+    // Hierarchical delegates its own routing internally, so an explicit
+    // --route/--tags is ignored there (with a warning) rather than silently
+    // shrinking the coordinator's agent pool.
+    let routing_active = route.is_some() || !tags.is_empty();
+    // Roster identity for downstream events (`AgentEnd`/`Result`/dry-run).
+    // Defaults to the original (unfiltered) roster keys and is reassigned
+    // ONLY when a route/tag selection actually narrows/reorders the roster
+    // below, so a run with no `--route`/`--tags` emits byte-identical events
+    // to before this change (AgentStart and AgentEnd/Result stay on the same
+    // roster keys).
+    let mut effective_names: Vec<String> = agent_names.to_vec();
+    if routing_active && pattern == "hierarchical" {
+        sink.emit(&RunEvent::Warning {
+            code: "routing_ignored_hierarchical".to_string(),
+            from: None,
+            to: None,
+        });
+    } else if routing_active {
+        let routes = match resolution {
+            AgentResolution::Project { config, .. } => config
+                .orchestration
+                .as_ref()
+                .map(|o| o.routes.clone())
+                .unwrap_or_default(),
+            _ => std::collections::BTreeMap::new(),
+        };
+        let (sel_keys, sel_agents, sel_providers, selection) =
+            apply_agent_selection(agent_names, agents, providers, route, tags, &routes)?;
+        agents = sel_agents;
+        providers = sel_providers;
+        effective_names = sel_keys;
+
+        sink.emit(&RunEvent::AgentSelect {
+            selected: selection.agents.clone(),
+            reason: selection.reason.clone(),
+        });
+
+        // blackboard/ring need >= 2 agents to make sense; a route/tag filter
+        // that narrows below that is a usage error, not a silent no-op.
+        if (pattern == "blackboard" || pattern == "ring") && agents.len() < 2 {
+            anyhow::bail!(
+                "agent routing selected {} agent(s); pattern '{pattern}' requires >= 2 \
+                 (selection: {})",
+                agents.len(),
+                selection.reason
+            );
+        }
+
+        if dry_run {
+            eprintln!(
+                "[dry-run] pattern '{pattern}' — {} ({} agent(s)): {}",
+                selection.reason,
+                effective_names.len(),
+                effective_names.join(", ")
+            );
+            if !json {
+                println!("{}", effective_names.join("\n"));
+            }
+            return Ok(());
+        }
+    }
+
+    // Reflect the (possibly narrowed/reordered) selection in downstream events
+    // (`AgentEnd`/`Result`); `RunStart`/`AgentStart` above intentionally stay
+    // on the originally requested roster keys. When no routing applied,
+    // `effective_names` is untouched, so this is the same slice as the
+    // original `agent_names` param (byte-identical events).
+    let agent_names: &[String] = effective_names.as_slice();
 
     match pattern {
         "blackboard" => {
@@ -1323,6 +1509,207 @@ mod tests {
                 assert!(!dir.to_string_lossy().is_empty());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+
+    use crate::core::agent::{Agent, AgentMetadata};
+    use crate::providers::traits::{
+        CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
+    };
+
+    struct DummyProvider(String);
+    #[async_trait]
+    impl Provider for DummyProvider {
+        async fn complete(&self, _r: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            anyhow::bail!("not used")
+        }
+        async fn stream(&self, _r: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("not used")
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: self.0.clone(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    fn agent_with_tags(name: &str, tags: &[&str], stacks: &[&str]) -> Agent {
+        Agent {
+            name: name.to_string(),
+            source: PathBuf::from(format!("{name}.md")),
+            metadata: AgentMetadata {
+                provider: "mock".to_string(),
+                model: Some("mock".to_string()),
+                command: None,
+                args: None,
+                temperature: 0.7,
+                max_tokens: None,
+                timeout: None,
+                tags: tags.iter().map(|s| s.to_string()).collect(),
+                stacks: stacks.iter().map(|s| s.to_string()).collect(),
+                scope: vec![],
+                model_fallback: vec![],
+                cost_limit: None,
+                rate_limit: None,
+                context_window: None,
+                mode: None,
+                orchestration: None,
+                triggers: None,
+                ring_config: None,
+            },
+            system_prompt: "p".to_string(),
+            instructions: None,
+            output_format: None,
+            pipeline: None,
+            context: None,
+        }
+    }
+
+    /// Roster keys equal `agent.name` here (the common/simple case); the
+    /// H1-vs-key divergence is exercised separately below.
+    fn roster() -> (Vec<String>, Vec<Agent>, Vec<Arc<dyn Provider>>) {
+        let agents = vec![
+            agent_with_tags("sec", &["security"], &["rust"]),
+            agent_with_tags("ui", &["frontend"], &[]),
+            agent_with_tags("qa", &["testing"], &[]),
+        ];
+        let keys: Vec<String> = agents.iter().map(|a| a.name.clone()).collect();
+        let providers: Vec<Arc<dyn Provider>> = agents
+            .iter()
+            .map(|a| Arc::new(DummyProvider(a.name.clone())) as Arc<dyn Provider>)
+            .collect();
+        (keys, agents, providers)
+    }
+
+    #[test]
+    fn no_selectors_keeps_full_roster_in_order() {
+        let (k, a, p) = roster();
+        let (sel_keys, agents, providers, sel) =
+            apply_agent_selection(&k, a, p, None, &[], &BTreeMap::new()).unwrap();
+        assert_eq!(
+            agents.iter().map(|x| x.name.clone()).collect::<Vec<_>>(),
+            vec!["sec", "ui", "qa"]
+        );
+        assert_eq!(providers.len(), 3);
+        assert_eq!(sel.agents, vec!["sec", "ui", "qa"]);
+        assert_eq!(sel_keys, vec!["sec", "ui", "qa"]);
+    }
+
+    #[test]
+    fn tags_filter_and_align_providers() {
+        let (k, a, p) = roster();
+        let (sel_keys, agents, providers, _sel) =
+            apply_agent_selection(&k, a, p, None, &["security".to_string()], &BTreeMap::new())
+                .unwrap();
+        assert_eq!(
+            agents.iter().map(|x| x.name.clone()).collect::<Vec<_>>(),
+            vec!["sec"]
+        );
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].metadata().name, "sec"); // provider realigned to the kept agent
+        assert_eq!(sel_keys, vec!["sec"]);
+    }
+
+    #[test]
+    fn route_selects_named_subset_reordered() {
+        let (k, a, p) = roster();
+        let mut routes = BTreeMap::new();
+        routes.insert("r".to_string(), vec!["qa".to_string(), "sec".to_string()]);
+        let (sel_keys, agents, providers, _sel) =
+            apply_agent_selection(&k, a, p, Some("r"), &[], &routes).unwrap();
+        // Order follows the route, not the roster.
+        assert_eq!(
+            agents.iter().map(|x| x.name.clone()).collect::<Vec<_>>(),
+            vec!["qa", "sec"]
+        );
+        assert_eq!(providers[0].metadata().name, "qa");
+        assert_eq!(providers[1].metadata().name, "sec");
+        assert_eq!(sel_keys, vec!["qa", "sec"]);
+    }
+
+    #[test]
+    fn route_referencing_absent_agent_errors() {
+        let (k, a, p) = roster();
+        let mut routes = BTreeMap::new();
+        routes.insert(
+            "r".to_string(),
+            vec!["sec".to_string(), "ghost".to_string()],
+        );
+        // `Result::unwrap_err` would require the Ok tuple (which carries
+        // `Arc<dyn Provider>`) to implement `Debug`, which it does not — match
+        // instead of unwrap_err to extract the error.
+        let err = match apply_agent_selection(&k, a, p, Some("r"), &[], &routes) {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error for a route referencing an absent agent"),
+        };
+        assert!(
+            err.to_string().contains("ghost"),
+            "error should name the missing agent: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_route_propagates_error() {
+        let (k, a, p) = roster();
+        let err = match apply_agent_selection(&k, a, p, Some("nope"), &[], &BTreeMap::new()) {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error for an unknown route"),
+        };
+        assert!(err.to_string().to_lowercase().contains("route"));
+    }
+
+    /// CRITICAL regression test: in this repo H1 title != filename slug is the
+    /// norm. `--route`/`--tags` and `orchestration.routes:` operate on the
+    /// roster KEY (filename slug), never on `agent.name` (parsed H1). Before
+    /// this fix, `apply_agent_selection` keyed everything on `agent.name`, so
+    /// a route naming the slug `backend-dev` would never match an agent whose
+    /// H1 is `Backend Developer` — `by_name.remove("backend-dev")` returned
+    /// `None` and the run bailed with "not among the run's agents".
+    #[test]
+    fn route_matches_roster_key_even_when_h1_title_differs() {
+        let agent = agent_with_tags("Backend Developer", &["backend"], &["rust"]);
+        let keys = vec!["backend-dev".to_string()];
+        let providers: Vec<Arc<dyn Provider>> =
+            vec![Arc::new(DummyProvider("backend-dev".to_string())) as Arc<dyn Provider>];
+
+        let mut routes = BTreeMap::new();
+        routes.insert("r".to_string(), vec!["backend-dev".to_string()]);
+
+        let (sel_keys, agents, out_providers, sel) =
+            apply_agent_selection(&keys, vec![agent], providers, Some("r"), &[], &routes).unwrap();
+
+        // The selection and returned identity are the roster KEY, not the H1.
+        assert_eq!(sel_keys, vec!["backend-dev".to_string()]);
+        assert_eq!(sel.agents, vec!["backend-dev".to_string()]);
+        // The Agent itself is untouched — H1 title is preserved for display.
+        assert_eq!(agents[0].name, "Backend Developer");
+        assert_eq!(out_providers.len(), 1);
+
+        // Same regression, via a tag selector instead of a route.
+        let agent2 = agent_with_tags("Backend Developer", &["backend"], &["rust"]);
+        let providers2: Vec<Arc<dyn Provider>> =
+            vec![Arc::new(DummyProvider("backend-dev".to_string())) as Arc<dyn Provider>];
+        let (sel_keys2, _agents2, _providers2, _sel2) = apply_agent_selection(
+            &keys,
+            vec![agent2],
+            providers2,
+            None,
+            &["backend".to_string()],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(sel_keys2, vec!["backend-dev".to_string()]);
     }
 }
 
