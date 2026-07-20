@@ -9,6 +9,7 @@ use ratatui::{
 
 use crate::tui::app::App;
 use crate::tui::filter;
+use crate::tui::widgets::search_bar;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.orchestration_runs.is_empty() {
@@ -101,23 +102,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Render search bar if in search mode
     if app.search_mode {
-        render_search_bar(frame, app, area);
+        search_bar(frame, &app.search_query, area);
     }
-}
-
-fn render_search_bar(frame: &mut Frame, app: &App, list_area: Rect) {
-    let search_area = ratatui::layout::Rect {
-        x: list_area.x,
-        y: list_area.bottom() - 1,
-        width: list_area.width,
-        height: 1,
-    };
-
-    let query_display = format!("/ {}\u{2588}", app.search_query);
-    let search = Paragraph::new(query_display)
-        .style(Style::default().fg(Color::Yellow))
-        .block(Block::default());
-    frame.render_widget(search, search_area);
 }
 
 pub fn render_detail(frame: &mut Frame, app: &App, area: Rect) {

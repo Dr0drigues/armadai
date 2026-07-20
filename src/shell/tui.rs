@@ -16,7 +16,7 @@ use ratatui::{
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
-const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+use super::SPINNER_FRAMES;
 
 /// A single message in the conversation
 #[derive(Debug, Clone)]
@@ -316,7 +316,7 @@ impl ShellApp {
         self.pipeline_providers.take()
     }
 
-    /// Show a popup overlay (dismissed with Esc or any key)
+    /// Show a popup overlay (dismissed with Esc / q / Enter; other keys are ignored)
     pub fn show_popup(&mut self, content: String) {
         self.popup = Some(content);
         self.popup_scroll = 0;
@@ -453,7 +453,7 @@ impl ShellApp {
                 KeyCode::PageDown => {
                     self.popup_scroll = self.popup_scroll.saturating_add(10);
                 }
-                _ => self.dismiss_popup(),
+                _ => {}
             }
             return false;
         }
