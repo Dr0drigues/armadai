@@ -618,12 +618,12 @@ async fn event_loop(
                         }
                         StreamEvent::Delta(text) => {
                             // Detect agent mentions in streamed text
-                            app.workroom.detect_mentions(&text);
+                            app.workroom.apply_stream_text(&text);
                             app.append_to_streaming(&text);
                             got_data = true;
                         }
                         StreamEvent::Message(text) => {
-                            app.workroom.detect_mentions(&text);
+                            app.workroom.apply_stream_text(&text);
                             app.append_to_streaming(&text);
                             got_data = true;
                         }
@@ -934,12 +934,12 @@ async fn execute_tandem(
                             app.workroom.set_visible(true);
                         }
                         StreamEvent::Delta(text) => {
-                            app.workroom.detect_mentions(&text);
+                            app.workroom.apply_stream_text(&text);
                             app.append_to_tandem_stream(&stream.stream_id, &text);
                             got_data = true;
                         }
                         StreamEvent::Message(text) => {
-                            app.workroom.detect_mentions(&text);
+                            app.workroom.apply_stream_text(&text);
                             app.append_to_tandem_stream(&stream.stream_id, &text);
                             got_data = true;
                         }
@@ -1320,12 +1320,12 @@ async fn execute_pipeline_steps(
                             app.workroom.set_visible(true);
                         }
                         StreamEvent::Delta(text) => {
-                            app.workroom.detect_mentions(&text);
+                            app.workroom.apply_stream_text(&text);
                             app.append_to_streaming(&text);
                             got_data = true;
                         }
                         StreamEvent::Message(text) => {
-                            app.workroom.detect_mentions(&text);
+                            app.workroom.apply_stream_text(&text);
                             app.append_to_streaming(&text);
                             got_data = true;
                         }

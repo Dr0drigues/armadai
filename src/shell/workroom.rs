@@ -289,58 +289,6 @@ impl Workroom {
         self.visible = visible;
     }
 
-    /// Detect agent mentions in streamed text and set them to Working.
-    /// Matches: exact name, name with spaces, partial keywords.
-    pub fn detect_mentions(&mut self, text: &str) {
-        let text_lower = text.to_lowercase();
-
-        // First pass: also detect coordinator delegating
-        let is_delegation = text_lower.contains("déléguer")
-            || text_lower.contains("delegat")
-            || text_lower.contains("spécialiste")
-            || text_lower.contains("specialist");
-
-        if is_delegation
-            && let Some(coord) = self
-                .agents
-                .iter_mut()
-                .find(|a| a.role == AgentRole::Coordinator)
-            && coord.state == AgentState::Idle
-        {
-            coord.state = AgentState::Delegating;
-            coord.started_at = Some(Instant::now());
-        }
-
-        for agent in &mut self.agents {
-            if agent.state != AgentState::Idle {
-                continue;
-            }
-            let name_lower = agent.name.to_lowercase();
-            // Match: "shell-scripting-expert"
-            if text_lower.contains(&name_lower) {
-                agent.state = AgentState::Working;
-                agent.started_at = Some(Instant::now());
-                continue;
-            }
-            // Match: "shell scripting expert"
-            let name_spaces = name_lower.replace('-', " ");
-            if text_lower.contains(&name_spaces) {
-                agent.state = AgentState::Working;
-                agent.started_at = Some(Instant::now());
-                continue;
-            }
-            // Match: key parts — e.g., "shell scripting" from "shell-scripting-expert"
-            let parts: Vec<&str> = name_lower.split('-').collect();
-            if parts.len() >= 2 {
-                let key = format!("{} {}", parts[0], parts[1]);
-                if text_lower.contains(&key) {
-                    agent.state = AgentState::Working;
-                    agent.started_at = Some(Instant::now());
-                }
-            }
-        }
-    }
-
     /// Push a state transition for an agent, updating timestamps + history.
     fn set_state(&mut self, name: &str, state: AgentState) {
         if let Some(agent) = self.agents.iter_mut().find(|a| a.name == name) {
@@ -389,12 +337,29 @@ impl Workroom {
             self.apply_marker(inner.trim());
             self.marker_buf = self.marker_buf[end + 3..].to_string(); // strip "-->"
         }
+
+        // Safety cap: an unterminated `<!--ARMADAI_` opener must not let the
+        // buffer grow without bound within a turn.
+        const MAX_MARKER_BUF: usize = 8192;
+        if self.marker_buf.len() > MAX_MARKER_BUF {
+            // Keep only the tail (where a real closing `-->` would still land).
+            let cut = self.marker_buf.len() - MAX_MARKER_BUF;
+            // Respect char boundaries.
+            let mut cut = cut;
+            while cut < self.marker_buf.len() && !self.marker_buf.is_char_boundary(cut) {
+                cut += 1;
+            }
+            self.marker_buf = self.marker_buf[cut..].to_string();
+        }
     }
 
     /// Apply a single marker body (e.g. `ARMADAI_DELEGATE:core-specialist`).
     fn apply_marker(&mut self, body: &str) {
         if let Some(target) = body.strip_prefix("ARMADAI_DELEGATE:") {
             let target = target.trim().to_string();
+            if target.is_empty() {
+                return; // malformed marker — ignore
+            }
             if let Some(coord) = self.coordinator_name() {
                 self.set_state(&coord, AgentState::Delegating);
             }
@@ -417,8 +382,12 @@ impl Workroom {
                 && matches!(agent.state, AgentState::Working | AgentState::Delegating)
             {
                 self.set_state(&cur, AgentState::Done);
-                // Control returns to the coordinator.
-                self.current_agent = self.coordinator_name();
+                // Clear the current agent so a later stray recap echo of
+                // `<!--ARMADAI_END-->` finds no active agent and no-ops (closes
+                // the recap-guard hole). The coordinator stays `Delegating`
+                // and is finalized to `Done` by `on_complete()` at true
+                // end-of-turn — so the coordinator ends the turn Done, not Idle.
+                self.current_agent = None;
             }
         }
     }
@@ -523,6 +492,10 @@ impl Workroom {
     pub fn agents_for_test(&self) -> &[TrackedAgent] {
         &self.agents
     }
+
+    pub fn marker_buf_len_for_test(&self) -> usize {
+        self.marker_buf.len()
+    }
 }
 
 #[cfg(test)]
@@ -596,17 +569,6 @@ orchestration:
         let agent = wr.agents.iter().find(|a| a.name == "agent-a").unwrap();
         assert_eq!(agent.state, AgentState::Idle);
         assert!(!wr.is_visible()); // not pinned, so hidden
-    }
-
-    #[test]
-    fn test_detect_mentions() {
-        let mut wr = setup_workroom();
-        wr.detect_mentions("I'll delegate to agent-a for this task");
-        let agent = wr.agents.iter().find(|a| a.name == "agent-a").unwrap();
-        assert_eq!(agent.state, AgentState::Working);
-        // agent-b should still be idle
-        let agent_b = wr.agents.iter().find(|a| a.name == "agent-b").unwrap();
-        assert_eq!(agent_b.state, AgentState::Idle);
     }
 
     #[test]
@@ -719,5 +681,56 @@ orchestration:
                 a.name
             );
         }
+    }
+
+    // The recap-guard must protect an ALREADY-DONE agent too: after an agent
+    // finishes, a stray END (echoed in a recap) must not re-transition anything.
+    #[test]
+    fn test_stray_end_after_agent_done_is_noop() {
+        let mut wr = wr_dev_lead_core();
+        wr.apply_stream_text("<!--ARMADAI_DELEGATE:core-specialist-->");
+        wr.apply_stream_text("<!--ARMADAI_END-->"); // core-specialist -> Done, control back to coordinator
+        let before: Vec<_> = wr
+            .agents_for_test()
+            .iter()
+            .map(|a| (a.name.clone(), a.state.clone()))
+            .collect();
+        wr.apply_stream_text("| recap echo <!--ARMADAI_END-->"); // stray, coordinator is Idle here
+        let after: Vec<_> = wr
+            .agents_for_test()
+            .iter()
+            .map(|a| (a.name.clone(), a.state.clone()))
+            .collect();
+        assert_eq!(
+            before, after,
+            "a stray recap END must not change any agent state"
+        );
+    }
+
+    #[test]
+    fn test_empty_delegate_target_is_ignored() {
+        let mut wr = wr_dev_lead_core();
+        wr.apply_stream_text("<!--ARMADAI_DELEGATE:-->");
+        // No agent named "" — nothing works; coordinator not forced to delegate to nobody.
+        assert!(
+            wr.agents_for_test()
+                .iter()
+                .all(|a| a.state == AgentState::Idle)
+        );
+    }
+
+    #[test]
+    fn test_unterminated_opener_buffer_is_capped() {
+        let mut wr = wr_dev_lead_core();
+        // A stray opener that never closes, followed by a lot of prose.
+        wr.apply_stream_text("<!--ARMADAI_");
+        for _ in 0..1000 {
+            wr.apply_stream_text("some long prose without any closing marker ");
+        }
+        // Buffer must not grow unbounded.
+        assert!(
+            wr.marker_buf_len_for_test() <= 8192,
+            "unterminated marker buffer must be capped"
+        );
     }
 }
