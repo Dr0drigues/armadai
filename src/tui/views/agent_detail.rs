@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Constraint::Length(8), // Metadata
                 Constraint::Length(5), // Orchestration
                 Constraint::Length(8), // Model Resolution
-                Constraint::Min(6),    // System Prompt
+                Constraint::Min(0),    // System Prompt (scrollable — j/k)
                 Constraint::Length(6), // Instructions
             ]
         } else {
@@ -44,7 +44,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Constraint::Length(3), // Title
                 Constraint::Length(8), // Metadata
                 Constraint::Length(8), // Model Resolution
-                Constraint::Min(6),    // System Prompt
+                Constraint::Min(0),    // System Prompt (scrollable — j/k)
                 Constraint::Length(6), // Instructions
             ]
         })
@@ -230,7 +230,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )
         // Was `fg(Color::White)` — white-on-white on a light terminal.
         .style(Style::default())
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((app.detail_scroll, 0));
     frame.render_widget(prompt_widget, chunks[3 + orch_offset]);
 
     // Instructions section

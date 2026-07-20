@@ -43,7 +43,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let mut constraints = vec![
         Constraint::Length(3), // Title
         Constraint::Length(6), // Metadata
-        Constraint::Min(6),    // Body
+        Constraint::Min(0),    // Body (scrollable — j/k)
     ];
 
     // One block per reference file
@@ -137,7 +137,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )
         // Was `fg(Color::White)` — white-on-white on a light terminal.
         .style(Style::default())
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((app.detail_scroll, 0));
     frame.render_widget(body_widget, chunks[2]);
 
     // Reference file content blocks

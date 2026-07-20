@@ -44,6 +44,12 @@ pub async fn run() -> Result<()> {
                 continue;
             }
 
+            // Ctrl+C quits unconditionally (aligns with the shell TUI's quit
+            // key), regardless of palette/search mode or the current tab.
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                break;
+            }
+
             // Command palette mode
             if app.palette.visible {
                 match key.code {
@@ -155,6 +161,7 @@ pub async fn run() -> Result<()> {
                             | app::Tab::Skills
                             | app::Tab::Starters
                             | app::Tab::History
+                            | app::Tab::Costs
                             | app::Tab::Models
                     ) || {
                         #[cfg(feature = "storage")]
@@ -180,6 +187,7 @@ pub async fn run() -> Result<()> {
                             | app::Tab::Skills
                             | app::Tab::Starters
                             | app::Tab::History
+                            | app::Tab::Costs
                             | app::Tab::Models
                     ) || {
                         #[cfg(feature = "storage")]
@@ -197,8 +205,22 @@ pub async fn run() -> Result<()> {
                 }
                 KeyCode::Tab => app.next_tab(),
                 KeyCode::BackTab => app.prev_tab(),
-                KeyCode::Char('j') | KeyCode::Down => app.select_next(),
-                KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
+                KeyCode::Char('j') | KeyCode::Down => {
+                    // In a scrollable detail view, j/Down scrolls the body
+                    // instead of moving a (non-existent) list selection.
+                    if is_scrollable_detail(app.current_tab) {
+                        app.scroll_detail_down();
+                    } else {
+                        app.select_next();
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if is_scrollable_detail(app.current_tab) {
+                        app.scroll_detail_up();
+                    } else {
+                        app.select_prev();
+                    }
+                }
                 KeyCode::Char('R')
                     if matches!(app.current_tab, app::Tab::Models | app::Tab::ModelDetail) =>
                 {
@@ -313,6 +335,23 @@ pub async fn run() -> Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+/// Detail tabs whose body panel honors `App::detail_scroll` (see
+/// `agent_detail`, `prompt_detail`, `skill_detail`, `orchestration::render_detail`).
+/// While one of these is active, j/k and the arrow keys scroll the body
+/// instead of moving a list selection (there is no list to navigate).
+fn is_scrollable_detail(tab: app::Tab) -> bool {
+    // `Tab::OrchestrationDetail` exists regardless of the `storage` feature
+    // (only the underlying data is gated), so no extra `#[cfg]` is needed
+    // here — without `storage` the tab is simply never reached.
+    matches!(
+        tab,
+        app::Tab::AgentDetail
+            | app::Tab::PromptDetail
+            | app::Tab::SkillDetail
+            | app::Tab::OrchestrationDetail
+    )
 }
 
 #[cfg(feature = "storage")]

@@ -163,7 +163,7 @@ pub fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
                     .borders(Borders::ALL)
                     .title(format!(" Run {} ", entry.run_id)),
             )
-            .scroll((0, 0));
+            .scroll((app.detail_scroll, 0));
 
         frame.render_widget(paragraph, area);
     } else {
