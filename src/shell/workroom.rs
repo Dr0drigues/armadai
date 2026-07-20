@@ -382,20 +382,12 @@ impl Workroom {
                 && matches!(agent.state, AgentState::Working | AgentState::Delegating)
             {
                 self.set_state(&cur, AgentState::Done);
-                // Control returns to the coordinator. If a *different* agent
-                // just finished, the coordinator itself isn't done — it goes
-                // back to Idle until it delegates again or the turn truly
-                // ends (`on_complete`). This also closes the recap-guard hole
-                // above: without this reset, the coordinator stayed
-                // `Delegating` forever, so a later stray recap echo of
-                // `<!--ARMADAI_END-->` would wrongly re-match the guard and
-                // flip the coordinator to `Done`.
-                if let Some(coord) = self.coordinator_name()
-                    && coord != cur
-                {
-                    self.set_state(&coord, AgentState::Idle);
-                }
-                self.current_agent = self.coordinator_name();
+                // Clear the current agent so a later stray recap echo of
+                // `<!--ARMADAI_END-->` finds no active agent and no-ops (closes
+                // the recap-guard hole). The coordinator stays `Delegating`
+                // and is finalized to `Done` by `on_complete()` at true
+                // end-of-turn — so the coordinator ends the turn Done, not Idle.
+                self.current_agent = None;
             }
         }
     }
