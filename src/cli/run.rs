@@ -722,6 +722,7 @@ async fn run_orchestrated(
     // to before this change (AgentStart and AgentEnd/Result stay on the same
     // roster keys).
     let mut effective_names: Vec<String> = agent_names.to_vec();
+    let mut selection_reason: Option<String> = None;
     if routing_active && pattern == "hierarchical" {
         sink.emit(&RunEvent::Warning {
             code: "routing_ignored_hierarchical".to_string(),
@@ -742,6 +743,7 @@ async fn run_orchestrated(
         agents = sel_agents;
         providers = sel_providers;
         effective_names = sel_keys;
+        selection_reason = Some(selection.reason.clone());
 
         sink.emit(&RunEvent::AgentSelect {
             selected: selection.agents.clone(),
@@ -758,19 +760,24 @@ async fn run_orchestrated(
                 selection.reason
             );
         }
+    }
 
-        if dry_run {
-            eprintln!(
-                "[dry-run] pattern '{pattern}' — {} ({} agent(s)): {}",
-                selection.reason,
-                effective_names.len(),
-                effective_names.join(", ")
-            );
-            if !json {
-                println!("{}", effective_names.join("\n"));
-            }
-            return Ok(());
+    // --dry-run: resolve + print the selection WITHOUT executing. Works with
+    // OR without --route/--tags — a plain dry-run previews the full roster
+    // (this check lives OUTSIDE the routing block so it fires unconditionally).
+    if dry_run {
+        let reason = selection_reason
+            .as_deref()
+            .unwrap_or("no routing (full roster)");
+        eprintln!(
+            "[dry-run] pattern '{pattern}' — {reason} ({} agent(s)): {}",
+            effective_names.len(),
+            effective_names.join(", ")
+        );
+        if !json {
+            println!("{}", effective_names.join("\n"));
         }
+        return Ok(());
     }
 
     // Reflect the (possibly narrowed/reordered) selection in downstream events
