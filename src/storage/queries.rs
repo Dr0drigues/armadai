@@ -175,6 +175,7 @@ pub struct OrchestrationRunRecord {
     pub outcome_json: Option<String>,
     pub rounds: i64,
     pub halt_reason: Option<String>,
+    pub parent_run_id: Option<String>,
 }
 
 /// Record for a board entry.
@@ -216,6 +217,17 @@ pub struct RingVoteRecord {
     pub concerns: String,
 }
 
+/// Record for a hierarchical delegation event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationEventRecord {
+    pub run_id: String,
+    pub seq: i64,
+    pub from_agent: String,
+    pub to_agent: String,
+    pub message: String,
+    pub depth: i64,
+}
+
 /// Insert an orchestration run record (finished_at populated automatically).
 pub fn insert_orchestration_run(
     db: &Database,
@@ -225,15 +237,16 @@ pub fn insert_orchestration_run(
         .lock()
         .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     conn.execute(
-        "INSERT INTO orchestration_runs (run_id, pattern, config_json, outcome_json, rounds, halt_reason, finished_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+        "INSERT INTO orchestration_runs (run_id, pattern, config_json, outcome_json, rounds, halt_reason, parent_run_id, finished_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
         params![
             record.run_id,
             record.pattern,
             record.config_json,
             record.outcome_json,
             record.rounds,
-            record.halt_reason
+            record.halt_reason,
+            record.parent_run_id
         ],
     )?;
     Ok(())
@@ -318,7 +331,7 @@ pub fn get_orchestration_run(
         .lock()
         .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     let mut stmt = conn.prepare(
-        "SELECT run_id, pattern, config_json, outcome_json, rounds, halt_reason
+        "SELECT run_id, pattern, config_json, outcome_json, rounds, halt_reason, parent_run_id
          FROM orchestration_runs WHERE run_id = ?1",
     )?;
     let mut rows = stmt.query_map(params![run_id], |row| {
@@ -329,6 +342,7 @@ pub fn get_orchestration_run(
             outcome_json: row.get(3)?,
             rounds: row.get(4)?,
             halt_reason: row.get(5)?,
+            parent_run_id: row.get(6)?,
         })
     })?;
     match rows.next() {
@@ -347,7 +361,7 @@ pub fn get_orchestration_runs(
         .lock()
         .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     let mut stmt = conn.prepare(
-        "SELECT run_id, pattern, config_json, outcome_json, rounds, halt_reason
+        "SELECT run_id, pattern, config_json, outcome_json, rounds, halt_reason, parent_run_id
          FROM orchestration_runs ORDER BY created_at DESC LIMIT ?1",
     )?;
     let rows = stmt.query_map(params![limit], |row| {
@@ -358,6 +372,7 @@ pub fn get_orchestration_runs(
             outcome_json: row.get(3)?,
             rounds: row.get(4)?,
             halt_reason: row.get(5)?,
+            parent_run_id: row.get(6)?,
         })
     })?;
     let mut records = Vec::new();
@@ -457,6 +472,88 @@ pub fn get_ring_votes(db: &Database, run_id: &str) -> anyhow::Result<Vec<RingVot
     Ok(records)
 }
 
+/// Insert a delegation event.
+#[allow(dead_code)] // consumed by hierarchical persistence (Lot 2 Task 4)
+pub fn insert_delegation_event(db: &Database, record: DelegationEventRecord) -> anyhow::Result<()> {
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
+    conn.execute(
+        "INSERT INTO delegation_events (run_id, seq, from_agent, to_agent, message, depth)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            record.run_id,
+            record.seq,
+            record.from_agent,
+            record.to_agent,
+            record.message,
+            record.depth
+        ],
+    )?;
+    Ok(())
+}
+
+/// Get delegation events for a run, ordered by sequence.
+#[allow(dead_code)] // consumed by web/TUI trace UI (Lot 3)
+pub fn get_delegation_events(
+    db: &Database,
+    run_id: &str,
+) -> anyhow::Result<Vec<DelegationEventRecord>> {
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
+    let mut stmt = conn.prepare(
+        "SELECT run_id, seq, from_agent, to_agent, message, depth
+         FROM delegation_events WHERE run_id = ?1 ORDER BY seq ASC",
+    )?;
+    let rows = stmt.query_map(params![run_id], |row| {
+        Ok(DelegationEventRecord {
+            run_id: row.get(0)?,
+            seq: row.get(1)?,
+            from_agent: row.get(2)?,
+            to_agent: row.get(3)?,
+            message: row.get(4)?,
+            depth: row.get(5)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Get the child orchestration runs of a parent (nested sub-runs).
+#[allow(dead_code)] // consumed by web/TUI trace UI (Lot 3)
+pub fn get_child_orchestration_runs(
+    db: &Database,
+    parent_run_id: &str,
+) -> anyhow::Result<Vec<OrchestrationRunRecord>> {
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
+    let mut stmt = conn.prepare(
+        "SELECT run_id, pattern, config_json, outcome_json, rounds, halt_reason, parent_run_id
+         FROM orchestration_runs WHERE parent_run_id = ?1 ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map(params![parent_run_id], |row| {
+        Ok(OrchestrationRunRecord {
+            run_id: row.get(0)?,
+            pattern: row.get(1)?,
+            config_json: row.get(2)?,
+            outcome_json: row.get(3)?,
+            rounds: row.get(4)?,
+            halt_reason: row.get(5)?,
+            parent_run_id: row.get(6)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +623,7 @@ mod tests {
             outcome_json: Some(r#"{"state":"halted"}"#.to_string()),
             rounds: 3,
             halt_reason: Some("consensus".to_string()),
+            parent_run_id: None,
         };
         insert_orchestration_run(&db, orch).unwrap();
 
@@ -556,6 +654,7 @@ mod tests {
                 outcome_json: None,
                 rounds: 1,
                 halt_reason: None,
+                parent_run_id: None,
             },
         )
         .unwrap();
@@ -617,6 +716,7 @@ mod tests {
                 outcome_json: None,
                 rounds: 1,
                 halt_reason: None,
+                parent_run_id: None,
             },
         )
         .unwrap();
@@ -662,6 +762,7 @@ mod tests {
                 outcome_json: None,
                 rounds: 2,
                 halt_reason: None,
+                parent_run_id: None,
             },
         )
         .unwrap();
@@ -722,5 +823,120 @@ mod tests {
         let db = init_embedded().unwrap();
         let votes = get_ring_votes(&db, "nonexistent").unwrap();
         assert!(votes.is_empty());
+    }
+
+    #[test]
+    fn test_orchestration_run_parent_and_children() {
+        let db = init_embedded().unwrap();
+        // parent hierarchical run
+        insert_run(&db, sample_run("coord", 0.0)).unwrap();
+        let parent_id = {
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM runs LIMIT 1", [], |r| r.get::<_, String>(0))
+                .unwrap()
+        };
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: parent_id.clone(),
+                pattern: "hierarchical".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: None,
+                rounds: 0,
+                halt_reason: None,
+                parent_run_id: None,
+            },
+        )
+        .unwrap();
+        // child blackboard run linked to the parent
+        insert_run(&db, sample_run("searcher", 0.0)).unwrap();
+        let child_id = {
+            let conn = db.lock().unwrap();
+            conn.query_row(
+                "SELECT id FROM runs WHERE agent='searcher' LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: child_id.clone(),
+                pattern: "blackboard".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: None,
+                rounds: 2,
+                halt_reason: None,
+                parent_run_id: Some(parent_id.clone()),
+            },
+        )
+        .unwrap();
+
+        let got = get_orchestration_run(&db, &parent_id).unwrap().unwrap();
+        assert_eq!(got.parent_run_id, None);
+        let children = get_child_orchestration_runs(&db, &parent_id).unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].run_id, child_id);
+        assert_eq!(
+            children[0].parent_run_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+    }
+
+    #[test]
+    fn test_delegation_events_roundtrip() {
+        let db = init_embedded().unwrap();
+        insert_run(&db, sample_run("coord", 0.0)).unwrap();
+        let run_id = {
+            let conn = db.lock().unwrap();
+            conn.query_row("SELECT id FROM runs LIMIT 1", [], |r| r.get::<_, String>(0))
+                .unwrap()
+        };
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: run_id.clone(),
+                pattern: "hierarchical".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: None,
+                rounds: 0,
+                halt_reason: None,
+                parent_run_id: None,
+            },
+        )
+        .unwrap();
+        insert_delegation_event(
+            &db,
+            DelegationEventRecord {
+                run_id: run_id.clone(),
+                seq: 1,
+                from_agent: "coord".into(),
+                to_agent: "lead".into(),
+                message: "do X".into(),
+                depth: 1,
+            },
+        )
+        .unwrap();
+        insert_delegation_event(
+            &db,
+            DelegationEventRecord {
+                run_id: run_id.clone(),
+                seq: 0,
+                from_agent: "user".into(),
+                to_agent: "coord".into(),
+                message: "start".into(),
+                depth: 0,
+            },
+        )
+        .unwrap();
+
+        let events = get_delegation_events(&db, &run_id).unwrap();
+        assert_eq!(events.len(), 2);
+        // ordered by seq ascending
+        assert_eq!(events[0].seq, 0);
+        assert_eq!(events[0].to_agent, "coord");
+        assert_eq!(events[1].seq, 1);
+        assert_eq!(events[1].to_agent, "lead");
     }
 }

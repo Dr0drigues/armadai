@@ -957,6 +957,7 @@ fn record_orchestration_blackboard(
         outcome_json: serde_json::to_string(board.state()).ok(),
         rounds: board.round as i64,
         halt_reason,
+        parent_run_id: None,
     };
     if let Err(e) = queries::insert_orchestration_run(&db, orch) {
         tracing::warn!("Failed to record orchestration metadata: {e}");
@@ -1045,6 +1046,7 @@ fn record_orchestration_ring(
         outcome_json: outcome_str,
         rounds: token.lap as i64,
         halt_reason: None,
+        parent_run_id: None,
     };
     if let Err(e) = queries::insert_orchestration_run(&db, orch) {
         tracing::warn!("Failed to record orchestration metadata: {e}");
