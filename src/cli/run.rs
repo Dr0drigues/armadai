@@ -517,6 +517,70 @@ fn resolve_agents_dir(headless: bool) -> AgentResolution {
     AgentResolution::Default(AppPaths::resolve().agents_dir)
 }
 
+/// Apply C8 agent selection (routes/tags) to a loaded roster, returning the
+/// filtered and reordered (agents, providers) plus the selection metadata.
+/// Everything operates on the loaded roster: a route naming an agent absent
+/// from the roster is a clear error (the agent must be provided to the run).
+#[allow(dead_code)] // wired into `run_orchestrated` by the CLI flags in C8 Lot B Task 2
+#[allow(clippy::type_complexity)] // (agents, providers, selection) mirrors the loaded-roster shape
+fn apply_agent_selection(
+    agents: Vec<crate::core::agent::Agent>,
+    providers: Vec<std::sync::Arc<dyn crate::providers::traits::Provider>>,
+    route: Option<&str>,
+    tags: &[String],
+    routes: &std::collections::BTreeMap<String, Vec<String>>,
+) -> anyhow::Result<(
+    Vec<crate::core::agent::Agent>,
+    Vec<std::sync::Arc<dyn crate::providers::traits::Provider>>,
+    crate::core::orchestration::agent_selection::AgentSelection,
+)> {
+    use std::collections::HashMap;
+
+    let roster: Vec<String> = agents.iter().map(|a| a.name.clone()).collect();
+    let mut agent_tags: HashMap<String, Vec<String>> = HashMap::new();
+    for a in &agents {
+        let mut t = a.metadata.tags.clone();
+        t.extend(a.metadata.stacks.iter().cloned());
+        agent_tags.insert(a.name.clone(), t);
+    }
+
+    let selection = crate::core::orchestration::agent_selection::select_agents(
+        &roster,
+        route,
+        tags,
+        routes,
+        &agent_tags,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Index the loaded pairs by name, then rebuild in selection order.
+    let mut by_name: HashMap<
+        String,
+        (
+            crate::core::agent::Agent,
+            std::sync::Arc<dyn crate::providers::traits::Provider>,
+        ),
+    > = HashMap::new();
+    for (a, p) in agents.into_iter().zip(providers) {
+        by_name.insert(a.name.clone(), (a, p));
+    }
+
+    let mut out_agents = Vec::with_capacity(selection.agents.len());
+    let mut out_providers = Vec::with_capacity(selection.agents.len());
+    for name in &selection.agents {
+        let (a, p) = by_name.remove(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "route/selection references agent '{name}' which is not among the run's agents \
+                 (add it via --pipe or the orchestration config)"
+            )
+        })?;
+        out_agents.push(a);
+        out_providers.push(p);
+    }
+
+    Ok((out_agents, out_providers, selection))
+}
+
 /// Run orchestrated multi-agent execution (blackboard or ring).
 async fn run_orchestrated(
     resolution: &AgentResolution,
@@ -1323,6 +1387,157 @@ mod tests {
                 assert!(!dir.to_string_lossy().is_empty());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+
+    use crate::core::agent::{Agent, AgentMetadata};
+    use crate::providers::traits::{
+        CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
+    };
+
+    struct DummyProvider(String);
+    #[async_trait]
+    impl Provider for DummyProvider {
+        async fn complete(&self, _r: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            anyhow::bail!("not used")
+        }
+        async fn stream(&self, _r: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("not used")
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: self.0.clone(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    fn agent_with_tags(name: &str, tags: &[&str], stacks: &[&str]) -> Agent {
+        Agent {
+            name: name.to_string(),
+            source: PathBuf::from(format!("{name}.md")),
+            metadata: AgentMetadata {
+                provider: "mock".to_string(),
+                model: Some("mock".to_string()),
+                command: None,
+                args: None,
+                temperature: 0.7,
+                max_tokens: None,
+                timeout: None,
+                tags: tags.iter().map(|s| s.to_string()).collect(),
+                stacks: stacks.iter().map(|s| s.to_string()).collect(),
+                scope: vec![],
+                model_fallback: vec![],
+                cost_limit: None,
+                rate_limit: None,
+                context_window: None,
+                mode: None,
+                orchestration: None,
+                triggers: None,
+                ring_config: None,
+            },
+            system_prompt: "p".to_string(),
+            instructions: None,
+            output_format: None,
+            pipeline: None,
+            context: None,
+        }
+    }
+
+    fn roster() -> (Vec<Agent>, Vec<Arc<dyn Provider>>) {
+        let agents = vec![
+            agent_with_tags("sec", &["security"], &["rust"]),
+            agent_with_tags("ui", &["frontend"], &[]),
+            agent_with_tags("qa", &["testing"], &[]),
+        ];
+        let providers: Vec<Arc<dyn Provider>> = agents
+            .iter()
+            .map(|a| Arc::new(DummyProvider(a.name.clone())) as Arc<dyn Provider>)
+            .collect();
+        (agents, providers)
+    }
+
+    #[test]
+    fn no_selectors_keeps_full_roster_in_order() {
+        let (a, p) = roster();
+        let (agents, providers, sel) =
+            apply_agent_selection(a, p, None, &[], &BTreeMap::new()).unwrap();
+        assert_eq!(
+            agents.iter().map(|x| x.name.clone()).collect::<Vec<_>>(),
+            vec!["sec", "ui", "qa"]
+        );
+        assert_eq!(providers.len(), 3);
+        assert_eq!(sel.agents, vec!["sec", "ui", "qa"]);
+    }
+
+    #[test]
+    fn tags_filter_and_align_providers() {
+        let (a, p) = roster();
+        let (agents, providers, _sel) =
+            apply_agent_selection(a, p, None, &["security".to_string()], &BTreeMap::new()).unwrap();
+        assert_eq!(
+            agents.iter().map(|x| x.name.clone()).collect::<Vec<_>>(),
+            vec!["sec"]
+        );
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].metadata().name, "sec"); // provider realigned to the kept agent
+    }
+
+    #[test]
+    fn route_selects_named_subset_reordered() {
+        let (a, p) = roster();
+        let mut routes = BTreeMap::new();
+        routes.insert("r".to_string(), vec!["qa".to_string(), "sec".to_string()]);
+        let (agents, providers, _sel) =
+            apply_agent_selection(a, p, Some("r"), &[], &routes).unwrap();
+        // Order follows the route, not the roster.
+        assert_eq!(
+            agents.iter().map(|x| x.name.clone()).collect::<Vec<_>>(),
+            vec!["qa", "sec"]
+        );
+        assert_eq!(providers[0].metadata().name, "qa");
+        assert_eq!(providers[1].metadata().name, "sec");
+    }
+
+    #[test]
+    fn route_referencing_absent_agent_errors() {
+        let (a, p) = roster();
+        let mut routes = BTreeMap::new();
+        routes.insert(
+            "r".to_string(),
+            vec!["sec".to_string(), "ghost".to_string()],
+        );
+        // `Result::unwrap_err` would require the Ok tuple (which carries
+        // `Arc<dyn Provider>`) to implement `Debug`, which it does not — match
+        // instead of unwrap_err to extract the error.
+        let err = match apply_agent_selection(a, p, Some("r"), &[], &routes) {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error for a route referencing an absent agent"),
+        };
+        assert!(
+            err.to_string().contains("ghost"),
+            "error should name the missing agent: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_route_propagates_error() {
+        let (a, p) = roster();
+        let err = match apply_agent_selection(a, p, Some("nope"), &[], &BTreeMap::new()) {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error for an unknown route"),
+        };
+        assert!(err.to_string().to_lowercase().contains("route"));
     }
 }
 
