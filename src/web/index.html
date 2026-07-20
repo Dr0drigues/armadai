@@ -105,6 +105,7 @@
     <button onclick="showTab('costs')">Costs</button>
     <button onclick="showTab('models')">Models</button>
     <button onclick="showTab('orchestration')">Orchestration</button>
+    <button onclick="showTab('traces')">Traces</button>
   </nav>
   <button id="theme-btn" onclick="toggleTheme()" title="Toggle dark/light mode">🌙</button>
 </header>
@@ -117,6 +118,7 @@
   <div id="costs" class="card" style="display:none"></div>
   <div id="models" class="card" style="display:none"></div>
   <div id="orchestration" class="card" style="display:none"></div>
+  <div id="traces" class="card" style="display:none"></div>
   <div id="view" class="card"></div>
 </main>
 <script>
@@ -257,10 +259,10 @@ function createSearchBar(tableId) {
 
 function showTab(tab) {
   document.querySelectorAll('nav button').forEach((b, i) => {
-    const tabs = ['agents','prompts','skills','starters','history','costs','models','orchestration'];
+    const tabs = ['agents','prompts','skills','starters','history','costs','models','orchestration','traces'];
     b.classList.toggle('active', tabs[i] === tab);
   });
-  ['agents','prompts','skills','starters','history','costs','models','orchestration','view'].forEach(id => document.getElementById(id).style.display = 'none');
+  ['agents','prompts','skills','starters','history','costs','models','orchestration','traces','view'].forEach(id => document.getElementById(id).style.display = 'none');
   document.getElementById(tab).style.display = 'block';
   currentTab = tab;
   if (tab === 'agents') loadAgents();
@@ -271,6 +273,7 @@ function showTab(tab) {
   if (tab === 'costs') loadCosts();
   if (tab === 'models') loadModels();
   if (tab === 'orchestration') loadOrchestration();
+  if (tab === 'traces') loadTraces();
 }
 
 async function loadAgents() {
@@ -816,6 +819,242 @@ function escapeHtml(text) {
     "'": '&#039;'
   };
   return text.replace(/[&<>"']/g, m => map[m]);
+}
+
+// ── Traces tab ───────────────────────────────────────────────────
+
+function truncateText(text, maxLen) {
+  if (!text) return '';
+  const s = String(text);
+  return s.length > maxLen ? s.slice(0, maxLen - 1) + '…' : s;
+}
+
+function parseJsonSafe(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch (e) { return null; }
+}
+
+function extractCost(outcomeObj) {
+  if (!outcomeObj || typeof outcomeObj !== 'object') return null;
+  if (typeof outcomeObj.cost === 'number') return outcomeObj.cost;
+  if (typeof outcomeObj.total_cost === 'number') return outcomeObj.total_cost;
+  return null;
+}
+
+function summarizeOutcome(outcomeObj) {
+  if (outcomeObj == null) return '(none)';
+  if (typeof outcomeObj !== 'object') return truncateText(String(outcomeObj), 60);
+  const parts = [];
+  if (outcomeObj.state) parts.push(String(outcomeObj.state));
+  if (outcomeObj.status) parts.push(String(outcomeObj.status));
+  if (outcomeObj.summary) parts.push(truncateText(String(outcomeObj.summary), 50));
+  if (parts.length) return parts.join(' · ');
+  const keys = Object.keys(outcomeObj);
+  if (!keys.length) return '(empty)';
+  return truncateText(keys.map(k => `${k}=${JSON.stringify(outcomeObj[k])}`).join(', '), 60);
+}
+
+// Sanitize an arbitrary agent name into a valid Mermaid participant id
+// (letters/digits/underscore only, must not start with a digit).
+function mermaidSanitizeId(name) {
+  let id = String(name == null ? 'unknown' : name).replace(/[^a-zA-Z0-9_]/g, '_');
+  if (!id || /^[0-9]/.test(id)) id = 'p_' + id;
+  return id;
+}
+
+// Escape a label so it can't break Mermaid sequenceDiagram syntax
+// (colons, semicolons, newlines, arrows, quotes) and truncate it.
+function mermaidEscapeLabel(text, maxLen) {
+  if (text == null) return '';
+  let s = String(text)
+    .replace(/\r?\n/g, ' ')
+    .replace(/-{1,2}>{1,2}/g, '-')
+    .replace(/[:;"<>]/g, ',')
+    .trim();
+  if (maxLen && s.length > maxLen) s = s.slice(0, maxLen - 1) + '…';
+  return s;
+}
+
+async function loadTraces() {
+  const res = await fetch('/api/orchestration/trace');
+  const data = await res.json();
+  const traces = data.traces || [];
+  const el = document.getElementById('traces');
+  if (!traces.length) {
+    el.innerHTML = '<div class="empty">No orchestration traces yet. Run an orchestrated agent (e.g. `armadai run --orchestrate blackboard ...`) to generate one.</div>';
+    return;
+  }
+  el.innerHTML = `
+    <div class="card-header">${traces.length} orchestration runs</div>
+    <table>
+      <tr><th>Run ID</th><th>Pattern</th><th>Rounds</th><th>Halt Reason</th><th>Outcome</th><th>Cost</th></tr>
+      <tbody>
+        ${traces.map(t => {
+          const outcomeObj = parseJsonSafe(t.outcome);
+          const cost = extractCost(outcomeObj);
+          const idStr = String(t.id != null ? t.id : '');
+          return `
+          <tr class="clickable" onclick="viewTraceRun('${idStr.replace(/'/g, "\\'")}')">
+            <td style="font-family:monospace">${escapeHtmlContent(idStr)}</td>
+            <td>${escapeHtmlContent(t.pattern || '-')}</td>
+            <td>${t.rounds != null ? t.rounds : '-'}</td>
+            <td>${escapeHtmlContent(t.halt_reason || '-')}</td>
+            <td>${escapeHtmlContent(summarizeOutcome(outcomeObj))}</td>
+            <td class="cost">${cost != null ? '$' + cost.toFixed(6) : '-'}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+  createSearchBar('traces');
+}
+
+// Build the ordered list of trace "events" shared by both the sequence
+// diagram and the timeline, from whichever pattern produced data
+// (blackboard board entries or ring contributions).
+function buildTraceEvents(boardEntries, ringContributions) {
+  const isBlackboard = boardEntries.length > 0;
+  const events = isBlackboard
+    ? boardEntries.map(e => ({
+        order: e.round || 0,
+        sub: 0,
+        orderLabel: `Round ${e.round}`,
+        agent: e.agent,
+        kind: e.kind,
+        content: e.content,
+        confidence: e.confidence,
+      }))
+    : ringContributions.map(c => ({
+        order: c.lap || 0,
+        sub: c.position_in_lap || 0,
+        orderLabel: `Lap ${c.lap} · #${c.position_in_lap}`,
+        agent: c.agent,
+        kind: c.action,
+        content: c.content,
+        confidence: null,
+      }));
+  events.sort((a, b) => (a.order - b.order) || (a.sub - b.sub));
+  return { isBlackboard, events };
+}
+
+function generateTraceSequenceDiagram(boardEntries, ringContributions, ringVotes) {
+  const { isBlackboard, events } = buildTraceEvents(boardEntries, ringContributions);
+  const hub = isBlackboard ? 'Board' : 'Ring';
+
+  // Collect distinct agent names in first-appearance order.
+  const seen = new Set();
+  const agentNames = [];
+  const registerAgent = (name) => {
+    const key = String(name == null ? 'unknown' : name);
+    if (!seen.has(key)) { seen.add(key); agentNames.push(key); }
+  };
+  events.forEach(e => registerAgent(e.agent));
+  ringVotes.forEach(v => registerAgent(v.agent));
+
+  const lines = ['sequenceDiagram'];
+  lines.push(`participant ${hub}`);
+  agentNames.forEach(name => {
+    const id = mermaidSanitizeId(name);
+    const label = mermaidEscapeLabel(name, 30) || id;
+    lines.push(`participant ${id} as ${label}`);
+  });
+
+  events.forEach(e => {
+    const agentId = mermaidSanitizeId(e.agent);
+    const label = mermaidEscapeLabel(`${e.kind || 'entry'}: ${e.content || ''}`, 70) || '(empty)';
+    lines.push(`${agentId}->>${hub}: ${label}`);
+    if (e.confidence != null) {
+      lines.push(`Note right of ${agentId}: confidence ${Number(e.confidence).toFixed(2)}`);
+    }
+  });
+
+  ringVotes.forEach(v => {
+    const agentId = mermaidSanitizeId(v.agent);
+    const conf = v.confidence != null ? Number(v.confidence).toFixed(2) : 'n/a';
+    const note = mermaidEscapeLabel(`vote ${v.position || ''} (confidence ${conf})`, 70);
+    lines.push(`Note right of ${agentId}: ${note}`);
+  });
+
+  return lines.join('\n');
+}
+
+function generateTraceTimeline(boardEntries, ringContributions, ringVotes) {
+  const { events } = buildTraceEvents(boardEntries, ringContributions);
+
+  const rows = events.map(e => `
+    <tr>
+      <td style="white-space:nowrap;color:var(--muted)">${escapeHtmlContent(e.orderLabel)}</td>
+      <td style="font-family:monospace">${escapeHtmlContent(e.agent || '-')}</td>
+      <td>${escapeHtmlContent(e.kind || '-')}</td>
+      <td>${renderMarkdown(truncateText(e.content || '', 300))}</td>
+      <td>${e.confidence != null ? Number(e.confidence).toFixed(2) : '-'}</td>
+    </tr>`).join('');
+
+  const voteRows = ringVotes.map(v => `
+    <tr>
+      <td style="white-space:nowrap;color:var(--muted)">Vote</td>
+      <td style="font-family:monospace">${escapeHtmlContent(v.agent || '-')}</td>
+      <td>${escapeHtmlContent(v.position || '-')}</td>
+      <td>${escapeHtmlContent(truncateText(v.supports || '', 150))}${v.concerns ? ' — concerns: ' + escapeHtmlContent(truncateText(v.concerns, 150)) : ''}</td>
+      <td>${v.confidence != null ? Number(v.confidence).toFixed(2) : '-'}</td>
+    </tr>`).join('');
+
+  return `
+    <table>
+      <tr><th>Order</th><th>Agent</th><th>Type</th><th>Content</th><th>Confidence</th></tr>
+      <tbody>${rows}${voteRows}</tbody>
+    </table>`;
+}
+
+async function viewTraceRun(id) {
+  const res = await fetch(`/api/orchestration/trace/${encodeURIComponent(id)}`);
+  const d = await res.json();
+  viewBackTab = 'traces';
+  ['agents','prompts','skills','starters','history','costs','models','orchestration','traces'].forEach(tid => document.getElementById(tid).style.display = 'none');
+  const el = document.getElementById('view');
+  el.style.display = 'block';
+
+  const run = d.run;
+  if (!run) {
+    el.innerHTML = `
+      <div class="detail">
+        <button class="back-btn" onclick="backToList()">&larr; Back to traces</button>
+        <div class="empty">Run not found.</div>
+      </div>`;
+    return;
+  }
+
+  const boardEntries = d.board_entries || [];
+  const ringContributions = d.ring_contributions || [];
+  const ringVotes = d.ring_votes || [];
+  const hasEntries = boardEntries.length > 0 || ringContributions.length > 0;
+  const outcomeObj = parseJsonSafe(run.outcome);
+
+  let bodyHtml;
+  if (!hasEntries) {
+    bodyHtml = '<div class="empty">This run has no recorded board/ring entries (direct pattern, or an empty trace).</div>';
+  } else {
+    const diagram = generateTraceSequenceDiagram(boardEntries, ringContributions, ringVotes);
+    const timeline = generateTraceTimeline(boardEntries, ringContributions, ringVotes);
+    bodyHtml = `
+      <div class="list-section"><h3>Sequence Diagram</h3><div class="mermaid">${escapeHtml(diagram)}</div></div>
+      <div class="list-section"><h3>Timeline</h3>${timeline}</div>`;
+  }
+
+  el.innerHTML = `
+    <div class="detail">
+      <button class="back-btn" onclick="backToList()">&larr; Back to traces</button>
+      <h2 style="font-family:monospace">${escapeHtmlContent(String(run.id || ''))}</h2>
+      <div class="detail-grid">
+        <div class="detail-field"><label>Pattern</label><span>${escapeHtmlContent(run.pattern || '-')}</span></div>
+        <div class="detail-field"><label>Rounds</label><span>${run.rounds != null ? run.rounds : '-'}</span></div>
+        <div class="detail-field"><label>Halt Reason</label><span>${escapeHtmlContent(run.halt_reason || '-')}</span></div>
+        <div class="detail-field"><label>Outcome</label><span>${escapeHtmlContent(summarizeOutcome(outcomeObj))}</span></div>
+      </div>
+      ${bodyHtml}
+    </div>`;
+
+  if (hasEntries) mermaid.run();
 }
 
 // Initial load
