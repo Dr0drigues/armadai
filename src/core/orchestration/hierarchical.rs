@@ -17,9 +17,13 @@ use crate::core::events::{EventSink, RunEvent};
 use crate::core::routing::{BudgetState, RoutingRules, route};
 use crate::providers::traits::{ChatMessage, CompletionRequest, CompletionResponse, Provider};
 
+use super::NestedPattern;
 use super::OrchestrationConfig;
+use super::blackboard::{BlackboardConfig, Board, BoardAgent, run_blackboard};
 use super::context_injection::{AgentInfo, build_orchestration_prompt};
+use super::llm_agents::{LlmBoardAgent, LlmRingAgent, RoutingCtx};
 use super::protocol::{DelegationAction, extract_narrative, parse_delegations};
+use super::ring::{RingAgent, RingConfig, RingOutcome, RingToken, TokenStatus, run_ring};
 
 // ── Result types ─────────────────────────────────────────────────
 
@@ -281,6 +285,22 @@ fn invoke_agent(
             });
         } // unlock
 
+        // ── C9: nested team sub-pattern short-circuit ───────────
+        // If this agent is the lead of a team that declares a nested
+        // pattern, run that sub-pattern over the team's agents instead of
+        // the normal LLM+delegation loop, then return the aggregated result.
+        if let Some(team) = ctx
+            .config
+            .teams
+            .iter()
+            .find(|t| t.lead.as_deref() == Some(agent_name.as_str()) && t.pattern.is_some())
+        {
+            let nested = team.pattern.expect("checked is_some above");
+            let members = team.agents.clone();
+            return run_nested_team(&ctx, &state, &agent_name, nested, &members, &input, depth)
+                .await;
+        }
+
         // ── Build enriched system prompt (read-only) ────────────
         let system_prompt = build_enriched_prompt(&ctx, &agent_name);
 
@@ -421,6 +441,231 @@ fn invoke_agent(
         // For safety, just return the synthesis text to avoid infinite loops
         Ok(extract_narrative(&synthesis))
     })
+}
+
+// ── Nested team sub-patterns (C9) ────────────────────────────────
+
+/// Run a hierarchical team as a nested blackboard/ring sub-run (C9).
+///
+/// The team's agents run the declared sub-pattern on `task`, sharing the
+/// hierarchical run's remaining token budget. Consumed tokens/cost are folded
+/// back into `EngineState`. Returns the aggregated outcome text (arbitration
+/// by the lead is layered on in a later task). Depth of the sub-run is
+/// `depth + 1` (counted against `max_depth` before launching).
+async fn run_nested_team(
+    ctx: &Arc<EngineContext>,
+    state: &Arc<Mutex<EngineState>>,
+    team_lead: &str,
+    nested: NestedPattern,
+    agent_names: &[String],
+    task: &str,
+    depth: u32,
+) -> anyhow::Result<String> {
+    // Depth guard: the sub-run conceptually runs at depth + 1.
+    if depth + 1 >= ctx.config.max_depth() {
+        anyhow::bail!(
+            "Max delegation depth ({}) reached launching nested team '{team_lead}'",
+            ctx.config.max_depth()
+        );
+    }
+
+    // Compute the remaining shared budget (never below zero).
+    let remaining_budget = {
+        let s = state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Mutex poisoned computing nested budget: {:?}", e))?;
+        match ctx.config.token_budget {
+            Some(total) => {
+                let used = s.total_tokens_in as u64 + s.total_tokens_out as u64;
+                total.saturating_sub(used)
+            }
+            // No global budget: fall back to the sub-pattern's own default.
+            None => match nested {
+                NestedPattern::Blackboard => BlackboardConfig::default().token_budget,
+                NestedPattern::Ring => RingConfig::default().token_budget,
+            },
+        }
+    };
+
+    // Resolve the team's agents into (Agent, provider) pairs.
+    let mut member_agents = Vec::new();
+    let mut member_providers: Vec<Arc<dyn Provider>> = Vec::new();
+    for name in agent_names {
+        let agent = ctx
+            .agents
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("nested team agent '{name}' not found"))?
+            .clone();
+        let provider = ctx
+            .providers
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("no provider for nested team agent '{name}'"))?;
+        member_agents.push(agent);
+        member_providers.push(Arc::clone(provider));
+    }
+
+    ctx.sink.emit(&RunEvent::NestedStart {
+        team_lead: team_lead.to_string(),
+        pattern: nested.to_string(),
+    });
+
+    let routing_ctx = RoutingCtx::new(ctx.routing_rules.clone(), remaining_budget);
+
+    let (outcome_text, folded_in, folded_out, folded_cost) = match nested {
+        NestedPattern::Blackboard => {
+            let config = BlackboardConfig {
+                token_budget: remaining_budget,
+                ..BlackboardConfig::default()
+            };
+            let config = apply_team_blackboard_overrides(config, ctx, team_lead);
+            let board_agents: Vec<Arc<dyn BoardAgent>> = member_agents
+                .into_iter()
+                .map(|a| {
+                    Arc::new(LlmBoardAgent::with_routing(
+                        a,
+                        routing_ctx.clone(),
+                        Arc::clone(&ctx.sink),
+                    )) as Arc<dyn BoardAgent>
+                })
+                .collect();
+            let mut board = Board::new(task.to_string(), config.token_budget);
+            run_blackboard(
+                &mut board,
+                &board_agents,
+                &member_providers,
+                &config,
+                &ctx.sink,
+            )
+            .await?;
+            let (ti, to, cost) = board.entries().iter().fold((0u32, 0u32, 0f64), |acc, e| {
+                (
+                    acc.0 + e.tokens_used.input,
+                    acc.1 + e.tokens_used.output,
+                    acc.2 + e.tokens_used.cost,
+                )
+            });
+            let text = board
+                .entries()
+                .iter()
+                .map(|e| format!("[{}] {}", e.agent, e.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            (text, ti, to, cost)
+        }
+        NestedPattern::Ring => {
+            let config = RingConfig {
+                token_budget: remaining_budget,
+                ..RingConfig::default()
+            };
+            let config = apply_team_ring_overrides(config, ctx, team_lead);
+            let ring_agents: Vec<Arc<dyn RingAgent>> = member_agents
+                .into_iter()
+                .map(|a| {
+                    Arc::new(LlmRingAgent::with_routing(
+                        a,
+                        routing_ctx.clone(),
+                        Arc::clone(&ctx.sink),
+                    )) as Arc<dyn RingAgent>
+                })
+                .collect();
+            let order: Vec<String> = ring_agents.iter().map(|a| a.name().to_string()).collect();
+            let mut token = RingToken::new(task.to_string(), order, config.token_budget);
+            run_ring(
+                &mut token,
+                &ring_agents,
+                &member_providers,
+                &config,
+                &ctx.sink,
+            )
+            .await?;
+            let (ti, to, cost) = token
+                .contributions
+                .iter()
+                .fold((0u32, 0u32, 0f64), |acc, c| {
+                    (
+                        acc.0 + c.tokens_used.input,
+                        acc.1 + c.tokens_used.output,
+                        acc.2 + c.tokens_used.cost,
+                    )
+                });
+            let text = match token.status() {
+                TokenStatus::Done { outcome } => match outcome {
+                    RingOutcome::Consensus { resolution, .. }
+                    | RingOutcome::Majority { resolution, .. } => resolution.clone(),
+                    RingOutcome::NoConsensus { summary, .. } => summary.clone(),
+                    RingOutcome::BudgetExhausted { partial_summary }
+                    | RingOutcome::CostLimitExceeded {
+                        partial_summary, ..
+                    } => partial_summary.clone(),
+                    RingOutcome::Cancelled => String::new(),
+                },
+                _ => String::new(),
+            };
+            (text, ti, to, cost)
+        }
+    };
+
+    // Fold the sub-run's metrics into the shared hierarchical state.
+    {
+        let mut s = state.lock().unwrap_or_else(|e| {
+            tracing::warn!("Mutex poisoned folding nested metrics: {:?}", e);
+            e.into_inner()
+        });
+        s.total_tokens_in += folded_in;
+        s.total_tokens_out += folded_out;
+        s.total_cost += folded_cost;
+        s.invocation_count += agent_names.len() as u32;
+    }
+
+    ctx.sink.emit(&RunEvent::NestedEnd {
+        team_lead: team_lead.to_string(),
+    });
+
+    Ok(outcome_text)
+}
+
+/// Resolve the effective BlackboardConfig for a team (team overrides > global).
+fn apply_team_blackboard_overrides(
+    mut config: BlackboardConfig,
+    ctx: &EngineContext,
+    team_lead: &str,
+) -> BlackboardConfig {
+    if let Some(team) = ctx
+        .config
+        .teams
+        .iter()
+        .find(|t| t.lead.as_deref() == Some(team_lead))
+    {
+        if let Some(v) = team.max_rounds.or(ctx.config.max_rounds) {
+            config.max_rounds = v;
+        }
+        if let Some(v) = team.consensus_threshold.or(ctx.config.consensus_threshold) {
+            config.consensus_threshold = v;
+        }
+    }
+    config
+}
+
+/// Resolve the effective RingConfig for a team (team overrides > global).
+fn apply_team_ring_overrides(
+    mut config: RingConfig,
+    ctx: &EngineContext,
+    team_lead: &str,
+) -> RingConfig {
+    if let Some(team) = ctx
+        .config
+        .teams
+        .iter()
+        .find(|t| t.lead.as_deref() == Some(team_lead))
+    {
+        if let Some(v) = team.max_laps {
+            config.max_laps = v;
+        }
+        if let Some(v) = team.consensus_threshold.or(ctx.config.consensus_threshold) {
+            config.consensus_threshold = v;
+        }
+    }
+    config
 }
 
 // ── Internal helpers ────────────────────────────────────────────
@@ -1660,5 +1905,161 @@ mod tests {
         );
         assert!(result.total_cost > 0.0, "Should have captured cost");
         assert_eq!(result.invocation_count, 1, "Should have one invocation");
+    }
+
+    // ── C9: nested team sub-pattern tests ───────────────────────
+
+    /// Provider that always returns the same content (order-independent — needed
+    /// because nested board/ring agents run concurrently).
+    struct FixedProvider {
+        text: String,
+    }
+    impl FixedProvider {
+        fn new(text: &str) -> Self {
+            Self {
+                text: text.to_string(),
+            }
+        }
+    }
+    #[async_trait]
+    impl Provider for FixedProvider {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> anyhow::Result<CompletionResponse> {
+            Ok(CompletionResponse {
+                content: self.text.clone(),
+                model: "mock".to_string(),
+                tokens_in: 10,
+                tokens_out: 20,
+                cost: 0.001,
+            })
+        }
+        async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("streaming not supported in mock")
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "mock".to_string(),
+                models: vec!["mock".to_string()],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    /// Config: coordinator → one nested-blackboard team (lead + 2 agents).
+    fn nested_blackboard_config() -> OrchestrationConfig {
+        OrchestrationConfig {
+            enabled: true,
+            pattern: super::super::OrchestrationPattern::Hierarchical,
+            coordinator: Some("coordinator".to_string()),
+            teams: vec![TeamConfig {
+                lead: Some("research-lead".to_string()),
+                agents: vec!["searcher".to_string(), "analyst".to_string()],
+                pattern: Some(super::super::NestedPattern::Blackboard),
+                max_rounds: Some(2),
+                ..Default::default()
+            }],
+            max_rounds: Some(2),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_nested_blackboard_runs_and_folds_metrics() {
+        let config = nested_blackboard_config();
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "Coordinate."),
+        );
+        agents.insert(
+            "research-lead".to_string(),
+            make_agent("research-lead", "Lead."),
+        );
+        agents.insert("searcher".to_string(), make_agent("searcher", "Search."));
+        agents.insert("analyst".to_string(), make_agent("analyst", "Analyze."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        // Coordinator delegates the whole task to the nested-pattern lead.
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(FixedProvider::new("@research-lead: analyze the topic")),
+        );
+        // Lead is not LLM-called in Lot 1 (no arbitration yet).
+        providers.insert(
+            "research-lead".to_string(),
+            Arc::new(FixedProvider::new("lead")),
+        );
+        // Team agents produce board findings (parse_board_action format).
+        let board_action = "ACTION: FINDING\nCONFIDENCE: 0.9\nCONTENT: a concrete finding";
+        providers.insert(
+            "searcher".to_string(),
+            Arc::new(FixedProvider::new(board_action)),
+        );
+        providers.insert(
+            "analyst".to_string(),
+            Arc::new(FixedProvider::new(board_action)),
+        );
+
+        let capture = Arc::new(CaptureSink::new());
+        let sink: Arc<dyn EventSink> = capture.clone();
+        let mut engine = HierarchicalEngine::new(config, agents, providers, sink);
+        let result = engine.run("Do research").await.unwrap();
+
+        let events = capture.events();
+        assert!(
+            events.iter().any(|e| e.contains(r#""t":"nested_start""#)
+                && e.contains(r#""pattern":"blackboard""#)
+                && e.contains(r#""team_lead":"research-lead""#)),
+            "expected nested_start, got: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| e.contains(r#""t":"nested_end""#)),
+            "expected nested_end, got: {events:?}"
+        );
+        // Board agents consumed tokens → folded into the hierarchical run metrics.
+        assert!(
+            result.total_tokens_in > 0 && result.total_tokens_out > 0,
+            "nested board tokens should fold into run metrics, got in={} out={}",
+            result.total_tokens_in,
+            result.total_tokens_out
+        );
+    }
+
+    #[tokio::test]
+    async fn test_flat_delegation_still_works_without_pattern() {
+        // A team WITHOUT `pattern` must behave exactly as before (regression guard).
+        let config = sample_config(); // teams have no `pattern`
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "Coordinate."),
+        );
+        agents.insert("agent-a".to_string(), make_agent("agent-a", "Do A."));
+        agents.insert("agent-b".to_string(), make_agent("agent-b", "Do B."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(MockProvider::new(vec!["@agent-a: do it", "final answer"])),
+        );
+        providers.insert(
+            "agent-a".to_string(),
+            Arc::new(MockProvider::new(vec!["A result"])),
+        );
+
+        let capture = Arc::new(CaptureSink::new());
+        let sink: Arc<dyn EventSink> = capture.clone();
+        let mut engine = HierarchicalEngine::new(config, agents, providers, sink);
+        let result = engine.run("go").await.unwrap();
+
+        let events = capture.events();
+        assert!(
+            !events.iter().any(|e| e.contains(r#""t":"nested_start""#)),
+            "flat delegation must not emit nested events"
+        );
+        assert!(!result.content.is_empty());
     }
 }
