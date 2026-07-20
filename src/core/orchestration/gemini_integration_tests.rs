@@ -197,6 +197,7 @@ async fn test_hierarchical_delegation_works() {
         teams: vec![TeamConfig {
             lead: None,
             agents: vec!["analyst".to_string(), "reviewer".to_string()],
+            ..Default::default()
         }],
         max_depth: Some(3),
         max_iterations: Some(10),
@@ -284,6 +285,7 @@ async fn test_budget_halts_gracefully() {
         teams: vec![TeamConfig {
             lead: None,
             agents: vec!["analyst".to_string()],
+            ..Default::default()
         }],
         max_depth: Some(2),
         max_iterations: Some(5),
@@ -375,6 +377,7 @@ async fn test_agents_follow_roles() {
         teams: vec![TeamConfig {
             lead: None,
             agents: vec!["translator".to_string(), "summarizer".to_string()],
+            ..Default::default()
         }],
         max_depth: Some(3),
         max_iterations: Some(10),
