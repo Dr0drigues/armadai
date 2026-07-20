@@ -67,6 +67,13 @@ pub struct ProjectConfig {
     /// Consumed in `cli::run::execute` to build the `RoutingRules` passed to
     /// `run_single_agent` for `latest:auto` model resolution.
     pub routing: Option<crate::core::routing::RoutingRules>,
+    /// Project-level custom registry sources (agents/skills/models), merged
+    /// with the user-level `~/.config/armadai/registries.yaml` and built-in
+    /// defaults. See `crate::core::registries`. Consumed by
+    /// `registry::sync::effective_sources`, `skills_registry::cache::effective_sources`
+    /// and `model_registry::fetch`'s source resolution (B2 Lot A Task 2).
+    #[serde(default)]
+    pub registries: Option<crate::core::registries::RegistriesConfig>,
 }
 
 /// Reference to an agent — resolved at runtime.
@@ -599,6 +606,32 @@ routing:
         let yaml = "agents: []\n";
         let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.routing.is_none());
+    }
+
+    #[test]
+    fn parses_registries_section() {
+        let yaml = r#"
+agents: []
+registries:
+  agents:
+    - url: https://example.com/agents.git
+  skills:
+    - url: https://example.com/skills.git
+"#;
+        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let r = cfg.registries.expect("registries present");
+        assert_eq!(r.agents.len(), 1);
+        assert_eq!(r.agents[0].url, "https://example.com/agents.git");
+        assert_eq!(r.skills.len(), 1);
+        assert_eq!(r.skills[0].url, "https://example.com/skills.git");
+        assert!(r.models.is_empty());
+    }
+
+    #[test]
+    fn registries_absent_gives_none() {
+        let yaml = "agents: []\n";
+        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(cfg.registries.is_none());
     }
 
     #[test]

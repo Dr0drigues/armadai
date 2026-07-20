@@ -101,6 +101,7 @@ mod tests {
             description: desc.map(String::from),
             tags: tags.iter().map(|s| s.to_string()).collect(),
             category: category.map(String::from),
+            source: "test-source".to_string(),
         }
     }
 

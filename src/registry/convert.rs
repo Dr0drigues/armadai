@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::cache::converted_dir;
-use super::sync::repo_dir;
+use super::sync::dir_for_key;
 use crate::core::config::user_agents_dir;
 
 /// Convert a Copilot `.agent.md` file to ArmadAI Markdown format.
@@ -83,13 +83,18 @@ pub fn convert_to_armadai(content: &str, fallback_name: &str) -> String {
 
 /// Convert a registry agent and cache the result.
 ///
-/// `registry_path` is relative to the repo root (e.g. "agents/official/security.agent.md").
-pub fn convert_cached(registry_path: &str) -> anyhow::Result<PathBuf> {
-    let repo = repo_dir();
+/// `source` is the source key (see `sync::source_key`) the agent came from,
+/// and `registry_path` is relative to that source's repo root (e.g.
+/// "agents/official/security.agent.md").
+pub fn convert_cached(source: &str, registry_path: &str) -> anyhow::Result<PathBuf> {
+    let repo = dir_for_key(source);
     let src = repo.join(registry_path);
 
     if !src.is_file() {
-        anyhow::bail!("Registry file not found: {}", src.display());
+        anyhow::bail!(
+            "Registry file not found: {} (source '{source}')",
+            src.display()
+        );
     }
 
     let cache_dir = converted_dir();
@@ -111,8 +116,12 @@ pub fn convert_cached(registry_path: &str) -> anyhow::Result<PathBuf> {
 }
 
 /// Import a registry agent into the user library (~/.config/armadai/agents/).
-pub fn import_to_library(registry_path: &str, force: bool) -> anyhow::Result<PathBuf> {
-    let cached = convert_cached(registry_path)?;
+pub fn import_to_library(
+    source: &str,
+    registry_path: &str,
+    force: bool,
+) -> anyhow::Result<PathBuf> {
+    let cached = convert_cached(source, registry_path)?;
 
     let agents_dir = user_agents_dir();
     std::fs::create_dir_all(&agents_dir)?;

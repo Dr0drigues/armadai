@@ -7,8 +7,7 @@ use super::ModelEntry;
 
 const CACHE_FILE: &str = "models-cache.json";
 const CACHE_TTL_SECS: u64 = 86400; // 24h
-#[cfg(feature = "providers-api")]
-const MODELS_DEV_URL: &str = "https://models.dev/api.json";
+pub(crate) const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 /// Cached registry: provider_id → Vec<ModelEntry>
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -45,22 +44,158 @@ pub async fn load_models_online(provider: &str) -> Option<Vec<ModelEntry>> {
     None
 }
 
+/// Resolve the effective list of model registry sources: the built-in
+/// `models.dev` catalog, plus any user-level
+/// (`~/.config/armadai/registries.yaml`) and project-level (`armadai.yaml` /
+/// `.armadai/config.yaml`) custom sources.
+///
+/// Project config is looked up via `core::project::find_project_config`,
+/// which walks up from the current working directory. Without a
+/// `registries:` section anywhere, this returns exactly `[MODELS_DEV_URL]`.
+#[cfg(feature = "providers-api")]
+fn resolved_model_sources() -> Vec<String> {
+    let user = crate::core::registries::load_user_registries();
+    let project = crate::core::project::find_project_config().map(|(_, cfg)| cfg);
+    let project_registries = project.as_ref().and_then(|cfg| cfg.registries.as_ref());
+    crate::core::registries::resolved_sources(
+        crate::core::registries::RegistryKind::Models,
+        &[MODELS_DEV_URL],
+        &user,
+        project_registries,
+    )
+}
+
+/// Directory holding one cache file per model registry source, keyed by a
+/// sanitized version of the source URL. Kept separate from the merged
+/// `models-cache.json` (see `cache_path`) so a fetch failure on one source
+/// doesn't lose previously-fetched data for the others.
+#[cfg(feature = "providers-api")]
+fn source_cache_dir() -> PathBuf {
+    config_dir().join("models-sources")
+}
+
+/// Derive a filesystem-safe cache file path for a given source URL.
+///
+/// Delegates to `core::registries::cache_key`, the sanitization scheme
+/// shared with `registry::sync::source_key` (previously each had its own,
+/// independently-maintained and collision-prone sanitization — see B2 Task 2
+/// review).
+#[cfg(feature = "providers-api")]
+fn source_cache_path(url: &str) -> PathBuf {
+    let key = crate::core::registries::cache_key(url);
+    source_cache_dir().join(format!("{key}.json"))
+}
+
+/// Fetch and parse a single source's catalog (models.dev format).
+#[cfg(feature = "providers-api")]
+async fn fetch_source(url: &str) -> anyhow::Result<HashMap<String, Vec<ModelEntry>>> {
+    let body: serde_json::Value = reqwest::get(url).await?.json().await?;
+    Ok(parse_registry(&body))
+}
+
+/// Fetch every configured model registry source and merge them into a
+/// single provider → models map.
+///
+/// Merge semantics: **union by provider, last source wins** — sources are
+/// processed in `resolved_model_sources()` order (built-in default first,
+/// then user, then project custom sources), and for a given provider id the
+/// last source that supplied it overwrites earlier ones.
+///
+/// Each source is cached independently (see `source_cache_path`). If a
+/// source's fetch fails, we fall back to that source's last successful
+/// cache (regardless of its TTL) so one flaky/unreachable custom registry
+/// doesn't wipe out previously known data — only if a source has *never*
+/// succeeded does it contribute nothing. If every source fails, the first
+/// error encountered is returned (preserving the pre-multi-source behavior
+/// of propagating a fetch error when there is only the single default
+/// source).
+///
+/// The aggregate cache's `fetched_at` is the oldest timestamp among the
+/// sources that actually contributed data this run (see
+/// [`aggregate_fetched_at`]) rather than unconditionally `now()`: if any
+/// source had to fall back to its own stale cache, stamping the merged
+/// result as freshly-fetched would hide up to 24h (the per-source TTL) of
+/// degradation from consumers that only check the aggregate's freshness.
 #[cfg(feature = "providers-api")]
 async fn fetch_and_cache() -> anyhow::Result<CachedRegistry> {
-    let body: serde_json::Value = reqwest::get(MODELS_DEV_URL).await?.json().await?;
-    let providers = parse_registry(&body);
+    let sources = resolved_model_sources();
+    let mut merged: HashMap<String, Vec<ModelEntry>> = HashMap::new();
+    let mut first_err: Option<anyhow::Error> = None;
+    let mut any_data = false;
+    let mut contributing_timestamps: Vec<u64> = Vec::new();
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
+    for source in &sources {
+        let source_path = source_cache_path(source);
+        match fetch_source(source).await {
+            Ok(providers) => {
+                any_data = true;
+                contributing_timestamps.push(now);
+                save_cache_to(
+                    &source_path,
+                    &CachedRegistry {
+                        fetched_at: now,
+                        providers: providers.clone(),
+                    },
+                );
+                for (provider, entries) in providers {
+                    merged.insert(provider, entries);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to fetch model registry source '{source}': {e:?}");
+                // Fall back to whatever this source last produced, however
+                // stale, rather than losing it entirely.
+                if let Ok(content) = std::fs::read_to_string(&source_path)
+                    && let Ok(cached) = serde_json::from_str::<CachedRegistry>(&content)
+                {
+                    any_data = true;
+                    contributing_timestamps.push(cached.fetched_at);
+                    for (provider, entries) in cached.providers {
+                        merged.insert(provider, entries);
+                    }
+                } else if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+    }
+
+    if !any_data {
+        return Err(
+            first_err.unwrap_or_else(|| anyhow::anyhow!("no model registry source available"))
+        );
+    }
+
+    let fetched_at = aggregate_fetched_at(&contributing_timestamps, now);
+    if fetched_at < now {
+        tracing::warn!(
+            "Model registry cache freshness degraded: at least one source fell back to a stale cache (aggregate fetched_at={fetched_at}, now={now})"
+        );
+    }
+
     let registry = CachedRegistry {
-        fetched_at: now,
-        providers,
+        fetched_at,
+        providers: merged,
     };
     save_cache_to(&cache_path(), &registry);
     Ok(registry)
+}
+
+/// Compute the aggregate cache's `fetched_at` from the per-source
+/// timestamps that contributed data this run. Any source that fell back to
+/// a stale cache pulls the aggregate down to that source's own `fetched_at`,
+/// so a merged cache that includes stale fallback data never claims to be
+/// fresher than its stalest ingredient. Pure function, kept separate from
+/// [`fetch_and_cache`] so this logic is unit-testable without a network
+/// call.
+#[cfg(any(feature = "providers-api", test))]
+fn aggregate_fetched_at(contributing_timestamps: &[u64], now: u64) -> u64 {
+    contributing_timestamps.iter().copied().min().unwrap_or(now)
 }
 
 /// Parse the models.dev JSON structure into a provider → models map.
@@ -262,6 +397,102 @@ mod tests {
         let json = serde_json::json!({});
         let providers = parse_registry(&json);
         assert!(providers.is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "providers-api")]
+    fn resolved_sources_defaults_only_without_custom_config() {
+        use crate::core::registries::{RegistriesConfig, RegistryKind, resolved_sources};
+
+        let user = RegistriesConfig::default();
+        let result = resolved_sources(RegistryKind::Models, &[MODELS_DEV_URL], &user, None);
+        assert_eq!(result, vec![MODELS_DEV_URL.to_string()]);
+    }
+
+    #[test]
+    #[cfg(feature = "providers-api")]
+    fn resolved_sources_includes_default_and_custom_model_source() {
+        use crate::core::registries::{
+            RegistriesConfig, RegistryKind, RegistrySource, resolved_sources,
+        };
+
+        let user = RegistriesConfig {
+            models: vec![RegistrySource {
+                url: "https://example.com/custom-models.json".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let result = resolved_sources(RegistryKind::Models, &[MODELS_DEV_URL], &user, None);
+        assert_eq!(
+            result,
+            vec![
+                MODELS_DEV_URL.to_string(),
+                "https://example.com/custom-models.json".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "providers-api")]
+    fn source_cache_path_is_stable_and_distinct_per_source() {
+        let a = source_cache_path("https://models.dev/api.json");
+        let b = source_cache_path("https://example.com/custom-models.json");
+        assert_ne!(a, b);
+        // Deterministic: same URL always maps to the same path.
+        assert_eq!(a, source_cache_path("https://models.dev/api.json"));
+    }
+
+    #[test]
+    #[cfg(feature = "providers-api")]
+    fn resolved_model_sources_glue_includes_user_level_custom_source() {
+        // Exercises the real `resolved_model_sources()` glue (not just the
+        // pure `resolved_sources` helper) with a `RegistriesConfig` loaded
+        // from disk, per the B2 Task 2 review follow-up.
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
+        }
+
+        std::fs::write(
+            dir.path().join("registries.yaml"),
+            "models:\n  - url: https://example.com/custom-glue-models.json\n",
+        )
+        .unwrap();
+
+        let sources = resolved_model_sources();
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
+
+        assert!(sources.contains(&MODELS_DEV_URL.to_string()));
+        assert!(sources.contains(&"https://example.com/custom-glue-models.json".to_string()));
+    }
+
+    #[test]
+    fn aggregate_fetched_at_is_now_when_all_sources_fresh() {
+        let now = 1_700_000_000;
+        assert_eq!(aggregate_fetched_at(&[now, now], now), now);
+    }
+
+    #[test]
+    fn aggregate_fetched_at_uses_oldest_when_a_source_fell_back_to_stale_cache() {
+        let now = 1_700_000_000;
+        let stale = now - 3600; // one source fell back to a 1h-old cache
+        assert_eq!(aggregate_fetched_at(&[now, stale], now), stale);
+    }
+
+    #[test]
+    fn aggregate_fetched_at_defaults_to_now_when_no_contributions() {
+        // Defensive default; `fetch_and_cache` never actually reaches this
+        // with an empty slice (it bails out via `any_data` first), but the
+        // pure function should still behave sanely.
+        assert_eq!(aggregate_fetched_at(&[], 42), 42);
     }
 
     #[test]
