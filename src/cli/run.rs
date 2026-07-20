@@ -791,6 +791,11 @@ async fn run_orchestrated(
                 agent_map.len()
             );
 
+            // Kept alive for post-run persistence (`record_orchestration_hierarchical`)
+            // since `orch_config` itself is moved into the engine below.
+            #[cfg(feature = "storage")]
+            let orch_config_for_storage = orch_config.clone();
+
             let mut engine = HierarchicalEngine::with_routing_rules(
                 orch_config,
                 agent_map,
@@ -804,6 +809,9 @@ async fn run_orchestrated(
                 "[hierarchical] Done: {} invocations, {} tokens in, {} tokens out",
                 result.invocation_count, result.total_tokens_in, result.total_tokens_out
             );
+
+            #[cfg(feature = "storage")]
+            record_orchestration_hierarchical(&result, &orch_config_for_storage, input);
 
             if !json {
                 println!("{}", result.content);
@@ -903,22 +911,20 @@ fn apply_ring_overrides(
     config
 }
 
+/// Persist a blackboard orchestration run (and its board entries) into `db`,
+/// linked to `parent_run_id` when this run is a nested sub-run of a
+/// hierarchical team (C9). Returns the generated `run_id` so callers can
+/// link children to it.
 #[cfg(feature = "storage")]
-fn record_orchestration_blackboard(
+fn record_orchestration_blackboard_into(
+    db: &crate::storage::Database,
     board: &crate::core::orchestration::blackboard::Board,
     config: &crate::core::orchestration::blackboard::BlackboardConfig,
     input: &str,
-) {
+    parent_run_id: Option<&str>,
+) -> String {
     use crate::core::orchestration::blackboard::BoardState;
-    use crate::storage::{init_db, queries};
-
-    let db = match init_db() {
-        Ok(db) => db,
-        Err(e) => {
-            tracing::warn!("Failed to init storage: {e}");
-            return;
-        }
-    };
+    use crate::storage::queries;
 
     let run_id = uuid::Uuid::new_v4().to_string();
 
@@ -940,9 +946,9 @@ fn record_orchestration_blackboard(
         }
         .to_string(),
     };
-    if let Err(e) = queries::insert_run_with_id(&db, &run_id, parent) {
+    if let Err(e) = queries::insert_run_with_id(db, &run_id, parent) {
         tracing::warn!("Failed to record orchestration parent run: {e}");
-        return;
+        return run_id;
     }
 
     // 2. Orchestration metadata
@@ -957,10 +963,11 @@ fn record_orchestration_blackboard(
         outcome_json: serde_json::to_string(board.state()).ok(),
         rounds: board.round as i64,
         halt_reason,
+        parent_run_id: parent_run_id.map(|s| s.to_string()),
     };
-    if let Err(e) = queries::insert_orchestration_run(&db, orch) {
+    if let Err(e) = queries::insert_orchestration_run(db, orch) {
         tracing::warn!("Failed to record orchestration metadata: {e}");
-        return;
+        return run_id;
     }
 
     // 3. Board entries
@@ -986,28 +993,47 @@ fn record_orchestration_blackboard(
             tokens_in: entry.tokens_used.input as i64,
             tokens_out: entry.tokens_used.output as i64,
         };
-        if let Err(e) = queries::insert_board_entry(&db, record) {
+        if let Err(e) = queries::insert_board_entry(db, record) {
             tracing::warn!("Failed to record board entry: {e}");
         }
     }
+
+    run_id
 }
 
+/// Top-level entry point for persisting a standalone blackboard run
+/// (`armadai run --orchestrate blackboard`). Initializes storage and
+/// delegates to [`record_orchestration_blackboard_into`] with no parent.
 #[cfg(feature = "storage")]
-fn record_orchestration_ring(
-    token: &crate::core::orchestration::ring::RingToken,
-    config: &crate::core::orchestration::ring::RingConfig,
+fn record_orchestration_blackboard(
+    board: &crate::core::orchestration::blackboard::Board,
+    config: &crate::core::orchestration::blackboard::BlackboardConfig,
     input: &str,
 ) {
-    use crate::core::orchestration::ring::TokenStatus;
-    use crate::storage::{init_db, queries};
-
-    let db = match init_db() {
+    let db = match crate::storage::init_db() {
         Ok(db) => db,
         Err(e) => {
             tracing::warn!("Failed to init storage: {e}");
             return;
         }
     };
+    let _ = record_orchestration_blackboard_into(&db, board, config, input, None);
+}
+
+/// Persist a ring orchestration run (and its contributions/votes) into `db`,
+/// linked to `parent_run_id` when this run is a nested sub-run of a
+/// hierarchical team (C9). Returns the generated `run_id` so callers can
+/// link children to it.
+#[cfg(feature = "storage")]
+fn record_orchestration_ring_into(
+    db: &crate::storage::Database,
+    token: &crate::core::orchestration::ring::RingToken,
+    config: &crate::core::orchestration::ring::RingConfig,
+    input: &str,
+    parent_run_id: Option<&str>,
+) -> String {
+    use crate::core::orchestration::ring::TokenStatus;
+    use crate::storage::queries;
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let outcome_str = match token.status() {
@@ -1032,9 +1058,9 @@ fn record_orchestration_ring(
         }
         .to_string(),
     };
-    if let Err(e) = queries::insert_run_with_id(&db, &run_id, parent) {
+    if let Err(e) = queries::insert_run_with_id(db, &run_id, parent) {
         tracing::warn!("Failed to record orchestration parent run: {e}");
-        return;
+        return run_id;
     }
 
     // 2. Orchestration metadata
@@ -1045,10 +1071,11 @@ fn record_orchestration_ring(
         outcome_json: outcome_str,
         rounds: token.lap as i64,
         halt_reason: None,
+        parent_run_id: parent_run_id.map(|s| s.to_string()),
     };
-    if let Err(e) = queries::insert_orchestration_run(&db, orch) {
+    if let Err(e) = queries::insert_orchestration_run(db, orch) {
         tracing::warn!("Failed to record orchestration metadata: {e}");
-        return;
+        return run_id;
     }
 
     // 3. Contributions
@@ -1072,7 +1099,7 @@ fn record_orchestration_ring(
             tokens_in: c.tokens_used.input as i64,
             tokens_out: c.tokens_used.output as i64,
         };
-        if let Err(e) = queries::insert_ring_contribution(&db, record) {
+        if let Err(e) = queries::insert_ring_contribution(db, record) {
             tracing::warn!("Failed to record ring contribution: {e}");
         }
     }
@@ -1087,9 +1114,136 @@ fn record_orchestration_ring(
             supports: serde_json::to_string(&vote.supporting_contributions).unwrap_or_default(),
             concerns: serde_json::to_string(&vote.unresolved_concerns).unwrap_or_default(),
         };
-        if let Err(e) = queries::insert_ring_vote(&db, record) {
+        if let Err(e) = queries::insert_ring_vote(db, record) {
             tracing::warn!("Failed to record ring vote: {e}");
         }
+    }
+
+    run_id
+}
+
+/// Top-level entry point for persisting a standalone ring run
+/// (`armadai run --orchestrate ring`). Initializes storage and delegates to
+/// [`record_orchestration_ring_into`] with no parent.
+#[cfg(feature = "storage")]
+fn record_orchestration_ring(
+    token: &crate::core::orchestration::ring::RingToken,
+    config: &crate::core::orchestration::ring::RingConfig,
+    input: &str,
+) {
+    let db = match crate::storage::init_db() {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::warn!("Failed to init storage: {e}");
+            return;
+        }
+    };
+    let _ = record_orchestration_ring_into(&db, token, config, input, None);
+}
+
+/// Persist a hierarchical orchestration run: the parent run row, its
+/// delegation trace, and every nested blackboard/ring sub-run (linked via
+/// `parent_run_id`). Returns the generated hierarchical `run_id`.
+#[cfg(feature = "storage")]
+fn record_hierarchical_into(
+    db: &crate::storage::Database,
+    result: &crate::core::orchestration::hierarchical::OrchestrationResult,
+    config: &crate::core::orchestration::OrchestrationConfig,
+    input: &str,
+) -> anyhow::Result<String> {
+    use crate::core::orchestration::hierarchical::NestedRun;
+    use crate::storage::queries;
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+
+    // 1. Parent run record.
+    let parent = queries::RunRecord {
+        agent: "orchestration:hierarchical".to_string(),
+        input: input.to_string(),
+        output: result.content.clone(),
+        provider: "orchestration".to_string(),
+        model: String::new(),
+        tokens_in: result.total_tokens_in as i64,
+        tokens_out: result.total_tokens_out as i64,
+        cost: result.total_cost,
+        duration_ms: 0,
+        status: "success".to_string(),
+    };
+    queries::insert_run_with_id(db, &run_id, parent)?;
+
+    // 2. Orchestration metadata (hierarchical, no parent).
+    queries::insert_orchestration_run(
+        db,
+        queries::OrchestrationRunRecord {
+            run_id: run_id.clone(),
+            pattern: "hierarchical".to_string(),
+            config_json: serde_json::to_string(config).unwrap_or_default(),
+            outcome_json: None,
+            rounds: result.invocation_count as i64,
+            halt_reason: None,
+            parent_run_id: None,
+        },
+    )?;
+
+    // 3. Delegation events (seq = order in trace).
+    for (seq, ev) in result.trace.iter().enumerate() {
+        let rec = queries::DelegationEventRecord {
+            run_id: run_id.clone(),
+            seq: seq as i64,
+            from_agent: ev.from.clone(),
+            to_agent: ev.to.clone(),
+            message: ev.message.clone(),
+            depth: ev.depth as i64,
+        };
+        if let Err(e) = queries::insert_delegation_event(db, rec) {
+            tracing::warn!("Failed to record delegation event: {e}");
+        }
+    }
+
+    // 4. Nested sub-runs, linked to the hierarchical parent.
+    for nested in &result.nested_runs {
+        match nested {
+            NestedRun::Blackboard {
+                task,
+                board,
+                config,
+                ..
+            } => {
+                let _ =
+                    record_orchestration_blackboard_into(db, board, config, task, Some(&run_id));
+            }
+            NestedRun::Ring {
+                task,
+                token,
+                config,
+                ..
+            } => {
+                let _ = record_orchestration_ring_into(db, token, config, task, Some(&run_id));
+            }
+        }
+    }
+
+    Ok(run_id)
+}
+
+/// Top-level entry point for persisting a hierarchical run
+/// (`armadai run --orchestrate hierarchical`). Initializes storage and
+/// delegates to [`record_hierarchical_into`].
+#[cfg(feature = "storage")]
+fn record_orchestration_hierarchical(
+    result: &crate::core::orchestration::hierarchical::OrchestrationResult,
+    config: &crate::core::orchestration::OrchestrationConfig,
+    input: &str,
+) {
+    let db = match crate::storage::init_db() {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::warn!("Failed to init storage: {e}");
+            return;
+        }
+    };
+    if let Err(e) = record_hierarchical_into(&db, result, config, input) {
+        tracing::warn!("Failed to record hierarchical run: {e}");
     }
 }
 
@@ -1169,5 +1323,66 @@ mod tests {
                 assert!(!dir.to_string_lossy().is_empty());
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "storage"))]
+mod storage_tests {
+    use super::*;
+    use crate::core::orchestration::OrchestrationConfig;
+    use crate::core::orchestration::blackboard::{BlackboardConfig, Board};
+    use crate::core::orchestration::hierarchical::{
+        DelegationEvent, NestedRun, OrchestrationResult,
+    };
+    use crate::storage::{init_embedded, queries};
+
+    #[test]
+    fn hierarchical_run_and_nested_children_are_persisted() {
+        let db = init_embedded().unwrap();
+
+        // A hierarchical result with one delegation event and one nested board.
+        let board = Board::new("subtask".to_string(), 50_000);
+        // (empty board is fine; we only assert the run + linkage persists)
+        let result = OrchestrationResult {
+            content: "final".to_string(),
+            trace: vec![DelegationEvent {
+                from: "coordinator".to_string(),
+                to: "research-lead".to_string(),
+                message: "analyze".to_string(),
+                depth: 1,
+            }],
+            total_tokens_in: 30,
+            total_tokens_out: 40,
+            total_cost: 0.01,
+            invocation_count: 3,
+            nested_runs: vec![NestedRun::Blackboard {
+                team_lead: "research-lead".to_string(),
+                task: "subtask".to_string(),
+                board,
+                config: BlackboardConfig::default(),
+            }],
+        };
+        let config = OrchestrationConfig::default();
+
+        let parent_id = record_hierarchical_into(&db, &result, &config, "do research").unwrap();
+
+        // Parent persisted as hierarchical with no parent.
+        let parent = queries::get_orchestration_run(&db, &parent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parent.pattern, "hierarchical");
+        assert_eq!(parent.parent_run_id, None);
+        // Delegation event persisted.
+        let events = queries::get_delegation_events(&db, &parent_id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].to_agent, "research-lead");
+        // Nested child persisted and linked.
+        let children = queries::get_child_orchestration_runs(&db, &parent_id).unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].pattern, "blackboard");
+        assert_eq!(
+            children[0].parent_run_id.as_deref(),
+            Some(parent_id.as_str())
+        );
     }
 }

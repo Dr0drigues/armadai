@@ -39,6 +39,8 @@ pub struct OrchestrationResult {
     pub total_tokens_out: u32,
     pub total_cost: f64,
     pub invocation_count: u32,
+    /// Nested blackboard/ring sub-runs (C9), for downstream persistence.
+    pub nested_runs: Vec<NestedRun>,
 }
 
 /// A single delegation event in the trace.
@@ -48,6 +50,24 @@ pub struct DelegationEvent {
     pub to: String,
     pub message: String,
     pub depth: u32,
+}
+
+/// A nested sub-run produced by a team running a blackboard/ring sub-pattern (C9).
+/// Held so the CLI layer can persist it (with `parent_run_id`) after the run.
+#[derive(Debug)]
+pub enum NestedRun {
+    Blackboard {
+        team_lead: String,
+        task: String,
+        board: Board,
+        config: BlackboardConfig,
+    },
+    Ring {
+        team_lead: String,
+        task: String,
+        token: RingToken,
+        config: RingConfig,
+    },
 }
 
 // ── Shared state ────────────────────────────────────────────────
@@ -76,6 +96,7 @@ struct EngineState {
     total_tokens_out: u32,
     total_cost: f64,
     invocation_count: u32,
+    nested_runs: Vec<NestedRun>,
 }
 
 // ── Engine ───────────────────────────────────────────────────────
@@ -157,6 +178,7 @@ impl HierarchicalEngine {
                 total_tokens_out: 0,
                 total_cost: 0.0,
                 invocation_count: 0,
+                nested_runs: Vec::new(),
             })),
         }
     }
@@ -194,6 +216,7 @@ impl HierarchicalEngine {
             total_tokens_out: state.total_tokens_out,
             total_cost: state.total_cost,
             invocation_count: state.invocation_count,
+            nested_runs: std::mem::take(&mut state.nested_runs),
         })
     }
 }
@@ -511,7 +534,7 @@ async fn run_nested_team(
 
     let routing_ctx = RoutingCtx::new(ctx.routing_rules.clone(), remaining_budget);
 
-    let sub_run_result: anyhow::Result<(String, u32, u32, f64)> = match nested {
+    let sub_run_result: anyhow::Result<(String, u32, u32, f64, NestedRun)> = match nested {
         NestedPattern::Blackboard => {
             let config = BlackboardConfig {
                 token_budget: remaining_budget,
@@ -553,7 +576,13 @@ async fn run_nested_team(
                         .map(|e| format!("[{}] {}", e.agent, e.content))
                         .collect::<Vec<_>>()
                         .join("\n");
-                    Ok((text, ti, to, cost))
+                    let nested_run = NestedRun::Blackboard {
+                        team_lead: team_lead.to_string(),
+                        task: task.to_string(),
+                        board,
+                        config,
+                    };
+                    Ok((text, ti, to, cost, nested_run))
                 }
                 Err(e) => Err(e),
             }
@@ -610,7 +639,13 @@ async fn run_nested_team(
                         },
                         _ => String::new(),
                     };
-                    Ok((text, ti, to, cost))
+                    let nested_run = NestedRun::Ring {
+                        team_lead: team_lead.to_string(),
+                        task: task.to_string(),
+                        token,
+                        config,
+                    };
+                    Ok((text, ti, to, cost, nested_run))
                 }
                 Err(e) => Err(e),
             }
@@ -622,9 +657,10 @@ async fn run_nested_team(
     ctx.sink.emit(&RunEvent::NestedEnd {
         team_lead: team_lead.to_string(),
     });
-    let (outcome_text, folded_in, folded_out, folded_cost) = sub_run_result?;
+    let (outcome_text, folded_in, folded_out, folded_cost, nested_run) = sub_run_result?;
 
-    // Fold the sub-run's metrics into the shared hierarchical state.
+    // Fold the sub-run's metrics into the shared hierarchical state, then
+    // surface the sub-run itself for downstream persistence.
     {
         let mut s = state.lock().unwrap_or_else(|e| {
             tracing::warn!("Mutex poisoned folding nested metrics: {:?}", e);
@@ -634,6 +670,7 @@ async fn run_nested_team(
         s.total_tokens_out += folded_out;
         s.total_cost += folded_cost;
         s.invocation_count += agent_names.len() as u32;
+        s.nested_runs.push(nested_run);
     }
 
     // Lead arbitrates the aggregated outcome (may accept/refine/override).
@@ -1912,6 +1949,7 @@ mod tests {
             total_tokens_out: 0,
             total_cost: 0.0,
             invocation_count: 0,
+            nested_runs: Vec::new(),
         }));
 
         let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
@@ -2173,6 +2211,59 @@ mod tests {
             result.total_tokens_in,
             result.total_tokens_out
         );
+    }
+
+    #[tokio::test]
+    async fn test_nested_run_is_surfaced_in_result() {
+        let config = nested_blackboard_config();
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "Coordinate."),
+        );
+        agents.insert(
+            "research-lead".to_string(),
+            make_agent("research-lead", "Lead."),
+        );
+        agents.insert("searcher".to_string(), make_agent("searcher", "Search."));
+        agents.insert("analyst".to_string(), make_agent("analyst", "Analyze."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(FixedProvider::new("@research-lead: analyze the topic")),
+        );
+        providers.insert(
+            "research-lead".to_string(),
+            Arc::new(FixedProvider::new("lead verdict")),
+        );
+        let board_action = "ACTION: FINDING\nCONFIDENCE: 0.9\nCONTENT: a finding";
+        providers.insert(
+            "searcher".to_string(),
+            Arc::new(FixedProvider::new(board_action)),
+        );
+        providers.insert(
+            "analyst".to_string(),
+            Arc::new(FixedProvider::new(board_action)),
+        );
+
+        let mut engine = HierarchicalEngine::new(config, agents, providers, Arc::new(NullSink));
+        let result = engine.run("Do research").await.unwrap();
+
+        assert_eq!(
+            result.nested_runs.len(),
+            1,
+            "one nested sub-run should be surfaced"
+        );
+        match &result.nested_runs[0] {
+            NestedRun::Blackboard {
+                team_lead, board, ..
+            } => {
+                assert_eq!(team_lead, "research-lead");
+                assert!(!board.entries().is_empty(), "board should have entries");
+            }
+            NestedRun::Ring { .. } => panic!("expected a blackboard nested run"),
+        }
     }
 
     #[tokio::test]

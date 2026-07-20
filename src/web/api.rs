@@ -916,6 +916,7 @@ mod tests {
                 outcome_json: Some("{\"status\":\"ok\"}".to_string()),
                 rounds: 3,
                 halt_reason: None,
+                parent_run_id: None,
             },
         )
         .unwrap();
