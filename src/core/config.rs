@@ -76,6 +76,12 @@ pub fn providers_file_path() -> PathBuf {
     config_dir().join("providers.yaml")
 }
 
+/// Path to the user-level custom registries config
+/// (`~/.config/armadai/registries.yaml`). See `crate::core::registries`.
+pub fn registries_config_path() -> PathBuf {
+    config_dir().join("registries.yaml")
+}
+
 /// Create the full directory tree under the config root.
 pub fn ensure_config_dirs() -> anyhow::Result<()> {
     let dirs = [
