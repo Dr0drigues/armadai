@@ -316,7 +316,7 @@ impl ShellApp {
         self.pipeline_providers.take()
     }
 
-    /// Show a popup overlay (dismissed with Esc or any key)
+    /// Show a popup overlay (dismissed with Esc / q / Enter; other keys are ignored)
     pub fn show_popup(&mut self, content: String) {
         self.popup = Some(content);
         self.popup_scroll = 0;

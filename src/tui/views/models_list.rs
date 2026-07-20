@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::tui::app::App;
 use crate::tui::filter;
-use crate::tui::format::{format_context, format_cost};
+use crate::tui::format::format_context;
 use crate::tui::widgets::search_bar;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -52,17 +52,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .and_then(|l| l.context)
                 .map(format_context)
                 .unwrap_or_else(|| "-".to_string());
+            // Catalog prices are per-million-token rates (convention: 2dp,
+            // matching model_detail + model_registry::display_label). `format_cost`
+            // is for per-run costs only, not catalog pricing.
             let cost_in = entry
                 .cost
                 .as_ref()
                 .and_then(|c| c.input)
-                .map(format_cost)
+                .map(|v| format!("${v:.2}"))
                 .unwrap_or_else(|| "-".to_string());
             let cost_out = entry
                 .cost
                 .as_ref()
                 .and_then(|c| c.output)
-                .map(format_cost)
+                .map(|v| format!("${v:.2}"))
                 .unwrap_or_else(|| "-".to_string());
             let style = if display_i == app.selected_model {
                 Style::default()
