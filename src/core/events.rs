@@ -60,6 +60,13 @@ pub enum RunEvent {
         agent: String,
         kind: String,
     },
+    NestedStart {
+        team_lead: String,
+        pattern: String,
+    },
+    NestedEnd {
+        team_lead: String,
+    },
 }
 
 /// Sink for run events. `NullSink` is a zero-cost no-op; `JsonlSink` writes JSONL to a writer.
@@ -258,6 +265,28 @@ mod tests {
             s,
             r#"{"t":"board","agent":"qa-specialist","kind":"passed"}"#
         );
+    }
+
+    #[test]
+    fn nested_start_serializes_with_short_keys() {
+        let ev = RunEvent::NestedStart {
+            team_lead: "research-lead".to_string(),
+            pattern: "blackboard".to_string(),
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(
+            s,
+            r#"{"t":"nested_start","team_lead":"research-lead","pattern":"blackboard"}"#
+        );
+    }
+
+    #[test]
+    fn nested_end_serializes_with_short_keys() {
+        let ev = RunEvent::NestedEnd {
+            team_lead: "research-lead".to_string(),
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(s, r#"{"t":"nested_end","team_lead":"research-lead"}"#);
     }
 
     // Test helper: a Write that appends to a shared buffer.
