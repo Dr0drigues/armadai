@@ -13,6 +13,7 @@ mod tests {
     use async_trait::async_trait;
 
     use crate::core::agent::{Agent, AgentMetadata};
+    use crate::core::events::{EventSink, NullSink};
     use crate::core::orchestration::classifier::classify_with_config;
     use crate::core::orchestration::context_injection::{AgentInfo, build_orchestration_prompt};
     use crate::core::orchestration::hierarchical::HierarchicalEngine;
@@ -22,6 +23,11 @@ mod tests {
     use crate::providers::traits::{
         CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
     };
+
+    /// No-op sink for tests that don't assert on emitted events.
+    fn null_sink() -> Arc<dyn EventSink> {
+        Arc::new(NullSink)
+    }
 
     // ── Test infrastructure ──────────────────────────────────────
 
@@ -222,7 +228,7 @@ timeout: 120
         );
 
         // Step 5: Run the engine
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Build a user management system").await.unwrap();
 
         // Step 6: Verify results
@@ -311,7 +317,7 @@ timeout: 120
         providers.insert("coord".to_string(), coord_provider);
         providers.insert("worker".to_string(), worker_provider);
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let _ = engine.run("Do something").await.unwrap();
 
         // The coordinator's system prompt should contain orchestration context
@@ -363,7 +369,7 @@ teams:
             Arc::new(ScriptedProvider::new("boss", vec!["I've decided: 42."])),
         );
 
-        let mut engine = HierarchicalEngine::new(run_config, agents, providers);
+        let mut engine = HierarchicalEngine::new(run_config, agents, providers, null_sink());
         let result = engine.run("What is the answer?").await.unwrap();
         assert_eq!(result.content, "I've decided: 42.");
     }
@@ -457,7 +463,7 @@ teams:
             )),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Build the feature").await.unwrap();
 
         assert!(!result.content.is_empty());
@@ -506,7 +512,7 @@ teams:
             Arc::new(ScriptedProvider::new("b", vec!["B done."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Do both").await.unwrap();
 
         // 4 LLM calls: coord(delegate) + a + b + coord(synthesize)
@@ -562,7 +568,7 @@ teams:
             Arc::new(ScriptedProvider::new("worker", vec!["First result."])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let _ = engine.run("Do the work").await.unwrap();
 
         // Coordinator was called twice (delegate then synthesize)
@@ -601,7 +607,7 @@ teams:
             Arc::new(ScriptedProvider::new("worker", vec!["ok"])),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Test unknown agent").await;
 
         // Should error because ghost-agent has no provider
@@ -674,7 +680,7 @@ teams:
             )),
         );
 
-        let mut engine = HierarchicalEngine::new(config, agents, providers);
+        let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
         let result = engine.run("Review the application").await.unwrap();
 
         assert!(!result.content.is_empty());

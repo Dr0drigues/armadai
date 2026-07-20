@@ -531,7 +531,7 @@ async fn run_orchestrated(
     use crate::core::orchestration::blackboard::{
         BlackboardConfig, Board, BoardAgent, run_blackboard,
     };
-    use crate::core::orchestration::llm_agents::{LlmBoardAgent, LlmRingAgent};
+    use crate::core::orchestration::llm_agents::{LlmBoardAgent, LlmRingAgent, RoutingCtx};
     use crate::core::orchestration::ring::{
         RingAgent, RingConfig, RingOutcome, RingToken, TokenStatus, run_ring,
     };
@@ -548,6 +548,15 @@ async fn run_orchestrated(
             config.defaults.orchestration.clone().unwrap_or_default()
         }
         _ => OrchestrationDefaults::default(),
+    };
+
+    // Routing rules for `latest:auto` LlmBoardAgent/LlmRingAgent, mirroring
+    // the sequential path in `run_single_agent`: project config wins, else
+    // the embedded default. The per-engine budget (see `RoutingCtx::new`) is
+    // derived below from each config's `token_budget` once it is known.
+    let routing_rules = match resolution {
+        AgentResolution::Project { config, .. } => config.routing.clone().unwrap_or_default(),
+        _ => crate::core::routing::RoutingRules::default(),
     };
 
     sink.emit(&RunEvent::RunStart {
@@ -587,12 +596,20 @@ async fn run_orchestrated(
 
     match pattern {
         "blackboard" => {
+            let config = apply_blackboard_overrides(BlackboardConfig::default(), &orch_defaults);
+            let routing_ctx = RoutingCtx::new(routing_rules, config.token_budget);
+
             let board_agents: Vec<Arc<dyn BoardAgent>> = agents
                 .into_iter()
-                .map(|a| Arc::new(LlmBoardAgent::new(a)) as Arc<dyn BoardAgent>)
+                .map(|a| {
+                    Arc::new(LlmBoardAgent::with_routing(
+                        a,
+                        routing_ctx.clone(),
+                        Arc::clone(sink),
+                    )) as Arc<dyn BoardAgent>
+                })
                 .collect();
 
-            let config = apply_blackboard_overrides(BlackboardConfig::default(), &orch_defaults);
             let mut board = Board::new(input.to_string(), config.token_budget);
 
             eprintln!(
@@ -601,7 +618,7 @@ async fn run_orchestrated(
                 config.max_rounds
             );
 
-            run_blackboard(&mut board, &board_agents, &providers, &config).await?;
+            run_blackboard(&mut board, &board_agents, &providers, &config, sink).await?;
 
             eprintln!("[blackboard] Halted: {:?}", board.state());
 
@@ -631,15 +648,23 @@ async fn run_orchestrated(
             });
         }
         "ring" => {
+            let config = apply_ring_overrides(RingConfig::default(), &orch_defaults);
+            let routing_ctx = RoutingCtx::new(routing_rules, config.token_budget);
+
             let ring_agents: Vec<Arc<dyn RingAgent>> = agents
                 .into_iter()
-                .map(|a| Arc::new(LlmRingAgent::new(a)) as Arc<dyn RingAgent>)
+                .map(|a| {
+                    Arc::new(LlmRingAgent::with_routing(
+                        a,
+                        routing_ctx.clone(),
+                        Arc::clone(sink),
+                    )) as Arc<dyn RingAgent>
+                })
                 .collect();
 
             let agent_order: Vec<String> =
                 ring_agents.iter().map(|a| a.name().to_string()).collect();
 
-            let config = apply_ring_overrides(RingConfig::default(), &orch_defaults);
             let mut token = RingToken::new(input.to_string(), agent_order, config.token_budget);
 
             eprintln!(
@@ -648,7 +673,7 @@ async fn run_orchestrated(
                 config.max_laps
             );
 
-            run_ring(&mut token, &ring_agents, &providers, &config).await?;
+            run_ring(&mut token, &ring_agents, &providers, &config, sink).await?;
 
             #[cfg(feature = "storage")]
             record_orchestration_ring(&token, &config, input);
@@ -766,7 +791,13 @@ async fn run_orchestrated(
                 agent_map.len()
             );
 
-            let mut engine = HierarchicalEngine::new(orch_config, agent_map, provider_map);
+            let mut engine = HierarchicalEngine::with_routing_rules(
+                orch_config,
+                agent_map,
+                provider_map,
+                Arc::clone(sink),
+                routing_rules,
+            );
             let result = engine.run(input).await?;
 
             eprintln!(

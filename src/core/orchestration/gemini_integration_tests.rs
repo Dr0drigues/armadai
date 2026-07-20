@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::core::agent::{Agent, AgentMetadata};
+use crate::core::events::{EventSink, NullSink};
 use crate::core::orchestration::hierarchical::HierarchicalEngine;
 use crate::core::orchestration::{OrchestrationConfig, OrchestrationPattern, TeamConfig};
 use crate::providers::api::google::GoogleProvider;
@@ -33,6 +34,11 @@ use crate::providers::traits::Provider;
 /// Helper to check if we should skip tests (no API key available).
 fn skip_unless_gemini() -> bool {
     std::env::var("GOOGLE_API_KEY").is_err()
+}
+
+/// No-op sink for tests that don't assert on emitted events.
+fn null_sink() -> Arc<dyn EventSink> {
+    Arc::new(NullSink)
 }
 
 /// Create a minimal agent for testing.
@@ -105,7 +111,7 @@ async fn test_direct_agent_responds() {
     };
 
     // Create engine and run
-    let mut engine = HierarchicalEngine::new(config, agents, providers);
+    let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
     let result = engine.run("What is 2+2?").await;
 
     // Verify success
@@ -199,7 +205,7 @@ async fn test_hierarchical_delegation_works() {
     };
 
     // Create engine and run
-    let mut engine = HierarchicalEngine::new(config, agents, providers);
+    let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
     let result = engine
         .run("Review this function: fn add(a: i32, b: i32) -> i32 { a + b }")
         .await;
@@ -286,7 +292,7 @@ async fn test_budget_halts_gracefully() {
     };
 
     // Create engine and run
-    let mut engine = HierarchicalEngine::new(config, agents, providers);
+    let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
     let result = engine
         .run("Please provide an exhaustive analysis of the political, economic, social, and technological implications of artificial intelligence across all sectors of modern society.")
         .await;
@@ -377,7 +383,7 @@ async fn test_agents_follow_roles() {
     };
 
     // Create engine and run
-    let mut engine = HierarchicalEngine::new(config, agents, providers);
+    let mut engine = HierarchicalEngine::new(config, agents, providers, null_sink());
     let result = engine
         .run("Process this text: The quick brown fox jumps over the lazy dog")
         .await;

@@ -1,33 +1,98 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::Utc;
 
-use super::blackboard::{BoardAgent, BoardDelta, BoardEntry, BoardSnapshot, EntryKind, TokenCount};
+use super::blackboard::{
+    BoardAgent, BoardDelta, BoardEntry, BoardSnapshot, EntryKind, TokenCount, entry_kind_name,
+};
 use super::ring::{Contribution, ContributionAction, RingAgent, RingRole, TokenSnapshot, Vote};
 use crate::core::agent::Agent;
+use crate::core::events::{EventSink, NullSink, RunEvent};
+use crate::core::routing::{BudgetState, RoutingRules, route};
 use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
-// ── Helpers ──────────────────────────────────────────────────────
+/// Routing context threaded through the orchestration engines so
+/// `LlmBoardAgent`/`LlmRingAgent` can route `latest:auto` models the same way
+/// `run_single_agent` does (spec: OH4 router in orchestration).
+///
+/// `rules` is shared via `Arc` since one context is cloned into every agent
+/// built for a run. `total_budget` is the board/ring's *configured*
+/// `token_budget` (constant for the run) — not the remaining amount, which
+/// changes every round/lap and is read from the snapshot at route time.
+/// `None` (or a configured budget of `0`) disables budget-aware downgrade
+/// entirely: `route()` is still called, just with `budget: None`.
+#[derive(Clone)]
+pub struct RoutingCtx {
+    rules: Arc<RoutingRules>,
+    total_budget: Option<u64>,
+}
 
-/// Map an `EntryKind` variant to a lowercase name for trigger matching.
-fn entry_kind_name(kind: &EntryKind) -> &str {
-    match kind {
-        EntryKind::Finding => "finding",
-        EntryKind::Challenge { .. } => "challenge",
-        EntryKind::Confirmation { .. } => "confirmation",
-        EntryKind::Synthesis { .. } => "synthesis",
-        EntryKind::Question => "question",
-        EntryKind::Answer { .. } => "answer",
+impl RoutingCtx {
+    /// `total_budget` is the board/ring's configured token budget (e.g.
+    /// `BlackboardConfig::token_budget` / `RingConfig::token_budget`).
+    pub fn new(rules: RoutingRules, total_budget: u64) -> Self {
+        Self {
+            rules: Arc::new(rules),
+            total_budget: (total_budget > 0).then_some(total_budget),
+        }
+    }
+
+    /// Derive the router's `BudgetState` from tokens remaining vs. the
+    /// configured total. `None` when no budget is configured for this run.
+    fn budget_state(&self, remaining: u64) -> Option<BudgetState> {
+        self.total_budget.map(|total| BudgetState {
+            remaining_ratio: remaining as f64 / total as f64,
+        })
     }
 }
 
-/// Resolve the model string from agent metadata.
-fn agent_model(agent: &Agent) -> String {
-    agent
+impl Default for RoutingCtx {
+    fn default() -> Self {
+        Self {
+            rules: Arc::new(RoutingRules::default()),
+            total_budget: None,
+        }
+    }
+}
+
+/// Resolve the model string for a completion request.
+///
+/// Concrete models, `command`-based agents, and `latest:pro/fast/max`
+/// placeholders pass through unchanged — those are resolved later by the
+/// linker (`resolve_model_for_tier` is only reached here for `latest:auto`;
+/// `parse_latest_placeholder` deliberately does not recognize it, see
+/// `linker::model_resolution`). `latest:auto` is routed through the OH4
+/// router (`core::routing::route`) using `input` (the prompt about to be
+/// sent), the agent's tags, and the budget derived from `budget_remaining`
+/// via `routing`. Emits `RunEvent::Route` on the routed path — budget only
+/// ever *downgrades* the tier (see `route`), it never fails the run.
+fn agent_model(
+    agent: &Agent,
+    input: &str,
+    budget_remaining: u64,
+    routing: &RoutingCtx,
+    sink: &Arc<dyn EventSink>,
+) -> String {
+    let raw = agent
         .metadata
         .model
         .clone()
         .or_else(|| agent.metadata.command.clone())
-        .unwrap_or_else(|| "default".to_string())
+        .unwrap_or_else(|| "default".to_string());
+
+    if raw != "latest:auto" {
+        return raw;
+    }
+
+    let budget = routing.budget_state(budget_remaining);
+    let (tier, reason) = route(input, &agent.metadata.tags, budget, &routing.rules);
+    sink.emit(&RunEvent::Route {
+        agent: agent.name.clone(),
+        tier: format!("{tier:?}"),
+        reason: format!("{reason:?}"),
+    });
+    crate::linker::model_resolution::resolve_model_for_tier(&agent.metadata.provider, tier)
 }
 
 // ── Structured-response parsers ─────────────────────────────────
@@ -203,11 +268,29 @@ fn parse_index_list(s: &Option<String>) -> Vec<usize> {
 /// otherwise the agent participates in every round.
 pub struct LlmBoardAgent {
     agent: Agent,
+    routing: RoutingCtx,
+    sink: Arc<dyn EventSink>,
 }
 
 impl LlmBoardAgent {
     pub fn new(agent: Agent) -> Self {
-        Self { agent }
+        Self {
+            agent,
+            routing: RoutingCtx::default(),
+            sink: Arc::new(NullSink),
+        }
+    }
+
+    /// Construct with an explicit routing context and event sink. Used by
+    /// `run_orchestrated` so `latest:auto` agents route through the
+    /// project's `RoutingRules` and the board's configured budget, emitting
+    /// `RunEvent::Route` via `sink`.
+    pub fn with_routing(agent: Agent, routing: RoutingCtx, sink: Arc<dyn EventSink>) -> Self {
+        Self {
+            agent,
+            routing,
+            sink,
+        }
     }
 }
 
@@ -301,7 +384,13 @@ impl BoardAgent for LlmBoardAgent {
         user_msg.push_str(BOARD_ACTION_INSTRUCTIONS);
 
         let request = CompletionRequest {
-            model: agent_model(&self.agent),
+            model: agent_model(
+                &self.agent,
+                &user_msg,
+                board.budget_remaining,
+                &self.routing,
+                &self.sink,
+            ),
             system_prompt: self.agent.system_prompt.clone(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
@@ -343,11 +432,29 @@ impl BoardAgent for LlmBoardAgent {
 /// `AgentRingConfig` if present, defaulting to `Specialist { domain: "general" }`.
 pub struct LlmRingAgent {
     agent: Agent,
+    routing: RoutingCtx,
+    sink: Arc<dyn EventSink>,
 }
 
 impl LlmRingAgent {
     pub fn new(agent: Agent) -> Self {
-        Self { agent }
+        Self {
+            agent,
+            routing: RoutingCtx::default(),
+            sink: Arc::new(NullSink),
+        }
+    }
+
+    /// Construct with an explicit routing context and event sink. Used by
+    /// `run_orchestrated` so `latest:auto` agents route through the
+    /// project's `RoutingRules` and the ring's configured budget, emitting
+    /// `RunEvent::Route` via `sink`.
+    pub fn with_routing(agent: Agent, routing: RoutingCtx, sink: Arc<dyn EventSink>) -> Self {
+        Self {
+            agent,
+            routing,
+            sink,
+        }
     }
 }
 
@@ -399,7 +506,13 @@ impl RingAgent for LlmRingAgent {
         user_msg.push_str(RING_ACTION_INSTRUCTIONS);
 
         let request = CompletionRequest {
-            model: agent_model(&self.agent),
+            model: agent_model(
+                &self.agent,
+                &user_msg,
+                token.budget_remaining,
+                &self.routing,
+                &self.sink,
+            ),
             system_prompt: self.agent.system_prompt.clone(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
@@ -458,7 +571,13 @@ impl RingAgent for LlmRingAgent {
         );
 
         let request = CompletionRequest {
-            model: agent_model(&self.agent),
+            model: agent_model(
+                &self.agent,
+                &user_msg,
+                token.budget_remaining,
+                &self.routing,
+                &self.sink,
+            ),
             system_prompt: self.agent.system_prompt.clone(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
@@ -490,6 +609,7 @@ mod tests {
 
     use super::*;
     use crate::core::agent::{Agent, AgentMetadata};
+    use crate::core::events::{EventSink, NullSink};
     use crate::core::orchestration::blackboard::{
         BlackboardConfig, Board, BoardState, run_blackboard,
     };
@@ -498,6 +618,11 @@ mod tests {
     };
     use crate::core::orchestration::test_helpers::noop_providers;
     use crate::core::orchestration::{AgentRingConfig, TriggerConfig};
+
+    /// No-op sink for tests that don't assert on emitted events.
+    fn null_sink() -> Arc<dyn EventSink> {
+        Arc::new(NullSink)
+    }
 
     fn make_agent(name: &str) -> Agent {
         Agent {
@@ -775,7 +900,7 @@ mod tests {
         };
         let mut board = Board::new("test task".to_string(), config.token_budget);
 
-        run_blackboard(&mut board, &agents, &providers, &config)
+        run_blackboard(&mut board, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
@@ -823,7 +948,7 @@ mod tests {
         let order = vec!["agent-a".to_string(), "agent-b".to_string()];
         let mut token = RingToken::new("test task".to_string(), order, config.token_budget);
 
-        run_ring(&mut token, &agents, &providers, &config)
+        run_ring(&mut token, &agents, &providers, &config, &null_sink())
             .await
             .unwrap();
 
@@ -1110,5 +1235,252 @@ mod tests {
     fn test_parse_index_list_mixed_invalid() {
         // Skips invalid entries
         assert_eq!(parse_index_list(&Some("1, abc, 3".to_string())), vec![1, 3]);
+    }
+
+    // ── latest:auto routing in orchestration (RoutingCtx) ────────────
+
+    /// Records the `model` of every `CompletionRequest` it receives, so tests
+    /// can assert what `agent_model` resolved `latest:auto` to.
+    struct CapturingProvider(std::sync::Mutex<Vec<String>>);
+
+    impl CapturingProvider {
+        fn new() -> Self {
+            Self(std::sync::Mutex::new(Vec::new()))
+        }
+
+        fn models(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for CapturingProvider {
+        async fn complete(
+            &self,
+            request: CompletionRequest,
+        ) -> anyhow::Result<crate::providers::traits::CompletionResponse> {
+            self.0.lock().unwrap().push(request.model.clone());
+            Ok(crate::providers::traits::CompletionResponse {
+                content: "ACTION: FINDING\nCONFIDENCE: 0.8\nCONTENT: ok".to_string(),
+                model: request.model,
+                tokens_in: 1,
+                tokens_out: 1,
+                cost: 0.0,
+            })
+        }
+
+        async fn stream(
+            &self,
+            _request: CompletionRequest,
+        ) -> anyhow::Result<crate::providers::traits::TokenStream> {
+            unimplemented!("not exercised by these tests")
+        }
+
+        fn metadata(&self) -> crate::providers::traits::ProviderMetadata {
+            crate::providers::traits::ProviderMetadata {
+                name: "capturing".to_string(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    /// Capture-only sink so tests can assert on emitted `RunEvent`s (mirrors
+    /// the `CaptureSink` used in `ring.rs`'s own test module).
+    struct CaptureSink(std::sync::Mutex<Vec<String>>);
+
+    impl CaptureSink {
+        fn new() -> Self {
+            Self(std::sync::Mutex::new(Vec::new()))
+        }
+
+        fn events(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl EventSink for CaptureSink {
+        fn emit(&self, ev: &RunEvent) {
+            if let Ok(s) = serde_json::to_string(ev) {
+                self.0.lock().unwrap().push(s);
+            }
+        }
+    }
+
+    fn make_agent_latest_auto(name: &str, tags: Vec<String>) -> Agent {
+        let mut agent = make_agent(name);
+        agent.metadata.model = Some("latest:auto".to_string());
+        agent.metadata.tags = tags;
+        agent
+    }
+
+    #[tokio::test]
+    async fn test_board_agent_latest_auto_downgrades_on_low_budget() {
+        // The "critical" tag maps to Max under default RoutingRules, but the
+        // board's remaining budget is far below `budget_downgrade_ratio`
+        // (default 0.2) — the router must downgrade to Fast and report
+        // RouteReason::Budget, exactly as it would for run_single_agent.
+        let agent = make_agent_latest_auto("agent-a", vec!["critical".to_string()]);
+        let routing = RoutingCtx::new(RoutingRules::default(), 1_000);
+        let sink = Arc::new(CaptureSink::new());
+        let board_agent =
+            LlmBoardAgent::with_routing(agent, routing, sink.clone() as Arc<dyn EventSink>);
+
+        let snapshot = BoardSnapshot {
+            task: "test task".to_string(),
+            entries: Arc::new(vec![]),
+            round: 0,
+            state: BoardState::Open,
+            context: Default::default(),
+            budget_remaining: 50, // 50 / 1_000 = 0.05 <= 0.2 downgrade threshold
+        };
+
+        let provider = CapturingProvider::new();
+        board_agent.contribute(&snapshot, &provider).await.unwrap();
+
+        let models = provider.models();
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0],
+            crate::linker::model_resolution::resolve_model_for_tier(
+                "anthropic",
+                crate::linker::model_resolution::ModelTier::Fast,
+            ),
+            "latest:auto should resolve to the Fast tier's model when budget is low"
+        );
+
+        let events = sink.events();
+        assert!(
+            events.iter().any(|e| e.contains(r#""t":"route""#)
+                && e.contains(r#""agent":"agent-a""#)
+                && e.contains(r#""tier":"Fast""#)
+                && e.contains(r#""reason":"Budget""#)),
+            "expected a Route event with tier=Fast reason=Budget, got: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_board_agent_latest_auto_no_downgrade_when_budget_healthy() {
+        // Same "critical" tag (→ Max) but a healthy budget: no downgrade,
+        // reason stays Tag — proves the budget check is not unconditional.
+        let agent = make_agent_latest_auto("agent-a", vec!["critical".to_string()]);
+        let routing = RoutingCtx::new(RoutingRules::default(), 1_000);
+        let sink = Arc::new(CaptureSink::new());
+        let board_agent =
+            LlmBoardAgent::with_routing(agent, routing, sink.clone() as Arc<dyn EventSink>);
+
+        let snapshot = BoardSnapshot {
+            task: "test task".to_string(),
+            entries: Arc::new(vec![]),
+            round: 0,
+            state: BoardState::Open,
+            context: Default::default(),
+            budget_remaining: 900, // 900 / 1_000 = 0.9, well above threshold
+        };
+
+        let provider = CapturingProvider::new();
+        board_agent.contribute(&snapshot, &provider).await.unwrap();
+
+        let models = provider.models();
+        assert_eq!(
+            models[0],
+            crate::linker::model_resolution::resolve_model_for_tier(
+                "anthropic",
+                crate::linker::model_resolution::ModelTier::Max,
+            )
+        );
+
+        let events = sink.events();
+        assert!(
+            events.iter().any(|e| e.contains(r#""t":"route""#)
+                && e.contains(r#""tier":"Max""#)
+                && e.contains(r#""reason":"Tag""#)),
+            "expected a Route event with tier=Max reason=Tag, got: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ring_agent_latest_auto_downgrades_on_low_budget() {
+        let agent = make_agent_latest_auto("agent-a", vec!["critical".to_string()]);
+        let routing = RoutingCtx::new(RoutingRules::default(), 1_000);
+        let sink = Arc::new(CaptureSink::new());
+        let ring_agent =
+            LlmRingAgent::with_routing(agent, routing, sink.clone() as Arc<dyn EventSink>);
+
+        let snapshot = TokenSnapshot {
+            task: "test task".to_string(),
+            contributions: Arc::new(vec![]),
+            lap: 0,
+            status: TokenStatus::Circulating,
+            ring_order: vec!["agent-a".to_string()],
+            current_position: 0,
+            budget_remaining: 30, // 30 / 1_000 = 0.03, well under threshold
+        };
+
+        let provider = CapturingProvider::new();
+        ring_agent.process(&snapshot, &provider).await.unwrap();
+
+        let models = provider.models();
+        assert_eq!(
+            models[0],
+            crate::linker::model_resolution::resolve_model_for_tier(
+                "anthropic",
+                crate::linker::model_resolution::ModelTier::Fast,
+            )
+        );
+
+        let events = sink.events();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains(r#""t":"route""#) && e.contains(r#""reason":"Budget""#)),
+            "expected a Route event with reason=Budget for the ring agent, got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn test_agent_model_concrete_and_latest_pro_unaffected_by_routing() {
+        // Non-regression: concrete models and latest:pro/fast/max are NOT
+        // routed through `route()` — they pass through unchanged regardless
+        // of budget/RoutingCtx. Only `latest:auto` is special-cased.
+        let routing = RoutingCtx::new(RoutingRules::default(), 1_000);
+        let sink: Arc<dyn EventSink> = Arc::new(NullSink);
+
+        let mut concrete = make_agent("agent-concrete");
+        concrete.metadata.model = Some("claude-sonnet-4-5-20250929".to_string());
+        assert_eq!(
+            agent_model(&concrete, "any input", 10, &routing, &sink),
+            "claude-sonnet-4-5-20250929"
+        );
+
+        let mut latest_pro = make_agent("agent-pro");
+        latest_pro.metadata.model = Some("latest:pro".to_string());
+        assert_eq!(
+            agent_model(&latest_pro, "any input", 10, &routing, &sink),
+            "latest:pro",
+            "latest:pro must NOT be routed here — only latest:auto is special-cased"
+        );
+    }
+
+    #[test]
+    fn test_routing_ctx_default_disables_budget_downgrade() {
+        // A `RoutingCtx::default()` (used by `LlmBoardAgent::new`/`LlmRingAgent::new`
+        // when no explicit routing context is supplied) must carry no budget,
+        // so `route()` never downgrades regardless of remaining tokens.
+        let routing = RoutingCtx::default();
+        let sink: Arc<dyn EventSink> = Arc::new(NullSink);
+
+        let agent = make_agent_latest_auto("agent-a", vec!["critical".to_string()]);
+        // budget_remaining is irrelevant here since RoutingCtx::default() has
+        // no total_budget — the router never receives a `BudgetState`.
+        let model = agent_model(&agent, "hi", 0, &routing, &sink);
+        assert_eq!(
+            model,
+            crate::linker::model_resolution::resolve_model_for_tier(
+                "anthropic",
+                crate::linker::model_resolution::ModelTier::Max,
+            ),
+            "no budget configured → tag-driven Max tier must not be downgraded"
+        );
     }
 }
