@@ -1,3 +1,50 @@
+## v1.0.0-rc.2 (2026-07-20)
+
+Second release candidate for 1.0.0. Consolidates the post-rc.1 work: the
+OH3/OH4 orchestration instrumentation, audit refinements, the web trace UI,
+custom registries, and the full **C9 pattern mixing** feature. Scope remains
+frozen (event-sourcing and the declarative-engine vision stay in 1.1/v2).
+
+### New: C9 — Pattern mixing (hierarchical → nested blackboard/ring)
+
+- **Engine** (#183): a hierarchical team can declare a nested sub-pattern
+  (`teams[].pattern: blackboard|ring`) and run its agents as that sub-pattern
+  instead of flat delegation. Budget/depth are shared with the parent run,
+  metrics fold back, and the team lead gets an **arbitration turn** over the
+  sub-run outcome (accept/refine/override). New `NestedStart`/`NestedEnd`
+  JSONL events. A dedicated `NestedPattern` enum makes deeper nesting
+  impossible by construction (single level).
+- **Storage** (#184): a real schema migration mechanism (`PRAGMA
+  user_version`) — the missing brick — relaxes the orchestration CHECK to
+  allow `hierarchical`, adds `parent_run_id`, and a `delegation_events`
+  table. Hierarchical runs and their nested sub-runs are now persisted and
+  linked. Legacy databases migrate without data loss (foreign keys are
+  disabled only around the table rebuild).
+- **Exposition** (#185): the web trace UI renders hierarchical runs — a
+  delegation-tree diagram plus expandable nested sub-runs (reusing the
+  existing sequence/timeline views). The trace list shows root runs only.
+
+### New: Custom registries (B2 Lot A)
+
+- **Configurable registries** (#182): a `registries:` section (user
+  `~/.config/armadai/registries.yaml` and/or project `armadai.yaml`) adds
+  custom sources for agents, skills, and models on top of the built-in
+  defaults (union, dedup). New CLI: `armadai registry sources
+  list|add|remove <agents|skills|models> <url>`.
+
+### New: Web orchestration traces (C6)
+
+- **Traces tab** (#181): the web dashboard lists orchestration runs and shows
+  a run's flow (Mermaid sequence diagram + timeline) via a detail endpoint.
+
+### Changed
+
+- **OH3/OH4 consolidation** (#179): JSONL run events (`Delegate`/`Vote`/
+  `Board`) are now emitted across the orchestration engines, and
+  `model: latest:auto` tier routing applies inside orchestration
+  (blackboard/ring/hierarchical), not just single-agent runs.
+- **Audit refinements** (#180): post-rc backlog cleanups for `armadai audit`.
+
 ## v1.0.0-rc.1 (2026-07-17)
 
 First release candidate for 1.0.0. Scope frozen (event-sourcing and the
