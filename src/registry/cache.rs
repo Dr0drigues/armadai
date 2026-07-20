@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::sync::repo_dir;
+use super::sync::{source_dir, source_key, sources_dir};
 use crate::core::config::registry_cache_dir;
 
 // ---------------------------------------------------------------------------
@@ -11,7 +11,7 @@ use crate::core::config::registry_cache_dir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexEntry {
-    /// Relative path inside the registry repo (e.g. "agents/official/security.agent.md")
+    /// Relative path inside the source repo (e.g. "agents/official/security.agent.md")
     pub path: String,
     /// Agent name derived from the file
     pub name: String,
@@ -22,6 +22,12 @@ pub struct IndexEntry {
     pub tags: Vec<String>,
     /// Category from the directory structure (e.g. "official", "community")
     pub category: Option<String>,
+    /// Source key this entry was scanned from (see `sync::source_key`), used
+    /// to relocate the file across multiple registry sources. Defaults to
+    /// the empty string for indexes built before multi-source support (B2
+    /// Lot A Task 2) — those all came from the single default source.
+    #[serde(default)]
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -33,32 +39,42 @@ pub struct Index {
 // Index building
 // ---------------------------------------------------------------------------
 
-/// Build a search index from the registry repo.
+/// Build a search index by scanning every synced source repo in `sources`.
 ///
-/// Scans for `.agent.md` and `.md` files in the repo and extracts metadata.
-pub fn build_index() -> anyhow::Result<Index> {
-    let repo = repo_dir();
-    if !repo.is_dir() {
-        anyhow::bail!("Registry not synced. Run `armadai registry sync` first.");
-    }
-
+/// Sources that haven't been cloned yet (e.g. sync failed or wasn't run) are
+/// silently skipped so a single broken/unreachable source doesn't prevent
+/// indexing the others.
+pub fn build_index(sources: &[String]) -> anyhow::Result<Index> {
     let mut entries = Vec::new();
-    scan_dir(&repo, &repo, &mut entries)?;
+
+    for url in sources {
+        let key = source_key(url);
+        let dir = source_dir(url);
+        if dir.is_dir() {
+            scan_dir(&dir, &dir, &key, &mut entries)?;
+        }
+    }
 
     let index = Index { entries };
     save_index(&index)?;
     Ok(index)
 }
 
-/// Load the cached index, or build it if missing.
-pub fn load_or_build_index() -> anyhow::Result<Index> {
+/// Load the cached index, or build it from whatever sources are already
+/// synced.
+pub fn load_or_build_index(sources: &[String]) -> anyhow::Result<Index> {
     let index_path = index_file_path();
     if index_path.is_file() {
         let content = std::fs::read_to_string(&index_path)?;
         let index: Index = serde_json::from_str(&content)?;
         return Ok(index);
     }
-    build_index()
+
+    if sources_dir().is_dir() {
+        return build_index(sources);
+    }
+
+    Ok(Index::default())
 }
 
 fn index_file_path() -> PathBuf {
@@ -73,7 +89,12 @@ fn save_index(index: &Index) -> anyhow::Result<()> {
 }
 
 /// Recursively scan a directory for agent markdown files.
-fn scan_dir(dir: &Path, repo_root: &Path, entries: &mut Vec<IndexEntry>) -> anyhow::Result<()> {
+fn scan_dir(
+    dir: &Path,
+    repo_root: &Path,
+    source: &str,
+    entries: &mut Vec<IndexEntry>,
+) -> anyhow::Result<()> {
     let read = match std::fs::read_dir(dir) {
         Ok(r) => r,
         Err(_) => return Ok(()),
@@ -88,9 +109,9 @@ fn scan_dir(dir: &Path, repo_root: &Path, entries: &mut Vec<IndexEntry>) -> anyh
         }
 
         if path.is_dir() {
-            scan_dir(&path, repo_root, entries)?;
+            scan_dir(&path, repo_root, source, entries)?;
         } else if is_agent_file(&path)
-            && let Ok(entry) = extract_entry(&path, repo_root)
+            && let Ok(entry) = extract_entry(&path, repo_root, source)
         {
             entries.push(entry);
         }
@@ -106,7 +127,7 @@ fn is_agent_file(path: &Path) -> bool {
 }
 
 /// Extract an index entry from a file by reading its first lines.
-fn extract_entry(path: &Path, repo_root: &Path) -> anyhow::Result<IndexEntry> {
+fn extract_entry(path: &Path, repo_root: &Path, source: &str) -> anyhow::Result<IndexEntry> {
     let content = std::fs::read_to_string(path)?;
     let rel_path = path
         .strip_prefix(repo_root)
@@ -144,6 +165,7 @@ fn extract_entry(path: &Path, repo_root: &Path) -> anyhow::Result<IndexEntry> {
         description,
         tags,
         category,
+        source: source.to_string(),
     })
 }
 
@@ -204,7 +226,7 @@ mod tests {
         )
         .unwrap();
 
-        let entry = extract_entry(&file, dir.path()).unwrap();
+        let entry = extract_entry(&file, dir.path(), "github/awesome-copilot").unwrap();
         assert_eq!(entry.name, "security");
         assert_eq!(
             entry.description.as_deref(),
@@ -212,6 +234,7 @@ mod tests {
         );
         assert_eq!(entry.category.as_deref(), Some("agents"));
         assert_eq!(entry.tags, vec!["security", "review"]);
+        assert_eq!(entry.source, "github/awesome-copilot");
     }
 
     #[test]
@@ -232,6 +255,7 @@ mod tests {
                 description: Some("A test agent".to_string()),
                 tags: vec!["test".to_string()],
                 category: Some("agents".to_string()),
+                source: "github/awesome-copilot".to_string(),
             }],
         };
 
@@ -239,5 +263,14 @@ mod tests {
         let deserialized: Index = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.entries.len(), 1);
         assert_eq!(deserialized.entries[0].name, "test");
+    }
+
+    #[test]
+    fn test_index_deserializes_without_source_field() {
+        // Back-compat: indexes cached before multi-source support (B2 Lot A
+        // Task 2) have no `source` field.
+        let json = r#"{"entries":[{"path":"a.md","name":"a","description":null,"tags":[],"category":null}]}"#;
+        let index: Index = serde_json::from_str(json).unwrap();
+        assert_eq!(index.entries[0].source, "");
     }
 }

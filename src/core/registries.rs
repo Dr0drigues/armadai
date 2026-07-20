@@ -47,6 +47,12 @@ pub struct RegistriesConfig {
 pub enum RegistryKind {
     Agents,
     Skills,
+    /// Only constructed when the `providers-api` feature is enabled:
+    /// `model_registry::fetch` is the sole consumer, since resolving model
+    /// catalog sources is only useful alongside the HTTP fetch that reads
+    /// them. Harmless to keep visible in `tui`-only builds, where model
+    /// registry fetching is unavailable anyway.
+    #[allow(dead_code)]
     Models,
 }
 

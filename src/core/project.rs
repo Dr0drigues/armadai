@@ -69,10 +69,9 @@ pub struct ProjectConfig {
     pub routing: Option<crate::core::routing::RoutingRules>,
     /// Project-level custom registry sources (agents/skills/models), merged
     /// with the user-level `~/.config/armadai/registries.yaml` and built-in
-    /// defaults. See `crate::core::registries`.
-    ///
-    /// Not yet consumed: registry wiring lands in B2 Lot A Task 2.
-    #[allow(dead_code)]
+    /// defaults. See `crate::core::registries`. Consumed by
+    /// `registry::sync::effective_sources`, `skills_registry::cache::effective_sources`
+    /// and `model_registry::fetch`'s source resolution (B2 Lot A Task 2).
     #[serde(default)]
     pub registries: Option<crate::core::registries::RegistriesConfig>,
 }

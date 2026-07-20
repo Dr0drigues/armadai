@@ -46,17 +46,19 @@ pub async fn execute(action: RegistryAction) -> anyhow::Result<()> {
 }
 
 async fn cmd_sync() -> anyhow::Result<()> {
-    println!("Syncing community registry...");
-    sync::registry_sync(None)?;
+    let sources = sync::effective_sources();
+    println!("Syncing {} agent registry source(s)...", sources.len());
+    sync::registry_sync(&sources)?;
     println!("Building search index...");
-    let index = cache::build_index()?;
+    let index = cache::build_index(&sources)?;
     println!("Indexed {} agent(s).", index.entries.len());
     Ok(())
 }
 
 async fn cmd_search(query: &str, category: Option<&str>) -> anyhow::Result<()> {
     check_staleness();
-    let index = cache::load_or_build_index()?;
+    let sources = sync::effective_sources();
+    let index = cache::load_or_build_index(&sources)?;
 
     let entries = match category {
         Some(cat) => {
@@ -95,7 +97,8 @@ async fn cmd_search(query: &str, category: Option<&str>) -> anyhow::Result<()> {
 
 async fn cmd_list(category: Option<&str>) -> anyhow::Result<()> {
     check_staleness();
-    let index = cache::load_or_build_index()?;
+    let sources = sync::effective_sources();
+    let index = cache::load_or_build_index(&sources)?;
 
     let entries: Vec<&cache::IndexEntry> = match category {
         Some(cat) => search::filter_by_category(&index.entries, cat),
@@ -104,7 +107,7 @@ async fn cmd_list(category: Option<&str>) -> anyhow::Result<()> {
 
     if entries.is_empty() {
         println!("No agents in registry.");
-        if !sync::repo_dir().join(".git").is_dir() {
+        if !sync::sources_dir().is_dir() {
             println!("Run `armadai registry sync` to fetch the registry.");
         }
         return Ok(());
@@ -152,7 +155,8 @@ async fn cmd_list(category: Option<&str>) -> anyhow::Result<()> {
 
 async fn cmd_add(agent: &str, force: bool) -> anyhow::Result<()> {
     check_staleness();
-    let index = cache::load_or_build_index()?;
+    let sources = sync::effective_sources();
+    let index = cache::load_or_build_index(&sources)?;
 
     // Find the agent in the index by name or path
     let entry = index
@@ -166,7 +170,7 @@ async fn cmd_add(agent: &str, force: bool) -> anyhow::Result<()> {
         })?;
 
     println!("Converting {} ...", entry.name);
-    let dst = convert::import_to_library(&entry.path, force)?;
+    let dst = convert::import_to_library(&entry.source, &entry.path, force)?;
     println!("Installed: {}", dst.display());
     println!("\nAgent '{}' added to your library.", entry.name);
     Ok(())
@@ -174,7 +178,8 @@ async fn cmd_add(agent: &str, force: bool) -> anyhow::Result<()> {
 
 async fn cmd_info(agent: &str) -> anyhow::Result<()> {
     check_staleness();
-    let index = cache::load_or_build_index()?;
+    let sources = sync::effective_sources();
+    let index = cache::load_or_build_index(&sources)?;
 
     let entry = index
         .entries
@@ -184,6 +189,9 @@ async fn cmd_info(agent: &str) -> anyhow::Result<()> {
 
     println!("Name:        {}", entry.name);
     println!("Path:        {}", entry.path);
+    if !entry.source.is_empty() {
+        println!("Source:      {}", entry.source);
+    }
     if let Some(ref cat) = entry.category {
         println!("Category:    {cat}");
     }
@@ -195,7 +203,7 @@ async fn cmd_info(agent: &str) -> anyhow::Result<()> {
     }
 
     // Show the raw content
-    let repo = sync::repo_dir();
+    let repo = sync::dir_for_key(&entry.source);
     let src = repo.join(&entry.path);
     if src.is_file() {
         println!("\n--- Content ---");
@@ -218,7 +226,7 @@ async fn cmd_info(agent: &str) -> anyhow::Result<()> {
 
 /// Print a hint if the registry is stale (> 7 days old).
 fn check_staleness() {
-    if sync::is_stale(7) && sync::repo_dir().join(".git").is_dir() {
+    if sync::is_stale(7) && sync::sources_dir().is_dir() {
         eprintln!("hint: registry may be outdated. Run `armadai registry sync` to refresh.");
     }
 }
