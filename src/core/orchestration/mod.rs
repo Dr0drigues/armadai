@@ -167,6 +167,11 @@ pub struct OrchestrationConfig {
     /// Team topology (hierarchical only).
     pub teams: Vec<TeamConfig>,
 
+    /// C8: named agent routes (route name → agent names). Selected via
+    /// `--route <name>`. Empty = no routes configured.
+    #[serde(default)]
+    pub routes: std::collections::BTreeMap<String, Vec<String>>,
+
     // ── Shared limits (all patterns) ───────────────────────────
     /// Max delegation depth (default: 5).
     pub max_depth: Option<u32>,
@@ -637,6 +642,30 @@ consensus_threshold: 0.85
         assert_eq!(config.max_depth(), 5);
         assert_eq!(config.max_iterations(), 50);
         assert_eq!(config.timeout_secs(), 300);
+    }
+
+    #[test]
+    fn test_orchestration_config_deserializes_routes() {
+        let yaml = r#"
+enabled: true
+pattern: blackboard
+routes:
+  security-audit: [rust-security, rust-reviewer]
+  frontend: [ui-specialist]
+"#;
+        let config: OrchestrationConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(
+            config.routes.get("security-audit").unwrap(),
+            &vec!["rust-security".to_string(), "rust-reviewer".to_string()]
+        );
+        assert_eq!(config.routes.get("frontend").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_orchestration_config_routes_default_empty() {
+        let yaml = "enabled: true\npattern: blackboard\n";
+        let config: OrchestrationConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.routes.is_empty());
     }
 
     #[test]

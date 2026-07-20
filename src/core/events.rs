@@ -67,6 +67,11 @@ pub enum RunEvent {
     NestedEnd {
         team_lead: String,
     },
+    #[allow(dead_code)] // constructed by the CLI wiring in C8 Lot B (--route/--tags)
+    AgentSelect {
+        selected: Vec<String>,
+        reason: String,
+    },
 }
 
 /// Sink for run events. `NullSink` is a zero-cost no-op; `JsonlSink` writes JSONL to a writer.
@@ -287,6 +292,19 @@ mod tests {
         };
         let s = serde_json::to_string(&ev).unwrap();
         assert_eq!(s, r#"{"t":"nested_end","team_lead":"research-lead"}"#);
+    }
+
+    #[test]
+    fn agent_select_serializes_with_short_keys() {
+        let ev = RunEvent::AgentSelect {
+            selected: vec!["rust-security".to_string(), "qa-specialist".to_string()],
+            reason: "route 'security-audit' → 2 agents".to_string(),
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(
+            s,
+            r#"{"t":"agent_select","selected":["rust-security","qa-specialist"],"reason":"route 'security-audit' → 2 agents"}"#
+        );
     }
 
     // Test helper: a Write that appends to a shared buffer.
