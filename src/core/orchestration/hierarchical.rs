@@ -511,7 +511,7 @@ async fn run_nested_team(
 
     let routing_ctx = RoutingCtx::new(ctx.routing_rules.clone(), remaining_budget);
 
-    let (outcome_text, folded_in, folded_out, folded_cost) = match nested {
+    let sub_run_result: anyhow::Result<(String, u32, u32, f64)> = match nested {
         NestedPattern::Blackboard => {
             let config = BlackboardConfig {
                 token_budget: remaining_budget,
@@ -529,28 +529,34 @@ async fn run_nested_team(
                 })
                 .collect();
             let mut board = Board::new(task.to_string(), config.token_budget);
-            run_blackboard(
+            match run_blackboard(
                 &mut board,
                 &board_agents,
                 &member_providers,
                 &config,
                 &ctx.sink,
             )
-            .await?;
-            let (ti, to, cost) = board.entries().iter().fold((0u32, 0u32, 0f64), |acc, e| {
-                (
-                    acc.0 + e.tokens_used.input,
-                    acc.1 + e.tokens_used.output,
-                    acc.2 + e.tokens_used.cost,
-                )
-            });
-            let text = board
-                .entries()
-                .iter()
-                .map(|e| format!("[{}] {}", e.agent, e.content))
-                .collect::<Vec<_>>()
-                .join("\n");
-            (text, ti, to, cost)
+            .await
+            {
+                Ok(()) => {
+                    let (ti, to, cost) =
+                        board.entries().iter().fold((0u32, 0u32, 0f64), |acc, e| {
+                            (
+                                acc.0 + e.tokens_used.input,
+                                acc.1 + e.tokens_used.output,
+                                acc.2 + e.tokens_used.cost,
+                            )
+                        });
+                    let text = board
+                        .entries()
+                        .iter()
+                        .map(|e| format!("[{}] {}", e.agent, e.content))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Ok((text, ti, to, cost))
+                }
+                Err(e) => Err(e),
+            }
         }
         NestedPattern::Ring => {
             let config = RingConfig {
@@ -570,40 +576,53 @@ async fn run_nested_team(
                 .collect();
             let order: Vec<String> = ring_agents.iter().map(|a| a.name().to_string()).collect();
             let mut token = RingToken::new(task.to_string(), order, config.token_budget);
-            run_ring(
+            match run_ring(
                 &mut token,
                 &ring_agents,
                 &member_providers,
                 &config,
                 &ctx.sink,
             )
-            .await?;
-            let (ti, to, cost) = token
-                .contributions
-                .iter()
-                .fold((0u32, 0u32, 0f64), |acc, c| {
-                    (
-                        acc.0 + c.tokens_used.input,
-                        acc.1 + c.tokens_used.output,
-                        acc.2 + c.tokens_used.cost,
-                    )
-                });
-            let text = match token.status() {
-                TokenStatus::Done { outcome } => match outcome {
-                    RingOutcome::Consensus { resolution, .. }
-                    | RingOutcome::Majority { resolution, .. } => resolution.clone(),
-                    RingOutcome::NoConsensus { summary, .. } => summary.clone(),
-                    RingOutcome::BudgetExhausted { partial_summary }
-                    | RingOutcome::CostLimitExceeded {
-                        partial_summary, ..
-                    } => partial_summary.clone(),
-                    RingOutcome::Cancelled => String::new(),
-                },
-                _ => String::new(),
-            };
-            (text, ti, to, cost)
+            .await
+            {
+                Ok(()) => {
+                    let (ti, to, cost) =
+                        token
+                            .contributions
+                            .iter()
+                            .fold((0u32, 0u32, 0f64), |acc, c| {
+                                (
+                                    acc.0 + c.tokens_used.input,
+                                    acc.1 + c.tokens_used.output,
+                                    acc.2 + c.tokens_used.cost,
+                                )
+                            });
+                    let text = match token.status() {
+                        TokenStatus::Done { outcome } => match outcome {
+                            RingOutcome::Consensus { resolution, .. }
+                            | RingOutcome::Majority { resolution, .. } => resolution.clone(),
+                            RingOutcome::NoConsensus { summary, .. } => summary.clone(),
+                            RingOutcome::BudgetExhausted { partial_summary }
+                            | RingOutcome::CostLimitExceeded {
+                                partial_summary, ..
+                            } => partial_summary.clone(),
+                            RingOutcome::Cancelled => String::new(),
+                        },
+                        _ => String::new(),
+                    };
+                    Ok((text, ti, to, cost))
+                }
+                Err(e) => Err(e),
+            }
         }
     };
+
+    // Emit `NestedEnd` regardless of outcome so it always balances
+    // `NestedStart`, then propagate a sub-run error if there was one.
+    ctx.sink.emit(&RunEvent::NestedEnd {
+        team_lead: team_lead.to_string(),
+    });
+    let (outcome_text, folded_in, folded_out, folded_cost) = sub_run_result?;
 
     // Fold the sub-run's metrics into the shared hierarchical state.
     {
@@ -616,10 +635,6 @@ async fn run_nested_team(
         s.total_cost += folded_cost;
         s.invocation_count += agent_names.len() as u32;
     }
-
-    ctx.sink.emit(&RunEvent::NestedEnd {
-        team_lead: team_lead.to_string(),
-    });
 
     // Lead arbitrates the aggregated outcome (may accept/refine/override).
     let arbitrated = arbitrate_nested_outcome(ctx, state, team_lead, task, &outcome_text).await?;
@@ -2072,6 +2087,89 @@ mod tests {
         assert!(
             result.total_tokens_in > 0 && result.total_tokens_out > 0,
             "nested board tokens should fold into run metrics, got in={} out={}",
+            result.total_tokens_in,
+            result.total_tokens_out
+        );
+    }
+
+    /// Config: coordinator → one nested-ring team (lead + 2 agents).
+    fn nested_ring_config() -> OrchestrationConfig {
+        OrchestrationConfig {
+            enabled: true,
+            pattern: super::super::OrchestrationPattern::Hierarchical,
+            coordinator: Some("coordinator".to_string()),
+            teams: vec![TeamConfig {
+                lead: Some("research-lead".to_string()),
+                agents: vec!["searcher".to_string(), "analyst".to_string()],
+                pattern: Some(super::super::NestedPattern::Ring),
+                max_laps: Some(1),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_nested_ring_runs_and_folds_metrics() {
+        let config = nested_ring_config();
+
+        let mut agents = HashMap::new();
+        agents.insert(
+            "coordinator".to_string(),
+            make_agent("coordinator", "Coordinate."),
+        );
+        agents.insert(
+            "research-lead".to_string(),
+            make_agent("research-lead", "Lead."),
+        );
+        agents.insert("searcher".to_string(), make_agent("searcher", "Search."));
+        agents.insert("analyst".to_string(), make_agent("analyst", "Analyze."));
+
+        let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+        // Coordinator delegates the whole task to the nested-pattern lead.
+        providers.insert(
+            "coordinator".to_string(),
+            Arc::new(FixedProvider::new("@research-lead: analyze the topic")),
+        );
+        // Lead arbitrates the ring outcome afterwards.
+        providers.insert(
+            "research-lead".to_string(),
+            Arc::new(FixedProvider::new("lead verdict")),
+        );
+        // Team agents produce ring contributions (parse_ring_action format, see
+        // `RING_ACTION_INSTRUCTIONS` / `parse_ring_action` in llm_agents.rs —
+        // unlike blackboard there is no CONFIDENCE header on a contribution).
+        let ring_action = "ACTION: PROPOSE\nCONTENT: a concrete proposal";
+        providers.insert(
+            "searcher".to_string(),
+            Arc::new(FixedProvider::new(ring_action)),
+        );
+        providers.insert(
+            "analyst".to_string(),
+            Arc::new(FixedProvider::new(ring_action)),
+        );
+
+        let capture = Arc::new(CaptureSink::new());
+        let sink: Arc<dyn EventSink> = capture.clone();
+        let mut engine = HierarchicalEngine::new(config, agents, providers, sink);
+        let result = engine.run("Do research").await.unwrap();
+
+        let events = capture.events();
+        assert!(
+            events.iter().any(|e| e.contains(r#""t":"nested_start""#)
+                && e.contains(r#""pattern":"ring""#)
+                && e.contains(r#""team_lead":"research-lead""#)),
+            "expected nested_start, got: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| e.contains(r#""t":"nested_end""#)),
+            "expected nested_end, got: {events:?}"
+        );
+        // Ring agents consumed tokens (circulation + voting) → folded into the
+        // hierarchical run metrics.
+        assert!(
+            result.total_tokens_in > 0 && result.total_tokens_out > 0,
+            "nested ring tokens should fold into run metrics, got in={} out={}",
             result.total_tokens_in,
             result.total_tokens_out
         );
