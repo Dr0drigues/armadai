@@ -307,10 +307,12 @@ mod tests {
                 TeamConfig {
                     lead: Some("java-lead".to_string()),
                     agents: vec!["java-arch".to_string(), "java-sec".to_string()],
+                    ..Default::default()
                 },
                 TeamConfig {
                     lead: None,
                     agents: vec!["cloud-expert".to_string(), "ops-expert".to_string()],
+                    ..Default::default()
                 },
             ],
             ..Default::default()

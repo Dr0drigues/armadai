@@ -250,6 +250,7 @@ timeout: 120
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["worker".to_string()],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -294,6 +295,7 @@ timeout: 120
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["worker".to_string()],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -419,6 +421,7 @@ teams:
             teams: vec![TeamConfig {
                 lead: Some("lead".to_string()),
                 agents: vec!["worker".to_string()],
+                ..Default::default()
             }],
             max_depth: Some(5),
             ..Default::default()
@@ -486,6 +489,7 @@ teams:
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["a".to_string(), "b".to_string()],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -547,6 +551,7 @@ teams:
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["worker".to_string()],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -585,6 +590,7 @@ teams:
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["worker".to_string()],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -629,6 +635,7 @@ teams:
                     "performance".to_string(),
                     "ux".to_string(),
                 ],
+                ..Default::default()
             }],
             ..Default::default()
         };

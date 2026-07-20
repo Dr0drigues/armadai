@@ -701,6 +701,7 @@ mod tests {
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["agent-a".to_string(), "agent-b".to_string()],
+                ..Default::default()
             }],
             ..Default::default()
         }
@@ -1057,6 +1058,7 @@ mod tests {
             teams: vec![TeamConfig {
                 lead: Some("lead".to_string()),
                 agents: vec!["worker".to_string()],
+                ..Default::default()
             }],
             max_depth: Some(2),
             ..Default::default()
@@ -1098,6 +1100,7 @@ mod tests {
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["agent-a".to_string()],
+                ..Default::default()
             }],
             max_iterations: Some(1),
             ..Default::default()
@@ -1191,6 +1194,7 @@ mod tests {
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["agent-a".to_string(), "agent-b".to_string()],
+                ..Default::default()
             }],
             token_budget: Some(55),
             ..Default::default()
@@ -1248,6 +1252,7 @@ mod tests {
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["agent-a".to_string(), "agent-b".to_string()],
+                ..Default::default()
             }],
             cost_limit: Some(0.0015),
             ..Default::default()
@@ -1300,6 +1305,7 @@ mod tests {
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["agent-a".to_string()],
+                ..Default::default()
             }],
             token_budget: None,
             cost_limit: None,
@@ -1343,6 +1349,7 @@ mod tests {
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["agent-a".to_string(), "agent-b".to_string()],
+                ..Default::default()
             }],
             token_budget: Some(50),
             ..Default::default()
@@ -1398,6 +1405,7 @@ mod tests {
                     "agent-b".to_string(),
                     "agent-c".to_string(),
                 ],
+                ..Default::default()
             }],
             ..Default::default()
         };
