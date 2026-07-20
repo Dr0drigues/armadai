@@ -1006,6 +1006,28 @@ function generateTraceTimeline(boardEntries, ringContributions, ringVotes) {
     </table>`;
 }
 
+// Build a mermaid flowchart of the hierarchical delegation tree from events.
+function generateDelegationDiagram(delegationEvents) {
+  const lines = ['flowchart TD'];
+  const seenNode = new Set();
+  const node = (name) => {
+    const id = mermaidSanitizeId(name);
+    if (!seenNode.has(id)) {
+      seenNode.add(id);
+      const label = mermaidEscapeLabel(String(name == null ? 'unknown' : name), 30) || id;
+      lines.push(`${id}["${label}"]`);
+    }
+    return id;
+  };
+  (delegationEvents || []).forEach(ev => {
+    const from = node(ev.from);
+    const to = node(ev.to);
+    const label = mermaidEscapeLabel(ev.message || '', 40);
+    lines.push(label ? `${from}-->|${label}| ${to}` : `${from}--> ${to}`);
+  });
+  return lines.join('\n');
+}
+
 async function viewTraceRun(id) {
   const res = await fetch(`/api/orchestration/trace/${encodeURIComponent(id)}`);
   const d = await res.json();
@@ -1030,8 +1052,37 @@ async function viewTraceRun(id) {
   const hasEntries = boardEntries.length > 0 || ringContributions.length > 0;
   const outcomeObj = parseJsonSafe(run.outcome);
 
+  const delegationEvents = d.delegation_events || [];
+  const children = d.children || [];
+  const isHierarchical = (run.pattern === 'hierarchical') || delegationEvents.length > 0 || children.length > 0;
+
   let bodyHtml;
-  if (!hasEntries) {
+  if (isHierarchical) {
+    if (!delegationEvents.length && !children.length) {
+      bodyHtml = '<div class="empty">This hierarchical run recorded no delegations or nested sub-runs.</div>';
+    } else {
+      const tree = generateDelegationDiagram(delegationEvents);
+      const childSections = children.map((c, i) => {
+        const cRun = c.run || {};
+        const cBoard = c.board_entries || [];
+        const cContribs = c.ring_contributions || [];
+        const cVotes = c.ring_votes || [];
+        const cHasEntries = cBoard.length > 0 || cContribs.length > 0;
+        const inner = cHasEntries
+          ? `<div class="list-section"><h4>Sequence</h4><div class="mermaid">${escapeHtml(generateTraceSequenceDiagram(cBoard, cContribs, cVotes))}</div></div>
+             <div class="list-section"><h4>Timeline</h4>${generateTraceTimeline(cBoard, cContribs, cVotes)}</div>`
+          : '<div class="empty">No entries for this sub-run.</div>';
+        const lead = cRun.pattern || 'sub-run';
+        return `<details${i === 0 ? ' open' : ''}>
+          <summary>Nested ${escapeHtmlContent(lead)} — ${escapeHtmlContent(String(cRun.id || ''))}</summary>
+          ${inner}
+        </details>`;
+      }).join('');
+      bodyHtml = `
+        <div class="list-section"><h3>Delegation Tree</h3><div class="mermaid">${escapeHtml(tree)}</div></div>
+        <div class="list-section"><h3>Nested Sub-runs (${children.length})</h3>${childSections || '<div class="empty">None.</div>'}</div>`;
+    }
+  } else if (!hasEntries) {
     bodyHtml = '<div class="empty">This run has no recorded board/ring entries (direct pattern, or an empty trace).</div>';
   } else {
     const diagram = generateTraceSequenceDiagram(boardEntries, ringContributions, ringVotes);
@@ -1054,7 +1105,7 @@ async function viewTraceRun(id) {
       ${bodyHtml}
     </div>`;
 
-  if (hasEntries) mermaid.run();
+  if (hasEntries || isHierarchical) mermaid.run();
 }
 
 // Initial load
