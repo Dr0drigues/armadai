@@ -622,23 +622,23 @@ pub async fn get_orchestration_trace() -> Json<serde_json::Value> {
     #[cfg(feature = "storage")]
     {
         use crate::storage::{init_db, queries};
-        if let Ok(db) = init_db() {
-            if let Ok(runs) = queries::get_orchestration_runs(&db, 50) {
-                let traces: Vec<serde_json::Value> = runs
-                    .iter()
-                    .map(|r| {
-                        serde_json::json!({
-                            "id": r.run_id,
-                            "pattern": r.pattern,
-                            "config": r.config_json,
-                            "outcome": r.outcome_json,
-                            "rounds": r.rounds,
-                            "halt_reason": r.halt_reason,
-                        })
+        if let Ok(db) = init_db()
+            && let Ok(runs) = queries::get_orchestration_runs(&db, 50)
+        {
+            let traces: Vec<serde_json::Value> = runs
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "id": r.run_id,
+                        "pattern": r.pattern,
+                        "config": r.config_json,
+                        "outcome": r.outcome_json,
+                        "rounds": r.rounds,
+                        "halt_reason": r.halt_reason,
                     })
-                    .collect();
-                return Json(serde_json::json!({ "traces": traces }));
-            }
+                })
+                .collect();
+            return Json(serde_json::json!({ "traces": traces }));
         }
     }
 
@@ -668,6 +668,109 @@ pub async fn get_orchestration_trace() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "traces": [],
         "sessions": session_traces,
+    }))
+}
+
+/// Get orchestration run detail (board entries, ring contributions, ring votes)
+/// for a single run identified by `run_id`.
+#[cfg(feature = "storage")]
+pub async fn get_orchestration_trace_detail(Path(run_id): Path<String>) -> Json<serde_json::Value> {
+    use crate::storage::{init_db, queries};
+
+    let empty = || {
+        serde_json::json!({
+            "run": null,
+            "board_entries": [],
+            "ring_contributions": [],
+            "ring_votes": [],
+        })
+    };
+
+    let db = match init_db() {
+        Ok(db) => db,
+        Err(_) => return Json(empty()),
+    };
+
+    let run = queries::get_orchestration_run(&db, &run_id)
+        .ok()
+        .flatten()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.run_id,
+                "pattern": r.pattern,
+                "config": r.config_json,
+                "outcome": r.outcome_json,
+                "rounds": r.rounds,
+                "halt_reason": r.halt_reason,
+            })
+        });
+
+    let board_entries: Vec<serde_json::Value> = queries::get_board_entries(&db, &run_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| {
+            serde_json::json!({
+                "agent": e.agent,
+                "round": e.round,
+                "kind": e.kind,
+                "content": e.content,
+                "refs": e.refs_json,
+                "confidence": e.confidence,
+                "tokens_in": e.tokens_in,
+                "tokens_out": e.tokens_out,
+            })
+        })
+        .collect();
+
+    let ring_contributions: Vec<serde_json::Value> = queries::get_ring_contributions(&db, &run_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| {
+            serde_json::json!({
+                "agent": c.agent,
+                "lap": c.lap,
+                "position_in_lap": c.position_in_lap,
+                "action": c.action,
+                "content": c.content,
+                "reactions": c.reactions_json,
+                "tokens_in": c.tokens_in,
+                "tokens_out": c.tokens_out,
+            })
+        })
+        .collect();
+
+    let ring_votes: Vec<serde_json::Value> = queries::get_ring_votes(&db, &run_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| {
+            serde_json::json!({
+                "agent": v.agent,
+                "position": v.position,
+                "confidence": v.confidence,
+                "supports": v.supports,
+                "concerns": v.concerns,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "run": run,
+        "board_entries": board_entries,
+        "ring_contributions": ring_contributions,
+        "ring_votes": ring_votes,
+    }))
+}
+
+/// Get orchestration run detail — storage disabled, always returns empty shell.
+#[cfg(not(feature = "storage"))]
+pub async fn get_orchestration_trace_detail(
+    Path(_run_id): Path<String>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "run": null,
+        "board_entries": [],
+        "ring_contributions": [],
+        "ring_votes": [],
     }))
 }
 
@@ -721,4 +824,168 @@ pub async fn get_orchestration_topology() -> Json<serde_json::Value> {
         teams,
         agents: all_agents,
     })
+}
+
+#[cfg(all(test, feature = "storage"))]
+mod tests {
+    use super::*;
+    use crate::core::config::ENV_MUTEX;
+    use crate::storage::queries::{
+        BoardEntryRecord, OrchestrationRunRecord, RingVoteRecord, RunRecord, insert_board_entry,
+        insert_orchestration_run, insert_ring_vote, insert_run_with_id,
+    };
+
+    /// Guard that points `ARMADAI_CONFIG_DIR` at a fresh temp dir with a
+    /// `config.yaml` redirecting storage to a scratch sqlite file, so
+    /// `init_db()` (as called by the handler under test) reads/writes there
+    /// instead of the real user config. Restores the original env var and
+    /// releases the shared env-mutation lock (`ENV_MUTEX`) on drop.
+    struct TempStorageGuard {
+        _dir: tempfile::TempDir,
+        orig: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TempStorageGuard {
+        fn new() -> Self {
+            let lock = ENV_MUTEX.lock().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("test.sqlite");
+            let config_yaml = format!(
+                "storage:\n  mode: embedded\n  path: \"{}\"\n",
+                db_path.display()
+            );
+            std::fs::write(dir.path().join("config.yaml"), config_yaml).unwrap();
+
+            let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+            // SAFETY: modifies the global environment; serialised via ENV_MUTEX.
+            unsafe {
+                std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
+            }
+
+            Self {
+                _dir: dir,
+                orig,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for TempStorageGuard {
+        fn drop(&mut self) {
+            match self.orig.take() {
+                // SAFETY: restoring original env state at end of test scope.
+                Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+                None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_orchestration_trace_detail_returns_run_and_entries() {
+        let _guard = TempStorageGuard::new();
+        let db = crate::storage::init_db().unwrap();
+
+        // `orchestration_runs.run_id` references `runs(id)`, so seed the
+        // parent row first (mirrors how the orchestration engine writes both
+        // tables under the same id).
+        insert_run_with_id(
+            &db,
+            "run-42",
+            RunRecord {
+                agent: "coordinator".to_string(),
+                input: "orchestrate".to_string(),
+                output: "done".to_string(),
+                provider: "anthropic".to_string(),
+                model: "claude-sonnet".to_string(),
+                tokens_in: 10,
+                tokens_out: 20,
+                cost: 0.01,
+                duration_ms: 500,
+                status: "success".to_string(),
+            },
+        )
+        .unwrap();
+
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: "run-42".to_string(),
+                pattern: "ring".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: Some("{\"status\":\"ok\"}".to_string()),
+                rounds: 3,
+                halt_reason: None,
+            },
+        )
+        .unwrap();
+
+        insert_board_entry(
+            &db,
+            BoardEntryRecord {
+                run_id: "run-42".to_string(),
+                agent: "core-specialist".to_string(),
+                round: 1,
+                kind: "proposal".to_string(),
+                content: "Use trait Provider".to_string(),
+                refs_json: "[]".to_string(),
+                confidence: 0.9,
+                tokens_in: 10,
+                tokens_out: 20,
+            },
+        )
+        .unwrap();
+
+        insert_ring_vote(
+            &db,
+            RingVoteRecord {
+                run_id: "run-42".to_string(),
+                agent: "qa-specialist".to_string(),
+                position: "approve".to_string(),
+                confidence: 0.8,
+                supports: "core-specialist".to_string(),
+                concerns: "none".to_string(),
+            },
+        )
+        .unwrap();
+
+        // Drop the connection so the handler's own `init_db()` call can open
+        // the same sqlite file freed of any exclusive lock.
+        drop(db);
+
+        let response = get_orchestration_trace_detail(Path("run-42".to_string())).await;
+        let value = response.0;
+
+        let run = &value["run"];
+        assert_eq!(run["id"], "run-42");
+        assert_eq!(run["pattern"], "ring");
+        assert_eq!(run["rounds"], 3);
+
+        let board_entries = value["board_entries"].as_array().unwrap();
+        assert_eq!(board_entries.len(), 1);
+        assert_eq!(board_entries[0]["agent"], "core-specialist");
+        assert_eq!(board_entries[0]["kind"], "proposal");
+        assert_eq!(board_entries[0]["tokens_out"], 20);
+
+        let ring_votes = value["ring_votes"].as_array().unwrap();
+        assert_eq!(ring_votes.len(), 1);
+        assert_eq!(ring_votes[0]["agent"], "qa-specialist");
+        assert_eq!(ring_votes[0]["position"], "approve");
+
+        assert!(value["ring_contributions"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_orchestration_trace_detail_unknown_run_is_null() {
+        let _guard = TempStorageGuard::new();
+        // Ensure the DB/schema exists even though no run is inserted.
+        drop(crate::storage::init_db().unwrap());
+
+        let response = get_orchestration_trace_detail(Path("does-not-exist".to_string())).await;
+        let value = response.0;
+        assert!(value["run"].is_null());
+        assert!(value["board_entries"].as_array().unwrap().is_empty());
+        assert!(value["ring_contributions"].as_array().unwrap().is_empty());
+        assert!(value["ring_votes"].as_array().unwrap().is_empty());
+    }
 }

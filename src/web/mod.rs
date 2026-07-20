@@ -36,6 +36,10 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
             get(api::get_orchestration_trace),
         )
         .route(
+            "/api/orchestration/trace/{run_id}",
+            get(api::get_orchestration_trace_detail),
+        )
+        .route(
             "/api/orchestration/topology",
             get(api::get_orchestration_topology),
         )
