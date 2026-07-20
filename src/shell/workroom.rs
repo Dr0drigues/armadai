@@ -35,6 +35,10 @@ pub struct TrackedAgent {
     pub finished_at: Option<Instant>,
     /// Spinner frame for animation
     pub spinner_frame: usize,
+    /// Short excerpt of the agent's latest action/status (for drill-down).
+    pub last_action: Option<String>,
+    /// State-transition history with timestamps (for drill-down).
+    pub transitions: Vec<(AgentState, std::time::Instant)>,
 }
 
 /// Role in the orchestration hierarchy
@@ -86,6 +90,8 @@ impl Workroom {
                         started_at: None,
                         finished_at: None,
                         spinner_frame: 0,
+                        last_action: None,
+                        transitions: Vec::new(),
                     });
                 }
             }
@@ -111,6 +117,8 @@ impl Workroom {
                         started_at: None,
                         finished_at: None,
                         spinner_frame: 0,
+                        last_action: None,
+                        transitions: Vec::new(),
                     });
                 }
                 _current_is_lead = true;
@@ -134,6 +142,8 @@ impl Workroom {
                         started_at: None,
                         finished_at: None,
                         spinner_frame: 0,
+                        last_action: None,
+                        transitions: Vec::new(),
                     });
                 }
             }
@@ -185,6 +195,8 @@ impl Workroom {
                 started_at: None,
                 finished_at: None,
                 spinner_frame: 0,
+                last_action: None,
+                transitions: Vec::new(),
             });
         }
     }
@@ -411,6 +423,13 @@ impl Workroom {
 }
 
 #[cfg(test)]
+impl Workroom {
+    pub fn agents_for_test(&self) -> &[TrackedAgent] {
+        &self.agents
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -472,6 +491,8 @@ orchestration:
             started_at: None,
             finished_at: None,
             spinner_frame: 0,
+            last_action: None,
+            transitions: Vec::new(),
         });
         wr.on_delegate("agent-a");
         wr.on_complete();
@@ -517,5 +538,16 @@ orchestration:
         wr.reset();
         // Should still be visible because pinned
         assert!(wr.is_visible());
+    }
+
+    #[test]
+    fn test_tracked_agent_has_enriched_fields() {
+        let mut wr = Workroom::new();
+        wr.init_from_config("coordinator: dev-lead\nteams:\n  - agents: [core-specialist]\n");
+        // Every tracked agent starts with no last action and an empty transition log.
+        for a in wr.agents_for_test() {
+            assert!(a.last_action.is_none());
+            assert!(a.transitions.is_empty());
+        }
     }
 }
