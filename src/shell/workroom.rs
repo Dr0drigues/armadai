@@ -337,12 +337,29 @@ impl Workroom {
             self.apply_marker(inner.trim());
             self.marker_buf = self.marker_buf[end + 3..].to_string(); // strip "-->"
         }
+
+        // Safety cap: an unterminated `<!--ARMADAI_` opener must not let the
+        // buffer grow without bound within a turn.
+        const MAX_MARKER_BUF: usize = 8192;
+        if self.marker_buf.len() > MAX_MARKER_BUF {
+            // Keep only the tail (where a real closing `-->` would still land).
+            let cut = self.marker_buf.len() - MAX_MARKER_BUF;
+            // Respect char boundaries.
+            let mut cut = cut;
+            while cut < self.marker_buf.len() && !self.marker_buf.is_char_boundary(cut) {
+                cut += 1;
+            }
+            self.marker_buf = self.marker_buf[cut..].to_string();
+        }
     }
 
     /// Apply a single marker body (e.g. `ARMADAI_DELEGATE:core-specialist`).
     fn apply_marker(&mut self, body: &str) {
         if let Some(target) = body.strip_prefix("ARMADAI_DELEGATE:") {
             let target = target.trim().to_string();
+            if target.is_empty() {
+                return; // malformed marker — ignore
+            }
             if let Some(coord) = self.coordinator_name() {
                 self.set_state(&coord, AgentState::Delegating);
             }
@@ -365,7 +382,19 @@ impl Workroom {
                 && matches!(agent.state, AgentState::Working | AgentState::Delegating)
             {
                 self.set_state(&cur, AgentState::Done);
-                // Control returns to the coordinator.
+                // Control returns to the coordinator. If a *different* agent
+                // just finished, the coordinator itself isn't done — it goes
+                // back to Idle until it delegates again or the turn truly
+                // ends (`on_complete`). This also closes the recap-guard hole
+                // above: without this reset, the coordinator stayed
+                // `Delegating` forever, so a later stray recap echo of
+                // `<!--ARMADAI_END-->` would wrongly re-match the guard and
+                // flip the coordinator to `Done`.
+                if let Some(coord) = self.coordinator_name()
+                    && coord != cur
+                {
+                    self.set_state(&coord, AgentState::Idle);
+                }
                 self.current_agent = self.coordinator_name();
             }
         }
@@ -470,6 +499,10 @@ fn keep_tail(buf: &mut String, needle: &str) {
 impl Workroom {
     pub fn agents_for_test(&self) -> &[TrackedAgent] {
         &self.agents
+    }
+
+    pub fn marker_buf_len_for_test(&self) -> usize {
+        self.marker_buf.len()
     }
 }
 
@@ -656,5 +689,56 @@ orchestration:
                 a.name
             );
         }
+    }
+
+    // The recap-guard must protect an ALREADY-DONE agent too: after an agent
+    // finishes, a stray END (echoed in a recap) must not re-transition anything.
+    #[test]
+    fn test_stray_end_after_agent_done_is_noop() {
+        let mut wr = wr_dev_lead_core();
+        wr.apply_stream_text("<!--ARMADAI_DELEGATE:core-specialist-->");
+        wr.apply_stream_text("<!--ARMADAI_END-->"); // core-specialist -> Done, control back to coordinator
+        let before: Vec<_> = wr
+            .agents_for_test()
+            .iter()
+            .map(|a| (a.name.clone(), a.state.clone()))
+            .collect();
+        wr.apply_stream_text("| recap echo <!--ARMADAI_END-->"); // stray, coordinator is Idle here
+        let after: Vec<_> = wr
+            .agents_for_test()
+            .iter()
+            .map(|a| (a.name.clone(), a.state.clone()))
+            .collect();
+        assert_eq!(
+            before, after,
+            "a stray recap END must not change any agent state"
+        );
+    }
+
+    #[test]
+    fn test_empty_delegate_target_is_ignored() {
+        let mut wr = wr_dev_lead_core();
+        wr.apply_stream_text("<!--ARMADAI_DELEGATE:-->");
+        // No agent named "" — nothing works; coordinator not forced to delegate to nobody.
+        assert!(
+            wr.agents_for_test()
+                .iter()
+                .all(|a| a.state == AgentState::Idle)
+        );
+    }
+
+    #[test]
+    fn test_unterminated_opener_buffer_is_capped() {
+        let mut wr = wr_dev_lead_core();
+        // A stray opener that never closes, followed by a lot of prose.
+        wr.apply_stream_text("<!--ARMADAI_");
+        for _ in 0..1000 {
+            wr.apply_stream_text("some long prose without any closing marker ");
+        }
+        // Buffer must not grow unbounded.
+        assert!(
+            wr.marker_buf_len_for_test() <= 8192,
+            "unterminated marker buffer must be capped"
+        );
     }
 }
