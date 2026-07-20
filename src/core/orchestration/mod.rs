@@ -8,6 +8,7 @@
 //!
 //! The `Auto` variant uses a classifier to pick the best pattern.
 
+pub mod agent_selection;
 pub mod blackboard;
 pub mod classifier;
 pub mod context_injection;
