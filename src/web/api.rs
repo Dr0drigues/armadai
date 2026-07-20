@@ -627,6 +627,7 @@ pub async fn get_orchestration_trace() -> Json<serde_json::Value> {
         {
             let traces: Vec<serde_json::Value> = runs
                 .iter()
+                .filter(|r| r.parent_run_id.is_none())
                 .map(|r| {
                     serde_json::json!({
                         "id": r.run_id,
@@ -671,8 +672,71 @@ pub async fn get_orchestration_trace() -> Json<serde_json::Value> {
     }))
 }
 
-/// Get orchestration run detail (board entries, ring contributions, ring votes)
-/// for a single run identified by `run_id`.
+/// Fetch the board entries, ring contributions, and ring votes for a single
+/// run, serialized to JSON. Shared between the main run and each of its
+/// nested children so their entries render identically.
+#[cfg(feature = "storage")]
+fn fetch_run_entries(
+    db: &crate::storage::Database,
+    run_id: &str,
+) -> (
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+) {
+    use crate::storage::queries;
+
+    let board_entries = queries::get_board_entries(db, run_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| {
+            serde_json::json!({
+                "agent": e.agent,
+                "round": e.round,
+                "kind": e.kind,
+                "content": e.content,
+                "refs": e.refs_json,
+                "confidence": e.confidence,
+                "tokens_in": e.tokens_in,
+                "tokens_out": e.tokens_out,
+            })
+        })
+        .collect();
+    let ring_contributions = queries::get_ring_contributions(db, run_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| {
+            serde_json::json!({
+                "agent": c.agent,
+                "lap": c.lap,
+                "position_in_lap": c.position_in_lap,
+                "action": c.action,
+                "content": c.content,
+                "reactions": c.reactions_json,
+                "tokens_in": c.tokens_in,
+                "tokens_out": c.tokens_out,
+            })
+        })
+        .collect();
+    let ring_votes = queries::get_ring_votes(db, run_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| {
+            serde_json::json!({
+                "agent": v.agent,
+                "position": v.position,
+                "confidence": v.confidence,
+                "supports": v.supports,
+                "concerns": v.concerns,
+            })
+        })
+        .collect();
+    (board_entries, ring_contributions, ring_votes)
+}
+
+/// Get orchestration run detail (board entries, ring contributions, ring votes,
+/// delegation events, and nested children) for a single run identified by
+/// `run_id`.
 #[cfg(feature = "storage")]
 pub async fn get_orchestration_trace_detail(Path(run_id): Path<String>) -> Json<serde_json::Value> {
     use crate::storage::{init_db, queries};
@@ -683,6 +747,8 @@ pub async fn get_orchestration_trace_detail(Path(run_id): Path<String>) -> Json<
             "board_entries": [],
             "ring_contributions": [],
             "ring_votes": [],
+            "delegation_events": [],
+            "children": [],
         })
     };
 
@@ -702,53 +768,44 @@ pub async fn get_orchestration_trace_detail(Path(run_id): Path<String>) -> Json<
                 "outcome": r.outcome_json,
                 "rounds": r.rounds,
                 "halt_reason": r.halt_reason,
+                "parent_run_id": r.parent_run_id,
             })
         });
 
-    let board_entries: Vec<serde_json::Value> = queries::get_board_entries(&db, &run_id)
+    let (board_entries, ring_contributions, ring_votes) = fetch_run_entries(&db, &run_id);
+
+    let delegation_events: Vec<serde_json::Value> = queries::get_delegation_events(&db, &run_id)
         .unwrap_or_default()
         .into_iter()
         .map(|e| {
             serde_json::json!({
-                "agent": e.agent,
-                "round": e.round,
-                "kind": e.kind,
-                "content": e.content,
-                "refs": e.refs_json,
-                "confidence": e.confidence,
-                "tokens_in": e.tokens_in,
-                "tokens_out": e.tokens_out,
+                "seq": e.seq,
+                "from": e.from_agent,
+                "to": e.to_agent,
+                "message": e.message,
+                "depth": e.depth,
             })
         })
         .collect();
 
-    let ring_contributions: Vec<serde_json::Value> = queries::get_ring_contributions(&db, &run_id)
+    let children: Vec<serde_json::Value> = queries::get_child_orchestration_runs(&db, &run_id)
         .unwrap_or_default()
         .into_iter()
         .map(|c| {
+            let (cb, cc, cv) = fetch_run_entries(&db, &c.run_id);
             serde_json::json!({
-                "agent": c.agent,
-                "lap": c.lap,
-                "position_in_lap": c.position_in_lap,
-                "action": c.action,
-                "content": c.content,
-                "reactions": c.reactions_json,
-                "tokens_in": c.tokens_in,
-                "tokens_out": c.tokens_out,
-            })
-        })
-        .collect();
-
-    let ring_votes: Vec<serde_json::Value> = queries::get_ring_votes(&db, &run_id)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|v| {
-            serde_json::json!({
-                "agent": v.agent,
-                "position": v.position,
-                "confidence": v.confidence,
-                "supports": v.supports,
-                "concerns": v.concerns,
+                "run": {
+                    "id": c.run_id,
+                    "pattern": c.pattern,
+                    "config": c.config_json,
+                    "outcome": c.outcome_json,
+                    "rounds": c.rounds,
+                    "halt_reason": c.halt_reason,
+                    "parent_run_id": c.parent_run_id,
+                },
+                "board_entries": cb,
+                "ring_contributions": cc,
+                "ring_votes": cv,
             })
         })
         .collect();
@@ -758,6 +815,8 @@ pub async fn get_orchestration_trace_detail(Path(run_id): Path<String>) -> Json<
         "board_entries": board_entries,
         "ring_contributions": ring_contributions,
         "ring_votes": ring_votes,
+        "delegation_events": delegation_events,
+        "children": children,
     }))
 }
 
@@ -771,6 +830,8 @@ pub async fn get_orchestration_trace_detail(
         "board_entries": [],
         "ring_contributions": [],
         "ring_votes": [],
+        "delegation_events": [],
+        "children": [],
     }))
 }
 
@@ -831,8 +892,9 @@ mod tests {
     use super::*;
     use crate::core::config::ENV_MUTEX;
     use crate::storage::queries::{
-        BoardEntryRecord, OrchestrationRunRecord, RingVoteRecord, RunRecord, insert_board_entry,
-        insert_orchestration_run, insert_ring_vote, insert_run_with_id,
+        BoardEntryRecord, DelegationEventRecord, OrchestrationRunRecord, RingVoteRecord, RunRecord,
+        insert_board_entry, insert_delegation_event, insert_orchestration_run, insert_ring_vote,
+        insert_run_with_id,
     };
 
     /// Guard that points `ARMADAI_CONFIG_DIR` at a fresh temp dir with a
@@ -988,5 +1050,125 @@ mod tests {
         assert!(value["board_entries"].as_array().unwrap().is_empty());
         assert!(value["ring_contributions"].as_array().unwrap().is_empty());
         assert!(value["ring_votes"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_trace_detail_hierarchical_has_delegation_events_and_children() {
+        let _guard = TempStorageGuard::new();
+        let db = crate::storage::init_db().unwrap();
+
+        // Parent hierarchical run.
+        insert_run_with_id(
+            &db,
+            "h-1",
+            RunRecord {
+                agent: "coordinator".to_string(),
+                input: "go".to_string(),
+                output: "done".to_string(),
+                provider: "orchestration".to_string(),
+                model: String::new(),
+                tokens_in: 10,
+                tokens_out: 20,
+                cost: 0.0,
+                duration_ms: 0,
+                status: "success".to_string(),
+            },
+        )
+        .unwrap();
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: "h-1".to_string(),
+                pattern: "hierarchical".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: None,
+                rounds: 2,
+                halt_reason: None,
+                parent_run_id: None,
+            },
+        )
+        .unwrap();
+        insert_delegation_event(
+            &db,
+            DelegationEventRecord {
+                run_id: "h-1".to_string(),
+                seq: 0,
+                from_agent: "coordinator".to_string(),
+                to_agent: "research-lead".to_string(),
+                message: "analyze".to_string(),
+                depth: 1,
+            },
+        )
+        .unwrap();
+
+        // Nested child blackboard run linked to the parent.
+        insert_run_with_id(
+            &db,
+            "c-1",
+            RunRecord {
+                agent: "orchestration:blackboard".to_string(),
+                input: "analyze".to_string(),
+                output: "x".to_string(),
+                provider: "orchestration".to_string(),
+                model: String::new(),
+                tokens_in: 5,
+                tokens_out: 5,
+                cost: 0.0,
+                duration_ms: 0,
+                status: "success".to_string(),
+            },
+        )
+        .unwrap();
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: "c-1".to_string(),
+                pattern: "blackboard".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: None,
+                rounds: 1,
+                halt_reason: None,
+                parent_run_id: Some("h-1".to_string()),
+            },
+        )
+        .unwrap();
+        insert_board_entry(
+            &db,
+            BoardEntryRecord {
+                run_id: "c-1".to_string(),
+                agent: "searcher".to_string(),
+                round: 1,
+                kind: "finding".to_string(),
+                content: "a finding".to_string(),
+                refs_json: "[]".to_string(),
+                confidence: 0.9,
+                tokens_in: 5,
+                tokens_out: 5,
+            },
+        )
+        .unwrap();
+
+        drop(db);
+
+        // Detail of the hierarchical run.
+        let response = get_orchestration_trace_detail(Path("h-1".to_string())).await;
+        let v = response.0;
+        assert_eq!(v["run"]["pattern"], "hierarchical");
+        let events = v["delegation_events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["to"], "research-lead");
+        let children = v["children"].as_array().unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["run"]["pattern"], "blackboard");
+        assert_eq!(children[0]["board_entries"].as_array().unwrap().len(), 1);
+
+        // The list shows only the root (the nested child is hidden).
+        let list = get_orchestration_trace().await.0;
+        let traces = list["traces"].as_array().unwrap();
+        assert!(traces.iter().any(|t| t["id"] == "h-1"));
+        assert!(
+            !traces.iter().any(|t| t["id"] == "c-1"),
+            "nested child must not appear in the list"
+        );
     }
 }
