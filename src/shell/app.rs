@@ -257,6 +257,12 @@ async fn event_loop(
             break;
         }
 
+        // While the workroom has drill-down focus, Enter is consumed by
+        // handle_key to open the agent detail popup — never submit input.
+        if app.workroom.is_focused() {
+            continue;
+        }
+
         // Check if user submitted input
         if key.code != KeyCode::Enter || app.should_quit() {
             continue;
