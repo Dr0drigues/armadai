@@ -430,6 +430,11 @@ async fn event_loop(
 
         app.add_user_message(&input);
 
+        // Reset the workroom at the START of a new turn (not the end), so the
+        // previous turn's final agent states (Done / who participated) stay
+        // visible between turns instead of snapping back to idle immediately.
+        app.workroom.reset();
+
         // PTY mode execution
         if app.is_pty_mode() {
             execute_pty_turn(
@@ -738,8 +743,9 @@ async fn event_loop(
                 break;
             }
         }
-        // Reset workroom for next turn
-        app.workroom.reset();
+        // NOTE: the workroom is reset at the START of the next turn (see
+        // `add_user_message` above), so the final Done states remain visible
+        // between turns rather than being wiped here.
     }
     Ok(())
 }
