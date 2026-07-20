@@ -15,6 +15,8 @@ mod skills_registry;
 #[cfg(feature = "storage")]
 mod storage;
 #[cfg(feature = "tui")]
+mod theme;
+#[cfg(feature = "tui")]
 mod tui;
 #[cfg(feature = "web")]
 mod web;
