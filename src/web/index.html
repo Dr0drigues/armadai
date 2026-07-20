@@ -863,14 +863,15 @@ function mermaidSanitizeId(name) {
   return id;
 }
 
-// Escape a label so it can't break Mermaid sequenceDiagram syntax
-// (colons, semicolons, newlines, arrows, quotes) and truncate it.
+// Escape a label so it can't break Mermaid sequenceDiagram or flowchart
+// syntax (colons, semicolons, newlines, arrows, quotes, and the `|` that
+// delimits flowchart edge labels) and truncate it.
 function mermaidEscapeLabel(text, maxLen) {
   if (text == null) return '';
   let s = String(text)
     .replace(/\r?\n/g, ' ')
     .replace(/-{1,2}>{1,2}/g, '-')
-    .replace(/[:;"<>]/g, ',')
+    .replace(/[:;"<>|]/g, ',')
     .trim();
   if (maxLen && s.length > maxLen) s = s.slice(0, maxLen - 1) + '…';
   return s;
