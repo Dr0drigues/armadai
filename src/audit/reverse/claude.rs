@@ -139,7 +139,7 @@ fn parse_skill_dir(dir: &Path) -> ImportedSkill {
     let (fm, has_frontmatter) = match fm_raw {
         Some(raw) => {
             let fm = serde_yaml_ng::from_str::<SkillFm>(raw).unwrap_or_else(|e| {
-                issues.push(issue(&skill_md, describe_yaml_error(raw, &e)));
+                issues.push(issue(&skill_md, describe_yaml_error(&content, raw, &e)));
                 SkillFm {
                     name: salvage_field(raw, "name"),
                     description: salvage_field(raw, "description"),
@@ -190,7 +190,7 @@ fn parse_agent_file(path: &Path) -> ImportedAgent {
     let (fm_raw, body) = extract_frontmatter(&content);
     let fm: ClaudeAgentFrontmatter = match fm_raw {
         Some(raw) => serde_yaml_ng::from_str(raw).unwrap_or_else(|e| {
-            issues.push(issue(path, describe_yaml_error(raw, &e)));
+            issues.push(issue(path, describe_yaml_error(&content, raw, &e)));
             ClaudeAgentFrontmatter {
                 name: salvage_field(raw, "name"),
                 description: salvage_field(raw, "description"),
@@ -255,10 +255,23 @@ fn salvage_field(raw: &str, key: &str) -> Option<String> {
 /// Turn a strict-YAML error into a message the Markdown-writing user can
 /// act on. The dominant real-world failure is an unquoted value containing
 /// `: `, which YAML and Claude Code both reject.
-fn describe_yaml_error(raw: &str, err: &serde_yaml_ng::Error) -> String {
+///
+/// `content` is the full file content (to calculate line offset correctly).
+/// `raw` is the extracted frontmatter YAML (between `---` delimiters).
+fn describe_yaml_error(content: &str, raw: &str, err: &serde_yaml_ng::Error) -> String {
     if let Some(loc) = err.location() {
-        // +1: the opening `---` line precedes the frontmatter in the file.
-        let file_line = loc.line() + 1;
+        // Calculate how many lines precede the frontmatter in the original file.
+        // extract_frontmatter() does trim_start(), so we must count stripped lines.
+        let trimmed = content.trim_start();
+        let prefix_len = content.len() - trimmed.len();
+        let lines_before_frontmatter = if prefix_len > 0 {
+            content[..prefix_len].chars().filter(|&c| c == '\n').count()
+        } else {
+            0
+        };
+        // File line (1-indexed) = lines_before + 1 (opening `---`) + 1 (first YAML line) + loc.line()
+        let file_line = lines_before_frontmatter + 2 + loc.line();
+
         if let Some(line) = raw.lines().nth(loc.line().saturating_sub(1))
             && let Some((key, value)) = line.split_once(':')
             && value.contains(": ")
