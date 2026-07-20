@@ -35,6 +35,10 @@ pub struct TrackedAgent {
     pub finished_at: Option<Instant>,
     /// Spinner frame for animation
     pub spinner_frame: usize,
+    /// Short excerpt of the agent's latest action/status (for drill-down).
+    pub last_action: Option<String>,
+    /// State-transition history with timestamps (for drill-down).
+    pub transitions: Vec<(AgentState, std::time::Instant)>,
 }
 
 /// Role in the orchestration hierarchy
@@ -52,6 +56,10 @@ pub struct Workroom {
     agents: Vec<TrackedAgent>,
     visible: bool,
     pinned: bool,
+    /// Buffer for streamed text, used to extract markers that may span chunks.
+    marker_buf: String,
+    /// Name of the agent currently holding the token (for END → Done).
+    current_agent: Option<String>,
 }
 
 impl Workroom {
@@ -60,6 +68,8 @@ impl Workroom {
             agents: Vec::new(),
             visible: false,
             pinned: false,
+            marker_buf: String::new(),
+            current_agent: None,
         }
     }
 
@@ -86,6 +96,8 @@ impl Workroom {
                         started_at: None,
                         finished_at: None,
                         spinner_frame: 0,
+                        last_action: None,
+                        transitions: Vec::new(),
                     });
                 }
             }
@@ -111,6 +123,8 @@ impl Workroom {
                         started_at: None,
                         finished_at: None,
                         spinner_frame: 0,
+                        last_action: None,
+                        transitions: Vec::new(),
                     });
                 }
                 _current_is_lead = true;
@@ -134,6 +148,8 @@ impl Workroom {
                         started_at: None,
                         finished_at: None,
                         spinner_frame: 0,
+                        last_action: None,
+                        transitions: Vec::new(),
                     });
                 }
             }
@@ -185,6 +201,8 @@ impl Workroom {
                 started_at: None,
                 finished_at: None,
                 spinner_frame: 0,
+                last_action: None,
+                transitions: Vec::new(),
             });
         }
     }
@@ -323,14 +341,91 @@ impl Workroom {
         }
     }
 
-    /// Parse a streaming line for delegate markers
-    pub fn parse_streaming_line(&mut self, line: &str) {
-        if let Some(start) = line.find("<!--ARMADAI_DELEGATE:")
-            && let Some(end) = line[start..].find("-->")
-        {
-            let marker = &line[start + 21..start + end];
-            self.on_delegate(marker.trim());
+    /// Push a state transition for an agent, updating timestamps + history.
+    fn set_state(&mut self, name: &str, state: AgentState) {
+        if let Some(agent) = self.agents.iter_mut().find(|a| a.name == name) {
+            match state {
+                AgentState::Working | AgentState::Delegating => {
+                    if agent.started_at.is_none() {
+                        agent.started_at = Some(Instant::now());
+                    }
+                }
+                AgentState::Done => {
+                    agent.finished_at = Some(Instant::now());
+                }
+                AgentState::Idle => {}
+            }
+            agent.transitions.push((state.clone(), Instant::now()));
+            agent.state = state;
         }
+    }
+
+    fn coordinator_name(&self) -> Option<String> {
+        self.agents
+            .iter()
+            .find(|a| a.role == AgentRole::Coordinator)
+            .map(|a| a.name.clone())
+    }
+
+    /// Apply streamed text to the workroom FSM by extracting ArmadAI protocol
+    /// markers. Buffers input so a marker split across chunks is handled.
+    pub fn apply_stream_text(&mut self, chunk: &str) {
+        self.marker_buf.push_str(chunk);
+
+        // Extract complete markers `<!--ARMADAI_...-->` in order.
+        loop {
+            let Some(start) = self.marker_buf.find("<!--ARMADAI_") else {
+                // No marker opener: keep only a possible partial opener tail.
+                keep_tail(&mut self.marker_buf, "<!--ARMADAI_");
+                break;
+            };
+            let Some(rel_end) = self.marker_buf[start..].find("-->") else {
+                // Opener present but not yet closed: retain from `start`.
+                self.marker_buf = self.marker_buf[start..].to_string();
+                break;
+            };
+            let end = start + rel_end;
+            let inner = self.marker_buf[start + 4..end].to_string(); // strip "<!--"
+            self.apply_marker(inner.trim());
+            self.marker_buf = self.marker_buf[end + 3..].to_string(); // strip "-->"
+        }
+    }
+
+    /// Apply a single marker body (e.g. `ARMADAI_DELEGATE:core-specialist`).
+    fn apply_marker(&mut self, body: &str) {
+        if let Some(target) = body.strip_prefix("ARMADAI_DELEGATE:") {
+            let target = target.trim().to_string();
+            if let Some(coord) = self.coordinator_name() {
+                self.set_state(&coord, AgentState::Delegating);
+            }
+            self.set_state(&target, AgentState::Working);
+            self.current_agent = Some(target);
+            self.visible = true;
+        } else if let Some(status) = body.strip_prefix("ARMADAI_META:status=") {
+            if let Some(cur) = self.current_agent.clone()
+                && let Some(agent) = self.agents.iter_mut().find(|a| a.name == cur)
+            {
+                agent.last_action = Some(status.trim().to_string());
+            }
+        } else if body.trim() == "ARMADAI_END" {
+            // NOTE: ArmadAI markers can be echoed in Claude Code recaps
+            // (e.g. `| ... recap ... <!--ARMADAI_END-->`), so a stray END is a
+            // false positive. Only act when an agent is genuinely active; the
+            // authoritative end-of-turn completion is `on_complete()`.
+            if let Some(cur) = self.current_agent.clone()
+                && let Some(agent) = self.agents.iter().find(|a| a.name == cur)
+                && matches!(agent.state, AgentState::Working | AgentState::Delegating)
+            {
+                self.set_state(&cur, AgentState::Done);
+                // Control returns to the coordinator.
+                self.current_agent = self.coordinator_name();
+            }
+        }
+    }
+
+    /// Parse a streaming line for ArmadAI protocol markers.
+    pub fn parse_streaming_line(&mut self, line: &str) {
+        self.apply_stream_text(line);
     }
 
     /// Render the workroom panel
@@ -410,6 +505,26 @@ impl Workroom {
     }
 }
 
+/// Retain only a trailing partial-prefix of `needle` at the end of `buf`
+/// (so a marker split across chunks can still be completed next call).
+fn keep_tail(buf: &mut String, needle: &str) {
+    let max = needle.len().min(buf.len());
+    for k in (1..=max).rev() {
+        if buf.is_char_boundary(buf.len() - k) && needle.starts_with(&buf[buf.len() - k..]) {
+            *buf = buf[buf.len() - k..].to_string();
+            return;
+        }
+    }
+    buf.clear();
+}
+
+#[cfg(test)]
+impl Workroom {
+    pub fn agents_for_test(&self) -> &[TrackedAgent] {
+        &self.agents
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,6 +587,8 @@ orchestration:
             started_at: None,
             finished_at: None,
             spinner_frame: 0,
+            last_action: None,
+            transitions: Vec::new(),
         });
         wr.on_delegate("agent-a");
         wr.on_complete();
@@ -517,5 +634,90 @@ orchestration:
         wr.reset();
         // Should still be visible because pinned
         assert!(wr.is_visible());
+    }
+
+    #[test]
+    fn test_tracked_agent_has_enriched_fields() {
+        let mut wr = Workroom::new();
+        wr.init_from_config("coordinator: dev-lead\nteams:\n  - agents: [core-specialist]\n");
+        // Every tracked agent starts with no last action and an empty transition log.
+        for a in wr.agents_for_test() {
+            assert!(a.last_action.is_none());
+            assert!(a.transitions.is_empty());
+        }
+    }
+
+    fn wr_dev_lead_core() -> Workroom {
+        let mut wr = Workroom::new();
+        // Block-style YAML (the line-based parser does NOT expand inline `[...]`).
+        wr.init_from_config(
+            "coordinator: dev-lead\nteams:\n  - agents:\n      - core-specialist\n",
+        );
+        wr
+    }
+
+    #[test]
+    fn test_apply_stream_text_delegate_sets_working_and_records_transition() {
+        let mut wr = wr_dev_lead_core();
+        wr.apply_stream_text("<!--ARMADAI_DELEGATE:core-specialist-->");
+        let a = wr
+            .agents_for_test()
+            .iter()
+            .find(|a| a.name == "core-specialist")
+            .unwrap();
+        assert_eq!(a.state, AgentState::Working);
+        assert!(!a.transitions.is_empty());
+        let coord = wr
+            .agents_for_test()
+            .iter()
+            .find(|a| a.name == "dev-lead")
+            .unwrap();
+        assert_eq!(coord.state, AgentState::Delegating);
+    }
+
+    #[test]
+    fn test_apply_stream_text_end_marks_current_done() {
+        let mut wr = wr_dev_lead_core();
+        wr.apply_stream_text("<!--ARMADAI_DELEGATE:core-specialist-->");
+        wr.apply_stream_text("<!--ARMADAI_META:status=complete-->");
+        wr.apply_stream_text("<!--ARMADAI_END-->");
+        let a = wr
+            .agents_for_test()
+            .iter()
+            .find(|a| a.name == "core-specialist")
+            .unwrap();
+        assert_eq!(a.state, AgentState::Done);
+        assert_eq!(a.last_action.as_deref(), Some("complete"));
+        assert!(a.finished_at.is_some());
+    }
+
+    #[test]
+    fn test_apply_stream_text_handles_marker_split_across_chunks() {
+        let mut wr = wr_dev_lead_core();
+        wr.apply_stream_text("<!--ARMADAI_DELE");
+        wr.apply_stream_text("GATE:core-specialist-->");
+        let a = wr
+            .agents_for_test()
+            .iter()
+            .find(|a| a.name == "core-specialist")
+            .unwrap();
+        assert_eq!(a.state, AgentState::Working);
+    }
+
+    // Regression: ArmadAI markers can be ECHOED in Claude Code recaps
+    // (e.g. `| Ceci est un recap ... <!--ARMADAI_END-->`). A stray END with no
+    // active agent must be a safe no-op — never mark an idle agent Done, never panic.
+    #[test]
+    fn test_apply_stream_text_stray_end_in_recap_is_noop() {
+        let mut wr = wr_dev_lead_core();
+        wr.apply_stream_text("| Ceci est un recap de Claude Code <!--ARMADAI_END-->");
+        for a in wr.agents_for_test() {
+            assert_ne!(
+                a.state,
+                AgentState::Done,
+                "stray recap END must not mark '{}' done",
+                a.name
+            );
+        }
     }
 }
