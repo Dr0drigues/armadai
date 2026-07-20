@@ -1,5 +1,10 @@
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 
+use crate::core::config::registries_config_path;
+use crate::core::project::find_project_config;
+use crate::core::registries::{
+    RegistriesConfig, RegistryKind, RegistrySource, load_user_registries,
+};
 use crate::registry::{cache, convert, search, sync};
 
 #[derive(Subcommand)]
@@ -33,6 +38,53 @@ pub enum RegistryAction {
         /// Agent name or path in registry
         agent: String,
     },
+    /// Manage custom registry sources (URLs)
+    Sources {
+        #[command(subcommand)]
+        action: SourcesAction,
+    },
+}
+
+/// Custom registry source actions (list/add/remove URLs).
+#[derive(Subcommand)]
+pub enum SourcesAction {
+    /// List all registry sources and their origins
+    List,
+    /// Add a custom registry source to user config
+    Add {
+        /// Registry kind (agents/skills/models)
+        kind: SourceKind,
+        /// Registry source URL
+        url: String,
+    },
+    /// Remove a custom registry source from user config
+    Remove {
+        /// Registry kind (agents/skills/models)
+        kind: SourceKind,
+        /// Registry source URL
+        url: String,
+    },
+}
+
+/// Registry kind for custom sources.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum SourceKind {
+    /// Agent registry sources
+    Agents,
+    /// Skill registry sources
+    Skills,
+    /// Model catalog sources
+    Models,
+}
+
+impl From<SourceKind> for RegistryKind {
+    fn from(kind: SourceKind) -> Self {
+        match kind {
+            SourceKind::Agents => RegistryKind::Agents,
+            SourceKind::Skills => RegistryKind::Skills,
+            SourceKind::Models => RegistryKind::Models,
+        }
+    }
 }
 
 pub async fn execute(action: RegistryAction) -> anyhow::Result<()> {
@@ -42,6 +94,11 @@ pub async fn execute(action: RegistryAction) -> anyhow::Result<()> {
         RegistryAction::List { category } => cmd_list(category.as_deref()).await,
         RegistryAction::Add { agent, force } => cmd_add(&agent, force).await,
         RegistryAction::Info { agent } => cmd_info(&agent).await,
+        RegistryAction::Sources { action } => match action {
+            SourcesAction::List => sources_list().await,
+            SourcesAction::Add { kind, url } => sources_add(kind, &url).await,
+            SourcesAction::Remove { kind, url } => sources_remove(kind, &url).await,
+        },
     }
 }
 
@@ -255,6 +312,134 @@ fn check_staleness() {
     }
 }
 
+/// List all registry sources with their origins (default/user/project).
+async fn sources_list() -> anyhow::Result<()> {
+    let user = load_user_registries();
+    let project = find_project_config()
+        .map(|(_, cfg)| cfg)
+        .and_then(|cfg| cfg.registries);
+
+    // Agents
+    println!("Agents:");
+    println!("  [default] {}", sync::DEFAULT_REGISTRY_URL);
+    for source in &user.agents {
+        println!("  [user]    {}", source.url);
+    }
+    if let Some(ref proj) = project {
+        for source in &proj.agents {
+            println!("  [project] {}", source.url);
+        }
+    }
+
+    // Skills
+    println!("\nSkills:");
+    for default_url in crate::skills_registry::sync::default_sources() {
+        println!("  [default] {}", default_url);
+    }
+    for source in &user.skills {
+        println!("  [user]    {}", source.url);
+    }
+    if let Some(ref proj) = project {
+        for source in &proj.skills {
+            println!("  [project] {}", source.url);
+        }
+    }
+
+    // Models
+    println!("\nModels:");
+    println!(
+        "  [default] {}",
+        crate::model_registry::fetch::MODELS_DEV_URL
+    );
+    for source in &user.models {
+        println!("  [user]    {}", source.url);
+    }
+    if let Some(ref proj) = project {
+        for source in &proj.models {
+            println!("  [project] {}", source.url);
+        }
+    }
+
+    Ok(())
+}
+
+/// Add a custom registry source to user config (idempotent).
+async fn sources_add(kind: SourceKind, url: &str) -> anyhow::Result<()> {
+    let mut config = load_user_registries();
+    let registry_kind: RegistryKind = kind.into();
+
+    let sources = match registry_kind {
+        RegistryKind::Agents => &mut config.agents,
+        RegistryKind::Skills => &mut config.skills,
+        RegistryKind::Models => &mut config.models,
+    };
+
+    // Check if already present (idempotent)
+    if sources.iter().any(|s| s.url == url) {
+        println!("Source already registered: {url}");
+        return Ok(());
+    }
+
+    sources.push(RegistrySource {
+        url: url.to_string(),
+    });
+
+    save_registries_config(&config)?;
+    println!("Added {} registry source: {url}", kind_name(registry_kind));
+    println!("  Saved to {}", registries_config_path().display());
+
+    Ok(())
+}
+
+/// Remove a custom registry source from user config.
+async fn sources_remove(kind: SourceKind, url: &str) -> anyhow::Result<()> {
+    let mut config = load_user_registries();
+    let registry_kind: RegistryKind = kind.into();
+
+    let sources = match registry_kind {
+        RegistryKind::Agents => &mut config.agents,
+        RegistryKind::Skills => &mut config.skills,
+        RegistryKind::Models => &mut config.models,
+    };
+
+    let before = sources.len();
+    sources.retain(|s| s.url != url);
+
+    if sources.len() == before {
+        println!("Source not found in config: {url}");
+        return Ok(());
+    }
+
+    save_registries_config(&config)?;
+    println!(
+        "Removed {} registry source: {url}",
+        kind_name(registry_kind)
+    );
+    println!("  Saved to {}", registries_config_path().display());
+
+    Ok(())
+}
+
+/// Save the registries config to disk, creating parent directory if needed.
+fn save_registries_config(config: &RegistriesConfig) -> anyhow::Result<()> {
+    let path = registries_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let yaml = serde_yaml_ng::to_string(config)?;
+    std::fs::write(&path, yaml)?;
+    Ok(())
+}
+
+/// Human-readable name for a registry kind.
+fn kind_name(kind: RegistryKind) -> &'static str {
+    match kind {
+        RegistryKind::Agents => "agents",
+        RegistryKind::Skills => "skills",
+        RegistryKind::Models => "models",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +474,86 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("missing-agent"));
         assert!(msg.contains("registry search"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn sources_add_and_load() {
+        use tempfile::tempdir;
+
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+
+        let temp = tempdir().unwrap();
+        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", temp.path());
+        }
+
+        let url = "https://custom.example.com/agents.git";
+        sources_add(SourceKind::Agents, url).await.unwrap();
+
+        let loaded = load_user_registries();
+        assert_eq!(loaded.agents.len(), 1);
+        assert_eq!(loaded.agents[0].url, url);
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn sources_remove_existing() {
+        use tempfile::tempdir;
+
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+
+        let temp = tempdir().unwrap();
+        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", temp.path());
+        }
+
+        let url = "https://custom.example.com/agents.git";
+        sources_add(SourceKind::Agents, url).await.unwrap();
+        sources_remove(SourceKind::Agents, url).await.unwrap();
+
+        let loaded = load_user_registries();
+        assert!(loaded.agents.is_empty());
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn sources_add_is_idempotent() {
+        use tempfile::tempdir;
+
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+
+        let temp = tempdir().unwrap();
+        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", temp.path());
+        }
+
+        let url = "https://custom.example.com/agents.git";
+        sources_add(SourceKind::Agents, url).await.unwrap();
+        sources_add(SourceKind::Agents, url).await.unwrap();
+
+        let loaded = load_user_registries();
+        assert_eq!(loaded.agents.len(), 1, "duplicate add should be idempotent");
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
     }
 }

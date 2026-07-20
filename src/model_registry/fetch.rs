@@ -7,8 +7,7 @@ use super::ModelEntry;
 
 const CACHE_FILE: &str = "models-cache.json";
 const CACHE_TTL_SECS: u64 = 86400; // 24h
-#[cfg(feature = "providers-api")]
-const MODELS_DEV_URL: &str = "https://models.dev/api.json";
+pub(crate) const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 /// Cached registry: provider_id → Vec<ModelEntry>
 #[derive(serde::Serialize, serde::Deserialize, Default)]
