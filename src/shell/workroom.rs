@@ -174,16 +174,31 @@ impl Workroom {
     /// Set agents from the stream-json init event.
     /// Filters out Claude Code internal agents and deduplicates.
     pub fn set_agents_from_init(&mut self, agent_names: &[String]) {
+        // Claude Code built-in agents AND the underlying CLI/provider names
+        // (which leak into the init event's agent list) — none of these are
+        // real fleet members and must not appear in the Workroom.
         const INTERNAL_AGENTS: &[&str] = &[
             "general-purpose",
             "statusline-setup",
             "Explore",
             "Plan",
             "claude-code-guide",
+            // Provider CLI names that surface as a pseudo-agent in the stream.
+            "claude",
+            "gemini",
+            "copilot",
+            "cursor",
+            "aider",
+            "codex",
+            "windsurf",
+            "cline",
+            "opencode",
         ];
 
         for name in agent_names {
-            if INTERNAL_AGENTS.contains(&name.as_str()) {
+            // Case-insensitive so "Claude"/"claude" are both filtered.
+            let name_lc = name.to_lowercase();
+            if INTERNAL_AGENTS.iter().any(|i| i.to_lowercase() == name_lc) {
                 continue;
             }
             // Skip if already present — case-insensitive match
@@ -612,6 +627,32 @@ orchestration:
             "coordinator: dev-lead\nteams:\n  - agents:\n      - core-specialist\n",
         );
         wr
+    }
+
+    #[test]
+    fn test_set_agents_from_init_filters_cli_provider_names() {
+        let mut wr = Workroom::new();
+        wr.set_agents_from_init(&[
+            "core-specialist".to_string(),
+            "claude".to_string(), // CLI/provider pseudo-agent — must be filtered
+            "Claude".to_string(), // case-insensitive
+            "gemini".to_string(),
+            "general-purpose".to_string(), // built-in — filtered
+            "qa-specialist".to_string(),
+        ]);
+        let names: Vec<String> = wr
+            .agents_for_test()
+            .iter()
+            .map(|a| a.name.clone())
+            .collect();
+        assert!(names.contains(&"core-specialist".to_string()));
+        assert!(names.contains(&"qa-specialist".to_string()));
+        assert!(
+            !names.iter().any(|n| n.eq_ignore_ascii_case("claude")),
+            "claude leaked: {names:?}"
+        );
+        assert!(!names.contains(&"gemini".to_string()));
+        assert!(!names.contains(&"general-purpose".to_string()));
     }
 
     #[test]
