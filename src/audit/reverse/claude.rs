@@ -269,8 +269,11 @@ fn describe_yaml_error(content: &str, raw: &str, err: &serde_yaml_ng::Error) -> 
         } else {
             0
         };
-        // File line (1-indexed) = lines_before + 1 (opening `---`) + 1 (first YAML line) + loc.line()
-        let file_line = lines_before_frontmatter + 2 + loc.line();
+        // File line (1-indexed) = lines_before + 1 (opening `---`) + loc.line().
+        // `loc.line()` from serde_yaml_ng is already 1-indexed and counts from
+        // the first YAML line (right after the opening `---`), so it must not
+        // be double-counted with an extra "+1 for the first YAML line".
+        let file_line = lines_before_frontmatter + 1 + loc.line();
 
         if let Some(line) = raw.lines().nth(loc.line().saturating_sub(1))
             && let Some((key, value)) = line.split_once(':')
@@ -539,5 +542,59 @@ mod tests {
         assert!(a.metadata.extra.contains_key("effort"));
         assert!(a.metadata.extra.contains_key("paths"));
         assert!(!a.metadata.extra.contains_key("name")); // typed fields never land in extra
+    }
+
+    #[test]
+    fn yaml_error_line_offset_without_leading_blank_lines() {
+        // Regression test: with no blank lines before the opening `---`, the
+        // reported file line must exactly match the physical line of the
+        // erroring field. File layout:
+        //   line 1: ---
+        //   line 2: name: test
+        //   line 3: description: bad : unquoted
+        //   line 4: ---
+        //   line 5: Body
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            ".claude/agents/offset_no_blank.md",
+            "---\nname: test\ndescription: bad : unquoted\n---\nBody",
+        );
+        let config = ClaudeReverseLinker.parse(dir.path());
+        let a = &config.agents[0];
+        assert_eq!(a.issues.len(), 1);
+        assert!(
+            a.issues[0].message.contains("line 3"),
+            "expected exact 'line 3' reference, got: {}",
+            a.issues[0].message
+        );
+    }
+
+    #[test]
+    fn yaml_error_line_offset_with_leading_blank_lines() {
+        // Regression test for the off-by-one offset bug: when the file has
+        // leading blank lines, describe_yaml_error must correctly offset the
+        // error line number relative to the file start (not the trimmed
+        // content), without over- or under-counting. File layout:
+        //   line 1-3: blank
+        //   line 4: ---
+        //   line 5: name: test
+        //   line 6: description: bad : unquoted
+        //   line 7: ---
+        //   line 8: Body
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            ".claude/agents/offset_with_blank.md",
+            "\n\n\n---\nname: test\ndescription: bad : unquoted\n---\nBody",
+        );
+        let config = ClaudeReverseLinker.parse(dir.path());
+        let a = &config.agents[0];
+        assert_eq!(a.issues.len(), 1);
+        assert!(
+            a.issues[0].message.contains("line 6"),
+            "expected exact 'line 6' reference, got: {}",
+            a.issues[0].message
+        );
     }
 }
