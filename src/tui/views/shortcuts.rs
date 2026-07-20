@@ -10,6 +10,11 @@ use crate::tui::app::{App, Tab};
 
 /// Render the keyboard shortcuts bar at the bottom of the screen.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    // Quit and tab-jump are available from every tab (P1-4 / P2-5): document
+    // them once here instead of repeating the pair in each arm below.
+    const QUIT: (&str, &str) = ("q / ^C", "Quit");
+    const JUMP: (&str, &str) = ("1-8", "Jump tab");
+
     let shortcuts = match app.current_tab {
         Tab::Dashboard => vec![
             ("j/k", "Navigate"),
@@ -17,22 +22,33 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ("/", "Search"),
             ("s", "Sort"),
             ("Tab", "Next tab"),
+            JUMP,
             (":", "Commands"),
             ("r", "Refresh"),
-            ("q", "Quit"),
+            QUIT,
         ],
-        Tab::AgentDetail | Tab::PromptDetail | Tab::SkillDetail | Tab::ModelDetail => vec![
+        Tab::AgentDetail | Tab::PromptDetail | Tab::SkillDetail => vec![
+            ("j/k", "Scroll"),
             ("Esc", "Back to list"),
             ("Tab", "Next tab"),
+            JUMP,
             (":", "Commands"),
-            ("q", "Quit"),
+            QUIT,
+        ],
+        Tab::ModelDetail => vec![
+            ("Esc", "Back to list"),
+            ("Tab", "Next tab"),
+            JUMP,
+            (":", "Commands"),
+            QUIT,
         ],
         Tab::StarterDetail => vec![
             ("Esc", "Back to list"),
             ("i", "Init project"),
             ("Tab", "Next tab"),
+            JUMP,
             (":", "Commands"),
-            ("q", "Quit"),
+            QUIT,
         ],
         Tab::Prompts | Tab::Skills => vec![
             ("j/k", "Navigate"),
@@ -40,9 +56,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ("/", "Search"),
             ("s", "Sort"),
             ("Tab", "Next tab"),
+            JUMP,
             (":", "Commands"),
             ("r", "Refresh"),
-            ("q", "Quit"),
+            QUIT,
         ],
         Tab::Starters => vec![
             ("j/k", "Navigate"),
@@ -51,24 +68,30 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ("s", "Sort"),
             ("i", "Init project"),
             ("Tab", "Next tab"),
+            JUMP,
             (":", "Commands"),
             ("r", "Refresh"),
-            ("q", "Quit"),
+            QUIT,
         ],
         Tab::History => vec![
             ("j/k", "Navigate"),
             ("/", "Search"),
             ("s", "Sort"),
             ("Tab", "Next tab"),
+            JUMP,
             (":", "Commands"),
             ("r", "Refresh"),
-            ("q", "Quit"),
+            QUIT,
         ],
         Tab::Costs => vec![
+            ("j/k", "Navigate"),
+            ("/", "Search"),
+            ("s", "Sort"),
             ("Tab", "Next tab"),
+            JUMP,
             (":", "Commands"),
             ("r", "Refresh"),
-            ("q", "Quit"),
+            QUIT,
         ],
         Tab::Models => vec![
             ("j/k", "Navigate"),
@@ -77,9 +100,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ("s", "Sort"),
             ("R", "Sync models.dev"),
             ("Tab", "Next tab"),
+            JUMP,
             (":", "Commands"),
             ("r", "Refresh"),
-            ("q", "Quit"),
+            QUIT,
         ],
         #[cfg(feature = "storage")]
         Tab::Orchestration => vec![
@@ -88,20 +112,23 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ("/", "Search"),
             ("s", "Sort"),
             ("Tab", "Next tab"),
+            JUMP,
             (":", "Commands"),
             ("r", "Refresh"),
-            ("q", "Quit"),
+            QUIT,
         ],
         #[cfg(feature = "storage")]
         Tab::OrchestrationDetail => vec![
+            ("j/k", "Scroll"),
             ("Esc", "Back to list"),
             ("Tab", "Next tab"),
+            JUMP,
             (":", "Commands"),
-            ("q", "Quit"),
+            QUIT,
         ],
         #[cfg(not(feature = "storage"))]
         Tab::Orchestration | Tab::OrchestrationDetail => {
-            vec![("Tab", "Next tab"), (":", "Commands"), ("q", "Quit")]
+            vec![("Tab", "Next tab"), JUMP, (":", "Commands"), QUIT]
         }
     };
 

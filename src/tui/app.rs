@@ -269,6 +269,7 @@ pub struct App {
     pub selected_history: usize,
     // Costs
     pub costs: Vec<CostEntry>,
+    pub selected_cost: usize,
     // Models (from model registry cache)
     pub models_flat: Vec<(String, ModelEntry)>,
     pub selected_model: usize,
@@ -285,6 +286,8 @@ pub struct App {
     pub search_mode: bool,
     pub search_query: String,
     pub sort_mode: SortMode,
+    // Detail view scroll offset (reset on tab switch / selection change).
+    pub detail_scroll: u16,
 }
 
 impl App {
@@ -303,6 +306,7 @@ impl App {
             history: Vec::new(),
             selected_history: 0,
             costs: Vec::new(),
+            selected_cost: 0,
             models_flat: Vec::new(),
             selected_model: 0,
             #[cfg(feature = "storage")]
@@ -314,12 +318,14 @@ impl App {
             search_mode: false,
             search_query: String::new(),
             sort_mode: SortMode::Default,
+            detail_scroll: 0,
         }
     }
 
     pub fn next_tab(&mut self) {
         self.tab_index = (self.tab_index + 1) % Tab::ALL.len();
         self.current_tab = Tab::ALL[self.tab_index];
+        self.detail_scroll = 0;
     }
 
     pub fn prev_tab(&mut self) {
@@ -329,11 +335,25 @@ impl App {
             self.tab_index - 1
         };
         self.current_tab = Tab::ALL[self.tab_index];
+        self.detail_scroll = 0;
     }
 
     pub fn switch_tab(&mut self, tab: Tab) {
         self.current_tab = tab;
         self.tab_index = tab.index();
+        self.detail_scroll = 0;
+    }
+
+    /// Scroll a detail view down by one line (saturating at the content's end
+    /// is handled by ratatui simply rendering nothing past it — no need to
+    /// track content length here).
+    pub fn scroll_detail_down(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_add(1);
+    }
+
+    /// Scroll a detail view up by one line.
+    pub fn scroll_detail_up(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(1);
     }
 
     pub fn load_agents(&mut self) {
@@ -493,6 +513,7 @@ impl App {
         self.selected_skill = 0;
         self.selected_starter = 0;
         self.selected_history = 0;
+        self.selected_cost = 0;
         self.selected_model = 0;
         #[cfg(feature = "storage")]
         {
@@ -509,6 +530,7 @@ impl App {
         self.selected_skill = 0;
         self.selected_starter = 0;
         self.selected_history = 0;
+        self.selected_cost = 0;
         self.selected_model = 0;
         #[cfg(feature = "storage")]
         {
@@ -616,6 +638,16 @@ impl App {
                     self.selected_history = (self.selected_history + 1) % display_indices.len();
                 }
             }
+            Tab::Costs => {
+                let display_indices = filter::apply_filter_and_sort_costs(
+                    &self.costs,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
+                    self.selected_cost = (self.selected_cost + 1) % display_indices.len();
+                }
+            }
             Tab::Models => {
                 let display_indices = filter::apply_filter_and_sort_models(
                     &self.models_flat,
@@ -712,6 +744,20 @@ impl App {
                         display_indices.len() - 1
                     } else {
                         self.selected_history - 1
+                    };
+                }
+            }
+            Tab::Costs => {
+                let display_indices = filter::apply_filter_and_sort_costs(
+                    &self.costs,
+                    &self.search_query,
+                    self.sort_mode,
+                );
+                if !display_indices.is_empty() {
+                    self.selected_cost = if self.selected_cost == 0 {
+                        display_indices.len() - 1
+                    } else {
+                        self.selected_cost - 1
                     };
                 }
             }

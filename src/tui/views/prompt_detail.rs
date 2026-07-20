@@ -29,7 +29,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([
             Constraint::Length(3), // Title
             Constraint::Length(5), // Metadata
-            Constraint::Min(6),    // Body
+            Constraint::Min(0),    // Body (scrollable — j/k)
         ])
         .split(area);
 
@@ -102,6 +102,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )
         // Was `fg(Color::White)` — white-on-white on a light terminal.
         .style(Style::default())
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((app.detail_scroll, 0));
     frame.render_widget(body_widget, chunks[2]);
 }

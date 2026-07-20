@@ -5,7 +5,7 @@ use crate::core::starter::StarterPack;
 use crate::model_registry::ModelEntry;
 #[cfg(feature = "storage")]
 use crate::tui::app::OrchestrationEntry;
-use crate::tui::app::{RunEntry, SortMode};
+use crate::tui::app::{CostEntry, RunEntry, SortMode};
 
 /// Filter items by search query (case-insensitive substring match on name + metadata).
 pub fn filter_agents(agents: &[Agent], query: &str) -> Vec<usize> {
@@ -96,6 +96,19 @@ pub fn filter_history(history: &[RunEntry], query: &str) -> Vec<usize> {
                 || r.provider.to_lowercase().contains(&query)
                 || r.model.to_lowercase().contains(&query)
         })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+pub fn filter_costs(costs: &[CostEntry], query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return (0..costs.len()).collect();
+    }
+    let query = query.to_lowercase();
+    costs
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.agent.to_lowercase().contains(&query))
         .map(|(i, _)| i)
         .collect()
 }
@@ -194,6 +207,36 @@ pub fn apply_filter_and_sort_history(
     sort_by_name(filtered, &names, sort_mode)
 }
 
+/// Apply filtering and sorting to get display indices for costs.
+///
+/// Unlike the other list views, `SortMode::Default` here means **cost
+/// descending** (the most useful ordering for a cost summary) rather than
+/// load order — costs have no inherent "natural" order to fall back to.
+/// `NameAsc`/`NameDesc` still sort by agent name, same as everywhere else.
+pub fn apply_filter_and_sort_costs(
+    costs: &[CostEntry],
+    query: &str,
+    sort_mode: SortMode,
+) -> Vec<usize> {
+    let filtered = filter_costs(costs, query);
+    match sort_mode {
+        SortMode::Default => {
+            let mut sorted = filtered;
+            sorted.sort_by(|&a, &b| {
+                costs[b]
+                    .total_cost
+                    .partial_cmp(&costs[a].total_cost)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            sorted
+        }
+        SortMode::NameAsc | SortMode::NameDesc => {
+            let names: Vec<_> = filtered.iter().map(|&i| &costs[i].agent).collect();
+            sort_by_name(filtered, &names, sort_mode)
+        }
+    }
+}
+
 /// Apply filtering and sorting to get display indices for models.
 pub fn apply_filter_and_sort_models(
     models: &[(String, ModelEntry)],
@@ -236,4 +279,42 @@ pub fn apply_filter_and_sort_orchestration(
     let filtered = filter_orchestration(orchestration, query);
     let names: Vec<_> = filtered.iter().map(|&i| &orchestration[i].run_id).collect();
     sort_by_name(filtered, &names, sort_mode)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cost(agent: &str, total_cost: f64) -> CostEntry {
+        CostEntry {
+            agent: agent.to_string(),
+            total_runs: 1,
+            total_cost,
+            total_tokens_in: 0,
+            total_tokens_out: 0,
+        }
+    }
+
+    #[test]
+    fn costs_default_sort_is_cost_descending() {
+        let costs = vec![cost("alpha", 0.5), cost("beta", 2.0), cost("gamma", 1.0)];
+        let indices = apply_filter_and_sort_costs(&costs, "", SortMode::Default);
+        let ordered: Vec<&str> = indices.iter().map(|&i| costs[i].agent.as_str()).collect();
+        assert_eq!(ordered, vec!["beta", "gamma", "alpha"]);
+    }
+
+    #[test]
+    fn costs_name_asc_sorts_alphabetically() {
+        let costs = vec![cost("gamma", 1.0), cost("alpha", 0.5), cost("beta", 2.0)];
+        let indices = apply_filter_and_sort_costs(&costs, "", SortMode::NameAsc);
+        let ordered: Vec<&str> = indices.iter().map(|&i| costs[i].agent.as_str()).collect();
+        assert_eq!(ordered, vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn costs_filter_by_agent_name() {
+        let costs = vec![cost("alpha", 0.5), cost("beta", 2.0)];
+        let indices = apply_filter_and_sort_costs(&costs, "alp", SortMode::Default);
+        assert_eq!(indices, vec![0]);
+    }
 }
