@@ -59,6 +59,7 @@ pub(super) fn c01_name_collisions(ctx: &AuditContext) -> Vec<Finding> {
 /// near-identical descriptions: the router cannot pick reliably.
 /// Agent↔agent redundancy stays A07 (higher threshold, Info): merging two
 /// agents is a design suggestion, an ambiguous skill trigger is a defect.
+/// Findings are aggregated into clusters (like A06/C02) to avoid N² noise.
 pub(super) fn c03_activation_overlap(ctx: &AuditContext) -> Vec<Finding> {
     let threshold = ctx.settings.activation_similarity;
     // (kind, name, path, description)
@@ -73,32 +74,61 @@ pub(super) fn c03_activation_overlap(ctx: &AuditContext) -> Vec<Finding> {
             surfaces.push(("agent", &a.name, &a.source_path, d));
         }
     }
-    let mut findings = Vec::new();
+
+    // Build similarity graph with UnionFind
+    let mut uf = super::UnionFind::new(surfaces.len());
     for i in 0..surfaces.len() {
         for j in (i + 1)..surfaces.len() {
-            let (ka, na, pa, da) = surfaces[i];
-            let (kb, nb, pb, db) = surfaces[j];
+            let (ka, _, _, da) = surfaces[i];
+            let (kb, _, _, db) = surfaces[j];
             if ka == "agent" && kb == "agent" {
                 continue; // A07's turf
             }
             if jaccard(da, db) >= threshold {
-                findings.push(Finding {
-                    rule: "C03",
-                    severity: Severity::Warning,
-                    file: pa.to_path_buf(),
-                    related: vec![pb.to_path_buf()],
-                    message: format!(
-                        "{ka} '{na}' and {kb} '{nb}' have overlapping activation descriptions — routing is ambiguous"
-                    ),
-                    suggestion: Some(
-                        "sharpen the descriptions so each one triggers on distinct intents"
-                            .to_string(),
-                    ),
-                });
+                uf.union(i, j);
             }
         }
     }
-    findings
+
+    // Group into clusters
+    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..surfaces.len() {
+        clusters.entry(uf.find(i)).or_default().push(i);
+    }
+
+    // Create one finding per cluster (size >= 2)
+    clusters
+        .into_values()
+        .filter(|members| members.len() >= 2)
+        .map(|members| {
+            let (_, _, first_path, _) = surfaces[members[0]];
+            let related: Vec<_> = members[1..]
+                .iter()
+                .map(|&i| surfaces[i].2.to_path_buf())
+                .collect();
+            let names: Vec<String> = members
+                .iter()
+                .map(|&i| {
+                    let (kind, name, _, _) = surfaces[i];
+                    format!("{kind} '{name}'")
+                })
+                .collect();
+            Finding {
+                rule: "C03",
+                severity: Severity::Warning,
+                file: first_path.to_path_buf(),
+                related,
+                message: format!(
+                    "{} assets have overlapping activation descriptions — routing is ambiguous: {}",
+                    members.len(),
+                    names.join(", ")
+                ),
+                suggestion: Some(
+                    "sharpen the descriptions so each one triggers on distinct intents".to_string(),
+                ),
+            }
+        })
+        .collect()
 }
 
 /// Prefix of a glob up to its first wildcard — a cheap, dependency-free
@@ -196,6 +226,7 @@ pub(super) fn c02_scope_overlap(ctx: &AuditContext) -> Vec<Finding> {
 }
 
 /// C05 — same scope, inconsistent tool restriction (one locked, one open).
+/// Findings are aggregated into clusters to avoid N² noise.
 pub(super) fn c05_inconsistent_tools(ctx: &AuditContext) -> Vec<Finding> {
     fn permissive(tools: &Option<Vec<String>>) -> bool {
         match tools {
@@ -204,21 +235,59 @@ pub(super) fn c05_inconsistent_tools(ctx: &AuditContext) -> Vec<Finding> {
         }
     }
     let scoped = scoped_agents(ctx);
-    overlapping_pairs(&scoped)
+    let conflicting_pairs: Vec<(usize, usize)> = overlapping_pairs(&scoped)
         .into_iter()
         .filter(|&(i, j)| {
             permissive(&scoped[i].0.metadata.tools) != permissive(&scoped[j].0.metadata.tools)
         })
-        .map(|(i, j)| Finding {
-            rule: "C05",
-            severity: Severity::Info,
-            file: scoped[i].0.source_path.clone(),
-            related: vec![scoped[j].0.source_path.clone()],
-            message: format!(
-                "agents '{}' and '{}' share a path scope but one restricts tools and the other does not",
-                scoped[i].0.name, scoped[j].0.name
-            ),
-            suggestion: Some("align the tool policies of agents working on the same files".to_string()),
+        .collect();
+
+    if conflicting_pairs.is_empty() {
+        return Vec::new();
+    }
+
+    // Build clusters of agents with conflicting tool policies
+    let mut uf = super::UnionFind::new(scoped.len());
+    for &(i, j) in &conflicting_pairs {
+        uf.union(i, j);
+    }
+
+    let mut clusters: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    // Collect all indices involved in conflicts
+    for &(i, j) in &conflicting_pairs {
+        let root_i = uf.find(i);
+        let root_j = uf.find(j);
+        clusters.entry(root_i).or_default().push(i);
+        clusters.entry(root_j).or_default().push(j);
+    }
+    // Deduplicate indices within each cluster
+    for cluster in clusters.values_mut() {
+        cluster.sort_unstable();
+        cluster.dedup();
+    }
+
+    clusters
+        .into_values()
+        .filter(|members| members.len() >= 2)
+        .map(|members| {
+            let names: Vec<&str> = members.iter().map(|&i| scoped[i].0.name.as_str()).collect();
+            Finding {
+                rule: "C05",
+                severity: Severity::Info,
+                file: scoped[members[0]].0.source_path.clone(),
+                related: members[1..]
+                    .iter()
+                    .map(|&i| scoped[i].0.source_path.clone())
+                    .collect(),
+                message: format!(
+                    "{} agents share path scopes but have inconsistent tool policies: {}",
+                    members.len(),
+                    names.join(", ")
+                ),
+                suggestion: Some(
+                    "align the tool policies of agents working on the same files".to_string(),
+                ),
+            }
         })
         .collect()
 }
@@ -241,8 +310,18 @@ pub(super) fn c04_double_ownership(ctx: &AuditContext) -> Vec<Finding> {
         return Vec::new();
     }
     let mut claims: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut in_code_fence = false;
     for line in instructions.content.lines() {
         let trimmed = line.trim();
+        // Track code fence boundaries to skip their content
+        if trimmed.starts_with("```") {
+            in_code_fence = !in_code_fence;
+            continue;
+        }
+        // Skip lines inside code fences
+        if in_code_fence {
+            continue;
+        }
         if !trimmed.starts_with('|') {
             continue;
         }
@@ -251,6 +330,10 @@ pub(super) fn c04_double_ownership(ctx: &AuditContext) -> Vec<Finding> {
             continue;
         };
         for cell in &cells {
+            // Skip URLs (contain protocol separator)
+            if cell.contains("://") {
+                continue;
+            }
             if cell.contains('/') && !cell.contains(' ') && !cell.is_empty() {
                 let owners = claims.entry(*cell).or_default();
                 if !owners.contains(&agent) {
