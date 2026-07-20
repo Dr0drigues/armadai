@@ -73,6 +73,10 @@ pub struct ShellApp {
     popup_scroll: u16,
     /// Should quit
     should_quit: bool,
+    /// "Press Esc again to quit" is armed: the previous key was a normal
+    /// (non-focused, no-popup) Esc with an empty input box. Any other key
+    /// (including a non-consecutive Esc after something else) disarms it.
+    esc_armed: bool,
     /// PTY mode enabled
     pty_mode: bool,
     /// Agent workroom panel
@@ -106,6 +110,7 @@ impl ShellApp {
             cost: 0.0,
             last_duration: Duration::from_secs(0),
             should_quit: false,
+            esc_armed: false,
             pty_mode: false,
             workroom: super::workroom::Workroom::new(),
         }
@@ -509,6 +514,13 @@ impl ShellApp {
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         use crossterm::event::{KeyCode, KeyModifiers};
 
+        // Disarm "press Esc again to quit" on any key that isn't Esc, so the
+        // double-Esc must be consecutive — typing (or any other key) cancels
+        // the armed quit and drops back to the normal hint bar.
+        if key.code != KeyCode::Esc {
+            self.esc_armed = false;
+        }
+
         // If popup is active, handle popup keys first
         if self.has_popup() {
             match key.code {
@@ -567,10 +579,23 @@ impl ShellApp {
         }
 
         match key.code {
-            // Handle Ctrl+C and Esc for quit
+            // Safe Esc (audit P1-3): a non-empty input box is too easy to
+            // lose to a stray Esc, so the first press just clears it. With
+            // an empty box, Esc arms a "press again to quit" state instead
+            // of quitting outright; a second, consecutive Esc confirms.
             KeyCode::Esc => {
-                self.should_quit = true;
-                true
+                if !self.input.is_empty() {
+                    self.input.clear();
+                    self.cursor = 0;
+                    self.esc_armed = false;
+                    false
+                } else if self.esc_armed {
+                    self.should_quit = true;
+                    true
+                } else {
+                    self.esc_armed = true;
+                    false
+                }
             }
             KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
                 self.should_quit = true;
@@ -736,6 +761,7 @@ impl ShellApp {
                 Constraint::Length(1),                                     // Header
                 Constraint::Min(0),                                        // Messages area
                 Constraint::Length(1),                                     // Statusbar
+                Constraint::Length(1),                                     // Shortcut hint bar
                 Constraint::Length(self.input_height(frame.area().width)), // Input (dynamic)
             ])
             .split(frame.area());
@@ -776,8 +802,11 @@ impl ShellApp {
         // Status bar
         self.render_statusbar(frame, chunks[2]);
 
+        // Shortcut hint bar (audit P1-1) — persistent, single line
+        self.render_hint_bar(frame, chunks[3]);
+
         // Input line
-        self.render_input_line(frame, chunks[3]);
+        self.render_input_line(frame, chunks[4]);
 
         // Popup overlay (rendered on top of everything)
         if let Some(ref content) = self.popup {
@@ -952,6 +981,27 @@ impl ShellApp {
         let statusbar = Paragraph::new(status_text).style(theme::muted());
 
         frame.render_widget(statusbar, area);
+    }
+
+    /// Persistent shortcut hint bar (audit P1-1). Normally a single muted
+    /// line of the always-available shortcuts; while a quit-confirming Esc
+    /// is armed (P1-3) it's replaced with a prominent transient warning so
+    /// the user knows a second Esc will exit.
+    fn render_hint_bar(&self, frame: &mut Frame, area: Rect) {
+        let (text, style) = if self.esc_armed {
+            (
+                "Press Esc again to quit (or keep typing to cancel)",
+                theme::warning(),
+            )
+        } else {
+            (
+                "Enter send · Ctrl+W workroom · /help commands · Ctrl+L clear · Esc×2 / Ctrl+C quit",
+                theme::muted(),
+            )
+        };
+
+        let hint_bar = Paragraph::new(text).style(style);
+        frame.render_widget(hint_bar, area);
     }
 
     /// Calculate dynamic input height based on content and terminal width.
@@ -1195,6 +1245,67 @@ mod tests {
         assert_eq!(result, Some("test".to_string()));
         assert!(app.input.is_empty());
         assert_eq!(app.cursor, 0);
+    }
+
+    #[test]
+    fn test_esc_with_nonempty_input_clears_instead_of_quitting() {
+        let mut app = ShellApp::new("Gemini".to_string());
+        app.input = "hello".to_string();
+        app.cursor = 5;
+
+        let quit = app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+
+        assert!(!quit);
+        assert!(!app.should_quit);
+        assert!(app.input.is_empty());
+        assert_eq!(app.cursor, 0);
+        assert!(!app.esc_armed);
+    }
+
+    #[test]
+    fn test_esc_twice_on_empty_input_quits() {
+        let mut app = ShellApp::new("Gemini".to_string());
+
+        let quit1 = app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+        assert!(!quit1);
+        assert!(!app.should_quit);
+        assert!(app.esc_armed);
+
+        let quit2 = app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+        assert!(quit2);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_other_key_disarms_esc() {
+        let mut app = ShellApp::new("Gemini".to_string());
+
+        app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+        assert!(app.esc_armed);
+
+        // Any non-Esc key (here, a no-op navigation key that leaves the
+        // input buffer empty) disarms the pending quit.
+        app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Left));
+        assert!(!app.esc_armed);
+
+        let quit = app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+        assert!(
+            !quit,
+            "a fresh, non-consecutive Esc should re-arm, not quit"
+        );
+        assert!(app.esc_armed);
+    }
+
+    #[test]
+    fn test_ctrl_c_quits_immediately() {
+        let mut app = ShellApp::new("Gemini".to_string());
+        let ctrl_c = KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+
+        assert!(app.handle_key(ctrl_c));
+        assert!(app.should_quit);
     }
 
     #[test]
