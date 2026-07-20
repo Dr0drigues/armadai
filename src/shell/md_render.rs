@@ -12,19 +12,29 @@ use ratatui::{
     text::{Line, Span},
 };
 
-// ── Colors (GitHub dark theme) ──────────────────────────────────
+// ── Colors ────────────────────────────────────────────────────────
+//
+// Named colors only (no `Rgb(...)`) so markdown stays legible on both
+// dark and light terminals — named colors resolve against the terminal's
+// own palette instead of forcing an exact truecolor value that may have
+// only been checked against a dark background. See
+// docs/proposals/ux-audit-tui-2026-07-20.md P0-2.
+//
+// `CODE_FG`/`CODE_BG` are the one intentional exception: they're always
+// used as a paired fg+bg (a self-contained "code box"), so the contrast
+// is fixed regardless of the surrounding terminal theme.
 
-const H1_COLOR: Color = Color::Rgb(88, 166, 255);
-const H2_COLOR: Color = Color::Rgb(63, 185, 80);
-const H3_COLOR: Color = Color::Rgb(210, 153, 34);
-const H4_COLOR: Color = Color::Rgb(139, 148, 158);
+const H1_COLOR: Color = Color::Blue;
+const H2_COLOR: Color = Color::Green;
+const H3_COLOR: Color = Color::Yellow;
+const H4_COLOR: Color = Color::DarkGray;
 const CODE_FG: Color = Color::Rgb(230, 237, 243);
 const CODE_BG: Color = Color::Rgb(55, 62, 71);
-const LINK_COLOR: Color = Color::Rgb(88, 166, 255);
-const QUOTE_COLOR: Color = Color::Rgb(139, 148, 158);
+const LINK_COLOR: Color = Color::Blue;
+const QUOTE_COLOR: Color = Color::DarkGray;
 const SEPARATOR_COLOR: Color = Color::DarkGray;
 const TABLE_BORDER_COLOR: Color = Color::DarkGray;
-const TABLE_HEADER_COLOR: Color = Color::Rgb(88, 166, 255);
+const TABLE_HEADER_COLOR: Color = Color::Blue;
 
 // ── Public API ──────────────────────────────────────────────────
 

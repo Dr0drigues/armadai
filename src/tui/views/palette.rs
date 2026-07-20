@@ -1,11 +1,12 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
+use crate::theme;
 use crate::tui::app::App;
 
 /// Render the command palette as a centered overlay.
@@ -34,11 +35,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .title(" Command Palette ")
-            .title_style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .title_style(theme::heading())
             .border_style(Style::default().fg(Color::Cyan)),
     );
     frame.render_widget(input, chunks[0]);
@@ -51,9 +48,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         .enumerate()
         .map(|(i, cmd)| {
             let style = if i == app.palette.selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                theme::selection()
             } else {
                 Style::default()
             };

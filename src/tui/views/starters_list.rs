@@ -1,10 +1,11 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, Borders, Paragraph, Row, Table},
 };
 
+use crate::theme;
 use crate::tui::app::App;
 use crate::tui::filter;
 use crate::tui::widgets::search_bar;
@@ -50,9 +51,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             };
             let p = &app.starters[starter_i];
             let style = if display_i == app.selected_starter {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                theme::selection()
             } else {
                 Style::default()
             };

@@ -13,6 +13,7 @@ use ratatui::{
 use std::time::Instant;
 
 use super::SPINNER_FRAMES as SPINNER;
+use crate::theme;
 
 /// Agent activity state
 #[derive(Debug, Clone, PartialEq)]
@@ -514,32 +515,20 @@ impl Workroom {
                         .started_at
                         .map(|s| format!(" {:.0}s", s.elapsed().as_secs_f64()))
                         .unwrap_or_default();
-                    (
-                        spinner,
-                        format!("working{elapsed}"),
-                        Style::default().fg(Color::Green),
-                    )
+                    (spinner, format!("working{elapsed}"), theme::working())
                 }
                 AgentState::Delegating => {
                     let spinner = SPINNER[agent.spinner_frame];
-                    (
-                        spinner,
-                        "delegating".to_string(),
-                        Style::default().fg(Color::Yellow),
-                    )
+                    (spinner, "delegating".to_string(), theme::delegating())
                 }
-                AgentState::Done => ("✓", "done".to_string(), Style::default().fg(Color::Green)),
-                AgentState::Idle => (
-                    "○",
-                    "idle".to_string(),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                AgentState::Done => ("✓", "done".to_string(), theme::done()),
+                AgentState::Idle => ("○", "idle".to_string(), theme::muted()),
             };
 
-            let role_color = match agent.role {
-                AgentRole::Coordinator => Color::Rgb(231, 76, 60), // red
-                AgentRole::Lead => Color::Rgb(243, 156, 18),       // orange
-                AgentRole::Agent => Color::Rgb(88, 166, 255),      // blue
+            let role_style = match agent.role {
+                AgentRole::Coordinator => theme::role_coordinator(),
+                AgentRole::Lead => theme::role_lead(),
+                AgentRole::Agent => theme::role_agent(),
             };
 
             let indent = match agent.role {
@@ -550,12 +539,9 @@ impl Workroom {
 
             let is_selected = self.focused && idx == self.selected;
             let name_style = if is_selected {
-                Style::default()
-                    .fg(role_color)
-                    .bold()
-                    .add_modifier(Modifier::REVERSED)
+                role_style.add_modifier(Modifier::REVERSED)
             } else {
-                Style::default().fg(role_color).bold()
+                role_style
             };
             let marker = if is_selected { "▸ " } else { "" };
 
@@ -571,7 +557,7 @@ impl Workroom {
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No agents configured",
-                Style::default().fg(Color::DarkGray),
+                theme::muted(),
             )));
         }
 
@@ -580,25 +566,22 @@ impl Workroom {
         if self.focused {
             lines.push(Line::from(Span::styled(
                 "Ctrl+W exit · j/k select",
-                Style::default().fg(Color::DarkGray),
+                theme::muted(),
             )));
-            lines.push(Line::from(Span::styled(
-                "Enter detail",
-                Style::default().fg(Color::DarkGray),
-            )));
+            lines.push(Line::from(Span::styled("Enter detail", theme::muted())));
         } else {
-            lines.push(Line::from(Span::styled(
-                "Ctrl+W focus",
-                Style::default().fg(Color::DarkGray),
-            )));
+            lines.push(Line::from(Span::styled("Ctrl+W focus", theme::muted())));
         }
 
+        // NOTE: the border color (`Rgb(48, 54, 61)`) is left as-is — it's a
+        // decorative box-drawing accent, not body text, and is legible on
+        // both dark and light terminals. See theme-report.md follow-ups.
         let panel = Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Rgb(48, 54, 61)))
                 .title(" Workroom ")
-                .title_style(Style::default().fg(Color::Cyan).bold()),
+                .title_style(theme::heading()),
         );
 
         frame.render_widget(panel, area);

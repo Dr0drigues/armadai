@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use crate::theme;
 use crate::tui::app::App;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -51,12 +52,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Title bar
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!(" {} ", agent.name),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!(" {} ", agent.name), theme::heading()),
         Span::styled(
             format!("  ({})", agent.source.display()),
             Style::default().fg(Color::DarkGray),
@@ -91,14 +87,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if !meta.tags.is_empty() {
         meta_lines.push(Line::from(vec![
             Span::styled("Tags:     ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(meta.tags.join(", "), Style::default().fg(Color::Yellow)),
+            Span::styled(meta.tags.join(", "), theme::tag()),
         ]));
     }
 
     if !meta.stacks.is_empty() {
         meta_lines.push(Line::from(vec![
             Span::styled("Stacks:   ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(meta.stacks.join(", "), Style::default().fg(Color::Green)),
+            Span::styled(meta.stacks.join(", "), theme::stack()),
         ]));
     }
 
@@ -232,7 +228,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .title(" System Prompt ")
                 .title_style(Style::default().add_modifier(Modifier::BOLD)),
         )
-        .style(Style::default().fg(Color::White))
+        // Was `fg(Color::White)` — white-on-white on a light terminal.
+        .style(Style::default())
         .wrap(Wrap { trim: false });
     frame.render_widget(prompt_widget, chunks[3 + orch_offset]);
 

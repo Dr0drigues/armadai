@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
 use super::SPINNER_FRAMES;
+use crate::theme;
 
 /// A single message in the conversation
 #[derive(Debug, Clone)]
@@ -944,11 +945,11 @@ impl ShellApp {
             )
         };
 
-        let statusbar = Paragraph::new(status_text).style(
-            Style::default()
-                .fg(Color::DarkGray)
-                .bg(Color::Rgb(22, 27, 34)),
-        );
+        // No fixed background here (was `bg(Rgb(22, 27, 34))`, a near-black
+        // strip that rendered dark-grey-on-near-black on light terminals —
+        // unreadable). A named fg on the terminal's own default background
+        // stays legible on both dark and light themes.
+        let statusbar = Paragraph::new(status_text).style(theme::muted());
 
         frame.render_widget(statusbar, area);
     }

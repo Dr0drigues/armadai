@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use crate::theme;
 use crate::tui::app::App;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -34,12 +35,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Title bar
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!(" {} ", prompt.name),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!(" {} ", prompt.name), theme::heading()),
         Span::styled(
             format!("  ({})", prompt.source.display()),
             Style::default().fg(Color::DarkGray),
@@ -104,7 +100,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .title(" Content ")
                 .title_style(Style::default().add_modifier(Modifier::BOLD)),
         )
-        .style(Style::default().fg(Color::White))
+        // Was `fg(Color::White)` — white-on-white on a light terminal.
+        .style(Style::default())
         .wrap(Wrap { trim: false });
     frame.render_widget(body_widget, chunks[2]);
 }
