@@ -31,6 +31,12 @@ pub mod pty_runner;
 #[cfg(feature = "tui")]
 pub mod workroom;
 
+/// Braille spinner frames shared by the shell TUI (`tui.rs`) and the
+/// workroom panel (`workroom.rs`) so the two animations stay in sync and
+/// the frame set is defined exactly once.
+#[cfg(feature = "tui")]
+pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 // Re-exported for external use when shell command is implemented
 #[allow(unused_imports)]
 pub use parser::{ParsedResponse, parse_response};

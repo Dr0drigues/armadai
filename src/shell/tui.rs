@@ -16,7 +16,7 @@ use ratatui::{
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
-const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+use super::SPINNER_FRAMES;
 
 /// A single message in the conversation
 #[derive(Debug, Clone)]

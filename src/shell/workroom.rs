@@ -12,6 +12,8 @@ use ratatui::{
 };
 use std::time::Instant;
 
+use super::SPINNER_FRAMES as SPINNER;
+
 /// Agent activity state
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentState {
@@ -48,8 +50,6 @@ pub enum AgentRole {
     Lead,
     Agent,
 }
-
-const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// The workroom tracks all agents and their states
 pub struct Workroom {
