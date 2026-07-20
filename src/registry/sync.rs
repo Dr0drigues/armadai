@@ -35,27 +35,18 @@ pub fn sources_dir() -> PathBuf {
     registry_cache_dir().join("sources")
 }
 
-/// Derive a filesystem-safe, stable key for a registry source URL.
+/// Derive a filesystem-safe, collision-resistant key for a registry source
+/// URL.
 ///
-/// GitHub URLs (`https://github.com/owner/repo[.git]`) are keyed as
-/// `owner/repo`, mirroring `skills_registry::sync::repo_dir`'s layout so the
-/// two registries stay consistent. Any other URL (e.g. a self-hosted git
-/// remote) falls back to a sanitized version of the whole URL so every
-/// source still gets its own directory.
+/// Delegates to `core::registries::cache_key`, the single sanitization
+/// scheme shared with `model_registry::fetch::source_cache_path` (previously
+/// each had its own ad hoc, collision-prone sanitization — see B2 Task 2
+/// review). The key always carries a hash suffix derived from the full URL,
+/// so two sources that happen to sanitize to the same readable prefix (or a
+/// prefix that would otherwise be a bare `.`/`..`, which is unsafe as a path
+/// segment) still get distinct, safe directory names.
 pub fn source_key(url: &str) -> String {
-    match crate::skills_registry::sync::parse_source(url) {
-        Some((owner, repo)) => format!("{owner}/{repo}"),
-        None => url
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect(),
-    }
+    crate::core::registries::cache_key(url)
 }
 
 /// Directory for a source already identified by its [`source_key`]. Used to
@@ -87,6 +78,10 @@ pub fn sync_source(url: &str) -> anyhow::Result<PathBuf> {
 /// sources are logged and skipped rather than aborting the whole sync, so a
 /// single unreachable custom registry doesn't block the default one (same
 /// approach as `skills_registry::sync::sync_all`).
+///
+/// Records a sync-completed marker (see [`mark_synced`]) when at least one
+/// source synced successfully, so [`is_stale`] can report accurate freshness
+/// afterwards.
 pub fn registry_sync(sources: &[String]) -> anyhow::Result<Vec<PathBuf>> {
     let mut dirs = Vec::new();
     for url in sources {
@@ -94,6 +89,11 @@ pub fn registry_sync(sources: &[String]) -> anyhow::Result<Vec<PathBuf>> {
             Ok(dir) => dirs.push(dir),
             Err(e) => eprintln!("  warn: failed to sync {url}: {e}"),
         }
+    }
+    if !dirs.is_empty()
+        && let Err(e) = mark_synced()
+    {
+        eprintln!("  warn: failed to record sync timestamp: {e}");
     }
     Ok(dirs)
 }
@@ -138,17 +138,47 @@ fn pull(repo: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Check if the registry cache was last synced more than `days` ago.
-/// Returns `true` if a re-sync is recommended (mirrors
-/// `skills_registry::sync::is_stale`, checking the shared sources root
-/// rather than a single repo since there may be several sources now).
-pub fn is_stale(days: u64) -> bool {
-    let dir = sources_dir();
-    if !dir.is_dir() {
-        return true;
-    }
+/// Marker file touched at the end of a successful [`registry_sync`] run, and
+/// read by [`is_stale`] to determine freshness.
+///
+/// A plain directory mtime (the previous approach — see git history) is
+/// *not* a reliable freshness signal here: `sources_dir()` is the parent of
+/// every source's own clone, and pulling into a subdirectory that already
+/// exists does not bump the parent directory's mtime on most filesystems.
+/// That made `is_stale` report "outdated" forever after the very first sync,
+/// even immediately after a successful `armadai registry sync`. A dedicated
+/// marker file, rewritten on every successful sync, sidesteps that.
+fn last_sync_marker() -> PathBuf {
+    sources_dir().join(".last_sync")
+}
 
-    match std::fs::metadata(&dir).and_then(|m| m.modified()) {
+/// Record that the registry was just synced successfully.
+///
+/// Called automatically by [`registry_sync`]; exposed so callers (and
+/// tests) can record a sync without needing to actually shell out to `git`.
+pub fn mark_synced() -> anyhow::Result<()> {
+    let marker = last_sync_marker();
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&marker, b"")?;
+    Ok(())
+}
+
+/// The pre-multi-source registry clone directory (a single `repo/` folder,
+/// used before B2 Lot A Task 2 introduced per-source `sources/<key>/`
+/// directories). Kept around only so a cache from an older ArmadAI version
+/// can be *detected* (see `cache::has_legacy_cache`) rather than silently
+/// served or mistaken for an empty registry.
+pub fn legacy_repo_dir() -> PathBuf {
+    registry_cache_dir().join("repo")
+}
+
+/// Check if the registry cache was last synced more than `days` ago.
+/// Returns `true` if a re-sync is recommended. Based on [`mark_synced`]'s
+/// marker file rather than any directory's mtime (see [`last_sync_marker`]).
+pub fn is_stale(days: u64) -> bool {
+    match std::fs::metadata(last_sync_marker()).and_then(|m| m.modified()) {
         Ok(modified) => {
             let age = std::time::SystemTime::now()
                 .duration_since(modified)
@@ -165,10 +195,14 @@ mod tests {
     use crate::core::registries::{RegistriesConfig, RegistrySource};
 
     #[test]
-    fn source_key_github_url_uses_owner_repo() {
+    fn source_key_github_url_is_readable_and_stable() {
+        let key = source_key("https://github.com/github/awesome-copilot.git");
+        assert!(key.contains("github"));
+        assert!(key.contains("awesome-copilot"));
+        // Deterministic: same URL always maps to the same key.
         assert_eq!(
-            source_key("https://github.com/github/awesome-copilot.git"),
-            "github/awesome-copilot"
+            key,
+            source_key("https://github.com/github/awesome-copilot.git")
         );
     }
 
@@ -183,6 +217,122 @@ mod tests {
         // No path separators or other characters that would escape the
         // "sources" cache directory.
         assert!(!key.contains('/'));
+    }
+
+    #[test]
+    fn source_key_distinguishes_urls_with_same_readable_prefix() {
+        // Two distinct URLs (different owners) whose naive sanitization
+        // could plausibly collide must still yield distinct keys — this is
+        // what the hash suffix in `core::registries::cache_key` guarantees.
+        let a = source_key("https://github.com/acme/registry");
+        let b = source_key("https://github.com/acme/registry-fork");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn source_key_traversal_like_input_is_not_dot_dot() {
+        // A URL that sanitizes to a bare ".." would be a path-traversal-
+        // shaped directory name; the hash suffix rules that out.
+        let key = source_key("..");
+        assert_ne!(key, "..");
+        assert_ne!(key, ".");
+    }
+
+    #[test]
+    fn is_stale_true_when_never_synced() {
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
+        }
+
+        assert!(is_stale(7));
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
+    }
+
+    #[test]
+    fn is_stale_false_right_after_mark_synced() {
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
+        }
+
+        mark_synced().expect("mark_synced should succeed");
+        assert!(!is_stale(7), "should be fresh immediately after a sync");
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
+    }
+
+    #[test]
+    fn is_stale_true_when_marker_older_than_ttl() {
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
+        }
+
+        mark_synced().expect("mark_synced should succeed");
+        let marker = last_sync_marker();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 86400);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&marker)
+            .expect("marker should be openable");
+        file.set_modified(old).expect("should backdate mtime");
+
+        assert!(
+            is_stale(7),
+            "8-day-old marker should be stale with a 7-day TTL"
+        );
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
+    }
+
+    #[test]
+    fn effective_sources_glue_includes_user_level_custom_source() {
+        // Exercises the real `effective_sources()` glue (not just the pure
+        // `resolved_sources` helper) with a `RegistriesConfig` loaded from
+        // disk, per the B2 Task 2 review follow-up.
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
+        }
+
+        std::fs::write(
+            dir.path().join("registries.yaml"),
+            "agents:\n  - url: https://example.com/custom-glue-agents.git\n",
+        )
+        .unwrap();
+
+        let sources = effective_sources();
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
+
+        assert!(sources.contains(&DEFAULT_REGISTRY_URL.to_string()));
+        assert!(sources.contains(&"https://example.com/custom-glue-agents.git".to_string()));
     }
 
     #[test]

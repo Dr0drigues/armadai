@@ -163,11 +163,7 @@ async fn cmd_add(agent: &str, force: bool) -> anyhow::Result<()> {
         .entries
         .iter()
         .find(|e| e.name == agent || e.path == agent)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Agent '{agent}' not found in registry. Try `armadai registry search {agent}`"
-            )
-        })?;
+        .ok_or_else(|| not_found_error(agent, &index))?;
 
     println!("Converting {} ...", entry.name);
     let dst = convert::import_to_library(&entry.source, &entry.path, force)?;
@@ -185,7 +181,7 @@ async fn cmd_info(agent: &str) -> anyhow::Result<()> {
         .entries
         .iter()
         .find(|e| e.name == agent || e.path == agent)
-        .ok_or_else(|| anyhow::anyhow!("Agent '{agent}' not found in registry."))?;
+        .ok_or_else(|| not_found_error(agent, &index))?;
 
     println!("Name:        {}", entry.name);
     println!("Path:        {}", entry.path);
@@ -224,9 +220,74 @@ async fn cmd_info(agent: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Print a hint if the registry is stale (> 7 days old).
+/// Build an actionable "agent not found" error for `registry add`/`info`.
+///
+/// When the index is empty — which is also what an ignored legacy cache
+/// resolves to (see `cache::load_or_build_index`) — this points the user at
+/// `registry sync` instead of the generic "not found" message, which would
+/// be confusing when the real cause is "there is no registry data at all
+/// yet" rather than "this specific agent doesn't exist".
+fn not_found_error(agent: &str, index: &cache::Index) -> anyhow::Error {
+    if index.entries.is_empty() {
+        anyhow::anyhow!(
+            "Registry is empty (no data synced yet, or the cache is from an older ArmadAI \
+             version). Run `armadai registry sync`, then retry."
+        )
+    } else {
+        anyhow::anyhow!(
+            "Agent '{agent}' not found in registry. Try `armadai registry search {agent}`"
+        )
+    }
+}
+
+/// Print a hint if the registry cache is stale or from an older ArmadAI
+/// version.
 fn check_staleness() {
+    if cache::has_legacy_cache() {
+        eprintln!(
+            "hint: registry cache is from an older ArmadAI version and will be ignored. Run `armadai registry sync` to refresh."
+        );
+        return;
+    }
+
     if sync::is_stale(7) && sync::sources_dir().is_dir() {
         eprintln!("hint: registry may be outdated. Run `armadai registry sync` to refresh.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn not_found_error_on_empty_index_points_to_sync_not_search() {
+        let err = not_found_error("some-agent", &cache::Index::default());
+        let msg = err.to_string();
+        assert!(
+            msg.contains("registry sync"),
+            "expected an actionable sync hint, got: {msg}"
+        );
+        assert!(
+            !msg.contains("search"),
+            "suggesting a search on an empty registry is not actionable, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn not_found_error_on_non_empty_index_suggests_search() {
+        let index = cache::Index {
+            entries: vec![cache::IndexEntry {
+                path: "agents/other.md".to_string(),
+                name: "other".to_string(),
+                description: None,
+                tags: vec![],
+                category: None,
+                source: "github/awesome-copilot-abc12345".to_string(),
+            }],
+        };
+        let err = not_found_error("missing-agent", &index);
+        let msg = err.to_string();
+        assert!(msg.contains("missing-agent"));
+        assert!(msg.contains("registry search"));
     }
 }

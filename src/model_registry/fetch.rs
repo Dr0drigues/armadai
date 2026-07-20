@@ -76,12 +76,14 @@ fn source_cache_dir() -> PathBuf {
 }
 
 /// Derive a filesystem-safe cache file path for a given source URL.
+///
+/// Delegates to `core::registries::cache_key`, the sanitization scheme
+/// shared with `registry::sync::source_key` (previously each had its own,
+/// independently-maintained and collision-prone sanitization — see B2 Task 2
+/// review).
 #[cfg(feature = "providers-api")]
 fn source_cache_path(url: &str) -> PathBuf {
-    let key: String = url
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
+    let key = crate::core::registries::cache_key(url);
     source_cache_dir().join(format!("{key}.json"))
 }
 
@@ -108,22 +110,32 @@ async fn fetch_source(url: &str) -> anyhow::Result<HashMap<String, Vec<ModelEntr
 /// error encountered is returned (preserving the pre-multi-source behavior
 /// of propagating a fetch error when there is only the single default
 /// source).
+///
+/// The aggregate cache's `fetched_at` is the oldest timestamp among the
+/// sources that actually contributed data this run (see
+/// [`aggregate_fetched_at`]) rather than unconditionally `now()`: if any
+/// source had to fall back to its own stale cache, stamping the merged
+/// result as freshly-fetched would hide up to 24h (the per-source TTL) of
+/// degradation from consumers that only check the aggregate's freshness.
 #[cfg(feature = "providers-api")]
 async fn fetch_and_cache() -> anyhow::Result<CachedRegistry> {
     let sources = resolved_model_sources();
     let mut merged: HashMap<String, Vec<ModelEntry>> = HashMap::new();
     let mut first_err: Option<anyhow::Error> = None;
     let mut any_data = false;
+    let mut contributing_timestamps: Vec<u64> = Vec::new();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
     for source in &sources {
         let source_path = source_cache_path(source);
         match fetch_source(source).await {
             Ok(providers) => {
                 any_data = true;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
+                contributing_timestamps.push(now);
                 save_cache_to(
                     &source_path,
                     &CachedRegistry {
@@ -143,6 +155,7 @@ async fn fetch_and_cache() -> anyhow::Result<CachedRegistry> {
                     && let Ok(cached) = serde_json::from_str::<CachedRegistry>(&content)
                 {
                     any_data = true;
+                    contributing_timestamps.push(cached.fetched_at);
                     for (provider, entries) in cached.providers {
                         merged.insert(provider, entries);
                     }
@@ -159,17 +172,31 @@ async fn fetch_and_cache() -> anyhow::Result<CachedRegistry> {
         );
     }
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let fetched_at = aggregate_fetched_at(&contributing_timestamps, now);
+    if fetched_at < now {
+        tracing::warn!(
+            "Model registry cache freshness degraded: at least one source fell back to a stale cache (aggregate fetched_at={fetched_at}, now={now})"
+        );
+    }
 
     let registry = CachedRegistry {
-        fetched_at: now,
+        fetched_at,
         providers: merged,
     };
     save_cache_to(&cache_path(), &registry);
     Ok(registry)
+}
+
+/// Compute the aggregate cache's `fetched_at` from the per-source
+/// timestamps that contributed data this run. Any source that fell back to
+/// a stale cache pulls the aggregate down to that source's own `fetched_at`,
+/// so a merged cache that includes stale fallback data never claims to be
+/// fresher than its stalest ingredient. Pure function, kept separate from
+/// [`fetch_and_cache`] so this logic is unit-testable without a network
+/// call.
+#[cfg(any(feature = "providers-api", test))]
+fn aggregate_fetched_at(contributing_timestamps: &[u64], now: u64) -> u64 {
+    contributing_timestamps.iter().copied().min().unwrap_or(now)
 }
 
 /// Parse the models.dev JSON structure into a provider → models map.
@@ -415,6 +442,58 @@ mod tests {
         assert_ne!(a, b);
         // Deterministic: same URL always maps to the same path.
         assert_eq!(a, source_cache_path("https://models.dev/api.json"));
+    }
+
+    #[test]
+    #[cfg(feature = "providers-api")]
+    fn resolved_model_sources_glue_includes_user_level_custom_source() {
+        // Exercises the real `resolved_model_sources()` glue (not just the
+        // pure `resolved_sources` helper) with a `RegistriesConfig` loaded
+        // from disk, per the B2 Task 2 review follow-up.
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
+        }
+
+        std::fs::write(
+            dir.path().join("registries.yaml"),
+            "models:\n  - url: https://example.com/custom-glue-models.json\n",
+        )
+        .unwrap();
+
+        let sources = resolved_model_sources();
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
+
+        assert!(sources.contains(&MODELS_DEV_URL.to_string()));
+        assert!(sources.contains(&"https://example.com/custom-glue-models.json".to_string()));
+    }
+
+    #[test]
+    fn aggregate_fetched_at_is_now_when_all_sources_fresh() {
+        let now = 1_700_000_000;
+        assert_eq!(aggregate_fetched_at(&[now, now], now), now);
+    }
+
+    #[test]
+    fn aggregate_fetched_at_uses_oldest_when_a_source_fell_back_to_stale_cache() {
+        let now = 1_700_000_000;
+        let stale = now - 3600; // one source fell back to a 1h-old cache
+        assert_eq!(aggregate_fetched_at(&[now, stale], now), stale);
+    }
+
+    #[test]
+    fn aggregate_fetched_at_defaults_to_now_when_no_contributions() {
+        // Defensive default; `fetch_and_cache` never actually reaches this
+        // with an empty slice (it bails out via `any_data` first), but the
+        // pure function should still behave sanely.
+        assert_eq!(aggregate_fetched_at(&[], 42), 42);
     }
 
     #[test]
