@@ -978,13 +978,22 @@ pub(crate) fn vote_weights_from_agents(agents: &BTreeMap<String, Agent>) -> BTre
 /// with a documented default — unlike `OrchestrationConfig`'s `Option`
 /// fields, `RingConfig` has no "unset" state for it), narrowed to `Option<u32>`
 /// as `Some(..)` unconditionally, saturating at `u32::MAX` — same convention
-/// as `run_blackboard_es`. `RingConfig` carries no cost-budget field (unlike
-/// `OrchestrationConfig::cost_limit`), so `cost_limit` is always `None` here
-/// — no cost guard applies to the event-sourced ring run.
+/// as `run_blackboard_es`. `RingConfig` itself carries no cost-budget field
+/// (unlike `OrchestrationConfig::cost_limit`) — legacy's standalone
+/// `run_ring` gets its cost cap from the `RingToken` its caller (`run.rs`)
+/// constructs, seeded from `OrchestrationConfig::cost_limit` (see
+/// `core::orchestration::ring`'s `TokenBudget::cost_limit` and its
+/// `RingOutcome::CostLimitExceeded` halt). This function accepts the same
+/// `cost_limit: Option<f64>` explicitly (OH1 Lot 4 Task 3, reconciliation C)
+/// and threads it straight to [`RingDecider`]'s own `cost_limit` field, whose
+/// `breached_budget` guard already checks it — `run_ring_es`/`decide`
+/// previously hard-coded `None` here, silently dropping the legacy cost
+/// guard on the ES path.
 ///
 /// Coexists with the legacy `core::orchestration::ring::run_ring` — this
 /// function is not called from `run.rs`; wiring it in as the active engine
 /// is a later lot (the bascule).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_ring_es(
     run_id: &str,
     input: &str,
@@ -992,6 +1001,7 @@ pub async fn run_ring_es(
     providers: BTreeMap<String, Arc<dyn Provider>>,
     config: RingConfig,
     routing_rules: RoutingRules,
+    cost_limit: Option<f64>,
     log: &mut impl EventLog,
 ) -> anyhow::Result<ExecutionState> {
     let agent_order: Vec<String> = agents.keys().cloned().collect();
@@ -1016,7 +1026,7 @@ pub async fn run_ring_es(
         max_laps,
         vote_weights.clone(),
         token_budget,
-        None,
+        cost_limit,
     );
     let effects = RingEffectRunner::new(agents, providers, config, vote_weights);
 
@@ -2200,6 +2210,7 @@ mod tests {
                 providers,
                 config,
                 RoutingRules::default(),
+                None,
                 &mut log,
             )
             .await
@@ -2280,6 +2291,7 @@ mod tests {
                 providers,
                 config,
                 RoutingRules::default(),
+                None,
                 &mut log,
             )
             .await
@@ -2314,6 +2326,63 @@ mod tests {
                 !content.trim().is_empty(),
                 "expected a non-empty resolved outcome"
             );
+        }
+
+        // Scenario 2-bis: `cost_limit` plumbing (OH1 Lot 4 Task 3,
+        // reconciliation C). Legacy's standalone `run_ring` halts via
+        // `RingOutcome::CostLimitExceeded` once the `RingToken`'s
+        // `TokenBudget` (seeded by the caller from
+        // `OrchestrationConfig::cost_limit`) reports its cost spent; the ES
+        // `RingDecider::breached_budget` guard already implements the
+        // equivalent check, but until this reconciliation `run_ring_es`
+        // hard-coded `None` for it, silently ignoring any caller-supplied
+        // limit. Unlike `BlackboardDecider::decide` (which only checks its
+        // budget guard once a round completes), `RingDecider::decide` checks
+        // `breached_budget` *first*, ahead of `ring_phase` — so with
+        // `cost_limit: Some(0.0)` (and `state.budget_cost` starting at
+        // `0.0`), the guard trips before any agent is ever invoked
+        // (`call_count() == 0` for both), a stricter-than-blackboard but
+        // still faithful proof that the parameter reaches the decider.
+        #[tokio::test]
+        async fn es_ring_halts_at_cost_limit() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), es_test_agent("a", "concrete-model"));
+            agents.insert("b".to_string(), es_test_agent("b", "concrete-model"));
+            let provider_a = Arc::new(ScriptedProvider::new(&[
+                "ACTION: PROPOSE\nCONTENT: lap0 from a",
+            ]));
+            let provider_b = Arc::new(ScriptedProvider::new(&[
+                "ACTION: PROPOSE\nCONTENT: lap0 from b",
+            ]));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), provider_a.clone() as Arc<dyn Provider>);
+            providers.insert("b".to_string(), provider_b.clone() as Arc<dyn Provider>);
+
+            let mut log = InMemoryLog::default();
+            let st = run_ring_es(
+                "run-ring-costlimit",
+                "task",
+                agents,
+                providers,
+                RingConfig::default(),
+                RoutingRules::default(),
+                Some(0.0),
+                &mut log,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(st.status, RunStatus::Completed);
+            assert!(
+                log_has_warned(&log, "run-ring-costlimit", "cost_limit"),
+                "expected a cost_limit Warned event in the log"
+            );
+            assert_eq!(
+                provider_a.call_count(),
+                0,
+                "RingDecider checks its cost guard before ring_phase, ahead of any circulation"
+            );
+            assert_eq!(provider_b.call_count(), 0);
         }
 
         // Scenario 3: replay determinism. After a full run, `replay(run_id,
@@ -2352,6 +2421,7 @@ mod tests {
                 providers,
                 config,
                 RoutingRules::default(),
+                None,
                 &mut log,
             )
             .await
