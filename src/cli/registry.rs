@@ -127,7 +127,7 @@ async fn cmd_sync() -> anyhow::Result<()> {
 /// loses the explicit `kind` override), this keeps the full [`RegistrySource`]
 /// so `sync_starters` can dispatch via `resolved_kind()` with an explicit
 /// `kind:` honored when set.
-fn effective_starter_sources() -> Vec<RegistrySource> {
+pub(crate) fn effective_starter_sources() -> Vec<RegistrySource> {
     let user = load_user_registries();
     let project = find_project_config()
         .map(|(_, cfg)| cfg)

@@ -36,10 +36,6 @@ pub struct RegistrySource {
 
 impl RegistrySource {
     /// The effective delivery kind: explicit `kind`, else inferred from the URL.
-    ///
-    /// Not yet called outside tests: the `starters_registry` fetcher that
-    /// dispatches on this (B2 Lot B, Task 2) lands in a follow-up task.
-    #[allow(dead_code)]
     pub fn resolved_kind(&self) -> SourceKind {
         if let Some(k) = self.kind {
             return k;
@@ -73,17 +69,7 @@ pub struct RegistriesConfig {
 pub enum RegistryKind {
     Agents,
     Skills,
-    /// Only constructed when the `providers-api` feature is enabled:
-    /// `model_registry::fetch` is the sole consumer, since resolving model
-    /// catalog sources is only useful alongside the HTTP fetch that reads
-    /// them. Harmless to keep visible in `tui`-only builds, where model
-    /// registry fetching is unavailable anyway.
-    #[allow(dead_code)]
     Models,
-    /// Not yet constructed outside tests: the starter-registry sync path
-    /// that resolves starter sources (B2 Lot B, Task 2) lands in a
-    /// follow-up task.
-    #[allow(dead_code)]
     Starters,
 }
 

@@ -29,15 +29,11 @@ struct ManifestPack {
     path: String,
 }
 
-// Not yet wired outside tests: real callers land in Lot 2 (`registry sync`
-// CLI + archive fetcher).
-#[allow(dead_code)]
 pub trait StarterFetcher {
     fn fetch(&self, url: &str, dest: &Path) -> anyhow::Result<()>;
 }
 
 /// Git-backed fetcher: clone if absent, else pull. Shells out to `git`.
-#[allow(dead_code)]
 pub struct GitFetcher;
 
 impl StarterFetcher for GitFetcher {
@@ -67,7 +63,6 @@ impl StarterFetcher for GitFetcher {
     }
 }
 
-#[allow(dead_code)]
 fn run_git(args: &[&str]) -> anyhow::Result<()> {
     let out = std::process::Command::new("git").args(args).output()?;
     if !out.status.success() {
@@ -173,9 +168,6 @@ fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Fetch one source into its cache dir. Git only in Lot 1; archive is Lot 2.
-// Not yet wired outside tests: real caller is `sync_starters`, itself a
-// Lot 2 (CLI `registry sync`) entry point.
-#[allow(dead_code)]
 pub fn fetch_starter_source(source: &RegistrySource) -> anyhow::Result<PathBuf> {
     let dest = source_cache_dir(&source.url);
     match source.resolved_kind() {
@@ -201,9 +193,6 @@ pub fn fetch_starter_source(source: &RegistrySource) -> anyhow::Result<PathBuf> 
 }
 
 /// Sync all sources; warn+continue on failure. Returns the dirs that synced OK.
-// Not yet wired outside tests: real caller is the Lot 2 `registry sync` CLI
-// command.
-#[allow(dead_code)]
 pub fn sync_starters(sources: &[RegistrySource]) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for s in sources {
