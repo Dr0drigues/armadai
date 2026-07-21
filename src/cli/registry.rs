@@ -75,6 +75,8 @@ pub enum SourceKind {
     Skills,
     /// Model catalog sources
     Models,
+    /// Starter pack registry sources
+    Starters,
 }
 
 impl From<SourceKind> for RegistryKind {
@@ -83,6 +85,7 @@ impl From<SourceKind> for RegistryKind {
             SourceKind::Agents => RegistryKind::Agents,
             SourceKind::Skills => RegistryKind::Skills,
             SourceKind::Models => RegistryKind::Models,
+            SourceKind::Starters => RegistryKind::Starters,
         }
     }
 }
@@ -109,7 +112,36 @@ async fn cmd_sync() -> anyhow::Result<()> {
     println!("Building search index...");
     let index = cache::build_index(&sources)?;
     println!("Indexed {} agent(s).", index.entries.len());
+
+    let starter_sources = effective_starter_sources();
+    println!("Syncing {} starter source(s)...", starter_sources.len());
+    if !starter_sources.is_empty() {
+        crate::starters_registry::sync_starters(&starter_sources);
+    }
+
     Ok(())
+}
+
+/// Gather typed starter registry sources (user ∪ project), deduplicated by
+/// URL. Unlike `resolved_sources` (which flattens to bare URL strings and
+/// loses the explicit `kind` override), this keeps the full [`RegistrySource`]
+/// so `sync_starters` can dispatch via `resolved_kind()` with an explicit
+/// `kind:` honored when set.
+fn effective_starter_sources() -> Vec<RegistrySource> {
+    let user = load_user_registries();
+    let project = find_project_config()
+        .map(|(_, cfg)| cfg)
+        .and_then(|cfg| cfg.registries);
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let project_starters = project.map(|cfg| cfg.starters).unwrap_or_default();
+    for source in user.starters.into_iter().chain(project_starters) {
+        if seen.insert(source.url.clone()) {
+            out.push(source);
+        }
+    }
+    out
 }
 
 async fn cmd_search(query: &str, category: Option<&str>) -> anyhow::Result<()> {
@@ -360,6 +392,17 @@ async fn sources_list() -> anyhow::Result<()> {
         }
     }
 
+    // Starters (no built-in default registry — user/project sources only)
+    println!("\nStarters:");
+    for source in &user.starters {
+        println!("  [user]    {}", source.url);
+    }
+    if let Some(ref proj) = project {
+        for source in &proj.starters {
+            println!("  [project] {}", source.url);
+        }
+    }
+
     Ok(())
 }
 
@@ -372,12 +415,7 @@ async fn sources_add(kind: SourceKind, url: &str) -> anyhow::Result<()> {
         RegistryKind::Agents => &mut config.agents,
         RegistryKind::Skills => &mut config.skills,
         RegistryKind::Models => &mut config.models,
-        // Starters are not yet exposed through this CLI (B2 Lot B, Lot 2);
-        // `SourceKind` (the CLI-facing arg enum above) has no `Starters`
-        // variant, so `kind.into()` can never actually produce this arm.
-        RegistryKind::Starters => {
-            unreachable!("starters not exposed via `registry sources` CLI yet")
-        }
+        RegistryKind::Starters => &mut config.starters,
     };
 
     // Check if already present (idempotent)
@@ -407,10 +445,7 @@ async fn sources_remove(kind: SourceKind, url: &str) -> anyhow::Result<()> {
         RegistryKind::Agents => &mut config.agents,
         RegistryKind::Skills => &mut config.skills,
         RegistryKind::Models => &mut config.models,
-        // See the matching comment in `sources_add`.
-        RegistryKind::Starters => {
-            unreachable!("starters not exposed via `registry sources` CLI yet")
-        }
+        RegistryKind::Starters => &mut config.starters,
     };
 
     let before = sources.len();
@@ -455,6 +490,14 @@ fn kind_name(kind: RegistryKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_source_kind_starters_maps_to_registry_kind() {
+        assert_eq!(
+            RegistryKind::from(SourceKind::Starters),
+            crate::core::registries::RegistryKind::Starters
+        );
+    }
 
     #[test]
     fn not_found_error_on_empty_index_points_to_sync_not_search() {
