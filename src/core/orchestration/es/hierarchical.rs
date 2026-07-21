@@ -485,6 +485,33 @@ impl HierarchicalDecider {
     /// (C9), return the `NestedStarted` event marking that boundary — the
     /// actual sub-run is executed by a later lot's effect; here we only
     /// record where it should start.
+    ///
+    /// NOTE (OH1 Lot 3): this only *marks the boundary* — `decide` stays
+    /// pure/sync and never launches the nested team's sub-run itself. The
+    /// `Action::Invoke` that follows this `Emit` in `invoke_actions` still
+    /// invokes `agent_name` (the team lead) as an ordinary agent in the
+    /// *parent* run, exactly like any other hierarchical agent; today's
+    /// `HierarchicalEffectRunner::run_invoke` has no special case for it.
+    ///
+    /// The Lot 3 hook: `EffectRunner::run_invoke` (or a wrapper around it)
+    /// will detect a just-emitted `NestedStarted { team_lead, pattern }` and,
+    /// instead of (or in addition to) the plain LLM call, drive a *separate*
+    /// event-sourced sub-run for that team — option A from the plan:
+    ///   - mint a child `run_id` carrying `parent_run_id = state.run_id`,
+    ///   - reuse the existing blackboard/ring `Decider`/`EffectRunner` pairs
+    ///     (`BlackboardDecider`/`RingDecider` and their effect runners) scoped
+    ///     to `team.agents` with `team.lead` as arbiter, seeded with the task
+    ///     handed to `team_lead`,
+    ///   - fold that sub-run to completion via `run_event_sourced` on its own
+    ///     log, then surface its outcome (+ aggregated tokens/cost) back into
+    ///     *this* run as an `AgentObserved`-like event for `team_lead` (so
+    ///     the parent's synthesis logic in this file needs no changes), and
+    ///   - finally emit `ExecutionEvent::NestedEnded { team_lead }` to close
+    ///     the boundary this `NestedStarted` opened.
+    ///
+    /// Nothing here — `decide`, `nested_started_event`, `invoke_actions` — is
+    /// expected to change for that; the hook lives entirely on the impure
+    /// `EffectRunner` side.
     fn nested_started_event(&self, agent_name: &str) -> Option<ExecutionEvent> {
         self.config
             .teams
@@ -1328,9 +1355,16 @@ mod tests {
             );
         }
 
-        // (e) agent to invoke leads a nested-pattern team → NestedStarted emitted
+        // (e) agent to invoke leads a nested-pattern team → NestedStarted
+        // emitted, ordered before the lead's own `Invoke`, and with no
+        // sub-run of the nested team's members (`core-a`/`core-b`) started —
+        // the actual sub-run is Lot 3's `EffectRunner` hook (see the NOTE on
+        // `nested_started_event` above).
+        //
+        // This is the "test à garantir" from the OH1 Lot 2 Task 6 brief:
+        // `decider_emits_nested_started_for_team_lead_with_pattern`.
         #[test]
-        fn nested_team_lead_emits_nested_started() {
+        fn decider_emits_nested_started_for_team_lead_with_pattern() {
             let config = OrchestrationConfig {
                 enabled: true,
                 pattern: OrchestrationPattern::Hierarchical,
@@ -1372,15 +1406,48 @@ mod tests {
             ];
             let state = fold(&events);
             let actions = dec.decide(&state);
-            assert!(actions.iter().any(|a| matches!(
-                a,
-                Action::Emit(ExecutionEvent::NestedStarted { team_lead, pattern })
-                if team_lead == "core-lead" && pattern == "blackboard"
-            )));
+
+            let nested_started_pos = actions.iter().position(|a| {
+                matches!(
+                    a,
+                    Action::Emit(ExecutionEvent::NestedStarted { team_lead, pattern })
+                    if team_lead == "core-lead" && pattern == "blackboard"
+                )
+            });
             assert!(
-                actions
+                nested_started_pos.is_some(),
+                "expected NestedStarted{{team_lead: \"core-lead\", pattern: \"blackboard\"}} \
+                 in {actions:?}"
+            );
+
+            let lead_invoke_pos = actions
+                .iter()
+                .position(|a| matches!(a, Action::Invoke { agent, .. } if agent == "core-lead"));
+            assert!(
+                lead_invoke_pos.is_some(),
+                "expected Invoke{{agent: \"core-lead\"}} in {actions:?}"
+            );
+            assert!(
+                nested_started_pos.unwrap() < lead_invoke_pos.unwrap(),
+                "NestedStarted must be emitted before the lead's own Invoke, got {actions:?}"
+            );
+
+            // No sub-run: `decide` never invokes the nested team's own
+            // members directly — only `core-lead` (as a normal agent in the
+            // *parent* run) is invoked. The real blackboard/ring sub-run for
+            // `core-a`/`core-b` is Lot 3's concern (`EffectRunner`), not this
+            // pure decision function.
+            assert!(
+                !actions
                     .iter()
-                    .any(|a| matches!(a, Action::Invoke{agent,..} if agent == "core-lead"))
+                    .any(|a| matches!(a, Action::Invoke { agent, .. } if agent == "core-a" || agent == "core-b")),
+                "decide must not start the nested sub-run itself, got {actions:?}"
+            );
+            assert_eq!(
+                actions.len(),
+                3,
+                "expected exactly [Emit(NestedStarted), Emit(Delegated), Invoke(core-lead)], \
+                 got {actions:?}"
             );
         }
 
