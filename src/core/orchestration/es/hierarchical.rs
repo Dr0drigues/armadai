@@ -3074,6 +3074,14 @@ mod tests {
 
         let dev_lead_calls_before = dev_lead_provider.call_count();
         let core_calls_before = core_provider.call_count();
+        assert!(
+            dev_lead_calls_before > 0,
+            "expected the dev-lead provider to have been invoked during the run"
+        );
+        assert!(
+            core_calls_before > 0,
+            "expected the core-specialist provider to have been invoked during the run"
+        );
 
         let replayed = replay("run-replay", &log).unwrap();
 
