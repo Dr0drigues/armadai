@@ -10,6 +10,7 @@ pub mod engine;
 pub mod event;
 pub mod hierarchical;
 pub mod log;
+pub mod ring;
 pub mod state;
 
 // Not yet consumed by any engine (this lot only lays the socle down) — the
