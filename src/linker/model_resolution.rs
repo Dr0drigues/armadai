@@ -145,15 +145,29 @@ pub fn fallback_model(provider: &str) -> &'static str {
 ///
 /// Strategy:
 /// 1. Filter cached models by tier (using `classify_model_tier`).
-/// 2. Exclude dated variants (IDs containing `-20` date suffixes).
-/// 3. Exclude preview models.
+/// 2. Exclude `latest`-alias IDs (e.g. `claude-3-5-sonnet-latest`) — real
+///    provider catalogs (models.dev) can list these alongside dated/bare
+///    variants, and since `"latest"` sorts alphabetically after any digit,
+///    an unfiltered `max()` would prefer them over a concrete pinned
+///    version. Callers (e.g. `latest:*` placeholder resolution) require a
+///    genuinely concrete model id — never one containing the literal
+///    substring `latest` — so these are excluded at every stage below, not
+///    just from the "clean" preference pass.
+/// 3. Exclude dated variants (IDs containing `-20` date suffixes) and
+///    preview models from the preferred ("clean") candidate set.
 /// 4. Among remaining, pick the one that sorts last alphabetically (highest version).
-/// 5. If no candidate survives filtering, fall back to hardcoded defaults.
+/// 5. If no "clean" candidate survives, fall back to any non-`latest` candidate.
+/// 6. If no candidate survives filtering at all, fall back to hardcoded defaults.
+///
+/// This guarantees `resolve_model_for_tier` never returns a string
+/// containing `"latest"`, regardless of what the ambient model registry
+/// cache does or doesn't contain.
 pub fn resolve_model_for_tier(provider: &str, tier: ModelTier) -> String {
     if let Some(entries) = crate::model_registry::fetch::load_models_cached(provider) {
         let candidates: Vec<&str> = entries
             .iter()
             .filter(|e| classify_model_tier(&e.id, provider) == Some(tier))
+            .filter(|e| !e.id.contains("latest"))
             .map(|e| e.id.as_str())
             .collect();
 
@@ -167,7 +181,7 @@ pub fn resolve_model_for_tier(provider: &str, tier: ModelTier) -> String {
             return (**best).to_string();
         }
 
-        // Fallback: any candidate, pick highest
+        // Fallback: any candidate (already excludes `latest`-alias ids), pick highest
         if let Some(best) = candidates.iter().max() {
             return best.to_string();
         }
@@ -685,7 +699,28 @@ mod tests {
 
     #[test]
     fn test_preview_resolution_with_latest() {
+        // Hermetic: force an empty, private `ARMADAI_CONFIG_DIR` so this test
+        // never sees the ambient/machine-local models.dev cache (which may
+        // be present, absent, or contain `-latest` alias ids depending on
+        // machine + parallel test runs — see resolve_model_for_tier's
+        // doc-comment). With no cache reachable, resolution always takes the
+        // hardcoded-fallback path, making the assertion deterministic.
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // SAFETY: env mutation is serialised via ENV_MUTEX for the duration
+        // of this test, and the original value is restored before returning.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", tmp.path());
+        }
+
         let result = preview_model_resolution(Some("latest:fast"));
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
+
         for (_target, model) in &result {
             // All targets should resolve to a concrete model, not "latest:fast"
             assert!(!model.contains("latest"));
