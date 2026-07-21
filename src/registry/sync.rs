@@ -349,6 +349,7 @@ mod tests {
         let user = RegistriesConfig {
             agents: vec![RegistrySource {
                 url: "https://example.com/custom-agents.git".to_string(),
+                kind: None,
             }],
             ..Default::default()
         };

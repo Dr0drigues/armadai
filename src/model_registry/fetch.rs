@@ -419,6 +419,7 @@ mod tests {
         let user = RegistriesConfig {
             models: vec![RegistrySource {
                 url: "https://example.com/custom-models.json".to_string(),
+                kind: None,
             }],
             ..Default::default()
         };

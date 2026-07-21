@@ -192,6 +192,7 @@ mod tests {
         let user = RegistriesConfig {
             skills: vec![RegistrySource {
                 url: "https://github.com/custom-org/custom-skills".to_string(),
+                kind: None,
             }],
             ..Default::default()
         };

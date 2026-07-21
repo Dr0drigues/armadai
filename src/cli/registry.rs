@@ -372,6 +372,12 @@ async fn sources_add(kind: SourceKind, url: &str) -> anyhow::Result<()> {
         RegistryKind::Agents => &mut config.agents,
         RegistryKind::Skills => &mut config.skills,
         RegistryKind::Models => &mut config.models,
+        // Starters are not yet exposed through this CLI (B2 Lot B, Lot 2);
+        // `SourceKind` (the CLI-facing arg enum above) has no `Starters`
+        // variant, so `kind.into()` can never actually produce this arm.
+        RegistryKind::Starters => {
+            unreachable!("starters not exposed via `registry sources` CLI yet")
+        }
     };
 
     // Check if already present (idempotent)
@@ -382,6 +388,7 @@ async fn sources_add(kind: SourceKind, url: &str) -> anyhow::Result<()> {
 
     sources.push(RegistrySource {
         url: url.to_string(),
+        kind: None,
     });
 
     save_registries_config(&config)?;
@@ -400,6 +407,10 @@ async fn sources_remove(kind: SourceKind, url: &str) -> anyhow::Result<()> {
         RegistryKind::Agents => &mut config.agents,
         RegistryKind::Skills => &mut config.skills,
         RegistryKind::Models => &mut config.models,
+        // See the matching comment in `sources_add`.
+        RegistryKind::Starters => {
+            unreachable!("starters not exposed via `registry sources` CLI yet")
+        }
     };
 
     let before = sources.len();
@@ -437,6 +448,7 @@ fn kind_name(kind: RegistryKind) -> &'static str {
         RegistryKind::Agents => "agents",
         RegistryKind::Skills => "skills",
         RegistryKind::Models => "models",
+        RegistryKind::Starters => "starters",
     }
 }
 

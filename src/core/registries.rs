@@ -17,10 +17,40 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::config::registries_config_path;
 
+/// Delivery kind of a registry source (transport-agnostic fetch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceKind {
+    Git,
+    Archive,
+}
+
 /// A single custom registry source.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RegistrySource {
     pub url: String,
+    /// Delivery kind. Absent = inferred from the URL (see `resolved_kind`).
+    #[serde(default)]
+    pub kind: Option<SourceKind>,
+}
+
+impl RegistrySource {
+    /// The effective delivery kind: explicit `kind`, else inferred from the URL.
+    ///
+    /// Not yet called outside tests: the `starters_registry` fetcher that
+    /// dispatches on this (B2 Lot B, Task 2) lands in a follow-up task.
+    #[allow(dead_code)]
+    pub fn resolved_kind(&self) -> SourceKind {
+        if let Some(k) = self.kind {
+            return k;
+        }
+        let u = self.url.to_lowercase();
+        if u.ends_with(".tar.gz") || u.ends_with(".tgz") || u.ends_with(".zip") {
+            SourceKind::Archive
+        } else {
+            SourceKind::Git
+        }
+    }
 }
 
 /// Custom registry sources declared by the user or a project, grouped by
@@ -39,11 +69,6 @@ pub struct RegistriesConfig {
 }
 
 /// Which registry kind is being resolved.
-///
-/// `starters` intentionally has no variant here yet: starter registry
-/// resolution is Lot B and out of scope for this task, even though the
-/// `starters` field already exists on [`RegistriesConfig`] for forward
-/// compatibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistryKind {
     Agents,
@@ -55,6 +80,11 @@ pub enum RegistryKind {
     /// registry fetching is unavailable anyway.
     #[allow(dead_code)]
     Models,
+    /// Not yet constructed outside tests: the starter-registry sync path
+    /// that resolves starter sources (B2 Lot B, Task 2) lands in a
+    /// follow-up task.
+    #[allow(dead_code)]
+    Starters,
 }
 
 impl RegistryKind {
@@ -63,6 +93,7 @@ impl RegistryKind {
             RegistryKind::Agents => &config.agents,
             RegistryKind::Skills => &config.skills,
             RegistryKind::Models => &config.models,
+            RegistryKind::Starters => &config.starters,
         }
     }
 }
@@ -183,19 +214,22 @@ registries:
         assert_eq!(
             wrapper.registries.agents,
             vec![RegistrySource {
-                url: "https://example.com/agents.git".to_string()
+                url: "https://example.com/agents.git".to_string(),
+                kind: None
             }]
         );
         assert_eq!(
             wrapper.registries.skills,
             vec![RegistrySource {
-                url: "https://example.com/skills.git".to_string()
+                url: "https://example.com/skills.git".to_string(),
+                kind: None
             }]
         );
         assert_eq!(
             wrapper.registries.models,
             vec![RegistrySource {
-                url: "https://example.com/models.json".to_string()
+                url: "https://example.com/models.json".to_string(),
+                kind: None
             }]
         );
         assert!(wrapper.registries.starters.is_empty());
@@ -242,9 +276,11 @@ registries:
             agents: vec![
                 RegistrySource {
                     url: "https://default.example/a".to_string(),
+                    kind: None,
                 }, // duplicate of a default
                 RegistrySource {
                     url: "https://user.example/b".to_string(),
+                    kind: None,
                 },
             ],
             ..Default::default()
@@ -253,9 +289,11 @@ registries:
             agents: vec![
                 RegistrySource {
                     url: "https://user.example/b".to_string(),
+                    kind: None,
                 }, // duplicate of a user source
                 RegistrySource {
                     url: "https://project.example/c".to_string(),
+                    kind: None,
                 },
             ],
             ..Default::default()
@@ -283,6 +321,7 @@ registries:
         let user = RegistriesConfig {
             skills: vec![RegistrySource {
                 url: "https://user.example/skills".to_string(),
+                kind: None,
             }],
             ..Default::default()
         };
@@ -353,5 +392,50 @@ registries:
             Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
             None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
         }
+    }
+
+    #[test]
+    fn test_source_kind_deserialize_and_infer() {
+        let yaml = r#"
+starters:
+  - url: "https://github.com/me/starters.git"
+  - url: "https://x.com/p.tar.gz"
+  - url: "https://interne/p"
+    kind: archive
+"#;
+        let c: RegistriesConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(c.starters[0].resolved_kind(), SourceKind::Git); // .git → git
+        assert_eq!(c.starters[1].resolved_kind(), SourceKind::Archive); // .tar.gz → archive
+        assert_eq!(c.starters[2].resolved_kind(), SourceKind::Archive); // explicit override
+        assert_eq!(c.starters[2].kind, Some(SourceKind::Archive));
+    }
+
+    #[test]
+    fn test_infer_defaults_to_git() {
+        let s = RegistrySource {
+            url: "https://host/repo".to_string(),
+            kind: None,
+        };
+        assert_eq!(s.resolved_kind(), SourceKind::Git);
+    }
+
+    #[test]
+    fn test_resolved_sources_starters_union() {
+        let user = RegistriesConfig {
+            starters: vec![RegistrySource {
+                url: "u".into(),
+                kind: None,
+            }],
+            ..Default::default()
+        };
+        let proj = RegistriesConfig {
+            starters: vec![RegistrySource {
+                url: "p".into(),
+                kind: None,
+            }],
+            ..Default::default()
+        };
+        let out = resolved_sources(RegistryKind::Starters, &[], &user, Some(&proj));
+        assert_eq!(out, vec!["u".to_string(), "p".to_string()]);
     }
 }
