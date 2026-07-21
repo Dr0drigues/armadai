@@ -25,12 +25,6 @@ pub enum RunStatus {
 #[derive(Debug, Clone, Default)]
 pub struct HierState {
     pub trace: Vec<(String, String, String, u32)>,
-    /// Tier resolved for each `latest:auto` agent (agent name -> tier, e.g.
-    /// `"Fast"`/`"Pro"`/`"Max"`), populated by `ModelRouted` events. Read by
-    /// the `HierarchicalEffectRunner` to resolve a concrete model string
-    /// before invoking the provider — see `es::hierarchical::run_invoke`.
-    /// `BTreeMap` for deterministic iteration/ordering.
-    pub routed_tiers: BTreeMap<String, String>,
 }
 
 /// A single blackboard entry, as recorded in the ES projection.
@@ -99,6 +93,14 @@ pub struct ExecutionState {
     pub hier: HierState,
     pub board: BoardState,
     pub ring: RingState,
+    /// Tier resolved for each `latest:auto` agent (agent name -> tier, e.g.
+    /// `"Fast"`/`"Pro"`/`"Max"`), populated by `ModelRouted` events. Read by
+    /// the pattern effect runners (e.g. `HierarchicalEffectRunner`) to
+    /// resolve a concrete model string before invoking the provider — see
+    /// `es::hierarchical::run_invoke`. Run-level (not pattern-specific):
+    /// blackboard/ring patterns route models the same way. `BTreeMap` for
+    /// deterministic iteration/ordering.
+    pub routed_tiers: BTreeMap<String, String>,
 }
 
 /// Apply a single event to `state` in place.
@@ -153,7 +155,7 @@ pub fn apply(state: &mut ExecutionState, event: &ExecutionEvent) {
             state.budget_cost += *cost;
         }
         ExecutionEvent::ModelRouted { agent, tier, .. } => {
-            state.hier.routed_tiers.insert(agent.clone(), tier.clone());
+            state.routed_tiers.insert(agent.clone(), tier.clone());
         }
         ExecutionEvent::Warned { .. } => {}
         ExecutionEvent::Halted { .. } => {
@@ -383,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn model_routed_projects_tier_into_hier_state() {
+    fn model_routed_projects_tier_into_run_state() {
         let events = vec![
             E::RunStarted {
                 run_id: "r".into(),
@@ -399,10 +401,7 @@ mod tests {
             },
         ];
         let st = fold(&events);
-        assert_eq!(
-            st.hier.routed_tiers.get("a").map(String::as_str),
-            Some("fast")
-        );
+        assert_eq!(st.routed_tiers.get("a").map(String::as_str), Some("fast"));
     }
 
     #[test]

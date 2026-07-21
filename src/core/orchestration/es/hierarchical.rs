@@ -790,8 +790,8 @@ impl Decider for HierarchicalDecider {
     }
 }
 
-/// Parse a tier string as stored in `HierState::routed_tiers` — the `Debug`
-/// format of `ModelTier` (`"Fast"`/`"Pro"`/`"Max"`), matched
+/// Parse a tier string as stored in `ExecutionState::routed_tiers` — the
+/// `Debug` format of `ModelTier` (`"Fast"`/`"Pro"`/`"Max"`), matched
 /// case-insensitively since `ModelRouted.tier` is produced via
 /// `format!("{tier:?}")` in `HierarchicalDecider::model_routed_event` — back
 /// into a `ModelTier`. Unrecognized strings fall back to `Pro`, the same
@@ -934,7 +934,7 @@ impl EffectRunner for HierarchicalEffectRunner {
         // (Task 3) always emits a `ModelRouted{agent, tier, ..}` event ahead
         // of the matching `Invoke` for such an agent (see
         // `model_routed_event`/`invoke_actions`), which `es::state::apply`
-        // projects into `state.hier.routed_tiers`. We read that tier back
+        // projects into `state.routed_tiers`. We read that tier back
         // here and resolve it to a concrete model via
         // `crate::linker::model_resolution::resolve_model_for_tier` — this
         // is the only place in the event-sourced hierarchical engine that
@@ -948,7 +948,7 @@ impl EffectRunner for HierarchicalEffectRunner {
             .clone()
             .unwrap_or_else(|| "default".to_string());
         let model = if raw_model == "latest:auto" {
-            let tier = match state.hier.routed_tiers.get(agent) {
+            let tier = match state.routed_tiers.get(agent) {
                 Some(tier_str) => parse_routed_tier(tier_str),
                 None => {
                     // Defensive fallback: `HierarchicalDecider` always emits
@@ -2682,7 +2682,7 @@ mod tests {
         // itself: `HierarchicalDecider` always emits `ModelRouted{agent,
         // tier, ..}` ahead of the matching `Invoke` for such an agent (see
         // `model_routed_event`), which `es::state::apply` projects into
-        // `state.hier.routed_tiers`. `run_invoke` must read that tier back
+        // `state.routed_tiers`. `run_invoke` must read that tier back
         // and turn it into a concrete model via
         // `resolve_model_for_tier` — both in the `CompletionRequest` sent to
         // the provider, and in the `model` field of the returned
