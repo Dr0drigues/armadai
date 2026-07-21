@@ -314,8 +314,10 @@ fn remote_starter_pack_dirs_in(cache_root: &Path) -> Vec<PathBuf> {
 /// Find a starter pack directory by name across all source directories.
 ///
 /// User and custom directories take priority over built-in (last match wins).
-/// If no local match is found, falls back to the remote starters cache
-/// (local always wins over remote).
+/// If no local match is found, falls back to the remote starters cache: first
+/// by directory basename, then — for single-pack repos whose dir differs from
+/// the pack's declared `name:` — by reading each remote pack's `pack.yaml`
+/// (local always wins over remote either way).
 pub fn find_pack_dir(name: &str) -> Option<PathBuf> {
     let mut found: Option<PathBuf> = None;
     for dir in all_starters_dirs() {
@@ -329,7 +331,29 @@ pub fn find_pack_dir(name: &str) -> Option<PathBuf> {
             .into_iter()
             .find(|d| d.file_name().is_some_and(|n| n == name));
     }
+    if found.is_none() {
+        found = find_remote_pack_by_name(name);
+    }
     found
+}
+
+/// Find a remote pack by its `pack.yaml` `name:` (not just its dir basename),
+/// so single-pack repos whose dir != name still resolve. Testable core.
+fn find_remote_pack_by_name_in(cache_root: &Path, name: &str) -> Option<PathBuf> {
+    for dir in remote_starter_pack_dirs_in(cache_root) {
+        if let Ok(pack) = StarterPack::load(&dir)
+            && pack.name == name
+        {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+/// Find a remote pack by its declared `name:` across the synced starters
+/// cache. See [`find_remote_pack_by_name_in`] for the testable core.
+pub fn find_remote_pack_by_name(name: &str) -> Option<PathBuf> {
+    find_remote_pack_by_name_in(&crate::starters_registry::starters_cache_dir(), name)
 }
 
 /// Load all starter packs from all source directories.
@@ -634,6 +658,25 @@ agents:
     #[test]
     fn test_find_pack_dir_not_found() {
         assert!(find_pack_dir("nonexistent-pack-xyz").is_none());
+    }
+
+    #[test]
+    fn find_remote_pack_by_name_by_manifest_name_not_dir() {
+        // A remote pack whose dir differs from its `name:` should still
+        // resolve by name, not just by directory basename.
+        use std::fs;
+        let tmp = std::env::temp_dir().join(format!("armadai-nm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let d = tmp.join("some-hash-dir/inner");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("pack.yaml"),
+            "name: cool-pack\ndescription: A cool pack\n",
+        )
+        .unwrap();
+        let found = find_remote_pack_by_name_in(&tmp, "cool-pack");
+        assert!(found.is_some());
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]

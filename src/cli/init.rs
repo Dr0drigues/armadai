@@ -64,11 +64,27 @@ fn init_global(force: bool) -> anyhow::Result<()> {
 
 /// Resolve a pack reference: a local directory containing `pack.yaml`
 /// takes precedence, otherwise fall back to the named starter pack lookup.
+///
+/// If both miss, auto-sync-on-miss kicks in: known starter registry sources
+/// (user ∪ project, see `crate::cli::registry::effective_starter_sources`)
+/// are synced once, then the lookup is retried. Network is only touched on
+/// a miss — a plain `armadai init --pack <known-local-name>` never syncs.
 pub(crate) fn resolve_pack_dir(name: &str) -> Option<std::path::PathBuf> {
     let candidate = std::path::Path::new(name);
     if candidate.join("pack.yaml").is_file() {
         return Some(candidate.to_path_buf());
     }
+    if let Some(dir) = find_pack_dir(name) {
+        return Some(dir);
+    }
+
+    // Auto-sync-on-miss: fetch remote starter sources, then retry once.
+    let sources = crate::cli::registry::effective_starter_sources();
+    if sources.is_empty() {
+        return None;
+    }
+    eprintln!("Pack '{name}' not found locally — syncing remote starter registries...");
+    let _ = crate::starters_registry::sync_starters(&sources);
     find_pack_dir(name)
 }
 
@@ -388,5 +404,28 @@ mod tests {
         .unwrap();
         let resolved = resolve_pack_dir(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(resolved, dir.path());
+    }
+
+    #[test]
+    fn resolve_pack_dir_miss_without_starter_sources_touches_no_network() {
+        // Backward compat: with no starter registry sources configured (the
+        // default — no `registries.yaml`), a miss on an unknown pack name
+        // must return None without attempting any sync/network call.
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        let config_dir = tempfile::tempdir().unwrap();
+        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", config_dir.path());
+        }
+
+        let resolved = resolve_pack_dir("definitely-nonexistent-pack-xyz");
+        assert!(resolved.is_none());
+
+        // SAFETY: restoring original env state at end of test scope.
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
     }
 }
