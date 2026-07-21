@@ -6,6 +6,7 @@
 //! plumbing for later lots to build on.
 
 pub mod event;
+pub mod log;
 pub mod state;
 
 // Not yet consumed by any engine (this lot only lays the socle down) — the
@@ -14,6 +15,11 @@ pub mod state;
 // distinct lint.
 #[allow(unused_imports)]
 pub use event::ExecutionEvent;
+#[cfg(feature = "storage")]
+#[allow(unused_imports)]
+pub use log::SqliteLog;
+#[allow(unused_imports)]
+pub use log::{EventLog, InMemoryLog};
 #[allow(unused_imports)]
 pub use state::{
     BoardEntryRec, BoardState, ContribRec, ExecutionState, HierState, RingState, RunStatus,
