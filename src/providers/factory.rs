@@ -132,7 +132,13 @@ fn create_unified_provider(
 
     if cli_available(command) {
         let args = if has_custom_args {
+            // Respect the agent's explicit args verbatim (never override them).
             agent.metadata.args.clone().unwrap_or_default()
+        } else if crate::shell::json_runner::supports_json(command) {
+            // Default (no custom args) on a JSON-capable CLI: use the canonical
+            // stream-json args so the provider captures real cost/tokens
+            // instead of $0.00. The provider parses stdout opportunistically.
+            crate::shell::json_runner::json_mode_args(command)
         } else {
             tool.cli_args.iter().map(|s| (*s).to_string()).collect()
         };

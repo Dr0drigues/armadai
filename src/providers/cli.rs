@@ -30,32 +30,6 @@ impl CliProvider {
         cmd
     }
 
-    /// Same shape as [`Self::build_command`] but with the canonical
-    /// stream-json args for this CLI (see
-    /// `crate::shell::json_runner::json_mode_args`) instead of `self.args`,
-    /// so we get structured JSONL events (cost/tokens) on stdout instead of
-    /// free-form text. Only meaningful when
-    /// `crate::shell::json_runner::supports_json(&self.command)` is true.
-    fn build_json_command(&self, input: &str) -> Command {
-        let mut cmd = Command::new(&self.command);
-        for arg in crate::shell::json_runner::json_mode_args(&self.command) {
-            cmd.arg(arg);
-        }
-        cmd.arg(input);
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-        cmd
-    }
-
-    /// Parse a JSON-mode CLI's raw stdout (one JSONL event per line) into a
-    /// [`CompletionResponse`]: accumulate the visible text from
-    /// `Delta`/`Message` events, and pull cost/tokens/model from the
-    /// terminal `Result` event.
-    ///
-    /// If no `Result` event appears (e.g. the CLI errored out mid-stream
-    /// after producing partial JSONL, or its stdout wasn't JSON at all),
-    /// falls back to the raw stdout as `content` with zeroed cost/tokens —
-    /// the same shape `complete()` has always returned for non-JSON CLIs.
     fn parse_json_stdout(&self, raw: &str) -> CompletionResponse {
         use crate::shell::json_runner::{StreamEvent, parse_stream_event};
 
@@ -97,12 +71,12 @@ impl Provider for CliProvider {
             .map(|m| m.content.as_str())
             .unwrap_or("");
 
-        let use_json = crate::shell::json_runner::supports_json(&self.command);
-        let mut cmd = if use_json {
-            self.build_json_command(input)
-        } else {
-            self.build_command(input)
-        };
+        // Run with `self.args` verbatim (the factory already selected the right
+        // args: canonical stream-json args for a default JSON-capable CLI, or
+        // the agent's explicit args). Then parse stdout opportunistically:
+        // `parse_json_stdout` extracts content + cost/tokens from JSONL events
+        // when present, and falls back to raw stdout (zeroed metrics) otherwise.
+        let mut cmd = self.build_command(input);
         let timeout = std::time::Duration::from_secs(self.timeout_secs);
 
         let output = match tokio::time::timeout(timeout, cmd.output()).await {
@@ -118,18 +92,7 @@ impl Provider for CliProvider {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-
-        if use_json {
-            Ok(self.parse_json_stdout(&stdout))
-        } else {
-            Ok(CompletionResponse {
-                content: stdout.to_string(),
-                model: self.command.clone(),
-                tokens_in: 0,
-                tokens_out: 0,
-                cost: 0.0,
-            })
-        }
+        Ok(self.parse_json_stdout(&stdout))
     }
 
     async fn stream(&self, request: CompletionRequest) -> anyhow::Result<TokenStream> {
