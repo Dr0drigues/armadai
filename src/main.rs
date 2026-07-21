@@ -12,6 +12,7 @@ mod secrets;
 #[allow(dead_code)]
 mod shell;
 mod skills_registry;
+mod starters_registry;
 #[cfg(feature = "storage")]
 mod storage;
 #[cfg(feature = "tui")]

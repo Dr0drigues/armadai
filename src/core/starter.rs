@@ -291,9 +291,31 @@ pub fn all_starters_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Pack directories discovered under the remote starters cache (each
+/// synced source is a subdir; packs are found by `discover_packs`).
+pub fn remote_starter_pack_dirs() -> Vec<PathBuf> {
+    remote_starter_pack_dirs_in(&crate::starters_registry::starters_cache_dir())
+}
+
+/// Testable core: scan a cache root's per-source subdirs for packs.
+fn remote_starter_pack_dirs_in(cache_root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(sources) = std::fs::read_dir(cache_root) else {
+        return out;
+    };
+    for src in sources.flatten() {
+        if src.path().is_dir() {
+            out.extend(crate::starters_registry::discover_packs(&src.path()));
+        }
+    }
+    out
+}
+
 /// Find a starter pack directory by name across all source directories.
 ///
 /// User and custom directories take priority over built-in (last match wins).
+/// If no local match is found, falls back to the remote starters cache
+/// (local always wins over remote).
 pub fn find_pack_dir(name: &str) -> Option<PathBuf> {
     let mut found: Option<PathBuf> = None;
     for dir in all_starters_dirs() {
@@ -301,6 +323,11 @@ pub fn find_pack_dir(name: &str) -> Option<PathBuf> {
         if candidate.is_dir() && candidate.join("pack.yaml").is_file() {
             found = Some(candidate);
         }
+    }
+    if found.is_none() {
+        found = remote_starter_pack_dirs()
+            .into_iter()
+            .find(|d| d.file_name().is_some_and(|n| n == name));
     }
     found
 }
@@ -325,6 +352,14 @@ pub fn load_all_packs() -> Vec<StarterPack> {
             {
                 packs_map.insert(pack.name.clone(), pack);
             }
+        }
+    }
+
+    // Remote (synced registry cache) packs: never override a local pack of
+    // the same name (local always wins over remote).
+    for dir in remote_starter_pack_dirs() {
+        if let Ok(pack) = StarterPack::load(&dir) {
+            packs_map.entry(pack.name.clone()).or_insert(pack);
         }
     }
 
@@ -365,6 +400,27 @@ pub fn list_available_packs() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_cache_packs_are_discovered() {
+        // A pack under the starters cache dir should be found by find_pack_dir.
+        // Isolate the cache via a temp registry_cache_dir if overridable; else
+        // assert discover_packs surfaces the cache packs through
+        // remote_starter_pack_dirs().
+        use std::fs;
+        let tmp = std::env::temp_dir().join(format!("armadai-remote-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let pack = tmp.join("src1/remote-demo/pack.yaml");
+        fs::create_dir_all(pack.parent().unwrap()).unwrap();
+        fs::write(&pack, "name: remote-demo\n").unwrap();
+        // remote_starter_pack_dirs scans a given cache root for packs:
+        let dirs = remote_starter_pack_dirs_in(&tmp);
+        assert!(
+            dirs.iter()
+                .any(|d| d.file_name().unwrap().to_string_lossy() == "remote-demo")
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn test_load_pack() {
