@@ -623,11 +623,10 @@ pub async fn get_orchestration_trace() -> Json<serde_json::Value> {
     {
         use crate::storage::{init_db, queries};
         if let Ok(db) = init_db()
-            && let Ok(runs) = queries::get_orchestration_runs(&db, 50)
+            && let Ok(runs) = queries::get_root_orchestration_runs(&db, 50)
         {
             let traces: Vec<serde_json::Value> = runs
                 .iter()
-                .filter(|r| r.parent_run_id.is_none())
                 .map(|r| {
                     serde_json::json!({
                         "id": r.run_id,

@@ -387,6 +387,43 @@ pub fn get_orchestration_runs(
     Ok(records)
 }
 
+/// Get root orchestration runs list (most recent first), excluding nested
+/// children (`parent_run_id IS NOT NULL`).
+///
+/// Filters at the SQL level rather than in Rust so `limit` bounds the number
+/// of *roots* returned — filtering a `get_orchestration_runs` result in Rust
+/// after the fact would let nested children consume slots in the initial
+/// `LIMIT`, silently returning fewer than `limit` roots whenever a run in the
+/// window has children (see C6 trace list pagination).
+pub fn get_root_orchestration_runs(
+    db: &Database,
+    limit: u32,
+) -> anyhow::Result<Vec<OrchestrationRunRecord>> {
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
+    let mut stmt = conn.prepare(
+        "SELECT run_id, pattern, config_json, outcome_json, rounds, halt_reason, parent_run_id
+         FROM orchestration_runs WHERE parent_run_id IS NULL ORDER BY created_at DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], |row| {
+        Ok(OrchestrationRunRecord {
+            run_id: row.get(0)?,
+            pattern: row.get(1)?,
+            config_json: row.get(2)?,
+            outcome_json: row.get(3)?,
+            rounds: row.get(4)?,
+            halt_reason: row.get(5)?,
+            parent_run_id: row.get(6)?,
+        })
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
 /// Get board entries for a run.
 #[allow(dead_code)] // API reserved for future `armadai history` / web UI
 pub fn get_board_entries(db: &Database, run_id: &str) -> anyhow::Result<Vec<BoardEntryRecord>> {
@@ -653,6 +690,75 @@ mod tests {
         let r = result.unwrap();
         assert_eq!(r.pattern, "blackboard");
         assert_eq!(r.rounds, 3);
+    }
+
+    #[test]
+    fn test_get_root_orchestration_runs_excludes_children() {
+        // C6 regression: pagination must filter parent_run_id at the SQL
+        // level (WHERE parent_run_id IS NULL ... LIMIT), not by fetching
+        // `limit` rows and filtering roots out in Rust afterwards — the
+        // latter lets children consume slots in the LIMIT window and can
+        // silently return fewer than `limit` roots.
+        let db = init_embedded().unwrap();
+
+        insert_run_with_id(&db, "root-1", sample_run("agent-a", 0.01)).unwrap();
+        insert_run_with_id(&db, "root-2", sample_run("agent-a", 0.02)).unwrap();
+        insert_run_with_id(&db, "child-1", sample_run("agent-a", 0.03)).unwrap();
+
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: "root-1".to_string(),
+                pattern: "blackboard".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: None,
+                rounds: 1,
+                halt_reason: None,
+                parent_run_id: None,
+            },
+        )
+        .unwrap();
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: "root-2".to_string(),
+                pattern: "ring".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: None,
+                rounds: 1,
+                halt_reason: None,
+                parent_run_id: None,
+            },
+        )
+        .unwrap();
+        insert_orchestration_run(
+            &db,
+            OrchestrationRunRecord {
+                run_id: "child-1".to_string(),
+                pattern: "hierarchical".to_string(),
+                config_json: "{}".to_string(),
+                outcome_json: None,
+                rounds: 1,
+                halt_reason: None,
+                parent_run_id: Some("root-1".to_string()),
+            },
+        )
+        .unwrap();
+
+        let roots = get_root_orchestration_runs(&db, 50).unwrap();
+        assert_eq!(roots.len(), 2);
+        assert!(roots.iter().all(|r| r.parent_run_id.is_none()));
+        let ids: Vec<&str> = roots.iter().map(|r| r.run_id.as_str()).collect();
+        assert!(ids.contains(&"root-1"));
+        assert!(ids.contains(&"root-2"));
+        assert!(!ids.contains(&"child-1"));
+
+        // Also verify the LIMIT-window-loss scenario the SQL-level filter
+        // fixes: a limit of 1 must still return exactly a root (not a
+        // truncated set that happened to include the child).
+        let limited = get_root_orchestration_runs(&db, 1).unwrap();
+        assert_eq!(limited.len(), 1);
+        assert!(limited[0].parent_run_id.is_none());
     }
 
     #[test]
