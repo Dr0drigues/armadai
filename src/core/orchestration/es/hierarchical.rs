@@ -16,8 +16,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::engine::{Action, Decider, EffectRunner};
+use super::engine::{Action, Decider, EffectRunner, run_event_sourced};
 use super::event::ExecutionEvent;
+use super::log::EventLog;
 use super::state::ExecutionState;
 use crate::core::agent::Agent;
 use crate::core::orchestration::OrchestrationConfig;
@@ -966,6 +967,74 @@ impl EffectRunner for HierarchicalEffectRunner {
             model: response.model,
         })
     }
+}
+
+// ── run_hierarchical_es (Task 5): end-to-end assembly ────────────────
+
+/// Run a complete hierarchical orchestration end-to-end through the
+/// event-sourced engine: builds the initial `RunStarted` event, constructs a
+/// [`HierarchicalDecider`] + [`HierarchicalEffectRunner`] from `config` /
+/// `agents` / `providers` / `routing_rules`, and drives them through
+/// [`run_event_sourced`], returning the final [`ExecutionState`].
+///
+/// `run_id` is accepted explicitly rather than generated internally, so
+/// callers — notably tests proving replay determinism — can pass a fixed id
+/// and later reconstruct the same state purely from the log via
+/// [`super::engine::replay`].
+///
+/// Depth/iteration/token/cost limits are derived from `config`:
+/// `OrchestrationConfig::max_depth()`/`max_iterations()` apply their
+/// documented defaults (5 / 50) when unset; `token_budget` is narrowed from
+/// `Option<u64>` to the `Option<u32>` `HierarchicalDecider` expects
+/// (saturating at `u32::MAX` — well above any realistic token budget) and
+/// `cost_limit` passes through unchanged, `None` meaning "no limit" for
+/// both.
+///
+/// Coexists with the legacy
+/// `core::orchestration::hierarchical::HierarchicalEngine` — this function
+/// is not called from `run.rs`; wiring it in as the active engine is a
+/// later lot (the bascule).
+#[allow(clippy::too_many_arguments)]
+pub async fn run_hierarchical_es(
+    run_id: &str,
+    coordinator: &str,
+    input: &str,
+    config: OrchestrationConfig,
+    agents: BTreeMap<String, Agent>,
+    providers: BTreeMap<String, Arc<dyn Provider>>,
+    routing_rules: RoutingRules,
+    log: &mut impl EventLog,
+) -> anyhow::Result<ExecutionState> {
+    let agent_names: Vec<String> = agents.keys().cloned().collect();
+    let initial = vec![ExecutionEvent::RunStarted {
+        run_id: run_id.to_string(),
+        pattern: "hierarchical".to_string(),
+        agents: agent_names,
+        input: input.to_string(),
+        project: None,
+    }];
+
+    let max_depth = config.max_depth();
+    let max_iterations = config.max_iterations();
+    let token_budget = config
+        .token_budget
+        .map(|b| u32::try_from(b).unwrap_or(u32::MAX));
+    let cost_limit = config.cost_limit;
+
+    let decider = HierarchicalDecider::new(
+        coordinator.to_string(),
+        input.to_string(),
+        config.clone(),
+        agents.clone(),
+        routing_rules,
+        max_depth,
+        max_iterations,
+        token_budget,
+        cost_limit,
+    );
+    let effects = HierarchicalEffectRunner::new(agents, providers, config);
+
+    run_event_sourced(run_id, initial, &decider, &effects, log).await
 }
 
 #[cfg(test)]
@@ -2597,5 +2666,431 @@ mod tests {
                 other => panic!("expected AgentObserved, got {other:?}"),
             }
         }
+    }
+
+    // ── run_hierarchical_es (Task 5): end-to-end + replay determinism ──
+    //
+    // Exercises `run_hierarchical_es` as a whole (unlike `decide` and
+    // `effect_runner` above, which drive `HierarchicalDecider` /
+    // `HierarchicalEffectRunner` directly) — the same scenarios the legacy
+    // `HierarchicalEngine` covers, plus a proof that `replay` reconstructs
+    // an identical `ExecutionState` purely from the log, with no effect
+    // re-executed.
+    //
+    // IMPORTANT: every agent below uses a CONCRETE model string (never
+    // `latest:auto`). Resolving `latest:auto` calls
+    // `resolve_model_for_tier`, which — unless the agent's `provider` is
+    // deliberately absent from the cache (see the `effect_runner` tests
+    // above) — reads an on-disk `models.dev` cache. That I/O is
+    // non-hermetic (depends on whatever happens to be cached on the
+    // machine running the test) and would make these tests flaky. Sticking
+    // to concrete models keeps `HierarchicalEffectRunner::run_invoke`
+    // entirely in-memory, driven only by the scripted providers below.
+    use crate::core::agent::AgentMetadata;
+    use crate::core::orchestration::es::engine::replay;
+    use crate::core::orchestration::es::log::InMemoryLog;
+    use crate::core::orchestration::es::state::RunStatus;
+    use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+    use std::collections::VecDeque;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Minimal `Agent` for `run_hierarchical_es` E2E tests: always a
+    /// concrete model (see module note above).
+    fn es_test_agent(name: &str, model: &str) -> Agent {
+        Agent {
+            name: name.to_string(),
+            source: PathBuf::from(format!("{name}.md")),
+            metadata: AgentMetadata {
+                provider: "anthropic".to_string(),
+                model: Some(model.to_string()),
+                command: None,
+                args: None,
+                temperature: 0.7,
+                max_tokens: None,
+                timeout: None,
+                tags: vec![],
+                stacks: vec![],
+                scope: vec![],
+                model_fallback: vec![],
+                cost_limit: None,
+                rate_limit: None,
+                context_window: None,
+                mode: None,
+                orchestration: None,
+                triggers: None,
+                ring_config: None,
+            },
+            system_prompt: format!("You are {name}."),
+            instructions: None,
+            output_format: None,
+            pipeline: None,
+            context: None,
+        }
+    }
+
+    /// Provider scripted with a fixed sequence of responses, one per call
+    /// (repeating the last one for any call beyond the scripted list, so a
+    /// test can under-provision without panicking). Also counts calls, so
+    /// `es_replay_reconstructs_state` can prove `replay` triggers none.
+    struct ScriptedProvider {
+        responses: std::sync::Mutex<VecDeque<String>>,
+        last: std::sync::Mutex<String>,
+        calls: AtomicUsize,
+    }
+
+    impl ScriptedProvider {
+        fn new(responses: &[&str]) -> Self {
+            Self {
+                responses: std::sync::Mutex::new(
+                    responses.iter().map(|s| (*s).to_string()).collect(),
+                ),
+                last: std::sync::Mutex::new(String::new()),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl Provider for ScriptedProvider {
+        async fn complete(&self, request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut queue = self.responses.lock().unwrap();
+            let content = queue
+                .pop_front()
+                .unwrap_or_else(|| self.last.lock().unwrap().clone());
+            *self.last.lock().unwrap() = content.clone();
+            Ok(CompletionResponse {
+                content,
+                model: request.model,
+                tokens_in: 1,
+                tokens_out: 1,
+                cost: 0.0,
+            })
+        }
+        async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("streaming not exercised by run_hierarchical_es tests")
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "scripted".to_string(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    /// Base flat-team config: coordinator with a single team of `peers` (no
+    /// nested lead) — the same topology as `decide`'s `base_config`.
+    fn es_flat_config(coordinator: &str, peers: &[&str]) -> OrchestrationConfig {
+        OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some(coordinator.to_string()),
+            teams: vec![TeamConfig {
+                lead: None,
+                agents: peers.iter().map(|p| (*p).to_string()).collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Extract the `content` of the last `Completed` event recorded for
+    /// `run_id`, if any. `ExecutionState` itself carries no `content`
+    /// field (only `status`), so asserting the final answer's content
+    /// requires reading it back from the log.
+    fn final_content(log: &InMemoryLog, run_id: &str) -> String {
+        log.events(run_id)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find_map(|e| match e {
+                ExecutionEvent::Completed { content } => Some(content),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether `run_id`'s log contains a `Warned{code}` event matching
+    /// `code` exactly. `apply` treats `Warned` as a no-op on `ExecutionState`
+    /// (see `es::state::apply`), so — like `final_content` above — this can
+    /// only be checked against the log, not the projected state.
+    fn log_has_warned(log: &InMemoryLog, run_id: &str, code: &str) -> bool {
+        log.events(run_id)
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, ExecutionEvent::Warned { code: c } if c == code))
+    }
+
+    // Scenario 1: coordinator delegates to a single agent, which answers
+    // with a `FinalAnswer`; the coordinator then synthesizes its own
+    // `FinalAnswer` from that single result. The run must `Complete`, the
+    // delegation must be traced, and the final content must be non-empty.
+    #[tokio::test]
+    async fn es_single_delegation_completes() {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "dev-lead".to_string(),
+            es_test_agent("dev-lead", "concrete-model"),
+        );
+        agents.insert(
+            "core-specialist".to_string(),
+            es_test_agent("core-specialist", "concrete-model"),
+        );
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "dev-lead".to_string(),
+            Arc::new(ScriptedProvider::new(&[
+                "@core-specialist: fais X",
+                "Synthèse : tout est prêt.",
+            ])),
+        );
+        providers.insert(
+            "core-specialist".to_string(),
+            Arc::new(ScriptedProvider::new(&["X est fait."])),
+        );
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-single",
+            "dev-lead",
+            "build X",
+            es_flat_config("dev-lead", &["core-specialist"]),
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+        assert!(!st.hier.trace.is_empty(), "expected a recorded delegation");
+        assert!(
+            st.hier
+                .trace
+                .iter()
+                .any(|(from, to, _, _)| from == "dev-lead" && to == "core-specialist"),
+            "expected dev-lead -> core-specialist in the trace, got {:?}",
+            st.hier.trace
+        );
+        assert!(
+            !final_content(&log, "run-single").trim().is_empty(),
+            "expected non-empty final content"
+        );
+
+        let replayed = replay("run-single", &log).unwrap();
+        assert_eq!(format!("{st:?}"), format!("{replayed:?}"));
+    }
+
+    // Scenario 2: coordinator delegates to two sibling agents in the same
+    // response; both answer with `FinalAnswer`s, and the coordinator
+    // synthesizes both results into its own final answer.
+    #[tokio::test]
+    async fn es_multiple_delegations_synthesize() {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "dev-lead".to_string(),
+            es_test_agent("dev-lead", "concrete-model"),
+        );
+        agents.insert(
+            "core-specialist".to_string(),
+            es_test_agent("core-specialist", "concrete-model"),
+        );
+        agents.insert(
+            "qa-specialist".to_string(),
+            es_test_agent("qa-specialist", "concrete-model"),
+        );
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "dev-lead".to_string(),
+            Arc::new(ScriptedProvider::new(&[
+                "@core-specialist: implémente X\n@qa-specialist: teste X",
+                "Synthèse : fonctionnalité livrée.",
+            ])),
+        );
+        providers.insert(
+            "core-specialist".to_string(),
+            Arc::new(ScriptedProvider::new(&["X est implémenté."])),
+        );
+        providers.insert(
+            "qa-specialist".to_string(),
+            Arc::new(ScriptedProvider::new(&["X est testé, RAS."])),
+        );
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-multi",
+            "dev-lead",
+            "build X",
+            es_flat_config("dev-lead", &["core-specialist", "qa-specialist"]),
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+        let targets: Vec<&str> = st
+            .hier
+            .trace
+            .iter()
+            .filter(|(from, ..)| from == "dev-lead")
+            .map(|(_, to, _, _)| to.as_str())
+            .collect();
+        assert_eq!(targets, vec!["core-specialist", "qa-specialist"]);
+        assert!(
+            !final_content(&log, "run-multi").trim().is_empty(),
+            "expected non-empty final content"
+        );
+    }
+
+    // Scenario 3: a two-level delegation chain (dev-lead -> core-lead ->
+    // core-a) exceeds `max_depth` (2) on its second hop. `decide`'s guard
+    // must force completion — `Warned{max_depth}` + `Complete` — rather
+    // than let the chain keep growing; the run still ends `Completed` (the
+    // guard *completes* the run with a partial digest, it does not error),
+    // and that digest must be non-empty.
+    #[tokio::test]
+    async fn es_max_depth_halts_gracefully() {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "dev-lead".to_string(),
+            es_test_agent("dev-lead", "concrete-model"),
+        );
+        agents.insert(
+            "core-lead".to_string(),
+            es_test_agent("core-lead", "concrete-model"),
+        );
+        agents.insert(
+            "core-a".to_string(),
+            es_test_agent("core-a", "concrete-model"),
+        );
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "dev-lead".to_string(),
+            Arc::new(ScriptedProvider::new(&["@core-lead: gère la feature"])),
+        );
+        providers.insert(
+            "core-lead".to_string(),
+            Arc::new(ScriptedProvider::new(&["@core-a: fais A"])),
+        );
+        providers.insert(
+            "core-a".to_string(),
+            Arc::new(ScriptedProvider::new(&["A en cours."])),
+        );
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some("dev-lead".to_string()),
+            teams: vec![TeamConfig {
+                lead: Some("core-lead".to_string()),
+                agents: vec!["core-a".to_string()],
+                ..Default::default()
+            }],
+            max_depth: Some(2),
+            ..Default::default()
+        };
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-depth",
+            "dev-lead",
+            "build X",
+            config,
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+        assert!(
+            log_has_warned(&log, "run-depth", "max_depth"),
+            "expected a max_depth Warned event in the log"
+        );
+        assert!(
+            !final_content(&log, "run-depth").trim().is_empty(),
+            "expected a non-empty partial digest"
+        );
+    }
+
+    // Scenario 4: replay determinism. After a full run, `replay(run_id,
+    // &log)` must reconstruct an `ExecutionState` identical (`Debug`
+    // format) to the one `run_hierarchical_es` returned — and it must do
+    // so without invoking any provider again (`replay` takes no
+    // `EffectRunner` at all; the call-count assertions below are an extra,
+    // belt-and-braces proof that no effect silently re-runs).
+    #[tokio::test]
+    async fn es_replay_reconstructs_state() {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "dev-lead".to_string(),
+            es_test_agent("dev-lead", "concrete-model"),
+        );
+        agents.insert(
+            "core-specialist".to_string(),
+            es_test_agent("core-specialist", "concrete-model"),
+        );
+        let dev_lead_provider = Arc::new(ScriptedProvider::new(&[
+            "@core-specialist: fais X",
+            "Synthèse : tout est prêt.",
+        ]));
+        let core_provider = Arc::new(ScriptedProvider::new(&["X est fait."]));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "dev-lead".to_string(),
+            dev_lead_provider.clone() as Arc<dyn Provider>,
+        );
+        providers.insert(
+            "core-specialist".to_string(),
+            core_provider.clone() as Arc<dyn Provider>,
+        );
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-replay",
+            "dev-lead",
+            "build X",
+            es_flat_config("dev-lead", &["core-specialist"]),
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+        assert_eq!(st.status, RunStatus::Completed);
+
+        let dev_lead_calls_before = dev_lead_provider.call_count();
+        let core_calls_before = core_provider.call_count();
+
+        let replayed = replay("run-replay", &log).unwrap();
+
+        assert_eq!(
+            format!("{st:?}"),
+            format!("{replayed:?}"),
+            "replay must reconstruct an identical ExecutionState"
+        );
+        assert_eq!(
+            dev_lead_provider.call_count(),
+            dev_lead_calls_before,
+            "replay must not re-invoke the dev-lead provider"
+        );
+        assert_eq!(
+            core_provider.call_count(),
+            core_calls_before,
+            "replay must not re-invoke the core-specialist provider"
+        );
     }
 }
