@@ -174,4 +174,32 @@ mod tests {
             _ => panic!("expected Invoke"),
         }
     }
+
+    #[test]
+    fn escalation_line_becomes_invoke_with_escalated_event() {
+        // core-specialist is a subordinate of the coordinator "dev-lead"
+        // (no team lead in between) — classify_relationship must resolve
+        // this as Subordinate, so parse_delegations yields Escalate.
+        let config = sample_config();
+        let resp = "@dev-lead: je bloque sur X, besoin d'arbitrage";
+        let steps = plan_from_response(resp, "core-specialist", &config, 0);
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            PlannedStep::Invoke { agent, task, event } => {
+                assert_eq!(agent, "dev-lead");
+                assert_eq!(task, "je bloque sur X, besoin d'arbitrage");
+                assert!(
+                    matches!(
+                        event,
+                        ExecutionEvent::Escalated { from, to, message }
+                        if from == "core-specialist"
+                            && to == "dev-lead"
+                            && message == "je bloque sur X, besoin d'arbitrage"
+                    ),
+                    "expected Escalated for subordinate→coordinator contact, got {event:?}"
+                );
+            }
+            _ => panic!("expected Invoke"),
+        }
+    }
 }
