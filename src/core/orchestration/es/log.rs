@@ -154,6 +154,72 @@ mod tests {
         }
         let got = log.events("r1").unwrap();
         assert_eq!(got.len(), 3);
+        // Assert the full ordering, not just the last element — this is the
+        // property that would break if `seq` were computed wrong (e.g.
+        // reversed or unstable ORDER BY).
+        assert!(matches!(got[0], E::RunStarted { .. }));
+        assert!(matches!(got[1], E::AgentObserved { .. }));
         assert!(matches!(got[2], E::Completed { .. }));
+    }
+
+    /// Extract the `content` field of an `AgentObserved` event, panicking on
+    /// any other variant. Used to check per-event identity/order in the
+    /// multi-`run_id` isolation tests below.
+    fn observed_content(event: &E) -> &str {
+        match event {
+            E::AgentObserved { content, .. } => content,
+            other => panic!("expected AgentObserved, got {other:?}"),
+        }
+    }
+
+    /// Build an `AgentObserved` event carrying `run_id` and `idx` in its
+    /// `content`, so a mis-isolated log (e.g. a `seq`/PK collision between
+    /// two `run_id`s) shows up as a wrong-content or leaked event rather
+    /// than just a wrong count.
+    fn marker(run_id: &str, idx: usize) -> E {
+        E::AgentObserved {
+            agent: "a".into(),
+            content: format!("{run_id}-{idx}"),
+            tokens_in: 1,
+            tokens_out: 1,
+            cost: 0.0,
+            model: "m".into(),
+        }
+    }
+
+    /// Shared assertion for both backends: interleave appends to two
+    /// distinct `run_id`s (rA, rB, rA, rB, rA) and verify each `run_id`
+    /// gets back exactly its own events, in insertion order, with none of
+    /// the other's leaking in. This is the scenario that would break under
+    /// a `seq`/`(run_id, seq)` collision.
+    fn assert_multi_run_id_seq_isolation<L: EventLog>(mut log: L) {
+        let run_ids = ["rA", "rB", "rA", "rB", "rA"];
+        for (idx, run_id) in run_ids.iter().enumerate() {
+            log.append(run_id, &marker(run_id, idx)).unwrap();
+        }
+
+        let a = log.events("rA").unwrap();
+        let b = log.events("rB").unwrap();
+
+        assert_eq!(a.len(), 3, "rA should have exactly its 3 own events");
+        assert_eq!(b.len(), 2, "rB should have exactly its 2 own events");
+
+        let a_contents: Vec<&str> = a.iter().map(observed_content).collect();
+        assert_eq!(a_contents, vec!["rA-0", "rA-2", "rA-4"]);
+
+        let b_contents: Vec<&str> = b.iter().map(observed_content).collect();
+        assert_eq!(b_contents, vec!["rB-1", "rB-3"]);
+    }
+
+    #[test]
+    fn in_memory_multi_run_id_seq_isolation() {
+        assert_multi_run_id_seq_isolation(InMemoryLog::default());
+    }
+
+    #[cfg(feature = "storage")]
+    #[test]
+    fn sqlite_multi_run_id_seq_isolation() {
+        let db = crate::storage::init_embedded().unwrap();
+        assert_multi_run_id_seq_isolation(SqliteLog::new(db));
     }
 }

@@ -66,6 +66,10 @@ jobs:
           shared-key: ci-cargo
           save-if: ${{ github.ref == 'refs/heads/develop' }}
       - run: cargo test --no-default-features --features tui
+      # storage (SQLite) is not covered by the default `tui` feature set —
+      # run its tests explicitly so src/storage/ and the storage-gated
+      # code paths (e.g. SqliteLog) are actually exercised in CI.
+      - run: cargo test --no-default-features --features tui,storage
 
   build:
     name: Build
