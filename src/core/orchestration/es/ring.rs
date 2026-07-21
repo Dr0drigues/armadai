@@ -17,13 +17,23 @@
 //! machine.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use super::engine::{Action, Decider};
+use async_trait::async_trait;
+
+use super::engine::{Action, Decider, EffectRunner};
 use super::event::ExecutionEvent;
 use super::state::{ExecutionState, RunStatus, VoteRec};
 use crate::core::agent::Agent;
-use crate::core::orchestration::ring::RingConfig;
+use crate::core::orchestration::llm_agents::{
+    RING_ACTION_INSTRUCTIONS, parse_ring_action, parse_vote_confidence,
+};
+use crate::core::orchestration::ring::{ContributionAction, RingConfig};
 use crate::core::routing::{BudgetState, RoutingRules, route};
+#[cfg(test)]
+use crate::linker::model_resolution::fallback_model_for_tier;
+use crate::linker::model_resolution::{ModelTier, resolve_model_for_tier};
+use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// The ring pattern's current phase, derived purely from [`ExecutionState`].
 ///
@@ -581,6 +591,330 @@ impl Decider for RingDecider {
             // batch for exhaustiveness rather than a `match` catch-all that
             // could silently swallow a future `RingPhase` variant.
             RingPhase::Done => Vec::new(),
+        }
+    }
+}
+
+/// Parse a tier string as stored in `ExecutionState::routed_tiers` back into
+/// a `ModelTier`.
+///
+/// Identical in spirit to `es::hierarchical::parse_routed_tier`/
+/// `es::blackboard::parse_routed_tier` — duplicated rather than shared (same
+/// rationale: the three effect runners' `agents`/model-resolution concerns
+/// live on unrelated structs with no common trait today). Unrecognized
+/// strings fall back to `Pro`, matching the other two.
+fn parse_routed_tier(tier: &str) -> ModelTier {
+    match tier.to_lowercase().as_str() {
+        "fast" => ModelTier::Fast,
+        "max" => ModelTier::Max,
+        _ => ModelTier::Pro,
+    }
+}
+
+/// Map a parsed [`ContributionAction`] onto the lowercase `action` string
+/// carried by `ExecutionEvent::ContributionAdded` — the single source of
+/// truth [`ring_phase`]/[`next_ring_agent`] read back (via
+/// `ContribRec::action`) to detect early-convergence (every contribution in
+/// a lap is exactly `"pass"`) and to rotate the circulation. **Contract**:
+/// the `Pass` arm must map to the exact lowercase string `"pass"` — nothing
+/// else — since that is the literal `ring_phase` compares against
+/// (`lap_contribs.iter().all(|c| c.action == "pass")`); any other casing or
+/// wording would silently break the early-exit detection.
+fn action_string(action: &ContributionAction) -> &'static str {
+    match action {
+        ContributionAction::Propose => "propose",
+        ContributionAction::Enrich { .. } => "enrich",
+        ContributionAction::Contest { .. } => "contest",
+        ContributionAction::Endorse { .. } => "endorse",
+        ContributionAction::Synthesize => "synthesize",
+        ContributionAction::Pass { .. } => "pass",
+    }
+}
+
+// ── RingEffectRunner (Task 8): the sole async/impure effect ───────────
+
+/// Executes the actual LLM call behind `Action::Invoke` for the ring pattern
+/// and turns the raw provider response into the `ContributionAdded` (during
+/// circulation) or `VoteCast` (during voting) event the pure loop/
+/// [`RingDecider`] expect, per the current [`RingPhase`] (derived via
+/// [`ring_phase`]).
+///
+/// This is the *only* impure/async piece of the event-sourced ring engine —
+/// every other function in this module is a pure, synchronous helper over
+/// `ExecutionState`. Coexists with the legacy
+/// `core::orchestration::ring::run_ring`/`llm_agents::LlmRingAgent` (this
+/// struct is not wired into it, and does not import from it beyond the
+/// plain, side-effect-free `parse_ring_action`/`parse_vote_confidence`
+/// parsers and `RING_ACTION_INSTRUCTIONS` constant it explicitly reuses —
+/// strict coexistence, mirroring `HierarchicalEffectRunner`/
+/// `BlackboardEffectRunner`).
+pub struct RingEffectRunner {
+    /// All known agents by name (system prompt, model, temperature, …).
+    pub agents: BTreeMap<String, Agent>,
+    /// Provider instance per agent name.
+    pub providers: BTreeMap<String, Arc<dyn Provider>>,
+    /// Ring configuration, read by [`ring_phase`] to derive the current
+    /// phase for `agent`.
+    pub config: RingConfig,
+    /// Per-agent vote weight — reserved for a future synthesis/resolution
+    /// step; `run_invoke` itself doesn't read it (voting only records each
+    /// agent's own position/confidence, unweighted — weighting happens in
+    /// [`resolve_votes`], the `Decider`'s concern), kept here for symmetry
+    /// with [`RingDecider::vote_weights`] and so callers can construct both
+    /// from a single source of truth.
+    pub vote_weights: BTreeMap<String, f32>,
+}
+
+impl RingEffectRunner {
+    /// Construct a new `RingEffectRunner` from its immutable inputs.
+    pub fn new(
+        agents: BTreeMap<String, Agent>,
+        providers: BTreeMap<String, Arc<dyn Provider>>,
+        config: RingConfig,
+        vote_weights: BTreeMap<String, f32>,
+    ) -> Self {
+        Self {
+            agents,
+            providers,
+            config,
+            vote_weights,
+        }
+    }
+
+    /// Assemble the circulation prompt for `agent_name` at `lap`, reproducing
+    /// the shape of `LlmRingAgent::process`'s `user_msg`
+    /// (`core::orchestration::llm_agents`) over the event-sourced
+    /// `state.ring` projection instead of a live `TokenSnapshot`: `"Task:
+    /// …\nLap: …\nYour position: …/…\n"`, then (only if any exist) a
+    /// `"Previous contributions:\n"` section listing *every* contribution
+    /// recorded so far (`state.ring.contributions`, in append order) as
+    /// `"- [#{index} Lap {lap} / {position}] {agent}: {content}\n"`, then
+    /// [`RING_ACTION_INSTRUCTIONS`] verbatim.
+    ///
+    /// `position` (0-based, "your position in *this* lap") is the number of
+    /// contributions already recorded for `lap` — the same count
+    /// [`next_ring_agent`] and `ring_phase`'s lap-completeness check use, and
+    /// exactly the index this invocation's own `ContributionAdded` will
+    /// carry once it completes (see `run_invoke`'s `Circulate` branch below).
+    /// The roster size (`state.agents.len()`) stands in for
+    /// `TokenSnapshot::ring_order.len()` — the total agents.
+    fn build_circulate_prompt(&self, input: &str, lap: u32, state: &ExecutionState) -> String {
+        let position = state
+            .ring
+            .contributions
+            .iter()
+            .filter(|c| c.lap == lap)
+            .count();
+        let mut user_msg = format!(
+            "Task: {input}\nLap: {lap}\nYour position: {}/{}\n",
+            position + 1,
+            state.agents.len()
+        );
+
+        if !state.ring.contributions.is_empty() {
+            user_msg.push_str("\nPrevious contributions:\n");
+            for (i, c) in state.ring.contributions.iter().enumerate() {
+                user_msg.push_str(&format!(
+                    "- [#{i} Lap {} / {}] {}: {}\n",
+                    c.lap, c.position, c.agent, c.content
+                ));
+            }
+        }
+
+        user_msg.push_str(RING_ACTION_INSTRUCTIONS);
+        user_msg
+    }
+
+    /// Assemble the voting prompt, reproducing the shape of
+    /// `LlmRingAgent::vote`'s `user_msg` verbatim: `"Task: …\n\nAll
+    /// contributions:\n"`, one `"- [Lap … / …] {agent}: {content}\n"` line
+    /// per recorded contribution (`state.ring.contributions`, in append
+    /// order), then the fixed synthesis instructions asking for a
+    /// `CONFIDENCE: <0.0-1.0>` header followed by the agent's final
+    /// position.
+    fn build_vote_prompt(&self, input: &str, state: &ExecutionState) -> String {
+        let mut user_msg = format!("Task: {input}\n\nAll contributions:\n");
+        for c in &state.ring.contributions {
+            user_msg.push_str(&format!(
+                "- [Lap {} / {}] {}: {}\n",
+                c.lap, c.position, c.agent, c.content
+            ));
+        }
+        user_msg.push_str(
+            "\nSynthesize the contributions above. Identify areas of agreement, \
+             unresolved disagreements, and any gaps. Then state your final \
+             position in one or two sentences.\n\n\
+             Format your response as:\n\
+             CONFIDENCE: <0.0-1.0>\n\
+             <your synthesized position>",
+        );
+        user_msg
+    }
+}
+
+#[async_trait]
+impl EffectRunner for RingEffectRunner {
+    async fn run_invoke(
+        &self,
+        agent: &str,
+        input: &str,
+        state: &ExecutionState,
+    ) -> anyhow::Result<ExecutionEvent> {
+        let agent_def = self
+            .agents
+            .get(agent)
+            .ok_or_else(|| anyhow::anyhow!("Unknown agent '{agent}' — no Agent definition"))?;
+        let provider = self
+            .providers
+            .get(agent)
+            .ok_or_else(|| anyhow::anyhow!("No provider configured for agent '{agent}'"))?;
+
+        // Same `"latest:auto"` resolution as `HierarchicalEffectRunner`/
+        // `BlackboardEffectRunner`: see their doc comments for the full
+        // rationale. `RingDecider` (Task 7) emits `ModelRouted` ahead of
+        // every `latest:auto` agent's `Invoke`, so `state.routed_tiers`
+        // should already carry its tier by the time this runs; the `None`
+        // branch is a defensive fallback for a hand-built state (tests) or a
+        // future decider regression.
+        let raw_model = agent_def
+            .metadata
+            .model
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let model = if raw_model == "latest:auto" {
+            let tier = match state.routed_tiers.get(agent) {
+                Some(tier_str) => parse_routed_tier(tier_str),
+                None => {
+                    tracing::warn!(
+                        agent,
+                        "no ModelRouted tier recorded for latest:auto agent; falling back to Pro tier"
+                    );
+                    ModelTier::Pro
+                }
+            };
+            resolve_model_for_tier(&agent_def.metadata.provider, tier)
+        } else {
+            raw_model
+        };
+
+        match ring_phase(state, &self.config) {
+            RingPhase::Circulate { lap } => {
+                let position = state
+                    .ring
+                    .contributions
+                    .iter()
+                    .filter(|c| c.lap == lap)
+                    .count();
+                let prompt = self.build_circulate_prompt(input, lap, state);
+                let request = CompletionRequest {
+                    model,
+                    system_prompt: agent_def.system_prompt.clone(),
+                    messages: vec![ChatMessage {
+                        role: "user".to_string(),
+                        content: prompt,
+                    }],
+                    temperature: agent_def.metadata.temperature,
+                    max_tokens: agent_def.metadata.max_tokens,
+                };
+
+                // Graceful degradation (brief, "erreur provider"): a provider
+                // error must NOT abort the run — the ring must keep
+                // circulating even when one agent's LLM call fails outright.
+                // Swallow the error and manufacture a degraded
+                // `ContributionAdded` with `action: "pass"` (the exact
+                // lowercase string `ring_phase`'s early-convergence check
+                // compares against — see `action_string`'s doc comment), a
+                // `"[agent failed]"` marker so the failure is visible in the
+                // transcript, and zero tokens/cost (nothing was actually
+                // consumed/billed).
+                match provider.complete(request).await {
+                    Ok(response) => {
+                        let (action, content) = parse_ring_action(&response.content);
+                        Ok(ExecutionEvent::ContributionAdded {
+                            agent: agent.to_string(),
+                            lap,
+                            position,
+                            action: action_string(&action).to_string(),
+                            content,
+                            tokens_in: response.tokens_in,
+                            tokens_out: response.tokens_out,
+                            cost: response.cost,
+                        })
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            agent,
+                            error = %err,
+                            "ring agent provider call failed during circulation; recording a Pass instead of aborting the run"
+                        );
+                        Ok(ExecutionEvent::ContributionAdded {
+                            agent: agent.to_string(),
+                            lap,
+                            position,
+                            action: "pass".to_string(),
+                            content: "[agent failed]".to_string(),
+                            tokens_in: 0,
+                            tokens_out: 0,
+                            cost: 0.0,
+                        })
+                    }
+                }
+            }
+            // `Vote` is the only other phase `RingDecider` ever dispatches an
+            // `Invoke` for (`Resolve`/`Done` only ever `Emit`/`Complete`, never
+            // `Invoke` — see `RingDecider::decide`); the catch-all below is a
+            // defensive fallback for a hand-built state (tests) or a future
+            // decider regression, treated identically to `Vote` since both
+            // have nothing left to circulate.
+            _ => {
+                let n = state.ring.contributions.len();
+                let prompt = self.build_vote_prompt(input, state);
+                let request = CompletionRequest {
+                    model,
+                    system_prompt: agent_def.system_prompt.clone(),
+                    messages: vec![ChatMessage {
+                        role: "user".to_string(),
+                        content: prompt,
+                    }],
+                    temperature: agent_def.metadata.temperature,
+                    max_tokens: agent_def.metadata.max_tokens,
+                };
+
+                // Graceful degradation, voting phase: a provider error
+                // records a neutral abstention (`confidence: 0.0`, a
+                // documented `"[agent failed]"` position) rather than
+                // aborting the run — fidelity with the circulation branch
+                // above. `supports` still covers the full contribution range
+                // (fidèle au legacy shape even for a degraded vote); `concerns`
+                // documents the failure so it's distinguishable from a
+                // genuine (if unconfident) vote.
+                match provider.complete(request).await {
+                    Ok(response) => {
+                        let (confidence, position) = parse_vote_confidence(&response.content);
+                        Ok(ExecutionEvent::VoteCast {
+                            agent: agent.to_string(),
+                            position,
+                            confidence,
+                            supports: (0..n).collect(),
+                            concerns: vec![],
+                        })
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            agent,
+                            error = %err,
+                            "ring agent provider call failed during voting; recording a neutral abstention instead of aborting the run"
+                        );
+                        Ok(ExecutionEvent::VoteCast {
+                            agent: agent.to_string(),
+                            position: "[agent failed]".to_string(),
+                            confidence: 0.0,
+                            supports: (0..n).collect(),
+                            concerns: vec!["provider error".to_string()],
+                        })
+                    }
+                }
+            }
         }
     }
 }
@@ -1156,6 +1490,416 @@ mod tests {
                 actions[0]
             );
             assert!(matches!(&actions[1], Action::Complete { .. }));
+        }
+    }
+
+    // ── RingEffectRunner (Task 8) ─────────────────────────────────────
+    //
+    // Named `effect_runner` so `cargo test es::ring::tests::effect_runner`
+    // targets this module — mirrors the naming convention used by
+    // `es::hierarchical::tests::effect_runner`/
+    // `es::blackboard::tests::effect_runner`.
+    mod effect_runner {
+        use super::*;
+        use crate::core::agent::AgentMetadata;
+        use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+        use std::path::PathBuf;
+        use std::sync::Mutex;
+
+        /// Minimal `Agent` for effect-runner tests: a concrete (non
+        /// `latest:auto`) model by default.
+        fn test_agent(name: &str, model: &str) -> Agent {
+            Agent {
+                name: name.to_string(),
+                source: PathBuf::from(format!("{name}.md")),
+                metadata: AgentMetadata {
+                    provider: "anthropic".to_string(),
+                    model: Some(model.to_string()),
+                    command: None,
+                    args: None,
+                    temperature: 0.5,
+                    max_tokens: Some(256),
+                    timeout: None,
+                    tags: vec![],
+                    stacks: vec![],
+                    scope: vec![],
+                    model_fallback: vec![],
+                    cost_limit: None,
+                    rate_limit: None,
+                    context_window: None,
+                    mode: None,
+                    orchestration: None,
+                    triggers: None,
+                    ring_config: None,
+                },
+                system_prompt: format!("You are {name}."),
+                instructions: None,
+                output_format: None,
+                pipeline: None,
+                context: None,
+            }
+        }
+
+        /// Records every `CompletionRequest` it receives and always returns
+        /// a fixed `response` with `tokens_in: 5, tokens_out: 7, cost: 0.03`
+        /// — mirrors `CapturingProvider` in `es::hierarchical`/
+        /// `es::blackboard`'s own effect-runner tests, so assertions can
+        /// check both what was sent and what came back.
+        struct CapturingProvider {
+            requests: Mutex<Vec<CompletionRequest>>,
+            response: String,
+        }
+
+        impl CapturingProvider {
+            fn new(response: &str) -> Self {
+                Self {
+                    requests: Mutex::new(Vec::new()),
+                    response: response.to_string(),
+                }
+            }
+
+            fn requests(&self) -> Vec<CompletionRequest> {
+                self.requests.lock().unwrap().clone()
+            }
+        }
+
+        #[async_trait]
+        impl Provider for CapturingProvider {
+            async fn complete(
+                &self,
+                request: CompletionRequest,
+            ) -> anyhow::Result<CompletionResponse> {
+                let model = request.model.clone();
+                self.requests.lock().unwrap().push(request);
+                Ok(CompletionResponse {
+                    content: self.response.clone(),
+                    model,
+                    tokens_in: 5,
+                    tokens_out: 7,
+                    cost: 0.03,
+                })
+            }
+            async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+                anyhow::bail!("streaming not exercised by RingEffectRunner tests")
+            }
+            fn metadata(&self) -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "capturing".to_string(),
+                    models: vec![],
+                    supports_streaming: false,
+                }
+            }
+        }
+
+        /// Always fails — used to exercise the graceful-degradation
+        /// (Pass/abstention) branches.
+        struct FailingProvider;
+
+        #[async_trait]
+        impl Provider for FailingProvider {
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+            ) -> anyhow::Result<CompletionResponse> {
+                anyhow::bail!("simulated provider failure")
+            }
+            async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+                anyhow::bail!("streaming not exercised by RingEffectRunner tests")
+            }
+            fn metadata(&self) -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "failing".to_string(),
+                    models: vec![],
+                    supports_streaming: false,
+                }
+            }
+        }
+
+        fn runner(
+            agent_names: &[&str],
+            config: RingConfig,
+            provider: Arc<dyn Provider>,
+        ) -> RingEffectRunner {
+            let mut agents = BTreeMap::new();
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            for name in agent_names {
+                agents.insert((*name).to_string(), test_agent(name, "concrete-model"));
+                providers.insert((*name).to_string(), provider.clone());
+            }
+            RingEffectRunner::new(agents, providers, config, BTreeMap::new())
+        }
+
+        // (a) Circulation phase: `ACTION: PROPOSE\nCONTENT: x` → `ContributionAdded`
+        // with the expected agent/lap/position/action/content/tokens.
+        #[tokio::test]
+        async fn circulate_propose_returns_contribution_added() {
+            let capturing = Arc::new(CapturingProvider::new("ACTION: PROPOSE\nCONTENT: x"));
+            let runner = runner(
+                &["a", "b"],
+                RingConfig::default(),
+                capturing.clone() as Arc<dyn Provider>,
+            );
+            let state = fold(&[run_started(&["a", "b"]), E::LapStarted { lap: 0 }]);
+
+            let event = runner.run_invoke("a", "task", &state).await.unwrap();
+
+            match event {
+                E::ContributionAdded {
+                    agent,
+                    lap,
+                    position,
+                    action,
+                    content,
+                    tokens_in,
+                    tokens_out,
+                    cost,
+                } => {
+                    assert_eq!(agent, "a");
+                    assert_eq!(lap, 0);
+                    assert_eq!(position, 0);
+                    assert_eq!(action, "propose");
+                    assert_eq!(content, "x");
+                    assert_eq!(tokens_in, 5);
+                    assert_eq!(tokens_out, 7);
+                    assert!((cost - 0.03).abs() < 1e-9);
+                }
+                other => panic!("expected ContributionAdded, got {other:?}"),
+            }
+
+            let sent = capturing.requests();
+            assert_eq!(sent.len(), 1);
+            assert!(sent[0].messages[0].content.contains("Lap: 0"));
+        }
+
+        // (b) `ACTION: PASS` must yield `action == "pass"` EXACTLY — the
+        // literal string `ring_phase`'s early-convergence check compares
+        // against (see `action_string`'s doc comment / the Task 6 review
+        // contract in the brief).
+        #[tokio::test]
+        async fn circulate_pass_action_is_exact_lowercase_string() {
+            let capturing = Arc::new(CapturingProvider::new(
+                "ACTION: PASS\nCONTENT: nothing to add",
+            ));
+            let runner = runner(
+                &["a", "b"],
+                RingConfig::default(),
+                capturing as Arc<dyn Provider>,
+            );
+            let state = fold(&[run_started(&["a", "b"]), E::LapStarted { lap: 0 }]);
+
+            let event = runner.run_invoke("a", "task", &state).await.unwrap();
+
+            match event {
+                E::ContributionAdded { action, .. } => assert_eq!(action, "pass"),
+                other => panic!("expected ContributionAdded, got {other:?}"),
+            }
+        }
+
+        // (c) Circulation finished (both agents contributed the only lap,
+        // max_laps == 1) → phase Vote → `CONFIDENCE: 0.7` → `VoteCast` with
+        // the expected confidence and full-range `supports`.
+        #[tokio::test]
+        async fn vote_phase_returns_vote_cast_with_confidence_and_supports() {
+            let config = RingConfig {
+                max_laps: 1,
+                ..RingConfig::default()
+            };
+            let capturing = Arc::new(CapturingProvider::new("CONFIDENCE: 0.7\nUse Rust"));
+            let runner = runner(&["a", "b"], config, capturing as Arc<dyn Provider>);
+            let state = fold(&[
+                run_started(&["a", "b"]),
+                E::LapStarted { lap: 0 },
+                E::ContributionAdded {
+                    agent: "a".into(),
+                    lap: 0,
+                    position: 0,
+                    action: "propose".into(),
+                    content: "c1".into(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                },
+                E::ContributionAdded {
+                    agent: "b".into(),
+                    lap: 0,
+                    position: 1,
+                    action: "propose".into(),
+                    content: "c2".into(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                },
+            ]);
+            let event = runner.run_invoke("a", "task", &state).await.unwrap();
+
+            match event {
+                E::VoteCast {
+                    agent,
+                    confidence,
+                    supports,
+                    concerns,
+                    ..
+                } => {
+                    assert_eq!(agent, "a");
+                    assert!((confidence - 0.7).abs() < 1e-6);
+                    assert_eq!(supports, vec![0, 1]);
+                    assert!(concerns.is_empty());
+                }
+                other => panic!("expected VoteCast, got {other:?}"),
+            }
+        }
+
+        // (d) Provider error during circulation → degraded Pass, NOT an
+        // `Err` — the run must not abort.
+        #[tokio::test]
+        async fn circulate_provider_error_degrades_to_pass_not_err() {
+            let runner = runner(
+                &["a", "b"],
+                RingConfig::default(),
+                Arc::new(FailingProvider) as Arc<dyn Provider>,
+            );
+            let state = fold(&[run_started(&["a", "b"]), E::LapStarted { lap: 0 }]);
+
+            let event = runner.run_invoke("a", "task", &state).await.unwrap();
+
+            match event {
+                E::ContributionAdded {
+                    action,
+                    content,
+                    tokens_in,
+                    tokens_out,
+                    cost,
+                    ..
+                } => {
+                    assert_eq!(action, "pass");
+                    assert_eq!(content, "[agent failed]");
+                    assert_eq!(tokens_in, 0);
+                    assert_eq!(tokens_out, 0);
+                    assert!((cost - 0.0).abs() < 1e-9);
+                }
+                other => panic!("expected ContributionAdded (degraded), got {other:?}"),
+            }
+        }
+
+        // Provider error during voting → neutral abstention, NOT an `Err`.
+        #[tokio::test]
+        async fn vote_provider_error_degrades_to_neutral_abstention_not_err() {
+            let config = RingConfig {
+                max_laps: 1,
+                ..RingConfig::default()
+            };
+            let runner = runner(
+                &["a", "b"],
+                config,
+                Arc::new(FailingProvider) as Arc<dyn Provider>,
+            );
+            let state = fold(&[
+                run_started(&["a", "b"]),
+                E::LapStarted { lap: 0 },
+                E::ContributionAdded {
+                    agent: "a".into(),
+                    lap: 0,
+                    position: 0,
+                    action: "propose".into(),
+                    content: "c1".into(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                },
+                E::ContributionAdded {
+                    agent: "b".into(),
+                    lap: 0,
+                    position: 1,
+                    action: "propose".into(),
+                    content: "c2".into(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                },
+            ]);
+
+            let event = runner.run_invoke("a", "task", &state).await.unwrap();
+
+            match event {
+                E::VoteCast {
+                    confidence,
+                    concerns,
+                    ..
+                } => {
+                    assert!((confidence - 0.0).abs() < 1e-9);
+                    assert!(!concerns.is_empty());
+                }
+                other => panic!("expected VoteCast (degraded), got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn run_invoke_errors_for_unknown_agent() {
+            let runner = RingEffectRunner::new(
+                BTreeMap::new(),
+                BTreeMap::new(),
+                RingConfig::default(),
+                BTreeMap::new(),
+            );
+            let state = ExecutionState::default();
+            let err = runner
+                .run_invoke("missing", "task", &state)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("missing"));
+        }
+
+        #[tokio::test]
+        async fn run_invoke_errors_when_provider_missing_for_known_agent() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), test_agent("a", "concrete-model"));
+            let runner = RingEffectRunner::new(
+                agents,
+                BTreeMap::new(),
+                RingConfig::default(),
+                BTreeMap::new(),
+            );
+            let state = ExecutionState::default();
+            let err = runner.run_invoke("a", "task", &state).await.unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("provider") && msg.contains("'a'"),
+                "expected a distinctive missing-provider message, got: {msg}"
+            );
+        }
+
+        // `"latest:auto"` resolves to a concrete model via `state.routed_tiers`,
+        // the same as `HierarchicalEffectRunner`/`BlackboardEffectRunner`.
+        // Uses a deliberately uncached provider name so `resolve_model_for_tier`
+        // is forced onto its hermetic, pure `fallback_model_for_tier` path.
+        #[tokio::test]
+        async fn run_invoke_resolves_latest_auto_to_concrete_model() {
+            let mut agent = test_agent("a", "latest:auto");
+            agent.metadata.provider = "test-only-uncached-provider".to_string();
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), agent);
+            let capturing = Arc::new(CapturingProvider::new("ACTION: PROPOSE\nCONTENT: x"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), capturing.clone() as Arc<dyn Provider>);
+            let runner =
+                RingEffectRunner::new(agents, providers, RingConfig::default(), BTreeMap::new());
+
+            let state = fold(&[
+                run_started(&["a"]),
+                E::LapStarted { lap: 0 },
+                E::ModelRouted {
+                    agent: "a".into(),
+                    tier: "Fast".into(),
+                    reason: "Length".into(),
+                },
+            ]);
+            runner.run_invoke("a", "task", &state).await.unwrap();
+
+            let expected =
+                fallback_model_for_tier("test-only-uncached-provider", ModelTier::Fast).to_string();
+            let sent = capturing.requests();
+            assert_eq!(sent[0].model, expected);
+            assert_ne!(sent[0].model, "latest:auto");
         }
     }
 }
