@@ -12,6 +12,7 @@ pub(crate) mod new;
 mod prompts;
 mod registry;
 mod run;
+mod run_es_record;
 pub(crate) mod setup;
 mod skills;
 mod unlink;
