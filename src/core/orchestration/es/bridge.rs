@@ -16,25 +16,38 @@
 //! `run.rs` (that's Lot 5); it only provides the two functions/types Lot 5
 //! will need.
 
+use std::collections::BTreeMap;
+
 use super::event::ExecutionEvent;
 use super::log::EventLog;
 use super::state::ExecutionState;
 use crate::core::events::{EventSink, RunEvent};
 use crate::core::orchestration::hierarchical::{DelegationEvent, OrchestrationResult};
 
-/// Pure per-event projection: `ExecutionEvent` → zero or more `RunEvent`s.
+/// Per-event projection: `ExecutionEvent` → zero or more `RunEvent`s, given a
+/// side table of agent metadata (`agent_meta`, roster key → `(prov, model)`).
+///
+/// The function stays free/testable (not a method): pass an empty `agent_meta`
+/// to exercise the metadata-free behavior, or a populated one to check the
+/// enrichment. The only event that reads `agent_meta` is `AgentInvoked`; every
+/// other arm ignores it.
 ///
 /// This is a **fidelity subset**, not an isomorphism: several `ExecutionEvent`
 /// variants have no direct `RunEvent` counterpart, or the counterpart needs
-/// aggregate state (e.g. running totals) that this pure, single-event
-/// function has no access to. Known, documented gaps:
+/// aggregate state (e.g. running totals) that this single-event function has
+/// no access to. Known, documented gaps:
 ///
-/// - `AgentInvoked` → `AgentStart` carries empty `prov`/`model`: unlike the
-///   legacy engine's direct `sink.emit` call site (which knows the provider
-///   and model *before* invoking), `ExecutionEvent::AgentInvoked` only has
-///   `agent`/`input` — provider/model are only known once the agent responds
-///   (`AgentObserved.model`). A future lot may enrich `AgentInvoked` (or add a
-///   provider-selection event) to close this gap.
+/// - `AgentInvoked` → `AgentStart` fills `prov`/`model` from
+///   `agent_meta.get(agent)` (empty strings when the key is absent). Unlike
+///   the legacy engine's direct `sink.emit` call site (which knew the provider
+///   and model *before* invoking), `ExecutionEvent::AgentInvoked` only carries
+///   `agent`/`input`, so the metadata is threaded in from the run's roster via
+///   `agent_meta`. **Model choice**: `agent_meta` carries the agent's
+///   *configured* model (`agent.metadata.model`), matching what the legacy
+///   `AgentStart` emitted — NOT the effectively-resolved model when the agent
+///   uses `latest:auto` (resolved later, per turn). The resolved tier is
+///   already carried separately by `Route`/`ModelRouted`, so `AgentStart`
+///   deliberately keeps the configured value for start/end symmetry.
 /// - `Completed` → `[]` (not `Result`): `RunEvent::Result` also needs
 ///   aggregate `tin`/`tout`/`cost`/`agents` totals that only `ExecutionState`
 ///   has (via [`to_orchestration_result`]). Building the terminal `Result`
@@ -61,13 +74,19 @@ use crate::core::orchestration::hierarchical::{DelegationEvent, OrchestrationRes
 ///   tokens/cost (voting doesn't re-charge the budget), so `AgentEnd` gets
 ///   `tin: 0, tout: 0, cost: 0.0`; `content` falls back to `position` (the
 ///   closest thing to "what the agent produced this turn").
-pub fn map_execution_to_run_events(e: &ExecutionEvent) -> Vec<RunEvent> {
+pub fn map_execution_to_run_events(
+    e: &ExecutionEvent,
+    agent_meta: &BTreeMap<String, (String, String)>,
+) -> Vec<RunEvent> {
     match e {
-        ExecutionEvent::AgentInvoked { agent, .. } => vec![RunEvent::AgentStart {
-            agent: agent.clone(),
-            prov: String::new(),
-            model: String::new(),
-        }],
+        ExecutionEvent::AgentInvoked { agent, .. } => {
+            let (prov, model) = agent_meta.get(agent).cloned().unwrap_or_default();
+            vec![RunEvent::AgentStart {
+                agent: agent.clone(),
+                prov,
+                model,
+            }]
+        }
         ExecutionEvent::AgentObserved {
             agent,
             content,
@@ -172,22 +191,51 @@ pub fn map_execution_to_run_events(e: &ExecutionEvent) -> Vec<RunEvent> {
 /// `EventLog` decorator that appends to `inner` as normal, then projects the
 /// event onto `RunEvent`s (via [`map_execution_to_run_events`]) and pushes
 /// each through `sink`. `events()` delegates straight to `inner`.
+///
+/// `agent_meta` (roster key → `(prov, model)`) is threaded into the projection
+/// so `AgentInvoked → AgentStart` carries the run's real provider/model rather
+/// than empty strings. It is the single source of `AgentStart`/`AgentEnd` for
+/// the ES run paths, so callers must populate it from the run's roster (via
+/// [`SinkProjectingLog::with_meta`]); [`SinkProjectingLog::new`] leaves it
+/// empty for call sites that don't have a roster (`AgentStart` then falls back
+/// to empty `prov`/`model`, matching the pre-enrichment behavior).
 pub struct SinkProjectingLog<'s, L: EventLog> {
     pub inner: L,
     pub sink: &'s dyn EventSink,
+    pub agent_meta: BTreeMap<String, (String, String)>,
 }
 
 impl<'s, L: EventLog> SinkProjectingLog<'s, L> {
-    /// Wrap `inner`, projecting every future `append` onto `sink`.
+    /// Wrap `inner`, projecting every future `append` onto `sink` with an
+    /// empty `agent_meta` (so `AgentStart` carries empty `prov`/`model`).
     pub fn new(inner: L, sink: &'s dyn EventSink) -> Self {
-        Self { inner, sink }
+        Self {
+            inner,
+            sink,
+            agent_meta: BTreeMap::new(),
+        }
+    }
+
+    /// Wrap `inner` with a populated `agent_meta` (roster key → `(prov,
+    /// model)`), so `AgentInvoked → AgentStart` carries the run's real
+    /// provider/model. This is what the ES run paths use.
+    pub fn with_meta(
+        inner: L,
+        sink: &'s dyn EventSink,
+        agent_meta: BTreeMap<String, (String, String)>,
+    ) -> Self {
+        Self {
+            inner,
+            sink,
+            agent_meta,
+        }
     }
 }
 
 impl<L: EventLog> EventLog for SinkProjectingLog<'_, L> {
     fn append(&mut self, run_id: &str, event: &ExecutionEvent) -> anyhow::Result<()> {
         self.inner.append(run_id, event)?;
-        for re in map_execution_to_run_events(event) {
+        for re in map_execution_to_run_events(event, &self.agent_meta) {
             self.sink.emit(&re);
         }
         Ok(())
@@ -276,13 +324,19 @@ mod tests {
 
     // ── (a) map_execution_to_run_events, per variant ────────────────
 
+    /// Empty `agent_meta` for the arms that ignore it (everything but
+    /// `AgentInvoked`) and for the metadata-free `AgentInvoked` fallback case.
+    fn no_meta() -> BTreeMap<String, (String, String)> {
+        BTreeMap::new()
+    }
+
     #[test]
-    fn agent_invoked_maps_to_agent_start_with_empty_prov_model() {
+    fn agent_invoked_maps_to_agent_start_with_empty_prov_model_when_meta_absent() {
         let e = ExecutionEvent::AgentInvoked {
             agent: "core".into(),
             input: "do x".into(),
         };
-        let got = map_execution_to_run_events(&e);
+        let got = map_execution_to_run_events(&e, &no_meta());
         match &got[..] {
             [RunEvent::AgentStart { agent, prov, model }] => {
                 assert_eq!(agent, "core");
@@ -290,6 +344,28 @@ mod tests {
                 assert_eq!(model, "");
             }
             other => panic!("expected [AgentStart], got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_invoked_maps_to_agent_start_with_prov_model_from_meta() {
+        let e = ExecutionEvent::AgentInvoked {
+            agent: "core".into(),
+            input: "do x".into(),
+        };
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            "core".to_string(),
+            ("anthropic".to_string(), "claude-x".to_string()),
+        );
+        let got = map_execution_to_run_events(&e, &meta);
+        match &got[..] {
+            [RunEvent::AgentStart { agent, prov, model }] => {
+                assert_eq!(agent, "core");
+                assert_eq!(prov, "anthropic");
+                assert_eq!(model, "claude-x");
+            }
+            other => panic!("expected [AgentStart with meta], got {other:?}"),
         }
     }
 
@@ -303,7 +379,7 @@ mod tests {
             cost: 0.05,
             model: "claude-x".into(),
         };
-        let got = map_execution_to_run_events(&e);
+        let got = map_execution_to_run_events(&e, &no_meta());
         match &got[..] {
             [
                 RunEvent::AgentEnd {
@@ -331,7 +407,7 @@ mod tests {
             tier: "Max".into(),
             reason: "Tag".into(),
         };
-        let got = map_execution_to_run_events(&e);
+        let got = map_execution_to_run_events(&e, &no_meta());
         match &got[..] {
             [
                 RunEvent::Route {
@@ -356,7 +432,7 @@ mod tests {
             task: "do x".into(),
             depth: 1,
         };
-        let got = map_execution_to_run_events(&e);
+        let got = map_execution_to_run_events(&e, &no_meta());
         match &got[..] {
             [RunEvent::Delegate { from, to }] => {
                 assert_eq!(from, "lead");
@@ -379,7 +455,7 @@ mod tests {
             tokens_out: 2,
             cost: 0.03,
         };
-        let got = map_execution_to_run_events(&e);
+        let got = map_execution_to_run_events(&e, &no_meta());
         match &got[..] {
             [
                 RunEvent::Board { agent, kind },
@@ -415,7 +491,7 @@ mod tests {
             tokens_out: 5,
             cost: 0.06,
         };
-        let got = map_execution_to_run_events(&e);
+        let got = map_execution_to_run_events(&e, &no_meta());
         match &got[..] {
             [
                 RunEvent::AgentEnd {
@@ -445,7 +521,7 @@ mod tests {
             supports: vec![],
             concerns: vec![],
         };
-        let got = map_execution_to_run_events(&e);
+        let got = map_execution_to_run_events(&e, &no_meta());
         match &got[..] {
             [
                 RunEvent::Vote { agent, conf },
@@ -502,9 +578,9 @@ mod tests {
         for concluding in [board, vote] {
             let mut starts = 0usize;
             let mut ends = 0usize;
-            for re in map_execution_to_run_events(&invoked)
+            for re in map_execution_to_run_events(&invoked, &no_meta())
                 .into_iter()
-                .chain(map_execution_to_run_events(&concluding))
+                .chain(map_execution_to_run_events(&concluding, &no_meta()))
             {
                 match re {
                     RunEvent::AgentStart { .. } => starts += 1,
@@ -526,7 +602,7 @@ mod tests {
             team_lead: "lead".into(),
             pattern: "blackboard".into(),
         };
-        let got = map_execution_to_run_events(&e);
+        let got = map_execution_to_run_events(&e, &no_meta());
         match &got[..] {
             [RunEvent::NestedStart { team_lead, pattern }] => {
                 assert_eq!(team_lead, "lead");
@@ -541,7 +617,7 @@ mod tests {
         let e = ExecutionEvent::NestedEnded {
             team_lead: "lead".into(),
         };
-        let got = map_execution_to_run_events(&e);
+        let got = map_execution_to_run_events(&e, &no_meta());
         match &got[..] {
             [RunEvent::NestedEnd { team_lead }] => assert_eq!(team_lead, "lead"),
             other => panic!("expected [NestedEnd], got {other:?}"),
@@ -553,7 +629,7 @@ mod tests {
         let e = ExecutionEvent::Completed {
             content: "done".into(),
         };
-        assert!(map_execution_to_run_events(&e).is_empty());
+        assert!(map_execution_to_run_events(&e, &no_meta()).is_empty());
     }
 
     #[test]
@@ -593,7 +669,7 @@ mod tests {
         ];
         for e in &no_ops {
             assert!(
-                map_execution_to_run_events(e).is_empty(),
+                map_execution_to_run_events(e, &no_meta()).is_empty(),
                 "expected empty mapping for {e:?}"
             );
         }

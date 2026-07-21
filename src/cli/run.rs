@@ -594,6 +594,19 @@ async fn dispatch_direct_es(
     use crate::core::orchestration::es::direct::run_direct_es;
     use std::collections::BTreeMap;
 
+    // Agent metadata for the bridge's `AgentInvoked → AgentStart` projection:
+    // the bridge is the single source of `AgentStart`/`AgentEnd` on this path
+    // (`run_inner`'s direct branch emits neither), so it must carry the real
+    // provider/model here — read before `agent` is moved into the roster map.
+    let mut agent_meta: BTreeMap<String, (String, String)> = BTreeMap::new();
+    agent_meta.insert(
+        agent_key.to_string(),
+        (
+            agent.metadata.provider.clone(),
+            agent.metadata.model.clone().unwrap_or_default(),
+        ),
+    );
+
     let mut agents = BTreeMap::new();
     agents.insert(agent_key.to_string(), agent);
     let mut providers = BTreeMap::new();
@@ -605,7 +618,7 @@ async fn dispatch_direct_es(
         quiet,
         max_content,
     };
-    let mut log = SinkProjectingLog::new(InMemoryLog::default(), &filtered_sink);
+    let mut log = SinkProjectingLog::with_meta(InMemoryLog::default(), &filtered_sink, agent_meta);
 
     let state = run_direct_es(
         &run_id,
@@ -937,7 +950,16 @@ fn apply_agent_selection(
     ))
 }
 
-/// Run orchestrated multi-agent execution (blackboard or ring).
+/// Run orchestrated multi-agent execution (blackboard/ring/hierarchical).
+///
+/// Loads the roster (parse + deprecation-resolve each agent, create its
+/// provider), then hands off to [`run_orchestrated_inner`], which owns ALL
+/// `RunEvent` emission. Split so the emission wiring — the observability
+/// contract this fix hardens — is unit-testable with mock agents/providers
+/// (see `es_switch_tests`) without file I/O or a real provider factory.
+///
+/// Deprecation transitions are collected here (not emitted) and replayed by
+/// the inner fn right after `RunStart`, preserving the original event order.
 #[allow(clippy::too_many_arguments)]
 async fn run_orchestrated(
     resolution: &AgentResolution,
@@ -952,14 +974,83 @@ async fn run_orchestrated(
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
+    use crate::providers::traits::Provider;
+
+    let mut agents = Vec::new();
+    let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
+    let mut deprecations: Vec<(Option<String>, Option<String>)> = Vec::new();
+
+    for name in agent_names {
+        let agent_path = resolve_agent_path(resolution, name)?;
+        let mut agent = crate::parser::parse_agent_file(&agent_path)?;
+
+        let model_before = agent.metadata.model.clone();
+        crate::linker::model_aliases::resolve_model_deprecations(
+            &mut agent.metadata.model,
+            &mut agent.metadata.model_fallback,
+        );
+        if agent.metadata.model != model_before {
+            deprecations.push((model_before, agent.metadata.model.clone()));
+        }
+
+        let provider = create_provider(&agent)?;
+        providers.push(Arc::from(provider));
+        agents.push(agent);
+    }
+
+    run_orchestrated_inner(
+        resolution,
+        agent_names,
+        agents,
+        providers,
+        deprecations,
+        input,
+        pattern,
+        sink,
+        json,
+        route,
+        tags,
+        dry_run,
+    )
+    .await
+}
+
+/// Emit every `RunEvent` for an orchestrated run from a pre-loaded roster:
+/// `RunStart`, replayed deprecation `Warning`s, C8 agent selection, `--dry-run`
+/// preview, the pattern dispatch, and the terminal `Result`.
+///
+/// **Observability contract (this fix):** the pattern dispatch (`dispatch_*_es`
+/// → the bridge's `SinkProjectingLog`) is the SINGLE source of
+/// `AgentStart`/`AgentEnd` on every ES path. This fn therefore does NOT emit an
+/// upstream per-agent `AgentStart` loop, and does NOT emit a trailing
+/// `emit_agent_ends` batch of empty `AgentEnd`s — both were removed as they
+/// double-emitted against the bridge (an empty-`prov`/`model` `AgentStart` and
+/// an empty-`content` `AgentEnd`, clobbering the bridge's real events). Every
+/// agent's `AgentStart`/`AgentEnd` now comes from the bridge, carrying the real
+/// provider/model (via [`agent_meta_from_roster`]) and real per-turn content.
+/// Only `--pipe`/legacy sequential runs (`run_single_agent`) still emit their
+/// own inline `AgentStart`/`AgentEnd`; those paths never reach this fn.
+#[allow(clippy::too_many_arguments)]
+async fn run_orchestrated_inner(
+    resolution: &AgentResolution,
+    agent_names: &[String],
+    mut agents: Vec<crate::core::agent::Agent>,
+    mut providers: Vec<std::sync::Arc<dyn crate::providers::traits::Provider>>,
+    deprecations: Vec<(Option<String>, Option<String>)>,
+    input: &str,
+    pattern: &str,
+    sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
+    json: bool,
+    route: Option<&str>,
+    tags: &[String],
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+
     use crate::core::orchestration::blackboard::BlackboardConfig;
     use crate::core::orchestration::ring::RingConfig;
     use crate::core::project::OrchestrationDefaults;
     use crate::providers::traits::Provider;
-
-    // Load all agents and create providers
-    let mut agents = Vec::new();
-    let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
 
     // Read project-level orchestration overrides (if any).
     let orch_defaults = match resolution {
@@ -990,31 +1081,14 @@ async fn run_orchestrated(
         in_chars: input.chars().count(),
     });
 
-    for name in agent_names {
-        let agent_path = resolve_agent_path(resolution, name)?;
-        let mut agent = crate::parser::parse_agent_file(&agent_path)?;
-
-        let model_before = agent.metadata.model.clone();
-        crate::linker::model_aliases::resolve_model_deprecations(
-            &mut agent.metadata.model,
-            &mut agent.metadata.model_fallback,
-        );
-        if agent.metadata.model != model_before {
-            sink.emit(&RunEvent::Warning {
-                code: "deprecated_model".to_string(),
-                from: model_before,
-                to: agent.metadata.model.clone(),
-            });
-        }
-
-        sink.emit(&RunEvent::AgentStart {
-            agent: name.clone(),
-            prov: agent.metadata.provider.clone(),
-            model: agent.metadata.model.clone().unwrap_or_default(),
+    // Replay deprecation warnings collected during roster load, right after
+    // `RunStart` (same order as the pre-split load loop emitted them).
+    for (from, to) in deprecations {
+        sink.emit(&RunEvent::Warning {
+            code: "deprecated_model".to_string(),
+            from,
+            to,
         });
-        let provider = create_provider(&agent)?;
-        providers.push(Arc::from(provider));
-        agents.push(agent);
     }
 
     // ── C8: deterministic agent selection (routes/tags) ────────────────
@@ -1143,7 +1217,6 @@ async fn run_orchestrated(
                 println!("{outcome_text}");
             }
 
-            emit_agent_ends(sink, agent_names);
             sink.emit(&RunEvent::Result {
                 content: outcome_text,
                 tin: u32::try_from(state.budget_tokens_in).unwrap_or(u32::MAX),
@@ -1202,7 +1275,6 @@ async fn run_orchestrated(
                 println!("{outcome_text}");
             }
 
-            emit_agent_ends(sink, agent_names);
             sink.emit(&RunEvent::Result {
                 content: outcome_text,
                 tin: u32::try_from(state.budget_tokens_in).unwrap_or(u32::MAX),
@@ -1299,7 +1371,6 @@ async fn run_orchestrated(
                 println!("{}", result.content);
             }
 
-            emit_agent_ends(sink, agent_names);
             sink.emit(&RunEvent::Result {
                 content: result.content,
                 tin: result.total_tokens_in,
@@ -1344,6 +1415,29 @@ fn orchestration_cost_limit(resolution: &AgentResolution) -> Option<f64> {
     }
 }
 
+/// Build the `agent_meta` table (roster key → `(provider, configured model)`)
+/// that the bridge ([`SinkProjectingLog`]) needs so its `AgentInvoked →
+/// AgentStart` projection carries the run's real provider/model instead of
+/// empty strings. Uses `agent.metadata.model` (the *configured* value, as the
+/// legacy `AgentStart` did) — the effectively-resolved tier for `latest:auto`
+/// agents is carried separately by `Route`/`ModelRouted`.
+fn agent_meta_from_roster(
+    agents: &std::collections::BTreeMap<String, Agent>,
+) -> std::collections::BTreeMap<String, (String, String)> {
+    agents
+        .iter()
+        .map(|(key, a)| {
+            (
+                key.clone(),
+                (
+                    a.metadata.provider.clone(),
+                    a.metadata.model.clone().unwrap_or_default(),
+                ),
+            )
+        })
+        .collect()
+}
+
 /// Drive the event-sourced `blackboard` engine end-to-end for an
 /// already-loaded roster (OH1 Lot 5, T5c): builds a fresh `InMemoryLog`
 /// wrapped in `SinkProjectingLog` (so `Board`/`Vote`/observability events
@@ -1363,7 +1457,11 @@ async fn dispatch_blackboard_es(
     use crate::core::orchestration::es::blackboard::run_blackboard_es;
 
     let run_id = uuid::Uuid::new_v4().to_string();
-    let mut log = SinkProjectingLog::new(InMemoryLog::default(), sink.as_ref());
+    let mut log = SinkProjectingLog::with_meta(
+        InMemoryLog::default(),
+        sink.as_ref(),
+        agent_meta_from_roster(&agents),
+    );
     run_blackboard_es(
         &run_id,
         input,
@@ -1394,7 +1492,11 @@ async fn dispatch_ring_es(
     use crate::core::orchestration::es::ring::run_ring_es;
 
     let run_id = uuid::Uuid::new_v4().to_string();
-    let mut log = SinkProjectingLog::new(InMemoryLog::default(), sink.as_ref());
+    let mut log = SinkProjectingLog::with_meta(
+        InMemoryLog::default(),
+        sink.as_ref(),
+        agent_meta_from_roster(&agents),
+    );
     let state = run_ring_es(
         &run_id,
         input,
@@ -1429,7 +1531,11 @@ async fn dispatch_hierarchical_es(
     use crate::core::orchestration::es::hierarchical::run_hierarchical_es;
 
     let run_id = uuid::Uuid::new_v4().to_string();
-    let mut log = SinkProjectingLog::new(InMemoryLog::default(), sink.as_ref());
+    let mut log = SinkProjectingLog::with_meta(
+        InMemoryLog::default(),
+        sink.as_ref(),
+        agent_meta_from_roster(&agents),
+    );
     let state = run_hierarchical_es(
         &run_id,
         coordinator,
@@ -1496,29 +1602,6 @@ fn record_ring_es(
         super::run_es_record::record_ring_es_into(&db, state, config, input, None, project)
     {
         tracing::warn!("Failed to record ring run: {e}");
-    }
-}
-
-/// Emit one `AgentEnd` event per agent, in order, restoring the JSONL contract's
-/// start/end symmetry for orchestrated runs (spec §3).
-///
-/// Per-agent completion metrics (tokens, cost) are not available from the
-/// orchestration engines (blackboard/ring/hierarchical aggregate at the run
-/// level only), so each event carries zeroed metrics and empty content — this
-/// is documented out-of-scope, not a bug. Call immediately before emitting the
-/// terminal `Result` event.
-fn emit_agent_ends(
-    sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
-    agent_names: &[String],
-) {
-    for name in agent_names {
-        sink.emit(&RunEvent::AgentEnd {
-            agent: name.clone(),
-            tin: 0,
-            tout: 0,
-            cost: 0.0,
-            content: String::new(),
-        });
     }
 }
 
@@ -2596,6 +2679,43 @@ mod es_switch_tests {
         assert_eq!(agent_end["content"], "the");
     }
 
+    /// Regression test for observability defect #1 (direct ES path): the
+    /// `agent_start` must carry the run's REAL `prov`/`model` in its payload
+    /// (not empty strings), sourced from the bridge's `agent_meta`, and the
+    /// single `agent_end` must carry the real content. Before the fix, the
+    /// direct path had no upstream `AgentStart` and relied solely on the
+    /// bridge, which emitted `prov: "", model: ""`.
+    #[tokio::test]
+    async fn direct_es_agent_start_carries_real_prov_model_and_real_end_content() {
+        let (capture, sink) = capture_sink();
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
+
+        dispatch_direct_es(
+            "solo",
+            test_agent("solo"),
+            provider,
+            "do the thing",
+            &RoutingRules::default(),
+            &sink,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let events = capture.events.lock().unwrap();
+        let starts: Vec<_> = events.iter().filter(|v| v["t"] == "agent_start").collect();
+        let ends: Vec<_> = events.iter().filter(|v| v["t"] == "agent_end").collect();
+
+        // Exactly one start/end (no duplicate), start payload carries the real
+        // provider/model (`test_agent` uses "anthropic"/"concrete-model").
+        assert_eq!(starts.len(), 1, "exactly one agent_start, got {starts:?}");
+        assert_eq!(ends.len(), 1, "exactly one agent_end, got {ends:?}");
+        assert_eq!(starts[0]["prov"], "anthropic");
+        assert_eq!(starts[0]["model"], "concrete-model");
+        assert_eq!(ends[0]["content"], "the answer");
+    }
+
     // ── T5b: hierarchical ────────────────────────────────────────────
 
     /// Base flat-team config: coordinator with a single team of `peers` (no
@@ -2940,6 +3060,185 @@ mod es_switch_tests {
         assert_eq!(persisted.pattern, "ring");
         let votes = queries::get_ring_votes(&db, &run_id).unwrap();
         assert_eq!(votes.len(), 2, "expected both agents' votes persisted");
+    }
+
+    // ── real-path emission tests (run_orchestrated_inner) ─────────────
+    //
+    // These drive the REAL orchestrated wrapper (`run_orchestrated_inner`,
+    // everything `run_orchestrated` runs after loading the roster), closing
+    // the gap the review flagged: the `dispatch_*_es` tests above short-circuit
+    // the wrapper, so they never exercised the (now removed) upstream
+    // `AgentStart` loop or `emit_agent_ends`. Gated to the no-storage config so
+    // they never touch the real user DB via `record_*` (the storage recording
+    // is covered separately by the `*_recorded_via_*` tests above, which use
+    // an in-memory DB). The two invariants below jointly catch both defects:
+    //   - every `agent_start` payload has non-empty `prov`/`model` → catches
+    //     the empty-prov/model bridge start AND the removed upstream duplicate;
+    //   - no `agent_end` has empty `content` → catches the removed
+    //     `emit_agent_ends` batch of empty-content ends (the "clobber").
+
+    /// Assert the bridge is the single, faithful source of AgentStart/AgentEnd
+    /// on an orchestrated run's captured JSONL stream.
+    #[cfg(not(feature = "storage"))]
+    fn assert_bridge_single_source(capture: &CaptureSink) {
+        let events = capture.events.lock().unwrap();
+
+        let starts: Vec<_> = events.iter().filter(|v| v["t"] == "agent_start").collect();
+        let ends: Vec<_> = events.iter().filter(|v| v["t"] == "agent_end").collect();
+
+        assert!(!starts.is_empty(), "expected at least one agent_start");
+        for s in &starts {
+            assert!(
+                !s["prov"].as_str().unwrap().is_empty(),
+                "agent_start.prov must be non-empty (real prov/model via bridge agent_meta): {s}"
+            );
+            assert!(
+                !s["model"].as_str().unwrap().is_empty(),
+                "agent_start.model must be non-empty: {s}"
+            );
+        }
+
+        assert!(!ends.is_empty(), "expected at least one agent_end");
+        for e in &ends {
+            assert!(
+                !e["content"].as_str().unwrap().is_empty(),
+                "agent_end.content must be non-empty (no emit_agent_ends residual): {e}"
+            );
+        }
+
+        // Symmetric bridge flow: exactly one end per start, no residual.
+        assert_eq!(
+            starts.len(),
+            ends.len(),
+            "agent_start/agent_end must be balanced (bridge single source)"
+        );
+
+        // The last agent_end for each agent carries its real content (not
+        // clobbered by an empty final AgentEnd).
+        use std::collections::BTreeMap;
+        let mut last_content: BTreeMap<String, String> = BTreeMap::new();
+        for e in &ends {
+            last_content.insert(
+                e["agent"].as_str().unwrap().to_string(),
+                e["content"].as_str().unwrap().to_string(),
+            );
+        }
+        for (agent, content) in &last_content {
+            assert!(
+                !content.is_empty(),
+                "last agent_end for '{agent}' must carry real content, got empty"
+            );
+        }
+
+        // Exactly one terminal Result.
+        let results = events.iter().filter(|v| v["t"] == "result").count();
+        assert_eq!(results, 1, "exactly one terminal Result");
+    }
+
+    #[cfg(not(feature = "storage"))]
+    fn roster_vecs(
+        roster: (BTreeMap<String, Agent>, BTreeMap<String, Arc<dyn Provider>>),
+    ) -> (Vec<String>, Vec<Agent>, Vec<Arc<dyn Provider>>) {
+        let (agents_map, providers_map) = roster;
+        let mut names = Vec::new();
+        let mut agents = Vec::new();
+        let mut providers = Vec::new();
+        for (name, agent) in agents_map {
+            let provider = providers_map.get(&name).unwrap().clone();
+            names.push(name);
+            agents.push(agent);
+            providers.push(provider);
+        }
+        (names, agents, providers)
+    }
+
+    #[cfg(not(feature = "storage"))]
+    #[tokio::test]
+    async fn run_orchestrated_inner_blackboard_single_source_observability() {
+        let (capture, sink) = capture_sink();
+        let (names, agents, providers) = roster_vecs(blackboard_roster());
+        let resolution = AgentResolution::Default(PathBuf::from("/tmp"));
+
+        run_orchestrated_inner(
+            &resolution,
+            &names,
+            agents,
+            providers,
+            vec![],
+            "task",
+            "blackboard",
+            &sink,
+            true,
+            None,
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_bridge_single_source(&capture);
+    }
+
+    #[cfg(not(feature = "storage"))]
+    #[tokio::test]
+    async fn run_orchestrated_inner_ring_single_source_observability() {
+        let (capture, sink) = capture_sink();
+        let (names, agents, providers) = roster_vecs(ring_roster());
+        let resolution = AgentResolution::Default(PathBuf::from("/tmp"));
+
+        run_orchestrated_inner(
+            &resolution,
+            &names,
+            agents,
+            providers,
+            vec![],
+            "task",
+            "ring",
+            &sink,
+            true,
+            None,
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_bridge_single_source(&capture);
+    }
+
+    #[cfg(not(feature = "storage"))]
+    #[tokio::test]
+    async fn run_orchestrated_inner_hierarchical_single_source_observability() {
+        let (capture, sink) = capture_sink();
+        let (names, agents, providers) = roster_vecs(hierarchical_roster());
+        // Hierarchical reads its orchestration config from the resolution.
+        let config = ProjectConfig {
+            orchestration: Some(Box::new(flat_config("dev-lead", &["core-specialist"]))),
+            ..Default::default()
+        };
+        let resolution = AgentResolution::Project {
+            root: PathBuf::from("/tmp/project"),
+            config: Box::new(config),
+        };
+
+        run_orchestrated_inner(
+            &resolution,
+            &names,
+            agents,
+            providers,
+            vec![],
+            "build X",
+            "hierarchical",
+            &sink,
+            true,
+            None,
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_bridge_single_source(&capture);
     }
 
     // ── orchestration_cost_limit (helper) ─────────────────────────────
