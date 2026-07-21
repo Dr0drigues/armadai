@@ -21,8 +21,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::engine::{Action, Decider, EffectRunner};
+use super::engine::{Action, Decider, EffectRunner, run_event_sourced};
 use super::event::ExecutionEvent;
+use super::log::EventLog;
 use super::state::{ExecutionState, RunStatus, VoteRec};
 use crate::core::agent::Agent;
 use crate::core::orchestration::llm_agents::{
@@ -917,6 +918,109 @@ impl EffectRunner for RingEffectRunner {
             }
         }
     }
+}
+
+// ── run_ring_es (Task 9): end-to-end assembly ────────────────────────
+
+/// Per-agent vote weight, read from `agent.metadata.ring_config.vote_weight`
+/// (default `1.0` for an agent with no ring config at all) — the same
+/// convention the legacy `run_ring` uses to populate `RingToken::vote_weights`
+/// before circulation (`core::orchestration::ring::run_ring`: `token
+/// .vote_weights.insert(agent.name().to_string(), agent.vote_weight())`,
+/// where `LlmRingAgent::vote_weight` reads the identical
+/// `ring_config.vote_weight` field).
+fn vote_weights_from_agents(agents: &BTreeMap<String, Agent>) -> BTreeMap<String, f32> {
+    agents
+        .iter()
+        .map(|(name, agent)| {
+            let weight = agent
+                .metadata
+                .ring_config
+                .as_ref()
+                .map(|c| c.vote_weight)
+                .unwrap_or(1.0);
+            (name.clone(), weight)
+        })
+        .collect()
+}
+
+/// Run a complete ring orchestration end-to-end through the event-sourced
+/// engine: builds the initial `RunStarted` event, constructs a
+/// [`RingDecider`] + [`RingEffectRunner`] from `config`/`agents`/`providers`/
+/// `routing_rules`, and drives them through [`run_event_sourced`], returning
+/// the final [`ExecutionState`].
+///
+/// `run_id` is accepted explicitly rather than generated internally, so
+/// callers — notably tests proving replay determinism — can pass a fixed id
+/// and later reconstruct the same state purely from the log via
+/// [`super::engine::replay`].
+///
+/// The run's roster (`RunStarted { agents, .. }`, and `RingDecider`'s
+/// `agent_order`) is `agents.keys()`, i.e. name-sorted (`BTreeMap` iteration
+/// order) — the same convention `run_hierarchical_es`/`run_blackboard_es` use
+/// for their own roster. **Contract (Task 6/7)**: `RingDecider::agent_order`
+/// must be the exact same order/set as `RunStarted { agents, .. }` for the
+/// circulation rotation ([`next_ring_agent`]) and lap-completeness check
+/// ([`ring_phase`]) to stay coherent — both are built from this single
+/// `agent_order` vector here, so there is no risk of the two drifting apart.
+///
+/// `RingDecider::max_laps` is deliberately set equal to `config.max_laps`
+/// (rather than an independently configurable cap, as a caller *could* pass
+/// per the decider's own doc comment) — two divergent sources for "how many
+/// laps before we force-stop" would be a footgun this assembly function
+/// forecloses; a caller wanting a stricter cap than `config.max_laps` should
+/// lower `config.max_laps` itself instead.
+///
+/// `vote_weights` is built from `agents` via [`vote_weights_from_agents`] —
+/// legacy fidelity with `run_ring`'s own `RingToken::vote_weights` seeding.
+///
+/// `token_budget` is derived from `config.token_budget` (a concrete `u64`
+/// with a documented default — unlike `OrchestrationConfig`'s `Option`
+/// fields, `RingConfig` has no "unset" state for it), narrowed to `Option<u32>`
+/// as `Some(..)` unconditionally, saturating at `u32::MAX` — same convention
+/// as `run_blackboard_es`. `RingConfig` carries no cost-budget field (unlike
+/// `OrchestrationConfig::cost_limit`), so `cost_limit` is always `None` here
+/// — no cost guard applies to the event-sourced ring run.
+///
+/// Coexists with the legacy `core::orchestration::ring::run_ring` — this
+/// function is not called from `run.rs`; wiring it in as the active engine
+/// is a later lot (the bascule).
+pub async fn run_ring_es(
+    run_id: &str,
+    input: &str,
+    agents: BTreeMap<String, Agent>,
+    providers: BTreeMap<String, Arc<dyn Provider>>,
+    config: RingConfig,
+    routing_rules: RoutingRules,
+    log: &mut impl EventLog,
+) -> anyhow::Result<ExecutionState> {
+    let agent_order: Vec<String> = agents.keys().cloned().collect();
+    let initial = vec![ExecutionEvent::RunStarted {
+        run_id: run_id.to_string(),
+        pattern: "ring".to_string(),
+        agents: agent_order.clone(),
+        input: input.to_string(),
+        project: None,
+    }];
+
+    let vote_weights = vote_weights_from_agents(&agents);
+    let max_laps = config.max_laps;
+    let token_budget = Some(u32::try_from(config.token_budget).unwrap_or(u32::MAX));
+
+    let decider = RingDecider::new(
+        agents.clone(),
+        agent_order,
+        input.to_string(),
+        config.clone(),
+        routing_rules,
+        max_laps,
+        vote_weights.clone(),
+        token_budget,
+        None,
+    );
+    let effects = RingEffectRunner::new(agents, providers, config, vote_weights);
+
+    run_event_sourced(run_id, initial, &decider, &effects, log).await
 }
 
 #[cfg(test)]
@@ -1900,6 +2004,388 @@ mod tests {
             let sent = capturing.requests();
             assert_eq!(sent[0].model, expected);
             assert_ne!(sent[0].model, "latest:auto");
+        }
+    }
+
+    // ── run_ring_es (Task 9): end-to-end + replay determinism ────────
+    //
+    // Exercises `run_ring_es` as a whole (unlike `decide` and `effect_runner`
+    // above, which drive `RingDecider`/`RingEffectRunner` directly) — the
+    // same circulation → vote → resolution flow the legacy
+    // `core::orchestration::ring::run_ring` engine covers, plus a proof that
+    // `replay` reconstructs an identical `ExecutionState` purely from the
+    // log, with no effect re-executed.
+    //
+    // IMPORTANT: every agent below uses a CONCRETE model string (never
+    // `latest:auto`) — see the identical rationale on
+    // `es::hierarchical`/`es::blackboard`'s own `run_*_es` end-to-end test
+    // modules: resolving `latest:auto` reads an on-disk `models.dev` cache,
+    // which would make these tests non-hermetic/flaky.
+    mod run_ring_es_tests {
+        use super::*;
+        use crate::core::agent::AgentMetadata;
+        use crate::core::orchestration::es::engine::replay;
+        use crate::core::orchestration::es::log::InMemoryLog;
+        use crate::core::orchestration::es::state::RunStatus;
+        use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+        use std::collections::VecDeque;
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Minimal `Agent` for `run_ring_es` E2E tests: always a concrete
+        /// model (see module note above).
+        fn es_test_agent(name: &str, model: &str) -> Agent {
+            Agent {
+                name: name.to_string(),
+                source: PathBuf::from(format!("{name}.md")),
+                metadata: AgentMetadata {
+                    provider: "anthropic".to_string(),
+                    model: Some(model.to_string()),
+                    command: None,
+                    args: None,
+                    temperature: 0.7,
+                    max_tokens: None,
+                    timeout: None,
+                    tags: vec![],
+                    stacks: vec![],
+                    scope: vec![],
+                    model_fallback: vec![],
+                    cost_limit: None,
+                    rate_limit: None,
+                    context_window: None,
+                    mode: None,
+                    orchestration: None,
+                    triggers: None,
+                    ring_config: None,
+                },
+                system_prompt: format!("You are {name}."),
+                instructions: None,
+                output_format: None,
+                pipeline: None,
+                context: None,
+            }
+        }
+
+        /// Provider scripted with a fixed sequence of responses, one per
+        /// call (repeating the last one for any call beyond the scripted
+        /// list, so a test can under-provision without panicking). Also
+        /// counts calls, so `es_ring_replay_reconstructs_state` can prove
+        /// `replay` triggers none. Identical in spirit to
+        /// `es::blackboard::tests::run_blackboard_es_tests::ScriptedProvider`
+        /// / `es::hierarchical::tests::ScriptedProvider` — duplicated rather
+        /// than shared (no common test-helpers module exists for the ES
+        /// engines today).
+        struct ScriptedProvider {
+            responses: std::sync::Mutex<VecDeque<String>>,
+            last: std::sync::Mutex<String>,
+            calls: AtomicUsize,
+        }
+
+        impl ScriptedProvider {
+            fn new(responses: &[&str]) -> Self {
+                Self {
+                    responses: std::sync::Mutex::new(
+                        responses.iter().map(|s| (*s).to_string()).collect(),
+                    ),
+                    last: std::sync::Mutex::new(String::new()),
+                    calls: AtomicUsize::new(0),
+                }
+            }
+
+            fn call_count(&self) -> usize {
+                self.calls.load(Ordering::SeqCst)
+            }
+        }
+
+        #[async_trait]
+        impl Provider for ScriptedProvider {
+            async fn complete(
+                &self,
+                request: CompletionRequest,
+            ) -> anyhow::Result<CompletionResponse> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let mut queue = self.responses.lock().unwrap();
+                let content = queue
+                    .pop_front()
+                    .unwrap_or_else(|| self.last.lock().unwrap().clone());
+                *self.last.lock().unwrap() = content.clone();
+                Ok(CompletionResponse {
+                    content,
+                    model: request.model,
+                    tokens_in: 1,
+                    tokens_out: 1,
+                    cost: 0.0,
+                })
+            }
+            async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+                anyhow::bail!("streaming not exercised by run_ring_es tests")
+            }
+            fn metadata(&self) -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "scripted".to_string(),
+                    models: vec![],
+                    supports_streaming: false,
+                }
+            }
+        }
+
+        /// Extract the `content` of the last `Completed` event recorded for
+        /// `run_id`, if any.
+        fn final_content(log: &InMemoryLog, run_id: &str) -> String {
+            log.events(run_id)
+                .unwrap()
+                .into_iter()
+                .rev()
+                .find_map(|e| match e {
+                    E::Completed { content } => Some(content),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        }
+
+        /// Whether `run_id`'s log contains a `Warned{code}` event matching
+        /// `code` exactly.
+        fn log_has_warned(log: &InMemoryLog, run_id: &str, code: &str) -> bool {
+            log.events(run_id)
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e, E::Warned { code: c } if c == code))
+        }
+
+        /// Whether `run_id`'s log contains an `E::OutcomeResolved` event.
+        fn log_has_outcome_resolved(log: &InMemoryLog, run_id: &str) -> bool {
+            log.events(run_id)
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e, E::OutcomeResolved { .. }))
+        }
+
+        // Scenario 1: two agents circulate one substantial (non-pass) lap
+        // each (`max_laps: 1`, so circulation ends after lap 0 without
+        // advancing), then both vote for the same position — a unanimous
+        // 2/2 group, above any similarity/weight tie concern. The run must
+        // resolve via `OutcomeResolved` and `Complete` with that position as
+        // the non-empty final content.
+        #[tokio::test]
+        async fn es_ring_circulates_votes_and_resolves() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), es_test_agent("a", "concrete-model"));
+            agents.insert("b".to_string(), es_test_agent("b", "concrete-model"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert(
+                "a".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION: PROPOSE\nCONTENT: use Rust with Axum",
+                    "CONFIDENCE: 0.9\nUse Rust with Axum",
+                ])),
+            );
+            providers.insert(
+                "b".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION: PROPOSE\nCONTENT: agreed, Rust and Axum",
+                    "CONFIDENCE: 0.8\nUse Rust with Axum",
+                ])),
+            );
+
+            let config = RingConfig {
+                max_laps: 1,
+                ..RingConfig::default()
+            };
+
+            let mut log = InMemoryLog::default();
+            let st = run_ring_es(
+                "run-ring-resolve",
+                "task",
+                agents,
+                providers,
+                config,
+                RoutingRules::default(),
+                &mut log,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(st.status, RunStatus::Completed);
+            assert_eq!(
+                st.ring.contributions.len(),
+                2,
+                "expected exactly one substantial lap's worth of contributions, got {:?}",
+                st.ring.contributions
+            );
+            assert!(
+                st.ring.contributions.iter().all(|c| c.action == "propose"),
+                "expected only substantive (non-pass) contributions, got {:?}",
+                st.ring.contributions
+            );
+            assert_eq!(st.ring.votes.len(), 2, "expected both agents to have voted");
+            assert!(
+                log_has_outcome_resolved(&log, "run-ring-resolve"),
+                "expected an OutcomeResolved event in the log"
+            );
+            let content = final_content(&log, "run-ring-resolve");
+            assert!(
+                !content.trim().is_empty(),
+                "expected a non-empty resolved outcome"
+            );
+            assert_eq!(content, "Use Rust with Axum");
+        }
+
+        // Scenario 2: two agents contribute a substantive (non-pass)
+        // proposal every lap, for exactly `config.max_laps` laps —
+        // `RingDecider::max_laps` is aligned with `config.max_laps` by
+        // `run_ring_es` (Task 9's contract), so once lap
+        // `config.max_laps - 1` completes, `ring_phase` itself transitions
+        // straight to `Vote` (its own natural circulation-exhaustion path,
+        // documented on `ring_phase`) — `RingDecider`'s own independent
+        // `max_laps >= self.max_laps` guard never actually fires here, since
+        // `ring_phase` never hands back a `Circulate { lap }` at or beyond
+        // `config.max_laps`. The run must still reach every configured lap
+        // (proving the cap is respected, not exited early by convergence)
+        // and then resolve normally via voting — asserted here as the
+        // actually-observed behavior per the task brief ("vérifie le
+        // comportement réel"), not an assumed `Warned{max_laps}`.
+        #[tokio::test]
+        async fn es_ring_halts_at_max_laps() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), es_test_agent("a", "concrete-model"));
+            agents.insert("b".to_string(), es_test_agent("b", "concrete-model"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert(
+                "a".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION: PROPOSE\nCONTENT: lap0 from a",
+                    "ACTION: PROPOSE\nCONTENT: lap1 from a",
+                    "CONFIDENCE: 0.7\nFinal position A",
+                ])),
+            );
+            providers.insert(
+                "b".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION: PROPOSE\nCONTENT: lap0 from b",
+                    "ACTION: PROPOSE\nCONTENT: lap1 from b",
+                    "CONFIDENCE: 0.7\nFinal position A",
+                ])),
+            );
+
+            let config = RingConfig {
+                max_laps: 2,
+                ..RingConfig::default()
+            };
+
+            let mut log = InMemoryLog::default();
+            let st = run_ring_es(
+                "run-ring-maxlaps",
+                "task",
+                agents,
+                providers,
+                config,
+                RoutingRules::default(),
+                &mut log,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(st.status, RunStatus::Completed);
+            assert_eq!(
+                st.ring.contributions.len(),
+                4,
+                "expected 2 agents x 2 configured laps of substantive contributions, got {:?}",
+                st.ring.contributions
+            );
+            assert!(
+                st.ring.contributions.iter().any(|c| c.lap == 1),
+                "expected circulation to have run through lap 1 (config.max_laps == 2), got {:?}",
+                st.ring.contributions
+            );
+            // Aligned max_laps: `ring_phase` exhausts circulation on its own
+            // once every configured lap has run, so the decider's own
+            // `Warned{max_laps}` guard never fires — the run resolves via
+            // normal voting instead.
+            assert!(
+                !log_has_warned(&log, "run-ring-maxlaps", "max_laps"),
+                "aligned RingDecider.max_laps/config.max_laps must never trip the decider's own max_laps guard"
+            );
+            assert!(
+                log_has_outcome_resolved(&log, "run-ring-maxlaps"),
+                "expected the run to resolve via voting once max_laps was reached"
+            );
+            let content = final_content(&log, "run-ring-maxlaps");
+            assert!(
+                !content.trim().is_empty(),
+                "expected a non-empty resolved outcome"
+            );
+        }
+
+        // Scenario 3: replay determinism. After a full run, `replay(run_id,
+        // &log)` must reconstruct an `ExecutionState` identical (`Debug`
+        // format) to the one `run_ring_es` returned — and it must do so
+        // without invoking any provider again (`replay` takes no
+        // `EffectRunner` at all; the call-count assertions below are an
+        // extra, belt-and-braces proof that no effect silently re-runs).
+        #[tokio::test]
+        async fn es_ring_replay_reconstructs_state() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), es_test_agent("a", "concrete-model"));
+            agents.insert("b".to_string(), es_test_agent("b", "concrete-model"));
+            let provider_a = Arc::new(ScriptedProvider::new(&[
+                "ACTION: PROPOSE\nCONTENT: use Rust with Axum",
+                "CONFIDENCE: 0.9\nUse Rust with Axum",
+            ]));
+            let provider_b = Arc::new(ScriptedProvider::new(&[
+                "ACTION: PROPOSE\nCONTENT: agreed, Rust and Axum",
+                "CONFIDENCE: 0.8\nUse Rust with Axum",
+            ]));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), provider_a.clone() as Arc<dyn Provider>);
+            providers.insert("b".to_string(), provider_b.clone() as Arc<dyn Provider>);
+
+            let config = RingConfig {
+                max_laps: 1,
+                ..RingConfig::default()
+            };
+
+            let mut log = InMemoryLog::default();
+            let st = run_ring_es(
+                "run-ring-replay",
+                "task",
+                agents,
+                providers,
+                config,
+                RoutingRules::default(),
+                &mut log,
+            )
+            .await
+            .unwrap();
+            assert_eq!(st.status, RunStatus::Completed);
+
+            let calls_a_before = provider_a.call_count();
+            let calls_b_before = provider_b.call_count();
+            assert!(
+                calls_a_before > 0,
+                "expected provider 'a' to have been invoked during the run"
+            );
+            assert!(
+                calls_b_before > 0,
+                "expected provider 'b' to have been invoked during the run"
+            );
+
+            let replayed = replay("run-ring-replay", &log).unwrap();
+
+            assert_eq!(
+                format!("{st:?}"),
+                format!("{replayed:?}"),
+                "replay must reconstruct an identical ExecutionState"
+            );
+            assert_eq!(
+                provider_a.call_count(),
+                calls_a_before,
+                "replay must not re-invoke provider 'a'"
+            );
+            assert_eq!(
+                provider_b.call_count(),
+                calls_b_before,
+                "replay must not re-invoke provider 'b'"
+            );
         }
     }
 }
