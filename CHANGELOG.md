@@ -1,3 +1,41 @@
+## v1.0.0-rc.4 (2026-07-21)
+
+Fourth release candidate for 1.0.0. Completes the RC roadmap with remote
+starter registries (B2 Lot B) and clears the post-rc.3 hygiene debts. Scope
+remains frozen (event-sourcing and the declarative engine stay in 1.1/v2).
+
+### New: B2 Lot B — Remote starter registries
+
+- **Fetch starter packs from remote registries** (#211, #212), transport-agnostic
+  behind a pluggable fetcher: **git** (clone/pull, always available) and
+  **archive** (download + `tar`/`unzip` extract, gated `providers-api`). A
+  `RegistrySource` declares its `kind` (git|archive), inferred from the URL or
+  explicit.
+- **Discovery norm (hybrid)**: any directory with a `pack.yaml` is a pack; an
+  optional `armadai-starters.yaml` manifest at the registry root enriches /
+  restricts what is exposed (with `..`/absolute paths rejected).
+- **Integration**: synced packs join the existing local starter resolution
+  (`find_pack_dir` / `load_all_packs`), with **local packs always winning** over
+  the remote cache; remote packs also resolve by their `name:` (not just dir).
+- **CLI**: `armadai registry sources add|remove|list starters <url>` and
+  `armadai registry sync` (now also syncs starter sources, user ∪ project).
+- **Auto-sync-on-miss**: `armadai init --pack <name>` syncs the configured
+  starter registries when the pack is missing locally, then retries — network
+  only on a miss (no starter sources ⇒ no network, behavior unchanged).
+
+### Fixed / hardening (#210)
+
+- **Hermetic model-tier resolution tests**: `resolve_model_for_tier` now
+  always returns a concrete pinned model (never a floating `-latest` alias or
+  the `latest:*` placeholder), and the affected tests are isolated from the
+  ambient model catalog cache — eliminating intermittent failures.
+- **Accurate CLI input-token count**: the CLI provider now sums
+  `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`, so
+  History/Costs no longer show a misleading near-zero "IN" for cached prompts.
+- **Trace list pagination**: `get_orchestration_trace` filters to root runs at
+  the SQL level (before `LIMIT`), so nested children no longer consume list
+  slots.
+
 ## v1.0.0-rc.3 (2026-07-21)
 
 Third release candidate for 1.0.0. Completes the rc.3 scope (dynamic agent
