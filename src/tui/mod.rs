@@ -378,6 +378,7 @@ fn load_storage_data(app: &mut app::App) {
                 cost: r.cost,
                 duration_ms: r.duration_ms,
                 status: r.status,
+                project: r.project,
             })
             .collect();
     }

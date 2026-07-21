@@ -965,6 +965,7 @@ mod tests {
                 cost: 0.01,
                 duration_ms: 500,
                 status: "success".to_string(),
+                project: None,
             },
         )
         .unwrap();
@@ -1072,6 +1073,7 @@ mod tests {
                 cost: 0.0,
                 duration_ms: 0,
                 status: "success".to_string(),
+                project: None,
             },
         )
         .unwrap();
@@ -1116,6 +1118,7 @@ mod tests {
                 cost: 0.0,
                 duration_ms: 0,
                 status: "success".to_string(),
+                project: None,
             },
         )
         .unwrap();

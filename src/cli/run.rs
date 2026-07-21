@@ -184,6 +184,10 @@ async fn run_inner(
         AgentResolution::Project { config, .. } => config.routing.clone().unwrap_or_default(),
         _ => crate::core::routing::RoutingRules::default(),
     };
+    // Which project (if any) these runs are attributed to in storage: the
+    // resolved project root, or the CWD as a best-effort fallback when no
+    // `armadai.yaml` was found (still useful to distinguish ad-hoc runs).
+    let project = project_display_string(&resolution);
 
     sink.emit(&RunEvent::RunStart {
         v: 1,
@@ -212,6 +216,7 @@ async fn run_inner(
             quiet,
             max_content,
             &routing_rules,
+            project.as_deref(),
         )
         .await?;
         agg_tin += metrics.tokens_in as u32;
@@ -245,6 +250,19 @@ enum AgentResolution {
     },
     /// No project config found — use default paths
     Default(PathBuf),
+}
+
+/// Best-effort project identifier for storage attribution: the resolved
+/// project root's display string when an `armadai.yaml` was found, else the
+/// current working directory (still useful to group ad-hoc runs), else
+/// `None` if even `current_dir()` fails.
+fn project_display_string(resolution: &AgentResolution) -> Option<String> {
+    match resolution {
+        AgentResolution::Project { root, .. } => Some(root.display().to_string()),
+        AgentResolution::Default(_) => std::env::current_dir()
+            .ok()
+            .map(|p| p.display().to_string()),
+    }
 }
 
 /// Resolve a single agent name to a file path using the resolution context.
@@ -286,7 +304,13 @@ async fn run_single_agent(
     quiet: bool,
     max_content: Option<usize>,
     routing_rules: &crate::core::routing::RoutingRules,
+    project: Option<&str>,
 ) -> anyhow::Result<(String, RunMetrics)> {
+    // `project` is only read by `record_run` under `#[cfg(feature = "storage")]`
+    // below; this keeps the parameter used (and its name meaningful at every
+    // call site) regardless of which features are enabled.
+    #[cfg(not(feature = "storage"))]
+    let _ = project;
     // 1. Load agent
     let mut agent = crate::parser::parse_agent_file(agent_path)?;
 
@@ -437,7 +461,7 @@ async fn run_single_agent(
 
     // 8. Record in storage (if available)
     #[cfg(feature = "storage")]
-    record_run(&metrics, input, &response.content);
+    record_run(&metrics, input, &response.content, project);
 
     Ok((response.content, metrics))
 }
@@ -454,7 +478,7 @@ struct RunMetrics {
 }
 
 #[cfg(feature = "storage")]
-fn record_run(metrics: &RunMetrics, input: &str, output: &str) {
+fn record_run(metrics: &RunMetrics, input: &str, output: &str, project: Option<&str>) {
     use crate::storage::{init_db, queries};
 
     let db = match init_db() {
@@ -476,6 +500,7 @@ fn record_run(metrics: &RunMetrics, input: &str, output: &str) {
         cost: metrics.cost,
         duration_ms: metrics.duration_ms,
         status: "success".to_string(),
+        project: project.map(|s| s.to_string()),
     };
 
     if let Err(e) = queries::insert_run(&db, record) {
@@ -674,6 +699,10 @@ async fn run_orchestrated(
         _ => crate::core::routing::RoutingRules::default(),
     };
 
+    // Project attribution for storage (mirrors the sequential path).
+    #[cfg(feature = "storage")]
+    let project = project_display_string(resolution);
+
     sink.emit(&RunEvent::RunStart {
         v: 1,
         agents: agent_names.to_vec(),
@@ -816,7 +845,7 @@ async fn run_orchestrated(
             eprintln!("[blackboard] Halted: {:?}", board.state());
 
             #[cfg(feature = "storage")]
-            record_orchestration_blackboard(&board, &config, input);
+            record_orchestration_blackboard(&board, &config, input, project.as_deref());
 
             let outcome_text = board
                 .entries()
@@ -869,7 +898,7 @@ async fn run_orchestrated(
             run_ring(&mut token, &ring_agents, &providers, &config, sink).await?;
 
             #[cfg(feature = "storage")]
-            record_orchestration_ring(&token, &config, input);
+            record_orchestration_ring(&token, &config, input, project.as_deref());
 
             let outcome_text = match token.status() {
                 TokenStatus::Done { outcome } => match outcome {
@@ -1012,7 +1041,12 @@ async fn run_orchestrated(
             );
 
             #[cfg(feature = "storage")]
-            record_orchestration_hierarchical(&result, &orch_config_for_storage, input);
+            record_orchestration_hierarchical(
+                &result,
+                &orch_config_for_storage,
+                input,
+                project.as_deref(),
+            );
 
             if !json {
                 println!("{}", result.content);
@@ -1117,12 +1151,14 @@ fn apply_ring_overrides(
 /// hierarchical team (C9). Returns the generated `run_id` so callers can
 /// link children to it.
 #[cfg(feature = "storage")]
+#[allow(clippy::too_many_arguments)]
 fn record_orchestration_blackboard_into(
     db: &crate::storage::Database,
     board: &crate::core::orchestration::blackboard::Board,
     config: &crate::core::orchestration::blackboard::BlackboardConfig,
     input: &str,
     parent_run_id: Option<&str>,
+    project: Option<&str>,
 ) -> String {
     use crate::core::orchestration::blackboard::BoardState;
     use crate::storage::queries;
@@ -1146,6 +1182,7 @@ fn record_orchestration_blackboard_into(
             "success"
         }
         .to_string(),
+        project: project.map(|s| s.to_string()),
     };
     if let Err(e) = queries::insert_run_with_id(db, &run_id, parent) {
         tracing::warn!("Failed to record orchestration parent run: {e}");
@@ -1210,6 +1247,7 @@ fn record_orchestration_blackboard(
     board: &crate::core::orchestration::blackboard::Board,
     config: &crate::core::orchestration::blackboard::BlackboardConfig,
     input: &str,
+    project: Option<&str>,
 ) {
     let db = match crate::storage::init_db() {
         Ok(db) => db,
@@ -1218,7 +1256,7 @@ fn record_orchestration_blackboard(
             return;
         }
     };
-    let _ = record_orchestration_blackboard_into(&db, board, config, input, None);
+    let _ = record_orchestration_blackboard_into(&db, board, config, input, None, project);
 }
 
 /// Persist a ring orchestration run (and its contributions/votes) into `db`,
@@ -1226,12 +1264,14 @@ fn record_orchestration_blackboard(
 /// hierarchical team (C9). Returns the generated `run_id` so callers can
 /// link children to it.
 #[cfg(feature = "storage")]
+#[allow(clippy::too_many_arguments)]
 fn record_orchestration_ring_into(
     db: &crate::storage::Database,
     token: &crate::core::orchestration::ring::RingToken,
     config: &crate::core::orchestration::ring::RingConfig,
     input: &str,
     parent_run_id: Option<&str>,
+    project: Option<&str>,
 ) -> String {
     use crate::core::orchestration::ring::TokenStatus;
     use crate::storage::queries;
@@ -1258,6 +1298,7 @@ fn record_orchestration_ring_into(
             _ => "incomplete",
         }
         .to_string(),
+        project: project.map(|s| s.to_string()),
     };
     if let Err(e) = queries::insert_run_with_id(db, &run_id, parent) {
         tracing::warn!("Failed to record orchestration parent run: {e}");
@@ -1331,6 +1372,7 @@ fn record_orchestration_ring(
     token: &crate::core::orchestration::ring::RingToken,
     config: &crate::core::orchestration::ring::RingConfig,
     input: &str,
+    project: Option<&str>,
 ) {
     let db = match crate::storage::init_db() {
         Ok(db) => db,
@@ -1339,7 +1381,7 @@ fn record_orchestration_ring(
             return;
         }
     };
-    let _ = record_orchestration_ring_into(&db, token, config, input, None);
+    let _ = record_orchestration_ring_into(&db, token, config, input, None, project);
 }
 
 /// Persist a hierarchical orchestration run: the parent run row, its
@@ -1351,6 +1393,7 @@ fn record_hierarchical_into(
     result: &crate::core::orchestration::hierarchical::OrchestrationResult,
     config: &crate::core::orchestration::OrchestrationConfig,
     input: &str,
+    project: Option<&str>,
 ) -> anyhow::Result<String> {
     use crate::core::orchestration::hierarchical::NestedRun;
     use crate::storage::queries;
@@ -1369,6 +1412,7 @@ fn record_hierarchical_into(
         cost: result.total_cost,
         duration_ms: 0,
         status: "success".to_string(),
+        project: project.map(|s| s.to_string()),
     };
     queries::insert_run_with_id(db, &run_id, parent)?;
 
@@ -1410,8 +1454,14 @@ fn record_hierarchical_into(
                 config,
                 ..
             } => {
-                let _ =
-                    record_orchestration_blackboard_into(db, board, config, task, Some(&run_id));
+                let _ = record_orchestration_blackboard_into(
+                    db,
+                    board,
+                    config,
+                    task,
+                    Some(&run_id),
+                    project,
+                );
             }
             NestedRun::Ring {
                 task,
@@ -1419,7 +1469,8 @@ fn record_hierarchical_into(
                 config,
                 ..
             } => {
-                let _ = record_orchestration_ring_into(db, token, config, task, Some(&run_id));
+                let _ =
+                    record_orchestration_ring_into(db, token, config, task, Some(&run_id), project);
             }
         }
     }
@@ -1435,6 +1486,7 @@ fn record_orchestration_hierarchical(
     result: &crate::core::orchestration::hierarchical::OrchestrationResult,
     config: &crate::core::orchestration::OrchestrationConfig,
     input: &str,
+    project: Option<&str>,
 ) {
     let db = match crate::storage::init_db() {
         Ok(db) => db,
@@ -1443,7 +1495,7 @@ fn record_orchestration_hierarchical(
             return;
         }
     };
-    if let Err(e) = record_hierarchical_into(&db, result, config, input) {
+    if let Err(e) = record_hierarchical_into(&db, result, config, input, project) {
         tracing::warn!("Failed to record hierarchical run: {e}");
     }
 }
@@ -1766,7 +1818,8 @@ mod storage_tests {
         };
         let config = OrchestrationConfig::default();
 
-        let parent_id = record_hierarchical_into(&db, &result, &config, "do research").unwrap();
+        let parent_id =
+            record_hierarchical_into(&db, &result, &config, "do research", None).unwrap();
 
         // Parent persisted as hierarchical with no parent.
         let parent = queries::get_orchestration_run(&db, &parent_id)
@@ -1786,5 +1839,51 @@ mod storage_tests {
             children[0].parent_run_id.as_deref(),
             Some(parent_id.as_str())
         );
+    }
+
+    #[test]
+    fn hierarchical_run_records_project_on_parent_and_nested_children() {
+        let db = init_embedded().unwrap();
+
+        let board = Board::new("subtask".to_string(), 50_000);
+        let result = OrchestrationResult {
+            content: "final".to_string(),
+            trace: vec![],
+            total_tokens_in: 0,
+            total_tokens_out: 0,
+            total_cost: 0.0,
+            invocation_count: 1,
+            nested_runs: vec![NestedRun::Blackboard {
+                team_lead: "research-lead".to_string(),
+                task: "subtask".to_string(),
+                board,
+                config: BlackboardConfig::default(),
+            }],
+        };
+        let config = OrchestrationConfig::default();
+
+        let parent_id = record_hierarchical_into(
+            &db,
+            &result,
+            &config,
+            "do research",
+            Some("/home/user/my-project"),
+        )
+        .unwrap();
+
+        let history = queries::get_history(&db, None, 10).unwrap();
+        assert_eq!(history.len(), 2, "parent + one nested blackboard run");
+        for run in &history {
+            assert_eq!(
+                run.project.as_deref(),
+                Some("/home/user/my-project"),
+                "every persisted run (parent and nested) should carry the project"
+            );
+        }
+        // Sanity: parent_id itself resolved to a hierarchical run.
+        let parent = queries::get_orchestration_run(&db, &parent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parent.pattern, "hierarchical");
     }
 }

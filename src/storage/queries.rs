@@ -15,6 +15,9 @@ pub struct RunRecord {
     pub cost: f64,
     pub duration_ms: i64,
     pub status: String,
+    /// Project root path the run was executed from (display string), or
+    /// `None` when there was no project config (default/global agent run).
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,10 +42,10 @@ pub fn insert_run_with_id(db: &Database, id: &str, run: RunRecord) -> anyhow::Re
         .lock()
         .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
     conn.execute(
-        "INSERT INTO runs (id, agent, input, output, provider, model, tokens_in, tokens_out, cost, duration_ms, status)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO runs (id, agent, input, output, provider, model, tokens_in, tokens_out, cost, duration_ms, status, project)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![id, run.agent, run.input, run.output, run.provider, run.model,
-                run.tokens_in, run.tokens_out, run.cost, run.duration_ms, run.status],
+                run.tokens_in, run.tokens_out, run.cost, run.duration_ms, run.status, run.project],
     )?;
     Ok(())
 }
@@ -61,7 +64,7 @@ pub fn get_history(
     match agent {
         Some(name) => {
             let mut stmt = conn.prepare(
-                "SELECT agent, input, output, provider, model, tokens_in, tokens_out, cost, duration_ms, status
+                "SELECT agent, input, output, provider, model, tokens_in, tokens_out, cost, duration_ms, status, project
                  FROM runs WHERE agent = ?1 ORDER BY created_at DESC LIMIT ?2",
             )?;
             let rows = stmt.query_map(params![name, limit], |row| {
@@ -76,6 +79,7 @@ pub fn get_history(
                     cost: row.get(7)?,
                     duration_ms: row.get(8)?,
                     status: row.get(9)?,
+                    project: row.get(10)?,
                 })
             })?;
             for row in rows {
@@ -84,7 +88,7 @@ pub fn get_history(
         }
         None => {
             let mut stmt = conn.prepare(
-                "SELECT agent, input, output, provider, model, tokens_in, tokens_out, cost, duration_ms, status
+                "SELECT agent, input, output, provider, model, tokens_in, tokens_out, cost, duration_ms, status, project
                  FROM runs ORDER BY created_at DESC LIMIT ?1",
             )?;
             let rows = stmt.query_map(params![limit], |row| {
@@ -99,6 +103,7 @@ pub fn get_history(
                     cost: row.get(7)?,
                     duration_ms: row.get(8)?,
                     status: row.get(9)?,
+                    project: row.get(10)?,
                 })
             })?;
             for row in rows {
@@ -570,6 +575,7 @@ mod tests {
             cost,
             duration_ms: 500,
             status: "success".to_string(),
+            project: None,
         }
     }
 
@@ -585,6 +591,22 @@ mod tests {
         let filtered = get_history(&db, Some("agent-a"), 10).unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].agent, "agent-a");
+    }
+
+    #[test]
+    fn test_run_project_roundtrips_through_history() {
+        let db = init_embedded().unwrap();
+        let mut with_project = sample_run("agent-a", 0.01);
+        with_project.project = Some("/home/user/my-project".to_string());
+        insert_run(&db, with_project).unwrap();
+        insert_run(&db, sample_run("agent-b", 0.02)).unwrap(); // no project
+
+        let all = get_history(&db, None, 10).unwrap();
+        assert_eq!(all.len(), 2);
+        let a = all.iter().find(|r| r.agent == "agent-a").unwrap();
+        let b = all.iter().find(|r| r.agent == "agent-b").unwrap();
+        assert_eq!(a.project.as_deref(), Some("/home/user/my-project"));
+        assert_eq!(b.project, None);
     }
 
     #[test]

@@ -11,6 +11,17 @@ use crate::tui::filter;
 use crate::tui::format::format_cost;
 use crate::tui::widgets::search_bar;
 
+/// Display value for the History table's PROJECT column: the basename of the
+/// project root path (the full path is long; the last component is enough
+/// to tell projects apart), or `—` when the run has no associated project
+/// (ad-hoc runs outside any `armadai.yaml`, or pre-migration rows).
+fn project_display(project: Option<&str>) -> String {
+    project
+        .and_then(|p| std::path::Path::new(p).file_name())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "—".to_string())
+}
+
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.history.is_empty() {
         let msg =
@@ -32,7 +43,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let header = Row::new(vec![
-        "", "AGENT", "PROVIDER", "MODEL", "IN", "OUT", "COST", "MS", "STATUS",
+        "", "AGENT", "PROJECT", "PROVIDER", "MODEL", "IN", "OUT", "COST", "MS", "STATUS",
     ])
     .style(Style::default().add_modifier(Modifier::BOLD))
     .bottom_margin(1);
@@ -52,6 +63,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 r.model.clone()
             };
+            let project_short = project_display(r.project.as_deref());
             let style = if display_i == app.selected_history {
                 theme::selection()
             } else {
@@ -60,6 +72,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Row::new(vec![
                 marker.to_string(),
                 r.agent.clone(),
+                project_short,
                 r.provider.clone(),
                 model_short,
                 r.tokens_in.to_string(),
@@ -76,9 +89,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         rows,
         [
             Constraint::Length(2),
-            Constraint::Min(12),
+            Constraint::Min(10),
+            Constraint::Length(14),
             Constraint::Length(10),
-            Constraint::Length(20),
+            Constraint::Length(16),
             Constraint::Length(6),
             Constraint::Length(6),
             Constraint::Length(8),
@@ -99,5 +113,32 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Render search bar if in search mode
     if app.search_mode {
         search_bar(frame, &app.search_query, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_display_basename_of_a_path() {
+        assert_eq!(
+            project_display(Some("/home/user/projects/my-app")),
+            "my-app"
+        );
+    }
+
+    #[test]
+    fn project_display_none_shows_placeholder() {
+        assert_eq!(project_display(None), "—");
+    }
+
+    #[test]
+    fn project_display_trailing_slash_still_resolves_basename() {
+        // Path::file_name ignores a trailing separator.
+        assert_eq!(
+            project_display(Some("/home/user/projects/my-app/")),
+            "my-app"
+        );
     }
 }

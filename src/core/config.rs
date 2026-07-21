@@ -44,6 +44,24 @@ pub fn config_dir() -> PathBuf {
     config_base.join("armadai")
 }
 
+/// Return the ArmadAI data root directory (for persistent storage, e.g. SQLite).
+///
+/// Resolution order:
+/// 1. `$XDG_DATA_HOME/armadai`
+/// 2. `$HOME/.local/share/armadai`
+///
+/// Unlike `config_dir()`, this is NOT overridable via `$ARMADAI_CONFIG_DIR` —
+/// config and data are separate XDG concerns.
+pub fn data_dir() -> PathBuf {
+    let data_base = std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".local").join("share")
+        });
+    data_base.join("armadai")
+}
+
 pub fn user_agents_dir() -> PathBuf {
     config_dir().join("agents")
 }
@@ -166,7 +184,15 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             mode: "embedded".to_string(),
-            path: "data/armadai.sqlite".to_string(),
+            // Absolute path so History/Costs are shared across CWDs (was
+            // "data/armadai.sqlite", relative to the CWD — a different DB per
+            // directory, meaning `armadai run` and `armadai tui` only saw the
+            // same data when launched from the same directory). Explicit
+            // `storage.path` in an existing config.yaml is unaffected.
+            path: data_dir()
+                .join("armadai.sqlite")
+                .to_string_lossy()
+                .into_owned(),
         }
     }
 }
@@ -362,7 +388,10 @@ defaults:
 
 storage:
   mode: embedded
-  path: data/armadai.sqlite
+  # `path` intentionally omitted: defaults to an absolute, shared location
+  # (~/.local/share/armadai/armadai.sqlite, or $XDG_DATA_HOME/armadai if set)
+  # so History/Costs are consistent regardless of CWD. Set explicitly here to
+  # override.
 
 rate_limits:
   anthropic: 50

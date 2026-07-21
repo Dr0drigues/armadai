@@ -74,6 +74,7 @@ pub struct RunEntry {
     pub status: String,
     pub input_preview: String,
     pub output_preview: String,
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone)]
