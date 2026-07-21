@@ -99,7 +99,11 @@ fn agent_model(
 
 /// Prompt suffix appended to board agent messages so the LLM returns a
 /// structured action header we can parse.
-const BOARD_ACTION_INSTRUCTIONS: &str = "\n\n\
+///
+/// `pub(crate)` (rather than private) so `es::blackboard::BlackboardEffectRunner`
+/// (OH1 Lot 3, Task 4) can reuse the exact same instructions when assembling
+/// its own board prompt, instead of duplicating this string.
+pub(crate) const BOARD_ACTION_INSTRUCTIONS: &str = "\n\n\
 Respond with the following structured header, then your content:\n\
 ACTION: <type> (one of: FINDING, CHALLENGE, CONFIRMATION, SYNTHESIS, QUESTION, ANSWER)\n\
 TARGET: <index> (required for CHALLENGE, CONFIRMATION, ANSWER; comma-separated for SYNTHESIS)\n\

@@ -12,13 +12,21 @@
 //! duplicating their definitions.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use super::engine::{Action, Decider};
+use async_trait::async_trait;
+
+use super::engine::{Action, Decider, EffectRunner};
 use super::event::ExecutionEvent;
 use super::state::{BoardEntryRec, ExecutionState};
 use crate::core::agent::Agent;
 use crate::core::orchestration::blackboard::{BlackboardConfig, EntryKind, entry_kind_name};
+use crate::core::orchestration::llm_agents::{BOARD_ACTION_INSTRUCTIONS, parse_board_action};
 use crate::core::routing::{BudgetState, RoutingRules, route};
+#[cfg(test)]
+use crate::linker::model_resolution::fallback_model_for_tier;
+use crate::linker::model_resolution::{ModelTier, resolve_model_for_tier};
+use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// Agents eligible to contribute on the board's current round, ordered by
 /// the run's roster (`state.agents`) rather than `agents`' own (`BTreeMap`,
@@ -448,6 +456,241 @@ pub(crate) fn build_board_result(state: &ExecutionState) -> String {
         .map(|entry| format!("[{}] {}", entry.agent, entry.content))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+// ── BlackboardEffectRunner (Task 4): the sole async/impure effect ────
+
+/// Parse a tier string as stored in `ExecutionState::routed_tiers` back into
+/// a `ModelTier`.
+///
+/// Identical in spirit to `es::hierarchical::parse_routed_tier` — duplicated
+/// rather than shared (same rationale as `BlackboardDecider::model_routed_event`
+/// above: the two effect runners' `agents`/model-resolution concerns live on
+/// unrelated structs with no common trait today). Unrecognized strings fall
+/// back to `Pro`, matching the hierarchical counterpart.
+fn parse_routed_tier(tier: &str) -> ModelTier {
+    match tier.to_lowercase().as_str() {
+        "fast" => ModelTier::Fast,
+        "max" => ModelTier::Max,
+        _ => ModelTier::Pro,
+    }
+}
+
+/// Executes the actual LLM call behind `Action::Invoke` for the blackboard
+/// pattern and turns the raw provider response into the `BoardEntryAdded`
+/// event the pure loop/`BlackboardDecider` expect.
+///
+/// This is the *only* impure/async piece of the event-sourced blackboard
+/// engine — every other function in this module is a pure, synchronous
+/// helper over `ExecutionState`. Coexists with the legacy
+/// `core::orchestration::llm_agents::LlmBoardAgent`/`blackboard::run_blackboard`
+/// (this struct is not wired into it, and does not import from it beyond the
+/// plain, side-effect-free `parse_board_action` parser and
+/// `BOARD_ACTION_INSTRUCTIONS` constant it explicitly reuses — strict
+/// coexistence, mirroring `HierarchicalEffectRunner`).
+pub struct BlackboardEffectRunner {
+    /// All known agents by name (system prompt, model, temperature, …).
+    pub agents: BTreeMap<String, Agent>,
+    /// Provider instance per agent name.
+    pub providers: BTreeMap<String, Arc<dyn Provider>>,
+    /// Blackboard configuration — currently read only for `token_budget`,
+    /// surfaced in the "Budget remaining" line of the assembled prompt (the
+    /// same line `LlmBoardAgent::contribute` sends), for prompt fidelity with
+    /// the legacy engine.
+    pub config: BlackboardConfig,
+}
+
+impl BlackboardEffectRunner {
+    /// Construct a new `BlackboardEffectRunner` from its immutable inputs.
+    pub fn new(
+        agents: BTreeMap<String, Agent>,
+        providers: BTreeMap<String, Arc<dyn Provider>>,
+        config: BlackboardConfig,
+    ) -> Self {
+        Self {
+            agents,
+            providers,
+            config,
+        }
+    }
+
+    /// Assemble the user-turn prompt sent to `agent_name` for the current
+    /// round, reproducing the shape of `LlmBoardAgent::contribute`'s
+    /// `user_msg` (`core::orchestration::llm_agents`) over the event-sourced
+    /// `state.board` projection instead of a live `BoardSnapshot`:
+    /// `"Task: …\nRound: …\nBudget remaining: … tokens\n"`, then (only if any
+    /// qualify) a `"Recent board entries:\n"` section listing every entry
+    /// **whose `round` is strictly less than `state.board.round`** as
+    /// `"- [{agent}#{index} {kind}] {content}\n"` — `{index}` being the
+    /// entry's position in `state.board.entries` (the same numbering
+    /// `entry_kind_to_rec`'s `refs`/the legacy `BoardEntry::index` target —
+    /// so a `TARGET: <index>` an LLM emits in its structured response points
+    /// at the same entries this snapshot exposed to it) — then
+    /// `BOARD_ACTION_INSTRUCTIONS` verbatim.
+    ///
+    /// The round filter is the deliberate, documented deviation from a plain
+    /// "last 10 entries" window: legacy fidelity requires that agents
+    /// contributing within the *same* round never see each other's
+    /// in-flight entries (they all act off the board as it stood at the
+    /// start of the round) — only entries from rounds that have already
+    /// fully completed are visible. Unlike `LlmBoardAgent::contribute`
+    /// (which caps at the 10 most recent entries), this includes every
+    /// qualifying entry — the task's snapshot-filter requirement takes
+    /// priority over reproducing that truncation, and no test scenario here
+    /// exercises more than a handful of entries.
+    fn build_prompt(&self, agent_name: &str, input: &str, state: &ExecutionState) -> String {
+        let budget_remaining = self
+            .config
+            .token_budget
+            .saturating_sub(state.budget_tokens_in + state.budget_tokens_out);
+        let mut user_msg = format!(
+            "Task: {input}\nRound: {}\nBudget remaining: {budget_remaining} tokens\n",
+            state.board.round
+        );
+
+        let snapshot: Vec<(usize, &BoardEntryRec)> = state
+            .board
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.round < state.board.round)
+            .collect();
+        if !snapshot.is_empty() {
+            user_msg.push_str("\nRecent board entries:\n");
+            for (index, entry) in snapshot {
+                user_msg.push_str(&format!(
+                    "- [{}#{index} {}] {}\n",
+                    entry.agent, entry.kind, entry.content
+                ));
+            }
+        }
+
+        // Silence the unused `agent_name` parameter warning below: kept for
+        // signature symmetry with `run_invoke`/future per-agent prompt
+        // customization, even though the current prompt shape doesn't read
+        // it directly (the legacy `contribute` prompt is agent-agnostic
+        // too — the agent's own perspective comes entirely from its system
+        // prompt, sent separately).
+        let _ = agent_name;
+
+        user_msg.push_str(BOARD_ACTION_INSTRUCTIONS);
+        user_msg
+    }
+}
+
+#[async_trait]
+impl EffectRunner for BlackboardEffectRunner {
+    async fn run_invoke(
+        &self,
+        agent: &str,
+        input: &str,
+        state: &ExecutionState,
+    ) -> anyhow::Result<ExecutionEvent> {
+        let agent_def = self
+            .agents
+            .get(agent)
+            .ok_or_else(|| anyhow::anyhow!("Unknown agent '{agent}' — no Agent definition"))?;
+        let provider = self
+            .providers
+            .get(agent)
+            .ok_or_else(|| anyhow::anyhow!("No provider configured for agent '{agent}'"))?;
+
+        let prompt = self.build_prompt(agent, input, state);
+
+        // Same `"latest:auto"` resolution as `HierarchicalEffectRunner`: see
+        // its doc comment for the full rationale. `BlackboardDecider`
+        // (Task 3) emits `ModelRouted` ahead of every `latest:auto` agent's
+        // `Invoke`, so `state.routed_tiers` should already carry its tier by
+        // the time this runs; the `None` branch is a defensive fallback for
+        // a hand-built state (tests) or a future decider regression.
+        let raw_model = agent_def
+            .metadata
+            .model
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let model = if raw_model == "latest:auto" {
+            let tier = match state.routed_tiers.get(agent) {
+                Some(tier_str) => parse_routed_tier(tier_str),
+                None => {
+                    tracing::warn!(
+                        agent,
+                        "no ModelRouted tier recorded for latest:auto agent; falling back to Pro tier"
+                    );
+                    ModelTier::Pro
+                }
+            };
+            resolve_model_for_tier(&agent_def.metadata.provider, tier)
+        } else {
+            raw_model
+        };
+
+        let request = CompletionRequest {
+            model,
+            system_prompt: agent_def.system_prompt.clone(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: prompt,
+            }],
+            temperature: agent_def.metadata.temperature,
+            max_tokens: agent_def.metadata.max_tokens,
+        };
+
+        let round = state.board.round;
+
+        // Graceful degradation (Task 4 brief, point 5): a provider error
+        // must NOT abort the run — legacy fidelity requires the blackboard
+        // to keep going even when one agent's LLM call fails outright (a
+        // timeout, a 5xx, an auth error, …). Instead of propagating the
+        // error through `?` (which `es::engine::run_event_sourced` would
+        // otherwise let bubble out of the whole run via its own `?` on
+        // `run_invoke`), we swallow it here and manufacture a degraded
+        // `BoardEntryAdded`: `kind = "finding"` (the neutral default,
+        // matching `parse_board_action`'s own fallback for an unparseable
+        // response), a `"[agent failed]"` marker prefix so the failure is
+        // visible in the board transcript, `confidence: 0.0` (the LLM never
+        // actually vouched for anything), and `tokens_in/out = 0, cost =
+        // 0.0` (no tokens were actually consumed/billed — the call never
+        // returned a response to meter). This keeps `BlackboardDecider`'s
+        // round-completion bookkeeping correct (`round_complete` only checks
+        // that every eligible agent posted *an* entry for the round, not
+        // that it succeeded) without corrupting the budget totals with a
+        // cost that was never incurred.
+        match provider.complete(request).await {
+            Ok(response) => {
+                let (kind, confidence, content) = parse_board_action(&response.content);
+                let (kind, refs) = entry_kind_to_rec(&kind);
+                Ok(ExecutionEvent::BoardEntryAdded {
+                    agent: agent.to_string(),
+                    round,
+                    kind,
+                    content,
+                    refs,
+                    confidence,
+                    tokens_in: response.tokens_in,
+                    tokens_out: response.tokens_out,
+                    cost: response.cost,
+                })
+            }
+            Err(err) => {
+                tracing::warn!(
+                    agent,
+                    error = %err,
+                    "blackboard agent provider call failed; recording a degraded entry instead of aborting the run"
+                );
+                Ok(ExecutionEvent::BoardEntryAdded {
+                    agent: agent.to_string(),
+                    round,
+                    kind: "finding".to_string(),
+                    content: format!("[agent failed] {err}"),
+                    refs: vec![],
+                    confidence: 0.0,
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -984,6 +1227,418 @@ mod tests {
                 actions[0]
             );
             assert!(matches!(&actions[1], Action::Complete { .. }));
+        }
+    }
+
+    // ── BlackboardEffectRunner (Task 4) ──────────────────────────────
+    //
+    // Named `effect_runner` so `cargo test es::blackboard::tests::effect_runner`
+    // targets this module — mirrors the naming convention used by
+    // `es::hierarchical::tests::effect_runner`.
+    mod effect_runner {
+        use super::*;
+        use crate::core::agent::AgentMetadata;
+        use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+        use std::path::PathBuf;
+        use std::sync::Mutex;
+
+        /// Minimal `Agent` for effect-runner tests: a concrete (non
+        /// `latest:auto`) model by default.
+        fn test_agent(name: &str, model: &str) -> Agent {
+            Agent {
+                name: name.to_string(),
+                source: PathBuf::from(format!("{name}.md")),
+                metadata: AgentMetadata {
+                    provider: "anthropic".to_string(),
+                    model: Some(model.to_string()),
+                    command: None,
+                    args: None,
+                    temperature: 0.5,
+                    max_tokens: Some(256),
+                    timeout: None,
+                    tags: vec![],
+                    stacks: vec![],
+                    scope: vec![],
+                    model_fallback: vec![],
+                    cost_limit: None,
+                    rate_limit: None,
+                    context_window: None,
+                    mode: None,
+                    orchestration: None,
+                    triggers: None,
+                    ring_config: None,
+                },
+                system_prompt: format!("You are {name}."),
+                instructions: None,
+                output_format: None,
+                pipeline: None,
+                context: None,
+            }
+        }
+
+        /// Returns a fixed response with fixed token/cost/model metrics,
+        /// regardless of the request.
+        struct FixedProvider {
+            content: String,
+            tokens_in: u32,
+            tokens_out: u32,
+            cost: f64,
+            model: String,
+        }
+
+        #[async_trait]
+        impl Provider for FixedProvider {
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+            ) -> anyhow::Result<CompletionResponse> {
+                Ok(CompletionResponse {
+                    content: self.content.clone(),
+                    model: self.model.clone(),
+                    tokens_in: self.tokens_in,
+                    tokens_out: self.tokens_out,
+                    cost: self.cost,
+                })
+            }
+            async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+                anyhow::bail!("streaming not exercised by BlackboardEffectRunner tests")
+            }
+            fn metadata(&self) -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "fixed".to_string(),
+                    models: vec![],
+                    supports_streaming: false,
+                }
+            }
+        }
+
+        /// Like `FixedProvider`, but records every `CompletionRequest` it
+        /// receives, so tests can assert what `run_invoke` actually sent
+        /// (namely, the assembled prompt) — mirrors `CapturingProvider` in
+        /// `es::hierarchical`'s own effect-runner tests.
+        struct CapturingProvider {
+            requests: Mutex<Vec<CompletionRequest>>,
+            response: String,
+        }
+
+        impl CapturingProvider {
+            fn new(response: &str) -> Self {
+                Self {
+                    requests: Mutex::new(Vec::new()),
+                    response: response.to_string(),
+                }
+            }
+
+            fn requests(&self) -> Vec<CompletionRequest> {
+                self.requests.lock().unwrap().clone()
+            }
+        }
+
+        #[async_trait]
+        impl Provider for CapturingProvider {
+            async fn complete(
+                &self,
+                request: CompletionRequest,
+            ) -> anyhow::Result<CompletionResponse> {
+                let model = request.model.clone();
+                self.requests.lock().unwrap().push(request);
+                Ok(CompletionResponse {
+                    content: self.response.clone(),
+                    model,
+                    tokens_in: 1,
+                    tokens_out: 1,
+                    cost: 0.0,
+                })
+            }
+            async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+                anyhow::bail!("streaming not exercised by BlackboardEffectRunner tests")
+            }
+            fn metadata(&self) -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "capturing".to_string(),
+                    models: vec![],
+                    supports_streaming: false,
+                }
+            }
+        }
+
+        /// Always fails — proves `run_invoke` degrades gracefully (a
+        /// `BoardEntryAdded` with a marker content) instead of propagating
+        /// the provider's error through the run.
+        struct FailingProvider;
+
+        #[async_trait]
+        impl Provider for FailingProvider {
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+            ) -> anyhow::Result<CompletionResponse> {
+                anyhow::bail!("simulated provider outage")
+            }
+            async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+                anyhow::bail!("streaming not exercised by BlackboardEffectRunner tests")
+            }
+            fn metadata(&self) -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "failing".to_string(),
+                    models: vec![],
+                    supports_streaming: false,
+                }
+            }
+        }
+
+        fn board_run_started(agents: &[&str]) -> ExecutionEvent {
+            ExecutionEvent::RunStarted {
+                run_id: "r".into(),
+                pattern: "blackboard".into(),
+                agents: agents.iter().map(|a| a.to_string()).collect(),
+                input: "task".into(),
+                project: None,
+            }
+        }
+
+        // (a) Step 1 (brief): a fixed structured response
+        // (`ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:ok`) →
+        // `BoardEntryAdded` with kind="confirmation", refs=[0], confidence
+        // 0.9, the state's current round, and the *real* token/cost figures
+        // from the `CompletionResponse` (not the entry-level defaults
+        // `parse_board_action` would produce on a fallback).
+        #[tokio::test]
+        async fn run_invoke_parses_structured_action_into_board_entry_added() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), test_agent("a", "concrete-model"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert(
+                "a".to_string(),
+                Arc::new(FixedProvider {
+                    content: "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:ok"
+                        .to_string(),
+                    tokens_in: 7,
+                    tokens_out: 5,
+                    cost: 0.03,
+                    model: "concrete-model".to_string(),
+                }),
+            );
+            let runner =
+                BlackboardEffectRunner::new(agents, providers, BlackboardConfig::default());
+
+            let state = fold(&[
+                board_run_started(&["a"]),
+                ExecutionEvent::RoundStarted { round: 0 },
+            ]);
+            let ev = runner.run_invoke("a", "task", &state).await.unwrap();
+
+            match ev {
+                ExecutionEvent::BoardEntryAdded {
+                    agent,
+                    round,
+                    kind,
+                    content,
+                    refs,
+                    confidence,
+                    tokens_in,
+                    tokens_out,
+                    cost,
+                } => {
+                    assert_eq!(agent, "a");
+                    assert_eq!(round, 0);
+                    assert_eq!(kind, "confirmation");
+                    assert_eq!(refs, vec![0]);
+                    assert!((confidence - 0.9).abs() < 1e-6);
+                    assert_eq!(content, "ok");
+                    assert_eq!(tokens_in, 7);
+                    assert_eq!(tokens_out, 5);
+                    assert!((cost - 0.03).abs() < 1e-9);
+                }
+                other => panic!("expected BoardEntryAdded, got {other:?}"),
+            }
+        }
+
+        // (b) Step 1 (brief): the captured prompt must NOT contain the
+        // current round's entries (its peers' in-flight contributions) but
+        // MUST contain entries from earlier, already-completed rounds — the
+        // snapshot-filter requirement documented on `build_prompt`.
+        #[tokio::test]
+        async fn run_invoke_prompt_snapshot_excludes_current_round_entries() {
+            let mut agents = BTreeMap::new();
+            agents.insert("b".to_string(), test_agent("b", "concrete-model"));
+            let capturing = Arc::new(CapturingProvider::new(
+                "ACTION:FINDING\nCONFIDENCE:0.5\nCONTENT:noted",
+            ));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("b".to_string(), capturing.clone() as Arc<dyn Provider>);
+            let runner =
+                BlackboardEffectRunner::new(agents, providers, BlackboardConfig::default());
+
+            let events = vec![
+                board_run_started(&["a", "b"]),
+                ExecutionEvent::RoundStarted { round: 0 },
+                ExecutionEvent::BoardEntryAdded {
+                    agent: "a".into(),
+                    round: 0,
+                    kind: "finding".into(),
+                    content: "prev-round-content".into(),
+                    refs: vec![],
+                    confidence: 0.7,
+                    tokens_in: 1,
+                    tokens_out: 1,
+                    cost: 0.0,
+                },
+                ExecutionEvent::RoundStarted { round: 1 },
+                ExecutionEvent::BoardEntryAdded {
+                    agent: "a".into(),
+                    round: 1,
+                    kind: "finding".into(),
+                    content: "current-round-content".into(),
+                    refs: vec![],
+                    confidence: 0.7,
+                    tokens_in: 1,
+                    tokens_out: 1,
+                    cost: 0.0,
+                },
+            ];
+            let state = fold(&events);
+            runner.run_invoke("b", "task", &state).await.unwrap();
+
+            let sent = capturing.requests();
+            assert_eq!(sent.len(), 1);
+            let prompt = &sent[0].messages[0].content;
+            assert!(
+                prompt.contains("prev-round-content"),
+                "expected the previous round's entry in the prompt, got: {prompt}"
+            );
+            assert!(
+                !prompt.contains("current-round-content"),
+                "must not leak the current round's peer entries into the prompt, got: {prompt}"
+            );
+        }
+
+        // (c) Step 1 (brief): a provider error must NOT propagate as an
+        // `Err` — `run_invoke` degrades gracefully into a `BoardEntryAdded`
+        // with kind="finding", a "[agent failed]" content marker, confidence
+        // 0.0, and zeroed tokens/cost.
+        #[tokio::test]
+        async fn run_invoke_degrades_gracefully_on_provider_error() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), test_agent("a", "concrete-model"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), Arc::new(FailingProvider));
+            let runner =
+                BlackboardEffectRunner::new(agents, providers, BlackboardConfig::default());
+
+            let state = fold(&[
+                board_run_started(&["a"]),
+                ExecutionEvent::RoundStarted { round: 2 },
+            ]);
+            let ev = runner
+                .run_invoke("a", "task", &state)
+                .await
+                .expect("a provider error must not propagate as Err");
+
+            match ev {
+                ExecutionEvent::BoardEntryAdded {
+                    agent,
+                    round,
+                    kind,
+                    content,
+                    refs,
+                    confidence,
+                    tokens_in,
+                    tokens_out,
+                    cost,
+                } => {
+                    assert_eq!(agent, "a");
+                    assert_eq!(round, 2);
+                    assert_eq!(kind, "finding");
+                    assert!(
+                        content.contains("[agent failed]"),
+                        "expected a degraded-entry marker, got: {content}"
+                    );
+                    assert!(refs.is_empty());
+                    assert_eq!(confidence, 0.0);
+                    assert_eq!(tokens_in, 0);
+                    assert_eq!(tokens_out, 0);
+                    assert_eq!(cost, 0.0);
+                }
+                other => panic!("expected a degraded BoardEntryAdded, got {other:?}"),
+            }
+        }
+
+        // `"latest:auto"` is resolved the same way as
+        // `HierarchicalEffectRunner`: `BlackboardDecider::model_routed_event`
+        // emits `ModelRouted{agent, tier, ..}` ahead of the matching
+        // `Invoke`, which `es::state::apply` projects into
+        // `state.routed_tiers`; `run_invoke` reads that tier back and
+        // resolves it via `resolve_model_for_tier` — never leaking the
+        // literal `"latest:auto"` string to the provider. The agent's
+        // `provider` is deliberately a name no on-disk `models.dev` cache
+        // could contain, forcing the hermetic, pure `fallback_model_for_tier`
+        // path (see the identical rationale on
+        // `es::hierarchical::run_invoke_resolves_latest_auto_to_concrete_model`).
+        #[tokio::test]
+        async fn run_invoke_resolves_latest_auto_to_concrete_model() {
+            let mut agent = test_agent("a", "latest:auto");
+            agent.metadata.provider = "test-only-uncached-provider".to_string();
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), agent);
+            let capturing = Arc::new(CapturingProvider::new(
+                "ACTION:FINDING\nCONFIDENCE:0.5\nCONTENT:noted",
+            ));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), capturing.clone() as Arc<dyn Provider>);
+            let runner =
+                BlackboardEffectRunner::new(agents, providers, BlackboardConfig::default());
+
+            let state = fold(&[
+                board_run_started(&["a"]),
+                ExecutionEvent::RoundStarted { round: 0 },
+                ExecutionEvent::ModelRouted {
+                    agent: "a".into(),
+                    tier: "Fast".into(),
+                    reason: "Length".into(),
+                },
+            ]);
+            runner.run_invoke("a", "task", &state).await.unwrap();
+
+            let expected =
+                fallback_model_for_tier("test-only-uncached-provider", ModelTier::Fast).to_string();
+            let sent = capturing.requests();
+            assert_eq!(sent[0].model, expected);
+            assert_ne!(sent[0].model, "latest:auto");
+        }
+
+        // Config errors (unknown agent / no provider registered) are
+        // distinct from a provider *call* failure: these still propagate as
+        // `Err`, mirroring `HierarchicalEffectRunner`'s equivalent tests —
+        // there is no "agent" to degrade gracefully on behalf of.
+        #[tokio::test]
+        async fn run_invoke_errors_for_unknown_agent() {
+            let runner = BlackboardEffectRunner::new(
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BlackboardConfig::default(),
+            );
+            let state = ExecutionState::default();
+            let err = runner
+                .run_invoke("missing", "task", &state)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("missing"));
+        }
+
+        #[tokio::test]
+        async fn run_invoke_errors_when_provider_missing_for_known_agent() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), test_agent("a", "concrete-model"));
+            let runner =
+                BlackboardEffectRunner::new(agents, BTreeMap::new(), BlackboardConfig::default());
+            let state = ExecutionState::default();
+            let err = runner.run_invoke("a", "task", &state).await.unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("provider") && msg.contains("'a'"),
+                "expected a distinctive missing-provider message, got: {msg}"
+            );
         }
     }
 }
