@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Current schema version. Bumped whenever a migration is added.
 #[allow(dead_code)] // not yet consumed outside tests; will back future migration tooling (Lot 2+)
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// Apply the database schema: create base tables (target schema) then run migrations.
 pub fn apply(conn: &Connection) -> anyhow::Result<()> {
@@ -103,6 +103,17 @@ pub fn apply(conn: &Connection) -> anyhow::Result<()> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_delegation_events_run ON delegation_events(run_id, seq);
+
+        CREATE TABLE IF NOT EXISTS execution_events (
+            run_id      TEXT NOT NULL,
+            seq         INTEGER NOT NULL,
+            ts          TEXT NOT NULL DEFAULT (datetime('now')),
+            kind        TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (run_id, seq)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_execution_events_run ON execution_events(run_id, seq);
         ",
     )?;
 
@@ -132,6 +143,10 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     if version < 2 {
         migrate_to_v2(conn)?;
         conn.execute_batch("PRAGMA user_version = 2;")?;
+    }
+    if version < 3 {
+        migrate_to_v3(conn)?;
+        conn.execute_batch("PRAGMA user_version = 3;")?;
     }
     Ok(())
 }
@@ -200,6 +215,29 @@ fn migrate_to_v2(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// v2 → v3: add `execution_events`, the append-only event-sourcing log for
+/// orchestration runs (OH1 Lot 1 socle — `crate::core::orchestration::es`).
+/// `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` are both
+/// idempotent, so this is safe to run unconditionally (a fresh database
+/// already has the table from `apply`'s base batch above, in which case this
+/// is a no-op).
+fn migrate_to_v3(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS execution_events (
+            run_id      TEXT NOT NULL,
+            seq         INTEGER NOT NULL,
+            ts          TEXT NOT NULL DEFAULT (datetime('now')),
+            kind        TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (run_id, seq)
+        );
+        CREATE INDEX IF NOT EXISTS idx_execution_events_run ON execution_events(run_id, seq);
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +256,15 @@ mod tests {
         .unwrap()
             > 0
     }
+    fn has_table(conn: &Connection, table: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1",
+            [table],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    }
 
     #[test]
     fn fresh_db_is_at_schema_version_and_has_new_columns() {
@@ -226,6 +273,7 @@ mod tests {
         assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(has_column(&conn, "orchestration_runs", "parent_run_id"));
         assert!(has_column(&conn, "runs", "project"));
+        assert!(has_table(&conn, "execution_events"));
         // delegation_events table exists
         let n: i64 = conn
             .query_row(
@@ -414,5 +462,58 @@ mod tests {
             .unwrap();
         assert_eq!(agent, "a");
         assert_eq!(project, None);
+    }
+
+    /// A v2 database (has `runs.project`, predates `execution_events`)
+    /// migrates to v3 by adding the table in place — no data loss on
+    /// existing tables.
+    #[test]
+    fn v2_db_migrates_to_v3_adding_execution_events_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        // A v2 database is just the current base schema minus
+        // `execution_events` (which migrate_to_v3 adds), at user_version 2.
+        conn.execute_batch(
+            "
+            CREATE TABLE runs (id TEXT PRIMARY KEY, agent TEXT NOT NULL, input TEXT NOT NULL,
+                output TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+                tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0.0, duration_ms INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'success', created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                project TEXT);
+            CREATE TABLE orchestration_runs (
+                run_id        TEXT PRIMARY KEY REFERENCES runs(id),
+                pattern       TEXT NOT NULL CHECK (pattern IN ('direct', 'blackboard', 'ring', 'hierarchical')),
+                config_json   TEXT NOT NULL,
+                outcome_json  TEXT,
+                rounds        INTEGER NOT NULL DEFAULT 0,
+                halt_reason   TEXT,
+                parent_run_id TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                finished_at   TEXT
+            );
+            INSERT INTO runs (id, agent, input, output, provider, model) VALUES ('r1','a','i','o','p','m');
+            ",
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA user_version = 2;").unwrap();
+
+        assert_eq!(user_version(&conn), 2);
+        assert!(!has_table(&conn, "execution_events"));
+
+        apply(&conn).unwrap();
+
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert!(has_table(&conn, "execution_events"));
+        // Existing row preserved (table add is additive, no rebuild involved).
+        let agent: String = conn
+            .query_row("SELECT agent FROM runs WHERE id='r1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(agent, "a");
+        // The table is actually usable (PK + insert works).
+        conn.execute(
+            "INSERT INTO execution_events (run_id, seq, kind, payload_json) VALUES ('r1', 0, 'run_started', '{}')",
+            [],
+        )
+        .unwrap();
     }
 }

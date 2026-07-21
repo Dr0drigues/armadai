@@ -14,6 +14,7 @@ pub mod classifier;
 pub mod context_injection;
 #[cfg(test)]
 mod e2e_tests;
+pub mod es;
 #[cfg(all(test, feature = "providers-api"))]
 mod gemini_integration_tests;
 pub mod hierarchical;
