@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Current schema version. Bumped whenever a migration is added.
 #[allow(dead_code)] // not yet consumed outside tests; will back future migration tooling (Lot 2+)
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Apply the database schema: create base tables (target schema) then run migrations.
 pub fn apply(conn: &Connection) -> anyhow::Result<()> {
@@ -30,7 +30,8 @@ pub fn apply(conn: &Connection) -> anyhow::Result<()> {
             cost REAL NOT NULL DEFAULT 0.0,
             duration_ms INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'success',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            project TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent);
@@ -128,6 +129,10 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         migrate_to_v1(conn)?;
         conn.execute_batch("PRAGMA user_version = 1;")?;
     }
+    if version < 2 {
+        migrate_to_v2(conn)?;
+        conn.execute_batch("PRAGMA user_version = 2;")?;
+    }
     Ok(())
 }
 
@@ -177,6 +182,24 @@ fn migrate_to_v1(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// v1 → v2: add `runs.project` (the project root path a run was executed
+/// from), so History/Costs can attribute runs to a project. A plain `ALTER
+/// TABLE ADD COLUMN` suffices (unlike v1, no CHECK constraint is involved),
+/// so no table rebuild is needed. A fresh database already has the column
+/// from `apply`'s base `CREATE TABLE IF NOT EXISTS runs` above, so this is a
+/// no-op there.
+fn migrate_to_v2(conn: &Connection) -> anyhow::Result<()> {
+    let has_project: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name = 'project'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !has_project {
+        conn.execute_batch("ALTER TABLE runs ADD COLUMN project TEXT;")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +225,7 @@ mod tests {
         apply(&conn).unwrap();
         assert_eq!(user_version(&conn), SCHEMA_VERSION);
         assert!(has_column(&conn, "orchestration_runs", "parent_run_id"));
+        assert!(has_column(&conn, "runs", "project"));
         // delegation_events table exists
         let n: i64 = conn
             .query_row(
@@ -342,5 +366,53 @@ mod tests {
         apply(&conn).unwrap();
         apply(&conn).unwrap(); // must not error or duplicate
         assert_eq!(user_version(&conn), SCHEMA_VERSION);
+    }
+
+    /// A v1 database (already migrated past the CHECK-relaxation, i.e. it has
+    /// `parent_run_id`, but predates `runs.project`) migrates to v2 by adding
+    /// the column in place — no table rebuild, no data loss.
+    #[test]
+    fn v1_db_migrates_to_v2_adding_project_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE runs (id TEXT PRIMARY KEY, agent TEXT NOT NULL, input TEXT NOT NULL,
+                output TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+                tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0.0, duration_ms INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'success', created_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE TABLE orchestration_runs (
+                run_id        TEXT PRIMARY KEY REFERENCES runs(id),
+                pattern       TEXT NOT NULL CHECK (pattern IN ('direct', 'blackboard', 'ring', 'hierarchical')),
+                config_json   TEXT NOT NULL,
+                outcome_json  TEXT,
+                rounds        INTEGER NOT NULL DEFAULT 0,
+                halt_reason   TEXT,
+                parent_run_id TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                finished_at   TEXT
+            );
+            INSERT INTO runs (id, agent, input, output, provider, model) VALUES ('r1','a','i','o','p','m');
+            ",
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA user_version = 1;").unwrap();
+
+        assert_eq!(user_version(&conn), 1);
+        assert!(has_column(&conn, "orchestration_runs", "parent_run_id"));
+        assert!(!has_column(&conn, "runs", "project"));
+
+        apply(&conn).unwrap();
+
+        assert_eq!(user_version(&conn), SCHEMA_VERSION);
+        assert!(has_column(&conn, "runs", "project"));
+        // Existing row preserved (ALTER TABLE ADD COLUMN, not a rebuild).
+        let (agent, project): (String, Option<String>) = conn
+            .query_row("SELECT agent, project FROM runs WHERE id='r1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(agent, "a");
+        assert_eq!(project, None);
     }
 }
