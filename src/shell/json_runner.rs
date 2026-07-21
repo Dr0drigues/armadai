@@ -395,11 +395,26 @@ fn parse_claude_json(json: &Value) -> CliResponse {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    // Extract tokens from usage
+    // Extract tokens from usage.
+    //
+    // Claude Code reports most of the prompt via the prompt-cache fields
+    // (`cache_read_input_tokens` for a cache hit, `cache_creation_input_tokens`
+    // when writing a new cache entry) rather than `input_tokens`, which is
+    // often just a handful of uncached tokens. Summing all three gives the
+    // true total prompt size — otherwise History/Costs show a misleading
+    // near-zero "IN" count for a run that actually sent a full prompt.
     let usage = json.get("usage");
-    let tokens_in = usage
-        .and_then(|u| u.get("input_tokens"))
-        .and_then(|v| v.as_u64());
+    let usage_u64 = |field: &str| {
+        usage
+            .and_then(|u| u.get(field))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    };
+    let tokens_in = usage.map(|_| {
+        usage_u64("input_tokens")
+            + usage_u64("cache_read_input_tokens")
+            + usage_u64("cache_creation_input_tokens")
+    });
     let tokens_out = usage
         .and_then(|u| u.get("output_tokens"))
         .and_then(|v| v.as_u64());
@@ -661,6 +676,38 @@ mod tests {
         assert_eq!(resp.session_id, Some("abc-123".to_string()));
         assert_eq!(resp.model, Some("claude-opus-4-6".to_string()));
         assert!(resp.from_json);
+    }
+
+    #[test]
+    fn test_parse_claude_json_sums_cache_tokens_into_tokens_in() {
+        // Claude Code reports most of the real prompt via cache_read/
+        // cache_creation, not input_tokens — tokens_in must be the sum of
+        // all three so History/Costs don't show a misleading near-zero "IN"
+        // for a run that actually sent a full (cached) prompt.
+        let json = r#"{"type":"result","subtype":"success","is_error":false,"duration_ms":5100,"num_turns":1,"result":"Hello!","session_id":"abc-123","total_cost_usd":0.076,"usage":{"input_tokens":2,"cache_read_input_tokens":15000,"cache_creation_input_tokens":300,"output_tokens":10},"modelUsage":{"claude-opus-4-6":{"outputTokens":10}}}"#;
+        let resp = parse_json_response("claude", json);
+        assert_eq!(resp.tokens_in, Some(2 + 15000 + 300));
+        assert_eq!(resp.tokens_out, Some(10));
+    }
+
+    #[test]
+    fn test_parse_claude_json_tokens_in_without_cache_fields_unchanged() {
+        // No cache fields present: tokens_in falls back to input_tokens alone
+        // (each missing field defaults to 0), matching pre-fix behavior.
+        let json =
+            r#"{"type":"result","result":"Hi","usage":{"input_tokens":100,"output_tokens":10}}"#;
+        let resp = parse_json_response("claude", json);
+        assert_eq!(resp.tokens_in, Some(100));
+    }
+
+    #[test]
+    fn test_parse_claude_json_no_usage_object_yields_none() {
+        // No `usage` key at all: tokens_in/tokens_out stay None rather than
+        // becoming Some(0), matching pre-fix behavior for malformed output.
+        let json = r#"{"type":"result","result":"Hi"}"#;
+        let resp = parse_json_response("claude", json);
+        assert_eq!(resp.tokens_in, None);
+        assert_eq!(resp.tokens_out, None);
     }
 
     #[test]
