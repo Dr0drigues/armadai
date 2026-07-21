@@ -1,3 +1,65 @@
+## v1.0.0-rc.3 (2026-07-21)
+
+Third release candidate for 1.0.0. Completes the rc.3 scope (dynamic agent
+routing + an event-based shell Workroom) and adds a substantial UX pass across
+both terminal UIs plus genuinely useful run history/costs. Scope remains frozen
+(event-sourcing and the declarative engine stay in 1.1/v2).
+
+### New: C8 — Declarative agent routing
+
+- **Deterministic routing** (#187, #188): select which roster agents run a task
+  via **named routes** (`orchestration.routes:`) and/or **capability tags**
+  (`--tags`), on top of `--route`. New `armadai run` flags `--route`, `--tags`,
+  and `--dry-run` (preview the selection — agents + reason + pattern — with zero
+  tokens). Targets blackboard/ring; hierarchical keeps its own topology.
+
+### New: Event-based shell Workroom + drill-down
+
+- **Marker-driven state machine** (#189, #190): the shell Workroom panel is now
+  driven by the ArmadAI protocol markers in the stream (`ARMADAI_DELEGATE` /
+  `META` / `END`) instead of fuzzy text matching — robust to markers echoed in
+  recaps, resilient to chunk-split markers. `detect_mentions` removed.
+- **Drill-down** (#194): `Ctrl+W` focuses the Workroom; `j`/`k` select an agent;
+  `Enter` opens a detail popup (state, elapsed, last action, transition
+  timeline); `Esc`/`Ctrl+W` exit. Works between AND during a streaming turn.
+
+### New: Useful run history & costs
+
+- **Absolute shared DB** (#208): the default storage path is now
+  `~/.local/share/armadai/armadai.sqlite` (was a CWD-relative `data/…`), so runs
+  and `armadai tui` share one database regardless of directory.
+- **Per-run project** (#208): schema migration v2 tags every run (sequential and
+  orchestrated) with its originating project; the dashboard History shows a
+  PROJECT column.
+- **Real CLI cost/tokens** (#208): the CLI provider now parses the underlying
+  tool's stream-json output (`total_cost_usd` + usage) instead of reporting
+  `$0.00`. Agents with explicit `args:` are respected verbatim.
+
+### Changed: UX/UI pass across both TUIs
+
+- **Shared semantic theme + light-terminal support** (#195): a `theme.rs` with
+  named (terminal-adaptive) colors; the statusbar, detail views and markdown
+  rendering are now legible on light terminals (were white-on-white / dark bar).
+- **Safe Esc + shortcut bar** (#196): in the shell, Esc clears the input first,
+  then requires a second Esc to quit (Ctrl+C still quits immediately); a
+  persistent hint bar documents the shortcuts.
+- **Dashboard polish** (#197, #191): scrollable detail views, the Costs tab
+  brought to list conventions (selection/search/sort), `Ctrl+C` quits, and
+  consistency fixes (legible Workroom colors, centralized cost/context
+  formatting, deduped search bar & spinner).
+
+### Fixed
+
+- **Hierarchical orchestration was broken for kebab-keyed agents** (#198): the
+  engine keyed agents by their H1 title instead of the config key, so the
+  coordinator lookup failed (`No provider found for 'dev-lead'`). Now keyed by
+  the roster key. Same class of fix as C8's routing (#192).
+- **`--dry-run` now short-circuits without `--route`/`--tags`** (#192): a plain
+  `--dry-run` previews the full roster instead of executing.
+- **Workroom lifecycle** (#192, #193): CLI/provider pseudo-agents (e.g.
+  `claude`) filtered out; final agent states persist between turns (reset moved
+  to turn start).
+
 ## v1.0.0-rc.2 (2026-07-20)
 
 Second release candidate for 1.0.0. Consolidates the post-rc.1 work: the
