@@ -165,8 +165,27 @@ pub fn apply(state: &mut ExecutionState, event: &ExecutionEvent) {
                 .trace
                 .push((from.clone(), to.clone(), task.clone(), *depth));
         }
-        ExecutionEvent::AskedPeer { .. } => {}
-        ExecutionEvent::Escalated { .. } => {}
+        ExecutionEvent::AskedPeer { from, to, question } => {
+            // `AskedPeer` carries no `depth` field (unlike `Delegated`), and
+            // `apply` must stay a cheap, pure projection — no traversal of
+            // prior events to derive a "current depth". We record `0` as a
+            // documented placeholder depth for peer-level interactions
+            // (distinct from hierarchical delegation depth); consumers of
+            // `hier.trace` should not read depth as meaningful for
+            // `AskedPeer`/`Escalated` entries.
+            state
+                .hier
+                .trace
+                .push((from.clone(), to.clone(), question.clone(), 0));
+        }
+        ExecutionEvent::Escalated { from, to, message } => {
+            // See `AskedPeer` above: `Escalated` has no `depth` field either,
+            // so we record the same documented placeholder `0`.
+            state
+                .hier
+                .trace
+                .push((from.clone(), to.clone(), message.clone(), 0));
+        }
         ExecutionEvent::Synthesized { .. } => {}
         ExecutionEvent::NestedStarted { .. } => {}
         ExecutionEvent::NestedEnded { .. } => {}
@@ -353,5 +372,32 @@ mod tests {
         assert_eq!(st.board.entries.len(), 1);
         assert_eq!(st.board.round, 1);
         assert_eq!(st.budget_tokens_in, 5);
+    }
+
+    #[test]
+    fn asked_peer_and_escalated_are_traced() {
+        let events = vec![
+            E::RunStarted {
+                run_id: "r".into(),
+                pattern: "hierarchical".into(),
+                agents: vec!["a".into(), "b".into()],
+                input: "x".into(),
+                project: None,
+            },
+            E::AskedPeer {
+                from: "a".into(),
+                to: "b".into(),
+                question: "q?".into(),
+            },
+            E::Escalated {
+                from: "b".into(),
+                to: "a".into(),
+                message: "up".into(),
+            },
+        ];
+        let st = fold(&events);
+        assert_eq!(st.hier.trace.len(), 2);
+        assert_eq!(st.hier.trace[0].1, "b"); // to
+        assert_eq!(st.hier.trace[1].2, "up"); // message
     }
 }
