@@ -4,20 +4,29 @@
 //! `crate::core::orchestration::protocol` and maps each parsed
 //! `DelegationAction` onto a `PlannedStep` carrying the `ExecutionEvent` that
 //! should be appended for it. No I/O, no async — this is the decision half
-//! of the event-sourced hierarchical engine; effects (actually invoking
-//! agents) are wired by a later lot.
+//! of the event-sourced hierarchical engine.
+//!
+//! `HierarchicalEffectRunner` (Task 4) is the other half: the sole
+//! async/impure component, executing the actual LLM call behind
+//! `Action::Invoke` and turning the provider's response into the
+//! `AgentObserved` event the pure `Decider`/loop expect.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
-use super::engine::{Action, Decider};
+use async_trait::async_trait;
+
+use super::engine::{Action, Decider, EffectRunner};
 use super::event::ExecutionEvent;
 use super::state::ExecutionState;
 use crate::core::agent::Agent;
 use crate::core::orchestration::OrchestrationConfig;
+use crate::core::orchestration::context_injection::{AgentInfo, build_orchestration_prompt};
 use crate::core::orchestration::protocol::{
     DelegationAction, extract_narrative, parse_delegations,
 };
 use crate::core::routing::{BudgetState, RoutingRules, route};
+use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// A single step planned from an LLM response, before any effect has run.
 ///
@@ -747,6 +756,164 @@ impl Decider for HierarchicalDecider {
                 content: build_partial_content(state),
             },
         ]
+    }
+}
+
+// ── HierarchicalEffectRunner (Task 4): the sole async/impure effect ──
+
+/// Executes the actual LLM call behind `Action::Invoke` for the hierarchical
+/// pattern and turns the raw provider response into the `AgentObserved`
+/// event the pure loop/decider expect.
+///
+/// This is the *only* impure/async piece of the event-sourced hierarchical
+/// engine — `plan_from_response` and `HierarchicalDecider` above never touch
+/// I/O. Coexists with the legacy `core::orchestration::hierarchical::HierarchicalEngine`
+/// (this struct is not wired into it, and does not import from it — strict
+/// coexistence, mirroring `format_results` above).
+pub struct HierarchicalEffectRunner {
+    /// All known agents by name (system prompt, model, temperature, …).
+    pub agents: BTreeMap<String, Agent>,
+    /// Provider instance per agent name.
+    pub providers: BTreeMap<String, Arc<dyn Provider>>,
+    /// Orchestration config, used to build each agent's enriched
+    /// (orchestration-aware) system prompt via
+    /// `context_injection::build_orchestration_prompt`.
+    pub config: OrchestrationConfig,
+}
+
+impl HierarchicalEffectRunner {
+    /// Construct a new `HierarchicalEffectRunner` from its immutable inputs.
+    pub fn new(
+        agents: BTreeMap<String, Agent>,
+        providers: BTreeMap<String, Arc<dyn Provider>>,
+        config: OrchestrationConfig,
+    ) -> Self {
+        Self {
+            agents,
+            providers,
+            config,
+        }
+    }
+
+    /// Reconstruct `agents_info` (name → description, the first non-empty
+    /// line of the agent's `system_prompt`) from `self.agents`, for
+    /// `context_injection::build_orchestration_prompt`.
+    ///
+    /// Mirrors `HierarchicalEngine::with_routing_rules`'s construction in the
+    /// legacy engine (`core::orchestration::hierarchical.rs`) — reimplemented
+    /// here rather than imported, keeping strict coexistence (neither engine
+    /// depends on the other).
+    fn agents_info(&self) -> HashMap<String, AgentInfo> {
+        self.agents
+            .iter()
+            .map(|(name, agent)| {
+                let description = agent
+                    .system_prompt
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .map(|l| l.trim().to_string());
+                (
+                    name.clone(),
+                    AgentInfo {
+                        name: name.clone(),
+                        description,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Build the enriched system prompt for `agent_name`: its own
+    /// `system_prompt`, plus the orchestration-protocol block from
+    /// `context_injection::build_orchestration_prompt` when one applies
+    /// (hierarchical pattern enabled, per `self.config`). Falls back to a
+    /// generic default if `agent_name` isn't in `self.agents` — should not
+    /// happen once the caller (`run_invoke`) has already resolved the agent,
+    /// but keeps this helper total.
+    fn enriched_system_prompt(&self, agent_name: &str) -> String {
+        let base = self
+            .agents
+            .get(agent_name)
+            .map(|a| a.system_prompt.as_str())
+            .unwrap_or("You are a helpful assistant.");
+        match build_orchestration_prompt(agent_name, &self.config, &self.agents_info()) {
+            Some(block) => format!("{base}{block}"),
+            None => base.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl EffectRunner for HierarchicalEffectRunner {
+    async fn run_invoke(
+        &self,
+        agent: &str,
+        input: &str,
+        state: &ExecutionState,
+    ) -> anyhow::Result<ExecutionEvent> {
+        let agent_def = self
+            .agents
+            .get(agent)
+            .ok_or_else(|| anyhow::anyhow!("Unknown agent '{agent}' — no Agent definition"))?;
+        let provider = self
+            .providers
+            .get(agent)
+            .ok_or_else(|| anyhow::anyhow!("No provider configured for agent '{agent}'"))?;
+
+        let system_prompt = self.enriched_system_prompt(agent);
+
+        // The generic event-sourced loop (`run_event_sourced` in
+        // `es::engine`) always applies `AgentInvoked{agent, input}` — which
+        // pushes exactly this `user` turn — into `state` *before* calling
+        // `run_invoke`, so in production `state.conversations[agent]`
+        // already ends with it. Tests that exercise `run_invoke` directly
+        // against a hand-built state (skipping that step) won't have it yet.
+        // Append it only if it isn't already the trailing turn, so behavior
+        // is correct under both calling conventions without duplicating the
+        // turn on the (production) common path.
+        let mut messages = state.conversations.get(agent).cloned().unwrap_or_default();
+        let already_applied = messages
+            .last()
+            .is_some_and(|m| m.role == "user" && m.content == input);
+        if !already_applied {
+            messages.push(ChatMessage {
+                role: "user".to_string(),
+                content: input.to_string(),
+            });
+        }
+
+        // OH1 Lot 2 scope: use the agent's configured model as-is. The
+        // `Decider` (Task 3) is responsible for emitting `ModelRouted` when
+        // an agent is `latest:auto`-routed; resolving that tier to a
+        // concrete model string (`crate::linker::model_resolution`) is
+        // deliberately out of scope for this effect — it stays simple and
+        // faithful to the brief, passing `agent.metadata.model` through
+        // verbatim. Fine-grained tier→model resolution here is left to a
+        // later lot.
+        let model = agent_def
+            .metadata
+            .model
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+
+        let request = CompletionRequest {
+            model,
+            system_prompt,
+            messages,
+            temperature: agent_def.metadata.temperature,
+            max_tokens: agent_def.metadata.max_tokens,
+        };
+
+        let response = provider.complete(request).await?;
+
+        Ok(ExecutionEvent::AgentObserved {
+            agent: agent.to_string(),
+            content: response.content,
+            tokens_in: response.tokens_in,
+            tokens_out: response.tokens_out,
+            cost: response.cost,
+            model: response.model,
+        })
     }
 }
 
@@ -1953,6 +2120,363 @@ mod tests {
                 );
             }
             _ => panic!("expected Invoke"),
+        }
+    }
+
+    /// Tests for `HierarchicalEffectRunner` (Task 4): the sole async/impure
+    /// component of the event-sourced hierarchical engine. Named
+    /// `effect_runner` so `cargo test es::hierarchical::tests::effect`
+    /// targets this module.
+    mod effect_runner {
+        use super::*;
+        use crate::core::agent::AgentMetadata;
+        use crate::core::orchestration::es::state::fold;
+        use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+        use std::path::PathBuf;
+        use std::sync::Mutex;
+
+        /// Minimal `Agent` for effect-runner tests: a concrete (non
+        /// `latest:auto`) model by default, with a two-line system prompt so
+        /// `agents_info`'s "first non-empty line" description extraction has
+        /// something to bite on.
+        fn test_agent(name: &str, model: &str) -> Agent {
+            Agent {
+                name: name.to_string(),
+                source: PathBuf::from(format!("{name}.md")),
+                metadata: AgentMetadata {
+                    provider: "anthropic".to_string(),
+                    model: Some(model.to_string()),
+                    command: None,
+                    args: None,
+                    temperature: 0.5,
+                    max_tokens: Some(256),
+                    timeout: None,
+                    tags: vec![],
+                    stacks: vec![],
+                    scope: vec![],
+                    model_fallback: vec![],
+                    cost_limit: None,
+                    rate_limit: None,
+                    context_window: None,
+                    mode: None,
+                    orchestration: None,
+                    triggers: None,
+                    ring_config: None,
+                },
+                system_prompt: format!("You are {name}, a specialist agent.\nBe concise."),
+                instructions: None,
+                output_format: None,
+                pipeline: None,
+                context: None,
+            }
+        }
+
+        /// Returns a fixed response with fixed token/cost/model metrics,
+        /// regardless of the request — a local test double (no reusable mock
+        /// is reachable from this module without depending on the legacy
+        /// engine's private test items).
+        struct FixedProvider {
+            content: String,
+            tokens_in: u32,
+            tokens_out: u32,
+            cost: f64,
+            model: String,
+        }
+
+        #[async_trait]
+        impl Provider for FixedProvider {
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+            ) -> anyhow::Result<CompletionResponse> {
+                Ok(CompletionResponse {
+                    content: self.content.clone(),
+                    model: self.model.clone(),
+                    tokens_in: self.tokens_in,
+                    tokens_out: self.tokens_out,
+                    cost: self.cost,
+                })
+            }
+            async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+                anyhow::bail!("streaming not exercised by HierarchicalEffectRunner tests")
+            }
+            fn metadata(&self) -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "fixed".to_string(),
+                    models: vec![],
+                    supports_streaming: false,
+                }
+            }
+        }
+
+        /// Like `FixedProvider`, but records every `CompletionRequest` it
+        /// receives, so tests can assert what `run_invoke` actually sent
+        /// (system prompt, messages, model) — mirrors `CapturingProvider` in
+        /// the legacy `core::orchestration::hierarchical` test module.
+        struct CapturingProvider {
+            requests: Mutex<Vec<CompletionRequest>>,
+            response: String,
+        }
+
+        impl CapturingProvider {
+            fn new(response: &str) -> Self {
+                Self {
+                    requests: Mutex::new(Vec::new()),
+                    response: response.to_string(),
+                }
+            }
+
+            fn requests(&self) -> Vec<CompletionRequest> {
+                self.requests.lock().unwrap().clone()
+            }
+        }
+
+        #[async_trait]
+        impl Provider for CapturingProvider {
+            async fn complete(
+                &self,
+                request: CompletionRequest,
+            ) -> anyhow::Result<CompletionResponse> {
+                let model = request.model.clone();
+                self.requests.lock().unwrap().push(request);
+                Ok(CompletionResponse {
+                    content: self.response.clone(),
+                    model,
+                    tokens_in: 1,
+                    tokens_out: 1,
+                    cost: 0.0,
+                })
+            }
+            async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+                anyhow::bail!("streaming not exercised by HierarchicalEffectRunner tests")
+            }
+            fn metadata(&self) -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "capturing".to_string(),
+                    models: vec![],
+                    supports_streaming: false,
+                }
+            }
+        }
+
+        fn run_started(agents: &[&str], input: &str) -> ExecutionEvent {
+            ExecutionEvent::RunStarted {
+                run_id: "r".into(),
+                pattern: "hierarchical".into(),
+                agents: agents.iter().map(|a| a.to_string()).collect(),
+                input: input.into(),
+                project: None,
+            }
+        }
+
+        // Step 1 (brief): fixed mock provider → AgentObserved with the
+        // expected agent/content/tokens/cost/model.
+        #[tokio::test]
+        async fn effect_runner_invokes_provider_and_returns_observed() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), test_agent("a", "concrete-model"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert(
+                "a".to_string(),
+                Arc::new(FixedProvider {
+                    content: "resp".to_string(),
+                    tokens_in: 3,
+                    tokens_out: 4,
+                    cost: 0.02,
+                    model: "concrete-model".to_string(),
+                }),
+            );
+            let runner =
+                HierarchicalEffectRunner::new(agents, providers, OrchestrationConfig::default());
+
+            let state = fold(&[run_started(&["a"], "go")]);
+            let ev = runner.run_invoke("a", "go", &state).await.unwrap();
+
+            match ev {
+                ExecutionEvent::AgentObserved {
+                    agent,
+                    content,
+                    tokens_in,
+                    tokens_out,
+                    cost,
+                    model,
+                } => {
+                    assert_eq!(agent, "a");
+                    assert_eq!(content, "resp");
+                    assert_eq!(tokens_in, 3);
+                    assert_eq!(tokens_out, 4);
+                    assert!((cost - 0.02).abs() < 1e-9);
+                    assert_eq!(model, "concrete-model");
+                }
+                other => panic!("expected AgentObserved, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn run_invoke_errors_for_unknown_agent() {
+            let runner = HierarchicalEffectRunner::new(
+                BTreeMap::new(),
+                BTreeMap::new(),
+                OrchestrationConfig::default(),
+            );
+            let state = ExecutionState::default();
+            let err = runner
+                .run_invoke("missing", "go", &state)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("missing"));
+        }
+
+        #[tokio::test]
+        async fn run_invoke_errors_when_provider_missing_for_known_agent() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), test_agent("a", "concrete-model"));
+            // No provider registered for "a".
+            let runner = HierarchicalEffectRunner::new(
+                agents,
+                BTreeMap::new(),
+                OrchestrationConfig::default(),
+            );
+            let state = ExecutionState::default();
+            let err = runner.run_invoke("a", "go", &state).await.unwrap_err();
+            assert!(err.to_string().contains('a'));
+        }
+
+        // The generic loop applies `AgentInvoked` (pushing the `user` turn)
+        // into `state` before calling `run_invoke` — so in production the
+        // conversation already ends with `input`. `run_invoke` must not
+        // duplicate that turn when it's already the trailing message.
+        #[tokio::test]
+        async fn run_invoke_does_not_duplicate_an_already_applied_user_turn() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), test_agent("a", "concrete-model"));
+            let capturing = Arc::new(CapturingProvider::new("resp"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), capturing.clone() as Arc<dyn Provider>);
+            let runner =
+                HierarchicalEffectRunner::new(agents, providers, OrchestrationConfig::default());
+
+            // Simulate the real engine loop: RunStarted, then AgentInvoked
+            // (applied), before run_invoke is called.
+            let state = fold(&[
+                run_started(&["a"], "go"),
+                ExecutionEvent::AgentInvoked {
+                    agent: "a".into(),
+                    input: "go".into(),
+                },
+            ]);
+            runner.run_invoke("a", "go", &state).await.unwrap();
+
+            let sent = capturing.requests();
+            assert_eq!(sent.len(), 1);
+            let user_turns: Vec<&ChatMessage> = sent[0]
+                .messages
+                .iter()
+                .filter(|m| m.role == "user")
+                .collect();
+            assert_eq!(
+                user_turns.len(),
+                1,
+                "must not duplicate the already-applied user turn, got: {:?}",
+                sent[0].messages
+            );
+        }
+
+        // `run_invoke` called directly against a hand-built state that has
+        // *not* gone through `AgentInvoked` (e.g. a unit test constructing
+        // state from `RunStarted` alone) must still deliver `input` as a
+        // `user` turn to the provider.
+        #[tokio::test]
+        async fn run_invoke_appends_input_when_not_already_in_conversation() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), test_agent("a", "concrete-model"));
+            let capturing = Arc::new(CapturingProvider::new("resp"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), capturing.clone() as Arc<dyn Provider>);
+            let runner =
+                HierarchicalEffectRunner::new(agents, providers, OrchestrationConfig::default());
+
+            let state = fold(&[run_started(&["a"], "go")]);
+            runner.run_invoke("a", "go", &state).await.unwrap();
+
+            let sent = capturing.requests();
+            assert_eq!(sent.len(), 1);
+            assert!(
+                sent[0]
+                    .messages
+                    .iter()
+                    .any(|m| m.role == "user" && m.content == "go"),
+                "expected the input to reach the provider as a user turn, got: {:?}",
+                sent[0].messages
+            );
+        }
+
+        // `enriched_system_prompt` must fold in the orchestration protocol
+        // block (context_injection) when hierarchical orchestration is
+        // enabled, and use `agents_info` built from `self.agents` for peer
+        // descriptions.
+        #[tokio::test]
+        async fn run_invoke_sends_enriched_system_prompt_when_hierarchical_enabled() {
+            let mut agents = BTreeMap::new();
+            agents.insert(
+                "dev-lead".to_string(),
+                test_agent("dev-lead", "concrete-model"),
+            );
+            agents.insert(
+                "core-specialist".to_string(),
+                test_agent("core-specialist", "concrete-model"),
+            );
+            let capturing = Arc::new(CapturingProvider::new("resp"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert(
+                "dev-lead".to_string(),
+                capturing.clone() as Arc<dyn Provider>,
+            );
+
+            let config = OrchestrationConfig {
+                enabled: true,
+                pattern: crate::core::orchestration::OrchestrationPattern::Hierarchical,
+                coordinator: Some("dev-lead".to_string()),
+                teams: vec![crate::core::orchestration::TeamConfig {
+                    lead: None,
+                    agents: vec!["core-specialist".to_string()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let runner = HierarchicalEffectRunner::new(agents, providers, config);
+
+            let state = fold(&[run_started(&["dev-lead"], "build X")]);
+            runner
+                .run_invoke("dev-lead", "build X", &state)
+                .await
+                .unwrap();
+
+            let sent = capturing.requests();
+            assert_eq!(sent.len(), 1);
+            assert!(sent[0].system_prompt.contains("You are dev-lead"));
+            assert!(sent[0].system_prompt.contains("## Orchestration Protocol"));
+            assert!(sent[0].system_prompt.contains("core-specialist"));
+        }
+
+        // Model is passed through as-is from `agent.metadata.model` — no
+        // `latest:auto` resolution happens in the effect runner (that's the
+        // decider's `ModelRouted` concern, per the module docs).
+        #[tokio::test]
+        async fn run_invoke_passes_agent_model_through_verbatim() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), test_agent("a", "latest:auto"));
+            let capturing = Arc::new(CapturingProvider::new("resp"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), capturing.clone() as Arc<dyn Provider>);
+            let runner =
+                HierarchicalEffectRunner::new(agents, providers, OrchestrationConfig::default());
+
+            let state = fold(&[run_started(&["a"], "go")]);
+            runner.run_invoke("a", "go", &state).await.unwrap();
+
+            let sent = capturing.requests();
+            assert_eq!(sent[0].model, "latest:auto");
         }
     }
 }
