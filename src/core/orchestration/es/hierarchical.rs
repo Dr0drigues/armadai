@@ -14,7 +14,9 @@ use super::event::ExecutionEvent;
 use super::state::ExecutionState;
 use crate::core::agent::Agent;
 use crate::core::orchestration::OrchestrationConfig;
-use crate::core::orchestration::protocol::{DelegationAction, parse_delegations};
+use crate::core::orchestration::protocol::{
+    DelegationAction, extract_narrative, parse_delegations,
+};
 use crate::core::routing::{BudgetState, RoutingRules, route};
 
 /// A single step planned from an LLM response, before any effect has run.
@@ -145,15 +147,6 @@ fn depth_of(state: &ExecutionState, agent: &str) -> u32 {
         .unwrap_or(0)
 }
 
-/// Number of assistant responses `agent` has produced so far.
-fn response_count(state: &ExecutionState, agent: &str) -> usize {
-    state
-        .conversations
-        .get(agent)
-        .map(|msgs| msgs.iter().filter(|m| m.role == "assistant").count())
-        .unwrap_or(0)
-}
-
 /// Number of delegations/questions/escalations `agent` has already issued
 /// (as the `from` side of a `hier.trace` entry).
 fn outgoing_count(state: &ExecutionState, agent: &str) -> usize {
@@ -165,34 +158,124 @@ fn outgoing_count(state: &ExecutionState, agent: &str) -> usize {
         .count()
 }
 
-/// Find the next unprocessed assistant response to act on: the first agent
-/// (in `conversations`' `BTreeMap` iteration order, i.e. sorted by name —
-/// deterministic) whose assistant-response count exceeds the number of
-/// delegations/questions/escalations it has issued so far.
+/// The most recent `assistant` response produced by `agent`, if any.
 ///
-/// This derives "unprocessed" purely structurally, with no extra
-/// bookkeeping field: a response is "processed" exactly when its
-/// consequences (child `Delegated`/`AskedPeer`/`Escalated` events) have
-/// been recorded, so counting the two and comparing is enough. Resolving
-/// one pending agent per call (rather than trying to find a single global
-/// "latest" across all agents) is what keeps this correct even when a
-/// single `decide` batch invoked several children at once (e.g. two
-/// sibling delegations): the generic engine loop (`run_event_sourced`)
-/// re-invokes `decide` after every batch, so each newly-answered agent
-/// becomes "pending" in turn across successive calls, always resolved in
-/// the same (name-sorted) order — never dependent on wall-clock event
-/// arrival order.
-fn pending_response(state: &ExecutionState) -> Option<(&str, &str)> {
-    state.conversations.iter().find_map(|(agent, msgs)| {
-        if msgs.iter().filter(|m| m.role == "assistant").count() > outgoing_count(state, agent) {
+/// At `decide` time each conversation alternates strictly `user`,
+/// `assistant`, … (the engine loop records `AgentInvoked` then, within the
+/// same batch, the resulting `AgentObserved`), so this is `agent`'s latest
+/// turn — a delegation round, a synthesis, or a final answer.
+fn latest_response<'a>(state: &'a ExecutionState, agent: &str) -> Option<&'a str> {
+    state
+        .conversations
+        .get(agent)?
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .map(|m| m.content.as_str())
+}
+
+/// Whether `response` (from `sender`) carries no delegation directive at
+/// all — i.e. `parse_delegations` collapses it to a single `FinalAnswer`.
+/// A settled leaf answer and a converged coordinator synthesis both satisfy
+/// this.
+fn is_final_answer(response: &str, sender: &str, config: &OrchestrationConfig) -> bool {
+    matches!(
+        parse_delegations(response, sender, config).as_slice(),
+        [DelegationAction::FinalAnswer { .. }]
+    )
+}
+
+/// The delegation *targets* named in `response` (from `sender`), in line
+/// order — every `Delegate`/`AskPeer`/`Escalate` directive contributes its
+/// target; a `FinalAnswer` contributes nothing. Order is deterministic
+/// (line order, inherited from `parse_delegations`), so the synthesis
+/// re-injection format is stable across replays.
+fn delegation_targets(response: &str, sender: &str, config: &OrchestrationConfig) -> Vec<String> {
+    parse_delegations(response, sender, config)
+        .into_iter()
+        .filter_map(|action| match action {
+            DelegationAction::Delegate { target, .. }
+            | DelegationAction::AskPeer { target, .. }
+            | DelegationAction::Escalate { target, .. } => Some(target),
+            DelegationAction::FinalAnswer { .. } => None,
+        })
+        .collect()
+}
+
+/// Total number of delegation directives `agent` has emitted across *all*
+/// of its responses so far. Each dispatched directive records exactly one
+/// `hier.trace` entry (`from == agent`), so comparing this against
+/// [`outgoing_count`] tells us whether the latest response has been
+/// dispatched yet (see [`pending_delegation_lines`]).
+fn total_delegation_lines(
+    state: &ExecutionState,
+    config: &OrchestrationConfig,
+    agent: &str,
+) -> usize {
+    state
+        .conversations
+        .get(agent)
+        .map(|msgs| {
             msgs.iter()
-                .rev()
-                .find(|m| m.role == "assistant")
-                .map(|m| (agent.as_str(), m.content.as_str()))
-        } else {
-            None
-        }
-    })
+                .filter(|m| m.role == "assistant")
+                .map(|m| delegation_targets(&m.content, agent, config).len())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Number of `agent`'s delegation directives not yet dispatched: the
+/// directives it has emitted (`total_delegation_lines`) minus those already
+/// recorded in the trace (`outgoing_count`). Dispatch is atomic per
+/// response (a whole batch of `Emit(Delegated)` + `Invoke` at once), so this
+/// is either `0` (all dispatched) or exactly the size of the latest
+/// response's directive set (that response awaits dispatch).
+fn pending_delegation_lines(
+    state: &ExecutionState,
+    config: &OrchestrationConfig,
+    agent: &str,
+) -> usize {
+    total_delegation_lines(state, config, agent).saturating_sub(outgoing_count(state, agent))
+}
+
+/// Whether `agent` has delivered a final result to its delegator: it has
+/// responded and its *latest* response is a `FinalAnswer`. An agent that
+/// delegated (its latest response still carries directives) is *not*
+/// settled — it is either awaiting its own children or awaiting its own
+/// synthesis — which is exactly what makes settlement propagate bottom-up.
+fn is_settled(state: &ExecutionState, config: &OrchestrationConfig, agent: &str) -> bool {
+    latest_response(state, agent).is_some_and(|r| is_final_answer(r, agent, config))
+}
+
+/// How many times `agent` has been re-invoked with a synthesis re-injection
+/// (a `user` message carrying formatted child results). Used purely for the
+/// coordinator anti-loop guard.
+fn synthesis_count(state: &ExecutionState, agent: &str) -> usize {
+    state
+        .conversations
+        .get(agent)
+        .map(|msgs| {
+            msgs.iter()
+                .filter(|m| m.role == "user" && m.content.contains("[Result from @"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Format collected child results for re-injection into a delegator's
+/// conversation. Pure, local replica of the legacy
+/// `core::orchestration::hierarchical::format_results` — kept separate on
+/// purpose (strict coexistence: the legacy engine is not modified nor
+/// imported from here). Each result is wrapped in
+/// `[Result from @NAME] … [End result from @NAME]`, in the order given.
+fn format_results(results: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (agent, result) in results {
+        out.push_str(&format!(
+            "[Result from @{agent}]\n{result}\n[End result from @{agent}]\n\n"
+        ));
+    }
+    out
 }
 
 /// Reconstruct a best-effort partial final answer from whatever each agent
@@ -392,20 +475,128 @@ impl HierarchicalDecider {
     }
 }
 
-// NOTE (scope of this Task): unlike the legacy recursive `invoke_agent`
-// (`crate::core::orchestration::hierarchical::invoke_agent`), which
-// re-injects a subordinate's collected result into its *delegator*'s
-// conversation for a synthesis turn before deciding anything further, this
-// pure `Decider` treats every `PlannedStep::Complete` (from *any* agent's
-// response, not just the coordinator's) as ending the whole run. Wiring the
-// "feed subordinate results back to the delegator, then re-invoke it"
-// synthesis loop is left to a later task in this lot — it requires
-// tracking delegator/child result pairing, which isn't needed for the
-// depth/iteration/budget guards or the nested-team boundary this task
-// covers. The anti-loop guard (point 4) still applies correctly in the
-// meantime: the coordinator can legitimately be invoked more than once via
-// `Escalate` (subordinate → coordinator), which is enough to observe and
-// test the "≥ 2 turns without FinalAnswer" cutoff.
+// ── Synthesis loop (Task 3 fix) ──────────────────────────────────
+//
+// The central behaviour of the hierarchical pattern is *coordinator
+// synthesis*: when an agent X delegates to children [A, B, …], the children's
+// results are re-injected into X's own conversation as a single `user` turn
+// (`[Result from @A] … [End result from @A]`, one block per child), and X is
+// re-invoked to synthesize them. Only the *root coordinator*'s `FinalAnswer`
+// (produced after its synthesis, or as a direct answer with no delegation)
+// terminates the whole run — a subordinate's `FinalAnswer` merely settles it
+// so its delegator can synthesize.
+//
+// This is reconstructed purely from `ExecutionState`, with no extra
+// bookkeeping field:
+//   * `hier.trace` (`from == X`) records what X dispatched; comparing its
+//     size (`outgoing_count`) against the directives parsed from X's
+//     responses (`total_delegation_lines`) yields `pending_delegation_lines`
+//     — non-zero means X's latest response still awaits dispatch.
+//   * an agent is "settled" when its latest response is a `FinalAnswer`
+//     (`is_settled`); settlement therefore propagates bottom-up.
+//   * X is "awaiting synthesis" when its latest response carries directives,
+//     all of them are dispatched, and every child target is settled — at
+//     which point X has not yet been re-invoked (its latest turn is still the
+//     delegation), so the re-injection has not happened yet.
+impl HierarchicalDecider {
+    /// First agent (name-sorted, via `BTreeMap` iteration) whose latest
+    /// response carries delegation directives that have not been dispatched
+    /// yet. Resolving one per call keeps sibling delegations deterministic:
+    /// the generic loop re-invokes `decide` after every batch.
+    fn agent_needing_dispatch(&self, state: &ExecutionState) -> Option<String> {
+        state
+            .conversations
+            .keys()
+            .find(|agent| pending_delegation_lines(state, &self.config, agent) > 0)
+            .cloned()
+    }
+
+    /// Whether `agent`'s latest (already-dispatched) delegation round is
+    /// ready to be synthesized: it carried directives, all are dispatched,
+    /// and every child target has settled.
+    fn is_awaiting_synthesis(&self, state: &ExecutionState, agent: &str) -> bool {
+        let Some(latest) = latest_response(state, agent) else {
+            return false;
+        };
+        if is_final_answer(latest, agent, &self.config) {
+            return false;
+        }
+        if pending_delegation_lines(state, &self.config, agent) > 0 {
+            return false;
+        }
+        let children = delegation_targets(latest, agent, &self.config);
+        !children.is_empty()
+            && children
+                .iter()
+                .all(|child| is_settled(state, &self.config, child))
+    }
+
+    /// First agent (name-sorted) awaiting synthesis. Because a delegator is
+    /// only "awaiting" once *all* its children have settled (and a child that
+    /// itself delegated is not settled until it synthesizes down to a
+    /// `FinalAnswer`), this resolves the delegation tree bottom-up.
+    fn awaiting_synthesis_agent(&self, state: &ExecutionState) -> Option<String> {
+        state
+            .conversations
+            .keys()
+            .find(|agent| self.is_awaiting_synthesis(state, agent))
+            .cloned()
+    }
+
+    /// Dispatch `agent`'s latest (undispatched) delegation response: map each
+    /// directive to its `Emit(Delegated/AskedPeer/Escalated)` + `Invoke`
+    /// batch via `plan_from_response` (Tasks 1-2). A `FinalAnswer` step
+    /// cannot occur here (only agents with pending directives reach this),
+    /// and is dropped defensively if it somehow does.
+    fn dispatch_actions(&self, agent: &str, state: &ExecutionState) -> Vec<Action> {
+        let Some(latest) = latest_response(state, agent) else {
+            return Vec::new();
+        };
+        let latest = latest.to_string();
+        let depth = depth_of(state, agent);
+        plan_from_response(&latest, agent, &self.config, depth)
+            .into_iter()
+            .flat_map(|step| match step {
+                PlannedStep::Invoke { agent, task, event } => {
+                    self.invoke_actions(&agent, &task, state, Some(event))
+                }
+                PlannedStep::Complete { .. } => Vec::new(),
+            })
+            .collect()
+    }
+
+    /// Build the synthesis re-injection for `agent`: collect each child's
+    /// latest response (in the order the children were addressed), format
+    /// them as `[Result from @child] …` blocks, and re-invoke `agent` with
+    /// that as its next `user` turn. No `Delegated` event is emitted (this is
+    /// a synthesis turn, not a new delegation); an optional `ModelRouted`
+    /// precedes the `Invoke` for `latest:auto` agents.
+    fn synthesis_actions(&self, state: &ExecutionState, agent: &str) -> Vec<Action> {
+        let Some(latest) = latest_response(state, agent) else {
+            return Vec::new();
+        };
+        let results: Vec<(String, String)> = delegation_targets(latest, agent, &self.config)
+            .into_iter()
+            .map(|child| {
+                let result = latest_response(state, &child)
+                    .unwrap_or_default()
+                    .to_string();
+                (child, result)
+            })
+            .collect();
+        let message = format_results(&results);
+        let mut actions = Vec::new();
+        if let Some(event) = self.model_routed_event(agent, &message, state) {
+            actions.push(Action::Emit(event));
+        }
+        actions.push(Action::Invoke {
+            agent: agent.to_string(),
+            input: message,
+        });
+        actions
+    }
+}
+
 impl Decider for HierarchicalDecider {
     fn decide(&self, state: &ExecutionState) -> Vec<Action> {
         // 1. Nothing has happened yet: kick off the coordinator with the
@@ -427,31 +618,43 @@ impl Decider for HierarchicalDecider {
             ];
         }
 
-        // 3. Process the next unprocessed assistant response, if any.
-        let Some((agent, content)) = pending_response(state) else {
-            return Vec::new();
-        };
-        let agent = agent.to_string();
-        let content = content.to_string();
-
-        // 4. Anti-loop: a coordinator that keeps delegating without ever
-        // producing a `FinalAnswer` would never terminate on its own —
-        // force completion using its latest narrative once it has had 2+
-        // turns.
-        if agent == self.coordinator && response_count(state, &agent) >= 2 {
-            return vec![Action::Complete { content }];
+        // 3. Root-coordinator termination / anti-loop. Only the coordinator's
+        // own answer can end the run.
+        if let Some(coord_latest) = latest_response(state, &self.coordinator) {
+            // A `FinalAnswer` from the coordinator — produced after its
+            // synthesis, or as a direct answer with no delegation at all —
+            // is the run's final result.
+            if is_final_answer(coord_latest, &self.coordinator, &self.config) {
+                return vec![Action::Complete {
+                    content: extract_narrative(coord_latest),
+                }];
+            }
+            // Anti-loop: the coordinator has synthesized twice and still not
+            // converged to its own `FinalAnswer`. Force completion with its
+            // latest narrative rather than spin forever (the socle's
+            // MAX_ITERATIONS remains the global net).
+            if synthesis_count(state, &self.coordinator) >= 2 {
+                return vec![Action::Complete {
+                    content: extract_narrative(coord_latest),
+                }];
+            }
         }
 
-        let depth = depth_of(state, &agent);
-        plan_from_response(&content, &agent, &self.config, depth)
-            .into_iter()
-            .flat_map(|step| match step {
-                PlannedStep::Invoke { agent, task, event } => {
-                    self.invoke_actions(&agent, &task, state, Some(event))
-                }
-                PlannedStep::Complete { content } => vec![Action::Complete { content }],
-            })
-            .collect()
+        // 4. Dispatch any undispatched delegation round (the coordinator's
+        // or a subordinate's), spawning its children.
+        if let Some(agent) = self.agent_needing_dispatch(state) {
+            return self.dispatch_actions(&agent, state);
+        }
+
+        // 5. Synthesis: an agent whose children have all settled is
+        // re-invoked with their re-injected results (resolved bottom-up).
+        if let Some(agent) = self.awaiting_synthesis_agent(state) {
+            return self.synthesis_actions(state, &agent);
+        }
+
+        // 6. Nothing actionable (e.g. a subordinate settled but its delegator
+        // is still waiting on a sibling): let the loop idle.
+        Vec::new()
     }
 }
 
@@ -802,16 +1005,172 @@ mod tests {
             );
         }
 
-        // Anti-loop: the coordinator can legitimately be invoked more than
-        // once — not via subordinate-result re-injection (out of scope for
-        // this pure Decider; see `NOTE` on `Decider::decide` at the top of
-        // this file) but via an `Escalate` (subordinate → coordinator),
-        // which produces a fresh `AgentInvoked` for the coordinator. If the
-        // coordinator's *second* turn still isn't a `FinalAnswer`, the
-        // anti-loop must force `Complete` with that turn's raw content
-        // rather than keep delegating forever.
+        /// Helper: a settled subordinate turn — invoked with `task`, then
+        /// observes `answer` (a `FinalAnswer`, no delegation directives).
+        fn subordinate_turn(agent: &str, task: &str, answer: &str) -> Vec<ExecutionEvent> {
+            vec![
+                ExecutionEvent::AgentInvoked {
+                    agent: agent.into(),
+                    input: task.into(),
+                },
+                ExecutionEvent::AgentObserved {
+                    agent: agent.into(),
+                    content: answer.into(),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 0.0,
+                    model: "m".into(),
+                },
+            ]
+        }
+
+        // Test 1: coordinator delegated to A and B, both answered (each a
+        // FinalAnswer). `decide` must re-inject *both* results into the
+        // coordinator and re-invoke it for synthesis — NOT `Complete` on a
+        // subordinate's answer.
         #[test]
-        fn coordinator_anti_loop_forces_complete_after_two_turns() {
+        fn synthesis_after_all_children_respond() {
+            let dec = test_decider(
+                "dev-lead",
+                &[
+                    ("dev-lead", "concrete-model"),
+                    ("core-specialist", "concrete-model"),
+                    ("qa-specialist", "concrete-model"),
+                ],
+                base_config(),
+                5,
+                50,
+                None,
+                None,
+            );
+            let mut events = vec![
+                run_started(&["dev-lead"]),
+                ExecutionEvent::AgentInvoked {
+                    agent: "dev-lead".into(),
+                    input: "build X".into(),
+                },
+                ExecutionEvent::AgentObserved {
+                    agent: "dev-lead".into(),
+                    content: "@core-specialist: implémente X\n@qa-specialist: teste X".into(),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 0.0,
+                    model: "m".into(),
+                },
+                ExecutionEvent::Delegated {
+                    from: "dev-lead".into(),
+                    to: "core-specialist".into(),
+                    task: "implémente X".into(),
+                    depth: 1,
+                },
+            ];
+            events.extend(subordinate_turn(
+                "core-specialist",
+                "implémente X",
+                "X est implémenté.",
+            ));
+            events.push(ExecutionEvent::Delegated {
+                from: "dev-lead".into(),
+                to: "qa-specialist".into(),
+                task: "teste X".into(),
+                depth: 1,
+            });
+            events.extend(subordinate_turn(
+                "qa-specialist",
+                "teste X",
+                "X est testé, RAS.",
+            ));
+
+            let state = fold(&events);
+            let actions = dec.decide(&state);
+
+            // No Complete: a subordinate FinalAnswer must not end the run.
+            assert!(!actions.iter().any(|a| matches!(a, Action::Complete { .. })));
+            // Exactly the re-injection: Invoke the coordinator with both
+            // children's results formatted in.
+            let reinjection = actions.iter().find_map(|a| match a {
+                Action::Invoke { agent, input } if agent == "dev-lead" => Some(input.as_str()),
+                _ => None,
+            });
+            let input = reinjection.expect("expected a synthesis Invoke to the coordinator");
+            assert!(
+                input.contains("[Result from @core-specialist]")
+                    && input.contains("X est implémenté."),
+                "core-specialist result must be re-injected, got: {input}"
+            );
+            assert!(
+                input.contains("[Result from @qa-specialist]")
+                    && input.contains("X est testé, RAS."),
+                "qa-specialist result must be re-injected, got: {input}"
+            );
+        }
+
+        // Test 2a: a subordinate answered (FinalAnswer) but a sibling has not
+        // yet responded → the run must NOT complete, and synthesis must NOT
+        // fire yet (the coordinator waits for the missing sibling).
+        #[test]
+        fn no_completion_while_a_sibling_is_still_pending() {
+            let dec = test_decider(
+                "dev-lead",
+                &[
+                    ("dev-lead", "concrete-model"),
+                    ("core-specialist", "concrete-model"),
+                    ("qa-specialist", "concrete-model"),
+                ],
+                base_config(),
+                5,
+                50,
+                None,
+                None,
+            );
+            let mut events = vec![
+                run_started(&["dev-lead"]),
+                ExecutionEvent::AgentInvoked {
+                    agent: "dev-lead".into(),
+                    input: "build X".into(),
+                },
+                ExecutionEvent::AgentObserved {
+                    agent: "dev-lead".into(),
+                    content: "@core-specialist: implémente X\n@qa-specialist: teste X".into(),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 0.0,
+                    model: "m".into(),
+                },
+                // Both delegations dispatched…
+                ExecutionEvent::Delegated {
+                    from: "dev-lead".into(),
+                    to: "core-specialist".into(),
+                    task: "implémente X".into(),
+                    depth: 1,
+                },
+                ExecutionEvent::Delegated {
+                    from: "dev-lead".into(),
+                    to: "qa-specialist".into(),
+                    task: "teste X".into(),
+                    depth: 1,
+                },
+            ];
+            // …but only core-specialist has answered; qa-specialist is still
+            // in flight (no observation).
+            events.extend(subordinate_turn(
+                "core-specialist",
+                "implémente X",
+                "X est implémenté.",
+            ));
+
+            let state = fold(&events);
+            let actions = dec.decide(&state);
+            assert!(
+                actions.is_empty(),
+                "must idle until the pending sibling answers, got: {actions:?}"
+            );
+        }
+
+        // Test 2b: the coordinator produced its own FinalAnswer *after*
+        // synthesis → the run completes with that answer.
+        #[test]
+        fn completes_on_coordinator_final_answer_after_synthesis() {
             let dec = test_decider(
                 "dev-lead",
                 &[
@@ -824,9 +1183,77 @@ mod tests {
                 None,
                 None,
             );
-            let events = vec![
+            let mut events = vec![
                 run_started(&["dev-lead"]),
-                // Turn 1: coordinator delegates to core-specialist.
+                ExecutionEvent::AgentInvoked {
+                    agent: "dev-lead".into(),
+                    input: "build X".into(),
+                },
+                ExecutionEvent::AgentObserved {
+                    agent: "dev-lead".into(),
+                    content: "@core-specialist: implémente X".into(),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 0.0,
+                    model: "m".into(),
+                },
+                ExecutionEvent::Delegated {
+                    from: "dev-lead".into(),
+                    to: "core-specialist".into(),
+                    task: "implémente X".into(),
+                    depth: 1,
+                },
+            ];
+            events.extend(subordinate_turn(
+                "core-specialist",
+                "implémente X",
+                "X est implémenté.",
+            ));
+            // Coordinator re-invoked with the re-injected result, then
+            // synthesizes a clean FinalAnswer.
+            events.push(ExecutionEvent::AgentInvoked {
+                agent: "dev-lead".into(),
+                input: format_results(&[(
+                    "core-specialist".to_string(),
+                    "X est implémenté.".to_string(),
+                )]),
+            });
+            events.push(ExecutionEvent::AgentObserved {
+                agent: "dev-lead".into(),
+                content: "Synthèse finale : la fonctionnalité est prête.".into(),
+                tokens_in: 5,
+                tokens_out: 5,
+                cost: 0.0,
+                model: "m".into(),
+            });
+
+            let state = fold(&events);
+            let actions = dec.decide(&state);
+            assert_eq!(actions.len(), 1);
+            assert!(
+                matches!(&actions[0], Action::Complete { content } if content.contains("prête"))
+            );
+        }
+
+        // Anti-loop: the coordinator has synthesized twice and still keeps
+        // delegating instead of producing its own FinalAnswer → force
+        // completion with its latest narrative.
+        #[test]
+        fn coordinator_anti_loop_forces_complete_after_two_syntheses() {
+            let dec = test_decider(
+                "dev-lead",
+                &[
+                    ("dev-lead", "concrete-model"),
+                    ("core-specialist", "concrete-model"),
+                ],
+                base_config(),
+                5,
+                50,
+                None,
+                None,
+            );
+            let mut events = vec![
+                run_started(&["dev-lead"]),
                 ExecutionEvent::AgentInvoked {
                     agent: "dev-lead".into(),
                     input: "build X".into(),
@@ -845,43 +1272,48 @@ mod tests {
                     task: "task 1".into(),
                     depth: 1,
                 },
-                // core-specialist escalates back to the coordinator instead
-                // of answering — a legitimate second invocation trigger.
-                ExecutionEvent::AgentInvoked {
-                    agent: "core-specialist".into(),
-                    input: "task 1".into(),
-                },
-                ExecutionEvent::AgentObserved {
-                    agent: "core-specialist".into(),
-                    content: "@dev-lead: je bloque, besoin d'arbitrage".into(),
-                    tokens_in: 5,
-                    tokens_out: 5,
-                    cost: 0.0,
-                    model: "m".into(),
-                },
-                ExecutionEvent::Escalated {
-                    from: "core-specialist".into(),
-                    to: "dev-lead".into(),
-                    message: "je bloque, besoin d'arbitrage".into(),
-                },
-                // Turn 2: coordinator responds again, still not a FinalAnswer.
-                ExecutionEvent::AgentInvoked {
-                    agent: "dev-lead".into(),
-                    input: "je bloque, besoin d'arbitrage".into(),
-                },
-                ExecutionEvent::AgentObserved {
-                    agent: "dev-lead".into(),
-                    content: "@core-specialist: task 2".into(),
-                    tokens_in: 5,
-                    tokens_out: 5,
-                    cost: 0.0,
-                    model: "m".into(),
-                },
             ];
+            events.extend(subordinate_turn("core-specialist", "task 1", "result 1"));
+            // Synthesis #1: coordinator still delegates instead of answering.
+            events.push(ExecutionEvent::AgentInvoked {
+                agent: "dev-lead".into(),
+                input: format_results(&[("core-specialist".to_string(), "result 1".to_string())]),
+            });
+            events.push(ExecutionEvent::AgentObserved {
+                agent: "dev-lead".into(),
+                content: "Encore du travail.\n@core-specialist: task 2".into(),
+                tokens_in: 5,
+                tokens_out: 5,
+                cost: 0.0,
+                model: "m".into(),
+            });
+            events.push(ExecutionEvent::Delegated {
+                from: "dev-lead".into(),
+                to: "core-specialist".into(),
+                task: "task 2".into(),
+                depth: 1,
+            });
+            events.extend(subordinate_turn("core-specialist", "task 2", "result 2"));
+            // Synthesis #2: still delegating — the anti-loop must now fire.
+            events.push(ExecutionEvent::AgentInvoked {
+                agent: "dev-lead".into(),
+                input: format_results(&[("core-specialist".to_string(), "result 2".to_string())]),
+            });
+            events.push(ExecutionEvent::AgentObserved {
+                agent: "dev-lead".into(),
+                content: "Toujours en cours.\n@core-specialist: task 3".into(),
+                tokens_in: 5,
+                tokens_out: 5,
+                cost: 0.0,
+                model: "m".into(),
+            });
+
             let state = fold(&events);
             let actions = dec.decide(&state);
             assert_eq!(actions.len(), 1);
-            assert!(matches!(&actions[0], Action::Complete{content} if content.contains("task 2")));
+            assert!(
+                matches!(&actions[0], Action::Complete { content } if content.contains("Toujours en cours"))
+            );
         }
     }
 
