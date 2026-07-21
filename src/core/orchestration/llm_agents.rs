@@ -99,7 +99,11 @@ fn agent_model(
 
 /// Prompt suffix appended to board agent messages so the LLM returns a
 /// structured action header we can parse.
-const BOARD_ACTION_INSTRUCTIONS: &str = "\n\n\
+///
+/// `pub(crate)` (rather than private) so `es::blackboard::BlackboardEffectRunner`
+/// (OH1 Lot 3, Task 4) can reuse the exact same instructions when assembling
+/// its own board prompt, instead of duplicating this string.
+pub(crate) const BOARD_ACTION_INSTRUCTIONS: &str = "\n\n\
 Respond with the following structured header, then your content:\n\
 ACTION: <type> (one of: FINDING, CHALLENGE, CONFIRMATION, SYNTHESIS, QUESTION, ANSWER)\n\
 TARGET: <index> (required for CHALLENGE, CONFIRMATION, ANSWER; comma-separated for SYNTHESIS)\n\
@@ -167,7 +171,7 @@ pub(crate) fn parse_board_action(response: &str) -> (EntryKind, f32, String) {
 }
 
 /// Prompt suffix for ring agent process messages.
-const RING_ACTION_INSTRUCTIONS: &str = "\n\n\
+pub(crate) const RING_ACTION_INSTRUCTIONS: &str = "\n\n\
 Respond with the following structured header, then your content:\n\
 ACTION: <type> (one of: PROPOSE, ENRICH, CONTEST, ENDORSE, SYNTHESIZE, PASS)\n\
 TARGET: <index> (required for ENRICH, CONTEST, ENDORSE)\n\
@@ -230,7 +234,7 @@ pub(crate) fn parse_ring_action(response: &str) -> (ContributionAction, String) 
 /// Parse a confidence value from the first line of a vote response.
 ///
 /// Falls back to 0.8 if the header is absent or malformed.
-fn parse_vote_confidence(response: &str) -> (f32, String) {
+pub(crate) fn parse_vote_confidence(response: &str) -> (f32, String) {
     if let Some(first_line) = response.lines().next() {
         let trimmed = first_line.trim();
         if let Some(rest) = trimmed.strip_prefix("CONFIDENCE:")

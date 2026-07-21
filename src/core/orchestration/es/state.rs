@@ -5,7 +5,7 @@
 //! randomness. Given the same state and event it always produces the same
 //! next state, which is what makes the event log replayable.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::event::ExecutionEvent;
 use crate::providers::traits::ChatMessage;
@@ -25,12 +25,6 @@ pub enum RunStatus {
 #[derive(Debug, Clone, Default)]
 pub struct HierState {
     pub trace: Vec<(String, String, String, u32)>,
-    /// Tier resolved for each `latest:auto` agent (agent name -> tier, e.g.
-    /// `"Fast"`/`"Pro"`/`"Max"`), populated by `ModelRouted` events. Read by
-    /// the `HierarchicalEffectRunner` to resolve a concrete model string
-    /// before invoking the provider — see `es::hierarchical::run_invoke`.
-    /// `BTreeMap` for deterministic iteration/ordering.
-    pub routed_tiers: BTreeMap<String, String>,
 }
 
 /// A single blackboard entry, as recorded in the ES projection.
@@ -99,6 +93,25 @@ pub struct ExecutionState {
     pub hier: HierState,
     pub board: BoardState,
     pub ring: RingState,
+    /// Tier resolved for each `latest:auto` agent (agent name -> tier, e.g.
+    /// `"Fast"`/`"Pro"`/`"Max"`), populated by `ModelRouted` events. Read by
+    /// the pattern effect runners (e.g. `HierarchicalEffectRunner`) to
+    /// resolve a concrete model string before invoking the provider — see
+    /// `es::hierarchical::run_invoke`. Run-level (not pattern-specific):
+    /// blackboard/ring patterns route models the same way. `BTreeMap` for
+    /// deterministic iteration/ordering.
+    pub routed_tiers: BTreeMap<String, String>,
+    /// Team leads whose nested C9 sub-run boundary is currently *open*: a
+    /// `NestedStarted { team_lead }` has been recorded with no matching
+    /// `NestedEnded { team_lead }` yet. Populated purely by `apply`
+    /// (`NestedStarted` inserts, `NestedEnded` removes), so the pure
+    /// `HierarchicalDecider` can detect — without scanning the whole log —
+    /// which nested boundaries still need a deferred `NestedEnded` emitted to
+    /// close them (see `HierarchicalDecider::pending_nested_ended`). `BTreeSet`
+    /// for deterministic iteration order. In any terminal (completed) run this
+    /// set is empty — every boundary opened during the run is closed before it
+    /// ends — so it never perturbs replay-vs-run `Debug` equality.
+    pub open_nested: BTreeSet<String>,
 }
 
 /// Apply a single event to `state` in place.
@@ -153,7 +166,7 @@ pub fn apply(state: &mut ExecutionState, event: &ExecutionEvent) {
             state.budget_cost += *cost;
         }
         ExecutionEvent::ModelRouted { agent, tier, .. } => {
-            state.hier.routed_tiers.insert(agent.clone(), tier.clone());
+            state.routed_tiers.insert(agent.clone(), tier.clone());
         }
         ExecutionEvent::Warned { .. } => {}
         ExecutionEvent::Halted { .. } => {
@@ -195,8 +208,16 @@ pub fn apply(state: &mut ExecutionState, event: &ExecutionEvent) {
                 .push((from.clone(), to.clone(), message.clone(), 0));
         }
         ExecutionEvent::Synthesized { .. } => {}
-        ExecutionEvent::NestedStarted { .. } => {}
-        ExecutionEvent::NestedEnded { .. } => {}
+        ExecutionEvent::NestedStarted { team_lead, .. } => {
+            // Open a nested C9 boundary for `team_lead`. The matching
+            // `NestedEnded` (emitted in deferred fashion by
+            // `HierarchicalDecider::decide`, once the lead's sub-run outcome
+            // has been observed) removes it below.
+            state.open_nested.insert(team_lead.clone());
+        }
+        ExecutionEvent::NestedEnded { team_lead } => {
+            state.open_nested.remove(team_lead);
+        }
         ExecutionEvent::RoundStarted { round } => {
             state.board.round = *round;
         }
@@ -383,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn model_routed_projects_tier_into_hier_state() {
+    fn model_routed_projects_tier_into_run_state() {
         let events = vec![
             E::RunStarted {
                 run_id: "r".into(),
@@ -399,10 +420,7 @@ mod tests {
             },
         ];
         let st = fold(&events);
-        assert_eq!(
-            st.hier.routed_tiers.get("a").map(String::as_str),
-            Some("fast")
-        );
+        assert_eq!(st.routed_tiers.get("a").map(String::as_str), Some("fast"));
     }
 
     #[test]

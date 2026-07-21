@@ -5,10 +5,12 @@
 //! orchestration engine is wired to this module yet — it is pure domain
 //! plumbing for later lots to build on.
 
+pub mod blackboard;
 pub mod engine;
 pub mod event;
 pub mod hierarchical;
 pub mod log;
+pub mod ring;
 pub mod state;
 
 // Not yet consumed by any engine (this lot only lays the socle down) — the
