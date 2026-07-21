@@ -41,11 +41,26 @@ use crate::core::orchestration::hierarchical::{DelegationEvent, OrchestrationRes
 ///   line is left to the future `run.rs` call site (Lot 5), which has both
 ///   the sink and the folded state.
 /// - `RunStarted`, `Warned`, `Halted`, `AskedPeer`, `Escalated`, `Synthesized`,
-///   `RoundStarted`, `ConsensusReached`, `LapStarted`, `ContributionAdded`,
+///   `RoundStarted`, `ConsensusReached`, `LapStarted`,
 ///   `OutcomeResolved` → `[]`: no `RunEvent` equivalent is specified for this
 ///   lot (e.g. `Warned`/`Halted` could plausibly map onto `RunEvent::Warning`,
 ///   but `Warning`'s `from`/`to` fields have no source in `Warned{code}` alone
 ///   — left for a future lot to decide deliberately rather than guessed here).
+///
+/// **`AgentStart`/`AgentEnd` symmetry**: `AgentInvoked` (emitted by the shared
+/// `es::engine` invoke loop for *every* pattern, including blackboard/ring)
+/// always maps to `AgentStart`. Every event that concludes that agent's turn
+/// must therefore also emit an `AgentEnd`, whichever pattern-specific event
+/// carries the conclusion:
+/// - hierarchical/direct: `AgentObserved` → `AgentEnd` (only, as before).
+/// - blackboard: `BoardEntryAdded` → `[Board, AgentEnd]` (tokens/cost/content
+///   straight from the event).
+/// - ring circulation: `ContributionAdded` → `[AgentEnd]` (no ring-specific
+///   `RunEvent` exists for a contribution, so `AgentEnd` is the only line).
+/// - ring voting: `VoteCast` → `[Vote, AgentEnd]`. `VoteCast` carries no
+///   tokens/cost (voting doesn't re-charge the budget), so `AgentEnd` gets
+///   `tin: 0, tout: 0, cost: 0.0`; `content` falls back to `position` (the
+///   closest thing to "what the agent produced this turn").
 pub fn map_execution_to_run_events(e: &ExecutionEvent) -> Vec<RunEvent> {
     match e {
         ExecutionEvent::AgentInvoked { agent, .. } => vec![RunEvent::AgentStart {
@@ -80,16 +95,59 @@ pub fn map_execution_to_run_events(e: &ExecutionEvent) -> Vec<RunEvent> {
             from: from.clone(),
             to: to.clone(),
         }],
-        ExecutionEvent::BoardEntryAdded { agent, kind, .. } => vec![RunEvent::Board {
+        ExecutionEvent::BoardEntryAdded {
+            agent,
+            kind,
+            content,
+            tokens_in,
+            tokens_out,
+            cost,
+            ..
+        } => vec![
+            RunEvent::Board {
+                agent: agent.clone(),
+                kind: kind.clone(),
+            },
+            RunEvent::AgentEnd {
+                agent: agent.clone(),
+                tin: *tokens_in,
+                tout: *tokens_out,
+                cost: *cost,
+                content: content.clone(),
+            },
+        ],
+        ExecutionEvent::ContributionAdded {
+            agent,
+            content,
+            tokens_in,
+            tokens_out,
+            cost,
+            ..
+        } => vec![RunEvent::AgentEnd {
             agent: agent.clone(),
-            kind: kind.clone(),
+            tin: *tokens_in,
+            tout: *tokens_out,
+            cost: *cost,
+            content: content.clone(),
         }],
         ExecutionEvent::VoteCast {
-            agent, confidence, ..
-        } => vec![RunEvent::Vote {
-            agent: agent.clone(),
-            conf: *confidence,
-        }],
+            agent,
+            position,
+            confidence,
+            ..
+        } => vec![
+            RunEvent::Vote {
+                agent: agent.clone(),
+                conf: *confidence,
+            },
+            RunEvent::AgentEnd {
+                agent: agent.clone(),
+                tin: 0,
+                tout: 0,
+                cost: 0.0,
+                content: position.clone(),
+            },
+        ],
         ExecutionEvent::NestedStarted { team_lead, pattern } => vec![RunEvent::NestedStart {
             team_lead: team_lead.clone(),
             pattern: pattern.clone(),
@@ -107,7 +165,6 @@ pub fn map_execution_to_run_events(e: &ExecutionEvent) -> Vec<RunEvent> {
         | ExecutionEvent::RoundStarted { .. }
         | ExecutionEvent::ConsensusReached { .. }
         | ExecutionEvent::LapStarted { .. }
-        | ExecutionEvent::ContributionAdded { .. }
         | ExecutionEvent::OutcomeResolved { .. } => vec![],
     }
 }
@@ -310,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn board_entry_added_maps_to_board() {
+    fn board_entry_added_maps_to_board_and_agent_end() {
         let e = ExecutionEvent::BoardEntryAdded {
             agent: "a".into(),
             round: 1,
@@ -319,21 +376,68 @@ mod tests {
             refs: vec![],
             confidence: 0.9,
             tokens_in: 1,
-            tokens_out: 1,
-            cost: 0.0,
+            tokens_out: 2,
+            cost: 0.03,
         };
         let got = map_execution_to_run_events(&e);
         match &got[..] {
-            [RunEvent::Board { agent, kind }] => {
+            [
+                RunEvent::Board { agent, kind },
+                RunEvent::AgentEnd {
+                    agent: end_agent,
+                    tin,
+                    tout,
+                    cost,
+                    content,
+                },
+            ] => {
                 assert_eq!(agent, "a");
                 assert_eq!(kind, "finding");
+                assert_eq!(end_agent, "a");
+                assert_eq!(*tin, 1);
+                assert_eq!(*tout, 2);
+                assert!((*cost - 0.03).abs() < 1e-9);
+                assert_eq!(content, "c");
             }
-            other => panic!("expected [Board], got {other:?}"),
+            other => panic!("expected [Board, AgentEnd], got {other:?}"),
         }
     }
 
     #[test]
-    fn vote_cast_maps_to_vote_using_confidence() {
+    fn contribution_added_maps_to_agent_end_only() {
+        let e = ExecutionEvent::ContributionAdded {
+            agent: "a".into(),
+            lap: 1,
+            position: 0,
+            action: "propose".into(),
+            content: "c".into(),
+            tokens_in: 4,
+            tokens_out: 5,
+            cost: 0.06,
+        };
+        let got = map_execution_to_run_events(&e);
+        match &got[..] {
+            [
+                RunEvent::AgentEnd {
+                    agent,
+                    tin,
+                    tout,
+                    cost,
+                    content,
+                },
+            ] => {
+                assert_eq!(agent, "a");
+                assert_eq!(*tin, 4);
+                assert_eq!(*tout, 5);
+                assert!((*cost - 0.06).abs() < 1e-9);
+                assert_eq!(content, "c");
+            }
+            other => panic!("expected [AgentEnd], got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vote_cast_maps_to_vote_and_agent_end_using_confidence_and_position() {
         let e = ExecutionEvent::VoteCast {
             agent: "r".into(),
             position: "approve".into(),
@@ -343,11 +447,76 @@ mod tests {
         };
         let got = map_execution_to_run_events(&e);
         match &got[..] {
-            [RunEvent::Vote { agent, conf }] => {
+            [
+                RunEvent::Vote { agent, conf },
+                RunEvent::AgentEnd {
+                    agent: end_agent,
+                    tin,
+                    tout,
+                    cost,
+                    content,
+                },
+            ] => {
                 assert_eq!(agent, "r");
                 assert!((*conf - 0.8).abs() < 1e-6);
+                assert_eq!(end_agent, "r");
+                assert_eq!(*tin, 0);
+                assert_eq!(*tout, 0);
+                assert_eq!(*cost, 0.0);
+                assert_eq!(content, "approve");
             }
-            other => panic!("expected [Vote], got {other:?}"),
+            other => panic!("expected [Vote, AgentEnd], got {other:?}"),
+        }
+    }
+
+    /// Regression test for the observability fidelity fix: blackboard/ring
+    /// turns must emit `AgentEnd` symmetric to the `AgentStart` produced by
+    /// the shared `AgentInvoked` event, exactly like hierarchical/direct do
+    /// via `AgentObserved`. Before the fix, `BoardEntryAdded`/`VoteCast`
+    /// mapped to `[Board]`/`[Vote]` only, leaving `AgentStart` unmatched.
+    #[test]
+    fn board_and_ring_turns_are_symmetric_with_agent_start() {
+        let invoked = ExecutionEvent::AgentInvoked {
+            agent: "a".into(),
+            input: "x".into(),
+        };
+        let board = ExecutionEvent::BoardEntryAdded {
+            agent: "a".into(),
+            round: 1,
+            kind: "finding".into(),
+            content: "c".into(),
+            refs: vec![],
+            confidence: 0.5,
+            tokens_in: 1,
+            tokens_out: 1,
+            cost: 0.0,
+        };
+        let vote = ExecutionEvent::VoteCast {
+            agent: "a".into(),
+            position: "approve".into(),
+            confidence: 0.5,
+            supports: vec![],
+            concerns: vec![],
+        };
+
+        for concluding in [board, vote] {
+            let mut starts = 0usize;
+            let mut ends = 0usize;
+            for re in map_execution_to_run_events(&invoked)
+                .into_iter()
+                .chain(map_execution_to_run_events(&concluding))
+            {
+                match re {
+                    RunEvent::AgentStart { .. } => starts += 1,
+                    RunEvent::AgentEnd { .. } => ends += 1,
+                    _ => {}
+                }
+            }
+            assert_eq!(starts, 1, "expected exactly one AgentStart");
+            assert_eq!(
+                ends, 1,
+                "expected exactly one AgentEnd matching the AgentStart"
+            );
         }
     }
 
@@ -418,16 +587,6 @@ mod tests {
             ExecutionEvent::RoundStarted { round: 1 },
             ExecutionEvent::ConsensusReached { score: 0.9 },
             ExecutionEvent::LapStarted { lap: 1 },
-            ExecutionEvent::ContributionAdded {
-                agent: "a".into(),
-                lap: 1,
-                position: 0,
-                action: "x".into(),
-                content: "c".into(),
-                tokens_in: 1,
-                tokens_out: 1,
-                cost: 0.0,
-            },
             ExecutionEvent::OutcomeResolved {
                 outcome: "x".into(),
             },

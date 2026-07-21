@@ -216,6 +216,8 @@ async fn run_inner(
             &current_input,
             project_defaults,
             sink,
+            quiet,
+            max_content,
             &routing_rules,
             project.as_deref(),
         )
@@ -518,20 +520,67 @@ struct DirectDispatch {
     events: Vec<ExecutionEvent>,
 }
 
+/// [`EventSink`] decorator that applies `--quiet`/`--max-content` to
+/// `AgentEnd` events before forwarding them to `inner`, mirroring the inline
+/// suppression/truncation `run_single_agent` applies at its step 6 (see
+/// there): when `quiet` is set the `AgentEnd` is dropped entirely (only the
+/// terminal `Result` matters); otherwise `content` is truncated to
+/// `max_content` chars when set. Every other `RunEvent` passes through
+/// unchanged. This keeps `map_execution_to_run_events` itself pure — the
+/// filtering lives entirely at this call site, not in the bridge.
+struct QuietMaxContentSink<'s> {
+    inner: &'s dyn EventSink,
+    quiet: bool,
+    max_content: Option<usize>,
+}
+
+impl EventSink for QuietMaxContentSink<'_> {
+    fn emit(&self, ev: &RunEvent) {
+        if let RunEvent::AgentEnd {
+            agent,
+            tin,
+            tout,
+            cost,
+            content,
+        } = ev
+        {
+            if self.quiet {
+                return;
+            }
+            let content = match self.max_content {
+                Some(n) => content.chars().take(n).collect::<String>(),
+                None => content.clone(),
+            };
+            self.inner.emit(&RunEvent::AgentEnd {
+                agent: agent.clone(),
+                tin: *tin,
+                tout: *tout,
+                cost: *cost,
+                content,
+            });
+            return;
+        }
+        self.inner.emit(ev);
+    }
+}
+
 /// Drive a single, already-loaded/prepared `agent` through the event-sourced
 /// `direct` engine ([`crate::core::orchestration::es::direct::run_direct_es`]),
 /// on a fresh [`InMemoryLog`] wrapped in [`SinkProjectingLog`] so
 /// `AgentStart`/`AgentEnd`/`Route` observability keeps flowing to `sink`
-/// exactly as the legacy path did. `agent_key` is the roster key (filename
-/// slug) the run addresses this agent by — for a single-agent direct run
-/// there is no delegation/route to key by anything else, but using the same
-/// convention as the orchestrated patterns keeps `run_direct_es`'s own
+/// exactly as the legacy path did — modulo `quiet`/`max_content`, applied via
+/// [`QuietMaxContentSink`] so the emitted `AgentEnd` honors the same flags
+/// `run_single_agent` does. `agent_key` is the roster key (filename slug) the
+/// run addresses this agent by — for a single-agent direct run there is no
+/// delegation/route to key by anything else, but using the same convention
+/// as the orchestrated patterns keeps `run_direct_es`'s own
 /// `RunStarted { agents, .. }` roster consistent.
 ///
 /// Pure with respect to loading/side-effect concerns other than the actual
 /// provider call — no file I/O, no rate limiting, no storage — which is what
 /// makes this directly unit-testable with a mock `Provider` (see
 /// `tests::direct_es`).
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_direct_es(
     agent_key: &str,
     agent: Agent,
@@ -539,6 +588,8 @@ async fn dispatch_direct_es(
     input: &str,
     routing_rules: &crate::core::routing::RoutingRules,
     sink: &Arc<dyn EventSink>,
+    quiet: bool,
+    max_content: Option<usize>,
 ) -> anyhow::Result<DirectDispatch> {
     use crate::core::orchestration::es::direct::run_direct_es;
     use std::collections::BTreeMap;
@@ -549,7 +600,12 @@ async fn dispatch_direct_es(
     providers.insert(agent_key.to_string(), provider);
 
     let run_id = uuid::Uuid::new_v4().to_string();
-    let mut log = SinkProjectingLog::new(InMemoryLog::default(), sink.as_ref());
+    let filtered_sink = QuietMaxContentSink {
+        inner: sink.as_ref(),
+        quiet,
+        max_content,
+    };
+    let mut log = SinkProjectingLog::new(InMemoryLog::default(), &filtered_sink);
 
     let state = run_direct_es(
         &run_id,
@@ -587,10 +643,9 @@ async fn dispatch_direct_es(
 /// of scope for the bascule): `agent.metadata.model_fallback` is never
 /// retried (`DirectEffectRunner` makes a single provider call and propagates
 /// any error, whereas `run_single_agent` retries each fallback model in
-/// order on a "model not found" error); and the emitted `AgentEnd`'s
-/// `content` is neither suppressed by `quiet` nor truncated by
-/// `max_content` — both are `SinkProjectingLog`'s fixed, already-tested
-/// bridging behavior (OH1 Lot 4), not something this call site controls.
+/// order on a "model not found" error). `quiet`/`max_content` *are* honored
+/// (via [`QuietMaxContentSink`] in [`dispatch_direct_es`]), matching
+/// `run_single_agent`'s step 6.
 #[allow(clippy::too_many_arguments)]
 async fn run_single_agent_es(
     agent_path: &Path,
@@ -598,6 +653,8 @@ async fn run_single_agent_es(
     input: &str,
     project_defaults: Option<&ProjectDefaults>,
     sink: &Arc<dyn EventSink>,
+    quiet: bool,
+    max_content: Option<usize>,
     routing_rules: &crate::core::routing::RoutingRules,
     project: Option<&str>,
 ) -> anyhow::Result<(String, u32, u32, f64)> {
@@ -647,8 +704,17 @@ async fn run_single_agent_es(
     // 5-7. Drive the event-sourced engine (model routing, request building,
     // AgentStart/AgentEnd observability, the actual provider call).
     let start = Instant::now();
-    let dispatch =
-        dispatch_direct_es(agent_key, agent, provider, input, routing_rules, sink).await?;
+    let dispatch = dispatch_direct_es(
+        agent_key,
+        agent,
+        provider,
+        input,
+        routing_rules,
+        sink,
+        quiet,
+        max_content,
+    )
+    .await?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
     // 8. Record in storage (if available) — same shape as `run_single_agent`.
@@ -2446,6 +2512,8 @@ mod es_switch_tests {
             "do the thing",
             &RoutingRules::default(),
             &sink,
+            false,
+            None,
         )
         .await
         .unwrap();
@@ -2462,6 +2530,70 @@ mod es_switch_tests {
         let tags = capture.tags();
         assert!(tags.iter().any(|t| t == "agent_start"), "tags: {tags:?}");
         assert!(tags.iter().any(|t| t == "agent_end"), "tags: {tags:?}");
+    }
+
+    /// Regression test for the `--quiet` fidelity fix: on the direct ES path
+    /// (`dispatch_direct_es`), `quiet: true` must suppress the `agent_end`
+    /// event entirely — mirroring `run_single_agent`'s `if !quiet { sink.emit
+    /// (AgentEnd) }` — while `agent_start` and the returned content/tokens
+    /// are unaffected (only the emitted observability event is suppressed,
+    /// not the function's return value).
+    #[tokio::test]
+    async fn direct_es_quiet_suppresses_agent_end_event() {
+        let (capture, sink) = capture_sink();
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
+
+        let dispatch = dispatch_direct_es(
+            "solo",
+            test_agent("solo"),
+            provider,
+            "do the thing",
+            &RoutingRules::default(),
+            &sink,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(dispatch.content, "the answer");
+        let tags = capture.tags();
+        assert!(tags.iter().any(|t| t == "agent_start"), "tags: {tags:?}");
+        assert!(
+            !tags.iter().any(|t| t == "agent_end"),
+            "quiet must suppress agent_end, tags: {tags:?}"
+        );
+    }
+
+    /// Regression test for the `--max-content` fidelity fix: on the direct ES
+    /// path, the emitted `agent_end.content` must be truncated to `N` chars,
+    /// while the function's returned `content` (used for the final `Result`
+    /// event and stdout `println!`) stays full-length.
+    #[tokio::test]
+    async fn direct_es_max_content_truncates_agent_end_content_only() {
+        let (capture, sink) = capture_sink();
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the full answer"]));
+
+        let dispatch = dispatch_direct_es(
+            "solo",
+            test_agent("solo"),
+            provider,
+            "do the thing",
+            &RoutingRules::default(),
+            &sink,
+            false,
+            Some(3),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(dispatch.content, "the full answer");
+        let events = capture.events.lock().unwrap();
+        let agent_end = events
+            .iter()
+            .find(|v| v["t"] == "agent_end")
+            .expect("agent_end must still be emitted");
+        assert_eq!(agent_end["content"], "the");
     }
 
     // ── T5b: hierarchical ────────────────────────────────────────────
@@ -2637,19 +2769,22 @@ mod es_switch_tests {
         let display = crate::cli::run_es_record::blackboard_display(&state);
         assert!(!display.trim().is_empty());
 
-        // (c): AgentStart + Board observability reaches the sink. NOTE:
-        // unlike direct/hierarchical, `BlackboardEffectRunner::run_invoke`
-        // always returns `BoardEntryAdded` (never `AgentObserved`) — per
-        // `es::bridge::map_execution_to_run_events`'s documented mapping,
-        // this means `AgentEnd` is *never* emitted for blackboard (a Lot 4
-        // bridging fact, not something this bascule changes or regresses).
+        // (c): AgentStart + Board + AgentEnd observability reaches the sink,
+        // in symmetric start/end pairs. `BlackboardEffectRunner::run_invoke`
+        // always returns `BoardEntryAdded` (never `AgentObserved`), but
+        // `es::bridge::map_execution_to_run_events` now maps `BoardEntryAdded`
+        // onto `[Board, AgentEnd]` too, so every `agent_start` this pattern
+        // emits (via the shared `AgentInvoked`) has a matching `agent_end`
+        // (observability fidelity fix — see `es::bridge` symmetry test).
         let tags = capture.tags();
         assert!(tags.iter().any(|t| t == "agent_start"), "tags: {tags:?}");
         assert!(tags.iter().any(|t| t == "board"), "tags: {tags:?}");
-        assert!(
-            !tags.iter().any(|t| t == "agent_end"),
-            "blackboard never emits agent_end (BoardEntryAdded has no AgentEnd \
-             mapping) — tags: {tags:?}"
+        assert!(tags.iter().any(|t| t == "agent_end"), "tags: {tags:?}");
+        let starts = tags.iter().filter(|t| *t == "agent_start").count();
+        let ends = tags.iter().filter(|t| *t == "agent_end").count();
+        assert_eq!(
+            starts, ends,
+            "every agent_start must have a matching agent_end — tags: {tags:?}"
         );
     }
 
@@ -2748,19 +2883,22 @@ mod es_switch_tests {
         let display = crate::cli::run_es_record::ring_display(&state, &events);
         assert!(display.starts_with("Use Rust with Axum"));
 
-        // (c): AgentStart + Vote observability reaches the sink. NOTE: like
-        // blackboard, `RingEffectRunner::run_invoke` returns
-        // `ContributionAdded` (no `RunEvent` mapping) during circulation and
-        // `VoteCast` (-> `RunEvent::Vote`) during voting — never
-        // `AgentObserved` — so `AgentEnd` is *never* emitted for ring either
-        // (same Lot 4 bridging fact as blackboard).
+        // (c): AgentStart + Vote + AgentEnd observability reaches the sink,
+        // in symmetric start/end pairs. `RingEffectRunner::run_invoke` returns
+        // `ContributionAdded` during circulation and `VoteCast` during
+        // voting — never `AgentObserved` — but `es::bridge::
+        // map_execution_to_run_events` now maps both onto an `AgentEnd` too
+        // (observability fidelity fix — see `es::bridge` symmetry test), so
+        // every `agent_start` this pattern emits has a matching `agent_end`.
         let tags = capture.tags();
         assert!(tags.iter().any(|t| t == "agent_start"), "tags: {tags:?}");
         assert!(tags.iter().any(|t| t == "vote"), "tags: {tags:?}");
-        assert!(
-            !tags.iter().any(|t| t == "agent_end"),
-            "ring never emits agent_end (ContributionAdded/VoteCast have no \
-             AgentEnd mapping) — tags: {tags:?}"
+        assert!(tags.iter().any(|t| t == "agent_end"), "tags: {tags:?}");
+        let starts = tags.iter().filter(|t| *t == "agent_start").count();
+        let ends = tags.iter().filter(|t| *t == "agent_end").count();
+        assert_eq!(
+            starts, ends,
+            "every agent_start must have a matching agent_end — tags: {tags:?}"
         );
     }
 
