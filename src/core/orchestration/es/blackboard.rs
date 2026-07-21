@@ -16,8 +16,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::engine::{Action, Decider, EffectRunner};
+use super::engine::{Action, Decider, EffectRunner, run_event_sourced};
 use super::event::ExecutionEvent;
+use super::log::EventLog;
 use super::state::{BoardEntryRec, ExecutionState};
 use crate::core::agent::Agent;
 use crate::core::orchestration::blackboard::{BlackboardConfig, EntryKind, entry_kind_name};
@@ -691,6 +692,73 @@ impl EffectRunner for BlackboardEffectRunner {
             }
         }
     }
+}
+
+// ── run_blackboard_es (Task 5): end-to-end assembly ──────────────────
+
+/// Run a complete blackboard orchestration end-to-end through the
+/// event-sourced engine: builds the initial `RunStarted` event, constructs a
+/// [`BlackboardDecider`] + [`BlackboardEffectRunner`] from `config` /
+/// `agents` / `providers` / `routing_rules`, and drives them through
+/// [`run_event_sourced`], returning the final [`ExecutionState`].
+///
+/// `run_id` is accepted explicitly rather than generated internally, so
+/// callers — notably tests proving replay determinism — can pass a fixed id
+/// and later reconstruct the same state purely from the log via
+/// [`super::engine::replay`].
+///
+/// The run's roster (`RunStarted { agents, .. }`, and `BlackboardDecider`'s
+/// `agent_order`) is `agents.keys()`, i.e. name-sorted (`BTreeMap`
+/// iteration order) — the same convention `run_hierarchical_es` uses for its
+/// own `agent_names`.
+///
+/// `max_rounds` and `token_budget` are derived from `config`
+/// (`BlackboardConfig::max_rounds`/`token_budget`, both concrete `u32`/`u64`
+/// values with documented defaults — unlike `OrchestrationConfig`'s
+/// `Option` fields, `BlackboardConfig` has no "unset" state for either, so
+/// `token_budget` narrows to `Option<u32>` as `Some(..)` unconditionally,
+/// saturating at `u32::MAX`). `BlackboardConfig` carries no cost-budget
+/// field (unlike `OrchestrationConfig::cost_limit`), so `cost_limit` is
+/// always `None` here — no cost guard applies to the event-sourced
+/// blackboard run.
+///
+/// Coexists with the legacy `core::orchestration::blackboard::run_blackboard`
+/// — this function is not called from `run.rs`; wiring it in as the active
+/// engine is a later lot (the bascule).
+pub async fn run_blackboard_es(
+    run_id: &str,
+    input: &str,
+    agents: BTreeMap<String, Agent>,
+    providers: BTreeMap<String, Arc<dyn Provider>>,
+    config: BlackboardConfig,
+    routing_rules: RoutingRules,
+    log: &mut impl EventLog,
+) -> anyhow::Result<ExecutionState> {
+    let agent_order: Vec<String> = agents.keys().cloned().collect();
+    let initial = vec![ExecutionEvent::RunStarted {
+        run_id: run_id.to_string(),
+        pattern: "blackboard".to_string(),
+        agents: agent_order.clone(),
+        input: input.to_string(),
+        project: None,
+    }];
+
+    let max_rounds = config.max_rounds;
+    let token_budget = Some(u32::try_from(config.token_budget).unwrap_or(u32::MAX));
+
+    let decider = BlackboardDecider::new(
+        agents.clone(),
+        agent_order,
+        input.to_string(),
+        config.clone(),
+        routing_rules,
+        max_rounds,
+        token_budget,
+        None,
+    );
+    let effects = BlackboardEffectRunner::new(agents, providers, config);
+
+    run_event_sourced(run_id, initial, &decider, &effects, log).await
 }
 
 #[cfg(test)]
@@ -1638,6 +1706,325 @@ mod tests {
             assert!(
                 msg.contains("provider") && msg.contains("'a'"),
                 "expected a distinctive missing-provider message, got: {msg}"
+            );
+        }
+    }
+
+    // ── run_blackboard_es (Task 5): end-to-end + replay determinism ──
+    //
+    // Exercises `run_blackboard_es` as a whole (unlike `decide` and
+    // `effect_runner` above, which drive `BlackboardDecider` /
+    // `BlackboardEffectRunner` directly) — the same scenarios the legacy
+    // `core::orchestration::blackboard::run_blackboard` engine covers, plus
+    // a proof that `replay` reconstructs an identical `ExecutionState`
+    // purely from the log, with no effect re-executed.
+    //
+    // IMPORTANT: every agent below uses a CONCRETE model string (never
+    // `latest:auto`) — see the identical rationale on
+    // `es::hierarchical::tests::run_hierarchical_es`'s own module doc:
+    // resolving `latest:auto` reads an on-disk `models.dev` cache, which
+    // would make these tests non-hermetic/flaky.
+    mod run_blackboard_es_tests {
+        use super::*;
+        use crate::core::orchestration::es::engine::replay;
+        use crate::core::orchestration::es::log::InMemoryLog;
+        use crate::core::orchestration::es::state::RunStatus;
+        use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+        use std::collections::VecDeque;
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Minimal `Agent` for `run_blackboard_es` E2E tests: always a
+        /// concrete model (see module note above).
+        fn es_test_agent(name: &str, model: &str) -> Agent {
+            Agent {
+                name: name.to_string(),
+                source: PathBuf::from(format!("{name}.md")),
+                metadata: AgentMetadata {
+                    provider: "anthropic".to_string(),
+                    model: Some(model.to_string()),
+                    command: None,
+                    args: None,
+                    temperature: 0.7,
+                    max_tokens: None,
+                    timeout: None,
+                    tags: vec![],
+                    stacks: vec![],
+                    scope: vec![],
+                    model_fallback: vec![],
+                    cost_limit: None,
+                    rate_limit: None,
+                    context_window: None,
+                    mode: None,
+                    orchestration: None,
+                    triggers: None,
+                    ring_config: None,
+                },
+                system_prompt: format!("You are {name}."),
+                instructions: None,
+                output_format: None,
+                pipeline: None,
+                context: None,
+            }
+        }
+
+        /// Provider scripted with a fixed sequence of responses, one per
+        /// call (repeating the last one for any call beyond the scripted
+        /// list, so a test can under-provision — e.g. a single response
+        /// reused every round — without panicking). Also counts calls, so
+        /// `es_blackboard_replay_reconstructs_state` can prove `replay`
+        /// triggers none. Identical in spirit to
+        /// `es::hierarchical::tests::ScriptedProvider` — duplicated rather
+        /// than shared (no common test-helpers module exists for the ES
+        /// engines today).
+        struct ScriptedProvider {
+            responses: std::sync::Mutex<VecDeque<String>>,
+            last: std::sync::Mutex<String>,
+            calls: AtomicUsize,
+        }
+
+        impl ScriptedProvider {
+            fn new(responses: &[&str]) -> Self {
+                Self {
+                    responses: std::sync::Mutex::new(
+                        responses.iter().map(|s| (*s).to_string()).collect(),
+                    ),
+                    last: std::sync::Mutex::new(String::new()),
+                    calls: AtomicUsize::new(0),
+                }
+            }
+
+            fn call_count(&self) -> usize {
+                self.calls.load(Ordering::SeqCst)
+            }
+        }
+
+        #[async_trait]
+        impl Provider for ScriptedProvider {
+            async fn complete(
+                &self,
+                request: CompletionRequest,
+            ) -> anyhow::Result<CompletionResponse> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let mut queue = self.responses.lock().unwrap();
+                let content = queue
+                    .pop_front()
+                    .unwrap_or_else(|| self.last.lock().unwrap().clone());
+                *self.last.lock().unwrap() = content.clone();
+                Ok(CompletionResponse {
+                    content,
+                    model: request.model,
+                    tokens_in: 1,
+                    tokens_out: 1,
+                    cost: 0.0,
+                })
+            }
+            async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+                anyhow::bail!("streaming not exercised by run_blackboard_es tests")
+            }
+            fn metadata(&self) -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "scripted".to_string(),
+                    models: vec![],
+                    supports_streaming: false,
+                }
+            }
+        }
+
+        /// Extract the `content` of the last `Completed` event recorded for
+        /// `run_id`, if any. `ExecutionState` itself carries no `content`
+        /// field (only `status`), so asserting the final answer's content
+        /// requires reading it back from the log.
+        fn final_content(log: &InMemoryLog, run_id: &str) -> String {
+            log.events(run_id)
+                .unwrap()
+                .into_iter()
+                .rev()
+                .find_map(|e| match e {
+                    ExecutionEvent::Completed { content } => Some(content),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        }
+
+        /// Whether `run_id`'s log contains a `Warned{code}` event matching
+        /// `code` exactly. `apply` treats `Warned` as a no-op on
+        /// `ExecutionState` (see `es::state::apply`), so — like
+        /// `final_content` above — this can only be checked against the
+        /// log, not the projected state.
+        fn log_has_warned(log: &InMemoryLog, run_id: &str, code: &str) -> bool {
+            log.events(run_id)
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e, ExecutionEvent::Warned { code: c } if c == code))
+        }
+
+        // Scenario 1: both agents post a `CONFIRMATION` targeting entry 0 in
+        // round 0 — a 2/2 = 1.0 confirmation ratio, above the default
+        // `consensus_threshold` (0.75), reaching consensus on the very
+        // first round (default `convergence_rounds` is 1). The run must
+        // `Complete`, and the final board digest must be non-empty.
+        #[tokio::test]
+        async fn es_blackboard_converges_and_completes() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), es_test_agent("a", "concrete-model"));
+            agents.insert("b".to_string(), es_test_agent("b", "concrete-model"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert(
+                "a".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:tout est cohérent",
+                ])),
+            );
+            providers.insert(
+                "b".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:confirmé",
+                ])),
+            );
+
+            let mut log = InMemoryLog::default();
+            let st = run_blackboard_es(
+                "run-converge",
+                "task",
+                agents,
+                providers,
+                BlackboardConfig::default(),
+                RoutingRules::default(),
+                &mut log,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(st.status, RunStatus::Completed);
+            assert!(
+                st.board.entries.iter().all(|e| e.kind == "confirmation"),
+                "expected only confirmation entries, got {:?}",
+                st.board.entries
+            );
+            assert!(
+                !final_content(&log, "run-converge").trim().is_empty(),
+                "expected a non-empty final board digest"
+            );
+        }
+
+        // Scenario 2: both agents post plain `FINDING`s every round — never
+        // a `CONFIRMATION` — so convergence never triggers. With
+        // `max_rounds: 2`, the run must halt via `Warned{max_rounds}` (once
+        // round 1 completes, since `round + 1 >= max_rounds` first holds at
+        // round 1) rather than spin forever, and still end `Completed`
+        // (the guard *completes* the run with the board digest, it does
+        // not error).
+        #[tokio::test]
+        async fn es_blackboard_halts_at_max_rounds() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), es_test_agent("a", "concrete-model"));
+            agents.insert("b".to_string(), es_test_agent("b", "concrete-model"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert(
+                "a".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION:FINDING\nCONFIDENCE:0.5\nCONTENT:piste A",
+                ])),
+            );
+            providers.insert(
+                "b".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION:FINDING\nCONFIDENCE:0.5\nCONTENT:piste B",
+                ])),
+            );
+
+            let config = BlackboardConfig {
+                max_rounds: 2,
+                ..BlackboardConfig::default()
+            };
+
+            let mut log = InMemoryLog::default();
+            let st = run_blackboard_es(
+                "run-maxrounds",
+                "task",
+                agents,
+                providers,
+                config,
+                RoutingRules::default(),
+                &mut log,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(st.status, RunStatus::Completed);
+            assert!(
+                log_has_warned(&log, "run-maxrounds", "max_rounds"),
+                "expected a max_rounds Warned event in the log"
+            );
+            assert!(
+                !final_content(&log, "run-maxrounds").trim().is_empty(),
+                "expected a non-empty board digest"
+            );
+        }
+
+        // Scenario 3: replay determinism. After a full run, `replay(run_id,
+        // &log)` must reconstruct an `ExecutionState` identical (`Debug`
+        // format) to the one `run_blackboard_es` returned — and it must do
+        // so without invoking any provider again (`replay` takes no
+        // `EffectRunner` at all; the call-count assertions below are an
+        // extra, belt-and-braces proof that no effect silently re-runs).
+        #[tokio::test]
+        async fn es_blackboard_replay_reconstructs_state() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), es_test_agent("a", "concrete-model"));
+            agents.insert("b".to_string(), es_test_agent("b", "concrete-model"));
+            let provider_a = Arc::new(ScriptedProvider::new(&[
+                "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:tout est cohérent",
+            ]));
+            let provider_b = Arc::new(ScriptedProvider::new(&[
+                "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:confirmé",
+            ]));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), provider_a.clone() as Arc<dyn Provider>);
+            providers.insert("b".to_string(), provider_b.clone() as Arc<dyn Provider>);
+
+            let mut log = InMemoryLog::default();
+            let st = run_blackboard_es(
+                "run-replay",
+                "task",
+                agents,
+                providers,
+                BlackboardConfig::default(),
+                RoutingRules::default(),
+                &mut log,
+            )
+            .await
+            .unwrap();
+            assert_eq!(st.status, RunStatus::Completed);
+
+            let calls_a_before = provider_a.call_count();
+            let calls_b_before = provider_b.call_count();
+            assert!(
+                calls_a_before > 0,
+                "expected provider 'a' to have been invoked during the run"
+            );
+            assert!(
+                calls_b_before > 0,
+                "expected provider 'b' to have been invoked during the run"
+            );
+
+            let replayed = replay("run-replay", &log).unwrap();
+
+            assert_eq!(
+                format!("{st:?}"),
+                format!("{replayed:?}"),
+                "replay must reconstruct an identical ExecutionState"
+            );
+            assert_eq!(
+                provider_a.call_count(),
+                calls_a_before,
+                "replay must not re-invoke provider 'a'"
+            );
+            assert_eq!(
+                provider_b.call_count(),
+                calls_b_before,
+                "replay must not re-invoke provider 'b'"
             );
         }
     }
