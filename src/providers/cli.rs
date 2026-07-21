@@ -29,6 +29,63 @@ impl CliProvider {
         cmd.stderr(std::process::Stdio::piped());
         cmd
     }
+
+    /// Same shape as [`Self::build_command`] but with the canonical
+    /// stream-json args for this CLI (see
+    /// `crate::shell::json_runner::json_mode_args`) instead of `self.args`,
+    /// so we get structured JSONL events (cost/tokens) on stdout instead of
+    /// free-form text. Only meaningful when
+    /// `crate::shell::json_runner::supports_json(&self.command)` is true.
+    fn build_json_command(&self, input: &str) -> Command {
+        let mut cmd = Command::new(&self.command);
+        for arg in crate::shell::json_runner::json_mode_args(&self.command) {
+            cmd.arg(arg);
+        }
+        cmd.arg(input);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd
+    }
+
+    /// Parse a JSON-mode CLI's raw stdout (one JSONL event per line) into a
+    /// [`CompletionResponse`]: accumulate the visible text from
+    /// `Delta`/`Message` events, and pull cost/tokens/model from the
+    /// terminal `Result` event.
+    ///
+    /// If no `Result` event appears (e.g. the CLI errored out mid-stream
+    /// after producing partial JSONL, or its stdout wasn't JSON at all),
+    /// falls back to the raw stdout as `content` with zeroed cost/tokens —
+    /// the same shape `complete()` has always returned for non-JSON CLIs.
+    fn parse_json_stdout(&self, raw: &str) -> CompletionResponse {
+        use crate::shell::json_runner::{StreamEvent, parse_stream_event};
+
+        let mut content = String::new();
+        let mut result = None;
+        for line in raw.lines() {
+            match parse_stream_event(&self.command, line) {
+                StreamEvent::Delta(t) | StreamEvent::Message(t) => content.push_str(&t),
+                StreamEvent::Result(resp) => result = Some(resp),
+                _ => {}
+            }
+        }
+
+        match result {
+            Some(resp) => CompletionResponse {
+                content,
+                model: resp.model.unwrap_or_else(|| self.command.clone()),
+                tokens_in: resp.tokens_in.unwrap_or(0) as u32,
+                tokens_out: resp.tokens_out.unwrap_or(0) as u32,
+                cost: resp.cost_usd.unwrap_or(0.0),
+            },
+            None => CompletionResponse {
+                content: raw.to_string(),
+                model: self.command.clone(),
+                tokens_in: 0,
+                tokens_out: 0,
+                cost: 0.0,
+            },
+        }
+    }
 }
 
 #[async_trait]
@@ -40,7 +97,12 @@ impl Provider for CliProvider {
             .map(|m| m.content.as_str())
             .unwrap_or("");
 
-        let mut cmd = self.build_command(input);
+        let use_json = crate::shell::json_runner::supports_json(&self.command);
+        let mut cmd = if use_json {
+            self.build_json_command(input)
+        } else {
+            self.build_command(input)
+        };
         let timeout = std::time::Duration::from_secs(self.timeout_secs);
 
         let output = match tokio::time::timeout(timeout, cmd.output()).await {
@@ -55,15 +117,19 @@ impl Provider for CliProvider {
             anyhow::bail!("CLI command failed ({}): {stderr}", output.status);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout);
 
-        Ok(CompletionResponse {
-            content: stdout,
-            model: self.command.clone(),
-            tokens_in: 0,
-            tokens_out: 0,
-            cost: 0.0,
-        })
+        if use_json {
+            Ok(self.parse_json_stdout(&stdout))
+        } else {
+            Ok(CompletionResponse {
+                content: stdout.to_string(),
+                model: self.command.clone(),
+                tokens_in: 0,
+                tokens_out: 0,
+                cost: 0.0,
+            })
+        }
     }
 
     async fn stream(&self, request: CompletionRequest) -> anyhow::Result<TokenStream> {
@@ -185,5 +251,45 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("timed out"), "Error was: {err}");
+    }
+
+    // ── JSON-mode stdout parsing (Part C: real cost/tokens from `claude`) ──
+
+    #[test]
+    fn parse_json_stdout_claude_extracts_cost_and_tokens() {
+        let provider = CliProvider::new("claude".to_string(), vec![], 10);
+        // A representative claude --output-format stream-json session: an
+        // init event, one assistant turn (the visible answer), then the
+        // terminal result event carrying usage/cost.
+        let jsonl = concat!(
+            r#"{"type":"system","subtype":"init","session_id":"s1","model":"claude-opus-4-6","agents":[]}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello there!"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"num_turns":1,"result":"Hello there!","session_id":"s1","total_cost_usd":0.0123,"usage":{"input_tokens":42,"output_tokens":17},"modelUsage":{"claude-opus-4-6":{"outputTokens":17}}}"#,
+        );
+
+        let response = provider.parse_json_stdout(jsonl);
+
+        assert_eq!(response.content, "Hello there!");
+        assert_eq!(response.tokens_in, 42);
+        assert_eq!(response.tokens_out, 17);
+        assert!((response.cost - 0.0123).abs() < 1e-9);
+        assert_eq!(response.model, "claude-opus-4-6");
+    }
+
+    #[test]
+    fn parse_json_stdout_falls_back_to_raw_when_no_result_event() {
+        // Partial/interrupted stream: no terminal "result" event at all.
+        let provider = CliProvider::new("claude".to_string(), vec![], 10);
+        let jsonl = r#"{"type":"system","subtype":"init","session_id":"s1","tools":[]}"#;
+
+        let response = provider.parse_json_stdout(jsonl);
+
+        // Falls back to the current behavior: raw stdout as content, zeroed metrics.
+        assert_eq!(response.content, jsonl);
+        assert_eq!(response.tokens_in, 0);
+        assert_eq!(response.tokens_out, 0);
+        assert_eq!(response.cost, 0.0);
     }
 }
