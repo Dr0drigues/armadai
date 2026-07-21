@@ -7,6 +7,7 @@
 
 pub mod blackboard;
 pub mod bridge;
+pub mod direct;
 pub mod engine;
 pub mod event;
 pub mod hierarchical;
