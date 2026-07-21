@@ -395,6 +395,7 @@ pub fn get_orchestration_runs(
 /// after the fact would let nested children consume slots in the initial
 /// `LIMIT`, silently returning fewer than `limit` roots whenever a run in the
 /// window has children (see C6 trace list pagination).
+#[allow(dead_code)] // sole caller (get_orchestration_trace) is gated behind `web`
 pub fn get_root_orchestration_runs(
     db: &Database,
     limit: u32,
