@@ -929,7 +929,7 @@ impl EffectRunner for RingEffectRunner {
 /// .vote_weights.insert(agent.name().to_string(), agent.vote_weight())`,
 /// where `LlmRingAgent::vote_weight` reads the identical
 /// `ring_config.vote_weight` field).
-fn vote_weights_from_agents(agents: &BTreeMap<String, Agent>) -> BTreeMap<String, f32> {
+pub(crate) fn vote_weights_from_agents(agents: &BTreeMap<String, Agent>) -> BTreeMap<String, f32> {
     agents
         .iter()
         .map(|(name, agent)| {

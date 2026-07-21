@@ -5,7 +5,7 @@
 //! randomness. Given the same state and event it always produces the same
 //! next state, which is what makes the event log replayable.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::event::ExecutionEvent;
 use crate::providers::traits::ChatMessage;
@@ -101,6 +101,17 @@ pub struct ExecutionState {
     /// blackboard/ring patterns route models the same way. `BTreeMap` for
     /// deterministic iteration/ordering.
     pub routed_tiers: BTreeMap<String, String>,
+    /// Team leads whose nested C9 sub-run boundary is currently *open*: a
+    /// `NestedStarted { team_lead }` has been recorded with no matching
+    /// `NestedEnded { team_lead }` yet. Populated purely by `apply`
+    /// (`NestedStarted` inserts, `NestedEnded` removes), so the pure
+    /// `HierarchicalDecider` can detect — without scanning the whole log —
+    /// which nested boundaries still need a deferred `NestedEnded` emitted to
+    /// close them (see `HierarchicalDecider::pending_nested_ended`). `BTreeSet`
+    /// for deterministic iteration order. In any terminal (completed) run this
+    /// set is empty — every boundary opened during the run is closed before it
+    /// ends — so it never perturbs replay-vs-run `Debug` equality.
+    pub open_nested: BTreeSet<String>,
 }
 
 /// Apply a single event to `state` in place.
@@ -197,8 +208,16 @@ pub fn apply(state: &mut ExecutionState, event: &ExecutionEvent) {
                 .push((from.clone(), to.clone(), message.clone(), 0));
         }
         ExecutionEvent::Synthesized { .. } => {}
-        ExecutionEvent::NestedStarted { .. } => {}
-        ExecutionEvent::NestedEnded { .. } => {}
+        ExecutionEvent::NestedStarted { team_lead, .. } => {
+            // Open a nested C9 boundary for `team_lead`. The matching
+            // `NestedEnded` (emitted in deferred fashion by
+            // `HierarchicalDecider::decide`, once the lead's sub-run outcome
+            // has been observed) removes it below.
+            state.open_nested.insert(team_lead.clone());
+        }
+        ExecutionEvent::NestedEnded { team_lead } => {
+            state.open_nested.remove(team_lead);
+        }
         ExecutionEvent::RoundStarted { round } => {
             state.board.round = *round;
         }

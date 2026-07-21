@@ -16,16 +16,20 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use super::blackboard::{build_board_result, run_blackboard_es};
 use super::engine::{Action, Decider, EffectRunner, run_event_sourced};
 use super::event::ExecutionEvent;
-use super::log::EventLog;
+use super::log::{EventLog, InMemoryLog};
+use super::ring::{resolve_votes, run_ring_es, vote_weights_from_agents};
 use super::state::ExecutionState;
 use crate::core::agent::Agent;
-use crate::core::orchestration::OrchestrationConfig;
+use crate::core::orchestration::blackboard::BlackboardConfig;
 use crate::core::orchestration::context_injection::{AgentInfo, build_orchestration_prompt};
 use crate::core::orchestration::protocol::{
     DelegationAction, extract_narrative, parse_delegations,
 };
+use crate::core::orchestration::ring::RingConfig;
+use crate::core::orchestration::{NestedPattern, OrchestrationConfig, TeamConfig};
 use crate::core::routing::{BudgetState, RoutingRules, route};
 #[cfg(test)]
 use crate::linker::model_resolution::fallback_model_for_tier;
@@ -513,20 +517,36 @@ impl HierarchicalDecider {
     /// expected to change for that; the hook lives entirely on the impure
     /// `EffectRunner` side.
     fn nested_started_event(&self, agent_name: &str) -> Option<ExecutionEvent> {
-        self.config
-            .teams
-            .iter()
-            .find_map(|team| {
-                if team.lead.as_deref() == Some(agent_name) {
-                    team.pattern
-                } else {
-                    None
-                }
-            })
-            .map(|pattern| ExecutionEvent::NestedStarted {
+        nested_team_for(&self.config, agent_name).map(|(_, pattern)| {
+            ExecutionEvent::NestedStarted {
                 team_lead: agent_name.to_string(),
                 pattern: pattern.to_string(),
-            })
+            }
+        })
+    }
+
+    /// First team lead (in `state.open_nested`'s `BTreeSet` order) whose
+    /// nested C9 boundary is still open *and* whose sub-run outcome has
+    /// already been surfaced as an `AgentObserved` (`assistant_turn_count >=
+    /// 1`). Returning it means `decide` should emit a deferred
+    /// `NestedEnded { team_lead }` to close that boundary.
+    ///
+    /// Pure and deterministic: reads only the projected `state.open_nested`
+    /// set (maintained by `es::state::apply` from `NestedStarted`/`NestedEnded`
+    /// events) plus the lead's observed-turn count — no log scan, no I/O. The
+    /// "observed" guard mirrors the legacy `run_nested_team`, which emits
+    /// `NestedEnd` only *after* the sub-run has produced its outcome; on the
+    /// production path the lead's `Invoke` (and the `AgentObserved` the nested
+    /// `run_invoke` returns for it) is applied in the very same action batch as
+    /// the opening `NestedStarted`, so by the next `decide` round the lead is
+    /// always already observed — the guard only matters for hand-built partial
+    /// states in tests.
+    fn pending_nested_ended(&self, state: &ExecutionState) -> Option<String> {
+        state
+            .open_nested
+            .iter()
+            .find(|lead| assistant_turn_count(state, lead) >= 1)
+            .cloned()
     }
 
     /// Build the ordered action batch for invoking `agent_name` with
@@ -690,6 +710,19 @@ impl Decider for HierarchicalDecider {
             return self.invoke_actions(&self.coordinator, &self.input, state, None);
         }
 
+        // 1b. C9 nested boundary close-off: a team lead's sub-run has been
+        // launched (`NestedStarted`) and its outcome observed
+        // (`AgentObserved`, produced by the nested `run_invoke` short-circuit),
+        // but the boundary is still open. Emit the deferred `NestedEnded` to
+        // balance it — as its own single-action batch, so the next `decide`
+        // round (with `open_nested` now empty) proceeds to the parent's normal
+        // synthesis/arbitration of the lead's outcome. Checked ahead of the
+        // guards so the boundary always closes, matching the legacy
+        // `run_nested_team`, which emits `NestedEnd` regardless of outcome.
+        if let Some(team_lead) = self.pending_nested_ended(state) {
+            return vec![Action::Emit(ExecutionEvent::NestedEnded { team_lead })];
+        }
+
         // 2. Guards: depth / iteration / budget caps, checked before
         // considering any further delegation.
         if let Some(code) = self.breached_limit(state) {
@@ -806,6 +839,87 @@ fn parse_routed_tier(tier: &str) -> ModelTier {
     }
 }
 
+/// Shared C9 detection: if `agent` is the declared lead of a team that runs a
+/// nested sub-pattern (blackboard/ring), return that `(team, pattern)`.
+///
+/// Single source of truth for "is this agent a nested-team lead?", used both
+/// by the pure `HierarchicalDecider::nested_started_event` (to *mark* the
+/// boundary) and by the impure `HierarchicalEffectRunner::run_invoke` (to
+/// actually *launch* the sub-run). Config validation (`validate_config`,
+/// `DuplicateLead`) guarantees a lead appears in at most one team, so the
+/// first match is the only match.
+fn nested_team_for<'a>(
+    config: &'a OrchestrationConfig,
+    agent: &str,
+) -> Option<(&'a TeamConfig, NestedPattern)> {
+    config.teams.iter().find_map(|team| {
+        if team.lead.as_deref() == Some(agent) {
+            team.pattern.map(|pattern| (team, pattern))
+        } else {
+            None
+        }
+    })
+}
+
+/// Resolve the effective `BlackboardConfig` for a nested team: start from
+/// `base` (which already carries the remaining shared token budget) and apply
+/// team-level overrides, falling back to the parent orchestration config.
+/// Mirrors the legacy `apply_team_blackboard_overrides`
+/// (`core::orchestration::hierarchical.rs`) — reimplemented over `&TeamConfig`
+/// / `&OrchestrationConfig` rather than `&EngineContext`, keeping strict
+/// coexistence with the legacy engine.
+fn team_blackboard_config(
+    mut base: BlackboardConfig,
+    team: &TeamConfig,
+    config: &OrchestrationConfig,
+) -> BlackboardConfig {
+    if let Some(v) = team.max_rounds.or(config.max_rounds) {
+        base.max_rounds = v;
+    }
+    if let Some(v) = team.consensus_threshold.or(config.consensus_threshold) {
+        base.consensus_threshold = v;
+    }
+    base
+}
+
+/// Fold a finished nested sub-run into the single `AgentObserved` event the
+/// parent run records for `team_lead`: the sub-run's `outcome` text as the
+/// lead's "response", and the child run's aggregated budget as the lead's
+/// token/cost accounting (so it flows into the parent budget exactly like a
+/// real LLM turn). The child's `budget_tokens_in/out` are `u64`; they are
+/// narrowed to the `AgentObserved` `u32` fields with a saturating cast
+/// (`u32::MAX` on the — practically impossible — overflow) rather than a
+/// silent wrap. `model` is the sentinel `"nested"`, marking this observation
+/// as a folded sub-run rather than a direct provider call.
+fn nested_observed(team_lead: &str, outcome: String, child: &ExecutionState) -> ExecutionEvent {
+    ExecutionEvent::AgentObserved {
+        agent: team_lead.to_string(),
+        content: outcome,
+        tokens_in: u32::try_from(child.budget_tokens_in).unwrap_or(u32::MAX),
+        tokens_out: u32::try_from(child.budget_tokens_out).unwrap_or(u32::MAX),
+        cost: child.budget_cost,
+        model: "nested".to_string(),
+    }
+}
+
+/// Resolve the effective `RingConfig` for a nested team. Mirrors the legacy
+/// `apply_team_ring_overrides`: `max_laps` takes the team override only (no
+/// global fallback, matching legacy), `consensus_threshold` falls back to the
+/// parent config.
+fn team_ring_config(
+    mut base: RingConfig,
+    team: &TeamConfig,
+    config: &OrchestrationConfig,
+) -> RingConfig {
+    if let Some(v) = team.max_laps {
+        base.max_laps = v;
+    }
+    if let Some(v) = team.consensus_threshold.or(config.consensus_threshold) {
+        base.consensus_threshold = v;
+    }
+    base
+}
+
 // ── HierarchicalEffectRunner (Task 4): the sole async/impure effect ──
 
 /// Executes the actual LLM call behind `Action::Invoke` for the hierarchical
@@ -826,10 +940,21 @@ pub struct HierarchicalEffectRunner {
     /// (orchestration-aware) system prompt via
     /// `context_injection::build_orchestration_prompt`.
     pub config: OrchestrationConfig,
+    /// Routing rules forwarded to a nested C9 sub-run
+    /// (`run_blackboard_es`/`run_ring_es`) so its `latest:auto` members route
+    /// consistently with the parent run. Defaults to `RoutingRules::default()`
+    /// via [`HierarchicalEffectRunner::new`]; production callers thread the
+    /// real rules in with [`HierarchicalEffectRunner::with_routing_rules`].
+    /// Unused on the flat (non-nested) invoke path.
+    pub routing_rules: RoutingRules,
 }
 
 impl HierarchicalEffectRunner {
     /// Construct a new `HierarchicalEffectRunner` from its immutable inputs.
+    /// `routing_rules` defaults to `RoutingRules::default()` — the correct
+    /// "no custom routing" value for the many unit tests that don't exercise
+    /// nested sub-runs; production assembly (`run_hierarchical_es`) overrides
+    /// it via [`Self::with_routing_rules`].
     pub fn new(
         agents: BTreeMap<String, Agent>,
         providers: BTreeMap<String, Arc<dyn Provider>>,
@@ -839,7 +964,148 @@ impl HierarchicalEffectRunner {
             agents,
             providers,
             config,
+            routing_rules: RoutingRules::default(),
         }
+    }
+
+    /// Thread the run's `routing_rules` into this effect runner, so a nested
+    /// C9 sub-run launched from `run_invoke` routes its members' `latest:auto`
+    /// models the same way the parent run does. Builder style to keep `new`'s
+    /// signature stable for the existing unit tests.
+    pub fn with_routing_rules(mut self, routing_rules: RoutingRules) -> Self {
+        self.routing_rules = routing_rules;
+        self
+    }
+
+    /// Launch a nested C9 sub-run for a team `team_lead` leads: run the team's
+    /// members (`team.agents`) through the event-sourced blackboard/ring
+    /// engine on a **dedicated, ephemeral child `InMemoryLog`**, then surface
+    /// the sub-run's outcome + aggregated metrics back into the parent run as
+    /// a single `AgentObserved` for `team_lead`.
+    ///
+    /// ## Child log choice
+    /// The sub-run writes its fine-grained events (`RoundStarted`,
+    /// `BoardEntryAdded`, `VoteCast`, …) to a *local* `InMemoryLog` that is
+    /// discarded when this function returns — they never enter the parent log.
+    /// Only three things cross the boundary into the parent log: the
+    /// `NestedStarted`/`NestedEnded` markers (emitted by the decider) and this
+    /// one folded `AgentObserved` carrying the outcome text + aggregated
+    /// tokens/cost. This is deliberate: it keeps the parent log's *replay*
+    /// deterministic and effect-free — replay reconstructs `team_lead`'s
+    /// observed outcome directly from the baked-in `AgentObserved`, with no
+    /// need to (and no risk of) re-executing the sub-run. The trade-off,
+    /// matching the intent of the legacy `run_nested_team` (which surfaced only
+    /// outcome + metrics upward, stashing the full `NestedRun` separately), is
+    /// that the sub-run's internal event trace is not persisted in the parent
+    /// log.
+    ///
+    /// ## Budget
+    /// The sub-run receives the parent's *remaining* shared token budget
+    /// (`config.token_budget − tokens already consumed`, saturating at 0), or
+    /// the sub-pattern's own default when the parent sets no budget — exactly
+    /// as legacy `run_nested_team` computes it. The tokens the sub-run consumes
+    /// flow back into the parent budget through the aggregated `AgentObserved`
+    /// (folded by `es::state::apply` like any other observation).
+    async fn run_nested(
+        &self,
+        team_lead: &str,
+        task: &str,
+        team: &TeamConfig,
+        pattern: NestedPattern,
+        state: &ExecutionState,
+    ) -> anyhow::Result<ExecutionEvent> {
+        // Scope agents/providers to the team's members (the lead is the
+        // arbiter, not a sub-run participant — matching legacy).
+        let mut member_agents: BTreeMap<String, Agent> = BTreeMap::new();
+        let mut member_providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        for name in &team.agents {
+            let agent = self
+                .agents
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("nested team agent '{name}' not found"))?
+                .clone();
+            let provider = self
+                .providers
+                .get(name)
+                .ok_or_else(|| anyhow::anyhow!("no provider for nested team agent '{name}'"))?;
+            member_agents.insert(name.clone(), agent);
+            member_providers.insert(name.clone(), Arc::clone(provider));
+        }
+
+        // Remaining shared token budget (never below zero), or the
+        // sub-pattern default when the parent run sets no global budget.
+        let remaining_budget = match self.config.token_budget {
+            Some(total) => total.saturating_sub(state.budget_tokens_in + state.budget_tokens_out),
+            None => match pattern {
+                NestedPattern::Blackboard => BlackboardConfig::default().token_budget,
+                NestedPattern::Ring => RingConfig::default().token_budget,
+            },
+        };
+
+        // Deterministic child run_id (carries the parent id + lead) on a
+        // dedicated, ephemeral child log (see the doc comment above).
+        let child_run_id = format!("{}::nested::{}", state.run_id, team_lead);
+        let mut child_log = InMemoryLog::default();
+
+        let child_state = match pattern {
+            NestedPattern::Blackboard => {
+                let cfg = team_blackboard_config(
+                    BlackboardConfig {
+                        token_budget: remaining_budget,
+                        ..BlackboardConfig::default()
+                    },
+                    team,
+                    &self.config,
+                );
+                run_blackboard_es(
+                    &child_run_id,
+                    task,
+                    member_agents,
+                    member_providers,
+                    cfg,
+                    self.routing_rules.clone(),
+                    &mut child_log,
+                )
+                .await?
+            }
+            NestedPattern::Ring => {
+                let cfg = team_ring_config(
+                    RingConfig {
+                        token_budget: remaining_budget,
+                        ..RingConfig::default()
+                    },
+                    team,
+                    &self.config,
+                );
+                // `resolve_votes` needs the same vote weights the sub-run's
+                // `RingDecider` used — rebuild them from the scoped members
+                // before ownership moves into `run_ring_es`.
+                let vote_weights = vote_weights_from_agents(&member_agents);
+                let child = run_ring_es(
+                    &child_run_id,
+                    task,
+                    member_agents,
+                    member_providers,
+                    cfg.clone(),
+                    self.routing_rules.clone(),
+                    &mut child_log,
+                )
+                .await?;
+                // Re-derive the outcome from the child state (the ring outcome
+                // is `resolve_votes` over the recorded votes — see
+                // `RingDecider`). Stash it in a closure-free local by short-
+                // circuiting: build the AgentObserved right here for ring, so
+                // the borrow of `cfg`/`vote_weights` stays local.
+                let outcome = resolve_votes(&child, &vote_weights, &cfg);
+                return Ok(nested_observed(team_lead, outcome, &child));
+            }
+        };
+
+        // Blackboard outcome: the deterministic board digest (`[agent]
+        // content` per entry), identical to the legacy engine's blackboard
+        // final answer.
+        let outcome = build_board_result(&child_state);
+        Ok(nested_observed(team_lead, outcome, &child_state))
     }
 
     /// Reconstruct `agents_info` (name → description, the first non-empty
@@ -898,6 +1164,16 @@ impl EffectRunner for HierarchicalEffectRunner {
         input: &str,
         state: &ExecutionState,
     ) -> anyhow::Result<ExecutionEvent> {
+        // C9 short-circuit: if `agent` leads a team declaring a nested
+        // sub-pattern, drive a full event-sourced blackboard/ring sub-run for
+        // that team instead of a flat LLM call, and surface its outcome +
+        // aggregated metrics as the lead's `AgentObserved` (see `run_nested`).
+        // Detection is the exact same `nested_team_for` test the decider used
+        // to emit the matching `NestedStarted`.
+        if let Some((team, pattern)) = nested_team_for(&self.config, agent) {
+            return self.run_nested(agent, input, team, pattern, state).await;
+        }
+
         let agent_def = self
             .agents
             .get(agent)
@@ -1053,13 +1329,14 @@ pub async fn run_hierarchical_es(
         input.to_string(),
         config.clone(),
         agents.clone(),
-        routing_rules,
+        routing_rules.clone(),
         max_depth,
         max_iterations,
         token_budget,
         cost_limit,
     );
-    let effects = HierarchicalEffectRunner::new(agents, providers, config);
+    let effects =
+        HierarchicalEffectRunner::new(agents, providers, config).with_routing_rules(routing_rules);
 
     run_event_sourced(run_id, initial, &decider, &effects, log).await
 }
@@ -3167,5 +3444,250 @@ mod tests {
             core_calls_before,
             "replay must not re-invoke the core-specialist provider"
         );
+    }
+
+    // ── Nested C9 sub-runs (Task 10) ─────────────────────────────────
+    //
+    // These mirror the legacy `hierarchical::tests::
+    // test_nested_blackboard_runs_and_folds_metrics` /
+    // `test_nested_ring_runs_and_folds_metrics`: the coordinator delegates to
+    // a lead of a team declaring a nested sub-pattern; `run_invoke`
+    // short-circuits into a full event-sourced blackboard/ring sub-run on a
+    // dedicated child log, and folds its outcome + aggregated metrics back
+    // into the parent run as a single `AgentObserved` for the lead.
+
+    /// Config: coordinator `dev-lead`, one team led by `core-lead` running the
+    /// nested `pattern` over members `core-a`/`core-b`.
+    fn nested_team_config(pattern: NestedPattern) -> OrchestrationConfig {
+        OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some("dev-lead".to_string()),
+            teams: vec![TeamConfig {
+                lead: Some("core-lead".to_string()),
+                agents: vec!["core-a".to_string(), "core-b".to_string()],
+                pattern: Some(pattern),
+                // Keep the sub-run short/deterministic (one lap/round).
+                max_rounds: Some(1),
+                max_laps: Some(1),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// The `AgentObserved` recorded for `agent` in `run_id`'s log, if any —
+    /// returns `(content, tokens_in, tokens_out, model)`.
+    fn observed_for(
+        log: &InMemoryLog,
+        run_id: &str,
+        agent: &str,
+    ) -> Option<(String, u32, u32, String)> {
+        log.events(run_id)
+            .unwrap()
+            .into_iter()
+            .find_map(|e| match e {
+                ExecutionEvent::AgentObserved {
+                    agent: a,
+                    content,
+                    tokens_in,
+                    tokens_out,
+                    model,
+                    ..
+                } if a == agent => Some((content, tokens_in, tokens_out, model)),
+                _ => None,
+            })
+    }
+
+    /// Position (index) of the first `NestedStarted`/`NestedEnded` for
+    /// `team_lead` in `run_id`'s log, for ordering assertions.
+    fn nested_marker_positions(
+        log: &InMemoryLog,
+        run_id: &str,
+        team_lead: &str,
+    ) -> (Option<usize>, Option<usize>) {
+        let events = log.events(run_id).unwrap();
+        let started = events.iter().position(
+            |e| matches!(e, ExecutionEvent::NestedStarted { team_lead: tl, .. } if tl == team_lead),
+        );
+        let ended = events.iter().position(
+            |e| matches!(e, ExecutionEvent::NestedEnded { team_lead: tl } if tl == team_lead),
+        );
+        (started, ended)
+    }
+
+    // Scenario: coordinator delegates to a `blackboard` team lead. The nested
+    // sub-run executes (both members contribute), the lead's `AgentObserved`
+    // carries the board digest + aggregated metrics with `model == "nested"`,
+    // the parent log records `NestedStarted` then `NestedEnded`, the parent
+    // budget includes the sub-run's tokens, and replay reconstructs the state.
+    #[tokio::test]
+    async fn es_nested_blackboard_runs_and_folds_metrics() {
+        let mut agents = BTreeMap::new();
+        for name in ["dev-lead", "core-lead", "core-a", "core-b"] {
+            agents.insert(name.to_string(), es_test_agent(name, "concrete-model"));
+        }
+
+        let core_a = Arc::new(ScriptedProvider::new(&[
+            "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:core-a confirme",
+        ]));
+        let core_b = Arc::new(ScriptedProvider::new(&[
+            "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:core-b confirme",
+        ]));
+        // `core-lead` is the arbiter, not a sub-run participant — its provider
+        // must never be called on the nested path (sentinel proves the
+        // short-circuit fired instead of a flat LLM call).
+        let core_lead = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert("dev-lead".to_string(), {
+            Arc::new(ScriptedProvider::new(&[
+                "@core-lead: gère la feature",
+                "Synthèse : livré.",
+            ])) as Arc<dyn Provider>
+        });
+        providers.insert(
+            "core-lead".to_string(),
+            core_lead.clone() as Arc<dyn Provider>,
+        );
+        providers.insert("core-a".to_string(), core_a.clone() as Arc<dyn Provider>);
+        providers.insert("core-b".to_string(), core_b.clone() as Arc<dyn Provider>);
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-nested-bb",
+            "dev-lead",
+            "build X",
+            nested_team_config(NestedPattern::Blackboard),
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+
+        // Sub-run actually executed: both members were invoked...
+        assert!(core_a.call_count() > 0 && core_b.call_count() > 0);
+        // ...but the lead's own provider was never called (short-circuit).
+        assert_eq!(
+            core_lead.call_count(),
+            0,
+            "lead must not make a flat LLM call"
+        );
+
+        // The lead's observed turn is the folded sub-run: board digest,
+        // aggregated tokens (2 members × 1 in / 1 out), model "nested".
+        let (content, tin, tout, model) =
+            observed_for(&log, "run-nested-bb", "core-lead").expect("lead observation");
+        assert_eq!(model, "nested");
+        assert_eq!((tin, tout), (2, 2), "aggregated sub-run metrics");
+        assert_eq!(
+            content,
+            "[core-a] core-a confirme\n[core-b] core-b confirme"
+        );
+
+        // The parent log records NestedStarted before NestedEnded.
+        let (started, ended) = nested_marker_positions(&log, "run-nested-bb", "core-lead");
+        assert!(
+            matches!((started, ended), (Some(s), Some(e)) if s < e),
+            "expected NestedStarted before NestedEnded, got {started:?}/{ended:?}"
+        );
+
+        // Parent budget includes the sub-run: dev-lead delegate (1) +
+        // nested (2) + dev-lead synthesis (1) = 4 tokens in.
+        assert_eq!(st.budget_tokens_in, 4);
+        assert_eq!(st.budget_tokens_out, 4);
+
+        // Sub-run stays isolated: members never leak into the parent state.
+        assert!(!st.conversations.contains_key("core-a"));
+        assert!(!st.conversations.contains_key("core-b"));
+        // Boundary is closed in the terminal state.
+        assert!(st.open_nested.is_empty());
+
+        // Replay reconstructs the identical state from the parent log alone
+        // (the child sub-run is never re-executed).
+        let replayed = replay("run-nested-bb", &log).unwrap();
+        assert_eq!(format!("{st:?}"), format!("{replayed:?}"));
+    }
+
+    // Scenario: same topology, `ring` sub-pattern. The nested ring circulates
+    // one lap, both members vote for the same position, the outcome resolves
+    // to that position, and it is folded into the lead's `AgentObserved`.
+    #[tokio::test]
+    async fn es_nested_ring_runs_and_folds_metrics() {
+        let mut agents = BTreeMap::new();
+        for name in ["dev-lead", "core-lead", "core-a", "core-b"] {
+            agents.insert(name.to_string(), es_test_agent(name, "concrete-model"));
+        }
+
+        let core_a = Arc::new(ScriptedProvider::new(&[
+            "ACTION: PROPOSE\nCONTENT: use Rust",
+            "CONFIDENCE: 0.9\nUse Rust",
+        ]));
+        let core_b = Arc::new(ScriptedProvider::new(&[
+            "ACTION: PROPOSE\nCONTENT: agreed, Rust",
+            "CONFIDENCE: 0.8\nUse Rust",
+        ]));
+        let core_lead = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert("dev-lead".to_string(), {
+            Arc::new(ScriptedProvider::new(&[
+                "@core-lead: gère la feature",
+                "Synthèse : livré.",
+            ])) as Arc<dyn Provider>
+        });
+        providers.insert(
+            "core-lead".to_string(),
+            core_lead.clone() as Arc<dyn Provider>,
+        );
+        providers.insert("core-a".to_string(), core_a.clone() as Arc<dyn Provider>);
+        providers.insert("core-b".to_string(), core_b.clone() as Arc<dyn Provider>);
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-nested-ring",
+            "dev-lead",
+            "build X",
+            nested_team_config(NestedPattern::Ring),
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+        assert!(core_a.call_count() > 0 && core_b.call_count() > 0);
+        assert_eq!(
+            core_lead.call_count(),
+            0,
+            "lead must not make a flat LLM call"
+        );
+
+        // Ring outcome = resolved representative position; metrics aggregate
+        // the two contributions (votes carry no tokens in the ES projection).
+        let (content, tin, tout, model) =
+            observed_for(&log, "run-nested-ring", "core-lead").expect("lead observation");
+        assert_eq!(model, "nested");
+        assert_eq!(content, "Use Rust");
+        assert_eq!((tin, tout), (2, 2), "aggregated sub-run metrics");
+
+        let (started, ended) = nested_marker_positions(&log, "run-nested-ring", "core-lead");
+        assert!(
+            matches!((started, ended), (Some(s), Some(e)) if s < e),
+            "expected NestedStarted before NestedEnded, got {started:?}/{ended:?}"
+        );
+
+        assert_eq!(st.budget_tokens_in, 4);
+        assert_eq!(st.budget_tokens_out, 4);
+        assert!(!st.conversations.contains_key("core-a"));
+        assert!(!st.conversations.contains_key("core-b"));
+        assert!(st.open_nested.is_empty());
+
+        let replayed = replay("run-nested-ring", &log).unwrap();
+        assert_eq!(format!("{st:?}"), format!("{replayed:?}"));
     }
 }
