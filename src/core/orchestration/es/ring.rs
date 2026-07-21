@@ -18,8 +18,12 @@
 
 use std::collections::BTreeMap;
 
+use super::engine::{Action, Decider};
+use super::event::ExecutionEvent;
 use super::state::{ExecutionState, RunStatus, VoteRec};
+use crate::core::agent::Agent;
 use crate::core::orchestration::ring::RingConfig;
+use crate::core::routing::{BudgetState, RoutingRules, route};
 
 /// The ring pattern's current phase, derived purely from [`ExecutionState`].
 ///
@@ -277,6 +281,308 @@ pub fn resolve_votes(
         .expect("groups must be non-empty because votes is non-empty");
 
     largest_group[0].1.position.clone()
+}
+
+// ── RingDecider (Task 7): pure decision function ──────────────────
+
+/// Best-effort partial digest of the run so far, built from every recorded
+/// ring contribution (`state.ring.contributions`, in append order — the
+/// chronological order the underlying event log recorded them), formatted as
+/// `[agent] content` per line. Ring counterpart of
+/// `es::blackboard::build_board_result`/`es::hierarchical::build_partial_content`,
+/// used as the fallback content for a guard-triggered `Complete` when no vote
+/// has been cast yet (see [`RingDecider::partial_or_outcome`]).
+fn build_ring_partial(state: &ExecutionState) -> String {
+    state
+        .ring
+        .contributions
+        .iter()
+        .map(|c| format!("[{}] {}", c.agent, c.content))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Pure ring [`Decider`]: given the current [`ExecutionState`], decides the
+/// next batch of [`Action`]s across the pattern's three phases — circulation
+/// (`Circulate`), voting (`Vote`), and resolution (`Resolve`) — derived via
+/// [`ring_phase`].
+///
+/// Mirrors `HierarchicalDecider`/`BlackboardDecider` (`es::hierarchical`/
+/// `es::blackboard`, OH1 Lot 2/3): all fields are immutable inputs captured
+/// at construction time, `decide` performs no I/O and reads no mutable
+/// state — every decision is a pure function of `state`, which is what keeps
+/// event-log replay deterministic.
+///
+/// # Roster contract
+/// `agent_order` must be the same set, in the same order, as `state.agents`
+/// (the run's roster, seeded from `RunStarted { agents, .. }`). This decider
+/// never checks or reconciles the two — it is the caller's responsibility
+/// (the future `run_ring_es`, Task 9's assembly function) to construct both
+/// from a single source of truth. [`ring_phase`]'s lap-completeness check
+/// reads `state.agents`; [`next_ring_agent`] and this decider's own
+/// vote-completeness check (`Vote`/`Resolve` branches) read `agent_order` —
+/// a mismatch between the two would desynchronize "who still owes a
+/// contribution/vote" from "who gets invoked next".
+#[derive(Debug, Clone)]
+pub struct RingDecider {
+    /// All known agents by name, for model/tag lookups (routing).
+    pub agents: BTreeMap<String, Agent>,
+    /// Declared agent order — the circulation/voting rotation. Must match
+    /// `state.agents` (see the roster contract above).
+    pub agent_order: Vec<String>,
+    /// The original user input/task, given to every invoked agent.
+    pub input: String,
+    /// Ring configuration (`max_laps`/`similarity_threshold`/…), read by
+    /// [`ring_phase`] and [`resolve_votes`].
+    pub config: RingConfig,
+    /// Routing rules for `latest:auto` agents.
+    pub routing_rules: RoutingRules,
+    /// Max laps before the run is force-completed, independent of
+    /// `config.max_laps` (which only drives [`ring_phase`]'s circulation →
+    /// vote transition). Kept as its own field — like
+    /// `BlackboardDecider::max_rounds` alongside `BlackboardConfig::max_rounds`
+    /// — so callers may cap circulation more aggressively than the pattern's
+    /// own configured lap count without touching `config`.
+    pub max_laps: u32,
+    /// Per-agent vote weight (default `1.0` when absent), read by
+    /// [`resolve_votes`].
+    pub vote_weights: BTreeMap<String, f32>,
+    /// Optional total token budget (in + out) before the run is
+    /// force-completed.
+    pub token_budget: Option<u32>,
+    /// Optional total cost budget (USD) before the run is force-completed.
+    pub cost_limit: Option<f64>,
+}
+
+impl RingDecider {
+    /// Construct a new `RingDecider`. All arguments become immutable fields
+    /// read by `decide`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        agents: BTreeMap<String, Agent>,
+        agent_order: Vec<String>,
+        input: impl Into<String>,
+        config: RingConfig,
+        routing_rules: RoutingRules,
+        max_laps: u32,
+        vote_weights: BTreeMap<String, f32>,
+        token_budget: Option<u32>,
+        cost_limit: Option<f64>,
+    ) -> Self {
+        Self {
+            agents,
+            agent_order,
+            input: input.into(),
+            config,
+            routing_rules,
+            max_laps,
+            vote_weights,
+            token_budget,
+            cost_limit,
+        }
+    }
+
+    /// Check budget/cost guards, returning the `Warned` code for whichever
+    /// one has been breached (token budget checked first — same convention
+    /// as `HierarchicalDecider::breached_limit`/`BlackboardDecider::breached_budget`).
+    fn breached_budget(&self, state: &ExecutionState) -> Option<&'static str> {
+        if let Some(budget) = self.token_budget
+            && state.budget_tokens_in + state.budget_tokens_out >= u64::from(budget)
+        {
+            return Some("token_budget");
+        }
+        if let Some(limit) = self.cost_limit
+            && state.budget_cost >= limit
+        {
+            return Some("cost_limit");
+        }
+        None
+    }
+
+    /// Best-effort final content for a guard-triggered `Complete`: the
+    /// resolved outcome if at least one vote has been cast (even a partial,
+    /// not-yet-complete vote round — [`resolve_votes`] tolerates that), or
+    /// else a digest of every ring contribution so far
+    /// ([`build_ring_partial`]). Matches the brief's "content: partiel ou
+    /// outcome".
+    fn partial_or_outcome(&self, state: &ExecutionState) -> String {
+        let outcome = resolve_votes(state, &self.vote_weights, &self.config);
+        if outcome.is_empty() {
+            build_ring_partial(state)
+        } else {
+            outcome
+        }
+    }
+
+    /// If `agent_name` is a known agent configured with the exact
+    /// `"latest:auto"` model placeholder, resolve the tier for
+    /// `routing_input` (pure, via `crate::core::routing::route`) and return
+    /// the `ModelRouted` event to emit before invoking it. Concrete models,
+    /// other `latest:*` placeholders, and unknown agents all return `None`.
+    ///
+    /// Identical in spirit to `HierarchicalDecider`/`BlackboardDecider`'s own
+    /// `model_routed_event` — duplicated rather than shared (same rationale:
+    /// the three deciders' `agents`/`routing_rules`/`token_budget` fields
+    /// live on unrelated structs with no common trait today).
+    fn model_routed_event(
+        &self,
+        agent_name: &str,
+        routing_input: &str,
+        state: &ExecutionState,
+    ) -> Option<ExecutionEvent> {
+        let agent = self.agents.get(agent_name)?;
+        let raw_model = agent.metadata.model.as_deref().unwrap_or("default");
+        if raw_model != "latest:auto" {
+            return None;
+        }
+        let tokens_consumed = state.budget_tokens_in + state.budget_tokens_out;
+        let budget = self.token_budget.filter(|&b| b > 0).map(|total| {
+            let total = u64::from(total);
+            BudgetState {
+                remaining_ratio: total.saturating_sub(tokens_consumed) as f64 / total as f64,
+            }
+        });
+        let (tier, reason) = route(
+            routing_input,
+            &agent.metadata.tags,
+            budget,
+            &self.routing_rules,
+        );
+        Some(ExecutionEvent::ModelRouted {
+            agent: agent_name.to_string(),
+            tier: format!("{tier:?}"),
+            reason: format!("{reason:?}"),
+        })
+    }
+
+    /// Build the action batch for circulation phase `lap`.
+    ///
+    /// **`LapStarted`-before-rotation contract**: whether `lap` has just
+    /// begun is decided purely from `state.ring.contributions` — no
+    /// contribution recorded yet for `lap` — rather than from
+    /// `state.ring.lap` (which still holds the *previous* lap's number until
+    /// the `LapStarted { lap }` this same batch emits is folded). When it has
+    /// just begun, `Emit(LapStarted { lap })` is pushed **first**, ahead of
+    /// anything else: [`next_ring_agent`] indexes by `state.ring.lap`, so
+    /// computing it against the raw (stale) `state` here would rotate off
+    /// the *previous* lap's contribution count instead of the new lap's
+    /// (vacuously `0`). We therefore compute the next agent against a
+    /// `state.ring.lap`-corrected lookahead clone — pure, local, no mutation
+    /// of the real state (mirrors `BlackboardDecider::decide`'s own
+    /// round-advance lookahead) — rather than against `state` directly, so
+    /// the very first invocation of a new lap always resolves to
+    /// `agent_order[0]` regardless of whether `LapStarted` has actually been
+    /// folded into `state` yet.
+    fn circulate_actions(&self, lap: u32, state: &ExecutionState) -> Vec<Action> {
+        let lap_just_started = !state.ring.contributions.iter().any(|c| c.lap == lap);
+
+        let mut lookahead = state.clone();
+        lookahead.ring.lap = lap;
+        let agent = next_ring_agent(&lookahead, &self.agent_order);
+
+        let mut actions = Vec::new();
+        if lap_just_started {
+            actions.push(Action::Emit(ExecutionEvent::LapStarted { lap }));
+        }
+        if let Some(agent) = agent {
+            if let Some(event) = self.model_routed_event(&agent, &self.input, state) {
+                actions.push(Action::Emit(event));
+            }
+            actions.push(Action::Invoke {
+                agent,
+                input: self.input.clone(),
+            });
+        }
+        actions
+    }
+
+    /// Build the action batch for the voting phase: `Invoke` the first agent
+    /// in `agent_order` that has not cast a vote yet (`state.ring.votes`).
+    /// Covers both the circulation→vote transition (nobody has voted:
+    /// resolves to `agent_order[0]`) and an in-progress vote round (resolves
+    /// to the next non-voter) — the same lookup serves both, since "first
+    /// non-voter in roster order" is exactly "next votant" either way.
+    ///
+    /// Returns an empty batch if every agent has already voted — defensive
+    /// only: `ring_phase` returns `RingPhase::Resolve` in that case, so
+    /// `decide` never calls this with an exhausted roster in practice.
+    fn vote_actions(&self, state: &ExecutionState) -> Vec<Action> {
+        let Some(agent) = self
+            .agent_order
+            .iter()
+            .find(|a| !state.ring.votes.contains_key(*a))
+            .cloned()
+        else {
+            return Vec::new();
+        };
+
+        let mut actions = Vec::new();
+        if let Some(event) = self.model_routed_event(&agent, &self.input, state) {
+            actions.push(Action::Emit(event));
+        }
+        actions.push(Action::Invoke {
+            agent,
+            input: self.input.clone(),
+        });
+        actions
+    }
+}
+
+impl Decider for RingDecider {
+    fn decide(&self, state: &ExecutionState) -> Vec<Action> {
+        // Budget/cost guards apply regardless of phase — a hard external
+        // limit that can be hit mid-circulation or mid-voting alike (same
+        // priority convention as `BlackboardDecider::decide`: checked ahead
+        // of any lap/round cap).
+        if let Some(code) = self.breached_budget(state) {
+            return vec![
+                Action::Emit(ExecutionEvent::Warned {
+                    code: code.to_string(),
+                }),
+                Action::Complete {
+                    content: self.partial_or_outcome(state),
+                },
+            ];
+        }
+
+        match ring_phase(state, &self.config) {
+            RingPhase::Circulate { lap } => {
+                // Independent cap: `self.max_laps` (not `config.max_laps`,
+                // which only drives `ring_phase`'s own circulation → vote
+                // transition — see the field doc comment above) stops
+                // circulation early, without having converged, when it is
+                // set below what `config` would otherwise allow.
+                if lap >= self.max_laps {
+                    return vec![
+                        Action::Emit(ExecutionEvent::Warned {
+                            code: "max_laps".to_string(),
+                        }),
+                        Action::Complete {
+                            content: self.partial_or_outcome(state),
+                        },
+                    ];
+                }
+                self.circulate_actions(lap, state)
+            }
+            RingPhase::Vote => self.vote_actions(state),
+            RingPhase::Resolve => {
+                let outcome = resolve_votes(state, &self.vote_weights, &self.config);
+                vec![
+                    Action::Emit(ExecutionEvent::OutcomeResolved {
+                        outcome: outcome.clone(),
+                    }),
+                    Action::Complete { content: outcome },
+                ]
+            }
+            // The generic loop (`run_event_sourced`) only calls `decide`
+            // while `state.status == RunStatus::Running`, so this should be
+            // unreachable in practice (a `Done` phase implies the run has
+            // already terminated) — kept as an explicit, harmless empty
+            // batch for exhaustiveness rather than a `match` catch-all that
+            // could silently swallow a future `RingPhase` variant.
+            RingPhase::Done => Vec::new(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -548,5 +854,308 @@ mod tests {
             resolve_votes(&state, &BTreeMap::new(), &config),
             "Use Rust for the backend"
         );
+    }
+
+    /// Review hardening (Task 6 minor): the tie-break must still pick the
+    /// *last* group when there are three tied groups, not just two — proving
+    /// `max_by`'s "last element wins" isn't an artifact of only ever
+    /// comparing a pair.
+    #[test]
+    fn resolve_votes_tie_break_three_way_returns_last_key() {
+        // Three single-word, mutually dissimilar positions ("alpha", "beta",
+        // "gamma" — zero word overlap, so each starts its own group), each
+        // with exactly one vote at the default weight 1.0 → all three groups
+        // tied at weight 1.0. `groups.values()` iterates key-sorted:
+        // "alpha", "beta", "gamma" — the tie must resolve to "Gamma", the
+        // last key, never "Alpha" or "Beta".
+        let state = fold(&[
+            run_started(&["agent-a", "agent-b", "agent-c"]),
+            vote("agent-a", "Alpha", 0.9),
+            vote("agent-b", "Beta", 0.9),
+            vote("agent-c", "Gamma", 0.9),
+        ]);
+        let config = RingConfig::default();
+        assert_eq!(resolve_votes(&state, &BTreeMap::new(), &config), "Gamma");
+    }
+
+    /// Review hardening (Task 6 minor): the tie-break follows the *group
+    /// key's* (lowercased position) `BTreeMap` order, not the order in which
+    /// groups were first created while iterating `state.ring.votes` (itself
+    /// agent-name-sorted). `agent-a` (sorted first) casts "Zebra" — so the
+    /// "zebra" group is created *before* the "apple" group as iteration
+    /// proceeds — yet "apple" < "zebra" alphabetically, so on a tie
+    /// `groups.values()` must still resolve to "Zebra" (the alphabetically
+    /// *last* key), proving iteration order followed by `max_by` is the
+    /// `BTreeMap`'s key order, not creation/insertion order.
+    #[test]
+    fn resolve_votes_tie_break_follows_key_order_not_creation_order() {
+        let state = fold(&[
+            run_started(&["agent-a", "agent-b"]),
+            vote("agent-a", "Zebra", 0.9),
+            vote("agent-b", "Apple", 0.9),
+        ]);
+        let config = RingConfig::default();
+        assert_eq!(resolve_votes(&state, &BTreeMap::new(), &config), "Zebra");
+    }
+
+    // ── RingDecider (Task 7) ──────────────────────────────────────────
+
+    /// Tests for `RingDecider` (Task 7): pure decision function built on top
+    /// of `ring_phase`/`next_ring_agent`/`resolve_votes`. Named `decide` so
+    /// `cargo test es::ring::tests::decide` targets this module — mirrors
+    /// the naming convention used by `es::hierarchical::tests::decide` and
+    /// `es::blackboard::tests::decide`.
+    mod decide {
+        use super::*;
+        use crate::core::agent::AgentMetadata;
+        use crate::core::orchestration::es::engine::{Action, Decider};
+        use crate::core::routing::RoutingRules;
+        use std::path::PathBuf;
+
+        fn test_agent(name: &str, model: &str) -> Agent {
+            Agent {
+                name: name.to_string(),
+                source: PathBuf::from(format!("{name}.md")),
+                metadata: AgentMetadata {
+                    provider: "anthropic".to_string(),
+                    model: Some(model.to_string()),
+                    command: None,
+                    args: None,
+                    temperature: 0.7,
+                    max_tokens: None,
+                    timeout: None,
+                    tags: vec![],
+                    stacks: vec![],
+                    scope: vec![],
+                    model_fallback: vec![],
+                    cost_limit: None,
+                    rate_limit: None,
+                    context_window: None,
+                    mode: None,
+                    orchestration: None,
+                    triggers: None,
+                    ring_config: None,
+                },
+                system_prompt: "prompt".to_string(),
+                instructions: None,
+                output_format: None,
+                pipeline: None,
+                context: None,
+            }
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn test_decider(
+            agent_names: &[&str],
+            config: RingConfig,
+            max_laps: u32,
+            vote_weights: BTreeMap<String, f32>,
+            token_budget: Option<u32>,
+            cost_limit: Option<f64>,
+        ) -> RingDecider {
+            let mut agents = BTreeMap::new();
+            for name in agent_names {
+                agents.insert((*name).to_string(), test_agent(name, "concrete-model"));
+            }
+            RingDecider::new(
+                agents,
+                agent_names.iter().map(|a| (*a).to_string()).collect(),
+                "task".to_string(),
+                config,
+                RoutingRules::default(),
+                max_laps,
+                vote_weights,
+                token_budget,
+                cost_limit,
+            )
+        }
+
+        fn invoked_agent(actions: &[Action]) -> Option<&str> {
+            actions.iter().find_map(|a| match a {
+                Action::Invoke { agent, .. } => Some(agent.as_str()),
+                _ => None,
+            })
+        }
+
+        // (a) empty state → `LapStarted{0}` first, then `Invoke` of the
+        // first agent in `agent_order`.
+        #[test]
+        fn empty_state_starts_lap_zero_and_invokes_first_agent() {
+            let dec = test_decider(
+                &["a", "b", "c"],
+                RingConfig::default(),
+                5,
+                BTreeMap::new(),
+                None,
+                None,
+            );
+            let state = fold(&[run_started(&["a", "b", "c"])]);
+            let actions = dec.decide(&state);
+
+            assert!(
+                matches!(&actions[0], Action::Emit(E::LapStarted { lap }) if *lap == 0),
+                "expected Emit(LapStarted{{lap: 0}}) first, got {actions:?}"
+            );
+            assert_eq!(invoked_agent(&actions), Some("a"));
+        }
+
+        // (b) circulation in progress (one contribution already recorded
+        // this lap) → no `LapStarted` re-emitted, `Invoke` of the next agent
+        // in roster order.
+        #[test]
+        fn circulation_in_progress_invokes_next_agent_without_lap_started() {
+            let dec = test_decider(
+                &["a", "b", "c"],
+                RingConfig::default(),
+                5,
+                BTreeMap::new(),
+                None,
+                None,
+            );
+            let state = fold(&[
+                run_started(&["a", "b", "c"]),
+                E::LapStarted { lap: 0 },
+                contribution("a", 0, 0, "propose"),
+            ]);
+            let actions = dec.decide(&state);
+
+            assert!(
+                !actions
+                    .iter()
+                    .any(|a| matches!(a, Action::Emit(E::LapStarted { .. }))),
+                "must not re-emit LapStarted mid-lap, got {actions:?}"
+            );
+            assert_eq!(actions.len(), 1, "got {actions:?}");
+            assert_eq!(invoked_agent(&actions), Some("b"));
+        }
+
+        // (c) end of circulation (max_laps == 1, lap 0 fully contributed,
+        // non-pass) → `Invoke` of the first voter (`agent_order[0]`), no
+        // agent having voted yet.
+        #[test]
+        fn end_of_circulation_invokes_first_voter() {
+            let config = RingConfig {
+                max_laps: 1,
+                ..RingConfig::default()
+            };
+            let dec = test_decider(&["a", "b"], config, 5, BTreeMap::new(), None, None);
+            let state = fold(&[
+                run_started(&["a", "b"]),
+                E::LapStarted { lap: 0 },
+                contribution("a", 0, 0, "propose"),
+                contribution("b", 0, 1, "propose"),
+            ]);
+            let actions = dec.decide(&state);
+
+            assert_eq!(actions.len(), 1, "got {actions:?}");
+            assert_eq!(invoked_agent(&actions), Some("a"));
+        }
+
+        // (d) every agent has voted → `OutcomeResolved` + `Complete`.
+        #[test]
+        fn all_voted_resolves_and_completes() {
+            let config = RingConfig {
+                max_laps: 1,
+                ..RingConfig::default()
+            };
+            let dec = test_decider(&["a", "b"], config, 5, BTreeMap::new(), None, None);
+            let state = fold(&[
+                run_started(&["a", "b"]),
+                E::LapStarted { lap: 0 },
+                contribution("a", 0, 0, "propose"),
+                contribution("b", 0, 1, "propose"),
+                vote("a", "Use Rust", 0.9),
+                vote("b", "Use Rust", 0.8),
+            ]);
+            let actions = dec.decide(&state);
+
+            assert_eq!(actions.len(), 2, "got {actions:?}");
+            assert!(
+                matches!(&actions[0], Action::Emit(E::OutcomeResolved { outcome }) if outcome == "Use Rust"),
+                "expected Emit(OutcomeResolved{{outcome: \"Use Rust\"}}), got {:?}",
+                actions[0]
+            );
+            assert!(
+                matches!(&actions[1], Action::Complete { content } if content == "Use Rust"),
+                "expected Complete{{content: \"Use Rust\"}}, got {:?}",
+                actions[1]
+            );
+        }
+
+        // (e) the decider's own `max_laps` cap (independent of
+        // `config.max_laps`) is reached while still circulating, without
+        // having converged → `Warned{max_laps}` + `Complete` with a partial
+        // digest.
+        #[test]
+        fn own_max_laps_cap_warns_and_completes() {
+            // `config.max_laps` is generous (3, the default) so `ring_phase`
+            // would happily advance to lap 1 — but the decider's own
+            // `max_laps` field is set to 1, independently capping
+            // circulation at lap 0.
+            let dec = test_decider(
+                &["a", "b"],
+                RingConfig::default(),
+                1,
+                BTreeMap::new(),
+                None,
+                None,
+            );
+            let state = fold(&[
+                run_started(&["a", "b"]),
+                E::LapStarted { lap: 0 },
+                contribution("a", 0, 0, "propose"),
+                contribution("b", 0, 1, "propose"),
+            ]);
+            let actions = dec.decide(&state);
+
+            assert_eq!(actions.len(), 2, "got {actions:?}");
+            assert!(
+                matches!(&actions[0], Action::Emit(E::Warned { code }) if code == "max_laps"),
+                "expected Warned{{code: \"max_laps\"}}, got {:?}",
+                actions[0]
+            );
+            assert!(
+                matches!(&actions[1], Action::Complete { content } if content.contains('a') && content.contains('b')),
+                "expected Complete with a partial digest, got {:?}",
+                actions[1]
+            );
+        }
+
+        // Token budget guard fires ahead of any phase-specific logic, even
+        // mid-circulation.
+        #[test]
+        fn token_budget_exhausted_warns_and_completes() {
+            let dec = test_decider(
+                &["a", "b"],
+                RingConfig::default(),
+                5,
+                BTreeMap::new(),
+                Some(10),
+                None,
+            );
+            let state = fold(&[
+                run_started(&["a", "b"]),
+                E::LapStarted { lap: 0 },
+                E::ContributionAdded {
+                    agent: "a".into(),
+                    lap: 0,
+                    position: 0,
+                    action: "propose".into(),
+                    content: "c".into(),
+                    tokens_in: 6,
+                    tokens_out: 6,
+                    cost: 0.0,
+                },
+            ]);
+            let actions = dec.decide(&state);
+
+            assert_eq!(actions.len(), 2, "got {actions:?}");
+            assert!(
+                matches!(&actions[0], Action::Emit(E::Warned { code }) if code == "token_budget"),
+                "expected Warned{{code: \"token_budget\"}}, got {:?}",
+                actions[0]
+            );
+            assert!(matches!(&actions[1], Action::Complete { .. }));
+        }
     }
 }
