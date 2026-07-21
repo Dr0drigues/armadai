@@ -8,8 +8,8 @@
 //! agents) are wired by a later lot.
 
 use super::event::ExecutionEvent;
+use crate::core::orchestration::OrchestrationConfig;
 use crate::core::orchestration::protocol::{DelegationAction, parse_delegations};
-use crate::core::orchestration::{OrchestrationConfig, OrchestrationPattern};
 
 /// A single step planned from an LLM response, before any effect has run.
 ///
@@ -45,31 +45,21 @@ pub enum PlannedStep {
 /// `response` (same guarantee as `parse_delegations`), so replay is
 /// deterministic.
 ///
-/// `parse_delegations` takes a full `OrchestrationConfig` (it needs team
-/// topology to classify sender→target as Superior/Peer/Subordinate), but
-/// this transducer's signature only carries `coordinator` — team topology is
-/// not yet threaded through at this lot. We build a minimal config carrying
-/// just the coordinator name; this correctly classifies the coordinator's
-/// own outgoing lines as delegations and any line addressed to the
-/// coordinator as an escalation (the cases this lot's tests exercise), but
-/// falls back to `Unknown` (→ treated as `Delegate`, matching
-/// `parse_delegations`'s own fallback) for peer relationships that would
-/// otherwise require team data. A later lot that threads the full
-/// `OrchestrationConfig` through can tighten this.
+/// `parse_delegations` needs the full `OrchestrationConfig` (coordinator +
+/// team topology) to classify sender→target as Superior/Peer/Subordinate —
+/// notably, two agents that only share a team (neither being the
+/// coordinator) must classify as `Peer`, which requires walking
+/// `config.teams`. This function takes the caller's `config` as-is and
+/// forwards it unchanged, so callers must pass the real orchestration
+/// config for the run (not a stripped-down stand-in), or peer relationships
+/// will silently degrade to `Unknown` → `Delegate`.
 pub fn plan_from_response(
     response: &str,
     sender: &str,
-    coordinator: &str,
+    config: &OrchestrationConfig,
     depth: u32,
 ) -> Vec<PlannedStep> {
-    let config = OrchestrationConfig {
-        enabled: true,
-        pattern: OrchestrationPattern::Hierarchical,
-        coordinator: Some(coordinator.to_string()),
-        ..Default::default()
-    };
-
-    parse_delegations(response, sender, &config)
+    parse_delegations(response, sender, config)
         .into_iter()
         .map(|action| match action {
             DelegationAction::Delegate { target, task } => PlannedStep::Invoke {
@@ -109,10 +99,29 @@ pub fn plan_from_response(
 mod tests {
     use super::*;
     use crate::core::orchestration::es::event::ExecutionEvent;
+    use crate::core::orchestration::{OrchestrationPattern, TeamConfig};
+
+    /// A realistic hierarchical config: a coordinator plus one team with
+    /// several members, so both Superior/Subordinate (coordinator↔team) and
+    /// Peer (intra-team) relationships are actually reachable.
+    fn sample_config() -> OrchestrationConfig {
+        OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some("dev-lead".to_string()),
+            teams: vec![TeamConfig {
+                lead: None,
+                agents: vec!["core-specialist".to_string(), "qa-specialist".to_string()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn final_answer_becomes_complete() {
-        let steps = plan_from_response("Voici la réponse finale.", "dev-lead", "dev-lead", 0);
+        let config = sample_config();
+        let steps = plan_from_response("Voici la réponse finale.", "dev-lead", &config, 0);
         assert_eq!(steps.len(), 1);
         matches!(&steps[0], PlannedStep::Complete { content } if content.contains("finale"))
             .then_some(())
@@ -121,8 +130,9 @@ mod tests {
 
     #[test]
     fn delegation_lines_become_invokes_with_events() {
+        let config = sample_config();
         let resp = "@core-specialist: implémente X\n@qa-specialist: teste X";
-        let steps = plan_from_response(resp, "dev-lead", "dev-lead", 0);
+        let steps = plan_from_response(resp, "dev-lead", &config, 0);
         assert_eq!(steps.len(), 2);
         // ordre = ordre des lignes (déterminisme)
         match &steps[0] {
@@ -136,6 +146,31 @@ mod tests {
         }
         match &steps[1] {
             PlannedStep::Invoke { agent, .. } => assert_eq!(agent, "qa-specialist"),
+            _ => panic!("expected Invoke"),
+        }
+    }
+
+    #[test]
+    fn peer_line_within_same_team_becomes_asked_peer() {
+        // core-specialist and qa-specialist are teammates (no team lead),
+        // neither is the coordinator — classify_relationship must resolve
+        // this as Peer, not fall back to Unknown/Delegate.
+        let config = sample_config();
+        let resp = "@qa-specialist: peux-tu vérifier ce point ?";
+        let steps = plan_from_response(resp, "core-specialist", &config, 0);
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            PlannedStep::Invoke { agent, event, .. } => {
+                assert_eq!(agent, "qa-specialist");
+                assert!(
+                    matches!(
+                        event,
+                        ExecutionEvent::AskedPeer { from, to, .. }
+                        if from == "core-specialist" && to == "qa-specialist"
+                    ),
+                    "expected AskedPeer for intra-team peer contact, got {event:?}"
+                );
+            }
             _ => panic!("expected Invoke"),
         }
     }
