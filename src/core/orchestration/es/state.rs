@@ -25,6 +25,12 @@ pub enum RunStatus {
 #[derive(Debug, Clone, Default)]
 pub struct HierState {
     pub trace: Vec<(String, String, String, u32)>,
+    /// Tier resolved for each `latest:auto` agent (agent name -> tier, e.g.
+    /// `"Fast"`/`"Pro"`/`"Max"`), populated by `ModelRouted` events. Read by
+    /// the `HierarchicalEffectRunner` to resolve a concrete model string
+    /// before invoking the provider — see `es::hierarchical::run_invoke`.
+    /// `BTreeMap` for deterministic iteration/ordering.
+    pub routed_tiers: BTreeMap<String, String>,
 }
 
 /// A single blackboard entry, as recorded in the ES projection.
@@ -146,7 +152,9 @@ pub fn apply(state: &mut ExecutionState, event: &ExecutionEvent) {
             state.budget_tokens_out += u64::from(*tokens_out);
             state.budget_cost += *cost;
         }
-        ExecutionEvent::ModelRouted { .. } => {}
+        ExecutionEvent::ModelRouted { agent, tier, .. } => {
+            state.hier.routed_tiers.insert(agent.clone(), tier.clone());
+        }
         ExecutionEvent::Warned { .. } => {}
         ExecutionEvent::Halted { .. } => {
             state.status = RunStatus::Halted;
@@ -372,6 +380,29 @@ mod tests {
         assert_eq!(st.board.entries.len(), 1);
         assert_eq!(st.board.round, 1);
         assert_eq!(st.budget_tokens_in, 5);
+    }
+
+    #[test]
+    fn model_routed_projects_tier_into_hier_state() {
+        let events = vec![
+            E::RunStarted {
+                run_id: "r".into(),
+                pattern: "hierarchical".into(),
+                agents: vec!["a".into()],
+                input: "x".into(),
+                project: None,
+            },
+            E::ModelRouted {
+                agent: "a".into(),
+                tier: "fast".into(),
+                reason: "Length".into(),
+            },
+        ];
+        let st = fold(&events);
+        assert_eq!(
+            st.hier.routed_tiers.get("a").map(String::as_str),
+            Some("fast")
+        );
     }
 
     #[test]

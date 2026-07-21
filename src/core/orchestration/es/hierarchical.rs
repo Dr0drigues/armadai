@@ -26,6 +26,9 @@ use crate::core::orchestration::protocol::{
     DelegationAction, extract_narrative, parse_delegations,
 };
 use crate::core::routing::{BudgetState, RoutingRules, route};
+#[cfg(test)]
+use crate::linker::model_resolution::fallback_model_for_tier;
+use crate::linker::model_resolution::{ModelTier, resolve_model_for_tier};
 use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// A single step planned from an LLM response, before any effect has run.
@@ -759,6 +762,22 @@ impl Decider for HierarchicalDecider {
     }
 }
 
+/// Parse a tier string as stored in `HierState::routed_tiers` — the `Debug`
+/// format of `ModelTier` (`"Fast"`/`"Pro"`/`"Max"`), matched
+/// case-insensitively since `ModelRouted.tier` is produced via
+/// `format!("{tier:?}")` in `HierarchicalDecider::model_routed_event` — back
+/// into a `ModelTier`. Unrecognized strings fall back to `Pro`, the same
+/// default `parse_latest_placeholder` uses for the bare `"latest"`
+/// placeholder; this should not occur in practice since the only producer
+/// of `routed_tiers` entries is that same `format!("{tier:?}")` call.
+fn parse_routed_tier(tier: &str) -> ModelTier {
+    match tier.to_lowercase().as_str() {
+        "fast" => ModelTier::Fast,
+        "max" => ModelTier::Max,
+        _ => ModelTier::Pro,
+    }
+}
+
 // ── HierarchicalEffectRunner (Task 4): the sole async/impure effect ──
 
 /// Executes the actual LLM call behind `Action::Invoke` for the hierarchical
@@ -882,19 +901,51 @@ impl EffectRunner for HierarchicalEffectRunner {
             });
         }
 
-        // OH1 Lot 2 scope: use the agent's configured model as-is. The
-        // `Decider` (Task 3) is responsible for emitting `ModelRouted` when
-        // an agent is `latest:auto`-routed; resolving that tier to a
-        // concrete model string (`crate::linker::model_resolution`) is
-        // deliberately out of scope for this effect — it stays simple and
-        // faithful to the brief, passing `agent.metadata.model` through
-        // verbatim. Fine-grained tier→model resolution here is left to a
-        // later lot.
-        let model = agent_def
+        // `agent.metadata.model` is passed through verbatim, *except* for
+        // the exact `"latest:auto"` placeholder: `HierarchicalDecider`
+        // (Task 3) always emits a `ModelRouted{agent, tier, ..}` event ahead
+        // of the matching `Invoke` for such an agent (see
+        // `model_routed_event`/`invoke_actions`), which `es::state::apply`
+        // projects into `state.hier.routed_tiers`. We read that tier back
+        // here and resolve it to a concrete model via
+        // `crate::linker::model_resolution::resolve_model_for_tier` — this
+        // is the only place in the event-sourced hierarchical engine that
+        // does so, keeping the pure `Decider` free of that effectful lookup.
+        // Every other model string (a concrete id, or another `latest:*`
+        // placeholder such as `latest:pro`) is sent as-is, unchanged from
+        // before.
+        let raw_model = agent_def
             .metadata
             .model
             .clone()
             .unwrap_or_else(|| "default".to_string());
+        let model = if raw_model == "latest:auto" {
+            let tier = match state.hier.routed_tiers.get(agent) {
+                Some(tier_str) => parse_routed_tier(tier_str),
+                None => {
+                    // Defensive fallback: `HierarchicalDecider` always emits
+                    // `ModelRouted` before dispatching `Invoke` for a
+                    // `latest:auto` agent, so this branch should be
+                    // unreachable on the production path (`run_event_sourced`
+                    // applies events into `state` before calling
+                    // `run_invoke`). It can only be reached by a hand-built
+                    // state in a test, or a future decider regression. Rather
+                    // than leak the literal `"latest:auto"` string to the
+                    // provider, fall back to the `Pro` tier — the same
+                    // default `parse_latest_placeholder` uses for the bare
+                    // `"latest"` placeholder — and log it loudly so the gap
+                    // is visible.
+                    tracing::warn!(
+                        agent,
+                        "no ModelRouted tier recorded for latest:auto agent; falling back to Pro tier"
+                    );
+                    ModelTier::Pro
+                }
+            };
+            resolve_model_for_tier(&agent_def.metadata.provider, tier)
+        } else {
+            raw_model
+        };
 
         let request = CompletionRequest {
             model,
@@ -2339,7 +2390,11 @@ mod tests {
             );
             let state = ExecutionState::default();
             let err = runner.run_invoke("a", "go", &state).await.unwrap_err();
-            assert!(err.to_string().contains('a'));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("provider") && msg.contains("'a'"),
+                "expected a distinctive missing-provider message, got: {msg}"
+            );
         }
 
         // The generic loop applies `AgentInvoked` (pushing the `user` turn)
@@ -2459,13 +2514,19 @@ mod tests {
             assert!(sent[0].system_prompt.contains("core-specialist"));
         }
 
-        // Model is passed through as-is from `agent.metadata.model` — no
-        // `latest:auto` resolution happens in the effect runner (that's the
-        // decider's `ModelRouted` concern, per the module docs).
+        // Model is passed through as-is when it isn't the exact
+        // `"latest:auto"` placeholder — a concrete model, or any other
+        // `latest:*` placeholder (e.g. `latest:pro`), reaches the provider
+        // unchanged. `"latest:auto"` itself is special-cased — covered by
+        // `run_invoke_resolves_latest_auto_to_concrete_model` below.
+        //
+        // Also asserts `temperature`/`max_tokens` from the agent's metadata
+        // reach the `CompletionRequest` unchanged (`test_agent` sets
+        // `temperature: 0.5`, `max_tokens: Some(256)`).
         #[tokio::test]
         async fn run_invoke_passes_agent_model_through_verbatim() {
             let mut agents = BTreeMap::new();
-            agents.insert("a".to_string(), test_agent("a", "latest:auto"));
+            agents.insert("a".to_string(), test_agent("a", "latest:pro"));
             let capturing = Arc::new(CapturingProvider::new("resp"));
             let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
             providers.insert("a".to_string(), capturing.clone() as Arc<dyn Provider>);
@@ -2476,7 +2537,65 @@ mod tests {
             runner.run_invoke("a", "go", &state).await.unwrap();
 
             let sent = capturing.requests();
-            assert_eq!(sent[0].model, "latest:auto");
+            assert_eq!(sent[0].model, "latest:pro");
+            assert_eq!(sent[0].temperature, 0.5);
+            assert_eq!(sent[0].max_tokens, Some(256));
+        }
+
+        // `"latest:auto"` is the one placeholder the effect runner resolves
+        // itself: `HierarchicalDecider` always emits `ModelRouted{agent,
+        // tier, ..}` ahead of the matching `Invoke` for such an agent (see
+        // `model_routed_event`), which `es::state::apply` projects into
+        // `state.hier.routed_tiers`. `run_invoke` must read that tier back
+        // and turn it into a concrete model via
+        // `resolve_model_for_tier` — both in the `CompletionRequest` sent to
+        // the provider, and in the `model` field of the returned
+        // `AgentObserved` — never leaking the literal `"latest:auto"`
+        // string to either.
+        //
+        // The agent's provider is deliberately a name no real `models.dev`
+        // cache on the machine running this test could ever contain
+        // (`load_models_cached` keys its cache by provider name), so
+        // `resolve_model_for_tier` is forced onto its hardcoded, pure
+        // `fallback_model_for_tier` path — keeping this test hermetic and
+        // independent of whatever the on-disk model registry cache happens
+        // to hold (or is concurrently being refreshed to by unrelated tests)
+        // on this machine.
+        #[tokio::test]
+        async fn run_invoke_resolves_latest_auto_to_concrete_model() {
+            let mut agent = test_agent("a", "latest:auto");
+            agent.metadata.provider = "test-only-uncached-provider".to_string();
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), agent);
+            let capturing = Arc::new(CapturingProvider::new("resp"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), capturing.clone() as Arc<dyn Provider>);
+            let runner =
+                HierarchicalEffectRunner::new(agents, providers, OrchestrationConfig::default());
+
+            let state = fold(&[
+                run_started(&["a"], "go"),
+                ExecutionEvent::ModelRouted {
+                    agent: "a".into(),
+                    tier: "Fast".into(),
+                    reason: "Length".into(),
+                },
+            ]);
+            let event = runner.run_invoke("a", "go", &state).await.unwrap();
+
+            // Deterministic, hardcoded fallback for an uncached provider —
+            // see `fallback_model_for_tier`'s wildcard arm.
+            let expected =
+                fallback_model_for_tier("test-only-uncached-provider", ModelTier::Fast).to_string();
+
+            let sent = capturing.requests();
+            assert_eq!(sent[0].model, expected);
+            assert_ne!(sent[0].model, "latest:auto");
+
+            match event {
+                ExecutionEvent::AgentObserved { model, .. } => assert_eq!(model, expected),
+                other => panic!("expected AgentObserved, got {other:?}"),
+            }
         }
     }
 }
