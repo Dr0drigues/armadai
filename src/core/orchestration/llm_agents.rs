@@ -1314,12 +1314,62 @@ mod tests {
         agent
     }
 
+    /// RAII guard that points `ARMADAI_CONFIG_DIR` at a private, empty
+    /// tempdir for the lifetime of the guard, so `resolve_model_for_tier`
+    /// (called both by the production code path under test and by the
+    /// test's own expected-value computation) can never observe the
+    /// ambient/machine-local models.dev cache.
+    ///
+    /// Without this, two calls to `resolve_model_for_tier` in the same test
+    /// could race against a *different* test (in another thread) that is
+    /// concurrently fetching/writing the real shared cache file, or could
+    /// simply see different content across machines/CI — exactly the
+    /// "present/absent/partial depending on machine + parallel runs"
+    /// flakiness this guard eliminates. Serialised via `ENV_MUTEX` since
+    /// mutating `ARMADAI_CONFIG_DIR` is process-global state.
+    struct IsolatedModelCache {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        _tmp: tempfile::TempDir,
+        orig: Option<String>,
+    }
+
+    impl IsolatedModelCache {
+        fn new() -> Self {
+            let guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+            let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+            let tmp = tempfile::tempdir().expect("tempdir");
+            // SAFETY: env mutation is serialised via ENV_MUTEX for the
+            // lifetime of this guard, and the original value is restored on
+            // drop.
+            unsafe {
+                std::env::set_var("ARMADAI_CONFIG_DIR", tmp.path());
+            }
+            Self {
+                _guard: guard,
+                _tmp: tmp,
+                orig,
+            }
+        }
+    }
+
+    impl Drop for IsolatedModelCache {
+        fn drop(&mut self) {
+            // SAFETY: still holding `_guard` (ENV_MUTEX) at this point.
+            match self.orig.take() {
+                Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+                None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_board_agent_latest_auto_downgrades_on_low_budget() {
         // The "critical" tag maps to Max under default RoutingRules, but the
         // board's remaining budget is far below `budget_downgrade_ratio`
         // (default 0.2) — the router must downgrade to Fast and report
         // RouteReason::Budget, exactly as it would for run_single_agent.
+        let _isolated = IsolatedModelCache::new();
+
         let agent = make_agent_latest_auto("agent-a", vec!["critical".to_string()]);
         let routing = RoutingCtx::new(RoutingRules::default(), 1_000);
         let sink = Arc::new(CaptureSink::new());
@@ -1363,6 +1413,8 @@ mod tests {
     async fn test_board_agent_latest_auto_no_downgrade_when_budget_healthy() {
         // Same "critical" tag (→ Max) but a healthy budget: no downgrade,
         // reason stays Tag — proves the budget check is not unconditional.
+        let _isolated = IsolatedModelCache::new();
+
         let agent = make_agent_latest_auto("agent-a", vec!["critical".to_string()]);
         let routing = RoutingCtx::new(RoutingRules::default(), 1_000);
         let sink = Arc::new(CaptureSink::new());
@@ -1401,6 +1453,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_ring_agent_latest_auto_downgrades_on_low_budget() {
+        let _isolated = IsolatedModelCache::new();
+
         let agent = make_agent_latest_auto("agent-a", vec!["critical".to_string()]);
         let routing = RoutingCtx::new(RoutingRules::default(), 1_000);
         let sink = Arc::new(CaptureSink::new());
@@ -1467,6 +1521,7 @@ mod tests {
         // A `RoutingCtx::default()` (used by `LlmBoardAgent::new`/`LlmRingAgent::new`
         // when no explicit routing context is supplied) must carry no budget,
         // so `route()` never downgrades regardless of remaining tokens.
+        let _isolated = IsolatedModelCache::new();
         let routing = RoutingCtx::default();
         let sink: Arc<dyn EventSink> = Arc::new(NullSink);
 
