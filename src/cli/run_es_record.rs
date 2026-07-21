@@ -9,9 +9,14 @@
 //! functions from `storage::queries`, so the schema and downstream readers
 //! (history, TUI, web) don't need to change.
 //!
-//! **Not yet wired into `run.rs`'s execution path** — that's OH1 Lot 5,
-//! which switches `run.rs` onto the ES engines and calls these instead of
-//! the legacy `record_orchestration_*_into` functions.
+//! Wired into `run.rs`'s execution path since OH1 Lot 5 (the bascule): the
+//! standalone blackboard/ring match arms in `run_orchestrated` call these
+//! instead of the legacy `record_orchestration_blackboard`/
+//! `record_orchestration_ring` (now dead code, kept for the historical
+//! record per the bascule's brief). The legacy `record_orchestration_*_into`
+//! functions (`_into`, singular parent+children shape) remain alive too —
+//! they're still reachable from `record_hierarchical_into`'s nested-run
+//! persistence.
 //!
 //! ## Documented regressions vs. the legacy path
 //!
@@ -37,9 +42,7 @@
 // `BlackboardConfig`/`RingConfig`/`RunStatus` are only referenced from the
 // `#[cfg(feature = "storage")]` record functions below (and from tests) —
 // under `--features tui` (no `storage`, no `test`) they'd otherwise be
-// flagged as unused imports. Not yet consumed by any non-test, non-storage
-// code (this lot only adds the ES-native record/display functions — OH1
-// Lot 5 wires them into `run.rs`'s execution path).
+// flagged as unused imports.
 #[allow(unused_imports)]
 use crate::core::orchestration::blackboard::BlackboardConfig;
 use crate::core::orchestration::es::event::ExecutionEvent;
@@ -53,7 +56,6 @@ use crate::core::orchestration::ring::RingConfig;
 /// insertion order. Reproduces the legacy blackboard outcome text (see
 /// `run.rs`: `board.entries().iter().map(|e| format!("[{}] {}", e.agent,
 /// e.content))`).
-#[allow(dead_code)] // reserved for OH1 Lot 5 (wiring into run.rs's execution path)
 pub fn blackboard_display(state: &ExecutionState) -> String {
     state
         .board
@@ -76,7 +78,6 @@ pub fn blackboard_display(state: &ExecutionState) -> String {
 /// engine-computed scores/dissents that the ES projection doesn't track;
 /// the plain `outcome` string plus vote tally is the readable equivalent
 /// available from the event-sourced state.
-#[allow(dead_code)] // reserved for OH1 Lot 5 (wiring into run.rs's execution path)
 pub fn ring_display(state: &ExecutionState, events: &[ExecutionEvent]) -> String {
     let outcome = events
         .iter()
@@ -114,7 +115,6 @@ pub fn ring_display(state: &ExecutionState, events: &[ExecutionEvent]) -> String
 /// (the parent `events` slice isn't threaded into `record_*_es_into`, see
 /// module docs), so it summarizes what `state` alone can offer.
 #[cfg(feature = "storage")]
-#[allow(dead_code)] // reserved for OH1 Lot 5 (wiring into run.rs's execution path)
 fn ring_contributions_text(state: &ExecutionState) -> String {
     state
         .ring
@@ -133,7 +133,6 @@ fn ring_contributions_text(state: &ExecutionState) -> String {
 /// `insert_board_entry` functions — but reads `ExecutionState` instead of a
 /// live `blackboard::Board`. Returns the generated `run_id`.
 #[cfg(feature = "storage")]
-#[allow(dead_code)] // reserved for OH1 Lot 5 (wiring into run.rs's execution path)
 pub fn record_blackboard_es_into(
     db: &crate::storage::Database,
     state: &ExecutionState,
@@ -210,7 +209,6 @@ pub fn record_blackboard_es_into(
 /// `ExecutionState` instead of a live `ring::RingToken`. Returns the
 /// generated `run_id`.
 #[cfg(feature = "storage")]
-#[allow(dead_code)] // reserved for OH1 Lot 5 (wiring into run.rs's execution path)
 pub fn record_ring_es_into(
     db: &crate::storage::Database,
     state: &ExecutionState,

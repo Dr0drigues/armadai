@@ -5,6 +5,10 @@ use std::time::Instant;
 use crate::core::agent::{Agent, AgentMode};
 use crate::core::config::AppPaths;
 use crate::core::events::{EventSink, RunEvent};
+use crate::core::orchestration::es::bridge::{SinkProjectingLog, to_orchestration_result};
+use crate::core::orchestration::es::event::ExecutionEvent;
+use crate::core::orchestration::es::log::{EventLog, InMemoryLog};
+use crate::core::orchestration::es::state::ExecutionState;
 use crate::core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
 use crate::providers::factory::create_provider;
 use crate::providers::rate_limiter::RateLimiter;
@@ -196,6 +200,41 @@ async fn run_inner(
         model: String::new(),
         in_chars: current_input.chars().count(),
     });
+
+    // Single-agent direct execution (OH1 Lot 5, T5a): switched onto the
+    // event-sourced `direct` engine (`run_direct_es`), wrapped in a
+    // `SinkProjectingLog` so `AgentStart`/`AgentEnd`/`Route` observability
+    // keeps flowing to `sink` unchanged. `--pipe` (multi-agent chain, below)
+    // deliberately stays on the legacy `run_single_agent` loop — the brief
+    // scopes this bascule to the single-agent case only.
+    if chain.len() == 1 {
+        let name = &chain[0];
+        let agent_path = resolve_agent_path(&resolution, name)?;
+        let (content, tin, tout, cost) = run_single_agent_es(
+            &agent_path,
+            name,
+            &current_input,
+            project_defaults,
+            sink,
+            &routing_rules,
+            project.as_deref(),
+        )
+        .await?;
+
+        sink.emit(&RunEvent::Result {
+            content: content.clone(),
+            tin,
+            tout,
+            cost,
+            agents: 1,
+        });
+
+        if !json {
+            println!("{content}");
+        }
+
+        return Ok(());
+    }
 
     let mut agg_tin = 0u32;
     let mut agg_tout = 0u32;
@@ -466,6 +505,185 @@ async fn run_single_agent(
     Ok((response.content, metrics))
 }
 
+/// Result of driving the event-sourced `direct` engine for one agent
+/// (OH1 Lot 5, T5a): the final answer plus the run-level aggregate
+/// tokens/cost (`ExecutionState::budget_*`), and the raw event log — the
+/// latter only needed by callers that also record storage (to recover the
+/// resolved model string from the last `AgentObserved`).
+struct DirectDispatch {
+    content: String,
+    tin: u32,
+    tout: u32,
+    cost: f64,
+    events: Vec<ExecutionEvent>,
+}
+
+/// Drive a single, already-loaded/prepared `agent` through the event-sourced
+/// `direct` engine ([`crate::core::orchestration::es::direct::run_direct_es`]),
+/// on a fresh [`InMemoryLog`] wrapped in [`SinkProjectingLog`] so
+/// `AgentStart`/`AgentEnd`/`Route` observability keeps flowing to `sink`
+/// exactly as the legacy path did. `agent_key` is the roster key (filename
+/// slug) the run addresses this agent by — for a single-agent direct run
+/// there is no delegation/route to key by anything else, but using the same
+/// convention as the orchestrated patterns keeps `run_direct_es`'s own
+/// `RunStarted { agents, .. }` roster consistent.
+///
+/// Pure with respect to loading/side-effect concerns other than the actual
+/// provider call — no file I/O, no rate limiting, no storage — which is what
+/// makes this directly unit-testable with a mock `Provider` (see
+/// `tests::direct_es`).
+async fn dispatch_direct_es(
+    agent_key: &str,
+    agent: Agent,
+    provider: Arc<dyn crate::providers::traits::Provider>,
+    input: &str,
+    routing_rules: &crate::core::routing::RoutingRules,
+    sink: &Arc<dyn EventSink>,
+) -> anyhow::Result<DirectDispatch> {
+    use crate::core::orchestration::es::direct::run_direct_es;
+    use std::collections::BTreeMap;
+
+    let mut agents = BTreeMap::new();
+    agents.insert(agent_key.to_string(), agent);
+    let mut providers = BTreeMap::new();
+    providers.insert(agent_key.to_string(), provider);
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let mut log = SinkProjectingLog::new(InMemoryLog::default(), sink.as_ref());
+
+    let state = run_direct_es(
+        &run_id,
+        agent_key,
+        input,
+        agents,
+        providers,
+        routing_rules.clone(),
+        &mut log,
+    )
+    .await?;
+    let events = log.events(&run_id)?;
+    let result = to_orchestration_result(&state, &events);
+
+    Ok(DirectDispatch {
+        content: result.content,
+        tin: result.total_tokens_in,
+        tout: result.total_tokens_out,
+        cost: result.total_cost,
+        events,
+    })
+}
+
+/// Execute a single agent via the event-sourced `direct` pattern (OH1 Lot 5,
+/// T5a): loads/prepares the agent exactly like [`run_single_agent`] (model-
+/// deprecation resolution + warning, unknown-model warning, rate limiting,
+/// guided-mode system-prompt augmentation), drives it through
+/// [`dispatch_direct_es`], and finally records the run in storage via the
+/// same [`record_run`]/[`RunMetrics`] the legacy (`--pipe`) path still uses.
+/// Returns `(content, tokens_in, tokens_out, cost)`; the caller (`run_inner`)
+/// owns emitting the terminal `RunEvent::Result` and the stdout `println!`,
+/// exactly like the legacy per-agent loop does for `--pipe`.
+///
+/// Known behavior gaps vs. the legacy path (documented, not fixed here — out
+/// of scope for the bascule): `agent.metadata.model_fallback` is never
+/// retried (`DirectEffectRunner` makes a single provider call and propagates
+/// any error, whereas `run_single_agent` retries each fallback model in
+/// order on a "model not found" error); and the emitted `AgentEnd`'s
+/// `content` is neither suppressed by `quiet` nor truncated by
+/// `max_content` — both are `SinkProjectingLog`'s fixed, already-tested
+/// bridging behavior (OH1 Lot 4), not something this call site controls.
+#[allow(clippy::too_many_arguments)]
+async fn run_single_agent_es(
+    agent_path: &Path,
+    agent_key: &str,
+    input: &str,
+    project_defaults: Option<&ProjectDefaults>,
+    sink: &Arc<dyn EventSink>,
+    routing_rules: &crate::core::routing::RoutingRules,
+    project: Option<&str>,
+) -> anyhow::Result<(String, u32, u32, f64)> {
+    #[cfg(not(feature = "storage"))]
+    let _ = project;
+
+    // 1. Load agent (mirrors `run_single_agent` steps 1-1c).
+    let mut agent = crate::parser::parse_agent_file(agent_path)?;
+
+    let model_before = agent.metadata.model.clone();
+    crate::linker::model_aliases::resolve_model_deprecations(
+        &mut agent.metadata.model,
+        &mut agent.metadata.model_fallback,
+    );
+    if agent.metadata.model != model_before {
+        sink.emit(&RunEvent::Warning {
+            code: "deprecated_model".to_string(),
+            from: model_before,
+            to: agent.metadata.model.clone(),
+        });
+    }
+    if let Some(ref model) = agent.metadata.model {
+        crate::linker::model_resolution::warn_unknown_model(model, &agent.metadata.provider);
+    }
+
+    // 2. Create provider (step 2).
+    let provider_name = agent.metadata.provider.clone();
+    let provider: Arc<dyn crate::providers::traits::Provider> = Arc::from(create_provider(&agent)?);
+
+    // 3. Rate limiting (step 3).
+    if let Some(ref rate_str) = agent.metadata.rate_limit
+        && let Some(rpm) = RateLimiter::parse_rate(rate_str)
+    {
+        RateLimiter::new(rpm).acquire().await;
+    }
+
+    // 4. Guided-mode system-prompt augmentation (step 4).
+    let effective_mode = agent
+        .metadata
+        .mode
+        .or(project_defaults.and_then(|d| d.mode))
+        .unwrap_or_default();
+    if effective_mode == AgentMode::Guided {
+        agent.system_prompt = format!("{}{GUIDED_MODE_INSTRUCTION}", agent.system_prompt);
+    }
+
+    // 5-7. Drive the event-sourced engine (model routing, request building,
+    // AgentStart/AgentEnd observability, the actual provider call).
+    let start = Instant::now();
+    let dispatch =
+        dispatch_direct_es(agent_key, agent, provider, input, routing_rules, sink).await?;
+    let duration_ms = start.elapsed().as_millis() as i64;
+
+    // 8. Record in storage (if available) — same shape as `run_single_agent`.
+    #[cfg(feature = "storage")]
+    {
+        let resolved_model = dispatch
+            .events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                ExecutionEvent::AgentObserved {
+                    agent: a, model, ..
+                } if a == agent_key => Some(model.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let metrics = RunMetrics {
+            agent: agent_key.to_string(),
+            provider_name,
+            model: resolved_model,
+            tokens_in: i64::from(dispatch.tin),
+            tokens_out: i64::from(dispatch.tout),
+            cost: dispatch.cost,
+            duration_ms,
+        };
+        record_run(&metrics, input, &dispatch.content, project);
+    }
+    #[cfg(not(feature = "storage"))]
+    {
+        let _ = (provider_name, duration_ms, &dispatch.events);
+    }
+
+    Ok((dispatch.content, dispatch.tin, dispatch.tout, dispatch.cost))
+}
+
 #[allow(dead_code)]
 struct RunMetrics {
     agent: String,
@@ -668,13 +886,8 @@ async fn run_orchestrated(
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
-    use crate::core::orchestration::blackboard::{
-        BlackboardConfig, Board, BoardAgent, run_blackboard,
-    };
-    use crate::core::orchestration::llm_agents::{LlmBoardAgent, LlmRingAgent, RoutingCtx};
-    use crate::core::orchestration::ring::{
-        RingAgent, RingConfig, RingOutcome, RingToken, TokenStatus, run_ring,
-    };
+    use crate::core::orchestration::blackboard::BlackboardConfig;
+    use crate::core::orchestration::ring::RingConfig;
     use crate::core::project::OrchestrationDefaults;
     use crate::providers::traits::Provider;
 
@@ -818,166 +1031,124 @@ async fn run_orchestrated(
 
     match pattern {
         "blackboard" => {
+            use std::collections::BTreeMap;
+
             let config = apply_blackboard_overrides(BlackboardConfig::default(), &orch_defaults);
-            let routing_ctx = RoutingCtx::new(routing_rules, config.token_budget);
+            let cost_limit = orchestration_cost_limit(resolution);
 
-            let board_agents: Vec<Arc<dyn BoardAgent>> = agents
-                .into_iter()
-                .map(|a| {
-                    Arc::new(LlmBoardAgent::with_routing(
-                        a,
-                        routing_ctx.clone(),
-                        Arc::clone(sink),
-                    )) as Arc<dyn BoardAgent>
-                })
-                .collect();
-
-            let mut board = Board::new(input.to_string(), config.token_budget);
+            // Roster keyed by the ROSTER KEY (`agent_names`, the filename
+            // slug — same convention as the hierarchical branch below), NOT
+            // `agent.name()` (the H1 title). `run_blackboard_es` derives its
+            // own `agent_order`/`RunStarted.agents` from this map's keys.
+            let mut agent_map: BTreeMap<String, Agent> = BTreeMap::new();
+            let mut provider_map: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            for (name, (agent, provider)) in
+                agent_names.iter().zip(agents.into_iter().zip(providers))
+            {
+                agent_map.insert(name.clone(), agent);
+                provider_map.insert(name.clone(), provider);
+            }
 
             eprintln!(
                 "[blackboard] Starting with {} agent(s), max {} rounds",
-                board_agents.len(),
+                agent_map.len(),
                 config.max_rounds
             );
 
-            run_blackboard(&mut board, &board_agents, &providers, &config, sink).await?;
+            let state = dispatch_blackboard_es(
+                input,
+                agent_map,
+                provider_map,
+                config.clone(),
+                routing_rules,
+                cost_limit,
+                sink,
+            )
+            .await?;
 
-            eprintln!("[blackboard] Halted: {:?}", board.state());
+            eprintln!("[blackboard] Halted: {:?}", state.status);
 
             #[cfg(feature = "storage")]
-            record_orchestration_blackboard(&board, &config, input, project.as_deref());
+            record_blackboard_es(&state, &config, input, project.as_deref());
 
-            let outcome_text = board
-                .entries()
-                .iter()
-                .map(|entry| format!("[{}] {}", entry.agent, entry.content))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let outcome_text = super::run_es_record::blackboard_display(&state);
 
             if !json {
                 println!("{outcome_text}");
             }
 
-            // NOTE: token/cost aggregation for orchestration requires engine-level
-            // instrumentation (out of scope for beta.3).
             emit_agent_ends(sink, agent_names);
             sink.emit(&RunEvent::Result {
                 content: outcome_text,
-                tin: 0,
-                tout: 0,
-                cost: 0.0,
+                tin: u32::try_from(state.budget_tokens_in).unwrap_or(u32::MAX),
+                tout: u32::try_from(state.budget_tokens_out).unwrap_or(u32::MAX),
+                cost: state.budget_cost,
                 agents: agent_names.len(),
             });
         }
         "ring" => {
+            use std::collections::BTreeMap;
+
             let config = apply_ring_overrides(RingConfig::default(), &orch_defaults);
-            let routing_ctx = RoutingCtx::new(routing_rules, config.token_budget);
+            let cost_limit = orchestration_cost_limit(resolution);
 
-            let ring_agents: Vec<Arc<dyn RingAgent>> = agents
-                .into_iter()
-                .map(|a| {
-                    Arc::new(LlmRingAgent::with_routing(
-                        a,
-                        routing_ctx.clone(),
-                        Arc::clone(sink),
-                    )) as Arc<dyn RingAgent>
-                })
-                .collect();
-
-            let agent_order: Vec<String> =
-                ring_agents.iter().map(|a| a.name().to_string()).collect();
-
-            let mut token = RingToken::new(input.to_string(), agent_order, config.token_budget);
+            // Roster keyed by the ROSTER KEY (`agent_names`), NOT
+            // `agent.name()` — unlike the legacy `ring_agents.iter().map(|a|
+            // a.name().to_string())` above (H1 title), which silently broke
+            // `--route`/`orchestration.routes:` whenever the H1 title differs
+            // from the filename slug (the common case in this repo; see
+            // `apply_agent_selection`'s own regression test). `run_ring_es`
+            // derives its own `agent_order`/`RunStarted.agents` from this
+            // map's keys, so this fixes that divergence as a side effect of
+            // the bascule.
+            let mut agent_map: BTreeMap<String, Agent> = BTreeMap::new();
+            let mut provider_map: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            for (name, (agent, provider)) in
+                agent_names.iter().zip(agents.into_iter().zip(providers))
+            {
+                agent_map.insert(name.clone(), agent);
+                provider_map.insert(name.clone(), provider);
+            }
 
             eprintln!(
                 "[ring] Starting with {} agent(s), max {} laps",
-                ring_agents.len(),
+                agent_map.len(),
                 config.max_laps
             );
 
-            run_ring(&mut token, &ring_agents, &providers, &config, sink).await?;
+            let (state, events) = dispatch_ring_es(
+                input,
+                agent_map,
+                provider_map,
+                config.clone(),
+                routing_rules,
+                cost_limit,
+                sink,
+            )
+            .await?;
 
             #[cfg(feature = "storage")]
-            record_orchestration_ring(&token, &config, input, project.as_deref());
+            record_ring_es(&state, &config, input, project.as_deref());
 
-            let outcome_text = match token.status() {
-                TokenStatus::Done { outcome } => match outcome {
-                    RingOutcome::Consensus {
-                        resolution, score, ..
-                    } => {
-                        eprintln!("[ring] Consensus ({:.0}%)", score * 100.0);
-                        if !json {
-                            println!("{resolution}");
-                        }
-                        resolution.clone()
-                    }
-                    RingOutcome::Majority {
-                        resolution,
-                        score,
-                        dissents,
-                    } => {
-                        eprintln!(
-                            "[ring] Majority ({:.0}%, {} dissent(s))",
-                            score * 100.0,
-                            dissents.len()
-                        );
-                        if !json {
-                            println!("{resolution}");
-                        }
-                        resolution.clone()
-                    }
-                    RingOutcome::NoConsensus { summary, .. } => {
-                        eprintln!("[ring] No consensus");
-                        if !json {
-                            println!("{summary}");
-                        }
-                        summary.clone()
-                    }
-                    RingOutcome::BudgetExhausted { partial_summary } => {
-                        eprintln!("[ring] Budget exhausted");
-                        if !json {
-                            println!("{partial_summary}");
-                        }
-                        partial_summary.clone()
-                    }
-                    RingOutcome::CostLimitExceeded {
-                        partial_summary,
-                        spent,
-                        limit,
-                    } => {
-                        eprintln!("[ring] Cost limit exceeded: ${:.4}/${:.4}", spent, limit);
-                        if !json {
-                            println!("{partial_summary}");
-                        }
-                        partial_summary.clone()
-                    }
-                    RingOutcome::Cancelled => {
-                        eprintln!("[ring] Cancelled");
-                        String::new()
-                    }
-                },
-                other => {
-                    eprintln!("[ring] Unexpected status: {other:?}");
-                    String::new()
-                }
-            };
+            let outcome_text = super::run_es_record::ring_display(&state, &events);
+            eprintln!("[ring] status: {:?}", state.status);
+            if !json {
+                println!("{outcome_text}");
+            }
 
-            // NOTE: token/cost aggregation for orchestration requires engine-level
-            // instrumentation (out of scope for beta.3).
             emit_agent_ends(sink, agent_names);
             sink.emit(&RunEvent::Result {
                 content: outcome_text,
-                tin: 0,
-                tout: 0,
-                cost: 0.0,
+                tin: u32::try_from(state.budget_tokens_in).unwrap_or(u32::MAX),
+                tout: u32::try_from(state.budget_tokens_out).unwrap_or(u32::MAX),
+                cost: state.budget_cost,
                 agents: agent_names.len(),
             });
         }
         "hierarchical" => {
-            use std::collections::HashMap;
+            use std::collections::BTreeMap;
 
             use crate::core::orchestration::OrchestrationConfig;
-            use crate::core::orchestration::hierarchical::HierarchicalEngine;
 
             // Build orchestration config from project or defaults
             let orch_config = match resolution {
@@ -995,8 +1166,8 @@ async fn run_orchestrated(
 
             let coordinator_name = orch_config
                 .coordinator
-                .as_deref()
-                .unwrap_or(agent_names.first().map(|s| s.as_str()).unwrap_or(""));
+                .clone()
+                .unwrap_or_else(|| agent_names.first().cloned().unwrap_or_default());
 
             // Build agent map and provider map, keyed by the ROSTER KEY (the
             // config name / filename slug in `agent_names`), NOT `agent.name`
@@ -1005,8 +1176,8 @@ async fn run_orchestrated(
             // by the H1 title (`Dev Lead`) would break the coordinator lookup
             // and every `@agent` delegation. `agents`/`providers` are in the
             // same order as `agent_names` (built by the load loop above).
-            let mut agent_map: HashMap<String, crate::core::agent::Agent> = HashMap::new();
-            let mut provider_map: HashMap<String, Arc<dyn Provider>> = HashMap::new();
+            let mut agent_map: BTreeMap<String, crate::core::agent::Agent> = BTreeMap::new();
+            let mut provider_map: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
 
             for (name, (agent, provider)) in
                 agent_names.iter().zip(agents.into_iter().zip(providers))
@@ -1026,14 +1197,24 @@ async fn run_orchestrated(
             #[cfg(feature = "storage")]
             let orch_config_for_storage = orch_config.clone();
 
-            let mut engine = HierarchicalEngine::with_routing_rules(
+            let (state, events) = dispatch_hierarchical_es(
+                &coordinator_name,
+                input,
                 orch_config,
                 agent_map,
                 provider_map,
-                Arc::clone(sink),
                 routing_rules,
-            );
-            let result = engine.run(input).await?;
+                sink,
+            )
+            .await?;
+            // `nested_runs` is always empty here (OH1 Lot 5): nested C9
+            // sub-runs execute against an ephemeral child log during the run
+            // (see `HierarchicalEffectRunner::run_nested`) and aren't part of
+            // this run's own `events`/`ExecutionState` — a documented
+            // regression vs. legacy (which persisted them via
+            // `NestedRun::Blackboard`/`Ring`), see `to_orchestration_result`'s
+            // doc comment.
+            let result = to_orchestration_result(&state, &events);
 
             eprintln!(
                 "[hierarchical] Done: {} invocations, {} tokens in, {} tokens out",
@@ -1069,6 +1250,187 @@ async fn run_orchestrated(
     }
 
     Ok(())
+}
+
+/// Resolve the top-level `orchestration:` block's `cost_limit` for a
+/// standalone blackboard/ring run (`armadai run --orchestrate
+/// blackboard|ring`), or `None` when there is no project config or no
+/// `orchestration:` section declared. `OrchestrationConfig::cost_limit` only
+/// lives on the top-level block (`resolution`'s `config.orchestration`), not
+/// on `OrchestrationDefaults` (which `orch_defaults` above already reads for
+/// `max_rounds`/`token_budget`/etc — it has no `cost_limit` field at all).
+///
+/// This is a **new guard** for the standalone patterns (OH1 Lot 5): the
+/// legacy standalone `run_blackboard`/`run_ring` call sites in this file
+/// never threaded a cost limit into `Board::new`/`RingToken::new` (unlike the
+/// nested-team path in `core::orchestration::hierarchical`, which does pass
+/// `OrchestrationConfig::cost_limit` down to `Board::with_cost_limit`) — a
+/// project declaring `orchestration.cost_limit` had it silently ignored for
+/// a plain `--orchestrate blackboard|ring` run. `run_blackboard_es`/
+/// `run_ring_es` accept `cost_limit` explicitly (OH1 Lot 4 Task 3), so this
+/// closes that gap as a side effect of the bascule.
+fn orchestration_cost_limit(resolution: &AgentResolution) -> Option<f64> {
+    match resolution {
+        AgentResolution::Project { config, .. } => {
+            config.orchestration.as_deref().and_then(|o| o.cost_limit)
+        }
+        AgentResolution::Default(_) => None,
+    }
+}
+
+/// Drive the event-sourced `blackboard` engine end-to-end for an
+/// already-loaded roster (OH1 Lot 5, T5c): builds a fresh `InMemoryLog`
+/// wrapped in `SinkProjectingLog` (so `Board`/`Vote`/observability events
+/// keep flowing to `sink`), runs `run_blackboard_es`, and returns the folded
+/// state. Pure with respect to loading/storage — no file I/O — which is what
+/// makes it directly unit-testable with mock providers (see
+/// `tests::blackboard_es`).
+async fn dispatch_blackboard_es(
+    input: &str,
+    agents: std::collections::BTreeMap<String, Agent>,
+    providers: std::collections::BTreeMap<String, Arc<dyn crate::providers::traits::Provider>>,
+    config: crate::core::orchestration::blackboard::BlackboardConfig,
+    routing_rules: crate::core::routing::RoutingRules,
+    cost_limit: Option<f64>,
+    sink: &Arc<dyn EventSink>,
+) -> anyhow::Result<ExecutionState> {
+    use crate::core::orchestration::es::blackboard::run_blackboard_es;
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let mut log = SinkProjectingLog::new(InMemoryLog::default(), sink.as_ref());
+    run_blackboard_es(
+        &run_id,
+        input,
+        agents,
+        providers,
+        config,
+        routing_rules,
+        cost_limit,
+        &mut log,
+    )
+    .await
+}
+
+/// Drive the event-sourced `ring` engine end-to-end for an already-loaded
+/// roster (OH1 Lot 5, T5d) — same shape as [`dispatch_blackboard_es`], but
+/// also returns the raw event log: `ring_display` needs it (last
+/// `OutcomeResolved`/`Completed`), unlike `blackboard_display` which reads
+/// only the folded `state.board.entries`.
+async fn dispatch_ring_es(
+    input: &str,
+    agents: std::collections::BTreeMap<String, Agent>,
+    providers: std::collections::BTreeMap<String, Arc<dyn crate::providers::traits::Provider>>,
+    config: crate::core::orchestration::ring::RingConfig,
+    routing_rules: crate::core::routing::RoutingRules,
+    cost_limit: Option<f64>,
+    sink: &Arc<dyn EventSink>,
+) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>)> {
+    use crate::core::orchestration::es::ring::run_ring_es;
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let mut log = SinkProjectingLog::new(InMemoryLog::default(), sink.as_ref());
+    let state = run_ring_es(
+        &run_id,
+        input,
+        agents,
+        providers,
+        config,
+        routing_rules,
+        cost_limit,
+        &mut log,
+    )
+    .await?;
+    let events = log.events(&run_id)?;
+    Ok((state, events))
+}
+
+/// Drive the event-sourced `hierarchical` engine end-to-end for an
+/// already-loaded roster (OH1 Lot 5, T5b) — same shape as
+/// [`dispatch_blackboard_es`]/[`dispatch_ring_es`], returning both the folded
+/// state and the raw event log so the caller can extract the legacy
+/// `OrchestrationResult` shape via `to_orchestration_result` (needed for the
+/// existing `record_orchestration_hierarchical`/display code, which predates
+/// the ES socle and knows only that type).
+async fn dispatch_hierarchical_es(
+    coordinator: &str,
+    input: &str,
+    config: crate::core::orchestration::OrchestrationConfig,
+    agents: std::collections::BTreeMap<String, Agent>,
+    providers: std::collections::BTreeMap<String, Arc<dyn crate::providers::traits::Provider>>,
+    routing_rules: crate::core::routing::RoutingRules,
+    sink: &Arc<dyn EventSink>,
+) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>)> {
+    use crate::core::orchestration::es::hierarchical::run_hierarchical_es;
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let mut log = SinkProjectingLog::new(InMemoryLog::default(), sink.as_ref());
+    let state = run_hierarchical_es(
+        &run_id,
+        coordinator,
+        input,
+        config,
+        agents,
+        providers,
+        routing_rules,
+        &mut log,
+    )
+    .await?;
+    let events = log.events(&run_id)?;
+    Ok((state, events))
+}
+
+/// Top-level entry point for persisting a standalone blackboard run's
+/// ES projection (`armadai run --orchestrate blackboard`, OH1 Lot 5).
+/// Initializes storage and delegates to
+/// [`super::run_es_record::record_blackboard_es_into`] with no parent —
+/// the ES-native counterpart of the legacy [`record_orchestration_blackboard`]
+/// (which reads a live `blackboard::Board` instead of an `ExecutionState`).
+#[cfg(feature = "storage")]
+fn record_blackboard_es(
+    state: &ExecutionState,
+    config: &crate::core::orchestration::blackboard::BlackboardConfig,
+    input: &str,
+    project: Option<&str>,
+) {
+    let db = match crate::storage::init_db() {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::warn!("Failed to init storage: {e}");
+            return;
+        }
+    };
+    if let Err(e) =
+        super::run_es_record::record_blackboard_es_into(&db, state, config, input, None, project)
+    {
+        tracing::warn!("Failed to record blackboard run: {e}");
+    }
+}
+
+/// Top-level entry point for persisting a standalone ring run's ES
+/// projection (`armadai run --orchestrate ring`, OH1 Lot 5). Initializes
+/// storage and delegates to [`super::run_es_record::record_ring_es_into`]
+/// with no parent — the ES-native counterpart of the legacy
+/// [`record_orchestration_ring`] (which reads a live `ring::RingToken`
+/// instead of an `ExecutionState`).
+#[cfg(feature = "storage")]
+fn record_ring_es(
+    state: &ExecutionState,
+    config: &crate::core::orchestration::ring::RingConfig,
+    input: &str,
+    project: Option<&str>,
+) {
+    let db = match crate::storage::init_db() {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::warn!("Failed to init storage: {e}");
+            return;
+        }
+    };
+    if let Err(e) =
+        super::run_es_record::record_ring_es_into(&db, state, config, input, None, project)
+    {
+        tracing::warn!("Failed to record ring run: {e}");
+    }
 }
 
 /// Emit one `AgentEnd` event per agent, in order, restoring the JSONL contract's
@@ -1242,7 +1604,16 @@ fn record_orchestration_blackboard_into(
 /// Top-level entry point for persisting a standalone blackboard run
 /// (`armadai run --orchestrate blackboard`). Initializes storage and
 /// delegates to [`record_orchestration_blackboard_into`] with no parent.
+///
+/// Dead since OH1 Lot 5: the standalone blackboard match arm in
+/// `run_orchestrated` now runs the event-sourced engine (`run_blackboard_es`)
+/// and records via [`record_blackboard_es`] instead, which reads an
+/// `ExecutionState` rather than a live `blackboard::Board`. Kept (not
+/// deleted) per the bascule's brief — `record_orchestration_blackboard_into`
+/// below remains reachable (and tested) via `record_hierarchical_into`'s
+/// nested-run persistence.
 #[cfg(feature = "storage")]
+#[allow(dead_code)]
 fn record_orchestration_blackboard(
     board: &crate::core::orchestration::blackboard::Board,
     config: &crate::core::orchestration::blackboard::BlackboardConfig,
@@ -1367,7 +1738,12 @@ fn record_orchestration_ring_into(
 /// Top-level entry point for persisting a standalone ring run
 /// (`armadai run --orchestrate ring`). Initializes storage and delegates to
 /// [`record_orchestration_ring_into`] with no parent.
+///
+/// Dead since OH1 Lot 5: see [`record_orchestration_blackboard`]'s doc —
+/// same rationale, the standalone ring match arm now records via
+/// [`record_ring_es`] instead.
 #[cfg(feature = "storage")]
+#[allow(dead_code)]
 fn record_orchestration_ring(
     token: &crate::core::orchestration::ring::RingToken,
     config: &crate::core::orchestration::ring::RingConfig,
@@ -1885,5 +2261,579 @@ mod storage_tests {
             .unwrap()
             .unwrap();
         assert_eq!(parent.pattern, "hierarchical");
+    }
+}
+
+/// Integration-style tests for OH1 Lot 5 (the `run.rs` → event-sourced
+/// engines bascule): drives each pattern's `dispatch_*_es` helper directly
+/// with mock providers (same idiom as `es::direct`/`hierarchical`/
+/// `blackboard`/`ring`'s own end-to-end tests, and
+/// `core::orchestration::e2e_tests`'s `ScriptedProvider`), then asserts
+/// (a) the run completes with the expected content, (b) `--json` headless
+/// observability (`RunEvent`s via `SinkProjectingLog`) includes the
+/// pattern-specific event kinds, and (c) — under `feature = "storage"` — the
+/// run persists via the same record functions the switched match arms call.
+///
+/// Doesn't drive `execute()`/`run_inner()`/`run_orchestrated()` themselves:
+/// those additionally require real files on disk (project resolution,
+/// `Agent::find_file`, `create_provider`), which this codebase's existing
+/// test conventions don't exercise either — `core::orchestration::e2e_tests`
+/// tests `HierarchicalEngine` directly for the same reason, and this file's
+/// own `storage_tests` module already tests `record_hierarchical_into`
+/// directly rather than through the CLI entry point. `dispatch_*_es` is
+/// exactly the seam `run_inner`/`run_orchestrated` call right after loading
+/// agents/providers — exercising it directly covers the actual
+/// engine-selection change this task makes, without re-testing file
+/// resolution (unrelated to this bascule).
+#[cfg(test)]
+mod es_switch_tests {
+    use super::*;
+    use std::collections::{BTreeMap, VecDeque};
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+
+    use crate::core::agent::AgentMetadata;
+    use crate::core::orchestration::blackboard::BlackboardConfig;
+    use crate::core::orchestration::es::state::RunStatus;
+    use crate::core::orchestration::ring::RingConfig;
+    use crate::core::orchestration::{OrchestrationConfig, OrchestrationPattern, TeamConfig};
+    use crate::core::routing::RoutingRules;
+    use crate::providers::traits::{
+        CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
+    };
+
+    // ── Shared test infra ────────────────────────────────────────────
+
+    /// Minimal `Agent` for these tests — concrete model, no orchestration
+    /// metadata. Mirrors the same-named helper duplicated across every
+    /// `es::*` test module.
+    fn test_agent(name: &str) -> Agent {
+        Agent {
+            name: name.to_string(),
+            source: PathBuf::from(format!("{name}.md")),
+            metadata: AgentMetadata {
+                provider: "anthropic".to_string(),
+                model: Some("concrete-model".to_string()),
+                command: None,
+                args: None,
+                temperature: 0.7,
+                max_tokens: None,
+                timeout: None,
+                tags: vec![],
+                stacks: vec![],
+                scope: vec![],
+                model_fallback: vec![],
+                cost_limit: None,
+                rate_limit: None,
+                context_window: None,
+                mode: None,
+                orchestration: None,
+                triggers: None,
+                ring_config: None,
+            },
+            system_prompt: format!("You are {name}."),
+            instructions: None,
+            output_format: None,
+            pipeline: None,
+            context: None,
+        }
+    }
+
+    /// A provider that returns scripted responses in order, then repeats its
+    /// last response forever — mirrors the same-named helper duplicated
+    /// across `es::blackboard`/`es::ring`/`es::hierarchical`'s own test
+    /// modules and `core::orchestration::e2e_tests`.
+    struct ScriptedProvider {
+        responses: Mutex<VecDeque<String>>,
+        last: Mutex<String>,
+        calls: AtomicUsize,
+    }
+
+    impl ScriptedProvider {
+        fn new(responses: &[&str]) -> Self {
+            Self {
+                responses: Mutex::new(responses.iter().map(|s| (*s).to_string()).collect()),
+                last: Mutex::new(String::new()),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl Provider for ScriptedProvider {
+        async fn complete(&self, request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut queue = self.responses.lock().unwrap();
+            let content = queue
+                .pop_front()
+                .unwrap_or_else(|| self.last.lock().unwrap().clone());
+            *self.last.lock().unwrap() = content.clone();
+            Ok(CompletionResponse {
+                content,
+                model: request.model,
+                tokens_in: 5,
+                tokens_out: 7,
+                cost: 0.001,
+            })
+        }
+        async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("streaming not exercised by these tests")
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "scripted".to_string(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    /// Records every emitted `RunEvent` as its serialized `serde_json::Value`
+    /// (`RunEvent` derives `Serialize` but not `Clone`) — same idiom as
+    /// `es::bridge`'s own `CaptureSink` test helper. Used to assert headless
+    /// JSONL observability without spinning up a real `JsonlSink`.
+    #[derive(Default)]
+    struct CaptureSink {
+        events: Mutex<Vec<serde_json::Value>>,
+    }
+
+    impl EventSink for CaptureSink {
+        fn emit(&self, ev: &RunEvent) {
+            let v = serde_json::to_value(ev).expect("RunEvent always serializes");
+            self.events.lock().unwrap().push(v);
+        }
+    }
+
+    impl CaptureSink {
+        fn tags(&self) -> Vec<String> {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|v| v["t"].as_str().unwrap().to_string())
+                .collect()
+        }
+    }
+
+    /// Build a `(concrete, dyn)` sink pair sharing the same underlying
+    /// `CaptureSink`: the `dyn EventSink` half is what `dispatch_*_es`
+    /// functions expect (`&Arc<dyn EventSink>`); the concrete half is kept
+    /// for post-run assertions on what was captured.
+    fn capture_sink() -> (Arc<CaptureSink>, Arc<dyn EventSink>) {
+        let capture = Arc::new(CaptureSink::default());
+        let dyn_sink: Arc<dyn EventSink> = capture.clone();
+        (capture, dyn_sink)
+    }
+
+    // ── T5a: direct ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn direct_es_completes_with_content_tokens_and_observability() {
+        let (capture, sink) = capture_sink();
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
+
+        let dispatch = dispatch_direct_es(
+            "solo",
+            test_agent("solo"),
+            provider,
+            "do the thing",
+            &RoutingRules::default(),
+            &sink,
+        )
+        .await
+        .unwrap();
+
+        // (a)/(b): completes with the mock's content and its declared tokens/cost.
+        assert_eq!(dispatch.content, "the answer");
+        assert_eq!(dispatch.tin, 5);
+        assert_eq!(dispatch.tout, 7);
+        assert!((dispatch.cost - 0.001).abs() < 1e-9);
+
+        // (c): AgentStart/AgentEnd observability reaches the sink (headless
+        // JSONL contract — direct is the one pattern whose effect runner
+        // always returns `AgentObserved`, so both are always present).
+        let tags = capture.tags();
+        assert!(tags.iter().any(|t| t == "agent_start"), "tags: {tags:?}");
+        assert!(tags.iter().any(|t| t == "agent_end"), "tags: {tags:?}");
+    }
+
+    // ── T5b: hierarchical ────────────────────────────────────────────
+
+    /// Base flat-team config: coordinator with a single team of `peers` (no
+    /// nested lead) — mirrors `es_flat_config` in `es::hierarchical`'s own
+    /// tests.
+    fn flat_config(coordinator: &str, peers: &[&str]) -> OrchestrationConfig {
+        OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some(coordinator.to_string()),
+            teams: vec![TeamConfig {
+                lead: None,
+                agents: peers.iter().map(|p| (*p).to_string()).collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// Shared scenario for the hierarchical tests below: `dev-lead` delegates
+    /// once to `core-specialist`, which answers with a final answer;
+    /// `dev-lead` then synthesizes its own final answer from that single
+    /// result. Mirrors `es_single_delegation_completes` in
+    /// `es::hierarchical`'s own tests.
+    fn hierarchical_roster() -> (BTreeMap<String, Agent>, BTreeMap<String, Arc<dyn Provider>>) {
+        let mut agents = BTreeMap::new();
+        agents.insert("dev-lead".to_string(), test_agent("dev-lead"));
+        agents.insert("core-specialist".to_string(), test_agent("core-specialist"));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "dev-lead".to_string(),
+            Arc::new(ScriptedProvider::new(&[
+                "@core-specialist: fais X",
+                "Synthèse : tout est prêt.",
+            ])),
+        );
+        providers.insert(
+            "core-specialist".to_string(),
+            Arc::new(ScriptedProvider::new(&["X est fait."])),
+        );
+        (agents, providers)
+    }
+
+    #[tokio::test]
+    async fn hierarchical_es_delegates_synthesizes_and_emits_observability() {
+        let (capture, sink) = capture_sink();
+        let (agents, providers) = hierarchical_roster();
+
+        let (state, events) = dispatch_hierarchical_es(
+            "dev-lead",
+            "build X",
+            flat_config("dev-lead", &["core-specialist"]),
+            agents,
+            providers,
+            RoutingRules::default(),
+            &sink,
+        )
+        .await
+        .unwrap();
+        let result = to_orchestration_result(&state, &events);
+
+        // (a): completes.
+        assert_eq!(state.status, RunStatus::Completed);
+        // (b): delegation traced + non-empty synthesized content.
+        assert!(
+            result
+                .trace
+                .iter()
+                .any(|e| e.from == "dev-lead" && e.to == "core-specialist"),
+            "expected dev-lead -> core-specialist in the trace, got {:?}",
+            result.trace
+        );
+        assert!(!result.content.trim().is_empty());
+
+        // (c): AgentStart/AgentEnd + Delegate observability reaches the sink.
+        let tags = capture.tags();
+        assert!(tags.iter().any(|t| t == "agent_start"), "tags: {tags:?}");
+        assert!(tags.iter().any(|t| t == "agent_end"), "tags: {tags:?}");
+        assert!(tags.iter().any(|t| t == "delegate"), "tags: {tags:?}");
+    }
+
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn hierarchical_es_result_is_recorded_via_record_hierarchical_into() {
+        use crate::storage::{init_embedded, queries};
+
+        let (_capture, sink) = capture_sink();
+        let (agents, providers) = hierarchical_roster();
+        let config = flat_config("dev-lead", &["core-specialist"]);
+
+        let (state, events) = dispatch_hierarchical_es(
+            "dev-lead",
+            "build X",
+            config.clone(),
+            agents,
+            providers,
+            RoutingRules::default(),
+            &sink,
+        )
+        .await
+        .unwrap();
+        let result = to_orchestration_result(&state, &events);
+
+        // (d): the same `record_hierarchical_into` the switched "hierarchical"
+        // match arm calls (via `record_orchestration_hierarchical`) persists
+        // the ES-derived `OrchestrationResult`.
+        let db = init_embedded().unwrap();
+        let run_id = record_hierarchical_into(&db, &result, &config, "build X", None).unwrap();
+
+        let persisted = queries::get_orchestration_run(&db, &run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.pattern, "hierarchical");
+        let delegation_events = queries::get_delegation_events(&db, &run_id).unwrap();
+        assert!(
+            delegation_events
+                .iter()
+                .any(|e| e.to_agent == "core-specialist"),
+            "expected the delegation to dev-lead -> core-specialist to be persisted"
+        );
+    }
+
+    // ── T5c: blackboard ──────────────────────────────────────────────
+
+    /// Both agents post a `CONFIRMATION` targeting entry 0 in round 0 — a
+    /// 2/2 = 1.0 confirmation ratio, above the default `consensus_threshold`
+    /// (0.75), reaching consensus on the very first round. Mirrors
+    /// `es_blackboard_converges_and_completes` in `es::blackboard`'s own
+    /// tests.
+    fn blackboard_roster() -> (BTreeMap<String, Agent>, BTreeMap<String, Arc<dyn Provider>>) {
+        let mut agents = BTreeMap::new();
+        agents.insert("a".to_string(), test_agent("a"));
+        agents.insert("b".to_string(), test_agent("b"));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "a".to_string(),
+            Arc::new(ScriptedProvider::new(&[
+                "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:tout est cohérent",
+            ])),
+        );
+        providers.insert(
+            "b".to_string(),
+            Arc::new(ScriptedProvider::new(&[
+                "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:confirmé",
+            ])),
+        );
+        (agents, providers)
+    }
+
+    #[tokio::test]
+    async fn blackboard_es_converges_and_emits_board_observability() {
+        let (capture, sink) = capture_sink();
+        let (agents, providers) = blackboard_roster();
+
+        let state = dispatch_blackboard_es(
+            "task",
+            agents,
+            providers,
+            BlackboardConfig::default(),
+            RoutingRules::default(),
+            None,
+            &sink,
+        )
+        .await
+        .unwrap();
+
+        // (a): completes.
+        assert_eq!(state.status, RunStatus::Completed);
+        // (b): non-empty board digest (same display the switched match arm
+        // shows via `run_es_record::blackboard_display`).
+        let display = crate::cli::run_es_record::blackboard_display(&state);
+        assert!(!display.trim().is_empty());
+
+        // (c): AgentStart + Board observability reaches the sink. NOTE:
+        // unlike direct/hierarchical, `BlackboardEffectRunner::run_invoke`
+        // always returns `BoardEntryAdded` (never `AgentObserved`) — per
+        // `es::bridge::map_execution_to_run_events`'s documented mapping,
+        // this means `AgentEnd` is *never* emitted for blackboard (a Lot 4
+        // bridging fact, not something this bascule changes or regresses).
+        let tags = capture.tags();
+        assert!(tags.iter().any(|t| t == "agent_start"), "tags: {tags:?}");
+        assert!(tags.iter().any(|t| t == "board"), "tags: {tags:?}");
+        assert!(
+            !tags.iter().any(|t| t == "agent_end"),
+            "blackboard never emits agent_end (BoardEntryAdded has no AgentEnd \
+             mapping) — tags: {tags:?}"
+        );
+    }
+
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn blackboard_es_state_is_recorded_via_record_blackboard_es_into() {
+        use crate::storage::{init_embedded, queries};
+
+        let (_capture, sink) = capture_sink();
+        let (agents, providers) = blackboard_roster();
+        let config = BlackboardConfig::default();
+
+        let state = dispatch_blackboard_es(
+            "task",
+            agents,
+            providers,
+            config.clone(),
+            RoutingRules::default(),
+            None,
+            &sink,
+        )
+        .await
+        .unwrap();
+
+        // (d): the same `record_blackboard_es_into` the switched "blackboard"
+        // match arm calls (via `record_blackboard_es`) persists the folded
+        // `ExecutionState`.
+        let db = init_embedded().unwrap();
+        let run_id = crate::cli::run_es_record::record_blackboard_es_into(
+            &db, &state, &config, "task", None, None,
+        )
+        .unwrap();
+
+        let persisted = queries::get_orchestration_run(&db, &run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.pattern, "blackboard");
+        let entries = queries::get_board_entries(&db, &run_id).unwrap();
+        assert_eq!(entries.len(), 2, "expected both agents' entries persisted");
+    }
+
+    // ── T5d: ring ────────────────────────────────────────────────────
+
+    /// Two agents circulate one substantial (non-pass) lap each
+    /// (`max_laps: 1`), then both vote for the same position — a unanimous
+    /// 2/2 group. Mirrors `es_ring_circulates_votes_and_resolves` in
+    /// `es::ring`'s own tests.
+    fn ring_roster() -> (BTreeMap<String, Agent>, BTreeMap<String, Arc<dyn Provider>>) {
+        let mut agents = BTreeMap::new();
+        agents.insert("a".to_string(), test_agent("a"));
+        agents.insert("b".to_string(), test_agent("b"));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "a".to_string(),
+            Arc::new(ScriptedProvider::new(&[
+                "ACTION: PROPOSE\nCONTENT: use Rust with Axum",
+                "CONFIDENCE: 0.9\nUse Rust with Axum",
+            ])),
+        );
+        providers.insert(
+            "b".to_string(),
+            Arc::new(ScriptedProvider::new(&[
+                "ACTION: PROPOSE\nCONTENT: agreed, Rust and Axum",
+                "CONFIDENCE: 0.8\nUse Rust with Axum",
+            ])),
+        );
+        (agents, providers)
+    }
+
+    #[tokio::test]
+    async fn ring_es_resolves_and_emits_vote_observability() {
+        let (capture, sink) = capture_sink();
+        let (agents, providers) = ring_roster();
+        let config = RingConfig {
+            max_laps: 1,
+            ..RingConfig::default()
+        };
+
+        let (state, events) = dispatch_ring_es(
+            "task",
+            agents,
+            providers,
+            config,
+            RoutingRules::default(),
+            None,
+            &sink,
+        )
+        .await
+        .unwrap();
+
+        // (a): completes.
+        assert_eq!(state.status, RunStatus::Completed);
+        // (b): non-empty resolved outcome (same display the switched match
+        // arm shows via `run_es_record::ring_display`), matching the
+        // unanimous position both agents voted for.
+        let display = crate::cli::run_es_record::ring_display(&state, &events);
+        assert!(display.starts_with("Use Rust with Axum"));
+
+        // (c): AgentStart + Vote observability reaches the sink. NOTE: like
+        // blackboard, `RingEffectRunner::run_invoke` returns
+        // `ContributionAdded` (no `RunEvent` mapping) during circulation and
+        // `VoteCast` (-> `RunEvent::Vote`) during voting — never
+        // `AgentObserved` — so `AgentEnd` is *never* emitted for ring either
+        // (same Lot 4 bridging fact as blackboard).
+        let tags = capture.tags();
+        assert!(tags.iter().any(|t| t == "agent_start"), "tags: {tags:?}");
+        assert!(tags.iter().any(|t| t == "vote"), "tags: {tags:?}");
+        assert!(
+            !tags.iter().any(|t| t == "agent_end"),
+            "ring never emits agent_end (ContributionAdded/VoteCast have no \
+             AgentEnd mapping) — tags: {tags:?}"
+        );
+    }
+
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn ring_es_state_is_recorded_via_record_ring_es_into() {
+        use crate::storage::{init_embedded, queries};
+
+        let (_capture, sink) = capture_sink();
+        let (agents, providers) = ring_roster();
+        let config = RingConfig {
+            max_laps: 1,
+            ..RingConfig::default()
+        };
+
+        let (state, _events) = dispatch_ring_es(
+            "task",
+            agents,
+            providers,
+            config.clone(),
+            RoutingRules::default(),
+            None,
+            &sink,
+        )
+        .await
+        .unwrap();
+
+        // (d): the same `record_ring_es_into` the switched "ring" match arm
+        // calls (via `record_ring_es`) persists the folded `ExecutionState`.
+        let db = init_embedded().unwrap();
+        let run_id = crate::cli::run_es_record::record_ring_es_into(
+            &db, &state, &config, "task", None, None,
+        )
+        .unwrap();
+
+        let persisted = queries::get_orchestration_run(&db, &run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.pattern, "ring");
+        let votes = queries::get_ring_votes(&db, &run_id).unwrap();
+        assert_eq!(votes.len(), 2, "expected both agents' votes persisted");
+    }
+
+    // ── orchestration_cost_limit (helper) ─────────────────────────────
+
+    #[test]
+    fn orchestration_cost_limit_none_without_project() {
+        let resolution = AgentResolution::Default(std::path::PathBuf::from("/tmp"));
+        assert_eq!(orchestration_cost_limit(&resolution), None);
+    }
+
+    #[test]
+    fn orchestration_cost_limit_reads_top_level_orchestration_block() {
+        let config = ProjectConfig {
+            orchestration: Some(Box::new(OrchestrationConfig {
+                cost_limit: Some(2.5),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let resolution = AgentResolution::Project {
+            root: std::path::PathBuf::from("/tmp/project"),
+            config: Box::new(config),
+        };
+        assert_eq!(orchestration_cost_limit(&resolution), Some(2.5));
+    }
+
+    // Silence an "unused" complaint on `call_count` in feature
+    // configurations that don't happen to exercise it (kept for future
+    // scenarios/debugging rather than deleted).
+    #[test]
+    fn scripted_provider_call_count_tracks_calls() {
+        let p = ScriptedProvider::new(&["one", "two"]);
+        assert_eq!(p.call_count(), 0);
     }
 }
