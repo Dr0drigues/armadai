@@ -3569,7 +3569,12 @@ mod tests {
         assert_eq!(st.status, RunStatus::Completed);
 
         // Sub-run actually executed: both members were invoked...
-        assert!(core_a.call_count() > 0 && core_b.call_count() > 0);
+        let core_a_calls_before = core_a.call_count();
+        let core_b_calls_before = core_b.call_count();
+        assert!(
+            core_a_calls_before > 0 && core_b_calls_before > 0,
+            "le sous-run doit avoir invoqué les membres pendant le run"
+        );
         // ...but the lead's own provider was never called (short-circuit).
         assert_eq!(
             core_lead.call_count(),
@@ -3610,6 +3615,16 @@ mod tests {
         // (the child sub-run is never re-executed).
         let replayed = replay("run-nested-bb", &log).unwrap();
         assert_eq!(format!("{st:?}"), format!("{replayed:?}"));
+        assert_eq!(
+            core_a.call_count(),
+            core_a_calls_before,
+            "le replay ne doit pas ré-exécuter le sous-run (core-a)"
+        );
+        assert_eq!(
+            core_b.call_count(),
+            core_b_calls_before,
+            "le replay ne doit pas ré-exécuter le sous-run (core-b)"
+        );
     }
 
     // Scenario: same topology, `ring` sub-pattern. The nested ring circulates
@@ -3660,7 +3675,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(st.status, RunStatus::Completed);
-        assert!(core_a.call_count() > 0 && core_b.call_count() > 0);
+        let core_a_calls_before = core_a.call_count();
+        let core_b_calls_before = core_b.call_count();
+        assert!(
+            core_a_calls_before > 0 && core_b_calls_before > 0,
+            "le sous-run doit avoir invoqué les membres pendant le run"
+        );
         assert_eq!(
             core_lead.call_count(),
             0,
@@ -3689,5 +3709,15 @@ mod tests {
 
         let replayed = replay("run-nested-ring", &log).unwrap();
         assert_eq!(format!("{st:?}"), format!("{replayed:?}"));
+        assert_eq!(
+            core_a.call_count(),
+            core_a_calls_before,
+            "le replay ne doit pas ré-exécuter le sous-run (core-a)"
+        );
+        assert_eq!(
+            core_b.call_count(),
+            core_b_calls_before,
+            "le replay ne doit pas ré-exécuter le sous-run (core-b)"
+        );
     }
 }
