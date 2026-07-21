@@ -296,6 +296,51 @@ fn build_partial_content(state: &ExecutionState) -> String {
         .join("\n")
 }
 
+/// Turn cap: the maximum number of `assistant` responses any single agent may
+/// produce before `decide` force-completes the run.
+///
+/// This is a *second*, orthogonal anti-loop guard sitting alongside the
+/// coordinator's `synthesis_count` guard. `synthesis_count` only counts
+/// synthesis re-injections (`user` turns carrying `[Result from @…]`), so it is
+/// blind to an **escalation ping-pong**: a subordinate `S` escalates to the
+/// coordinator, the coordinator re-delegates `@S`, `S` re-escalates, … Each
+/// re-invocation here is a *raw* escalation/delegation message, never a
+/// `format_results` re-injection, so `synthesis_count` stays `0` and the loop
+/// would only ever be broken by the socle's `MAX_ITERATIONS` (~500 LLM calls).
+/// Counting an agent's own turns catches that ping-pong far earlier.
+///
+/// `4` is chosen with a comfortable margin above the normal hierarchical flow:
+/// an agent delegates then synthesizes (2 turns), and even a coordinator that
+/// needs one synthesis retry tops out at 3 turns before the
+/// `synthesis_count >= 2` guard fires. A 4th turn therefore reliably signals a
+/// loop the other guards did not catch, without risking a false positive on a
+/// healthy run.
+const MAX_AGENT_TURNS: usize = 4;
+
+/// Number of `assistant` turns `agent` has produced so far — one per
+/// `AgentObserved` folded into its conversation. Used by the turn-cap
+/// anti-loop guard (see [`MAX_AGENT_TURNS`]).
+fn assistant_turn_count(state: &ExecutionState, agent: &str) -> usize {
+    state
+        .conversations
+        .get(agent)
+        .map(|msgs| msgs.iter().filter(|m| m.role == "assistant").count())
+        .unwrap_or(0)
+}
+
+/// Whether the run is legitimately waiting on an in-flight invocation: some
+/// agent that has been delegated/asked/escalated to (`to` side of a
+/// `hier.trace` entry) has not produced any response yet. Distinguishes a
+/// transient "waiting for a reply" state (idle, no actions) from a genuinely
+/// stuck run (see `decide`'s no-progress safety net).
+fn awaiting_in_flight(state: &ExecutionState) -> bool {
+    state
+        .hier
+        .trace
+        .iter()
+        .any(|(_, to, _, _)| latest_response(state, to).is_none())
+}
+
 /// Pure hierarchical [`Decider`]: given the current [`ExecutionState`],
 /// decides the next batch of [`Action`]s (invoke an agent, emit a
 /// bookkeeping event, warn-and-complete on limit breach, or complete the
@@ -640,21 +685,68 @@ impl Decider for HierarchicalDecider {
             }
         }
 
-        // 4. Dispatch any undispatched delegation round (the coordinator's
+        // 4. Turn-cap anti-loop: some agent has produced `MAX_AGENT_TURNS`
+        // responses without the run converging (the coordinator's own
+        // termination is checked first, above, so a healthy run completes
+        // normally before ever reaching this). This catches loops that
+        // `synthesis_count` is blind to — notably an escalation ping-pong,
+        // whose raw re-invocations never register as synthesis re-injections.
+        // Force completion with the coordinator's latest narrative (falling
+        // back to a partial digest if that narrative is empty), so `run.rs`
+        // always receives non-empty content.
+        if state
+            .conversations
+            .keys()
+            .any(|agent| assistant_turn_count(state, agent) >= MAX_AGENT_TURNS)
+        {
+            let content = latest_response(state, &self.coordinator)
+                .map(extract_narrative)
+                .filter(|narrative| !narrative.trim().is_empty())
+                .unwrap_or_else(|| build_partial_content(state));
+            return vec![
+                Action::Emit(ExecutionEvent::Warned {
+                    code: "agent_turn_cap".to_string(),
+                }),
+                Action::Complete { content },
+            ];
+        }
+
+        // 5. Dispatch any undispatched delegation round (the coordinator's
         // or a subordinate's), spawning its children.
         if let Some(agent) = self.agent_needing_dispatch(state) {
             return self.dispatch_actions(&agent, state);
         }
 
-        // 5. Synthesis: an agent whose children have all settled is
+        // 6. Synthesis: an agent whose children have all settled is
         // re-invoked with their re-injected results (resolved bottom-up).
         if let Some(agent) = self.awaiting_synthesis_agent(state) {
             return self.synthesis_actions(state, &agent);
         }
 
-        // 6. Nothing actionable (e.g. a subordinate settled but its delegator
-        // is still waiting on a sibling): let the loop idle.
-        Vec::new()
+        // 7a. Waiting on an in-flight reply: a subordinate settled but its
+        // delegator is still awaiting a sibling that has been dispatched yet
+        // not observed. Nothing to decide this round — stay idle. (In the real
+        // socle loop an invocation resolves within the same batch, so this
+        // arises only for synthetic/partial states; it is a genuine wait, not
+        // a dead end.)
+        if awaiting_in_flight(state) {
+            return Vec::new();
+        }
+
+        // 7b. No-progress safety net: nothing to dispatch, nothing awaiting
+        // synthesis, and nothing in flight — the run cannot advance. Returning
+        // an empty batch here would let the socle break out of its loop with
+        // `status = Running` (neither Completed nor Halted), a silent stall.
+        // Emit an explicit terminal instead, with a best-effort partial digest
+        // as content (non-empty for `run.rs`).
+        vec![
+            Action::Emit(ExecutionEvent::Warned {
+                code: "no_progress".to_string(),
+            }),
+            Action::Complete {
+                content: build_partial_content(state),
+            },
+        ]
     }
 }
 
@@ -1313,6 +1405,451 @@ mod tests {
             assert_eq!(actions.len(), 1);
             assert!(
                 matches!(&actions[0], Action::Complete { content } if content.contains("Toujours en cours"))
+            );
+        }
+
+        // I1: escalation ping-pong (subordinate escalates → coordinator
+        // re-delegates → subordinate re-escalates → …) never re-injects
+        // `format_results`, so `synthesis_count` stays 0 and cannot stop it.
+        // The turn-cap guard must catch it: once the coordinator has produced
+        // `MAX_AGENT_TURNS` (4) responses without converging, `decide` must
+        // `Warned{agent_turn_cap}` + `Complete` rather than dispatch yet
+        // another invocation.
+        #[test]
+        fn escalation_ping_pong_is_capped() {
+            let dec = test_decider(
+                "dev-lead",
+                &[
+                    ("dev-lead", "concrete-model"),
+                    ("core-specialist", "concrete-model"),
+                ],
+                base_config(),
+                // Generous depth/iteration caps: the point is that neither of
+                // them fires — the *turn cap* is what stops the ping-pong.
+                50,
+                500,
+                None,
+                None,
+            );
+            let mut events = vec![
+                run_started(&["dev-lead"]),
+                ExecutionEvent::AgentInvoked {
+                    agent: "dev-lead".into(),
+                    input: "build X".into(),
+                },
+                ExecutionEvent::AgentObserved {
+                    agent: "dev-lead".into(),
+                    content: "Je délègue.\n@core-specialist: fais X".into(),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 0.0,
+                    model: "m".into(),
+                },
+            ];
+            // Four escalate/re-delegate round-trips. Each pushes: Delegated,
+            // the subordinate's escalation turn, Escalated, then the
+            // coordinator's re-delegation turn. dev-lead accrues one assistant
+            // turn per round-trip (its kick-off above is turn #1, so the 3rd
+            // round-trip yields its 4th turn → the cap fires).
+            let rounds = [
+                ("fais X", "retry", "besoin d'aide", "Réessaie."),
+                ("retry", "retry2", "encore besoin", "Réessaie encore."),
+                ("retry2", "retry3", "toujours besoin", "Je relance."),
+            ];
+            for (task, next_task, escalation, narrative) in rounds {
+                events.push(ExecutionEvent::Delegated {
+                    from: "dev-lead".into(),
+                    to: "core-specialist".into(),
+                    task: task.into(),
+                    depth: 1,
+                });
+                events.push(ExecutionEvent::AgentInvoked {
+                    agent: "core-specialist".into(),
+                    input: task.into(),
+                });
+                events.push(ExecutionEvent::AgentObserved {
+                    agent: "core-specialist".into(),
+                    content: format!("Je bloque.\n@dev-lead: {escalation}"),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 0.0,
+                    model: "m".into(),
+                });
+                events.push(ExecutionEvent::Escalated {
+                    from: "core-specialist".into(),
+                    to: "dev-lead".into(),
+                    message: escalation.into(),
+                });
+                events.push(ExecutionEvent::AgentInvoked {
+                    agent: "dev-lead".into(),
+                    input: escalation.into(),
+                });
+                events.push(ExecutionEvent::AgentObserved {
+                    agent: "dev-lead".into(),
+                    content: format!("{narrative}\n@core-specialist: {next_task}"),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 0.0,
+                    model: "m".into(),
+                });
+            }
+
+            let state = fold(&events);
+            // Sanity: neither the depth nor the iteration socle cap has been
+            // hit, and no synthesis re-injection ever happened.
+            assert!(current_depth(&state) < 50);
+            assert!(invocation_count(&state) < 500);
+            assert_eq!(synthesis_count(&state, "dev-lead"), 0);
+            assert!(assistant_turn_count(&state, "dev-lead") >= MAX_AGENT_TURNS);
+
+            let actions = dec.decide(&state);
+            // The turn cap must terminate the run — NOT dispatch another
+            // invocation.
+            assert!(
+                !actions.iter().any(|a| matches!(a, Action::Invoke { .. })),
+                "turn cap must stop the ping-pong, not invoke again: {actions:?}"
+            );
+            assert!(actions.iter().any(|a| matches!(
+                a,
+                Action::Emit(ExecutionEvent::Warned { code }) if code == "agent_turn_cap"
+            )));
+            let completed = actions.iter().find_map(|a| match a {
+                Action::Complete { content } => Some(content.as_str()),
+                _ => None,
+            });
+            let content = completed.expect("turn cap must Complete the run");
+            assert!(
+                !content.trim().is_empty(),
+                "completion content must be non-empty"
+            );
+        }
+
+        // I2: three-level hierarchy C → L → {A, B}. Settlement must propagate
+        // bottom-up: once A and B settle, `decide` synthesizes L (NOT the run);
+        // once L settles, `decide` synthesizes C — the run does not end on L's
+        // FinalAnswer.
+        #[test]
+        fn multi_level_synthesis_propagates_bottom_up() {
+            let config = OrchestrationConfig {
+                enabled: true,
+                pattern: OrchestrationPattern::Hierarchical,
+                coordinator: Some("dev-lead".to_string()),
+                teams: vec![TeamConfig {
+                    lead: Some("core-lead".to_string()),
+                    agents: vec!["core-a".to_string(), "core-b".to_string()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let dec = test_decider(
+                "dev-lead",
+                &[
+                    ("dev-lead", "concrete-model"),
+                    ("core-lead", "concrete-model"),
+                    ("core-a", "concrete-model"),
+                    ("core-b", "concrete-model"),
+                ],
+                config,
+                5,
+                50,
+                None,
+                None,
+            );
+            // C delegates to L; L delegates to A and B; A and B answer.
+            let mut events = vec![
+                run_started(&["dev-lead"]),
+                ExecutionEvent::AgentInvoked {
+                    agent: "dev-lead".into(),
+                    input: "build X".into(),
+                },
+                ExecutionEvent::AgentObserved {
+                    agent: "dev-lead".into(),
+                    content: "@core-lead: gère la feature".into(),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 0.0,
+                    model: "m".into(),
+                },
+                ExecutionEvent::Delegated {
+                    from: "dev-lead".into(),
+                    to: "core-lead".into(),
+                    task: "gère la feature".into(),
+                    depth: 1,
+                },
+                ExecutionEvent::AgentInvoked {
+                    agent: "core-lead".into(),
+                    input: "gère la feature".into(),
+                },
+                ExecutionEvent::AgentObserved {
+                    agent: "core-lead".into(),
+                    content: "@core-a: fais A\n@core-b: fais B".into(),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 0.0,
+                    model: "m".into(),
+                },
+                ExecutionEvent::Delegated {
+                    from: "core-lead".into(),
+                    to: "core-a".into(),
+                    task: "fais A".into(),
+                    depth: 2,
+                },
+                ExecutionEvent::Delegated {
+                    from: "core-lead".into(),
+                    to: "core-b".into(),
+                    task: "fais B".into(),
+                    depth: 2,
+                },
+            ];
+            events.extend(subordinate_turn("core-a", "fais A", "A est fait."));
+            events.extend(subordinate_turn("core-b", "fais B", "B est fait."));
+
+            // Step 1: L's children have settled → synthesize L, not the run.
+            let state = fold(&events);
+            let actions = dec.decide(&state);
+            assert!(
+                !actions.iter().any(|a| matches!(a, Action::Complete { .. })),
+                "L's children settling must not end the run: {actions:?}"
+            );
+            let l_reinjection = actions.iter().find_map(|a| match a {
+                Action::Invoke { agent, input } if agent == "core-lead" => Some(input.as_str()),
+                _ => None,
+            });
+            let l_input = l_reinjection.expect("expected a synthesis Invoke to the lead L");
+            assert!(
+                l_input.contains("[Result from @core-a]") && l_input.contains("A est fait."),
+                "A's result must be re-injected into L, got: {l_input}"
+            );
+            assert!(
+                l_input.contains("[Result from @core-b]") && l_input.contains("B est fait."),
+                "B's result must be re-injected into L, got: {l_input}"
+            );
+
+            // Step 2: L now produces its own FinalAnswer (after synthesis).
+            events.push(ExecutionEvent::AgentInvoked {
+                agent: "core-lead".into(),
+                input: l_input.to_string(),
+            });
+            events.push(ExecutionEvent::AgentObserved {
+                agent: "core-lead".into(),
+                content: "Feature complète.".into(),
+                tokens_in: 5,
+                tokens_out: 5,
+                cost: 0.0,
+                model: "m".into(),
+            });
+
+            // `decide` must now synthesize C with L's result re-injected —
+            // NOT terminate the run on L's FinalAnswer.
+            let state = fold(&events);
+            let actions = dec.decide(&state);
+            assert!(
+                !actions.iter().any(|a| matches!(a, Action::Complete { .. })),
+                "L's FinalAnswer must not end the run — C must synthesize: {actions:?}"
+            );
+            let c_reinjection = actions.iter().find_map(|a| match a {
+                Action::Invoke { agent, input } if agent == "dev-lead" => Some(input.as_str()),
+                _ => None,
+            });
+            let c_input =
+                c_reinjection.expect("expected a bottom-up synthesis Invoke to coordinator C");
+            assert!(
+                c_input.contains("[Result from @core-lead]")
+                    && c_input.contains("Feature complète."),
+                "L's result must propagate up and be re-injected into C, got: {c_input}"
+            );
+        }
+
+        // I3: an agent configured with the exact `latest:auto` model must emit
+        // a `ModelRouted` event *before* its `Invoke`; agents on a concrete
+        // model must not.
+        #[test]
+        fn latest_auto_agent_emits_model_routed_before_invoke() {
+            let dec = test_decider(
+                "dev-lead",
+                &[
+                    ("dev-lead", "concrete-model"),
+                    ("core-specialist", "latest:auto"),
+                    ("qa-specialist", "concrete-model"),
+                ],
+                base_config(),
+                5,
+                50,
+                None,
+                None,
+            );
+            let events = vec![
+                run_started(&["dev-lead"]),
+                ExecutionEvent::AgentInvoked {
+                    agent: "dev-lead".into(),
+                    input: "build X".into(),
+                },
+                ExecutionEvent::AgentObserved {
+                    agent: "dev-lead".into(),
+                    content: "@core-specialist: implémente X\n@qa-specialist: teste X".into(),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 0.0,
+                    model: "m".into(),
+                },
+            ];
+            let state = fold(&events);
+            let actions = dec.decide(&state);
+
+            // Exactly one ModelRouted, for the latest:auto agent only.
+            let routed: Vec<&str> = actions
+                .iter()
+                .filter_map(|a| match a {
+                    Action::Emit(ExecutionEvent::ModelRouted { agent, .. }) => Some(agent.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(routed, vec!["core-specialist"]);
+
+            // …and it precedes that agent's Invoke.
+            let routed_pos = actions
+                .iter()
+                .position(|a| matches!(
+                    a,
+                    Action::Emit(ExecutionEvent::ModelRouted { agent, .. }) if agent == "core-specialist"
+                ))
+                .unwrap();
+            let invoke_pos = actions
+                .iter()
+                .position(
+                    |a| matches!(a, Action::Invoke { agent, .. } if agent == "core-specialist"),
+                )
+                .unwrap();
+            assert!(
+                routed_pos < invoke_pos,
+                "ModelRouted must precede the Invoke it annotates"
+            );
+        }
+
+        /// Build a minimal 1-delegation-then-partial-result state, used by the
+        /// budget/cost/iteration guard tests: the coordinator delegates once
+        /// and the subordinate returns a partial result. Each guard test wires
+        /// a decider whose caps make exactly one branch of `breached_limit`
+        /// trip on this state.
+        fn one_partial_result_state() -> ExecutionState {
+            let events = vec![
+                run_started(&["dev-lead"]),
+                ExecutionEvent::AgentInvoked {
+                    agent: "dev-lead".into(),
+                    input: "build X".into(),
+                },
+                ExecutionEvent::AgentObserved {
+                    agent: "dev-lead".into(),
+                    content: "@core-specialist: task".into(),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 1.0,
+                    model: "m".into(),
+                },
+            ];
+            fold(&events)
+        }
+
+        // I4: max_iterations breach → Warned{max_iterations} + Complete.
+        #[test]
+        fn guard_max_iterations_warns_and_completes() {
+            // depth (0) < max_depth (5) so the depth branch does not pre-empt;
+            // 1 invocation ≥ max_iterations (1) → the iteration branch trips.
+            let dec = test_decider(
+                "dev-lead",
+                &[("dev-lead", "concrete-model")],
+                base_config(),
+                5,
+                1,
+                None,
+                None,
+            );
+            let state = one_partial_result_state();
+            let actions = dec.decide(&state);
+            assert_eq!(actions.len(), 2);
+            assert!(matches!(
+                &actions[0],
+                Action::Emit(ExecutionEvent::Warned { code }) if code == "max_iterations"
+            ));
+            assert!(
+                matches!(&actions[1], Action::Complete { content } if !content.trim().is_empty())
+            );
+        }
+
+        // I4: token_budget breach → Warned{token_budget} + Complete. Also
+        // guards the u32→u64 widening: the comparison must not truncate.
+        #[test]
+        fn guard_token_budget_warns_and_completes() {
+            // 5 in + 5 out = 10 tokens ≥ budget (5). max_iterations high and
+            // cost_limit None so only the token branch can trip.
+            let dec = test_decider(
+                "dev-lead",
+                &[("dev-lead", "concrete-model")],
+                base_config(),
+                5,
+                50,
+                Some(5),
+                None,
+            );
+            let state = one_partial_result_state();
+            let actions = dec.decide(&state);
+            assert_eq!(actions.len(), 2);
+            assert!(matches!(
+                &actions[0],
+                Action::Emit(ExecutionEvent::Warned { code }) if code == "token_budget"
+            ));
+            assert!(
+                matches!(&actions[1], Action::Complete { content } if !content.trim().is_empty())
+            );
+
+            // Boundary / no-truncation: a budget just above the 10 tokens
+            // consumed must NOT trip the token branch (proves both sides are
+            // compared as u64, not a truncated u32 cast of the state).
+            let dec_ok = test_decider(
+                "dev-lead",
+                &[
+                    ("dev-lead", "concrete-model"),
+                    ("core-specialist", "concrete-model"),
+                ],
+                base_config(),
+                5,
+                50,
+                Some(11),
+                None,
+            );
+            let actions_ok = dec_ok.decide(&state);
+            assert!(
+                !actions_ok.iter().any(|a| matches!(
+                    a,
+                    Action::Emit(ExecutionEvent::Warned { code }) if code == "token_budget"
+                )),
+                "budget above consumption must not trip: {actions_ok:?}"
+            );
+        }
+
+        // I4: cost_limit breach → Warned{cost_limit} + Complete.
+        #[test]
+        fn guard_cost_limit_warns_and_completes() {
+            // Observed cost 1.0 ≥ cost_limit (0.5). max_iterations high and
+            // token_budget None so only the cost branch can trip.
+            let dec = test_decider(
+                "dev-lead",
+                &[("dev-lead", "concrete-model")],
+                base_config(),
+                5,
+                50,
+                None,
+                Some(0.5),
+            );
+            let state = one_partial_result_state();
+            let actions = dec.decide(&state);
+            assert_eq!(actions.len(), 2);
+            assert!(matches!(
+                &actions[0],
+                Action::Emit(ExecutionEvent::Warned { code }) if code == "cost_limit"
+            ));
+            assert!(
+                matches!(&actions[1], Action::Complete { content } if !content.trim().is_empty())
             );
         }
     }
