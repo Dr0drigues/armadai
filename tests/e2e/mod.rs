@@ -3,4 +3,5 @@
 
 pub mod case;
 pub mod harness;
+pub mod report;
 pub mod runner;

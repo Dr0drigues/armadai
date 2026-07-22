@@ -18,12 +18,10 @@ use super::case::{CaseFile, ExpectedEvent};
 
 /// Outcome of running one case: pass/fail plus enough context to render a report.
 ///
-/// `name`/`weight`/`allow_fail`/`expected`/`observed` are only consumed by the report
-/// aggregator (a later task, not yet in this repo) — `run_case` populates all of them
-/// today, `passed`/`diffs` are read by this task's own tests, but nothing here yet
-/// reads the rest back out. `#[allow(dead_code)]` until that lands; remove it once a
-/// consumer reads these fields.
-#[allow(dead_code)]
+/// `name`/`weight`/`allow_fail`/`expected`/`observed` are read back out by
+/// `report::write_reports` (the report aggregator) to build both the JSON summary
+/// and the HTML expected-vs-observed blocks; `passed`/`diffs` are also exercised by
+/// this module's own tests.
 #[derive(Debug, Clone, Default)]
 pub struct CaseOutcome {
     pub name: String,
