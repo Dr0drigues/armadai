@@ -189,6 +189,7 @@ pub fn map_execution_to_run_events(
         }],
         ExecutionEvent::Completed { .. }
         | ExecutionEvent::RunStarted { .. }
+        | ExecutionEvent::ConfigSnapshot { .. }
         | ExecutionEvent::Halted { .. }
         | ExecutionEvent::AskedPeer { .. }
         | ExecutionEvent::Escalated { .. }

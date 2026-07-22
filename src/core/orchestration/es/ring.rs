@@ -1035,13 +1035,18 @@ pub async fn run_ring_es(
     cost_limit: Option<f64>,
     log: &mut impl EventLog,
 ) -> anyhow::Result<ExecutionState> {
-    let initial = vec![ExecutionEvent::RunStarted {
-        run_id: run_id.to_string(),
-        pattern: "ring".to_string(),
-        agents: agent_order.clone(),
-        input: input.to_string(),
-        project: None,
-    }];
+    let initial = vec![
+        ExecutionEvent::RunStarted {
+            run_id: run_id.to_string(),
+            pattern: "ring".to_string(),
+            agents: agent_order.clone(),
+            input: input.to_string(),
+            project: None,
+        },
+        ExecutionEvent::ConfigSnapshot {
+            config_json: serde_json::to_string(&config).unwrap_or_default(),
+        },
+    ];
 
     let vote_weights = vote_weights_from_agents(&agents);
     let max_laps = config.max_laps;

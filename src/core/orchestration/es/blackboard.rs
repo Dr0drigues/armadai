@@ -758,13 +758,18 @@ pub async fn run_blackboard_es(
     log: &mut impl EventLog,
 ) -> anyhow::Result<ExecutionState> {
     let agent_order: Vec<String> = agents.keys().cloned().collect();
-    let initial = vec![ExecutionEvent::RunStarted {
-        run_id: run_id.to_string(),
-        pattern: "blackboard".to_string(),
-        agents: agent_order.clone(),
-        input: input.to_string(),
-        project: None,
-    }];
+    let initial = vec![
+        ExecutionEvent::RunStarted {
+            run_id: run_id.to_string(),
+            pattern: "blackboard".to_string(),
+            agents: agent_order.clone(),
+            input: input.to_string(),
+            project: None,
+        },
+        ExecutionEvent::ConfigSnapshot {
+            config_json: serde_json::to_string(&config).unwrap_or_default(),
+        },
+    ];
 
     let max_rounds = config.max_rounds;
     let token_budget = Some(u32::try_from(config.token_budget).unwrap_or(u32::MAX));
