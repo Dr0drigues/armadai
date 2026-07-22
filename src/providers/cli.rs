@@ -19,6 +19,28 @@ impl CliProvider {
         }
     }
 
+    /// Compose the input string sent to the CLI command from the request's
+    /// system prompt and last user message. The system prompt is the only
+    /// channel carrying agent persona and delegation instructions (see
+    /// `traits::CompletionRequest`); CLI providers have no separate channel
+    /// for it, so it is prefixed onto the task, clearly delimited.
+    ///
+    /// When `system_prompt` is empty, the message is returned unchanged
+    /// (no prefix, no tags) to preserve existing behavior exactly.
+    fn compose_input(&self, request: &CompletionRequest) -> String {
+        let msg = request
+            .messages
+            .last()
+            .map(|m| m.content.as_str())
+            .unwrap_or("");
+
+        if request.system_prompt.is_empty() {
+            msg.to_string()
+        } else {
+            format!("<system>\n{}\n</system>\n\n{}", request.system_prompt, msg)
+        }
+    }
+
     fn build_command(&self, input: &str) -> Command {
         let mut cmd = Command::new(&self.command);
         for arg in &self.args {
@@ -65,18 +87,14 @@ impl CliProvider {
 #[async_trait]
 impl Provider for CliProvider {
     async fn complete(&self, request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
-        let input = request
-            .messages
-            .last()
-            .map(|m| m.content.as_str())
-            .unwrap_or("");
+        let input = self.compose_input(&request);
 
         // Run with `self.args` verbatim (the factory already selected the right
         // args: canonical stream-json args for a default JSON-capable CLI, or
         // the agent's explicit args). Then parse stdout opportunistically:
         // `parse_json_stdout` extracts content + cost/tokens from JSONL events
         // when present, and falls back to raw stdout (zeroed metrics) otherwise.
-        let mut cmd = self.build_command(input);
+        let mut cmd = self.build_command(&input);
         let timeout = std::time::Duration::from_secs(self.timeout_secs);
 
         let output = match tokio::time::timeout(timeout, cmd.output()).await {
@@ -96,11 +114,7 @@ impl Provider for CliProvider {
     }
 
     async fn stream(&self, request: CompletionRequest) -> anyhow::Result<TokenStream> {
-        let input = request
-            .messages
-            .last()
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
+        let input = self.compose_input(&request);
 
         let mut child = self.build_command(&input).spawn()?;
 
@@ -254,5 +268,77 @@ mod tests {
         assert_eq!(response.tokens_in, 0);
         assert_eq!(response.tokens_out, 0);
         assert_eq!(response.cost, 0.0);
+    }
+
+    // ── system_prompt forwarding (fix: CliProvider was dropping system_prompt) ──
+
+    fn request_with_system(system_prompt: &str, text: &str) -> CompletionRequest {
+        CompletionRequest {
+            model: "echo".to_string(),
+            system_prompt: system_prompt.to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: text.to_string(),
+            }],
+            temperature: 0.0,
+            max_tokens: None,
+        }
+    }
+
+    #[test]
+    fn compose_input_empty_system_prompt_returns_message_unchanged() {
+        let provider = CliProvider::new("echo".to_string(), vec![], 10);
+        let request = request_with_system("", "fais la tache");
+        assert_eq!(provider.compose_input(&request), "fais la tache");
+    }
+
+    #[test]
+    fn compose_input_non_empty_system_prompt_prefixes_message() {
+        let provider = CliProvider::new("echo".to_string(), vec![], 10);
+        let request =
+            request_with_system("PERSONA-XYZ instructions de delegation", "fais la tache");
+        let composed = provider.compose_input(&request);
+
+        assert_eq!(
+            composed,
+            "<system>\nPERSONA-XYZ instructions de delegation\n</system>\n\nfais la tache"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_empty_system_prompt_reaches_the_command() {
+        let provider = CliProvider::new("echo".to_string(), vec![], 10);
+        let request =
+            request_with_system("PERSONA-XYZ instructions de delegation", "fais la tache");
+
+        let response = provider.complete(request).await.unwrap();
+
+        assert!(
+            response.content.contains("PERSONA-XYZ"),
+            "expected system prompt marker in output, got: {}",
+            response.content
+        );
+        assert!(
+            response.content.contains("fais la tache"),
+            "expected task text in output, got: {}",
+            response.content
+        );
+        let system_pos = response.content.find("PERSONA-XYZ").unwrap();
+        let task_pos = response.content.find("fais la tache").unwrap();
+        assert!(
+            system_pos < task_pos,
+            "expected system prompt before task, got: {}",
+            response.content
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_system_prompt_changes_nothing() {
+        let provider = CliProvider::new("echo".to_string(), vec![], 10);
+        let request = request_with_system("", "hello world");
+
+        let response = provider.complete(request).await.unwrap();
+
+        assert_eq!(response.content.trim(), "hello world");
     }
 }
