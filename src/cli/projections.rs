@@ -62,11 +62,12 @@ pub async fn execute(action: ProjectionsAction) -> anyhow::Result<()> {
 
                 if let Some(id) = run {
                     rebuild_run(&db, &id)?;
-                    println!("1 run(s) reprojected");
+                    println!("1 run reprojected");
                 } else {
                     // Default to --all if no flag specified
                     let count = rebuild_all(&db)?;
-                    println!("{} run(s) reprojected", count);
+                    let plural = if count == 1 { "run" } else { "runs" };
+                    println!("{count} {plural} reprojected");
                 }
 
                 Ok(())
