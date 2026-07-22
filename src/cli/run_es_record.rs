@@ -287,6 +287,121 @@ pub fn record_ring_es_into(
     Ok(run_id.to_string())
 }
 
+/// Idempotent projector: re-derive all flat-table rows (`runs`,
+/// `orchestration_runs`, `board_entries`, `ring_contributions`, `ring_votes`,
+/// `delegation_events`) for a given `run_id` from its event log.
+///
+/// Reads `execution_events[run_id]`, folds them into an `ExecutionState`,
+/// extracts the runtime config (from `ConfigSnapshot` → `state.config_json`),
+/// deletes any existing projection rows, then calls the pattern-specific
+/// `record_*_es_into` function to rebuild them. Multiple calls on the same
+/// `run_id` produce the exact same rows (idempotence: DELETE before INSERT).
+///
+/// Returns `Ok(())` when the projection succeeds, or an error if the event log
+/// is malformed (e.g. no `RunStarted`) or storage fails.
+#[cfg(feature = "storage")]
+pub fn project_run(db: &crate::storage::Database, run_id: &str) -> anyhow::Result<()> {
+    use crate::core::orchestration::es::log::{EventLog, SqliteLog};
+    use crate::core::orchestration::es::state::fold;
+
+    // 1. Read the event log for this run.
+    let log = SqliteLog::new(db.clone());
+    let events = log.events(run_id)?;
+
+    if events.is_empty() {
+        // No events = nothing to project (run doesn't exist or was never started).
+        return Ok(());
+    }
+
+    // 2. Fold into ExecutionState.
+    let state = fold(&events);
+
+    // 3. Extract pattern/input/project from the first RunStarted event.
+    let (pattern, input, project) = events
+        .iter()
+        .find_map(|e| match e {
+            ExecutionEvent::RunStarted {
+                pattern,
+                input,
+                project,
+                ..
+            } => Some((pattern.clone(), input.clone(), project.clone())),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("No RunStarted event in log for run {}", run_id))?;
+
+    // 4. Delete any existing projection rows (idempotence: clear before rebuilding).
+    crate::storage::queries::delete_projection_for_run(db, run_id)?;
+
+    // 5. Rebuild the projection by calling the pattern-specific record function.
+    match pattern.as_str() {
+        "blackboard" => {
+            let config: BlackboardConfig = state
+                .config_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok())
+                .unwrap_or_default();
+            record_blackboard_es_into(
+                db,
+                run_id,
+                &state,
+                &config,
+                &input,
+                None,
+                project.as_deref(),
+            )?;
+        }
+        "ring" => {
+            let config: RingConfig = state
+                .config_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok())
+                .unwrap_or_default();
+            record_ring_es_into(
+                db,
+                run_id,
+                &state,
+                &config,
+                &input,
+                None,
+                project.as_deref(),
+            )?;
+        }
+        "hierarchical" => {
+            use crate::core::orchestration::OrchestrationConfig;
+            use crate::core::orchestration::es::bridge::to_orchestration_result;
+
+            let result = to_orchestration_result(&state, &events);
+            let config: OrchestrationConfig = state
+                .config_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok())
+                .unwrap_or_default();
+
+            crate::cli::run::record_hierarchical_into(
+                db,
+                run_id,
+                &result,
+                &config,
+                &input,
+                project.as_deref(),
+            )?;
+        }
+        "direct" => {
+            // Direct runs have no orchestration metadata; nothing to project.
+        }
+        _ => {
+            anyhow::bail!(
+                "Unknown orchestration pattern '{}' for run {}",
+                pattern,
+                run_id
+            );
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,5 +727,81 @@ mod storage_tests {
             .unwrap()
             .unwrap();
         assert_eq!(run.run_id, "fixed-run-id-123");
+    }
+
+    /// Helper: construct a minimal blackboard event log suitable for
+    /// projection tests.
+    fn sample_blackboard_events(run_id: &str) -> Vec<ExecutionEvent> {
+        vec![
+            ExecutionEvent::RunStarted {
+                run_id: run_id.to_string(),
+                pattern: "blackboard".to_string(),
+                agents: vec!["a".to_string(), "b".to_string()],
+                input: "do research".to_string(),
+                project: None,
+            },
+            ExecutionEvent::ConfigSnapshot {
+                config_json:
+                    r#"{"max_rounds":5,"convergence_threshold":0.8,"consecutive_rounds":2}"#
+                        .to_string(),
+            },
+            ExecutionEvent::RoundStarted { round: 1 },
+            ExecutionEvent::AgentInvoked {
+                agent: "a".to_string(),
+                input: "task input".to_string(),
+            },
+            ExecutionEvent::BoardEntryAdded {
+                agent: "a".to_string(),
+                round: 1,
+                kind: "finding".to_string(),
+                content: "first finding".to_string(),
+                refs: vec![],
+                confidence: 0.9,
+                tokens_in: 50,
+                tokens_out: 100,
+                cost: 0.03,
+            },
+            ExecutionEvent::Completed {
+                content: "final result".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn project_run_is_idempotent() {
+        let db = init_embedded().unwrap();
+
+        // Persist a minimal blackboard log via SqliteLog.
+        let mut log = crate::core::orchestration::es::log::SqliteLog::new(db.clone());
+        for e in sample_blackboard_events("run-x") {
+            use crate::core::orchestration::es::log::EventLog;
+            log.append("run-x", &e).unwrap();
+        }
+
+        // Project twice.
+        super::project_run(&db, "run-x").unwrap();
+        super::project_run(&db, "run-x").unwrap();
+
+        // Exactly one row in runs + orchestration_runs, no duplication.
+        let run = queries::get_orchestration_run(&db, "run-x")
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.pattern, "blackboard");
+        assert_eq!(run.run_id, "run-x");
+
+        let history = queries::get_history(&db, None, 10).unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .filter(|r| r.agent == "orchestration:blackboard")
+                .count(),
+            1
+        );
+
+        // Board entries: exactly one entry, not duplicated.
+        let entries = queries::get_board_entries(&db, "run-x").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].agent, "a");
+        assert_eq!(entries[0].kind, "finding");
     }
 }

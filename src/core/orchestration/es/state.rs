@@ -93,6 +93,10 @@ pub struct ExecutionState {
     pub hier: HierState,
     pub board: BoardState,
     pub ring: RingState,
+    /// The orchestration config (JSON serialized) captured from `ConfigSnapshot`.
+    /// Emitted by blackboard/ring/hierarchical engines right after `RunStarted`;
+    /// direct runs have no config and leave this `None`.
+    pub config_json: Option<String>,
     /// Tier resolved for each `latest:auto` agent (agent name -> tier, e.g.
     /// `"Fast"`/`"Pro"`/`"Max"`), populated by `ModelRouted` events. Read by
     /// the pattern effect runners (e.g. `HierarchicalEffectRunner`) to
@@ -134,6 +138,9 @@ pub fn apply(state: &mut ExecutionState, event: &ExecutionEvent) {
             state.run_id = run_id.clone();
             state.pattern = pattern.clone();
             state.agents = agents.clone();
+        }
+        ExecutionEvent::ConfigSnapshot { config_json } => {
+            state.config_json = Some(config_json.clone());
         }
         ExecutionEvent::AgentInvoked { agent, input } => {
             state
@@ -448,5 +455,23 @@ mod tests {
         assert_eq!(st.hier.trace.len(), 2);
         assert_eq!(st.hier.trace[0].1, "b"); // to
         assert_eq!(st.hier.trace[1].2, "up"); // message
+    }
+
+    #[test]
+    fn config_snapshot_is_captured_in_state() {
+        let events = vec![
+            E::RunStarted {
+                run_id: "r".into(),
+                pattern: "blackboard".into(),
+                agents: vec!["a".into()],
+                input: "x".into(),
+                project: None,
+            },
+            E::ConfigSnapshot {
+                config_json: "{\"max_rounds\":5}".into(),
+            },
+        ];
+        let state = fold(&events);
+        assert_eq!(state.config_json.as_deref(), Some("{\"max_rounds\":5}"));
     }
 }

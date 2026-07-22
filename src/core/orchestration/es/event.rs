@@ -25,6 +25,12 @@ pub enum ExecutionEvent {
         input: String,
         project: Option<String>,
     },
+    /// A snapshot of the run's orchestration config (serialized as JSON).
+    /// Emitted immediately after `RunStarted` by the blackboard, ring, and
+    /// hierarchical engines. Direct runs have no orchestration config and do
+    /// not emit this event.
+    #[serde(rename = "config")]
+    ConfigSnapshot { config_json: String },
     /// An agent was invoked with a given input.
     AgentInvoked { agent: String, input: String },
     /// An agent produced output (with token/cost accounting).

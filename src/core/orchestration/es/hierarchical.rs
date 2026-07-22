@@ -1361,13 +1361,18 @@ pub async fn run_hierarchical_es(
     log: &mut impl EventLog,
 ) -> anyhow::Result<ExecutionState> {
     let agent_names: Vec<String> = agents.keys().cloned().collect();
-    let initial = vec![ExecutionEvent::RunStarted {
-        run_id: run_id.to_string(),
-        pattern: "hierarchical".to_string(),
-        agents: agent_names,
-        input: input.to_string(),
-        project: None,
-    }];
+    let initial = vec![
+        ExecutionEvent::RunStarted {
+            run_id: run_id.to_string(),
+            pattern: "hierarchical".to_string(),
+            agents: agent_names,
+            input: input.to_string(),
+            project: None,
+        },
+        ExecutionEvent::ConfigSnapshot {
+            config_json: serde_json::to_string(&config).unwrap_or_default(),
+        },
+    ];
 
     let max_depth = config.max_depth();
     let max_iterations = config.max_iterations();
