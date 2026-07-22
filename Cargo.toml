@@ -10,6 +10,10 @@ repository = "https://github.com/Dr0drigues/swarm-festai"
 name = "armadai"
 path = "src/main.rs"
 
+[[bin]]
+name = "fake-claude"
+path = "src/bin/fake-claude.rs"
+
 [features]
 default = ["tui", "web", "storage", "providers-api"]
 tui = ["dep:ratatui", "dep:crossterm", "dep:portable-pty", "dep:strip-ansi-escapes", "dep:unicode-width"]
@@ -72,4 +76,6 @@ strip-ansi-escapes = { version = "0.2", optional = true }
 regex = "1"
 
 [dev-dependencies]
+assert_cmd = "2.2.2"
+schemars = "1.2.1"
 tempfile = "3"
