@@ -437,6 +437,7 @@ mod tests {
     #[test]
     #[cfg(feature = "providers-api")]
     fn source_cache_path_is_stable_and_distinct_per_source() {
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
         let a = source_cache_path("https://models.dev/api.json");
         let b = source_cache_path("https://example.com/custom-models.json");
         assert_ne!(a, b);
