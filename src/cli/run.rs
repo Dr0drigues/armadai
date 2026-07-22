@@ -1253,7 +1253,10 @@ async fn run_orchestrated_inner(
             eprintln!("[blackboard] Halted: {:?}", state.status);
 
             #[cfg(feature = "storage")]
-            record_blackboard_es(&state, &config, input, project.as_deref());
+            {
+                let run_id = uuid::Uuid::new_v4().to_string();
+                record_blackboard_es(&run_id, &state, &config, input, project.as_deref());
+            }
 
             let outcome_text = super::run_es_record::blackboard_display(&state);
 
@@ -1317,7 +1320,10 @@ async fn run_orchestrated_inner(
             .await?;
 
             #[cfg(feature = "storage")]
-            record_ring_es(&state, &config, input, project.as_deref());
+            {
+                let run_id = uuid::Uuid::new_v4().to_string();
+                record_ring_es(&run_id, &state, &config, input, project.as_deref());
+            }
 
             let outcome_text = super::run_es_record::ring_display(&state, &events);
             eprintln!("[ring] status: {:?}", state.status);
@@ -1410,12 +1416,16 @@ async fn run_orchestrated_inner(
             );
 
             #[cfg(feature = "storage")]
-            record_orchestration_hierarchical(
-                &result,
-                &orch_config_for_storage,
-                input,
-                project.as_deref(),
-            );
+            {
+                let run_id = uuid::Uuid::new_v4().to_string();
+                record_orchestration_hierarchical(
+                    &run_id,
+                    &result,
+                    &orch_config_for_storage,
+                    input,
+                    project.as_deref(),
+                );
+            }
 
             if !json {
                 println!("{}", result.content);
@@ -1629,6 +1639,7 @@ async fn dispatch_hierarchical_es(
 /// (which reads a live `blackboard::Board` instead of an `ExecutionState`).
 #[cfg(feature = "storage")]
 fn record_blackboard_es(
+    run_id: &str,
     state: &ExecutionState,
     config: &crate::core::orchestration::blackboard::BlackboardConfig,
     input: &str,
@@ -1641,9 +1652,9 @@ fn record_blackboard_es(
             return;
         }
     };
-    if let Err(e) =
-        super::run_es_record::record_blackboard_es_into(&db, state, config, input, None, project)
-    {
+    if let Err(e) = super::run_es_record::record_blackboard_es_into(
+        &db, run_id, state, config, input, None, project,
+    ) {
         tracing::warn!("Failed to record blackboard run: {e}");
     }
 }
@@ -1656,6 +1667,7 @@ fn record_blackboard_es(
 /// instead of an `ExecutionState`).
 #[cfg(feature = "storage")]
 fn record_ring_es(
+    run_id: &str,
     state: &ExecutionState,
     config: &crate::core::orchestration::ring::RingConfig,
     input: &str,
@@ -1669,7 +1681,7 @@ fn record_ring_es(
         }
     };
     if let Err(e) =
-        super::run_es_record::record_ring_es_into(&db, state, config, input, None, project)
+        super::run_es_record::record_ring_es_into(&db, run_id, state, config, input, None, project)
     {
         tracing::warn!("Failed to record ring run: {e}");
     }
@@ -1728,18 +1740,17 @@ fn apply_ring_overrides(
 }
 
 /// Persist a hierarchical orchestration run: the parent run row and its
-/// delegation trace. Returns the generated hierarchical `run_id`.
+/// delegation trace. Returns the provided hierarchical `run_id`.
 #[cfg(feature = "storage")]
 fn record_hierarchical_into(
     db: &crate::storage::Database,
+    run_id: &str,
     result: &crate::core::orchestration::hierarchical::OrchestrationResult,
     config: &crate::core::orchestration::OrchestrationConfig,
     input: &str,
     project: Option<&str>,
 ) -> anyhow::Result<String> {
     use crate::storage::queries;
-
-    let run_id = uuid::Uuid::new_v4().to_string();
 
     // 1. Parent run record.
     let parent = queries::RunRecord {
@@ -1755,13 +1766,13 @@ fn record_hierarchical_into(
         status: "success".to_string(),
         project: project.map(|s| s.to_string()),
     };
-    queries::insert_run_with_id(db, &run_id, parent)?;
+    queries::insert_run_with_id(db, run_id, parent)?;
 
     // 2. Orchestration metadata (hierarchical, no parent).
     queries::insert_orchestration_run(
         db,
         queries::OrchestrationRunRecord {
-            run_id: run_id.clone(),
+            run_id: run_id.to_string(),
             pattern: "hierarchical".to_string(),
             config_json: serde_json::to_string(config).unwrap_or_default(),
             outcome_json: None,
@@ -1774,7 +1785,7 @@ fn record_hierarchical_into(
     // 3. Delegation events (seq = order in trace).
     for (seq, ev) in result.trace.iter().enumerate() {
         let rec = queries::DelegationEventRecord {
-            run_id: run_id.clone(),
+            run_id: run_id.to_string(),
             seq: seq as i64,
             from_agent: ev.from.clone(),
             to_agent: ev.to.clone(),
@@ -1786,7 +1797,7 @@ fn record_hierarchical_into(
         }
     }
 
-    Ok(run_id)
+    Ok(run_id.to_string())
 }
 
 /// Top-level entry point for persisting a hierarchical run
@@ -1794,6 +1805,7 @@ fn record_hierarchical_into(
 /// delegates to [`record_hierarchical_into`].
 #[cfg(feature = "storage")]
 fn record_orchestration_hierarchical(
+    run_id: &str,
     result: &crate::core::orchestration::hierarchical::OrchestrationResult,
     config: &crate::core::orchestration::OrchestrationConfig,
     input: &str,
@@ -1806,7 +1818,7 @@ fn record_orchestration_hierarchical(
             return;
         }
     };
-    if let Err(e) = record_hierarchical_into(&db, result, config, input, project) {
+    if let Err(e) = record_hierarchical_into(&db, run_id, result, config, input, project) {
         tracing::warn!("Failed to record hierarchical run: {e}");
     }
 }
@@ -2118,8 +2130,11 @@ mod storage_tests {
         };
         let config = OrchestrationConfig::default();
 
-        let parent_id =
-            record_hierarchical_into(&db, &result, &config, "do research", None).unwrap();
+        let parent_id = uuid::Uuid::new_v4().to_string();
+        let returned =
+            record_hierarchical_into(&db, &parent_id, &result, &config, "do research", None)
+                .unwrap();
+        assert_eq!(returned, parent_id);
 
         // Parent persisted as hierarchical with no parent.
         let parent = queries::get_orchestration_run(&db, &parent_id)
@@ -2147,14 +2162,17 @@ mod storage_tests {
         };
         let config = OrchestrationConfig::default();
 
-        let parent_id = record_hierarchical_into(
+        let parent_id = uuid::Uuid::new_v4().to_string();
+        let returned = record_hierarchical_into(
             &db,
+            &parent_id,
             &result,
             &config,
             "do research",
             Some("/home/user/my-project"),
         )
         .unwrap();
+        assert_eq!(returned, parent_id);
 
         let history = queries::get_history(&db, None, 10).unwrap();
         assert_eq!(history.len(), 1, "parent hierarchical run");
@@ -2588,7 +2606,10 @@ mod es_switch_tests {
         // match arm calls (via `record_orchestration_hierarchical`) persists
         // the ES-derived `OrchestrationResult`.
         let db = init_embedded().unwrap();
-        let run_id = record_hierarchical_into(&db, &result, &config, "build X", None).unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let returned =
+            record_hierarchical_into(&db, &run_id, &result, &config, "build X", None).unwrap();
+        assert_eq!(returned, run_id);
 
         let persisted = queries::get_orchestration_run(&db, &run_id)
             .unwrap()
@@ -2702,10 +2723,12 @@ mod es_switch_tests {
         // match arm calls (via `record_blackboard_es`) persists the folded
         // `ExecutionState`.
         let db = init_embedded().unwrap();
-        let run_id = crate::cli::run_es_record::record_blackboard_es_into(
-            &db, &state, &config, "task", None, None,
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let returned = crate::cli::run_es_record::record_blackboard_es_into(
+            &db, &run_id, &state, &config, "task", None, None,
         )
         .unwrap();
+        assert_eq!(returned, run_id);
 
         let persisted = queries::get_orchestration_run(&db, &run_id)
             .unwrap()
@@ -2824,10 +2847,12 @@ mod es_switch_tests {
         // (d): the same `record_ring_es_into` the switched "ring" match arm
         // calls (via `record_ring_es`) persists the folded `ExecutionState`.
         let db = init_embedded().unwrap();
-        let run_id = crate::cli::run_es_record::record_ring_es_into(
-            &db, &state, &config, "task", None, None,
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let returned = crate::cli::run_es_record::record_ring_es_into(
+            &db, &run_id, &state, &config, "task", None, None,
         )
         .unwrap();
+        assert_eq!(returned, run_id);
 
         let persisted = queries::get_orchestration_run(&db, &run_id)
             .unwrap()
