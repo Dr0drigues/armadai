@@ -131,10 +131,11 @@ fn ring_contributions_text(state: &ExecutionState) -> String {
 /// `record_orchestration_blackboard_into`'s shape/column choices — reusing
 /// the same low-level `insert_run_with_id`/`insert_orchestration_run`/
 /// `insert_board_entry` functions — but reads `ExecutionState` instead of a
-/// live `blackboard::Board`. Returns the generated `run_id`.
+/// live `blackboard::Board`. Returns the provided `run_id`.
 #[cfg(feature = "storage")]
 pub fn record_blackboard_es_into(
     db: &crate::storage::Database,
+    run_id: &str,
     state: &ExecutionState,
     config: &BlackboardConfig,
     input: &str,
@@ -142,8 +143,6 @@ pub fn record_blackboard_es_into(
     project: Option<&str>,
 ) -> anyhow::Result<String> {
     use crate::storage::queries;
-
-    let run_id = uuid::Uuid::new_v4().to_string();
 
     let status = match state.status {
         RunStatus::Halted => "halted",
@@ -164,10 +163,10 @@ pub fn record_blackboard_es_into(
         status: status.to_string(),
         project: project.map(str::to_string),
     };
-    queries::insert_run_with_id(db, &run_id, parent)?;
+    queries::insert_run_with_id(db, run_id, parent)?;
 
     let orch = queries::OrchestrationRunRecord {
-        run_id: run_id.clone(),
+        run_id: run_id.to_string(),
         pattern: "blackboard".to_string(),
         config_json: serde_json::to_string(config).unwrap_or_default(),
         // No ES-native equivalent of the legacy typed `BoardState` outcome —
@@ -182,7 +181,7 @@ pub fn record_blackboard_es_into(
 
     for entry in &state.board.entries {
         let record = queries::BoardEntryRecord {
-            run_id: run_id.clone(),
+            run_id: run_id.to_string(),
             agent: entry.agent.clone(),
             round: i64::from(entry.round),
             kind: entry.kind.clone(),
@@ -196,7 +195,7 @@ pub fn record_blackboard_es_into(
         queries::insert_board_entry(db, record)?;
     }
 
-    Ok(run_id)
+    Ok(run_id.to_string())
 }
 
 /// Persist a ring orchestration run from its ES projection: the parent
@@ -207,10 +206,11 @@ pub fn record_blackboard_es_into(
 /// `insert_run_with_id`/`insert_orchestration_run`/
 /// `insert_ring_contribution`/`insert_ring_vote` functions — but reads
 /// `ExecutionState` instead of a live `ring::RingToken`. Returns the
-/// generated `run_id`.
+/// provided `run_id`.
 #[cfg(feature = "storage")]
 pub fn record_ring_es_into(
     db: &crate::storage::Database,
+    run_id: &str,
     state: &ExecutionState,
     config: &RingConfig,
     input: &str,
@@ -218,8 +218,6 @@ pub fn record_ring_es_into(
     project: Option<&str>,
 ) -> anyhow::Result<String> {
     use crate::storage::queries;
-
-    let run_id = uuid::Uuid::new_v4().to_string();
 
     let status = match state.status {
         RunStatus::Halted => "halted",
@@ -240,10 +238,10 @@ pub fn record_ring_es_into(
         status: status.to_string(),
         project: project.map(str::to_string),
     };
-    queries::insert_run_with_id(db, &run_id, parent)?;
+    queries::insert_run_with_id(db, run_id, parent)?;
 
     let orch = queries::OrchestrationRunRecord {
-        run_id: run_id.clone(),
+        run_id: run_id.to_string(),
         pattern: "ring".to_string(),
         config_json: serde_json::to_string(config).unwrap_or_default(),
         // No ES-native equivalent of the legacy typed `TokenStatus` outcome —
@@ -258,7 +256,7 @@ pub fn record_ring_es_into(
 
     for c in &state.ring.contributions {
         let record = queries::RingContributionRecord {
-            run_id: run_id.clone(),
+            run_id: run_id.to_string(),
             agent: c.agent.clone(),
             lap: i64::from(c.lap),
             position_in_lap: c.position as i64,
@@ -276,7 +274,7 @@ pub fn record_ring_es_into(
 
     for vote in state.ring.votes.values() {
         let record = queries::RingVoteRecord {
-            run_id: run_id.clone(),
+            run_id: run_id.to_string(),
             agent: vote.agent.clone(),
             position: vote.position.clone(),
             confidence: f64::from(vote.confidence),
@@ -286,7 +284,7 @@ pub fn record_ring_es_into(
         queries::insert_ring_vote(db, record)?;
     }
 
-    Ok(run_id)
+    Ok(run_id.to_string())
 }
 
 #[cfg(test)]
@@ -495,8 +493,11 @@ mod storage_tests {
         let state = sample_blackboard_state();
         let config = BlackboardConfig::default();
 
-        let run_id =
-            record_blackboard_es_into(&db, &state, &config, "do research", None, None).unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let returned =
+            record_blackboard_es_into(&db, &run_id, &state, &config, "do research", None, None)
+                .unwrap();
+        assert_eq!(returned, run_id);
 
         let history = queries::get_history(&db, None, 10).unwrap();
         assert_eq!(history.len(), 1);
@@ -530,8 +531,10 @@ mod storage_tests {
         let state = sample_blackboard_state();
         let config = BlackboardConfig::default();
 
-        let run_id = record_blackboard_es_into(
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let returned = record_blackboard_es_into(
             &db,
+            &run_id,
             &state,
             &config,
             "sub task",
@@ -539,6 +542,7 @@ mod storage_tests {
             Some("/home/user/project"),
         )
         .unwrap();
+        assert_eq!(returned, run_id);
 
         let orch = queries::get_orchestration_run(&db, &run_id)
             .unwrap()
@@ -555,7 +559,10 @@ mod storage_tests {
         let state = sample_ring_state();
         let config = RingConfig::default();
 
-        let run_id = record_ring_es_into(&db, &state, &config, "do research", None, None).unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let returned =
+            record_ring_es_into(&db, &run_id, &state, &config, "do research", None, None).unwrap();
+        assert_eq!(returned, run_id);
 
         let history = queries::get_history(&db, None, 10).unwrap();
         assert_eq!(history.len(), 1);
@@ -589,5 +596,21 @@ mod storage_tests {
         let b_vote = votes.iter().find(|v| v.agent == "b").unwrap();
         assert_eq!(b_vote.position, "reject");
         assert!(b_vote.concerns.contains("incomplete"));
+    }
+
+    #[test]
+    fn record_blackboard_es_into_uses_caller_run_id() {
+        let db = init_embedded().unwrap();
+        let state = sample_blackboard_state();
+        let cfg = BlackboardConfig::default();
+        let returned =
+            record_blackboard_es_into(&db, "fixed-run-id-123", &state, &cfg, "task", None, None)
+                .unwrap();
+        assert_eq!(returned, "fixed-run-id-123");
+        // La ligne persistée porte bien ce run_id.
+        let run = queries::get_orchestration_run(&db, "fixed-run-id-123")
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.run_id, "fixed-run-id-123");
     }
 }
