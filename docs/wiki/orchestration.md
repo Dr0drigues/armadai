@@ -207,7 +207,7 @@ orchestration:
 | Divergence threshold | 0.60 | — | — |
 | Majority threshold | — | 0.60 | — |
 | Similarity threshold | — | 0.85 | — |
-| Token budget | 50,000 | 40,000 | — |
+| Token budget | 500,000 | 500,000 | — |
 | Agent timeout | 60s | 90s | — |
 | Convergence rounds | 1 | — | — |
 | Global timeout | — | — | 300s |

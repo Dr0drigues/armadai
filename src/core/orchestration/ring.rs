@@ -288,7 +288,11 @@ const fn default_similarity_threshold() -> f32 {
     0.85
 }
 const fn default_ring_token_budget() -> u64 {
-    40_000
+    // Safety cap, not a tight limit: high enough that normal multi-lap rings
+    // (verbose real agents, provider-side context overhead) reach the vote
+    // phase, low enough to still catch a runaway. The old 40k halted a real
+    // 2-agent ring before voting. Tunable via `ring.token_budget`.
+    500_000
 }
 
 impl Default for RingConfig {
@@ -653,7 +657,7 @@ mod tests {
         assert!((config.consensus_threshold - 0.80).abs() < f32::EPSILON);
         assert!((config.majority_threshold - 0.60).abs() < f32::EPSILON);
         assert!((config.similarity_threshold - 0.85).abs() < f32::EPSILON);
-        assert_eq!(config.token_budget, 40_000);
+        assert_eq!(config.token_budget, 500_000);
         assert_eq!(config.agent_timeout(), Duration::from_secs(90));
     }
 

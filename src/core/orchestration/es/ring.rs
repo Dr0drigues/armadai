@@ -36,6 +36,12 @@ use crate::linker::model_resolution::fallback_model_for_tier;
 use crate::linker::model_resolution::{ModelTier, resolve_model_for_tier};
 use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
+/// Maximum number of prior ring contributions re-emitted in a circulation
+/// prompt. Without a cap the ring re-sends the entire transcript on every
+/// turn (quadratic context growth) and exhausts the token budget before the
+/// vote phase. Mirrors the blackboard snapshot cap.
+const RING_CONTEXT_CAP: usize = 10;
+
 /// The ring pattern's current phase, derived purely from [`ExecutionState`].
 ///
 /// Mirrors the legacy `TokenStatus` (`Circulating`/`Voting`/`Done { .. }`)
@@ -687,10 +693,12 @@ impl RingEffectRunner {
     /// (`core::orchestration::llm_agents`) over the event-sourced
     /// `state.ring` projection instead of a live `TokenSnapshot`: `"Task:
     /// …\nLap: …\nYour position: …/…\n"`, then (only if any exist) a
-    /// `"Previous contributions:\n"` section listing *every* contribution
-    /// recorded so far (`state.ring.contributions`, in append order) as
-    /// `"- [#{index} Lap {lap} / {position}] {agent}: {content}\n"`, then
-    /// [`RING_ACTION_INSTRUCTIONS`] verbatim.
+    /// `"Previous contributions:\n"` section listing the most recent
+    /// contributions recorded so far (`state.ring.contributions`, in append
+    /// order, capped to the last [`RING_CONTEXT_CAP`] to bound prompt growth)
+    /// as `"- [#{index} Lap {lap} / {position}] {agent}: {content}\n"`, then
+    /// [`RING_ACTION_INSTRUCTIONS`] verbatim. When the history is truncated
+    /// the header reads `"Previous contributions (last N of M):\n"`.
     ///
     /// `position` (0-based, "your position in *this* lap") is the number of
     /// contributions already recorded for `lap` — the same count
@@ -713,8 +721,22 @@ impl RingEffectRunner {
         );
 
         if !state.ring.contributions.is_empty() {
-            user_msg.push_str("\nPrevious contributions:\n");
-            for (i, c) in state.ring.contributions.iter().enumerate() {
+            // Cap the re-emitted history to the most recent contributions to
+            // bound the prompt size (the ring otherwise re-sends the entire
+            // transcript every turn → quadratic context growth that eats the
+            // token budget before the vote phase). Mirrors the blackboard
+            // snapshot cap. Original indices are preserved for readability.
+            let all = &state.ring.contributions;
+            let start = all.len().saturating_sub(RING_CONTEXT_CAP);
+            if start > 0 {
+                user_msg.push_str(&format!(
+                    "\nPrevious contributions (last {RING_CONTEXT_CAP} of {}):\n",
+                    all.len()
+                ));
+            } else {
+                user_msg.push_str("\nPrevious contributions:\n");
+            }
+            for (i, c) in all.iter().enumerate().skip(start) {
                 user_msg.push_str(&format!(
                     "- [#{i} Lap {} / {}] {}: {}\n",
                     c.lap, c.position, c.agent, c.content
@@ -1431,6 +1453,62 @@ mod tests {
                 Action::Invoke { agent, .. } => Some(agent.as_str()),
                 _ => None,
             })
+        }
+
+        // ── build_circulate_prompt: history cap (budget-tuning) ──────────
+
+        fn test_runner() -> RingEffectRunner {
+            RingEffectRunner::new(
+                BTreeMap::new(),
+                BTreeMap::new(),
+                RingConfig::default(),
+                BTreeMap::new(),
+            )
+        }
+
+        #[test]
+        fn circulate_prompt_caps_history_to_last_ten() {
+            // 15 contributions recorded, but the circulation prompt must only
+            // re-emit the most recent RING_CONTEXT_CAP (10) — the older ones
+            // are dropped to bound prompt growth (quadratic → linear).
+            let mut events = vec![run_started(&["a", "b"])];
+            for i in 0..15 {
+                events.push(contribution("a", 0, i, "propose"));
+            }
+            let state = fold(&events);
+            let runner = test_runner();
+
+            let prompt = runner.build_circulate_prompt("task", 0, &state);
+
+            // Truncation header advertises "last 10 of 15".
+            assert!(
+                prompt.contains("Previous contributions (last 10 of 15):"),
+                "expected truncation header, got:\n{prompt}"
+            );
+            // The 10 most recent (indices 5..=14) survive; older ones are gone.
+            assert!(prompt.contains("[#14 "), "newest contribution missing");
+            assert!(prompt.contains("[#5 "), "oldest kept contribution missing");
+            assert!(!prompt.contains("[#4 "), "index 4 should have been dropped");
+            assert!(!prompt.contains("[#0 "), "index 0 should have been dropped");
+        }
+
+        #[test]
+        fn circulate_prompt_no_truncation_below_cap() {
+            // Under the cap the plain header is used and every contribution
+            // is present (no "last N of M" note).
+            let mut events = vec![run_started(&["a", "b"])];
+            for i in 0..3 {
+                events.push(contribution("a", 0, i, "propose"));
+            }
+            let state = fold(&events);
+            let runner = test_runner();
+
+            let prompt = runner.build_circulate_prompt("task", 0, &state);
+
+            assert!(prompt.contains("Previous contributions:\n"));
+            assert!(!prompt.contains("last "), "no truncation note expected");
+            assert!(prompt.contains("[#0 "));
+            assert!(prompt.contains("[#2 "));
         }
 
         // (a) empty state → `LapStarted{0}` first, then `Invoke` of the

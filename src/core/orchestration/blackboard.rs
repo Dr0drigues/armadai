@@ -385,7 +385,10 @@ const fn default_divergence_threshold() -> f32 {
     0.60
 }
 const fn default_bb_token_budget() -> u64 {
-    50_000
+    // Safety cap, not a tight limit (aligned with ring): high enough for
+    // normal multi-round blackboards with verbose real agents to converge,
+    // low enough to catch a runaway. Tunable via `blackboard.token_budget`.
+    500_000
 }
 const fn default_convergence_rounds() -> u32 {
     1
@@ -1068,7 +1071,7 @@ mod tests {
         assert_eq!(config.agent_timeout_secs, 60);
         assert!((config.consensus_threshold - 0.75).abs() < f32::EPSILON);
         assert!((config.divergence_threshold - 0.60).abs() < f32::EPSILON);
-        assert_eq!(config.token_budget, 50_000);
+        assert_eq!(config.token_budget, 500_000);
         assert_eq!(config.convergence_rounds, 1);
         assert_eq!(config.agent_timeout(), Duration::from_secs(60));
     }
