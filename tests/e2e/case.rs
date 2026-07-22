@@ -10,25 +10,22 @@
 //! # Sync with `src/bin/fake-claude.rs`
 //!
 //! `armadai` is a binary-only crate (no `lib.rs`), so `src/bin/fake-claude.rs` cannot
-//! be imported from the integration test crate. The runner (a later task) serializes
-//! the `fake` block of a case file back to YAML for `fake-claude` to deserialize, so
-//! [`Rule`] and [`Match`] below **must keep the exact same serde shape** (field names,
+//! be imported from the integration test crate. `tests/e2e/harness.rs` serializes
+//! the `fake` block of a case file back to YAML (`serde_yaml_ng::to_string`) for
+//! `fake-claude` to deserialize, so [`Rule`] and [`Match`] below **must keep the exact
+//! same serde shape** (field names,
 //! `match` → `match_` rename, optionality) as their counterparts in
 //! `src/bin/fake-claude.rs`. They are duplicated here — not shared — because the bin
 //! target isn't a library crate. **If you change one, change the other.** A shape
 //! mismatch would only surface at runtime (a case file's `fake` block failing to
 //! deserialize inside `fake-claude`), so review both files together on any edit.
 //!
-//! Several fields below are only populated via `Deserialize` for now and read only
-//! from the upcoming e2e runner (a later task); until that lands, `dead_code` would
-//! otherwise fire on this module in isolation.
-#![allow(dead_code)]
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Context;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// One end-to-end test case: setup + scripted fake responses + expectations.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -62,7 +59,11 @@ pub struct Setup {
 }
 
 /// The scripted `fake-claude` scenario for this case.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+///
+/// `Serialize` is needed so the harness can round-trip this block back to YAML for
+/// `fake-claude` to read (see the module doc) — that round-trip is itself the proof
+/// that this shape stays compatible with `src/bin/fake-claude.rs::Scenario`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FakeSpec {
     pub rules: Vec<Rule>,
 }
@@ -71,7 +72,7 @@ pub struct FakeSpec {
 ///
 /// Mirrors `Rule` in `src/bin/fake-claude.rs` — see the module-level doc comment on
 /// why this is a duplicate rather than a shared type, and keep the two in sync.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Rule {
     #[serde(rename = "match", default)]
     pub match_: Match,
@@ -94,7 +95,7 @@ pub struct Rule {
 /// `None`) is a catch-all that matches any agent/call/prompt.
 ///
 /// Mirrors `Match` in `src/bin/fake-claude.rs` — keep in sync (see module doc).
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Match {
     #[serde(default)]
     pub agent: Option<String>,
@@ -132,8 +133,13 @@ pub struct ExpectedEvent {
 pub fn load_case(path: &Path) -> anyhow::Result<CaseFile> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("reading case file {}", path.display()))?;
-    serde_yaml_ng::from_str(&contents)
-        .with_context(|| format!("parsing case file {}", path.display()))
+    load_case_str(&contents).with_context(|| format!("parsing case file {}", path.display()))
+}
+
+/// Parse a case file directly from a YAML string (inline fixtures in tests, or any
+/// other in-memory source — `load_case` is just this plus a file read).
+pub fn load_case_str(yaml: &str) -> anyhow::Result<CaseFile> {
+    serde_yaml_ng::from_str(yaml).context("parsing case YAML")
 }
 
 /// Render the JSON Schema for [`CaseFile`] as a pretty-printed string.

@@ -1,4 +1,6 @@
-//! Module tree for the e2e harness (case file format, and — in later tasks — the
-//! runner that executes cases against the `fake-claude` stub).
+//! Module tree for the e2e harness: case file format, the generic runner that
+//! executes cases against the `fake-claude` stub, and declarative expect evaluation.
 
 pub mod case;
+pub mod harness;
+pub mod runner;

@@ -98,7 +98,7 @@
       ]
     },
     "FakeSpec": {
-      "description": "The scripted `fake-claude` scenario for this case.",
+      "description": "The scripted `fake-claude` scenario for this case.\n\n`Serialize` is needed so the harness can round-trip this block back to YAML for\n`fake-claude` to read (see the module doc) — that round-trip is itself the proof\nthat this shape stays compatible with `src/bin/fake-claude.rs::Scenario`.",
       "type": "object",
       "properties": {
         "rules": {
@@ -171,7 +171,12 @@
           "minimum": 0
         },
         "match": {
-          "$ref": "#/$defs/Match"
+          "$ref": "#/$defs/Match",
+          "default": {
+            "agent": null,
+            "call": null,
+            "prompt_contains": null
+          }
         },
         "model": {
           "type": [
