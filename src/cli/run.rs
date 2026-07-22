@@ -138,6 +138,8 @@ async fn run_inner(
             &pattern,
             sink,
             json,
+            quiet,
+            max_content,
             route.as_deref(),
             &tags,
             dry_run,
@@ -170,6 +172,8 @@ async fn run_inner(
                 &pattern,
                 sink,
                 json,
+                quiet,
+                max_content,
                 route.as_deref(),
                 &tags,
                 dry_run,
@@ -520,14 +524,34 @@ struct DirectDispatch {
     events: Vec<ExecutionEvent>,
 }
 
-/// [`EventSink`] decorator that applies `--quiet`/`--max-content` to
-/// `AgentEnd` events before forwarding them to `inner`, mirroring the inline
-/// suppression/truncation `run_single_agent` applies at its step 6 (see
-/// there): when `quiet` is set the `AgentEnd` is dropped entirely (only the
-/// terminal `Result` matters); otherwise `content` is truncated to
-/// `max_content` chars when set. Every other `RunEvent` passes through
-/// unchanged. This keeps `map_execution_to_run_events` itself pure — the
-/// filtering lives entirely at this call site, not in the bridge.
+/// [`EventSink`] decorator that applies `--quiet`/`--max-content` to the
+/// events flowing through the ES bridge (`SinkProjectingLog`) before
+/// forwarding them to `inner`, mirroring the inline suppression/truncation
+/// `run_single_agent` applies at its step 6 (see there).
+///
+/// Per the CLI help text (`src/cli/mod.rs`, `Command::Run::quiet`): "with
+/// `--json`, emit only the final `result` event". `RunEvent::Result` is never
+/// itself produced by the bridge — `map_execution_to_run_events` maps
+/// `ExecutionEvent::Completed` to `[]`, and the terminal `Result` is always
+/// emitted by the caller (`run_inner`/`run_orchestrated_inner`) after the
+/// dispatch returns, outside this decorator's reach — so every `RunEvent` that
+/// reaches [`QuietMaxContentSink::emit`] is, by construction, an intermediate
+/// one (`AgentStart`, `AgentEnd`, `Board`, `Vote`, `Route`, `Delegate`,
+/// `NestedStart`/`NestedEnd`, `Warning`, …). Under `quiet` every one of them is
+/// dropped, which is what makes "only `result` shows up" true for the whole
+/// JSONL stream this decorator has a say over.
+///
+/// Without `quiet`, `max_content` truncates `AgentEnd.content` to `N` chars —
+/// the only intermediate event carrying a `content` field — while every other
+/// `RunEvent` (and the eventual `Result`, which this decorator never sees)
+/// passes through/stays untouched. This keeps `map_execution_to_run_events`
+/// itself pure — the filtering lives entirely at this call site, not in the
+/// bridge.
+///
+/// Shared by the direct dispatch (`dispatch_direct_es`) and the three
+/// orchestrated dispatches (`dispatch_blackboard_es`/`dispatch_ring_es`/
+/// `dispatch_hierarchical_es`) via [`quiet_max_content_sink`] — a single
+/// definition of "what quiet/max_content mean" for every ES run path.
 struct QuietMaxContentSink<'s> {
     inner: &'s dyn EventSink,
     quiet: bool,
@@ -536,6 +560,9 @@ struct QuietMaxContentSink<'s> {
 
 impl EventSink for QuietMaxContentSink<'_> {
     fn emit(&self, ev: &RunEvent) {
+        if self.quiet {
+            return;
+        }
         if let RunEvent::AgentEnd {
             agent,
             tin,
@@ -544,9 +571,6 @@ impl EventSink for QuietMaxContentSink<'_> {
             content,
         } = ev
         {
-            if self.quiet {
-                return;
-            }
             let content = match self.max_content {
                 Some(n) => content.chars().take(n).collect::<String>(),
                 None => content.clone(),
@@ -561,6 +585,22 @@ impl EventSink for QuietMaxContentSink<'_> {
             return;
         }
         self.inner.emit(ev);
+    }
+}
+
+/// Build the `QuietMaxContentSink` decorator around `sink` — the single
+/// construction point every ES dispatch (`dispatch_direct_es` and the three
+/// orchestrated `dispatch_*_es`) wraps its `SinkProjectingLog` sink with, so
+/// `--quiet`/`--max-content` mean exactly the same thing on every run path.
+fn quiet_max_content_sink(
+    sink: &Arc<dyn EventSink>,
+    quiet: bool,
+    max_content: Option<usize>,
+) -> QuietMaxContentSink<'_> {
+    QuietMaxContentSink {
+        inner: sink.as_ref(),
+        quiet,
+        max_content,
     }
 }
 
@@ -613,11 +653,7 @@ async fn dispatch_direct_es(
     providers.insert(agent_key.to_string(), provider);
 
     let run_id = uuid::Uuid::new_v4().to_string();
-    let filtered_sink = QuietMaxContentSink {
-        inner: sink.as_ref(),
-        quiet,
-        max_content,
-    };
+    let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
     let mut log = SinkProjectingLog::with_meta(InMemoryLog::default(), &filtered_sink, agent_meta);
 
     let state = run_direct_es(
@@ -968,6 +1004,8 @@ async fn run_orchestrated(
     pattern: &str,
     sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
     json: bool,
+    quiet: bool,
+    max_content: Option<usize>,
     route: Option<&str>,
     tags: &[String],
     dry_run: bool,
@@ -1008,6 +1046,8 @@ async fn run_orchestrated(
         pattern,
         sink,
         json,
+        quiet,
+        max_content,
         route,
         tags,
         dry_run,
@@ -1041,6 +1081,8 @@ async fn run_orchestrated_inner(
     pattern: &str,
     sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
     json: bool,
+    quiet: bool,
+    max_content: Option<usize>,
     route: Option<&str>,
     tags: &[String],
     dry_run: bool,
@@ -1203,6 +1245,8 @@ async fn run_orchestrated_inner(
                 routing_rules,
                 cost_limit,
                 sink,
+                quiet,
+                max_content,
             )
             .await?;
 
@@ -1267,6 +1311,8 @@ async fn run_orchestrated_inner(
                 routing_rules,
                 cost_limit,
                 sink,
+                quiet,
+                max_content,
             )
             .await?;
 
@@ -1347,6 +1393,8 @@ async fn run_orchestrated_inner(
                 provider_map,
                 routing_rules,
                 sink,
+                quiet,
+                max_content,
             )
             .await?;
             // `nested_runs` is always empty here (OH1 Lot 5): nested C9
@@ -1443,12 +1491,15 @@ fn agent_meta_from_roster(
 }
 
 /// Drive the event-sourced `blackboard` engine end-to-end for an
-/// already-loaded roster (OH1 Lot 5, T5c): builds a fresh `InMemoryLog`
-/// wrapped in `SinkProjectingLog` (so `Board`/`Vote`/observability events
-/// keep flowing to `sink`), runs `run_blackboard_es`, and returns the folded
-/// state. Pure with respect to loading/storage — no file I/O — which is what
-/// makes it directly unit-testable with mock providers (see
+/// already-loaded roster (OH1 Lot 5, T5c; OH1 Lot 4 reconciliation Task 5):
+/// builds a fresh `InMemoryLog` wrapped in `SinkProjectingLog` (so
+/// `Board`/`Vote`/observability events keep flowing to `sink`, filtered
+/// through [`quiet_max_content_sink`] so `--quiet`/`--max-content` are honored
+/// exactly like the direct path), runs `run_blackboard_es`, and returns the
+/// folded state. Pure with respect to loading/storage — no file I/O — which is
+/// what makes it directly unit-testable with mock providers (see
 /// `tests::blackboard_es`).
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_blackboard_es(
     input: &str,
     agents: std::collections::BTreeMap<String, Agent>,
@@ -1457,13 +1508,16 @@ async fn dispatch_blackboard_es(
     routing_rules: crate::core::routing::RoutingRules,
     cost_limit: Option<f64>,
     sink: &Arc<dyn EventSink>,
+    quiet: bool,
+    max_content: Option<usize>,
 ) -> anyhow::Result<ExecutionState> {
     use crate::core::orchestration::es::blackboard::run_blackboard_es;
 
     let run_id = uuid::Uuid::new_v4().to_string();
+    let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
     let mut log = SinkProjectingLog::with_meta(
         InMemoryLog::default(),
-        sink.as_ref(),
+        &filtered_sink,
         agent_meta_from_roster(&agents),
     );
     run_blackboard_es(
@@ -1483,7 +1537,9 @@ async fn dispatch_blackboard_es(
 /// roster (OH1 Lot 5, T5d) — same shape as [`dispatch_blackboard_es`], but
 /// also returns the raw event log: `ring_display` needs it (last
 /// `OutcomeResolved`/`Completed`), unlike `blackboard_display` which reads
-/// only the folded `state.board.entries`.
+/// only the folded `state.board.entries`. `--quiet`/`--max-content` are
+/// honored the same way, via [`quiet_max_content_sink`] (OH1 Lot 4
+/// reconciliation Task 5).
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_ring_es(
     input: &str,
@@ -1494,13 +1550,16 @@ async fn dispatch_ring_es(
     routing_rules: crate::core::routing::RoutingRules,
     cost_limit: Option<f64>,
     sink: &Arc<dyn EventSink>,
+    quiet: bool,
+    max_content: Option<usize>,
 ) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>)> {
     use crate::core::orchestration::es::ring::run_ring_es;
 
     let run_id = uuid::Uuid::new_v4().to_string();
+    let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
     let mut log = SinkProjectingLog::with_meta(
         InMemoryLog::default(),
-        sink.as_ref(),
+        &filtered_sink,
         agent_meta_from_roster(&agents),
     );
     let state = run_ring_es(
@@ -1525,7 +1584,10 @@ async fn dispatch_ring_es(
 /// state and the raw event log so the caller can extract the legacy
 /// `OrchestrationResult` shape via `to_orchestration_result` (needed for the
 /// existing `record_orchestration_hierarchical`/display code, which predates
-/// the ES socle and knows only that type).
+/// the ES socle and knows only that type). `--quiet`/`--max-content` are
+/// honored the same way, via [`quiet_max_content_sink`] (OH1 Lot 4
+/// reconciliation Task 5).
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_hierarchical_es(
     coordinator: &str,
     input: &str,
@@ -1534,13 +1596,16 @@ async fn dispatch_hierarchical_es(
     providers: std::collections::BTreeMap<String, Arc<dyn crate::providers::traits::Provider>>,
     routing_rules: crate::core::routing::RoutingRules,
     sink: &Arc<dyn EventSink>,
+    quiet: bool,
+    max_content: Option<usize>,
 ) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>)> {
     use crate::core::orchestration::es::hierarchical::run_hierarchical_es;
 
     let run_id = uuid::Uuid::new_v4().to_string();
+    let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
     let mut log = SinkProjectingLog::with_meta(
         InMemoryLog::default(),
-        sink.as_ref(),
+        &filtered_sink,
         agent_meta_from_roster(&agents),
     );
     let state = run_hierarchical_es(
@@ -2622,14 +2687,19 @@ mod es_switch_tests {
         assert!(tags.iter().any(|t| t == "agent_end"), "tags: {tags:?}");
     }
 
-    /// Regression test for the `--quiet` fidelity fix: on the direct ES path
-    /// (`dispatch_direct_es`), `quiet: true` must suppress the `agent_end`
-    /// event entirely — mirroring `run_single_agent`'s `if !quiet { sink.emit
-    /// (AgentEnd) }` — while `agent_start` and the returned content/tokens
-    /// are unaffected (only the emitted observability event is suppressed,
-    /// not the function's return value).
+    /// Regression test for the `--quiet` "result-only" fidelity fix (OH1 Lot 4
+    /// reconciliation Task 5): on the direct ES path (`dispatch_direct_es`),
+    /// `quiet: true` must suppress EVERY event flowing through the decorator
+    /// — `agent_start` as well as `agent_end` — since per the CLI help text
+    /// (`src/cli/mod.rs`) `--quiet` means "emit only the final `result`
+    /// event", and `dispatch_direct_es` never emits `result` itself (that's
+    /// the caller's job, outside this decorator's reach — see
+    /// [`QuietMaxContentSink`]'s doc comment). The returned content/tokens are
+    /// unaffected (only the emitted observability events are suppressed, not
+    /// the function's return value). Supersedes the narrower pre-Task-5
+    /// contract, which only dropped `agent_end` and kept `agent_start`.
     #[tokio::test]
-    async fn direct_es_quiet_suppresses_agent_end_event() {
+    async fn direct_es_quiet_suppresses_all_intermediate_events() {
         let (capture, sink) = capture_sink();
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
 
@@ -2648,10 +2718,10 @@ mod es_switch_tests {
 
         assert_eq!(dispatch.content, "the answer");
         let tags = capture.tags();
-        assert!(tags.iter().any(|t| t == "agent_start"), "tags: {tags:?}");
         assert!(
-            !tags.iter().any(|t| t == "agent_end"),
-            "quiet must suppress agent_end, tags: {tags:?}"
+            tags.is_empty(),
+            "quiet must suppress every event reaching the decorator (agent_start included), \
+             tags: {tags:?}"
         );
     }
 
@@ -2779,6 +2849,8 @@ mod es_switch_tests {
             providers,
             RoutingRules::default(),
             &sink,
+            false,
+            None,
         )
         .await
         .unwrap();
@@ -2821,6 +2893,8 @@ mod es_switch_tests {
             providers,
             RoutingRules::default(),
             &sink,
+            false,
+            None,
         )
         .await
         .unwrap();
@@ -2885,6 +2959,8 @@ mod es_switch_tests {
             RoutingRules::default(),
             None,
             &sink,
+            false,
+            None,
         )
         .await
         .unwrap();
@@ -2932,6 +3008,8 @@ mod es_switch_tests {
             RoutingRules::default(),
             None,
             &sink,
+            false,
+            None,
         )
         .await
         .unwrap();
@@ -2999,6 +3077,8 @@ mod es_switch_tests {
             RoutingRules::default(),
             None,
             &sink,
+            false,
+            None,
         )
         .await
         .unwrap();
@@ -3051,6 +3131,8 @@ mod es_switch_tests {
             RoutingRules::default(),
             None,
             &sink,
+            false,
+            None,
         )
         .await
         .unwrap();
@@ -3178,6 +3260,8 @@ mod es_switch_tests {
             "blackboard",
             &sink,
             true,
+            false,
+            None,
             None,
             &[],
             false,
@@ -3205,6 +3289,8 @@ mod es_switch_tests {
             "ring",
             &sink,
             true,
+            false,
+            None,
             None,
             &[],
             false,
@@ -3240,6 +3326,8 @@ mod es_switch_tests {
             "hierarchical",
             &sink,
             true,
+            false,
+            None,
             None,
             &[],
             false,
