@@ -560,10 +560,13 @@ impl HierarchicalDecider {
 
     /// Build the ordered action batch for invoking `agent_name` with
     /// `input`: an optional `ModelRouted` (if it routes `latest:auto`), an
-    /// optional `NestedStarted` (if it's a nested-team lead), an optional
-    /// bookkeeping event (`Delegated`/`AskedPeer`/`Escalated`, supplied by
-    /// `plan_from_response` — absent for the initial coordinator kick-off),
-    /// then the `Invoke` itself.
+    /// optional bookkeeping event (`Delegated`/`AskedPeer`/`Escalated`,
+    /// supplied by `plan_from_response` — absent for the initial coordinator
+    /// kick-off), an optional `NestedStarted` (if it's a nested-team lead),
+    /// then the `Invoke` itself. The bookkeeping event precedes
+    /// `NestedStarted` so that a delegation into a nested team is observed
+    /// (`delegate`) before the team boundary opens (`nested_start`), matching
+    /// the legacy engine's emission order.
     fn invoke_actions(
         &self,
         agent_name: &str,
@@ -575,10 +578,10 @@ impl HierarchicalDecider {
         if let Some(event) = self.model_routed_event(agent_name, input, state) {
             actions.push(Action::Emit(event));
         }
-        if let Some(event) = self.nested_started_event(agent_name) {
+        if let Some(event) = delegation_event {
             actions.push(Action::Emit(event));
         }
-        if let Some(event) = delegation_event {
+        if let Some(event) = self.nested_started_event(agent_name) {
             actions.push(Action::Emit(event));
         }
         actions.push(Action::Invoke {
