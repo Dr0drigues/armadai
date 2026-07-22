@@ -654,19 +654,65 @@ async fn dispatch_direct_es(
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
-    let mut log = SinkProjectingLog::with_meta(InMemoryLog::default(), &filtered_sink, agent_meta);
 
-    let state = run_direct_es(
-        &run_id,
-        agent_key,
-        input,
-        agents,
-        providers,
-        routing_rules.clone(),
-        &mut log,
-    )
-    .await?;
-    let events = log.events(&run_id)?;
+    #[cfg(feature = "storage")]
+    let (state, events) = {
+        use crate::core::orchestration::es::log::SqliteLog;
+        match crate::storage::init_db() {
+            Ok(db) => {
+                let mut log =
+                    SinkProjectingLog::with_meta(SqliteLog::new(db), &filtered_sink, agent_meta);
+                let state = run_direct_es(
+                    &run_id,
+                    agent_key,
+                    input,
+                    agents,
+                    providers,
+                    routing_rules.clone(),
+                    &mut log,
+                )
+                .await?;
+                let events = log.events(&run_id)?;
+                (state, events)
+            }
+            Err(_) => {
+                let mut log = SinkProjectingLog::with_meta(
+                    InMemoryLog::default(),
+                    &filtered_sink,
+                    agent_meta,
+                );
+                let state = run_direct_es(
+                    &run_id,
+                    agent_key,
+                    input,
+                    agents,
+                    providers,
+                    routing_rules.clone(),
+                    &mut log,
+                )
+                .await?;
+                let events = log.events(&run_id)?;
+                (state, events)
+            }
+        }
+    };
+    #[cfg(not(feature = "storage"))]
+    let (state, events) = {
+        let mut log =
+            SinkProjectingLog::with_meta(InMemoryLog::default(), &filtered_sink, agent_meta);
+        let state = run_direct_es(
+            &run_id,
+            agent_key,
+            input,
+            agents,
+            providers,
+            routing_rules.clone(),
+            &mut log,
+        )
+        .await?;
+        let events = log.events(&run_id)?;
+        (state, events)
+    };
     let result = to_orchestration_result(&state, &events);
 
     Ok(DirectDispatch {
@@ -1237,7 +1283,7 @@ async fn run_orchestrated_inner(
                 config.max_rounds
             );
 
-            let state = dispatch_blackboard_es(
+            let (state, _run_id) = dispatch_blackboard_es(
                 input,
                 agent_map,
                 provider_map,
@@ -1254,8 +1300,7 @@ async fn run_orchestrated_inner(
 
             #[cfg(feature = "storage")]
             {
-                let run_id = uuid::Uuid::new_v4().to_string();
-                record_blackboard_es(&run_id, &state, &config, input, project.as_deref());
+                record_blackboard_es(&_run_id, &state, &config, input, project.as_deref());
             }
 
             let outcome_text = super::run_es_record::blackboard_display(&state);
@@ -1305,7 +1350,7 @@ async fn run_orchestrated_inner(
                 config.max_laps
             );
 
-            let (state, events) = dispatch_ring_es(
+            let (state, events, _run_id) = dispatch_ring_es(
                 input,
                 agent_map,
                 agent_names.to_vec(),
@@ -1321,8 +1366,7 @@ async fn run_orchestrated_inner(
 
             #[cfg(feature = "storage")]
             {
-                let run_id = uuid::Uuid::new_v4().to_string();
-                record_ring_es(&run_id, &state, &config, input, project.as_deref());
+                record_ring_es(&_run_id, &state, &config, input, project.as_deref());
             }
 
             let outcome_text = super::run_es_record::ring_display(&state, &events);
@@ -1391,7 +1435,7 @@ async fn run_orchestrated_inner(
             #[cfg(feature = "storage")]
             let orch_config_for_storage = orch_config.clone();
 
-            let (state, events) = dispatch_hierarchical_es(
+            let (state, events, _run_id) = dispatch_hierarchical_es(
                 &coordinator_name,
                 input,
                 orch_config,
@@ -1417,9 +1461,8 @@ async fn run_orchestrated_inner(
 
             #[cfg(feature = "storage")]
             {
-                let run_id = uuid::Uuid::new_v4().to_string();
                 record_orchestration_hierarchical(
-                    &run_id,
+                    &_run_id,
                     &result,
                     &orch_config_for_storage,
                     input,
@@ -1518,27 +1561,74 @@ async fn dispatch_blackboard_es(
     sink: &Arc<dyn EventSink>,
     quiet: bool,
     max_content: Option<usize>,
-) -> anyhow::Result<ExecutionState> {
+) -> anyhow::Result<(ExecutionState, String)> {
     use crate::core::orchestration::es::blackboard::run_blackboard_es;
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
-    let mut log = SinkProjectingLog::with_meta(
-        InMemoryLog::default(),
-        &filtered_sink,
-        agent_meta_from_roster(&agents),
-    );
-    run_blackboard_es(
-        &run_id,
-        input,
-        agents,
-        providers,
-        config,
-        routing_rules,
-        cost_limit,
-        &mut log,
-    )
-    .await
+
+    #[cfg(feature = "storage")]
+    let state = {
+        use crate::core::orchestration::es::log::SqliteLog;
+        match crate::storage::init_db() {
+            Ok(db) => {
+                let mut log = SinkProjectingLog::with_meta(
+                    SqliteLog::new(db),
+                    &filtered_sink,
+                    agent_meta_from_roster(&agents),
+                );
+                run_blackboard_es(
+                    &run_id,
+                    input,
+                    agents,
+                    providers,
+                    config,
+                    routing_rules,
+                    cost_limit,
+                    &mut log,
+                )
+                .await?
+            }
+            Err(_) => {
+                let mut log = SinkProjectingLog::with_meta(
+                    InMemoryLog::default(),
+                    &filtered_sink,
+                    agent_meta_from_roster(&agents),
+                );
+                run_blackboard_es(
+                    &run_id,
+                    input,
+                    agents,
+                    providers,
+                    config,
+                    routing_rules,
+                    cost_limit,
+                    &mut log,
+                )
+                .await?
+            }
+        }
+    };
+    #[cfg(not(feature = "storage"))]
+    let state = {
+        let mut log = SinkProjectingLog::with_meta(
+            InMemoryLog::default(),
+            &filtered_sink,
+            agent_meta_from_roster(&agents),
+        );
+        run_blackboard_es(
+            &run_id,
+            input,
+            agents,
+            providers,
+            config,
+            routing_rules,
+            cost_limit,
+            &mut log,
+        )
+        .await?
+    };
+    Ok((state, run_id))
 }
 
 /// Drive the event-sourced `ring` engine end-to-end for an already-loaded
@@ -1560,30 +1650,83 @@ async fn dispatch_ring_es(
     sink: &Arc<dyn EventSink>,
     quiet: bool,
     max_content: Option<usize>,
-) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>)> {
+) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>, String)> {
     use crate::core::orchestration::es::ring::run_ring_es;
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
-    let mut log = SinkProjectingLog::with_meta(
-        InMemoryLog::default(),
-        &filtered_sink,
-        agent_meta_from_roster(&agents),
-    );
-    let state = run_ring_es(
-        &run_id,
-        input,
-        agents,
-        agent_order,
-        providers,
-        config,
-        routing_rules,
-        cost_limit,
-        &mut log,
-    )
-    .await?;
-    let events = log.events(&run_id)?;
-    Ok((state, events))
+
+    #[cfg(feature = "storage")]
+    let (state, events) = {
+        use crate::core::orchestration::es::log::SqliteLog;
+        match crate::storage::init_db() {
+            Ok(db) => {
+                let mut log = SinkProjectingLog::with_meta(
+                    SqliteLog::new(db),
+                    &filtered_sink,
+                    agent_meta_from_roster(&agents),
+                );
+                let state = run_ring_es(
+                    &run_id,
+                    input,
+                    agents,
+                    agent_order,
+                    providers,
+                    config,
+                    routing_rules,
+                    cost_limit,
+                    &mut log,
+                )
+                .await?;
+                let events = log.events(&run_id)?;
+                (state, events)
+            }
+            Err(_) => {
+                let mut log = SinkProjectingLog::with_meta(
+                    InMemoryLog::default(),
+                    &filtered_sink,
+                    agent_meta_from_roster(&agents),
+                );
+                let state = run_ring_es(
+                    &run_id,
+                    input,
+                    agents,
+                    agent_order,
+                    providers,
+                    config,
+                    routing_rules,
+                    cost_limit,
+                    &mut log,
+                )
+                .await?;
+                let events = log.events(&run_id)?;
+                (state, events)
+            }
+        }
+    };
+    #[cfg(not(feature = "storage"))]
+    let (state, events) = {
+        let mut log = SinkProjectingLog::with_meta(
+            InMemoryLog::default(),
+            &filtered_sink,
+            agent_meta_from_roster(&agents),
+        );
+        let state = run_ring_es(
+            &run_id,
+            input,
+            agents,
+            agent_order,
+            providers,
+            config,
+            routing_rules,
+            cost_limit,
+            &mut log,
+        )
+        .await?;
+        let events = log.events(&run_id)?;
+        (state, events)
+    };
+    Ok((state, events, run_id))
 }
 
 /// Drive the event-sourced `hierarchical` engine end-to-end for an
@@ -1606,29 +1749,80 @@ async fn dispatch_hierarchical_es(
     sink: &Arc<dyn EventSink>,
     quiet: bool,
     max_content: Option<usize>,
-) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>)> {
+) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>, String)> {
     use crate::core::orchestration::es::hierarchical::run_hierarchical_es;
 
     let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
-    let mut log = SinkProjectingLog::with_meta(
-        InMemoryLog::default(),
-        &filtered_sink,
-        agent_meta_from_roster(&agents),
-    );
-    let state = run_hierarchical_es(
-        &run_id,
-        coordinator,
-        input,
-        config,
-        agents,
-        providers,
-        routing_rules,
-        &mut log,
-    )
-    .await?;
-    let events = log.events(&run_id)?;
-    Ok((state, events))
+
+    #[cfg(feature = "storage")]
+    let (state, events) = {
+        use crate::core::orchestration::es::log::SqliteLog;
+        match crate::storage::init_db() {
+            Ok(db) => {
+                let mut log = SinkProjectingLog::with_meta(
+                    SqliteLog::new(db),
+                    &filtered_sink,
+                    agent_meta_from_roster(&agents),
+                );
+                let state = run_hierarchical_es(
+                    &run_id,
+                    coordinator,
+                    input,
+                    config,
+                    agents,
+                    providers,
+                    routing_rules,
+                    &mut log,
+                )
+                .await?;
+                let events = log.events(&run_id)?;
+                (state, events)
+            }
+            Err(_) => {
+                let mut log = SinkProjectingLog::with_meta(
+                    InMemoryLog::default(),
+                    &filtered_sink,
+                    agent_meta_from_roster(&agents),
+                );
+                let state = run_hierarchical_es(
+                    &run_id,
+                    coordinator,
+                    input,
+                    config,
+                    agents,
+                    providers,
+                    routing_rules,
+                    &mut log,
+                )
+                .await?;
+                let events = log.events(&run_id)?;
+                (state, events)
+            }
+        }
+    };
+    #[cfg(not(feature = "storage"))]
+    let (state, events) = {
+        let mut log = SinkProjectingLog::with_meta(
+            InMemoryLog::default(),
+            &filtered_sink,
+            agent_meta_from_roster(&agents),
+        );
+        let state = run_hierarchical_es(
+            &run_id,
+            coordinator,
+            input,
+            config,
+            agents,
+            providers,
+            routing_rules,
+            &mut log,
+        )
+        .await?;
+        let events = log.events(&run_id)?;
+        (state, events)
+    };
+    Ok((state, events, run_id))
 }
 
 /// Top-level entry point for persisting a standalone blackboard run's
@@ -2543,7 +2737,7 @@ mod es_switch_tests {
         let (capture, sink) = capture_sink();
         let (agents, providers) = hierarchical_roster();
 
-        let (state, events) = dispatch_hierarchical_es(
+        let (state, events, _run_id) = dispatch_hierarchical_es(
             "dev-lead",
             "build X",
             flat_config("dev-lead", &["core-specialist"]),
@@ -2587,7 +2781,7 @@ mod es_switch_tests {
         let (agents, providers) = hierarchical_roster();
         let config = flat_config("dev-lead", &["core-specialist"]);
 
-        let (state, events) = dispatch_hierarchical_es(
+        let (state, events, _dispatch_run_id) = dispatch_hierarchical_es(
             "dev-lead",
             "build X",
             config.clone(),
@@ -2656,7 +2850,7 @@ mod es_switch_tests {
         let (capture, sink) = capture_sink();
         let (agents, providers) = blackboard_roster();
 
-        let state = dispatch_blackboard_es(
+        let (state, _run_id) = dispatch_blackboard_es(
             "task",
             agents,
             providers,
@@ -2705,7 +2899,7 @@ mod es_switch_tests {
         let (agents, providers) = blackboard_roster();
         let config = BlackboardConfig::default();
 
-        let state = dispatch_blackboard_es(
+        let (state, _dispatch_run_id) = dispatch_blackboard_es(
             "task",
             agents,
             providers,
@@ -2736,6 +2930,65 @@ mod es_switch_tests {
         assert_eq!(persisted.pattern, "blackboard");
         let entries = queries::get_board_entries(&db, &run_id).unwrap();
         assert_eq!(entries.len(), 2, "expected both agents' entries persisted");
+    }
+
+    /// Verify that a blackboard run persists its event log to
+    /// `execution_events` when executed under the `storage` feature (OH1 Lot
+    /// 5a Task 2). Unlike `blackboard_es_state_is_recorded_via_
+    /// record_blackboard_es_into` which tests the tables plates write, this
+    /// test verifies that the event log itself is persisted au fil de l'eau.
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn blackboard_es_run_persists_event_log() {
+        use crate::core::orchestration::es::blackboard::run_blackboard_es;
+        use crate::core::orchestration::es::log::SqliteLog;
+        use crate::storage::init_embedded;
+
+        // (a): Setup — same roster as `blackboard_es_state_is_recorded_via_
+        // record_blackboard_es_into`, but we drive the ES loop with a
+        // SqliteLog directly to verify persistence.
+        let db = init_embedded().unwrap();
+        let run_id = "it-bb-log-1";
+        let (agents, providers) = blackboard_roster();
+        let config = BlackboardConfig::default();
+
+        // (b): Execute the ES loop with a SqliteLog (not InMemoryLog), wrapped
+        // in a SinkProjectingLog for observability (same structure as
+        // dispatch_blackboard_es will use under storage).
+        let (_capture, sink) = capture_sink();
+        let filtered_sink = quiet_max_content_sink(&sink, false, None);
+        let mut log = SinkProjectingLog::with_meta(
+            SqliteLog::new(db),
+            &filtered_sink,
+            agent_meta_from_roster(&agents),
+        );
+        let _state = run_blackboard_es(
+            run_id,
+            "task",
+            agents,
+            providers,
+            config,
+            RoutingRules::default(),
+            None,
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        // (c): Verify that the events were persisted to execution_events
+        // (read back via the same log instance).
+        let events = log.events(run_id).unwrap();
+        assert!(
+            !events.is_empty(),
+            "blackboard run must have persisted its event log"
+        );
+
+        // (d): Sanity-check: the first event should be RunStarted.
+        assert!(
+            matches!(events[0], ExecutionEvent::RunStarted { .. }),
+            "first event should be RunStarted, got {:?}",
+            events[0]
+        );
     }
 
     // ── T5d: ring ────────────────────────────────────────────────────
@@ -2775,7 +3028,7 @@ mod es_switch_tests {
             ..RingConfig::default()
         };
 
-        let (state, events) = dispatch_ring_es(
+        let (state, events, _run_id) = dispatch_ring_es(
             "task",
             agents,
             vec!["a".to_string(), "b".to_string()],
@@ -2829,7 +3082,7 @@ mod es_switch_tests {
             ..RingConfig::default()
         };
 
-        let (state, _events) = dispatch_ring_es(
+        let (state, _events, _dispatch_run_id) = dispatch_ring_es(
             "task",
             agents,
             vec!["a".to_string(), "b".to_string()],
