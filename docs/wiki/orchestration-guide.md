@@ -67,7 +67,7 @@ orchestration:
     - backend-dev
     - devops
   max_rounds: 5
-  token_budget: 50000
+  token_budget: 500000
 ```
 
 **Key parameters:**
@@ -78,7 +78,7 @@ orchestration:
 | max_rounds             | 5       | Maximum number of rounds before halting |
 | consensus_threshold    | 0.75    | Ratio of confirmations needed for consensus |
 | divergence_threshold   | 0.60    | Challenge ratio that triggers divergence halt |
-| token_budget           | 50000   | Maximum tokens across all agents |
+| token_budget           | 500000  | Safety cap on total tokens across all agents |
 | agent_timeout_secs     | 60      | Timeout per agent per round |
 | convergence_rounds     | 1       | Consecutive stable rounds before halting |
 
@@ -125,7 +125,7 @@ orchestration:
 | consensus_threshold   | 0.80    | Vote ratio required for consensus |
 | majority_threshold    | 0.60    | Vote ratio required for majority (if not consensus) |
 | similarity_threshold  | 0.85    | Jaccard threshold for grouping similar positions |
-| token_budget          | 40000   | Maximum tokens across all laps |
+| token_budget          | 500000  | Safety cap on total tokens across all laps |
 | agent_timeout_secs    | 90      | Timeout per agent per lap |
 
 **Agent actions:** Agents respond with structured actions: **Propose** (introduce idea), **Enrich** (build on prior contribution), **Contest** (argue against), **Endorse** (support), **Synthesize** (combine insights), **Pass** (nothing to add).
@@ -298,7 +298,7 @@ orchestration:
     - backend-dev
     - devops
   max_rounds: 5
-  token_budget: 50000
+  token_budget: 500000
 ```
 
 **Run:**
@@ -411,7 +411,7 @@ When a budget or cost limit is hit:
 3. All completed contributions are returned in the result
 4. The halt reason is logged and visible in history (`armadai history`)
 
-**Best practice:** Start with conservative budgets (e.g., 50k tokens for Blackboard, 40k for Ring) and increase if needed. Monitor costs via `armadai costs`.
+**Best practice:** The default token budget (500k) is a generous safety cap meant to catch a runaway, not a tight limit — normal multi-round/multi-lap runs with verbose agents stay well under it. Lower it only if you want a tighter ceiling for a specific run, and monitor costs via `armadai costs`.
 
 ## Tips and Gotchas
 
