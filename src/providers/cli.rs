@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_prompt_non_vide_atteint_la_commande() {
+    async fn non_empty_system_prompt_reaches_the_command() {
         let provider = CliProvider::new("echo".to_string(), vec![], 10);
         let request =
             request_with_system("PERSONA-XYZ instructions de delegation", "fais la tache");
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_prompt_vide_ne_change_rien() {
+    async fn empty_system_prompt_changes_nothing() {
         let provider = CliProvider::new("echo".to_string(), vec![], 10);
         let request = request_with_system("", "hello world");
 
