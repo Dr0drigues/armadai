@@ -1140,10 +1140,6 @@ async fn run_orchestrated_inner(
         _ => crate::core::routing::RoutingRules::default(),
     };
 
-    // Project attribution for storage (mirrors the sequential path).
-    #[cfg(feature = "storage")]
-    let project = project_display_string(resolution);
-
     sink.emit(&RunEvent::RunStart {
         v: 1,
         agents: agent_names.to_vec(),
@@ -1283,7 +1279,16 @@ async fn run_orchestrated_inner(
 
             #[cfg(feature = "storage")]
             {
-                record_blackboard_es(&_run_id, &state, &config, input, project.as_deref());
+                match crate::storage::init_db() {
+                    Ok(db) => {
+                        if let Err(e) = crate::cli::run_es_record::project_run(&db, &_run_id) {
+                            tracing::warn!("failed to project run {}: {}", _run_id, e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("event log storage unavailable, run not projected: {}", e);
+                    }
+                }
             }
 
             let outcome_text = super::run_es_record::blackboard_display(&state);
@@ -1349,7 +1354,16 @@ async fn run_orchestrated_inner(
 
             #[cfg(feature = "storage")]
             {
-                record_ring_es(&_run_id, &state, &config, input, project.as_deref());
+                match crate::storage::init_db() {
+                    Ok(db) => {
+                        if let Err(e) = crate::cli::run_es_record::project_run(&db, &_run_id) {
+                            tracing::warn!("failed to project run {}: {}", _run_id, e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("event log storage unavailable, run not projected: {}", e);
+                    }
+                }
             }
 
             let outcome_text = super::run_es_record::ring_display(&state, &events);
@@ -1413,11 +1427,6 @@ async fn run_orchestrated_inner(
                 agent_map.len()
             );
 
-            // Kept alive for post-run persistence (`record_orchestration_hierarchical`)
-            // since `orch_config` itself is moved into the engine below.
-            #[cfg(feature = "storage")]
-            let orch_config_for_storage = orch_config.clone();
-
             let (state, events, _run_id) = dispatch_hierarchical_es(
                 &coordinator_name,
                 input,
@@ -1444,13 +1453,16 @@ async fn run_orchestrated_inner(
 
             #[cfg(feature = "storage")]
             {
-                record_orchestration_hierarchical(
-                    &_run_id,
-                    &result,
-                    &orch_config_for_storage,
-                    input,
-                    project.as_deref(),
-                );
+                match crate::storage::init_db() {
+                    Ok(db) => {
+                        if let Err(e) = crate::cli::run_es_record::project_run(&db, &_run_id) {
+                            tracing::warn!("failed to project run {}: {}", _run_id, e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("event log storage unavailable, run not projected: {}", e);
+                    }
+                }
             }
 
             if !json {
@@ -1711,62 +1723,6 @@ async fn dispatch_hierarchical_es(
     Ok((state, events, run_id))
 }
 
-/// Top-level entry point for persisting a standalone blackboard run's
-/// ES projection (`armadai run --orchestrate blackboard`, OH1 Lot 5).
-/// Initializes storage and delegates to
-/// [`super::run_es_record::record_blackboard_es_into`] with no parent —
-/// the ES-native counterpart of the legacy [`record_orchestration_blackboard`]
-/// (which reads a live `blackboard::Board` instead of an `ExecutionState`).
-#[cfg(feature = "storage")]
-fn record_blackboard_es(
-    run_id: &str,
-    state: &ExecutionState,
-    config: &crate::core::orchestration::blackboard::BlackboardConfig,
-    input: &str,
-    project: Option<&str>,
-) {
-    let db = match crate::storage::init_db() {
-        Ok(db) => db,
-        Err(e) => {
-            tracing::warn!("Failed to init storage: {e}");
-            return;
-        }
-    };
-    if let Err(e) = super::run_es_record::record_blackboard_es_into(
-        &db, run_id, state, config, input, None, project,
-    ) {
-        tracing::warn!("Failed to record blackboard run: {e}");
-    }
-}
-
-/// Top-level entry point for persisting a standalone ring run's ES
-/// projection (`armadai run --orchestrate ring`, OH1 Lot 5). Initializes
-/// storage and delegates to [`super::run_es_record::record_ring_es_into`]
-/// with no parent — the ES-native counterpart of the legacy
-/// [`record_orchestration_ring`] (which reads a live `ring::RingToken`
-/// instead of an `ExecutionState`).
-#[cfg(feature = "storage")]
-fn record_ring_es(
-    run_id: &str,
-    state: &ExecutionState,
-    config: &crate::core::orchestration::ring::RingConfig,
-    input: &str,
-    project: Option<&str>,
-) {
-    let db = match crate::storage::init_db() {
-        Ok(db) => db,
-        Err(e) => {
-            tracing::warn!("Failed to init storage: {e}");
-            return;
-        }
-    };
-    if let Err(e) =
-        super::run_es_record::record_ring_es_into(&db, run_id, state, config, input, None, project)
-    {
-        tracing::warn!("Failed to record ring run: {e}");
-    }
-}
-
 /// Apply project-level orchestration overrides to a BlackboardConfig.
 fn apply_blackboard_overrides(
     mut config: crate::core::orchestration::blackboard::BlackboardConfig,
@@ -1878,29 +1834,6 @@ pub(crate) fn record_hierarchical_into(
     }
 
     Ok(run_id.to_string())
-}
-
-/// Top-level entry point for persisting a hierarchical run
-/// (`armadai run --orchestrate hierarchical`). Initializes storage and
-/// delegates to [`record_hierarchical_into`].
-#[cfg(feature = "storage")]
-fn record_orchestration_hierarchical(
-    run_id: &str,
-    result: &crate::core::orchestration::hierarchical::OrchestrationResult,
-    config: &crate::core::orchestration::OrchestrationConfig,
-    input: &str,
-    project: Option<&str>,
-) {
-    let db = match crate::storage::init_db() {
-        Ok(db) => db,
-        Err(e) => {
-            tracing::warn!("Failed to init storage: {e}");
-            return;
-        }
-    };
-    if let Err(e) = record_hierarchical_into(&db, run_id, result, config, input, project) {
-        tracing::warn!("Failed to record hierarchical run: {e}");
-    }
 }
 
 /// Check if an error indicates the model was not found (HTTP 404 or model-related 400).
@@ -2972,6 +2905,72 @@ mod es_switch_tests {
             matches!(events[0], ExecutionEvent::RunStarted { .. }),
             "first event should be RunStarted, got {:?}",
             events[0]
+        );
+    }
+
+    /// Verify that a blackboard run projects its flat tables from the event
+    /// log (OH1 Lot 5b Task 3). After the ES loop persists events to the log,
+    /// `project_run` derives the `runs`/`orchestration_runs`/`board_entries`
+    /// tables from it — the same flow the real `run_orchestrated` branches will
+    /// use after the Task 3 wiring.
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn blackboard_es_run_projects_tables_from_log() {
+        use crate::core::orchestration::es::blackboard::run_blackboard_es;
+        use crate::core::orchestration::es::log::SqliteLog;
+        use crate::storage::{init_embedded, queries};
+
+        let db = init_embedded().unwrap();
+        let run_id = "it-bb-proj-1";
+        let (agents, providers) = blackboard_roster();
+        let config = BlackboardConfig::default();
+
+        // (a): Execute the ES loop with a SqliteLog (persists events to the
+        // test's in-memory DB), wrapped in a SinkProjectingLog for observability.
+        let (_capture, sink) = capture_sink();
+        let filtered_sink = quiet_max_content_sink(&sink, false, None);
+        let mut log = SinkProjectingLog::with_meta(
+            SqliteLog::new(db.clone()),
+            &filtered_sink,
+            agent_meta_from_roster(&agents),
+        );
+        let state = run_blackboard_es(
+            run_id,
+            "task",
+            agents,
+            providers,
+            config,
+            RoutingRules::default(),
+            None,
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        // (b): Before projection, the flat tables should be empty for this run_id.
+        assert!(
+            queries::get_orchestration_run(&db, run_id)
+                .unwrap()
+                .is_none(),
+            "flat tables should be empty before projection"
+        );
+
+        // (c): Project the flat tables from the event log.
+        crate::cli::run_es_record::project_run(&db, run_id).unwrap();
+
+        // (d): Verify that the projection succeeded: `runs` + `orchestration_runs`
+        // tables should now have a row for this run with `pattern == "blackboard"`.
+        let run_record = queries::get_orchestration_run(&db, run_id)
+            .unwrap()
+            .expect("projection should have created a run record");
+        assert_eq!(run_record.pattern, "blackboard");
+
+        // (e): Verify that board entries were also projected.
+        let entries = queries::get_board_entries(&db, run_id).unwrap();
+        assert_eq!(
+            entries.len(),
+            state.board.entries.len(),
+            "all board entries should be projected"
         );
     }
 
