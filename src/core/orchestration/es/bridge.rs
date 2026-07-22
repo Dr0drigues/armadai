@@ -53,12 +53,20 @@ use crate::core::orchestration::hierarchical::{DelegationEvent, OrchestrationRes
 ///   has (via [`to_orchestration_result`]). Building the terminal `Result`
 ///   line is left to the future `run.rs` call site (Lot 5), which has both
 ///   the sink and the folded state.
-/// - `RunStarted`, `Warned`, `Halted`, `AskedPeer`, `Escalated`, `Synthesized`,
+/// - `Warned { code }` → `[RunEvent::Warning { code, from: None, to: None }]`:
+///   makes a graceful budget/cost halt (`Warned{token_budget|cost_limit}` +
+///   a partial `Complete`, emitted by the blackboard/ring/hierarchical
+///   deciders' priority-1 guard) visible in the `--json` stream, where it was
+///   previously silently dropped (OH1 Lot 4 Task 4, Bug B). `from`/`to` have
+///   no source in `Warned{code}` alone (unlike the `deprecated_model`/
+///   `routing_ignored_hierarchical` warnings emitted directly in
+///   `src/cli/run.rs`, which do carry them) — `Warning`'s schema keeps them
+///   as `Option` (`skip_serializing_if` on `None`) precisely so this arm can
+///   omit them rather than guess.
+/// - `RunStarted`, `Halted`, `AskedPeer`, `Escalated`, `Synthesized`,
 ///   `RoundStarted`, `ConsensusReached`, `LapStarted`,
 ///   `OutcomeResolved` → `[]`: no `RunEvent` equivalent is specified for this
-///   lot (e.g. `Warned`/`Halted` could plausibly map onto `RunEvent::Warning`,
-///   but `Warning`'s `from`/`to` fields have no source in `Warned{code}` alone
-///   — left for a future lot to decide deliberately rather than guessed here).
+///   lot.
 ///
 /// **`AgentStart`/`AgentEnd` symmetry**: `AgentInvoked` (emitted by the shared
 /// `es::engine` invoke loop for *every* pattern, including blackboard/ring)
@@ -174,9 +182,13 @@ pub fn map_execution_to_run_events(
         ExecutionEvent::NestedEnded { team_lead } => vec![RunEvent::NestedEnd {
             team_lead: team_lead.clone(),
         }],
+        ExecutionEvent::Warned { code } => vec![RunEvent::Warning {
+            code: code.clone(),
+            from: None,
+            to: None,
+        }],
         ExecutionEvent::Completed { .. }
         | ExecutionEvent::RunStarted { .. }
-        | ExecutionEvent::Warned { .. }
         | ExecutionEvent::Halted { .. }
         | ExecutionEvent::AskedPeer { .. }
         | ExecutionEvent::Escalated { .. }
@@ -632,6 +644,27 @@ mod tests {
         assert!(map_execution_to_run_events(&e, &no_meta()).is_empty());
     }
 
+    /// Regression test for Bug B (OH1 Lot 4 Task 4): a graceful budget/cost
+    /// halt (`Warned{code}`) must surface as a `RunEvent::Warning` — before
+    /// the fix it silently mapped to `[]`, making `--json` consumers blind to
+    /// the halt (they'd just see a `result` with partial content and exit 0,
+    /// no indication *why* the run stopped early).
+    #[test]
+    fn warned_maps_to_warning_with_code_and_no_from_to() {
+        let e = ExecutionEvent::Warned {
+            code: "token_budget".into(),
+        };
+        let got = map_execution_to_run_events(&e, &no_meta());
+        match &got[..] {
+            [RunEvent::Warning { code, from, to }] => {
+                assert_eq!(code, "token_budget");
+                assert_eq!(*from, None);
+                assert_eq!(*to, None);
+            }
+            other => panic!("expected [Warning], got {other:?}"),
+        }
+    }
+
     #[test]
     fn events_without_observability_equivalent_map_to_empty() {
         let no_ops = vec![
@@ -642,7 +675,6 @@ mod tests {
                 input: "x".into(),
                 project: None,
             },
-            ExecutionEvent::Warned { code: "w".into() },
             ExecutionEvent::Halted {
                 reason: "budget".into(),
             },

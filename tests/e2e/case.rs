@@ -63,6 +63,17 @@ pub struct Setup {
     /// existing (non-nested) case file parsing exactly as before.
     #[serde(default)]
     pub nested_team: Option<NestedTeamSetup>,
+    /// OH1 Lot 4 Task 4: a low global token budget, rendered by
+    /// `harness::project_yaml` as `defaults.orchestration.token_budget`.
+    /// That's the key `blackboard`/`ring` actually read (via
+    /// `OrchestrationDefaults`/`apply_blackboard_overrides`/
+    /// `apply_ring_overrides` in `src/cli/run.rs`) — NOT the top-level
+    /// `orchestration.token_budget`, which only feeds the `hierarchical`
+    /// pattern's own `OrchestrationConfig`. Used to deterministically trigger
+    /// a graceful budget halt (`ExecutionEvent::Warned{code: "token_budget"}`
+    /// + a partial `Complete`) for `cases/budget-halt-visible.yaml`.
+    #[serde(default)]
+    pub token_budget: Option<u64>,
 }
 
 /// Describes a C9 nested team for a `hierarchical` [`Setup`]: `lead` runs the
