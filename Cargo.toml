@@ -76,4 +76,6 @@ strip-ansi-escapes = { version = "0.2", optional = true }
 regex = "1"
 
 [dev-dependencies]
+assert_cmd = "2.2.2"
+schemars = "1.2.1"
 tempfile = "3"

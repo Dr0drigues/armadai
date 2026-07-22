@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CaseFile",
+  "description": "One end-to-end test case: setup + scripted fake responses + expectations.",
+  "type": "object",
+  "properties": {
+    "allow_fail": {
+      "description": "A known/tolerated failing case does not fail the overall suite.",
+      "type": "boolean",
+      "default": false
+    },
+    "expect": {
+      "$ref": "#/$defs/Expect"
+    },
+    "fake": {
+      "$ref": "#/$defs/FakeSpec"
+    },
+    "name": {
+      "description": "Human-readable case name (also used as the identifier in reports).",
+      "type": "string"
+    },
+    "setup": {
+      "$ref": "#/$defs/Setup"
+    },
+    "weight": {
+      "description": "Weight used by the report aggregator to prioritize failures.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "name",
+    "weight",
+    "setup",
+    "fake",
+    "expect"
+  ],
+  "$defs": {
+    "Expect": {
+      "description": "The expected outcome of a run.",
+      "type": "object",
+      "properties": {
+        "event_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "default": {}
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExpectedEvent"
+          }
+        },
+        "exit_code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "invariants": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "storage": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "default": null
+        }
+      },
+      "required": [
+        "exit_code"
+      ]
+    },
+    "ExpectedEvent": {
+      "description": "A partial match against one emitted event: `t` is the event type, and any other\nfield present is matched against the corresponding field on the actual event\n(fields absent here are not checked).",
+      "type": "object",
+      "properties": {
+        "t": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "t"
+      ]
+    },
+    "FakeSpec": {
+      "description": "The scripted `fake-claude` scenario for this case.",
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Rule"
+          }
+        }
+      },
+      "required": [
+        "rules"
+      ]
+    },
+    "Match": {
+      "description": "Match predicate for a [`Rule`]. All fields are optional; an empty `Match` (all\n`None`) is a catch-all that matches any agent/call/prompt.\n\nMirrors `Match` in `src/bin/fake-claude.rs` — keep in sync (see module doc).",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "call": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "prompt_contains": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "Rule": {
+      "description": "A single rule: a `match` predicate plus the scripted response/metrics.\n\nMirrors `Rule` in `src/bin/fake-claude.rs` — see the module-level doc comment on\nwhy this is a duplicate rather than a shared type, and keep the two in sync.",
+      "type": "object",
+      "properties": {
+        "cost": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
+        },
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32",
+          "default": null
+        },
+        "latency_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "match": {
+          "$ref": "#/$defs/Match"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "respond": {
+          "type": "string"
+        },
+        "tokens_in": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "tokens_out": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "respond"
+      ]
+    },
+    "Setup": {
+      "description": "How to invoke the real `armadai` binary for this case.",
+      "type": "object",
+      "properties": {
+        "agents": {
+          "description": "Agent ids involved in the run, in invocation order.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "flags": {
+          "description": "Extra CLI flags passed to `armadai run` (e.g. `--json`).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "input": {
+          "description": "Input piped/passed to the run.",
+          "type": "string",
+          "default": ""
+        },
+        "pattern": {
+          "description": "Orchestration pattern under test (e.g. `direct`, `hierarchical`, `blackboard`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  }
+}
