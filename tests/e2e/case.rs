@@ -56,6 +56,28 @@ pub struct Setup {
     /// Input piped/passed to the run.
     #[serde(default)]
     pub input: String,
+    /// C9 override for `hierarchical` cases: when set, `harness::project_yaml`
+    /// emits a single `orchestration.teams` entry with this `lead`/`pattern`/
+    /// `agents` (a nested blackboard/ring sub-team) instead of the default flat
+    /// team made of every non-coordinator agent. `serde(default)` keeps every
+    /// existing (non-nested) case file parsing exactly as before.
+    #[serde(default)]
+    pub nested_team: Option<NestedTeamSetup>,
+}
+
+/// Describes a C9 nested team for a `hierarchical` [`Setup`]: `lead` runs the
+/// sub-`pattern` (`blackboard`/`ring`) over `agents` instead of delegating to
+/// them individually. `lead` and every name in `agents` must also appear in
+/// the parent [`Setup::agents`] list (that's what makes `harness::write_project`
+/// generate an `agents/<name>.md` file and a `fake-claude` provider for them).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct NestedTeamSetup {
+    /// Agent id that arbitrates the sub-run (the team's `lead`).
+    pub lead: String,
+    /// Sub-pattern the team runs: `blackboard` or `ring`.
+    pub pattern: String,
+    /// Team members that actually run the sub-pattern (excludes `lead`).
+    pub agents: Vec<String>,
 }
 
 /// The scripted `fake-claude` scenario for this case.

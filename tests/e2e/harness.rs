@@ -178,6 +178,10 @@ fn write_project(root: &Path, case: &CaseFile) -> anyhow::Result<()> {
 /// pattern selected via project config rather than a `--orchestrate` CLI flag (see
 /// `configure_invocation`). See `OrchestrationConfig`/`TeamConfig` in
 /// `src/core/orchestration/mod.rs` for the schema this must match.
+///
+/// When `case.setup.nested_team` is set (C9), the single `teams:` entry declares
+/// that team's `lead`/`pattern`/`agents` instead of the default flat team of every
+/// non-coordinator agent — see `NestedTeamSetup` in `case.rs`.
 fn project_yaml(case: &CaseFile) -> String {
     let agents_block: String = case
         .setup
@@ -190,18 +194,35 @@ fn project_yaml(case: &CaseFile) -> String {
 
     if case.setup.pattern == "hierarchical" {
         let coordinator = &case.setup.agents[0];
-        let team_agents = &case.setup.agents[1..];
-        let team_agents_block: String = team_agents
-            .iter()
-            .map(|a| format!("        - {a}\n"))
-            .collect();
+        let teams_block = match &case.setup.nested_team {
+            Some(nt) => {
+                let members_block: String = nt
+                    .agents
+                    .iter()
+                    .map(|a| format!("        - {a}\n"))
+                    .collect();
+                format!(
+                    "    - lead: {}\n      \
+                       pattern: {}\n      \
+                       agents:\n{members_block}",
+                    nt.lead, nt.pattern
+                )
+            }
+            None => {
+                let team_agents = &case.setup.agents[1..];
+                let team_agents_block: String = team_agents
+                    .iter()
+                    .map(|a| format!("        - {a}\n"))
+                    .collect();
+                format!("    - agents:\n{team_agents_block}")
+            }
+        };
         yaml.push_str(&format!(
             "orchestration:\n  \
              enabled: true\n  \
              pattern: hierarchical\n  \
              coordinator: {coordinator}\n  \
-             teams:\n    \
-             - agents:\n{team_agents_block}"
+             teams:\n{teams_block}"
         ));
     }
 
@@ -231,10 +252,77 @@ fn agent_markdown(agent: &str) -> String {
     )
 }
 
+/// Load every `*.yaml` case file under `dir`, sorted by filename for a deterministic
+/// run order (and therefore a deterministic report). Used by `e2e_suite` to discover
+/// `tests/e2e/cases/*.yaml`.
+///
+/// # Panics
+/// Panics if `dir` cannot be read, or if any file fails to parse as a [`CaseFile`] —
+/// a malformed baseline case file is a harness bug, not a runtime condition to
+/// tolerate silently.
+pub fn discover_cases(dir: &str) -> Vec<CaseFile> {
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("reading case dir {dir}: {e}"))
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "yaml"))
+        .collect();
+    paths.sort();
+
+    paths
+        .iter()
+        .map(|p| {
+            super::case::load_case(p)
+                .unwrap_or_else(|e| panic!("loading case file {}: {e:#}", p.display()))
+        })
+        .collect()
+}
+
+/// Directory the e2e suite writes its `e2e-report.{json,html}` artifacts to
+/// (created if missing). Kept under `target/` so it's ignored by git and already
+/// present for CI's `actions/upload-artifact` step to pick up.
+pub fn report_dir() -> std::path::PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/e2e-report");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::e2e::case::load_case_str;
+
+    /// Discovers every case file under `tests/e2e/cases/`, runs each one against
+    /// the real `armadai` binary + `fake-claude` stub, and writes the aggregate
+    /// report (`e2e-report.json`/`.html`) to `report_dir()` — `if: always()` in CI
+    /// uploads it regardless of the outcome below, so a failing run still leaves a
+    /// diagnostic artifact behind.
+    ///
+    /// A case fails the suite unless it is marked `allow_fail: true` in its YAML
+    /// (see e.g. `cases/ring.yaml`, which documents a known legacy-engine gap).
+    #[test]
+    fn e2e_suite() {
+        let cases = discover_cases(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/e2e/cases"));
+        assert!(
+            !cases.is_empty(),
+            "no case files found under tests/e2e/cases — the suite would vacuously pass"
+        );
+
+        let outcomes: Vec<_> = cases.iter().map(run_case).collect();
+
+        crate::e2e::report::write_reports(&outcomes, &report_dir())
+            .expect("writing e2e-report.{json,html}");
+
+        let failed: Vec<&str> = outcomes
+            .iter()
+            .filter(|o| !o.passed && !o.allow_fail)
+            .map(|o| o.name.as_str())
+            .collect();
+        assert!(
+            failed.is_empty(),
+            "failed cases (not allow_fail): {failed:?} — see {}/e2e-report.html for diffs",
+            report_dir().display()
+        );
+    }
 
     /// A single-agent, `direct`-pattern case: no orchestration, no `--pipe`. This is
     /// the harness's own smoke test — the first real run of `armadai` against

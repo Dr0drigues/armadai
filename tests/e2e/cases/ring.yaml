@@ -1,0 +1,41 @@
+name: ring
+weight: 5
+# Known legacy-engine gap (validated manually on release/1.0.0, pre-Lot-4 ES
+# switch-over): the legacy ring (`src/core/orchestration/ring.rs`) circulates
+# contributions correctly, but this case's `vote` expectation is not reliably
+# observed through `armadai run --orchestrate ring --json` in this harness —
+# an observability gap in the legacy `--json` event stream. Débloqué au Lot 4
+# (émission `vote` côté event-sourcing). Do not let this case block the suite.
+allow_fail: true
+setup:
+  pattern: ring
+  agents: [t-a, t-b]
+  flags: ["--json"]
+  input: "propose a caching strategy"
+fake:
+  rules:
+    # Circulation phase: the ring runs `config.max_laps` laps regardless of
+    # call count (2 agents x N laps), so match on the propose-phase prompt
+    # text (`RING_ACTION_INSTRUCTIONS` in llm_agents.rs) rather than `call:`,
+    # to stay correct across however many laps the default config runs.
+    - match: { agent: t-a, prompt_contains: "ACTION: <type>" }
+      respond: "ACTION: PROPOSE\nCONTENT: t-a proposes a write-through cache"
+    - match: { agent: t-b, prompt_contains: "ACTION: <type>" }
+      respond: "ACTION: PROPOSE\nCONTENT: t-b proposes a read-through cache"
+    # Voting phase: matched on the vote prompt's distinct text (see
+    # `LlmRingAgent::vote` in llm_agents.rs) instead of a call index.
+    - match: { agent: t-a, prompt_contains: "Synthesize the contributions" }
+      respond: "CONFIDENCE: 0.8\nWrite-through is the safer default."
+    - match: { agent: t-b, prompt_contains: "Synthesize the contributions" }
+      respond: "CONFIDENCE: 0.75\nRead-through works if writes are rare."
+    - match: {}
+      respond: "unexpected — catch-all should never be hit in this case"
+expect:
+  exit_code: 0
+  events:
+    - { t: run_start }
+    - { t: agent_start, agent: t-a }
+    - { t: vote, agent: t-a }
+    - { t: result }
+  event_counts: { agent_start: 2, agent_end: 2, vote: 2, result: 1 }
+  invariants: [agent_start_end_symmetric, prov_model_non_empty, single_result, no_orphan_events]

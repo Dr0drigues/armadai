@@ -141,6 +141,32 @@
         }
       }
     },
+    "NestedTeamSetup": {
+      "description": "Describes a C9 nested team for a `hierarchical` [`Setup`]: `lead` runs the\nsub-`pattern` (`blackboard`/`ring`) over `agents` instead of delegating to\nthem individually. `lead` and every name in `agents` must also appear in\nthe parent [`Setup::agents`] list (that's what makes `harness::write_project`\ngenerate an `agents/<name>.md` file and a `fake-claude` provider for them).",
+      "type": "object",
+      "properties": {
+        "agents": {
+          "description": "Team members that actually run the sub-pattern (excludes `lead`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lead": {
+          "description": "Agent id that arbitrates the sub-run (the team's `lead`).",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Sub-pattern the team runs: `blackboard` or `ring`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "lead",
+        "pattern",
+        "agents"
+      ]
+    },
     "Rule": {
       "description": "A single rule: a `match` predicate plus the scripted response/metrics.\n\nMirrors `Rule` in `src/bin/fake-claude.rs` — see the module-level doc comment on\nwhy this is a duplicate rather than a shared type, and keep the two in sync.",
       "type": "object",
@@ -235,6 +261,17 @@
           "description": "Input piped/passed to the run.",
           "type": "string",
           "default": ""
+        },
+        "nested_team": {
+          "description": "C9 override for `hierarchical` cases: when set, `harness::project_yaml`\nemits a single `orchestration.teams` entry with this `lead`/`pattern`/\n`agents` (a nested blackboard/ring sub-team) instead of the default flat\nteam made of every non-coordinator agent. `serde(default)` keeps every\nexisting (non-nested) case file parsing exactly as before.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NestedTeamSetup"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "pattern": {
           "description": "Orchestration pattern under test (e.g. `direct`, `hierarchical`, `blackboard`).",

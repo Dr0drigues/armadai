@@ -68,8 +68,21 @@ jobs:
       - run: cargo test --no-default-features --features tui
       # storage (SQLite) is not covered by the default `tui` feature set —
       # run its tests explicitly so src/storage/ and the storage-gated
-      # code paths (e.g. SqliteLog) are actually exercised in CI.
+      # code paths (e.g. SqliteLog) are actually exercised in CI. This is
+      # also the mode the `e2e` integration test target runs in (see
+      # tests/e2e/harness.rs `e2e_suite`), so its report ends up under
+      # target/e2e-report/ for the next step to upload.
       - run: cargo test --no-default-features --features tui,storage
+      - name: Upload e2e report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            target/e2e-report/e2e-report.html
+            target/e2e-report/e2e-report.json
+          if-no-files-found: warn
+          retention-days: 14
 
   build:
     name: Build
