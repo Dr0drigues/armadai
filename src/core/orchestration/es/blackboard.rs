@@ -520,25 +520,32 @@ impl BlackboardEffectRunner {
     /// `user_msg` (`core::orchestration::llm_agents`) over the event-sourced
     /// `state.board` projection instead of a live `BoardSnapshot`:
     /// `"Task: …\nRound: …\nBudget remaining: … tokens\n"`, then (only if any
-    /// qualify) a `"Recent board entries:\n"` section listing every entry
-    /// **whose `round` is strictly less than `state.board.round`** as
-    /// `"- [{agent}#{index} {kind}] {content}\n"` — `{index}` being the
-    /// entry's position in `state.board.entries` (the same numbering
-    /// `entry_kind_to_rec`'s `refs`/the legacy `BoardEntry::index` target —
-    /// so a `TARGET: <index>` an LLM emits in its structured response points
-    /// at the same entries this snapshot exposed to it) — then
-    /// `BOARD_ACTION_INSTRUCTIONS` verbatim.
+    /// qualify) a `"Recent board entries:\n"` section listing, in
+    /// chronological order, the **10 most recent** entries **whose `round`
+    /// is strictly less than `state.board.round`** as `"- [{agent}#{index}
+    /// {kind}] {content}\n"` — `{index}` being the entry's position in
+    /// `state.board.entries` (the same numbering `entry_kind_to_rec`'s
+    /// `refs`/the legacy `BoardEntry::index` target — so a `TARGET: <index>`
+    /// an LLM emits in its structured response points at the same entries
+    /// this snapshot exposed to it) — then `BOARD_ACTION_INSTRUCTIONS`
+    /// verbatim.
     ///
-    /// The round filter is the deliberate, documented deviation from a plain
-    /// "last 10 entries" window: legacy fidelity requires that agents
-    /// contributing within the *same* round never see each other's
-    /// in-flight entries (they all act off the board as it stood at the
-    /// start of the round) — only entries from rounds that have already
-    /// fully completed are visible. Unlike `LlmBoardAgent::contribute`
-    /// (which caps at the 10 most recent entries), this includes every
-    /// qualifying entry — the task's snapshot-filter requirement takes
-    /// priority over reproducing that truncation, and no test scenario here
-    /// exercises more than a handful of entries.
+    /// Two legacy behaviours are reproduced here, both over the event-sourced
+    /// `state.board` projection rather than a live `BoardSnapshot`:
+    /// - the round filter (`entry.round < state.board.round`) mirrors
+    ///   `Board::snapshot()` being taken once at the *start* of each round
+    ///   (before that round's agents post anything), so contributors within
+    ///   the same round never see each other's in-flight entries;
+    /// - the 10-entry cap (OH1 Lot 4 Task 3, reconciliation B) mirrors
+    ///   `LlmBoardAgent::contribute`'s own `board.entries.iter().rev().take(10)`
+    ///   (`core::orchestration::llm_agents:377`) — this used to be an
+    ///   undocumented-cap gap in the ES path (every qualifying entry was
+    ///   included, unbounded), which this reconciliation closes. Unlike
+    ///   legacy's raw `rev().take(10)` (which prints the window
+    ///   newest-first), the 10 kept here are restored to their original
+    ///   chronological (oldest-first) order before formatting — the task's
+    ///   explicit intent for this reconciliation — since nothing else about
+    ///   this prompt's entry ordering is reversed.
     fn build_prompt(&self, agent_name: &str, input: &str, state: &ExecutionState) -> String {
         let budget_remaining = self
             .config
@@ -549,13 +556,19 @@ impl BlackboardEffectRunner {
             state.board.round
         );
 
-        let snapshot: Vec<(usize, &BoardEntryRec)> = state
-            .board
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.round < state.board.round)
-            .collect();
+        let snapshot: Vec<(usize, &BoardEntryRec)> = {
+            let mut recent: Vec<(usize, &BoardEntryRec)> = state
+                .board
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.round < state.board.round)
+                .rev()
+                .take(10)
+                .collect();
+            recent.reverse();
+            recent
+        };
         if !snapshot.is_empty() {
             user_msg.push_str("\nRecent board entries:\n");
             for (index, entry) in snapshot {
@@ -717,14 +730,23 @@ impl EffectRunner for BlackboardEffectRunner {
 /// values with documented defaults — unlike `OrchestrationConfig`'s
 /// `Option` fields, `BlackboardConfig` has no "unset" state for either, so
 /// `token_budget` narrows to `Option<u32>` as `Some(..)` unconditionally,
-/// saturating at `u32::MAX`). `BlackboardConfig` carries no cost-budget
-/// field (unlike `OrchestrationConfig::cost_limit`), so `cost_limit` is
-/// always `None` here — no cost guard applies to the event-sourced
-/// blackboard run.
+/// saturating at `u32::MAX`). `BlackboardConfig` itself carries no
+/// cost-budget field (unlike `OrchestrationConfig::cost_limit`) — legacy's
+/// standalone `run_blackboard` gets its cost cap from the `Board` its caller
+/// (`run.rs`) constructs via `Board::with_cost_limit(.., cost_limit)`,
+/// seeded from `OrchestrationConfig::cost_limit` (see
+/// `core::orchestration::blackboard::Board::with_cost_limit` /
+/// `TokenBudget::cost_limit` and its `CostLimitExceeded` halt). This
+/// function accepts the same `cost_limit: Option<f64>` explicitly (OH1 Lot 4
+/// Task 3, reconciliation C) and threads it straight to
+/// [`BlackboardDecider`]'s own `cost_limit` field, whose `breached_budget`
+/// guard already checks it — `run_blackboard_es`/`decide` previously hard-
+/// coded `None` here, silently dropping the legacy cost guard on the ES path.
 ///
 /// Coexists with the legacy `core::orchestration::blackboard::run_blackboard`
 /// — this function is not called from `run.rs`; wiring it in as the active
 /// engine is a later lot (the bascule).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_blackboard_es(
     run_id: &str,
     input: &str,
@@ -732,6 +754,7 @@ pub async fn run_blackboard_es(
     providers: BTreeMap<String, Arc<dyn Provider>>,
     config: BlackboardConfig,
     routing_rules: RoutingRules,
+    cost_limit: Option<f64>,
     log: &mut impl EventLog,
 ) -> anyhow::Result<ExecutionState> {
     let agent_order: Vec<String> = agents.keys().cloned().collect();
@@ -754,7 +777,7 @@ pub async fn run_blackboard_es(
         routing_rules,
         max_rounds,
         token_budget,
-        None,
+        cost_limit,
     );
     let effects = BlackboardEffectRunner::new(agents, providers, config);
 
@@ -1581,6 +1604,72 @@ mod tests {
             );
         }
 
+        // (b-bis) Step 1 (brief), OH1 Lot 4 Task 3 reconciliation B: with
+        // more than 10 already-completed-round entries on the board, the
+        // prompt must contain only the 10 most recent — mirroring legacy's
+        // `LlmBoardAgent::contribute` (`board.entries.iter().rev().take(10)`,
+        // `llm_agents.rs:377`), which this reconciliation reintroduces on the
+        // ES path (previously unbounded). 12 round-0 entries are posted
+        // (`entry-0` .. `entry-11`, in that order); only `entry-2` ..
+        // `entry-11` (the 10 most recent) may appear, and they must appear in
+        // chronological order (oldest of the kept ten first).
+        #[tokio::test]
+        async fn run_invoke_prompt_snapshot_caps_at_10_most_recent_entries() {
+            let mut agents = BTreeMap::new();
+            agents.insert("b".to_string(), test_agent("b", "concrete-model"));
+            let capturing = Arc::new(CapturingProvider::new(
+                "ACTION:FINDING\nCONFIDENCE:0.5\nCONTENT:noted",
+            ));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("b".to_string(), capturing.clone() as Arc<dyn Provider>);
+            let runner =
+                BlackboardEffectRunner::new(agents, providers, BlackboardConfig::default());
+
+            let mut events = vec![
+                board_run_started(&["a", "b"]),
+                ExecutionEvent::RoundStarted { round: 0 },
+            ];
+            for i in 0..12 {
+                events.push(ExecutionEvent::BoardEntryAdded {
+                    agent: "a".into(),
+                    round: 0,
+                    kind: "finding".into(),
+                    content: format!("entry-{i}"),
+                    refs: vec![],
+                    confidence: 0.7,
+                    tokens_in: 1,
+                    tokens_out: 1,
+                    cost: 0.0,
+                });
+            }
+            events.push(ExecutionEvent::RoundStarted { round: 1 });
+            let state = fold(&events);
+            runner.run_invoke("b", "task", &state).await.unwrap();
+
+            let sent = capturing.requests();
+            assert_eq!(sent.len(), 1);
+            let prompt = &sent[0].messages[0].content;
+
+            for i in 0..2 {
+                assert!(
+                    !prompt.contains(&format!("entry-{i}\n")),
+                    "entry-{i} is older than the 10 most recent and must be truncated, got: {prompt}"
+                );
+            }
+            let mut last_pos = 0;
+            for i in 2..12 {
+                let marker = format!("entry-{i}");
+                let pos = prompt
+                    .find(&marker)
+                    .unwrap_or_else(|| panic!("expected {marker} in the prompt, got: {prompt}"));
+                assert!(
+                    pos > last_pos || i == 2,
+                    "expected chronological order, {marker} at {pos} came before an earlier entry (last_pos={last_pos})"
+                );
+                last_pos = pos;
+            }
+        }
+
         // (c) Step 1 (brief): a provider error must NOT propagate as an
         // `Err` — `run_invoke` degrades gracefully into a `BoardEntryAdded`
         // with kind="finding", a "[agent failed]" content marker, confidence
@@ -1891,6 +1980,7 @@ mod tests {
                 providers,
                 BlackboardConfig::default(),
                 RoutingRules::default(),
+                None,
                 &mut log,
             )
             .await
@@ -1947,6 +2037,7 @@ mod tests {
                 providers,
                 config,
                 RoutingRules::default(),
+                None,
                 &mut log,
             )
             .await
@@ -1959,6 +2050,75 @@ mod tests {
             );
             assert!(
                 !final_content(&log, "run-maxrounds").trim().is_empty(),
+                "expected a non-empty board digest"
+            );
+        }
+
+        // Scenario 2-bis: `cost_limit` plumbing (OH1 Lot 4 Task 3,
+        // reconciliation C). Legacy's standalone `run_blackboard` halts via
+        // `HaltReason::CostLimitExceeded` once the `Board`'s `TokenBudget`
+        // (seeded by the caller from `OrchestrationConfig::cost_limit`)
+        // reports its cost spent; the ES `BlackboardDecider::breached_budget`
+        // guard already implements the equivalent check, but until this
+        // reconciliation `run_blackboard_es` hard-coded `None` for it,
+        // silently ignoring any caller-supplied limit. With `cost_limit:
+        // Some(0.0)` and `ScriptedProvider` always reporting `cost: 0.0`,
+        // round 0 completes (both agents are invoked exactly once — this is
+        // a real breach *after* work happened, not a pre-emptive no-op) and
+        // `breached_budget` trips ahead of `max_rounds`/convergence (its
+        // priority order in `decide`), halting with `Warned{cost_limit}`
+        // rather than looping to `max_rounds` or converging.
+        #[tokio::test]
+        async fn es_blackboard_halts_at_cost_limit() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), es_test_agent("a", "concrete-model"));
+            agents.insert("b".to_string(), es_test_agent("b", "concrete-model"));
+            let provider_a = Arc::new(ScriptedProvider::new(&[
+                "ACTION:FINDING\nCONFIDENCE:0.5\nCONTENT:piste A",
+            ]));
+            let provider_b = Arc::new(ScriptedProvider::new(&[
+                "ACTION:FINDING\nCONFIDENCE:0.5\nCONTENT:piste B",
+            ]));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), provider_a.clone() as Arc<dyn Provider>);
+            providers.insert("b".to_string(), provider_b.clone() as Arc<dyn Provider>);
+
+            let config = BlackboardConfig {
+                max_rounds: 50,
+                ..BlackboardConfig::default()
+            };
+
+            let mut log = InMemoryLog::default();
+            let st = run_blackboard_es(
+                "run-costlimit",
+                "task",
+                agents,
+                providers,
+                config,
+                RoutingRules::default(),
+                Some(0.0),
+                &mut log,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(st.status, RunStatus::Completed);
+            assert!(
+                log_has_warned(&log, "run-costlimit", "cost_limit"),
+                "expected a cost_limit Warned event in the log"
+            );
+            assert!(
+                !log_has_warned(&log, "run-costlimit", "max_rounds"),
+                "cost_limit must trip before max_rounds ever could"
+            );
+            assert_eq!(
+                provider_a.call_count(),
+                1,
+                "round 0 runs once before the cost guard halts the run"
+            );
+            assert_eq!(provider_b.call_count(), 1);
+            assert!(
+                !final_content(&log, "run-costlimit").trim().is_empty(),
                 "expected a non-empty board digest"
             );
         }
@@ -1992,6 +2152,7 @@ mod tests {
                 providers,
                 BlackboardConfig::default(),
                 RoutingRules::default(),
+                None,
                 &mut log,
             )
             .await

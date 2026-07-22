@@ -32,5 +32,7 @@ expect:
     - { t: agent_start, agent: t-coord }
     - { t: delegate, from: t-coord }
     - { t: result, content: "Synthesis: token flow and session store both check out." }
-  event_counts: { agent_start: 3, agent_end: 3, delegate: 2, result: 1 }
+  # contrat per-tour ES (un start/end par invocation) — décision 2026-07-22
+  # coordinator delegate call + 2 subordinates (parallel) + coordinator synthesis call = 4 invocations
+  event_counts: { agent_start: 4, agent_end: 4, delegate: 2, result: 1 }
   invariants: [agent_start_end_symmetric, prov_model_non_empty, single_result, no_orphan_events]

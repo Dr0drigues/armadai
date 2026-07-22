@@ -226,6 +226,21 @@ fn project_yaml(case: &CaseFile) -> String {
         ));
     }
 
+    // OH1 Lot 4 Task 4: `defaults.orchestration.token_budget` is the key
+    // `blackboard`/`ring` actually read (`OrchestrationDefaults`, via
+    // `apply_blackboard_overrides`/`apply_ring_overrides` in
+    // `src/cli/run.rs`) — distinct from the top-level `orchestration:` block
+    // above, which only feeds `hierarchical`. Emitted as its own top-level
+    // `defaults:` key regardless of `case.setup.pattern`, so it works
+    // whichever orchestrated pattern the case is exercising.
+    if let Some(budget) = case.setup.token_budget {
+        yaml.push_str(&format!(
+            "defaults:\n  \
+             orchestration:\n    \
+             token_budget: {budget}\n"
+        ));
+    }
+
     yaml
 }
 

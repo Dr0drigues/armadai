@@ -6,6 +6,8 @@
 //! plumbing for later lots to build on.
 
 pub mod blackboard;
+pub mod bridge;
+pub mod direct;
 pub mod engine;
 pub mod event;
 pub mod hierarchical;
@@ -17,6 +19,8 @@ pub mod state;
 // parent `orchestration` module already allows `dead_code` for the same
 // reason, but re-exports need their own allow since `unused_imports` is a
 // distinct lint.
+#[allow(unused_imports)]
+pub use bridge::{SinkProjectingLog, map_execution_to_run_events, to_orchestration_result};
 #[allow(unused_imports)]
 pub use engine::{Action, Decider, EffectRunner, replay, run_event_sourced};
 #[allow(unused_imports)]

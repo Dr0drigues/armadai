@@ -421,6 +421,15 @@ impl HierarchicalDecider {
     /// Check depth/iteration/budget guards, returning the `Warned` code for
     /// whichever one has been breached (checked in this order; the first
     /// breach wins — `decide` doesn't need to report more than one).
+    ///
+    /// The `max_depth` branch here is the *reactive* net: it catches a depth
+    /// already recorded in `hier.trace` on some earlier round (e.g. the
+    /// turn-cap/anti-loop paths below, or a hand-built state in a test).
+    /// The *proactive* guard-at-source — refusing to dispatch a delegation
+    /// that would create a too-deep child in the first place — lives in
+    /// `dispatch_actions` (OH1 Lot 4 Task 3, reconciliation A) and is what
+    /// fires on the normal delegation path, faithfully mirroring legacy's
+    /// `invoke_agent` entry check.
     fn breached_limit(&self, state: &ExecutionState) -> Option<&'static str> {
         if current_depth(state) >= self.max_depth {
             return Some("max_depth");
@@ -551,10 +560,13 @@ impl HierarchicalDecider {
 
     /// Build the ordered action batch for invoking `agent_name` with
     /// `input`: an optional `ModelRouted` (if it routes `latest:auto`), an
-    /// optional `NestedStarted` (if it's a nested-team lead), an optional
-    /// bookkeeping event (`Delegated`/`AskedPeer`/`Escalated`, supplied by
-    /// `plan_from_response` — absent for the initial coordinator kick-off),
-    /// then the `Invoke` itself.
+    /// optional bookkeeping event (`Delegated`/`AskedPeer`/`Escalated`,
+    /// supplied by `plan_from_response` — absent for the initial coordinator
+    /// kick-off), an optional `NestedStarted` (if it's a nested-team lead),
+    /// then the `Invoke` itself. The bookkeeping event precedes
+    /// `NestedStarted` so that a delegation into a nested team is observed
+    /// (`delegate`) before the team boundary opens (`nested_start`), matching
+    /// the legacy engine's emission order.
     fn invoke_actions(
         &self,
         agent_name: &str,
@@ -566,10 +578,10 @@ impl HierarchicalDecider {
         if let Some(event) = self.model_routed_event(agent_name, input, state) {
             actions.push(Action::Emit(event));
         }
-        if let Some(event) = self.nested_started_event(agent_name) {
+        if let Some(event) = delegation_event {
             actions.push(Action::Emit(event));
         }
-        if let Some(event) = delegation_event {
+        if let Some(event) = self.nested_started_event(agent_name) {
             actions.push(Action::Emit(event));
         }
         actions.push(Action::Invoke {
@@ -653,12 +665,44 @@ impl HierarchicalDecider {
     /// batch via `plan_from_response` (Tasks 1-2). A `FinalAnswer` step
     /// cannot occur here (only agents with pending directives reach this),
     /// and is dropped defensively if it somehow does.
+    ///
+    /// **max_depth guard-at-source** (OH1 Lot 4 Task 3, reconciliation A):
+    /// every target this batch would invoke — `Delegate`, `AskPeer`, and
+    /// `Escalate` alike — runs at `depth + 1` in the legacy engine (see
+    /// `invoke_agent(ctx, state, target, task, depth + 1, sender)` in
+    /// `crate::core::orchestration::hierarchical`), and legacy's
+    /// `invoke_agent` checks `depth >= max_depth` as the *very first* thing
+    /// it does — before recording anything in `trace`/`conversations` and
+    /// before ever calling the provider. So a target at exactly `max_depth`
+    /// is never invoked there.
+    ///
+    /// The ES engine used to only check this one `decide` round later
+    /// (`breached_limit`'s `current_depth(state) >= self.max_depth`, above),
+    /// by which point the too-deep child's `Delegated` + `Invoke` had
+    /// already been emitted and the child had already run — one level
+    /// deeper than legacy. Checking `depth + 1` here, before dispatch, closes
+    /// that gap: the run halts (`Warned{max_depth}` + `Complete`, exactly
+    /// the same graceful-halt shape `breached_limit` already produces)
+    /// without invoking the over-depth target at all. All directives parsed
+    /// from a single response share the same `depth + 1` (they're all
+    /// dispatched from the same `agent` in the same round), so this either
+    /// halts the whole batch or none of it — never a partial dispatch.
     fn dispatch_actions(&self, agent: &str, state: &ExecutionState) -> Vec<Action> {
         let Some(latest) = latest_response(state, agent) else {
             return Vec::new();
         };
         let latest = latest.to_string();
         let depth = depth_of(state, agent);
+        if depth + 1 >= self.max_depth {
+            return vec![
+                Action::Emit(ExecutionEvent::Warned {
+                    code: "max_depth".to_string(),
+                }),
+                Action::Complete {
+                    content: build_partial_content(state),
+                },
+            ];
+        }
         plan_from_response(&latest, agent, &self.config, depth)
             .into_iter()
             .flat_map(|step| match step {
@@ -1064,6 +1108,7 @@ impl HierarchicalEffectRunner {
                     member_providers,
                     cfg,
                     self.routing_rules.clone(),
+                    self.config.cost_limit,
                     &mut child_log,
                 )
                 .await?
@@ -1081,13 +1126,20 @@ impl HierarchicalEffectRunner {
                 // `RingDecider` used — rebuild them from the scoped members
                 // before ownership moves into `run_ring_es`.
                 let vote_weights = vote_weights_from_agents(&member_agents);
+                // `team.agents` is the chain order the C9 team was declared
+                // with (`armadai.yaml`'s `teams: [...] agents:` list) — pass
+                // it straight through as `agent_order` so the nested ring
+                // circulates in that order rather than `member_agents`'
+                // BTreeMap-alphabetical iteration (OH1 Lot 4 Task 3, Bug A).
                 let child = run_ring_es(
                     &child_run_id,
                     task,
                     member_agents,
+                    team.agents.clone(),
                     member_providers,
                     cfg.clone(),
                     self.routing_rules.clone(),
+                    self.config.cost_limit,
                     &mut child_log,
                 )
                 .await?;
@@ -1629,6 +1681,66 @@ mod tests {
             );
             assert!(
                 matches!(&actions[1], Action::Complete{content} if content.contains("partial result"))
+            );
+        }
+
+        // (d-bis) guard-at-source (OH1 Lot 4 Task 3, reconciliation A): a
+        // response that delegates to a target one level too deep must halt
+        // (`Warned{max_depth}` + `Complete`) *without* emitting that target's
+        // `Delegated`/`Invoke` at all — unlike (d) above, `core-specialist`
+        // here has *not yet been invoked*: this is the normal dispatch path
+        // (`agent_needing_dispatch` → `dispatch_actions`), not the reactive
+        // `breached_limit` fallback. With `max_depth: 1`, `dev-lead` sits at
+        // depth 0, so delegating to `core-specialist` would invoke it at
+        // depth `0 + 1 == max_depth` — exactly the legacy `invoke_agent`
+        // bail condition (`depth >= max_depth`).
+        #[test]
+        fn dispatch_guard_at_source_halts_before_invoking_too_deep_child() {
+            let dec = test_decider(
+                "dev-lead",
+                &[
+                    ("dev-lead", "concrete-model"),
+                    ("core-specialist", "concrete-model"),
+                ],
+                base_config(),
+                1,
+                50,
+                None,
+                None,
+            );
+            let events = vec![
+                run_started(&["dev-lead"]),
+                ExecutionEvent::AgentInvoked {
+                    agent: "dev-lead".into(),
+                    input: "build X".into(),
+                },
+                ExecutionEvent::AgentObserved {
+                    agent: "dev-lead".into(),
+                    content: "@core-specialist: task".into(),
+                    tokens_in: 5,
+                    tokens_out: 5,
+                    cost: 0.0,
+                    model: "m".into(),
+                },
+            ];
+            let state = fold(&events);
+            let actions = dec.decide(&state);
+            assert_eq!(actions.len(), 2);
+            assert!(
+                matches!(&actions[0], Action::Emit(ExecutionEvent::Warned{code}) if code == "max_depth")
+            );
+            assert!(matches!(&actions[1], Action::Complete { .. }));
+            assert!(
+                !actions.iter().any(
+                    |a| matches!(a, Action::Invoke { agent, .. } if agent == "core-specialist")
+                ),
+                "core-specialist is one level too deep and must never be invoked"
+            );
+            assert!(
+                !actions
+                    .iter()
+                    .any(|a| matches!(a, Action::Emit(ExecutionEvent::Delegated { .. }))),
+                "no Delegated event should be emitted for a target that is never dispatched"
             );
         }
 
@@ -3297,11 +3409,16 @@ mod tests {
     }
 
     // Scenario 3: a two-level delegation chain (dev-lead -> core-lead ->
-    // core-a) exceeds `max_depth` (2) on its second hop. `decide`'s guard
-    // must force completion — `Warned{max_depth}` + `Complete` — rather
-    // than let the chain keep growing; the run still ends `Completed` (the
-    // guard *completes* the run with a partial digest, it does not error),
-    // and that digest must be non-empty.
+    // core-a) would reach `max_depth` (2) on its second hop. `dispatch_actions`'s
+    // guard-at-source (OH1 Lot 4 Task 3, reconciliation A) must refuse to
+    // dispatch that second hop at all — mirroring legacy's `invoke_agent`,
+    // which bails *before* invoking a target at `depth >= max_depth` — so
+    // `core-a` is never invoked (`call_count() == 0`). The run still ends
+    // `Completed` with a `Warned{max_depth}` + non-empty partial digest (the
+    // guard *completes* the run, it does not error), one round earlier than
+    // before this reconciliation (previously `core-a` *was* invoked and the
+    // halt only kicked in on the following `decide` round — see git history
+    // for the pre-Task-3 version of this test).
     #[tokio::test]
     async fn es_max_depth_halts_gracefully() {
         let mut agents = BTreeMap::new();
@@ -3326,9 +3443,10 @@ mod tests {
             "core-lead".to_string(),
             Arc::new(ScriptedProvider::new(&["@core-a: fais A"])),
         );
+        let core_a_provider = Arc::new(ScriptedProvider::new(&["A en cours."]));
         providers.insert(
             "core-a".to_string(),
-            Arc::new(ScriptedProvider::new(&["A en cours."])),
+            core_a_provider.clone() as Arc<dyn Provider>,
         );
 
         let config = OrchestrationConfig {
@@ -3362,6 +3480,12 @@ mod tests {
         assert!(
             log_has_warned(&log, "run-depth", "max_depth"),
             "expected a max_depth Warned event in the log"
+        );
+        assert_eq!(
+            core_a_provider.call_count(),
+            0,
+            "core-a is one level too deep (depth 2 >= max_depth 2) and must never be invoked \
+             — the guard-at-source halts before dispatching it"
         );
         assert!(
             !final_content(&log, "run-depth").trim().is_empty(),

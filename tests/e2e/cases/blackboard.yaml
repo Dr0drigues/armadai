@@ -34,5 +34,7 @@ expect:
     - { t: board, kind: finding }
     - { t: board, kind: confirmation }
     - { t: result }
-  event_counts: { agent_start: 2, agent_end: 2, board: 4, result: 1 }
+  # contrat per-tour ES (un start/end par invocation) — décision 2026-07-22
+  # 2 agents x 2 rounds (round 2 converges via consensus, no round 3) = 4 invocations
+  event_counts: { agent_start: 4, agent_end: 4, board: 4, result: 1 }
   invariants: [agent_start_end_symmetric, prov_model_non_empty, single_result, no_orphan_events]

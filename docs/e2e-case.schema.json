@@ -276,6 +276,16 @@
         "pattern": {
           "description": "Orchestration pattern under test (e.g. `direct`, `hierarchical`, `blackboard`).",
           "type": "string"
+        },
+        "token_budget": {
+          "description": "OH1 Lot 4 Task 4: a low global token budget, rendered by\n`harness::project_yaml` as `defaults.orchestration.token_budget`.\nThat's the key `blackboard`/`ring` actually read (via\n`OrchestrationDefaults`/`apply_blackboard_overrides`/\n`apply_ring_overrides` in `src/cli/run.rs`) — NOT the top-level\n`orchestration.token_budget`, which only feeds the `hierarchical`\npattern's own `OrchestrationConfig`. Used to deterministically trigger\na graceful budget halt (`ExecutionEvent::Warned{code: \"token_budget\"}`\n+ a partial `Complete`) for `cases/budget-halt-visible.yaml`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
         }
       },
       "required": [
