@@ -300,7 +300,6 @@ pub fn record_ring_es_into(
 /// Returns `Ok(())` when the projection succeeds, or an error if the event log
 /// is malformed (e.g. no `RunStarted`) or storage fails.
 #[cfg(feature = "storage")]
-#[allow(dead_code)] // Wired in Task 3 (run.rs dispatch branches)
 pub fn project_run(db: &crate::storage::Database, run_id: &str) -> anyhow::Result<()> {
     use crate::core::orchestration::es::log::{EventLog, SqliteLog};
     use crate::core::orchestration::es::state::fold;

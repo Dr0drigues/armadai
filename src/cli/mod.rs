@@ -9,6 +9,7 @@ mod link;
 mod list;
 mod models;
 pub(crate) mod new;
+mod projections;
 mod prompts;
 mod registry;
 mod run;
@@ -218,6 +219,19 @@ pub enum Command {
         #[arg(long)]
         from: Option<String>,
     },
+    /// Manage flat-table projections from the event log
+    #[command(
+        subcommand,
+        long_about = "Manage flat-table projections from the event log.\n\n\
+            Re-derives flat tables (runs, orchestration_runs, board_entries, ring_contributions, \
+            ring_votes, delegation_events) from the immutable execution_events log. \
+            The projector is idempotent: multiple rebuilds produce the same result.",
+        after_help = "Examples:\n  \
+            armadai projections rebuild\n  \
+            armadai projections rebuild --all\n  \
+            armadai projections rebuild --run <run-id>"
+    )]
+    Projections(projections::ProjectionsAction),
     /// Manage providers and secrets
     #[command(
         long_about = "Manage providers and secrets.\n\n\
@@ -509,6 +523,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         } => audit::execute(path, report, min_severity, quiet, propose, deep).await,
         Command::History { agent } => history::execute(agent).await,
         Command::Costs { agent, from } => costs::execute(agent, from).await,
+        Command::Projections(action) => projections::execute(action).await,
         Command::Config { action } => config::execute(action).await,
         #[cfg(feature = "tui")]
         Command::Shell => crate::shell::app::run_shell().await,

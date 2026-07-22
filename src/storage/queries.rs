@@ -646,6 +646,24 @@ pub fn delete_projection_for_run(db: &Database, run_id: &str) -> anyhow::Result<
     Ok(total_deleted)
 }
 
+/// Get all distinct run_ids present in the execution_events log.
+///
+/// Returns run IDs in sorted order. Used by `armadai projections rebuild --all`
+/// to enumerate all runs that can be re-projected from the event log.
+#[allow(dead_code)] // Called by projections rebuild --all
+pub fn all_event_log_run_ids(db: &Database) -> anyhow::Result<Vec<String>> {
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
+    let mut stmt = conn.prepare("SELECT DISTINCT run_id FROM execution_events ORDER BY run_id")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut run_ids = Vec::new();
+    for row in rows {
+        run_ids.push(row?);
+    }
+    Ok(run_ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
