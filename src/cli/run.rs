@@ -1236,10 +1236,13 @@ async fn run_orchestrated_inner(
             // a.name().to_string())` above (H1 title), which silently broke
             // `--route`/`orchestration.routes:` whenever the H1 title differs
             // from the filename slug (the common case in this repo; see
-            // `apply_agent_selection`'s own regression test). `run_ring_es`
-            // derives its own `agent_order`/`RunStarted.agents` from this
-            // map's keys, so this fixes that divergence as a side effect of
-            // the bascule.
+            // `apply_agent_selection`'s own regression test). `agent_map` is a
+            // `BTreeMap` (name-sorted iteration), so it cannot carry the chain
+            // order on its own — `agent_names` (still ordered: the primary
+            // agent + `--pipe` chain, possibly reordered by `--route`/`--tags`)
+            // is passed to `dispatch_ring_es` as `agent_order` alongside it, so
+            // `run_ring_es` circulates in that order instead of alphabetically
+            // (OH1 Lot 4 Task 3, Bug A fix).
             let mut agent_map: BTreeMap<String, Agent> = BTreeMap::new();
             let mut provider_map: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
             for (name, (agent, provider)) in
@@ -1258,6 +1261,7 @@ async fn run_orchestrated_inner(
             let (state, events) = dispatch_ring_es(
                 input,
                 agent_map,
+                agent_names.to_vec(),
                 provider_map,
                 config.clone(),
                 routing_rules,
@@ -1480,9 +1484,11 @@ async fn dispatch_blackboard_es(
 /// also returns the raw event log: `ring_display` needs it (last
 /// `OutcomeResolved`/`Completed`), unlike `blackboard_display` which reads
 /// only the folded `state.board.entries`.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_ring_es(
     input: &str,
     agents: std::collections::BTreeMap<String, Agent>,
+    agent_order: Vec<String>,
     providers: std::collections::BTreeMap<String, Arc<dyn crate::providers::traits::Provider>>,
     config: crate::core::orchestration::ring::RingConfig,
     routing_rules: crate::core::routing::RoutingRules,
@@ -1501,6 +1507,7 @@ async fn dispatch_ring_es(
         &run_id,
         input,
         agents,
+        agent_order,
         providers,
         config,
         routing_rules,
@@ -2986,6 +2993,7 @@ mod es_switch_tests {
         let (state, events) = dispatch_ring_es(
             "task",
             agents,
+            vec!["a".to_string(), "b".to_string()],
             providers,
             config,
             RoutingRules::default(),
@@ -3037,6 +3045,7 @@ mod es_switch_tests {
         let (state, _events) = dispatch_ring_es(
             "task",
             agents,
+            vec!["a".to_string(), "b".to_string()],
             providers,
             config.clone(),
             RoutingRules::default(),

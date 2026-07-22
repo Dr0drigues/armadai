@@ -1126,10 +1126,16 @@ impl HierarchicalEffectRunner {
                 // `RingDecider` used — rebuild them from the scoped members
                 // before ownership moves into `run_ring_es`.
                 let vote_weights = vote_weights_from_agents(&member_agents);
+                // `team.agents` is the chain order the C9 team was declared
+                // with (`armadai.yaml`'s `teams: [...] agents:` list) — pass
+                // it straight through as `agent_order` so the nested ring
+                // circulates in that order rather than `member_agents`'
+                // BTreeMap-alphabetical iteration (OH1 Lot 4 Task 3, Bug A).
                 let child = run_ring_es(
                     &child_run_id,
                     task,
                     member_agents,
+                    team.agents.clone(),
                     member_providers,
                     cfg.clone(),
                     self.routing_rules.clone(),

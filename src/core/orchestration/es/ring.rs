@@ -956,13 +956,21 @@ pub(crate) fn vote_weights_from_agents(agents: &BTreeMap<String, Agent>) -> BTre
 /// [`super::engine::replay`].
 ///
 /// The run's roster (`RunStarted { agents, .. }`, and `RingDecider`'s
-/// `agent_order`) is `agents.keys()`, i.e. name-sorted (`BTreeMap` iteration
-/// order) — the same convention `run_hierarchical_es`/`run_blackboard_es` use
-/// for their own roster. **Contract (Task 6/7)**: `RingDecider::agent_order`
-/// must be the exact same order/set as `RunStarted { agents, .. }` for the
-/// circulation rotation ([`next_ring_agent`]) and lap-completeness check
-/// ([`ring_phase`]) to stay coherent — both are built from this single
-/// `agent_order` vector here, so there is no risk of the two drifting apart.
+/// `agent_order`) is the caller-supplied `agent_order` parameter, NOT
+/// `agents.keys()` — `agents: BTreeMap<String, Agent>` has no memory of the
+/// chain/roster order the caller invoked it with (`BTreeMap` iterates
+/// name-sorted), so deriving the circulation order from its keys silently
+/// reorders the run alphabetically regardless of the `--pipe` chain the user
+/// actually asked for (OH1 Lot 4 Task 3, reconciliation — "Bug A"). Callers
+/// must pass the exact same set of names as `agents.keys()`, just in the
+/// order circulation should visit them; `dispatch_ring_es` (`src/cli/run.rs`)
+/// threads this through from `agent_names`/`effective_names`, which still
+/// carries the chain order at the point the roster `BTreeMap` is built.
+/// **Contract (Task 6/7, preserved)**: `RingDecider::agent_order` must be the
+/// exact same order/set as `RunStarted { agents, .. }` for the circulation
+/// rotation ([`next_ring_agent`]) and lap-completeness check ([`ring_phase`])
+/// to stay coherent — both are built from this single `agent_order`
+/// parameter here, so there is no risk of the two drifting apart.
 ///
 /// `RingDecider::max_laps` is deliberately set equal to `config.max_laps`
 /// (rather than an independently configurable cap, as a caller *could* pass
@@ -998,13 +1006,13 @@ pub async fn run_ring_es(
     run_id: &str,
     input: &str,
     agents: BTreeMap<String, Agent>,
+    agent_order: Vec<String>,
     providers: BTreeMap<String, Arc<dyn Provider>>,
     config: RingConfig,
     routing_rules: RoutingRules,
     cost_limit: Option<f64>,
     log: &mut impl EventLog,
 ) -> anyhow::Result<ExecutionState> {
-    let agent_order: Vec<String> = agents.keys().cloned().collect();
     let initial = vec![ExecutionEvent::RunStarted {
         run_id: run_id.to_string(),
         pattern: "ring".to_string(),
@@ -2207,6 +2215,7 @@ mod tests {
                 "run-ring-resolve",
                 "task",
                 agents,
+                vec!["a".to_string(), "b".to_string()],
                 providers,
                 config,
                 RoutingRules::default(),
@@ -2288,6 +2297,7 @@ mod tests {
                 "run-ring-maxlaps",
                 "task",
                 agents,
+                vec!["a".to_string(), "b".to_string()],
                 providers,
                 config,
                 RoutingRules::default(),
@@ -2363,6 +2373,7 @@ mod tests {
                 "run-ring-costlimit",
                 "task",
                 agents,
+                vec!["a".to_string(), "b".to_string()],
                 providers,
                 RingConfig::default(),
                 RoutingRules::default(),
@@ -2418,6 +2429,7 @@ mod tests {
                 "run-ring-replay",
                 "task",
                 agents,
+                vec!["a".to_string(), "b".to_string()],
                 providers,
                 config,
                 RoutingRules::default(),
