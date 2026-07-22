@@ -168,6 +168,17 @@ impl Provider for CliProvider {
 mod tests {
     use super::*;
 
+    /// Run `fut` while holding `ENV_MUTEX`, serialising the child-process spawn's
+    /// read of `environ` against tests that mutate it via `std::env::set_var`
+    /// (otherwise a data race — the reason `set_var` is `unsafe`). Holding the
+    /// guard across `.await` is safe here: no other async task contends for
+    /// `ENV_MUTEX`, so there is no deadlock risk.
+    #[allow(clippy::await_holding_lock)]
+    async fn with_env_lock<T>(fut: impl std::future::Future<Output = T>) -> T {
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        fut.await
+    }
+
     fn echo_request(text: &str) -> CompletionRequest {
         CompletionRequest {
             model: "echo".to_string(),
@@ -183,11 +194,14 @@ mod tests {
 
     #[tokio::test]
     async fn cli_complete_echo() {
-        let provider = CliProvider::new("echo".to_string(), vec![], 10);
-        let response = provider
-            .complete(echo_request("hello world"))
-            .await
-            .unwrap();
+        let response = with_env_lock(async {
+            let provider = CliProvider::new("echo".to_string(), vec![], 10);
+            provider
+                .complete(echo_request("hello world"))
+                .await
+                .unwrap()
+        })
+        .await;
         assert_eq!(response.content.trim(), "hello world");
         assert_eq!(response.tokens_in, 0);
         assert_eq!(response.cost, 0.0);
@@ -195,8 +209,11 @@ mod tests {
 
     #[tokio::test]
     async fn cli_complete_with_args() {
-        let provider = CliProvider::new("echo".to_string(), vec!["prefix".to_string()], 10);
-        let response = provider.complete(echo_request("test")).await.unwrap();
+        let response = with_env_lock(async {
+            let provider = CliProvider::new("echo".to_string(), vec!["prefix".to_string()], 10);
+            provider.complete(echo_request("test")).await.unwrap()
+        })
+        .await;
         assert_eq!(response.content.trim(), "prefix test");
     }
 
@@ -204,27 +221,37 @@ mod tests {
     async fn cli_stream_echo() {
         use tokio_stream::StreamExt;
 
-        let provider = CliProvider::new("echo".to_string(), vec![], 10);
-        let mut stream = provider.stream(echo_request("stream test")).await.unwrap();
+        let output = with_env_lock(async {
+            let provider = CliProvider::new("echo".to_string(), vec![], 10);
+            let mut stream = provider.stream(echo_request("stream test")).await.unwrap();
 
-        let mut output = Vec::new();
-        while let Some(line) = stream.next().await {
-            output.push(line.unwrap());
-        }
+            let mut output = Vec::new();
+            while let Some(line) = stream.next().await {
+                output.push(line.unwrap());
+            }
+            output
+        })
+        .await;
         assert_eq!(output, vec!["stream test"]);
     }
 
     #[tokio::test]
     async fn cli_complete_failure() {
-        let provider = CliProvider::new("false".to_string(), vec![], 10);
-        let result = provider.complete(echo_request("")).await;
+        let result = with_env_lock(async {
+            let provider = CliProvider::new("false".to_string(), vec![], 10);
+            provider.complete(echo_request("")).await
+        })
+        .await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn cli_complete_timeout() {
-        let provider = CliProvider::new("sleep".to_string(), vec![], 1);
-        let result = provider.complete(echo_request("30")).await;
+        let result = with_env_lock(async {
+            let provider = CliProvider::new("sleep".to_string(), vec![], 1);
+            provider.complete(echo_request("30")).await
+        })
+        .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("timed out"), "Error was: {err}");
@@ -307,11 +334,14 @@ mod tests {
 
     #[tokio::test]
     async fn non_empty_system_prompt_reaches_the_command() {
-        let provider = CliProvider::new("echo".to_string(), vec![], 10);
-        let request =
-            request_with_system("PERSONA-XYZ instructions de delegation", "fais la tache");
+        let response = with_env_lock(async {
+            let provider = CliProvider::new("echo".to_string(), vec![], 10);
+            let request =
+                request_with_system("PERSONA-XYZ instructions de delegation", "fais la tache");
 
-        let response = provider.complete(request).await.unwrap();
+            provider.complete(request).await.unwrap()
+        })
+        .await;
 
         assert!(
             response.content.contains("PERSONA-XYZ"),
@@ -334,10 +364,13 @@ mod tests {
 
     #[tokio::test]
     async fn empty_system_prompt_changes_nothing() {
-        let provider = CliProvider::new("echo".to_string(), vec![], 10);
-        let request = request_with_system("", "hello world");
+        let response = with_env_lock(async {
+            let provider = CliProvider::new("echo".to_string(), vec![], 10);
+            let request = request_with_system("", "hello world");
 
-        let response = provider.complete(request).await.unwrap();
+            provider.complete(request).await.unwrap()
+        })
+        .await;
 
         assert_eq!(response.content.trim(), "hello world");
     }
