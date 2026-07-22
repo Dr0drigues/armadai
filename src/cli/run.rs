@@ -1397,13 +1397,11 @@ async fn run_orchestrated_inner(
                 max_content,
             )
             .await?;
-            // `nested_runs` is always empty here (OH1 Lot 5): nested C9
-            // sub-runs execute against an ephemeral child log during the run
-            // (see `HierarchicalEffectRunner::run_nested`) and aren't part of
-            // this run's own `events`/`ExecutionState` — a documented
-            // regression vs. legacy (which persisted them via
-            // `NestedRun::Blackboard`/`Ring`), see `to_orchestration_result`'s
-            // doc comment.
+            // Nested C9 sub-runs execute against an ephemeral child log during
+            // the run (see `HierarchicalEffectRunner::run_nested`) and aren't
+            // part of this run's own `events`/`ExecutionState`, so they aren't
+            // surfaced in the `OrchestrationResult` — see
+            // `to_orchestration_result`'s doc comment.
             let result = to_orchestration_result(&state, &events);
 
             eprintln!(
@@ -1729,261 +1727,8 @@ fn apply_ring_overrides(
     config
 }
 
-/// Persist a blackboard orchestration run (and its board entries) into `db`,
-/// linked to `parent_run_id` when this run is a nested sub-run of a
-/// hierarchical team (C9). Returns the generated `run_id` so callers can
-/// link children to it.
-#[cfg(feature = "storage")]
-#[allow(clippy::too_many_arguments)]
-fn record_orchestration_blackboard_into(
-    db: &crate::storage::Database,
-    board: &crate::core::orchestration::blackboard::Board,
-    config: &crate::core::orchestration::blackboard::BlackboardConfig,
-    input: &str,
-    parent_run_id: Option<&str>,
-    project: Option<&str>,
-) -> String {
-    use crate::core::orchestration::blackboard::BoardState;
-    use crate::storage::queries;
-
-    let run_id = uuid::Uuid::new_v4().to_string();
-
-    // 1. Parent run record
-    let parent = queries::RunRecord {
-        agent: "orchestration:blackboard".to_string(),
-        input: input.to_string(),
-        output: format!("{:?}", board.state()),
-        provider: "orchestration".to_string(),
-        model: String::new(),
-        tokens_in: board.budget().used as i64,
-        tokens_out: 0,
-        cost: 0.0,
-        duration_ms: 0,
-        status: if board.is_halted() {
-            "halted"
-        } else {
-            "success"
-        }
-        .to_string(),
-        project: project.map(|s| s.to_string()),
-    };
-    if let Err(e) = queries::insert_run_with_id(db, &run_id, parent) {
-        tracing::warn!("Failed to record orchestration parent run: {e}");
-        return run_id;
-    }
-
-    // 2. Orchestration metadata
-    let halt_reason = match board.state() {
-        BoardState::Halted { reason } => Some(format!("{reason:?}")),
-        _ => None,
-    };
-    let orch = queries::OrchestrationRunRecord {
-        run_id: run_id.clone(),
-        pattern: "blackboard".to_string(),
-        config_json: serde_json::to_string(config).unwrap_or_default(),
-        outcome_json: serde_json::to_string(board.state()).ok(),
-        rounds: board.round as i64,
-        halt_reason,
-        parent_run_id: parent_run_id.map(|s| s.to_string()),
-    };
-    if let Err(e) = queries::insert_orchestration_run(db, orch) {
-        tracing::warn!("Failed to record orchestration metadata: {e}");
-        return run_id;
-    }
-
-    // 3. Board entries
-    for entry in board.entries() {
-        let kind_str = match &entry.kind {
-            crate::core::orchestration::blackboard::EntryKind::Finding => "finding",
-            crate::core::orchestration::blackboard::EntryKind::Challenge { .. } => "challenge",
-            crate::core::orchestration::blackboard::EntryKind::Confirmation { .. } => {
-                "confirmation"
-            }
-            crate::core::orchestration::blackboard::EntryKind::Synthesis { .. } => "synthesis",
-            crate::core::orchestration::blackboard::EntryKind::Question => "question",
-            crate::core::orchestration::blackboard::EntryKind::Answer { .. } => "answer",
-        };
-        let record = queries::BoardEntryRecord {
-            run_id: run_id.clone(),
-            agent: entry.agent.clone(),
-            round: entry.round as i64,
-            kind: kind_str.to_string(),
-            content: entry.content.clone(),
-            refs_json: serde_json::to_string(&entry.references).unwrap_or_default(),
-            confidence: entry.confidence as f64,
-            tokens_in: entry.tokens_used.input as i64,
-            tokens_out: entry.tokens_used.output as i64,
-        };
-        if let Err(e) = queries::insert_board_entry(db, record) {
-            tracing::warn!("Failed to record board entry: {e}");
-        }
-    }
-
-    run_id
-}
-
-/// Top-level entry point for persisting a standalone blackboard run
-/// (`armadai run --orchestrate blackboard`). Initializes storage and
-/// delegates to [`record_orchestration_blackboard_into`] with no parent.
-///
-/// Dead since OH1 Lot 5: the standalone blackboard match arm in
-/// `run_orchestrated` now runs the event-sourced engine (`run_blackboard_es`)
-/// and records via [`record_blackboard_es`] instead, which reads an
-/// `ExecutionState` rather than a live `blackboard::Board`. Kept (not
-/// deleted) per the bascule's brief — `record_orchestration_blackboard_into`
-/// below remains reachable (and tested) via `record_hierarchical_into`'s
-/// nested-run persistence.
-#[cfg(feature = "storage")]
-#[allow(dead_code)]
-fn record_orchestration_blackboard(
-    board: &crate::core::orchestration::blackboard::Board,
-    config: &crate::core::orchestration::blackboard::BlackboardConfig,
-    input: &str,
-    project: Option<&str>,
-) {
-    let db = match crate::storage::init_db() {
-        Ok(db) => db,
-        Err(e) => {
-            tracing::warn!("Failed to init storage: {e}");
-            return;
-        }
-    };
-    let _ = record_orchestration_blackboard_into(&db, board, config, input, None, project);
-}
-
-/// Persist a ring orchestration run (and its contributions/votes) into `db`,
-/// linked to `parent_run_id` when this run is a nested sub-run of a
-/// hierarchical team (C9). Returns the generated `run_id` so callers can
-/// link children to it.
-#[cfg(feature = "storage")]
-#[allow(clippy::too_many_arguments)]
-fn record_orchestration_ring_into(
-    db: &crate::storage::Database,
-    token: &crate::core::orchestration::ring::RingToken,
-    config: &crate::core::orchestration::ring::RingConfig,
-    input: &str,
-    parent_run_id: Option<&str>,
-    project: Option<&str>,
-) -> String {
-    use crate::core::orchestration::ring::TokenStatus;
-    use crate::storage::queries;
-
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let outcome_str = match token.status() {
-        TokenStatus::Done { outcome } => serde_json::to_string(outcome).ok(),
-        _ => None,
-    };
-
-    // 1. Parent run record
-    let parent = queries::RunRecord {
-        agent: "orchestration:ring".to_string(),
-        input: input.to_string(),
-        output: format!("{:?}", token.status()),
-        provider: "orchestration".to_string(),
-        model: String::new(),
-        tokens_in: token.budget.used as i64,
-        tokens_out: 0,
-        cost: 0.0,
-        duration_ms: 0,
-        status: match token.status() {
-            TokenStatus::Done { .. } => "done",
-            _ => "incomplete",
-        }
-        .to_string(),
-        project: project.map(|s| s.to_string()),
-    };
-    if let Err(e) = queries::insert_run_with_id(db, &run_id, parent) {
-        tracing::warn!("Failed to record orchestration parent run: {e}");
-        return run_id;
-    }
-
-    // 2. Orchestration metadata
-    let orch = queries::OrchestrationRunRecord {
-        run_id: run_id.clone(),
-        pattern: "ring".to_string(),
-        config_json: serde_json::to_string(config).unwrap_or_default(),
-        outcome_json: outcome_str,
-        rounds: token.lap as i64,
-        halt_reason: None,
-        parent_run_id: parent_run_id.map(|s| s.to_string()),
-    };
-    if let Err(e) = queries::insert_orchestration_run(db, orch) {
-        tracing::warn!("Failed to record orchestration metadata: {e}");
-        return run_id;
-    }
-
-    // 3. Contributions
-    for c in token.contributions.iter() {
-        let action_str = match &c.action {
-            crate::core::orchestration::ring::ContributionAction::Propose => "propose",
-            crate::core::orchestration::ring::ContributionAction::Enrich { .. } => "enrich",
-            crate::core::orchestration::ring::ContributionAction::Contest { .. } => "contest",
-            crate::core::orchestration::ring::ContributionAction::Endorse { .. } => "endorse",
-            crate::core::orchestration::ring::ContributionAction::Synthesize => "synthesize",
-            crate::core::orchestration::ring::ContributionAction::Pass { .. } => "pass",
-        };
-        let record = queries::RingContributionRecord {
-            run_id: run_id.clone(),
-            agent: c.agent.clone(),
-            lap: c.lap as i64,
-            position_in_lap: c.position_in_lap as i64,
-            action: action_str.to_string(),
-            content: c.content.clone(),
-            reactions_json: serde_json::to_string(&c.reactions).unwrap_or_default(),
-            tokens_in: c.tokens_used.input as i64,
-            tokens_out: c.tokens_used.output as i64,
-        };
-        if let Err(e) = queries::insert_ring_contribution(db, record) {
-            tracing::warn!("Failed to record ring contribution: {e}");
-        }
-    }
-
-    // 4. Votes
-    for (agent, vote) in token.votes() {
-        let record = queries::RingVoteRecord {
-            run_id: run_id.clone(),
-            agent: agent.clone(),
-            position: vote.position.clone(),
-            confidence: vote.confidence as f64,
-            supports: serde_json::to_string(&vote.supporting_contributions).unwrap_or_default(),
-            concerns: serde_json::to_string(&vote.unresolved_concerns).unwrap_or_default(),
-        };
-        if let Err(e) = queries::insert_ring_vote(db, record) {
-            tracing::warn!("Failed to record ring vote: {e}");
-        }
-    }
-
-    run_id
-}
-
-/// Top-level entry point for persisting a standalone ring run
-/// (`armadai run --orchestrate ring`). Initializes storage and delegates to
-/// [`record_orchestration_ring_into`] with no parent.
-///
-/// Dead since OH1 Lot 5: see [`record_orchestration_blackboard`]'s doc —
-/// same rationale, the standalone ring match arm now records via
-/// [`record_ring_es`] instead.
-#[cfg(feature = "storage")]
-#[allow(dead_code)]
-fn record_orchestration_ring(
-    token: &crate::core::orchestration::ring::RingToken,
-    config: &crate::core::orchestration::ring::RingConfig,
-    input: &str,
-    project: Option<&str>,
-) {
-    let db = match crate::storage::init_db() {
-        Ok(db) => db,
-        Err(e) => {
-            tracing::warn!("Failed to init storage: {e}");
-            return;
-        }
-    };
-    let _ = record_orchestration_ring_into(&db, token, config, input, None, project);
-}
-
-/// Persist a hierarchical orchestration run: the parent run row, its
-/// delegation trace, and every nested blackboard/ring sub-run (linked via
-/// `parent_run_id`). Returns the generated hierarchical `run_id`.
+/// Persist a hierarchical orchestration run: the parent run row and its
+/// delegation trace. Returns the generated hierarchical `run_id`.
 #[cfg(feature = "storage")]
 fn record_hierarchical_into(
     db: &crate::storage::Database,
@@ -1992,7 +1737,6 @@ fn record_hierarchical_into(
     input: &str,
     project: Option<&str>,
 ) -> anyhow::Result<String> {
-    use crate::core::orchestration::hierarchical::NestedRun;
     use crate::storage::queries;
 
     let run_id = uuid::Uuid::new_v4().to_string();
@@ -2039,36 +1783,6 @@ fn record_hierarchical_into(
         };
         if let Err(e) = queries::insert_delegation_event(db, rec) {
             tracing::warn!("Failed to record delegation event: {e}");
-        }
-    }
-
-    // 4. Nested sub-runs, linked to the hierarchical parent.
-    for nested in &result.nested_runs {
-        match nested {
-            NestedRun::Blackboard {
-                task,
-                board,
-                config,
-                ..
-            } => {
-                let _ = record_orchestration_blackboard_into(
-                    db,
-                    board,
-                    config,
-                    task,
-                    Some(&run_id),
-                    project,
-                );
-            }
-            NestedRun::Ring {
-                task,
-                token,
-                config,
-                ..
-            } => {
-                let _ =
-                    record_orchestration_ring_into(db, token, config, task, Some(&run_id), project);
-            }
         }
     }
 
@@ -2381,19 +2095,14 @@ mod selection_tests {
 mod storage_tests {
     use super::*;
     use crate::core::orchestration::OrchestrationConfig;
-    use crate::core::orchestration::blackboard::{BlackboardConfig, Board};
-    use crate::core::orchestration::hierarchical::{
-        DelegationEvent, NestedRun, OrchestrationResult,
-    };
+    use crate::core::orchestration::hierarchical::{DelegationEvent, OrchestrationResult};
     use crate::storage::{init_embedded, queries};
 
     #[test]
-    fn hierarchical_run_and_nested_children_are_persisted() {
+    fn hierarchical_run_and_trace_are_persisted() {
         let db = init_embedded().unwrap();
 
-        // A hierarchical result with one delegation event and one nested board.
-        let board = Board::new("subtask".to_string(), 50_000);
-        // (empty board is fine; we only assert the run + linkage persists)
+        // A hierarchical result with one delegation event.
         let result = OrchestrationResult {
             content: "final".to_string(),
             trace: vec![DelegationEvent {
@@ -2406,12 +2115,6 @@ mod storage_tests {
             total_tokens_out: 40,
             total_cost: 0.01,
             invocation_count: 3,
-            nested_runs: vec![NestedRun::Blackboard {
-                team_lead: "research-lead".to_string(),
-                task: "subtask".to_string(),
-                board,
-                config: BlackboardConfig::default(),
-            }],
         };
         let config = OrchestrationConfig::default();
 
@@ -2428,21 +2131,12 @@ mod storage_tests {
         let events = queries::get_delegation_events(&db, &parent_id).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].to_agent, "research-lead");
-        // Nested child persisted and linked.
-        let children = queries::get_child_orchestration_runs(&db, &parent_id).unwrap();
-        assert_eq!(children.len(), 1);
-        assert_eq!(children[0].pattern, "blackboard");
-        assert_eq!(
-            children[0].parent_run_id.as_deref(),
-            Some(parent_id.as_str())
-        );
     }
 
     #[test]
-    fn hierarchical_run_records_project_on_parent_and_nested_children() {
+    fn hierarchical_run_records_project_on_parent() {
         let db = init_embedded().unwrap();
 
-        let board = Board::new("subtask".to_string(), 50_000);
         let result = OrchestrationResult {
             content: "final".to_string(),
             trace: vec![],
@@ -2450,12 +2144,6 @@ mod storage_tests {
             total_tokens_out: 0,
             total_cost: 0.0,
             invocation_count: 1,
-            nested_runs: vec![NestedRun::Blackboard {
-                team_lead: "research-lead".to_string(),
-                task: "subtask".to_string(),
-                board,
-                config: BlackboardConfig::default(),
-            }],
         };
         let config = OrchestrationConfig::default();
 
@@ -2469,14 +2157,12 @@ mod storage_tests {
         .unwrap();
 
         let history = queries::get_history(&db, None, 10).unwrap();
-        assert_eq!(history.len(), 2, "parent + one nested blackboard run");
-        for run in &history {
-            assert_eq!(
-                run.project.as_deref(),
-                Some("/home/user/my-project"),
-                "every persisted run (parent and nested) should carry the project"
-            );
-        }
+        assert_eq!(history.len(), 1, "parent hierarchical run");
+        assert_eq!(
+            history[0].project.as_deref(),
+            Some("/home/user/my-project"),
+            "the persisted run should carry the project"
+        );
         // Sanity: parent_id itself resolved to a hierarchical run.
         let parent = queries::get_orchestration_run(&db, &parent_id)
             .unwrap()
@@ -2488,8 +2174,7 @@ mod storage_tests {
 /// Integration-style tests for OH1 Lot 5 (the `run.rs` → event-sourced
 /// engines bascule): drives each pattern's `dispatch_*_es` helper directly
 /// with mock providers (same idiom as `es::direct`/`hierarchical`/
-/// `blackboard`/`ring`'s own end-to-end tests, and
-/// `core::orchestration::e2e_tests`'s `ScriptedProvider`), then asserts
+/// `blackboard`/`ring`'s own end-to-end tests), then asserts
 /// (a) the run completes with the expected content, (b) `--json` headless
 /// observability (`RunEvent`s via `SinkProjectingLog`) includes the
 /// pattern-specific event kinds, and (c) — under `feature = "storage"` — the
@@ -2498,10 +2183,9 @@ mod storage_tests {
 /// Doesn't drive `execute()`/`run_inner()`/`run_orchestrated()` themselves:
 /// those additionally require real files on disk (project resolution,
 /// `Agent::find_file`, `create_provider`), which this codebase's existing
-/// test conventions don't exercise either — `core::orchestration::e2e_tests`
-/// tests `HierarchicalEngine` directly for the same reason, and this file's
-/// own `storage_tests` module already tests `record_hierarchical_into`
-/// directly rather than through the CLI entry point. `dispatch_*_es` is
+/// test conventions don't exercise either — this file's own `storage_tests`
+/// module already tests `record_hierarchical_into` directly rather than
+/// through the CLI entry point. `dispatch_*_es` is
 /// exactly the seam `run_inner`/`run_orchestrated` call right after loading
 /// agents/providers — exercising it directly covers the actual
 /// engine-selection change this task makes, without re-testing file
@@ -2566,7 +2250,7 @@ mod es_switch_tests {
     /// A provider that returns scripted responses in order, then repeats its
     /// last response forever — mirrors the same-named helper duplicated
     /// across `es::blackboard`/`es::ring`/`es::hierarchical`'s own test
-    /// modules and `core::orchestration::e2e_tests`.
+    /// modules.
     struct ScriptedProvider {
         responses: Mutex<VecDeque<String>>,
         last: Mutex<String>,

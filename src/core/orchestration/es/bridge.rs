@@ -271,11 +271,6 @@ impl<L: EventLog> EventLog for SinkProjectingLog<'_, L> {
 /// - `trace`: `state.hier.trace` mapped 1:1 onto `DelegationEvent { from, to,
 ///   message: task, depth }`.
 /// - `invocation_count`: number of `AgentInvoked` events in `events`.
-/// - `nested_runs`: always empty here. Nested C9 sub-runs execute against an
-///   ephemeral child log during the run and aren't part of this run's own
-///   `events`/`ExecutionState` — surfacing them is deferred to Lot 5, which
-///   wires the ES engine into `run.rs` and can thread the child log's
-///   `NestedRun`s through from where they're actually produced.
 pub fn to_orchestration_result(
     state: &ExecutionState,
     events: &[ExecutionEvent],
@@ -322,7 +317,6 @@ pub fn to_orchestration_result(
         total_tokens_out: u32::try_from(state.budget_tokens_out).unwrap_or(u32::MAX),
         total_cost: state.budget_cost,
         invocation_count,
-        nested_runs: vec![],
     }
 }
 
@@ -820,7 +814,6 @@ mod tests {
         assert_eq!(result.trace[0].to, "core");
         assert_eq!(result.trace[0].message, "do x");
         assert_eq!(result.trace[0].depth, 1);
-        assert!(result.nested_runs.is_empty());
     }
 
     #[test]
@@ -862,6 +855,5 @@ mod tests {
         assert_eq!(result.content, "");
         assert_eq!(result.invocation_count, 0);
         assert!(result.trace.is_empty());
-        assert!(result.nested_runs.is_empty());
     }
 }

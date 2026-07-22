@@ -1,7 +1,6 @@
 //! Shared test utilities for orchestration tests.
 //!
-//! Provides a common `NoopProvider` (returns fixed responses) and helper
-//! functions for constructing `Board` and `RingToken` instances.
+//! Provides a common `NoopProvider` (returns fixed responses).
 
 use std::sync::Arc;
 
@@ -10,9 +9,6 @@ use async_trait::async_trait;
 use crate::providers::traits::{
     CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
 };
-
-use super::blackboard::Board;
-use super::ring::RingToken;
 
 /// A no-op provider that returns fixed responses with zero cost.
 ///
@@ -45,15 +41,4 @@ impl Provider for NoopProvider {
 /// Create a single-provider vec ready for orchestration tests.
 pub fn noop_providers() -> Vec<Arc<dyn Provider>> {
     vec![Arc::new(NoopProvider)]
-}
-
-/// Create a board with sensible test defaults.
-pub fn test_board(task: &str, token_budget: u64) -> Board {
-    Board::new(task.to_string(), token_budget)
-}
-
-/// Create a ring token with sensible test defaults.
-pub fn test_ring_token(task: &str, agents: &[&str], token_budget: u64) -> RingToken {
-    let order = agents.iter().map(|a| a.to_string()).collect();
-    RingToken::new(task.to_string(), order, token_budget)
 }
