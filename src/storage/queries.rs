@@ -596,6 +596,56 @@ pub fn get_child_orchestration_runs(
     Ok(out)
 }
 
+/// Delete all projection rows for a given `run_id` across all orchestration
+/// tables. Used by the idempotent projector (`project_run`) to clear any
+/// existing projection before re-deriving it from the event log. Returns the
+/// total number of rows deleted across all tables.
+///
+/// Tables cleared (in dependency order):
+/// - `delegation_events` (hierarchical child table)
+/// - `ring_votes` (ring child table)
+/// - `ring_contributions` (ring child table)
+/// - `board_entries` (blackboard child table)
+/// - `orchestration_runs` (parent metadata table)
+/// - `runs` (top-level parent row)
+///
+/// DELETEs are non-failing: removing a `run_id` that doesn't exist in a given
+/// table simply returns `0` rows affected, not an error.
+#[allow(dead_code)] // Called by project_run, wired in Task 3
+pub fn delete_projection_for_run(db: &Database, run_id: &str) -> anyhow::Result<usize> {
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
+
+    let mut total_deleted = 0;
+
+    // Child tables first (no FK enforcement in schema, but logical order).
+    total_deleted += conn.execute(
+        "DELETE FROM delegation_events WHERE run_id = ?1",
+        params![run_id],
+    )?;
+    total_deleted += conn.execute("DELETE FROM ring_votes WHERE run_id = ?1", params![run_id])?;
+    total_deleted += conn.execute(
+        "DELETE FROM ring_contributions WHERE run_id = ?1",
+        params![run_id],
+    )?;
+    total_deleted += conn.execute(
+        "DELETE FROM board_entries WHERE run_id = ?1",
+        params![run_id],
+    )?;
+
+    // Parent metadata.
+    total_deleted += conn.execute(
+        "DELETE FROM orchestration_runs WHERE run_id = ?1",
+        params![run_id],
+    )?;
+
+    // Top-level parent row.
+    total_deleted += conn.execute("DELETE FROM runs WHERE id = ?1", params![run_id])?;
+
+    Ok(total_deleted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

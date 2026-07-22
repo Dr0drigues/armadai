@@ -2,9 +2,9 @@ pub mod queries;
 pub mod schema;
 
 use rusqlite::Connection;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-pub type Database = Mutex<Connection>;
+pub type Database = Arc<Mutex<Connection>>;
 
 /// Initialize a persistent SQLite database at the configured path.
 pub fn init_db() -> anyhow::Result<Database> {
@@ -15,7 +15,7 @@ pub fn init_db() -> anyhow::Result<Database> {
     }
     let conn = Connection::open(path)?;
     schema::apply(&conn)?;
-    Ok(Mutex::new(conn))
+    Ok(Arc::new(Mutex::new(conn)))
 }
 
 /// Initialize an in-memory SQLite database (for tests).
@@ -23,5 +23,5 @@ pub fn init_db() -> anyhow::Result<Database> {
 pub fn init_embedded() -> anyhow::Result<Database> {
     let conn = Connection::open_in_memory()?;
     schema::apply(&conn)?;
-    Ok(Mutex::new(conn))
+    Ok(Arc::new(Mutex::new(conn)))
 }

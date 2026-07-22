@@ -1822,7 +1822,7 @@ fn apply_ring_overrides(
 /// Persist a hierarchical orchestration run: the parent run row and its
 /// delegation trace. Returns the provided hierarchical `run_id`.
 #[cfg(feature = "storage")]
-fn record_hierarchical_into(
+pub(crate) fn record_hierarchical_into(
     db: &crate::storage::Database,
     run_id: &str,
     result: &crate::core::orchestration::hierarchical::OrchestrationResult,
