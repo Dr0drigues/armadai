@@ -199,6 +199,7 @@ pub struct Glyphs {
     pub board: &'static str,
     pub pointer: &'static str,
     pub arrow_back: &'static str,
+    pub check: &'static str,
 }
 
 impl Glyphs {
@@ -215,6 +216,7 @@ impl Glyphs {
         board: "▤",
         pointer: "▸",
         arrow_back: "←",
+        check: "✓",
     };
 
     #[allow(dead_code)]
@@ -230,6 +232,7 @@ impl Glyphs {
         board: "#",
         pointer: ">",
         arrow_back: "<-",
+        check: "v",
     };
 }
 
@@ -337,6 +340,12 @@ mod tests {
         assert_eq!(Glyphs::UNICODE.arrow_back, "←");
         assert_eq!(Glyphs::ASCII.pointer, ">");
         assert_eq!(Glyphs::ASCII.arrow_back, "<-");
+    }
+
+    #[test]
+    fn glyphs_expose_check_mark() {
+        assert_eq!(Glyphs::UNICODE.check, "✓");
+        assert_eq!(Glyphs::ASCII.check, "v");
     }
 
     #[test]

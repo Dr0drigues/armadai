@@ -69,6 +69,16 @@ pub async fn execute(
         let cfg_yaml = std::fs::read_to_string(".armadai/config.yaml")
             .or_else(|_| std::fs::read_to_string("armadai.yaml"))
             .ok();
+        // Map an explicit `--orchestrate <pattern>` flag to the Workroom's
+        // pattern enum, so the fullscreen live view renders the matching
+        // rich layout (ring/blackboard) instead of relying on the project
+        // config's `pattern:` key, which is often absent for a one-off
+        // explicit run and would otherwise default to Hierarchical.
+        let explicit_pattern = orchestrate.as_deref().and_then(|o| match o {
+            "blackboard" => Some(crate::core::orchestration::OrchestrationPattern::Blackboard),
+            "ring" => Some(crate::core::orchestration::OrchestrationPattern::Ring),
+            _ => None,
+        });
         let printed = crate::shell::run_view::run_orchestration_tui(
             move |sink| async move {
                 run_inner(
@@ -89,6 +99,7 @@ pub async fn execute(
                 .await
             },
             cfg_yaml,
+            explicit_pattern,
         )
         .await;
         return match printed {

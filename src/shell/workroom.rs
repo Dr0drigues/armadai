@@ -108,6 +108,14 @@ impl Workroom {
         self.focused = focused;
     }
 
+    /// Override the active orchestration pattern (drives the focused layout).
+    /// Used to apply an explicit `--orchestrate <pattern>` flag, which takes
+    /// precedence over whatever `init_from_config` inferred from the project
+    /// config's `pattern:` key (or its `Hierarchical` default).
+    pub fn set_pattern(&mut self, pattern: OrchestrationPattern) {
+        self.pattern = pattern;
+    }
+
     /// Whether the workroom currently has keyboard focus.
     pub fn is_focused(&self) -> bool {
         self.focused
@@ -826,9 +834,10 @@ impl Workroom {
             lines.push(Line::from(Span::styled("Ctrl+W focus", theme::muted())));
         }
         if self.completed {
+            let check = theme::glyphs().check;
             lines.push(Line::from(Span::styled(
-                "✓ run complete · press q or Esc to exit",
-                theme::done(),
+                format!("{check} run complete · press q or Esc to exit"),
+                theme::muted(),
             )));
         }
     }
@@ -1330,6 +1339,61 @@ orchestration:
         wr.pattern = OrchestrationPattern::Blackboard;
         wr.set_focused(true);
         assert_eq!(wr.layout_mode(30), LayoutMode::Compact);
+    }
+
+    #[test]
+    fn completion_hint_uses_muted_theme_and_glyph_check() {
+        let mut wr = Workroom::new();
+        wr.set_completed(true);
+        let mut lines = Vec::new();
+        wr.push_footer(&mut lines);
+        let hint_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains("run complete")))
+            .expect("completion hint line present");
+        let span = hint_line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("run complete"))
+            .unwrap();
+        assert_eq!(span.style, theme::muted());
+        // Glyph comes from theme::glyphs() (unicode ✓ or its ASCII fallback
+        // depending on init(ascii)), never a hardcoded character.
+        assert!(span.content.starts_with(theme::glyphs().check));
+    }
+
+    #[test]
+    fn no_completion_hint_when_not_completed() {
+        let wr = Workroom::new();
+        let mut lines = Vec::new();
+        wr.push_footer(&mut lines);
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.spans.iter().any(|s| s.content.contains("run complete")))
+        );
+    }
+
+    #[test]
+    fn set_pattern_overrides_default() {
+        let mut wr = Workroom::new();
+        wr.set_focused(true);
+        // Default pattern (no config parsed) is Hierarchical → Hierarchical layout.
+        assert_eq!(wr.layout_mode(60), LayoutMode::Hierarchical);
+        wr.set_pattern(OrchestrationPattern::Ring);
+        assert_eq!(wr.layout_mode(60), LayoutMode::Ring);
+    }
+
+    #[test]
+    fn set_pattern_overrides_config_after_init() {
+        let mut wr = Workroom::new();
+        wr.set_focused(true);
+        // Config has no `pattern:` key → parse_pattern defaults to Hierarchical.
+        wr.init_from_config("coordinator: lead\nagents:\n- a\n- b\n");
+        assert_eq!(wr.layout_mode(60), LayoutMode::Hierarchical);
+        // An explicit `--orchestrate blackboard` flag must win over that default.
+        wr.set_pattern(OrchestrationPattern::Blackboard);
+        assert_eq!(wr.layout_mode(60), LayoutMode::Blackboard);
     }
 
     #[test]

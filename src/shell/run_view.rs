@@ -13,6 +13,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::core::events::{EventSink, RunEvent};
+use crate::core::orchestration::OrchestrationPattern;
 use crate::shell::workroom::Workroom;
 
 /// An `EventSink` that forwards a clone of every `RunEvent` into a channel,
@@ -55,6 +56,7 @@ fn restore_terminal() {
 pub async fn run_orchestration_tui<F>(
     run: impl FnOnce(Arc<dyn EventSink>) -> F,
     config_yaml: Option<String>,
+    explicit_pattern: Option<OrchestrationPattern>,
 ) -> anyhow::Result<Option<String>>
 where
     F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
@@ -68,7 +70,18 @@ where
     if let Some(cfg) = config_yaml {
         workroom.init_from_config(&cfg);
     }
+    // An explicit `--orchestrate <pattern>` flag overrides whatever
+    // `init_from_config` inferred (or its `Hierarchical` default) — the
+    // project config often has no `orchestration:` block at all for a
+    // one-off explicit run, which would otherwise render the wrong layout.
+    if let Some(pattern) = explicit_pattern {
+        workroom.set_pattern(pattern);
+    }
     workroom.set_visible(true);
+    // Fullscreen dedicated run view (unlike the shell's narrow sidebar): show
+    // the rich pattern layout (ring/tree/blackboard) by default rather than
+    // requiring Ctrl+W to focus first. Ctrl+W still toggles it off/on below.
+    workroom.set_focused(true);
 
     // Install a panic hook that restores the terminal before the default
     // handler runs (mirrors `src/shell/app.rs`). Without this, a panic while
