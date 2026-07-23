@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 
 /// Structured run events emitted in headless/JSON mode. Short keys for token economy.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum RunEvent {
     RunStart {
