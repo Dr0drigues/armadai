@@ -13,6 +13,7 @@ use ratatui::{
 use std::time::Instant;
 
 use super::SPINNER_FRAMES as SPINNER;
+use crate::core::orchestration::OrchestrationPattern;
 use crate::theme;
 
 /// Agent activity state
@@ -65,6 +66,8 @@ pub struct Workroom {
     selected: usize,
     /// Whether the workroom currently has keyboard focus (drill-down mode).
     focused: bool,
+    /// Active orchestration pattern (drives the focused layout).
+    pattern: OrchestrationPattern,
 }
 
 impl Workroom {
@@ -77,6 +80,7 @@ impl Workroom {
             current_agent: None,
             selected: 0,
             focused: false,
+            pattern: OrchestrationPattern::Hierarchical,
         }
     }
 
@@ -167,6 +171,7 @@ impl Workroom {
     /// Initialize from orchestration config (coordinator + teams)
     pub fn init_from_config(&mut self, config_yaml: &str) {
         self.agents.clear();
+        self.pattern = parse_pattern(config_yaml);
 
         // Parse coordinator (take first occurrence only)
         for line in config_yaml.lines() {
@@ -588,6 +593,24 @@ impl Workroom {
     }
 }
 
+/// Detect the orchestration pattern from a project config YAML string.
+/// Tolerant line scan (matches the heuristic style of `init_from_config`):
+/// reads the first `pattern:` value and maps it, defaulting to Hierarchical.
+fn parse_pattern(config_yaml: &str) -> OrchestrationPattern {
+    for line in config_yaml.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("pattern:") {
+            let value = rest.trim().trim_matches('"').to_ascii_lowercase();
+            return match value.as_str() {
+                "blackboard" => OrchestrationPattern::Blackboard,
+                "ring" => OrchestrationPattern::Ring,
+                _ => OrchestrationPattern::Hierarchical,
+            };
+        }
+    }
+    OrchestrationPattern::Hierarchical
+}
+
 /// Retain only a trailing partial-prefix of `needle` at the end of `buf`
 /// (so a marker split across chunks can still be completed next call).
 fn keep_tail(buf: &mut String, needle: &str) {
@@ -804,6 +827,38 @@ orchestration:
             .find(|a| a.name == "core-specialist")
             .unwrap();
         assert_eq!(a.state, AgentState::Working);
+    }
+
+    #[test]
+    fn parse_pattern_reads_known_values() {
+        assert_eq!(
+            parse_pattern("orchestration:\n  pattern: blackboard\n"),
+            OrchestrationPattern::Blackboard
+        );
+        assert_eq!(
+            parse_pattern("orchestration:\n  pattern: \"ring\"\n"),
+            OrchestrationPattern::Ring
+        );
+        assert_eq!(
+            parse_pattern("orchestration:\n  pattern: Hierarchical\n"),
+            OrchestrationPattern::Hierarchical
+        );
+    }
+
+    #[test]
+    fn parse_pattern_defaults_to_hierarchical() {
+        assert_eq!(parse_pattern(""), OrchestrationPattern::Hierarchical);
+        assert_eq!(
+            parse_pattern("orchestration:\n  pattern: bogus\n"),
+            OrchestrationPattern::Hierarchical
+        );
+    }
+
+    #[test]
+    fn init_from_config_sets_pattern() {
+        let mut wr = Workroom::new();
+        wr.init_from_config("orchestration:\n  pattern: ring\ncoordinator: dev-lead\n");
+        assert_eq!(wr.pattern, OrchestrationPattern::Ring);
     }
 
     // Regression: ArmadAI markers can be ECHOED in Claude Code recaps
