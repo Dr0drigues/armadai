@@ -64,6 +64,19 @@ export interface ProviderModels {
   models: ModelSummary[];
 }
 
+export interface TopologyTeam {
+  lead: string | null;
+  agents: string[];
+}
+
+export interface OrchestrationTopology {
+  enabled: boolean;
+  pattern: string | null;
+  coordinator: string | null;
+  teams: TopologyTeam[];
+  agents: string[];
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const r = await fetch(path);
   if (!r.ok) throw new Error(`${path}: ${r.status}`);
@@ -77,6 +90,12 @@ export const getSkills = () => getJson<SkillSummary[]>("/api/skills");
 export const getStarters = () => getJson<StarterSummary[]>("/api/starters");
 export const getCosts = () => getJson<CostSummary[]>("/api/costs");
 export const getModels = () => getJson<ProviderModels[]>("/api/models");
+export const getDetail = (kind: string, name: string) =>
+  getJson<Record<string, unknown>>(`/api/${kind}/${encodeURIComponent(name)}`);
+export const getTopology = () => getJson<OrchestrationTopology>("/api/orchestration/topology");
+export const getTraces = () => getJson<Record<string, unknown>[]>("/api/orchestration/trace");
+export const getTraceDetail = (id: string) =>
+  getJson<Record<string, unknown>>(`/api/orchestration/trace/${encodeURIComponent(id)}`);
 
 export const fmtCost = (n: number) => `$${n.toFixed(2)}`;
 export const fmtTokens = (n: number) => {

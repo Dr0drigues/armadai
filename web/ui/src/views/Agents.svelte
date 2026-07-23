@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getAgents } from "../lib/api";
+  import { navigate } from "../lib/route.svelte";
   import type { AgentSummary } from "../lib/api";
 
   let agents = $state<AgentSummary[]>([]);
@@ -42,7 +43,17 @@
   {:else}
     <div class="agents-list">
       {#each agents as agent (agent.name)}
-        <div class="agent">
+        <div
+          class="agent"
+          role="button"
+          tabindex="0"
+          onclick={() => navigate(`agents/${encodeURIComponent(agent.name)}`)}
+          onkeydown={(e) => {
+            if (e.key === "Enter") {
+              navigate(`agents/${encodeURIComponent(agent.name)}`);
+            }
+          }}
+        >
           <div class="av">{getInitials(agent.name)}</div>
           <div class="who">
             <div class="n">{agent.name}</div>
@@ -76,11 +87,17 @@
     padding: 10px;
     border-radius: var(--radius);
     border: 1px solid var(--border-faint);
+    cursor: pointer;
   }
 
   .agent:hover {
     border-color: var(--border);
     background: var(--surface-2);
+  }
+
+  .agent:focus {
+    outline: 2px solid var(--brass);
+    outline-offset: -1px;
   }
 
   .agent .av {

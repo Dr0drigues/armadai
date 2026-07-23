@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, type Snippet } from "svelte";
+  import { navigate } from "./route.svelte";
   import { theme } from "./theme.svelte";
   import Icon from "./Icon.svelte";
 
@@ -13,12 +14,10 @@
   let {
     tabs = [] as Tab[],
     active = "agents",
-    onselect = (_id: string) => {},
     children,
   }: {
     tabs?: Tab[];
     active?: string;
-    onselect?: (id: string) => void;
     children?: Snippet;
   } = $props();
 
@@ -57,8 +56,8 @@
         class:active={active === tab.id}
         role="button"
         tabindex="0"
-        onclick={() => onselect(tab.id)}
-        onkeydown={(e) => e.key === "Enter" && onselect(tab.id)}
+        onclick={() => navigate(tab.id)}
+        onkeydown={(e) => e.key === "Enter" && navigate(tab.id)}
       >
         <Icon name={tab.icon ?? tab.id} size={16} />
         {tab.label}

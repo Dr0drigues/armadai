@@ -82,4 +82,33 @@ export const ICONS: Record<string, Node[]> = {
       attrs: { points: "9 22 9 12 15 12 15 22" },
     },
   ],
+
+  orchestration: [
+    {
+      tag: "circle",
+      attrs: { cx: 12, cy: 12, r: 2 },
+    },
+    {
+      tag: "circle",
+      attrs: { cx: 5, cy: 6, r: 2 },
+    },
+    {
+      tag: "circle",
+      attrs: { cx: 19, cy: 6, r: 2 },
+    },
+    {
+      tag: "circle",
+      attrs: { cx: 5, cy: 18, r: 2 },
+    },
+    {
+      tag: "circle",
+      attrs: { cx: 19, cy: 18, r: 2 },
+    },
+    {
+      tag: "path",
+      attrs: {
+        d: "M12 12L5 6M12 12L19 6M12 12L5 18M12 12L19 18",
+      },
+    },
+  ],
 };

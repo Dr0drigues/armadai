@@ -57,7 +57,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each entries as entry (entry.agent + entry.duration_ms)}
+          {#each entries as entry, i (i)}
             <tr>
               <td class="mono">{entry.agent}</td>
               <td class="mono">{entry.provider} · {entry.model}</td>

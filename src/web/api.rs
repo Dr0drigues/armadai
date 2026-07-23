@@ -15,6 +15,17 @@ fn to_json<T: Serialize>(value: T) -> Json<serde_json::Value> {
     )
 }
 
+/// Whether `source`'s file stem (case-insensitive) equals `name`. Detail
+/// lookups accept both the H1 display name and the file slug, since starters
+/// and the orchestration topology reference agents/prompts/skills by their
+/// file stem (e.g. "dev-lead") rather than their H1 title ("Dev Lead").
+fn file_stem_matches(source: &std::path::Path, name: &str) -> bool {
+    source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case(name))
+}
+
 #[derive(Serialize)]
 pub struct AgentSummary {
     name: String,
@@ -223,7 +234,7 @@ pub async fn get_agent(Path(name): Path<String>) -> Json<serde_json::Value> {
     let agents = load_agents();
     match agents
         .into_iter()
-        .find(|a| a.name.eq_ignore_ascii_case(&name))
+        .find(|a| a.name.eq_ignore_ascii_case(&name) || file_stem_matches(&a.source, &name))
     {
         Some(a) => {
             let model = a.model_display();
@@ -406,7 +417,7 @@ pub async fn get_prompt(Path(name): Path<String>) -> Json<serde_json::Value> {
     let prompts = load_all_prompts(&user_prompts_dir());
     match prompts
         .into_iter()
-        .find(|p| p.name.eq_ignore_ascii_case(&name))
+        .find(|p| p.name.eq_ignore_ascii_case(&name) || file_stem_matches(&p.source, &name))
     {
         Some(p) => {
             let detail = PromptDetail {
@@ -440,7 +451,7 @@ pub async fn get_skill(Path(name): Path<String>) -> Json<serde_json::Value> {
     let skills = load_all_skills(&user_skills_dir());
     match skills
         .into_iter()
-        .find(|s| s.name.eq_ignore_ascii_case(&name))
+        .find(|s| s.name.eq_ignore_ascii_case(&name) || file_stem_matches(&s.source, &name))
     {
         Some(s) => {
             let detail = SkillDetail {

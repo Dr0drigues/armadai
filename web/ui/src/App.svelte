@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { router } from "./lib/route.svelte";
   import Shell from "./lib/Shell.svelte";
   import Agents from "./views/Agents.svelte";
   import History from "./views/History.svelte";
@@ -7,62 +9,136 @@
   import Starters from "./views/Starters.svelte";
   import Costs from "./views/Costs.svelte";
   import Models from "./views/Models.svelte";
+  import Orchestration from "./views/Orchestration.svelte";
+  import Detail from "./views/Detail.svelte";
+  import {
+    getAgents,
+    getPrompts,
+    getSkills,
+    getStarters,
+    getHistory,
+    getModels,
+  } from "./lib/api";
 
-  let active = $state("agents");
+  let counts = $state<Record<string, number>>({});
 
   const tabs = [
-    { id: "agents", label: "Agents", count: 6, icon: "agents" },
-    { id: "prompts", label: "Prompts", count: 12, icon: "prompts" },
-    { id: "skills", label: "Skills", count: 8, icon: "skills" },
-    { id: "starters", label: "Starters", count: 5, icon: "starters" },
-    { id: "history", label: "History", count: 148, icon: "history" },
+    { id: "agents", label: "Agents", icon: "agents" },
+    { id: "prompts", label: "Prompts", icon: "prompts" },
+    { id: "skills", label: "Skills", icon: "skills" },
+    { id: "starters", label: "Starters", icon: "starters" },
+    { id: "history", label: "History", icon: "history" },
     { id: "costs", label: "Costs", icon: "costs" },
-    { id: "models", label: "Models", count: 37, icon: "models" },
+    { id: "models", label: "Models", icon: "models" },
+    { id: "orchestration", label: "Orchestration", icon: "orchestration" },
   ];
 
-  function handleSelect(id: string) {
-    active = id;
-  }
+  const SUBTITLES: Record<string, string> = {
+    agents: "agents de la flotte",
+    prompts: "fragments de prompt",
+    skills: "compétences",
+    starters: "packs de démarrage",
+    history: "historique des runs",
+    costs: "coûts & tokens",
+    models: "catalogue de modèles",
+    orchestration: "topologie & traces",
+  };
+
+  onMount(async () => {
+    try {
+      const [agents, prompts, skills, starters, history, models] = await Promise.all([
+        getAgents(),
+        getPrompts(),
+        getSkills(),
+        getStarters(),
+        getHistory(),
+        getModels(),
+      ]);
+
+      counts.agents = agents.length;
+      counts.prompts = prompts.length;
+      counts.skills = skills.length;
+      counts.starters = starters.length;
+      counts.history = history.length;
+      // Models is ProviderModels[] → sum of all models across providers
+      counts.models = models.reduce((sum, pm) => sum + pm.models.length, 0);
+    } catch (err) {
+      console.error("Failed to load counts:", err);
+      // Continue without counts if fetch fails
+    }
+  });
+
+  const r = $derived(router.current);
+  const active = $derived(r.view);
+  const subtitle = $derived(r.param ? "détail" : (SUBTITLES[active] ?? ""));
+
+  // Inject counts into tabs
+  const tabsWithCounts = $derived(
+    tabs.map((tab) => ({
+      ...tab,
+      count: counts[tab.id],
+    }))
+  );
 </script>
 
-<Shell {tabs} {active} onselect={handleSelect}>
+<Shell tabs={tabsWithCounts} {active}>
   <div class="page-head">
     <h1>
       {#if active === "agents"}
-        Agents
+        {r.param ? r.param : "Agents"}
       {:else if active === "prompts"}
-        Prompts
+        {r.param ? r.param : "Prompts"}
       {:else if active === "skills"}
-        Skills
+        {r.param ? r.param : "Skills"}
       {:else if active === "starters"}
-        Starters
+        {r.param ? r.param : "Starters"}
       {:else if active === "history"}
         History
       {:else if active === "costs"}
         Costs
       {:else if active === "models"}
         Models
+      {:else if active === "orchestration"}
+        Orchestration
       {:else}
         {active}
       {/if}
     </h1>
-    <span class="sub">Page de la flotte ArmadAI</span>
+    {#if subtitle}<span class="sub">{subtitle}</span>{/if}
   </div>
 
   {#if active === "agents"}
-    <Agents />
+    {#if r.param}
+      <Detail kind="agents" name={r.param} />
+    {:else}
+      <Agents />
+    {/if}
   {:else if active === "prompts"}
-    <Prompts />
+    {#if r.param}
+      <Detail kind="prompts" name={r.param} />
+    {:else}
+      <Prompts />
+    {/if}
   {:else if active === "skills"}
-    <Skills />
+    {#if r.param}
+      <Detail kind="skills" name={r.param} />
+    {:else}
+      <Skills />
+    {/if}
   {:else if active === "starters"}
-    <Starters />
+    {#if r.param}
+      <Detail kind="starters" name={r.param} />
+    {:else}
+      <Starters />
+    {/if}
   {:else if active === "history"}
     <History />
   {:else if active === "costs"}
     <Costs />
   {:else if active === "models"}
     <Models />
+  {:else if active === "orchestration"}
+    <Orchestration />
   {:else}
     <div class="panel">
       <p>Vue « {active} » — à venir.</p>
