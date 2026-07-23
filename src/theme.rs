@@ -197,6 +197,8 @@ pub struct Glyphs {
     pub arrow_down: &'static str,
     pub arrow_up: &'static str,
     pub board: &'static str,
+    pub pointer: &'static str,
+    pub arrow_back: &'static str,
 }
 
 impl Glyphs {
@@ -211,6 +213,8 @@ impl Glyphs {
         arrow_down: "↓",
         arrow_up: "↑",
         board: "▤",
+        pointer: "▸",
+        arrow_back: "←",
     };
 
     #[allow(dead_code)]
@@ -224,6 +228,8 @@ impl Glyphs {
         arrow_down: "v",
         arrow_up: "^",
         board: "#",
+        pointer: ">",
+        arrow_back: "<-",
     };
 }
 
@@ -316,6 +322,14 @@ mod tests {
         assert_eq!(a.arrow_down, "v");
         assert_eq!(a.arrow_up, "^");
         assert_eq!(a.board, "#");
+    }
+
+    #[test]
+    fn glyphs_expose_pointer_and_back_arrow() {
+        assert_eq!(Glyphs::UNICODE.pointer, "▸");
+        assert_eq!(Glyphs::UNICODE.arrow_back, "←");
+        assert_eq!(Glyphs::ASCII.pointer, ">");
+        assert_eq!(Glyphs::ASCII.arrow_back, "<-");
     }
 
     #[test]

@@ -251,7 +251,11 @@ pub enum Command {
             Conversational interface for interacting with LLM providers. \
             Type messages and press Enter to get responses. Use Ctrl+C or Esc to quit, \
             Ctrl+L to clear conversation.")]
-    Shell,
+    Shell {
+        /// Use ASCII glyphs instead of Unicode (for limited terminals)
+        #[arg(long)]
+        ascii: bool,
+    },
     /// Launch the TUI dashboard
     #[cfg(feature = "tui")]
     #[command(long_about = "Launch the TUI dashboard.\n\n\
@@ -462,7 +466,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         None => {
             // No subcommand — launch the interactive shell
             #[cfg(feature = "tui")]
-            return crate::shell::app::run_shell().await;
+            return crate::shell::app::run_shell(false).await;
             #[cfg(not(feature = "tui"))]
             anyhow::bail!(
                 "Shell requires the 'tui' feature. Use `armadai shell` or `armadai --help`."
@@ -529,7 +533,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Projections(action) => projections::execute(action).await,
         Command::Config { action } => config::execute(action).await,
         #[cfg(feature = "tui")]
-        Command::Shell => crate::shell::app::run_shell().await,
+        Command::Shell { ascii } => crate::shell::app::run_shell(ascii).await,
         #[cfg(feature = "tui")]
         Command::Tui { global, ascii } => {
             crate::core::config::set_force_global(global);

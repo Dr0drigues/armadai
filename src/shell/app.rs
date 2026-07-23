@@ -97,7 +97,9 @@ fn restore_terminal() {
 }
 
 /// Main shell entry point.
-pub async fn run_shell() -> Result<()> {
+pub async fn run_shell(ascii: bool) -> Result<()> {
+    crate::theme::init(ascii);
+
     // Run wizard to ensure project is ready
     let wizard_result = super::wizard::ensure_project_ready()?;
 
