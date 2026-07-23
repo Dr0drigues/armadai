@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getPrompts } from "../lib/api";
+  import { navigate } from "../lib/route.svelte";
   import type { PromptSummary } from "../lib/api";
 
   let prompts = $state<PromptSummary[]>([]);
@@ -34,7 +35,17 @@
   {:else}
     <div class="prompts-list">
       {#each prompts as prompt (prompt.name)}
-        <div class="prompt">
+        <div
+          class="prompt"
+          role="button"
+          tabindex="0"
+          onclick={() => navigate(`prompts/${encodeURIComponent(prompt.name)}`)}
+          onkeydown={(e) => {
+            if (e.key === "Enter") {
+              navigate(`prompts/${encodeURIComponent(prompt.name)}`);
+            }
+          }}
+        >
           <div class="who">
             <div class="n">{prompt.name}</div>
             {#if prompt.description}
@@ -73,11 +84,17 @@
     padding: 10px;
     border-radius: var(--radius);
     border: 1px solid var(--border-faint);
+    cursor: pointer;
   }
 
   .prompt:hover {
     border-color: var(--border);
     background: var(--surface-2);
+  }
+
+  .prompt:focus {
+    outline: 2px solid var(--brass);
+    outline-offset: -1px;
   }
 
   .prompt .who {

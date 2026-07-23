@@ -8,6 +8,7 @@
   import Starters from "./views/Starters.svelte";
   import Costs from "./views/Costs.svelte";
   import Models from "./views/Models.svelte";
+  import Detail from "./views/Detail.svelte";
 
   const tabs = [
     { id: "agents", label: "Agents", count: 6, icon: "agents" },
@@ -27,13 +28,13 @@
   <div class="page-head">
     <h1>
       {#if active === "agents"}
-        Agents
+        {r.param ? r.param : "Agents"}
       {:else if active === "prompts"}
-        Prompts
+        {r.param ? r.param : "Prompts"}
       {:else if active === "skills"}
-        Skills
+        {r.param ? r.param : "Skills"}
       {:else if active === "starters"}
-        Starters
+        {r.param ? r.param : "Starters"}
       {:else if active === "history"}
         History
       {:else if active === "costs"}
@@ -48,13 +49,29 @@
   </div>
 
   {#if active === "agents"}
-    <Agents />
+    {#if r.param}
+      <Detail kind="agents" name={r.param} />
+    {:else}
+      <Agents />
+    {/if}
   {:else if active === "prompts"}
-    <Prompts />
+    {#if r.param}
+      <Detail kind="prompts" name={r.param} />
+    {:else}
+      <Prompts />
+    {/if}
   {:else if active === "skills"}
-    <Skills />
+    {#if r.param}
+      <Detail kind="skills" name={r.param} />
+    {:else}
+      <Skills />
+    {/if}
   {:else if active === "starters"}
-    <Starters />
+    {#if r.param}
+      <Detail kind="starters" name={r.param} />
+    {:else}
+      <Starters />
+    {/if}
   {:else if active === "history"}
     <History />
   {:else if active === "costs"}

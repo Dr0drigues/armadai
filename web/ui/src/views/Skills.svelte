@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getSkills } from "../lib/api";
+  import { navigate } from "../lib/route.svelte";
   import type { SkillSummary } from "../lib/api";
 
   let skills = $state<SkillSummary[]>([]);
@@ -34,7 +35,17 @@
   {:else}
     <div class="skills-list">
       {#each skills as skill (skill.name)}
-        <div class="skill">
+        <div
+          class="skill"
+          role="button"
+          tabindex="0"
+          onclick={() => navigate(`skills/${encodeURIComponent(skill.name)}`)}
+          onkeydown={(e) => {
+            if (e.key === "Enter") {
+              navigate(`skills/${encodeURIComponent(skill.name)}`);
+            }
+          }}
+        >
           <div class="who">
             <div class="n">
               {skill.name}
@@ -78,11 +89,17 @@
     padding: 10px;
     border-radius: var(--radius);
     border: 1px solid var(--border-faint);
+    cursor: pointer;
   }
 
   .skill:hover {
     border-color: var(--border);
     background: var(--surface-2);
+  }
+
+  .skill:focus {
+    outline: 2px solid var(--brass);
+    outline-offset: -1px;
   }
 
   .skill .who {

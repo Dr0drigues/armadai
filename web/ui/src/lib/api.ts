@@ -77,6 +77,8 @@ export const getSkills = () => getJson<SkillSummary[]>("/api/skills");
 export const getStarters = () => getJson<StarterSummary[]>("/api/starters");
 export const getCosts = () => getJson<CostSummary[]>("/api/costs");
 export const getModels = () => getJson<ProviderModels[]>("/api/models");
+export const getDetail = (kind: string, name: string) =>
+  getJson<Record<string, unknown>>(`/api/${kind}/${encodeURIComponent(name)}`);
 
 export const fmtCost = (n: number) => `$${n.toFixed(2)}`;
 export const fmtTokens = (n: number) => {

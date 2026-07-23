@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getStarters } from "../lib/api";
+  import { navigate } from "../lib/route.svelte";
   import type { StarterSummary } from "../lib/api";
 
   let starters = $state<StarterSummary[]>([]);
@@ -34,7 +35,17 @@
   {:else}
     <div class="starters-grid">
       {#each starters as starter (starter.name)}
-        <div class="starter-card">
+        <div
+          class="starter-card"
+          role="button"
+          tabindex="0"
+          onclick={() => navigate(`starters/${encodeURIComponent(starter.name)}`)}
+          onkeydown={(e) => {
+            if (e.key === "Enter") {
+              navigate(`starters/${encodeURIComponent(starter.name)}`);
+            }
+          }}
+        >
           <div class="header">
             <h3>{starter.name}</h3>
           </div>
@@ -80,11 +91,17 @@
     border: 1px solid var(--border-faint);
     border-radius: var(--radius);
     background: var(--surface-1);
+    cursor: pointer;
   }
 
   .starter-card:hover {
     border-color: var(--border);
     background: var(--surface-2);
+  }
+
+  .starter-card:focus {
+    outline: 2px solid var(--brass);
+    outline-offset: -1px;
   }
 
   .starter-card .header {
