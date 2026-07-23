@@ -192,6 +192,11 @@ pub struct Glyphs {
     pub flag_ok: &'static str,
     pub bullet: &'static str,
     pub arrow: &'static str,
+    pub tree_branch: &'static str,
+    pub tree_last: &'static str,
+    pub arrow_down: &'static str,
+    pub arrow_up: &'static str,
+    pub board: &'static str,
 }
 
 impl Glyphs {
@@ -201,6 +206,11 @@ impl Glyphs {
         flag_ok: "◆",
         bullet: "●",
         arrow: "→",
+        tree_branch: "├─",
+        tree_last: "└─",
+        arrow_down: "↓",
+        arrow_up: "↑",
+        board: "▤",
     };
 
     #[allow(dead_code)]
@@ -209,6 +219,11 @@ impl Glyphs {
         flag_ok: "#",
         bullet: "-",
         arrow: "->",
+        tree_branch: "+-",
+        tree_last: "\\-",
+        arrow_down: "v",
+        arrow_up: "^",
+        board: "#",
     };
 }
 
@@ -285,6 +300,22 @@ mod tests {
     #[test]
     fn heading_is_bold() {
         assert!(heading().add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn glyphs_expose_tree_and_flow_symbols() {
+        let g = Glyphs::UNICODE;
+        assert_eq!(g.tree_branch, "├─");
+        assert_eq!(g.tree_last, "└─");
+        assert_eq!(g.arrow_down, "↓");
+        assert_eq!(g.arrow_up, "↑");
+        assert_eq!(g.board, "▤");
+        let a = Glyphs::ASCII;
+        assert_eq!(a.tree_branch, "+-");
+        assert_eq!(a.tree_last, "\\-");
+        assert_eq!(a.arrow_down, "v");
+        assert_eq!(a.arrow_up, "^");
+        assert_eq!(a.board, "#");
     }
 
     #[test]
