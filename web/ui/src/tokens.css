@@ -1,0 +1,182 @@
+/* ── ArmadAI Design Tokens ── */
+
+/* Typography uses the design system's fallback stack (system UI + monospace)
+   for W1. Self-hosting the real IBM Plex woff2 (with @font-face) is deferred
+   to W2 — see docs/superpowers/plans (web Svelte rewrite). */
+
+/* Color tokens (oklch values) — dark mode by default */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-abyss: oklch(0.150 0.028 248);
+  --bg-base: oklch(0.188 0.030 248);
+  --surface-1: oklch(0.223 0.031 247);
+  --surface-2: oklch(0.258 0.032 246);
+  --surface-3: oklch(0.305 0.033 245);
+  --border: oklch(0.360 0.030 244);
+  --border-strong: oklch(0.470 0.034 243);
+  --border-faint: oklch(0.280 0.028 246);
+  --text-primary: oklch(0.955 0.008 240);
+  --text-secondary: oklch(0.790 0.015 240);
+  --text-muted: oklch(0.635 0.020 242);
+  --text-faint: oklch(0.505 0.020 244);
+  --text-on-accent: oklch(0.180 0.030 248);
+  --brass: oklch(0.790 0.100 84);
+  --brass-strong: oklch(0.855 0.110 86);
+  --brass-dim: oklch(0.660 0.086 82);
+  --brass-bg: oklch(0.300 0.045 82);
+  --brass-border: oklch(0.500 0.070 82);
+  --accent: var(--brass);
+  --focus-ring: oklch(0.790 0.100 84 / 0.55);
+  --signal-ok: oklch(0.760 0.150 152);
+  --signal-warning: oklch(0.820 0.155 70);
+  --signal-critical: oklch(0.660 0.190 25);
+  --signal-running: oklch(0.730 0.130 226);
+  --signal-halted: oklch(0.620 0.018 244);
+  --signal-ok-bg: oklch(0.320 0.070 152);
+  --signal-warning-bg: oklch(0.340 0.070 70);
+  --signal-critical-bg: oklch(0.320 0.085 25);
+  --signal-running-bg: oklch(0.320 0.065 226);
+  --signal-halted-bg: oklch(0.300 0.014 244);
+  --signal-ok-fg: oklch(0.860 0.160 152);
+  --signal-warning-fg: oklch(0.880 0.160 72);
+  --signal-critical-fg: oklch(0.800 0.170 25);
+  --signal-running-fg: oklch(0.840 0.130 226);
+  --signal-halted-fg: oklch(0.760 0.016 244);
+  --viz-track: oklch(0.300 0.030 246);
+  --viz-grid: oklch(0.330 0.028 245);
+}
+
+/* Light mode */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg-abyss: oklch(0.928 0.012 240);
+  --bg-base: oklch(0.966 0.008 236);
+  --surface-1: oklch(0.996 0.003 236);
+  --surface-2: oklch(0.980 0.006 237);
+  --surface-3: oklch(0.944 0.010 238);
+  --border: oklch(0.868 0.013 240);
+  --border-strong: oklch(0.770 0.022 242);
+  --border-faint: oklch(0.910 0.010 239);
+  --text-primary: oklch(0.245 0.036 248);
+  --text-secondary: oklch(0.400 0.030 246);
+  --text-muted: oklch(0.520 0.026 245);
+  --text-faint: oklch(0.630 0.022 244);
+  --text-on-accent: oklch(0.985 0.004 236);
+  --brass: oklch(0.560 0.110 78);
+  --brass-strong: oklch(0.475 0.108 76);
+  --brass-dim: oklch(0.660 0.090 82);
+  --brass-bg: oklch(0.930 0.045 84);
+  --brass-border: oklch(0.780 0.075 82);
+  --focus-ring: oklch(0.560 0.110 78 / 0.45);
+  --signal-ok: oklch(0.520 0.150 152);
+  --signal-warning: oklch(0.560 0.140 66);
+  --signal-critical: oklch(0.535 0.195 27);
+  --signal-running: oklch(0.520 0.130 232);
+  --signal-halted: oklch(0.560 0.018 244);
+  --signal-ok-bg: oklch(0.945 0.050 152);
+  --signal-warning-bg: oklch(0.950 0.055 70);
+  --signal-critical-bg: oklch(0.948 0.050 27);
+  --signal-running-bg: oklch(0.945 0.045 232);
+  --signal-halted-bg: oklch(0.935 0.010 244);
+  --signal-ok-fg: oklch(0.440 0.140 152);
+  --signal-warning-fg: oklch(0.470 0.125 62);
+  --signal-critical-fg: oklch(0.470 0.185 27);
+  --signal-running-fg: oklch(0.445 0.125 232);
+  --signal-halted-fg: oklch(0.480 0.016 244);
+  --viz-track: oklch(0.915 0.010 240);
+  --viz-grid: oklch(0.885 0.012 240);
+}
+
+/* prefers-color-scheme light mode */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg-abyss: oklch(0.928 0.012 240);
+    --bg-base: oklch(0.966 0.008 236);
+    --surface-1: oklch(0.996 0.003 236);
+    --surface-2: oklch(0.980 0.006 237);
+    --surface-3: oklch(0.944 0.010 238);
+    --border: oklch(0.868 0.013 240);
+    --border-strong: oklch(0.770 0.022 242);
+    --border-faint: oklch(0.910 0.010 239);
+    --text-primary: oklch(0.245 0.036 248);
+    --text-secondary: oklch(0.400 0.030 246);
+    --text-muted: oklch(0.520 0.026 245);
+    --text-faint: oklch(0.630 0.022 244);
+    --text-on-accent: oklch(0.985 0.004 236);
+    --brass: oklch(0.560 0.110 78);
+    --brass-strong: oklch(0.475 0.108 76);
+    --brass-bg: oklch(0.930 0.045 84);
+    --brass-border: oklch(0.780 0.075 82);
+    --focus-ring: oklch(0.560 0.110 78 / 0.45);
+    --signal-ok: oklch(0.520 0.150 152);
+    --signal-warning: oklch(0.560 0.140 66);
+    --signal-critical: oklch(0.535 0.195 27);
+    --signal-running: oklch(0.520 0.130 232);
+    --signal-halted: oklch(0.560 0.018 244);
+    --signal-running-bg: oklch(0.945 0.045 232);
+    --signal-ok-bg: oklch(0.945 0.050 152);
+    --signal-halted-bg: oklch(0.935 0.010 244);
+    --signal-running-fg: oklch(0.445 0.125 232);
+    --signal-ok-fg: oklch(0.440 0.140 152);
+    --signal-halted-fg: oklch(0.480 0.016 244);
+    --viz-track: oklch(0.915 0.010 240);
+    --viz-grid: oklch(0.885 0.012 240);
+  }
+}
+
+/* Typography tokens */
+:root {
+  --font-ui: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code",
+    Menlo, monospace;
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 19px;
+  --text-2xl: 23px;
+  --text-3xl: 28px;
+  --tracking-caps: 0.14em;
+  --tracking-wide: 0.04em;
+  --panel-pad: 16px;
+  --gutter: 24px;
+  --row-h: 36px;
+  --sidebar-w: 240px;
+  --radius: 6px;
+}
+
+/* Reset */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Utility classes */
+.eyebrow {
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
