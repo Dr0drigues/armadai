@@ -560,7 +560,11 @@ impl Workroom {
             } else {
                 self.role_style(agent)
             };
-            let marker = if is_holder { "▸ " } else { "  " };
+            let marker = if is_holder {
+                format!("{} ", g.pointer)
+            } else {
+                "  ".to_string()
+            };
             let mut spans = vec![
                 Span::raw(marker),
                 Span::styled(&agent.name, name_style),
@@ -568,7 +572,10 @@ impl Workroom {
                 Span::styled(state_str, style),
             ];
             if is_holder {
-                spans.push(Span::styled("   ← holds token", theme::selection()));
+                spans.push(Span::styled(
+                    format!("   {} holds token", g.arrow_back),
+                    theme::selection(),
+                ));
             }
             lines.push(Line::from(spans));
             if idx != last {
@@ -604,19 +611,26 @@ impl Workroom {
             LayoutMode::Ring => self.ring_lines(),
         };
 
-        let panel = Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::border_style())
-                .title(format!(" Workroom · {} ", self.pattern))
-                .title_style(theme::heading()),
-        );
+        let panel = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border_style())
+                    .title(format!(" Workroom · {} ", self.pattern))
+                    .title_style(theme::heading()),
+            )
+            // Base style for the whole panel area so uncoloured content
+            // (e.g. plain `role_agent` names) inherits a neutral foreground
+            // instead of the terminal default fg (which reads blue on light
+            // terminals). Coloured roles/states override this.
+            .style(theme::border_style());
         frame.render_widget(panel, area);
     }
 
     /// The idle/narrow layout: role-indented flat list (historical rendering).
     fn compact_lines(&self) -> Vec<Line<'_>> {
         let mut lines: Vec<Line> = Vec::new();
+        let g = theme::glyphs();
         for (idx, agent) in self.agents.iter().enumerate() {
             let (icon, state_str, style) = self.state_display(agent);
             let role_style = self.role_style(agent);
@@ -631,7 +645,11 @@ impl Workroom {
             } else {
                 role_style
             };
-            let marker = if is_selected { "▸ " } else { "" };
+            let marker = if is_selected {
+                format!("{} ", g.pointer)
+            } else {
+                String::new()
+            };
             lines.push(Line::from(vec![
                 Span::raw(indent),
                 Span::raw(marker),

@@ -842,9 +842,9 @@ impl ShellApp {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan))
+                    .border_style(theme::border_style())
                     .title(" ArmadAI ")
-                    .title_style(Style::default().fg(Color::Cyan).bold()),
+                    .title_style(theme::heading()),
             )
             .wrap(Wrap { trim: false })
             .scroll((self.popup_scroll, 0));

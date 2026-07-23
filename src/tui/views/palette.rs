@@ -27,7 +27,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Input field
     let input = Paragraph::new(Line::from(vec![
-        Span::styled(": ", Style::default().fg(Color::Cyan)),
+        Span::styled(": ", theme::heading()),
         Span::raw(&app.palette.input),
         Span::styled("_", Style::default().fg(Color::DarkGray)),
     ]))
@@ -36,7 +36,6 @@ pub fn render(frame: &mut Frame, app: &App) {
             .borders(Borders::ALL)
             .title(" Command Palette ")
             .title_style(theme::heading())
-            .border_style(Style::default().fg(Color::Cyan))
             .style(theme::border_style()),
     );
     frame.render_widget(input, chunks[0]);
@@ -67,7 +66,6 @@ pub fn render(frame: &mut Frame, app: &App) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
             .style(theme::border_style()),
     );
     frame.render_widget(list, chunks[1]);

@@ -106,7 +106,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if !meta.scope.is_empty() {
         meta_lines.push(Line::from(vec![
             Span::styled("Scope:    ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(meta.scope.join(", "), Style::default().fg(Color::Cyan)),
+            Span::styled(meta.scope.join(", "), theme::tag()),
         ]));
     }
 
@@ -142,7 +142,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         if let Some(ref pattern) = agent.metadata.orchestration {
             orch_lines.push(Line::from(vec![
                 Span::styled("Pattern:  ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(pattern.to_string(), Style::default().fg(Color::Magenta)),
+                Span::styled(pattern.to_string(), theme::heading()),
             ]));
         }
 
@@ -163,7 +163,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             parts.push(format!("priority: {}", triggers.priority));
             orch_lines.push(Line::from(vec![
                 Span::styled("Triggers: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(parts.join(", "), Style::default().fg(Color::Yellow)),
+                Span::styled(parts.join(", "), theme::stack()),
             ]));
         }
 
@@ -177,7 +177,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             }
             orch_lines.push(Line::from(vec![
                 Span::styled("Ring:     ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(parts.join(", "), Style::default().fg(Color::Blue)),
+                Span::styled(parts.join(", "), theme::working()),
             ]));
         }
 
