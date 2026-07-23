@@ -253,8 +253,6 @@ pub enum SortMode {
 pub struct App {
     pub current_tab: Tab,
     pub tab_index: usize,
-    // Theme (DS palette, tier detection, glyphs)
-    pub theme: crate::tui::theme::Theme,
     // Dashboard
     pub agents: Vec<Agent>,
     pub selected_agent: usize,
@@ -298,7 +296,6 @@ impl App {
         Self {
             current_tab: Tab::Dashboard,
             tab_index: 0,
-            theme: crate::tui::theme::Theme::default(),
             agents: Vec::new(),
             selected_agent: 0,
             prompts: Vec::new(),

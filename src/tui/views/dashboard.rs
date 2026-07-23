@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Row, Table, Tabs},
 };
 
+use crate::theme;
 use crate::tui::app::{App, Tab};
 use crate::tui::filter;
 use crate::tui::widgets::search_bar;
@@ -31,12 +32,12 @@ pub fn render(frame: &mut Frame, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" ArmadAI ")
-                .style(app.theme.border_style()),
+                .style(theme::border_style()),
         )
         .select(app.tab_index)
         // Default terminal fg adapts to either theme.
         .style(Style::default())
-        .highlight_style(app.theme.accent_style());
+        .highlight_style(theme::accent_style());
     frame.render_widget(tabs, chunks[0]);
 
     // Content area — dispatch to the right view
@@ -85,7 +86,7 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Agents ")
-                .style(app.theme.border_style()),
+                .style(theme::border_style()),
         );
         frame.render_widget(msg, area);
         return;
@@ -100,7 +101,7 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Agents ")
-                .style(app.theme.border_style()),
+                .style(theme::border_style()),
         );
         frame.render_widget(msg, area);
         return;
@@ -122,7 +123,7 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
             let agent = &app.agents[agent_i];
             let tags = agent.metadata.tags.join(", ");
             let style = if display_i == app.selected_agent {
-                app.theme.accent_style()
+                theme::accent_style()
             } else {
                 Style::default()
             };
@@ -157,7 +158,7 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
                 display_indices.len(),
                 app.sort_indicator()
             ))
-            .style(app.theme.border_style()),
+            .style(theme::border_style()),
     );
 
     frame.render_widget(table, area);
