@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onMount, type Snippet } from "svelte";
   import { theme } from "./theme.svelte";
+  import Icon from "./Icon.svelte";
 
   interface Tab {
     id: string;
     label: string;
     count?: number;
+    icon?: string;
   }
 
   let {
@@ -58,10 +60,7 @@
         onclick={() => onselect(tab.id)}
         onkeydown={(e) => e.key === "Enter" && onselect(tab.id)}
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3" />
-        </svg>
+        <Icon name={tab.icon ?? tab.id} size={16} />
         {tab.label}
         {#if tab.count !== undefined}
           <span class="count mono">{tab.count}</span>
@@ -176,7 +175,7 @@
     transition: background-color 0.15s, color 0.15s;
   }
 
-  .nav-item svg {
+  .nav-item :global(svg) {
     width: 16px;
     height: 16px;
     stroke: currentColor;

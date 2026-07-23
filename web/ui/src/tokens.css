@@ -1,8 +1,7 @@
 /* ── ArmadAI Design Tokens ── */
 
-/* Typography uses the design system's fallback stack (system UI + monospace)
-   for W1. Self-hosting the real IBM Plex woff2 (with @font-face) is deferred
-   to W2 — see docs/superpowers/plans (web Svelte rewrite). */
+/* IBM Plex is self-hosted via @fontsource (imported in main.ts) — Vite bundles
+   the woff2 and registers the @font-face. No manual @font-face here. */
 
 /* Color tokens (oklch values) — dark mode by default */
 :root,
