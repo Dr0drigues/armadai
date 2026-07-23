@@ -5,6 +5,8 @@
   import Prompts from "./views/Prompts.svelte";
   import Skills from "./views/Skills.svelte";
   import Starters from "./views/Starters.svelte";
+  import Costs from "./views/Costs.svelte";
+  import Models from "./views/Models.svelte";
 
   let active = $state("agents");
 
@@ -58,13 +60,9 @@
   {:else if active === "history"}
     <History />
   {:else if active === "costs"}
-    <div class="panel">
-      <p>Vue « Costs » — à venir en W2b.</p>
-    </div>
+    <Costs />
   {:else if active === "models"}
-    <div class="panel">
-      <p>Vue « Models » — à venir en W2b.</p>
-    </div>
+    <Models />
   {:else}
     <div class="panel">
       <p>Vue « {active} » — à venir.</p>
