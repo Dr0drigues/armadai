@@ -23,6 +23,15 @@
   // Click vs pan threshold (pixels)
   const CLICK_THRESHOLD = 5;
 
+  // Tooltip state
+  interface TooltipState {
+    name: string;
+    role: "coordinator" | "lead" | "agent";
+  }
+  let hoveredNode: TooltipState | null = $state(null);
+  let tooltipX = $state(0);
+  let tooltipY = $state(0);
+
   // Compute layout
   const diamondSize = 26;
   const agentRadius = 13;
@@ -182,6 +191,22 @@
       navigate(`agents/${encodeURIComponent(name)}`);
     }
   }
+
+  // Tooltip handlers
+  function onNodePointerEnter(name: string, role: "coordinator" | "lead" | "agent") {
+    hoveredNode = { name, role };
+  }
+
+  function onNodePointerLeave() {
+    hoveredNode = null;
+  }
+
+  function onNodePointerMoveLocal(e: PointerEvent) {
+    if (hoveredNode) {
+      tooltipX = e.clientX;
+      tooltipY = e.clientY;
+    }
+  }
 </script>
 
 <div class="topology-container">
@@ -229,6 +254,9 @@
             onpointerdown={onNodePointerDown}
             onpointerup={(e) => onNodeClick(topology.coordinator || "", e)}
             onkeydown={(e) => onNodeKeyDown(topology.coordinator || "", e)}
+            onpointerenter={() => onNodePointerEnter(topology.coordinator || "", "coordinator")}
+            onpointerleave={onNodePointerLeave}
+            onpointermove={onNodePointerMoveLocal}
             aria-label="Coordinator {topology.coordinator}"
           >
             <rect
@@ -241,7 +269,6 @@
               transform="rotate(45 {coordX} {coordY})"
             />
             <text x={coordX} y={coordY} class="label" text-anchor="middle" dominant-baseline="middle">
-              <title>{topology.coordinator}</title>
               {getLabel(topology.coordinator)}
             </text>
           </g>
@@ -258,6 +285,9 @@
                   onpointerdown={onNodePointerDown}
                   onpointerup={(e) => onNodeClick(topology.teams[teamIdx].lead || "", e)}
                   onkeydown={(e) => onNodeKeyDown(topology.teams[teamIdx].lead || "", e)}
+                  onpointerenter={() => onNodePointerEnter(topology.teams[teamIdx].lead || "", "lead")}
+                  onpointerleave={onNodePointerLeave}
+                  onpointermove={onNodePointerMoveLocal}
                   aria-label="Team lead {topology.teams[teamIdx].lead}"
                 >
                   <rect
@@ -276,7 +306,6 @@
                     text-anchor="middle"
                     dominant-baseline="middle"
                   >
-                    <title>{topology.teams[teamIdx].lead}</title>
                     {getLabel(topology.teams[teamIdx].lead || "")}
                   </text>
                 </g>
@@ -313,6 +342,9 @@
                   onpointerdown={onNodePointerDown}
                   onpointerup={(e) => onNodeClick(agent.name, e)}
                   onkeydown={(e) => onNodeKeyDown(agent.name, e)}
+                  onpointerenter={() => onNodePointerEnter(agent.name, "agent")}
+                  onpointerleave={onNodePointerLeave}
+                  onpointermove={onNodePointerMoveLocal}
                   aria-label="Agent {agent.name}"
                 >
                   <circle cx={agent.x} cy={agent.y} r={agentRadius} class="agent-circle" />
@@ -323,7 +355,6 @@
                     text-anchor="middle"
                     dominant-baseline="middle"
                   >
-                    <title>{agent.name}</title>
                     {getLabel(agent.name)}
                   </text>
                 </g>
@@ -340,6 +371,9 @@
               onpointerdown={onNodePointerDown}
               onpointerup={(e) => onNodeClick(agent.name, e)}
               onkeydown={(e) => onNodeKeyDown(agent.name, e)}
+              onpointerenter={() => onNodePointerEnter(agent.name, "agent")}
+              onpointerleave={onNodePointerLeave}
+              onpointermove={onNodePointerMoveLocal}
               aria-label="Agent {agent.name}"
             >
               <circle cx={agent.x} cy={agent.y} r={agentRadius} class="agent-circle" />
@@ -350,7 +384,6 @@
                 text-anchor="middle"
                 dominant-baseline="middle"
               >
-                <title>{agent.name}</title>
                 {getLabel(agent.name)}
               </text>
             </g>
@@ -362,6 +395,18 @@
       <button class="reset-btn" onclick={resetView} title="Recentrer le graphe">
         ↺
       </button>
+
+      <!-- Tooltip (positioned at cursor) -->
+      {#if hoveredNode}
+        <div
+          class="tooltip"
+          style="left: {tooltipX}px; top: {tooltipY}px;"
+          role="tooltip"
+        >
+          <div class="tooltip-name">{hoveredNode.name}</div>
+          <div class="tooltip-role">{hoveredNode.role}</div>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -504,5 +549,33 @@
 
   .reset-btn:active {
     transform: scale(0.95);
+  }
+
+  .tooltip {
+    position: fixed;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1.4;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    pointer-events: none;
+    z-index: 1000;
+    transform: translate(-4px, -4px);
+  }
+
+  .tooltip-name {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+  }
+
+  .tooltip-role {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: capitalize;
   }
 </style>
