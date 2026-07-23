@@ -1,5 +1,7 @@
 <script lang="ts">
   import Shell from "./lib/Shell.svelte";
+  import Agents from "./views/Agents.svelte";
+  import History from "./views/History.svelte";
 
   let active = $state("agents");
 
@@ -43,13 +45,9 @@
   </div>
 
   {#if active === "agents"}
-    <div class="panel">
-      <p>Agents — coming in Task 4.</p>
-    </div>
+    <Agents />
   {:else if active === "history"}
-    <div class="panel">
-      <p>History — coming in Task 4.</p>
-    </div>
+    <History />
   {:else}
     <div class="panel">
       <p>Vue « {active} » — à venir en W2.</p>
