@@ -58,6 +58,25 @@
   function isObject(value: unknown): boolean {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
+
+  // Check if a field should render as clickable links (for starters backlinks)
+  function isLinkableField(key: string, value: unknown): boolean {
+    if (kind !== "starters") return false;
+    const linkableKeys = ["agents", "prompts", "skills"];
+    if (!linkableKeys.includes(key)) return false;
+    return (
+      Array.isArray(value) &&
+      (value as unknown[]).every((i) => typeof i === "string")
+    );
+  }
+
+  // Navigate to a linked resource
+  function navigateToResource(
+    fieldKey: string,
+    itemName: string
+  ): void {
+    navigate(`${fieldKey}/${encodeURIComponent(itemName)}`);
+  }
 </script>
 
 <div class="detail-container">
@@ -90,7 +109,18 @@
               {#if key === "description" && isLongText(value)}
                 <Markdown source={String(value)} />
               {:else if isArray(value)}
-                {#if (value as unknown[]).every((i) => typeof i === "string" || typeof i === "number")}
+                {#if isLinkableField(key, value)}
+                  <div class="tags">
+                    {#each value as unknown[] as item (item)}
+                      <button
+                        class="tag tag-link"
+                        onclick={() => navigateToResource(key, String(item))}
+                      >
+                        {renderValue(item)}
+                      </button>
+                    {/each}
+                  </div>
+                {:else if (value as unknown[]).every((i) => typeof i === "string" || typeof i === "number")}
                   <div class="tags">
                     {#each value as unknown[] as item (item)}
                       <span class="tag">{renderValue(item)}</span>
@@ -215,6 +245,33 @@
     border-radius: 3px;
     font-size: var(--text-2xs);
     font-weight: 500;
+  }
+
+  .tag-link {
+    appearance: none;
+    border: none;
+    padding: 4px 8px;
+    background: var(--brass-bg);
+    color: var(--brass);
+    border-radius: 3px;
+    font-size: var(--text-2xs);
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+
+  .tag-link:hover {
+    background: var(--brass);
+    color: var(--surface-1);
+  }
+
+  .tag-link:focus {
+    outline: 2px solid var(--brass);
+    outline-offset: 1px;
+  }
+
+  .tag-link:active {
+    transform: scale(0.95);
   }
 
   pre {

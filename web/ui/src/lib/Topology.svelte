@@ -7,6 +7,18 @@
 
   let { topology }: Props = $props();
 
+  // Pan and zoom state
+  let tx = $state(0);
+  let ty = $state(0);
+  let scale = $state(1);
+
+  // Pan tracking
+  let isPanning = $state(false);
+  let panStartX = $state(0);
+  let panStartY = $state(0);
+  let panStartTx = $state(0);
+  let panStartTy = $state(0);
+
   // Compute layout
   const diamondSize = 26;
   const agentRadius = 13;
@@ -97,78 +109,155 @@
       ? coordY + 200 + (topology.agents && topology.agents.length > 0 ? 80 : 0)
       : coordY + 150 + (topology.agents && topology.agents.length > 0 ? 80 : 0)
   );
+
+  // Pan handlers
+  function onPointerDown(e: PointerEvent) {
+    if (e.button !== 0) return; // Only left button
+    isPanning = true;
+    panStartX = e.clientX;
+    panStartY = e.clientY;
+    panStartTx = tx;
+    panStartTy = ty;
+    (e.target as SVGElement).setPointerCapture(e.pointerId);
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    if (!isPanning) return;
+    const deltaX = e.clientX - panStartX;
+    const deltaY = e.clientY - panStartY;
+    tx = panStartTx + deltaX;
+    ty = panStartTy + deltaY;
+  }
+
+  function onPointerUp() {
+    isPanning = false;
+  }
+
+  // Zoom handler (centered at cursor if possible, or globally)
+  function onWheel(e: WheelEvent) {
+    e.preventDefault();
+    const zoomSpeed = 0.1;
+    const newScale = Math.max(0.4, Math.min(3, scale - (e.deltaY > 0 ? zoomSpeed : -zoomSpeed)));
+
+    // Optional: center zoom at cursor position
+    // For simplicity, we'll just zoom globally
+    scale = newScale;
+  }
+
+  // Reset pan/zoom
+  function resetView() {
+    tx = 0;
+    ty = 0;
+    scale = 1;
+  }
 </script>
 
 <div class="topology-container">
   {#if !topology.enabled || !topology.coordinator}
     <p class="no-topology">Aucune topologie disponible.</p>
   {:else}
-    <svg width={svgWidth} height={svgHeight} viewBox="0 0 {svgWidth} {svgHeight}" class="topology-svg">
-      <!-- Draw edges: coordinator -> teams -->
-      {#each layoutTeams as team}
-        <line x1={coordX} y1={coordY} x2={team.x} y2={team.y} class="edge" />
+    <div class="topology-wrapper">
+      <svg
+        width={svgWidth}
+        height={svgHeight}
+        viewBox="0 0 {svgWidth} {svgHeight}"
+        class="topology-svg"
+        class:panning={isPanning}
+        onpointerdown={onPointerDown}
+        onpointermove={onPointerMove}
+        onpointerup={onPointerUp}
+        onpointercancel={onPointerUp}
+        onwheel={onWheel}
+        style="touch-action: none"
+        role="application"
+        aria-label="Orchestration topology graph with pan and zoom"
+      >
+        <!-- Transformed content group -->
+        <g transform="translate({tx} {ty}) scale({scale})">
+          <!-- Draw edges: coordinator -> teams -->
+          {#each layoutTeams as team}
+            <line x1={coordX} y1={coordY} x2={team.x} y2={team.y} class="edge" />
 
-        <!-- Draw edges: team -> agents -->
-        {#each team.agents as agent}
-          <line x1={team.x} y1={team.y} x2={agent.x} y2={agent.y} class="edge" />
-        {/each}
-      {/each}
+            <!-- Draw edges: team -> agents -->
+            {#each team.agents as agent}
+              <line x1={team.x} y1={team.y} x2={agent.x} y2={agent.y} class="edge" />
+            {/each}
+          {/each}
 
-      <!-- Draw edges: coordinator -> standalone agents -->
-      {#each standaloneAgents as agent}
-        <line x1={coordX} y1={coordY} x2={agent.x} y2={agent.y} class="edge" />
-      {/each}
+          <!-- Draw edges: coordinator -> standalone agents -->
+          {#each standaloneAgents as agent}
+            <line x1={coordX} y1={coordY} x2={agent.x} y2={agent.y} class="edge" />
+          {/each}
 
-      <!-- Draw coordinator (diamond) -->
-      <g class="node coordinator">
-        <rect
-          x={coordX - diamondSize / 2}
-          y={coordY - diamondSize / 2}
-          width={diamondSize}
-          height={diamondSize}
-          rx="2"
-          class="diamond"
-          transform="rotate(45 {coordX} {coordY})"
-        />
-        <text x={coordX} y={coordY} class="label" text-anchor="middle" dominant-baseline="middle">
-          <title>{topology.coordinator}</title>
-          {getLabel(topology.coordinator)}
-        </text>
-      </g>
-
-      <!-- Draw team nodes and agents -->
-      {#each layoutTeams as team}
-        <!-- Team lead (diamond) -->
-        {#if team && team.x !== undefined && team.y !== undefined}
-          <g class="node team">
+          <!-- Draw coordinator (diamond) -->
+          <g class="node coordinator">
             <rect
-              x={team.x - diamondSize / 2}
-              y={team.y - diamondSize / 2}
+              x={coordX - diamondSize / 2}
+              y={coordY - diamondSize / 2}
               width={diamondSize}
               height={diamondSize}
               rx="2"
               class="diamond"
-              transform="rotate(45 {team.x} {team.y})"
+              transform="rotate(45 {coordX} {coordY})"
             />
-            <text
-              x={team.x}
-              y={team.y}
-              class="label"
-              text-anchor="middle"
-              dominant-baseline="middle"
-            >
-              {#if topology.teams[layoutTeams.indexOf(team)] && topology.teams[layoutTeams.indexOf(team)].lead}
-                <title>{topology.teams[layoutTeams.indexOf(team)].lead || "Équipe"}</title>
-                {getLabel(topology.teams[layoutTeams.indexOf(team)].lead || "")}
-              {:else}
-                <title>Équipe</title>
-                T
-              {/if}
+            <text x={coordX} y={coordY} class="label" text-anchor="middle" dominant-baseline="middle">
+              <title>{topology.coordinator}</title>
+              {getLabel(topology.coordinator)}
             </text>
           </g>
 
-          <!-- Agents under this team -->
-          {#each team.agents as agent}
+          <!-- Draw team nodes and agents -->
+          {#each layoutTeams as team}
+            <!-- Team lead (diamond) -->
+            {#if team && team.x !== undefined && team.y !== undefined}
+              <g class="node team">
+                <rect
+                  x={team.x - diamondSize / 2}
+                  y={team.y - diamondSize / 2}
+                  width={diamondSize}
+                  height={diamondSize}
+                  rx="2"
+                  class="diamond"
+                  transform="rotate(45 {team.x} {team.y})"
+                />
+                <text
+                  x={team.x}
+                  y={team.y}
+                  class="label"
+                  text-anchor="middle"
+                  dominant-baseline="middle"
+                >
+                  {#if topology.teams[layoutTeams.indexOf(team)] && topology.teams[layoutTeams.indexOf(team)].lead}
+                    <title>{topology.teams[layoutTeams.indexOf(team)].lead || "Équipe"}</title>
+                    {getLabel(topology.teams[layoutTeams.indexOf(team)].lead || "")}
+                  {:else}
+                    <title>Équipe</title>
+                    T
+                  {/if}
+                </text>
+              </g>
+
+              <!-- Agents under this team -->
+              {#each team.agents as agent}
+                <g class="node agent">
+                  <circle cx={agent.x} cy={agent.y} r={agentRadius} class="agent-circle" />
+                  <text
+                    x={agent.x}
+                    y={agent.y}
+                    class="label agent-label"
+                    text-anchor="middle"
+                    dominant-baseline="middle"
+                  >
+                    <title>{agent.name}</title>
+                    {getLabel(agent.name)}
+                  </text>
+                </g>
+              {/each}
+            {/if}
+          {/each}
+
+          <!-- Standalone agents (not in teams) -->
+          {#each standaloneAgents as agent}
             <g class="node agent">
               <circle cx={agent.x} cy={agent.y} r={agentRadius} class="agent-circle" />
               <text
@@ -183,26 +272,14 @@
               </text>
             </g>
           {/each}
-        {/if}
-      {/each}
-
-      <!-- Standalone agents (not in teams) -->
-      {#each standaloneAgents as agent}
-        <g class="node agent">
-          <circle cx={agent.x} cy={agent.y} r={agentRadius} class="agent-circle" />
-          <text
-            x={agent.x}
-            y={agent.y}
-            class="label agent-label"
-            text-anchor="middle"
-            dominant-baseline="middle"
-          >
-            <title>{agent.name}</title>
-            {getLabel(agent.name)}
-          </text>
         </g>
-      {/each}
-    </svg>
+      </svg>
+
+      <!-- Reset button (discreet, positioned absolutely) -->
+      <button class="reset-btn" onclick={resetView} title="Recentrer le graphe">
+        ↺
+      </button>
+    </div>
   {/if}
 </div>
 
@@ -212,7 +289,6 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: var(--panel-pad);
-    overflow-x: auto;
     margin: var(--gutter) 0;
   }
 
@@ -223,11 +299,24 @@
     padding: 24px;
   }
 
+  .topology-wrapper {
+    position: relative;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--surface-0);
+  }
+
   .topology-svg {
     width: 100%;
     max-width: 100%;
     height: auto;
     display: block;
+    cursor: grab;
+    transition: cursor 150ms ease;
+  }
+
+  .topology-svg.panning {
+    cursor: grabbing;
   }
 
   .edge {
@@ -280,5 +369,40 @@
 
   .agent-label {
     fill: var(--text-secondary);
+  }
+
+  .reset-btn {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 150ms ease;
+    z-index: 10;
+  }
+
+  .reset-btn:hover {
+    background: var(--surface-3);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+  }
+
+  .reset-btn:focus {
+    outline: 2px solid var(--brass);
+    outline-offset: 2px;
+  }
+
+  .reset-btn:active {
+    transform: scale(0.95);
   }
 </style>
