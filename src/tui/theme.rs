@@ -195,8 +195,10 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
+        // Cheap, env-free default; the real run always overwrites this with
+        // `Theme::detect(ascii)` before rendering, so avoid a second env read.
         Theme {
-            tier: ColorTier::detect(),
+            tier: ColorTier::Ansi16,
             ascii: false,
         }
     }
