@@ -851,7 +851,12 @@ impl ShellApp {
     fn render_messages_area(&self, frame: &mut Frame, area: Rect) {
         if self.messages.is_empty() {
             let placeholder = Paragraph::new("Welcome to ArmadAI Shell!\n\nType your message and press Enter to get started. Press Ctrl+L to clear conversation, Ctrl+W to focus the workroom panel, Ctrl+C or Esc to quit.")
-                .block(Block::default().borders(Borders::ALL))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border_style()),
+                )
+                .style(theme::border_style())
                 .wrap(Wrap { trim: false });
             frame.render_widget(placeholder, area);
             return;
@@ -931,9 +936,17 @@ impl ShellApp {
             max_scroll
         };
 
-        // Create paragraph with message content
+        // Create paragraph with message content. The base `.style()` gives the
+        // whole panel a neutral foreground so unstyled message bodies (plain
+        // user lines, markdown text) don't inherit the terminal default fg
+        // (which reads blue on light terminals). Styled role labels override it.
         let messages_text = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border_style()),
+            )
+            .style(theme::border_style())
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0));
 
