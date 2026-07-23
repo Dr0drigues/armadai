@@ -536,14 +536,72 @@ impl Workroom {
         self.apply_stream_text(line);
     }
 
+    /// Index of the agent currently holding the ring token, if any.
+    fn token_holder_index(&self) -> Option<usize> {
+        let current = self.current_agent.as_deref()?;
+        self.agents.iter().position(|a| a.name == current)
+    }
+
+    /// The focused ring layout: sequential agents with flow arrows; the
+    /// token holder is highlighted (bold brass) with a "holds token" suffix.
+    fn ring_lines(&self) -> Vec<Line<'_>> {
+        let mut lines: Vec<Line> = Vec::new();
+        let g = theme::glyphs();
+        let holder = self.token_holder_index();
+        let last = self.agents.len().saturating_sub(1);
+        for (idx, agent) in self.agents.iter().enumerate() {
+            let (icon, state_str, style) = self.state_display(agent);
+            let is_holder = holder == Some(idx);
+            let is_selected = self.focused && idx == self.selected;
+            let name_style = if is_holder {
+                theme::selection()
+            } else if is_selected {
+                self.role_style(agent).add_modifier(Modifier::REVERSED)
+            } else {
+                self.role_style(agent)
+            };
+            let marker = if is_holder { "▸ " } else { "  " };
+            let mut spans = vec![
+                Span::raw(marker),
+                Span::styled(&agent.name, name_style),
+                Span::styled(format!(" {icon} "), style),
+                Span::styled(state_str, style),
+            ];
+            if is_holder {
+                spans.push(Span::styled("   ← holds token", theme::selection()));
+            }
+            lines.push(Line::from(spans));
+            if idx != last {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", g.arrow_down),
+                    theme::muted(),
+                )));
+            }
+        }
+        if self.agents.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No agents configured",
+                theme::muted(),
+            )));
+        } else {
+            // Loop-back arrow closing the ring.
+            lines.push(Line::from(Span::styled(
+                format!("  {} (loops to top)", g.arrow_up),
+                theme::muted(),
+            )));
+        }
+        self.push_footer(&mut lines);
+        lines
+    }
+
     /// Render the workroom panel
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         let inner_width = area.width.saturating_sub(2); // exclude borders
         let lines = match self.layout_mode(inner_width) {
             LayoutMode::Compact => self.compact_lines(),
             LayoutMode::Hierarchical => self.hierarchical_lines(),
-            // Blackboard/Ring rich layouts land in T3b; degrade until then.
-            LayoutMode::Blackboard | LayoutMode::Ring => self.compact_lines(),
+            LayoutMode::Blackboard => self.blackboard_lines(),
+            LayoutMode::Ring => self.ring_lines(),
         };
 
         let panel = Paragraph::new(lines).block(
@@ -693,6 +751,46 @@ impl Workroom {
             ]));
         }
         if lines.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No agents configured",
+                theme::muted(),
+            )));
+        }
+        self.push_footer(&mut lines);
+        lines
+    }
+
+    /// The focused blackboard layout: a shared-board header, then a flat
+    /// list of agents (no hierarchy — all react to shared state).
+    fn blackboard_lines(&self) -> Vec<Line<'_>> {
+        let mut lines: Vec<Line> = Vec::new();
+        let g = theme::glyphs();
+        lines.push(Line::from(Span::styled(
+            format!("{} shared board · {} agents", g.board, self.agents.len()),
+            theme::heading(),
+        )));
+        for (idx, agent) in self.agents.iter().enumerate() {
+            let (icon, state_str, style) = self.state_display(agent);
+            let role_style = self.role_style(agent);
+            let is_selected = self.focused && idx == self.selected;
+            let name_style = if is_selected {
+                role_style.add_modifier(Modifier::REVERSED)
+            } else {
+                role_style
+            };
+            let suffix = if agent.state == AgentState::Idle {
+                "  idle (waiting on board)".to_string()
+            } else {
+                format!("  {state_str}")
+            };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{icon} "), style),
+                Span::styled(&agent.name, name_style),
+                Span::styled(suffix, style),
+            ]));
+        }
+        if self.agents.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No agents configured",
                 theme::muted(),
@@ -1134,5 +1232,49 @@ orchestration:
         assert!(md.contains("working"));
         assert!(md.contains("done"));
         assert!(md.contains("Last action:** complete"));
+    }
+
+    #[test]
+    fn blackboard_lines_has_board_header() {
+        let mut wr = Workroom::new();
+        wr.init_from_config(
+            "orchestration:\n  pattern: blackboard\ncoordinator: c\nagents:\n- a\n- b\n",
+        );
+        let lines = wr.blackboard_lines();
+        // First line is the shared-board header carrying the board glyph.
+        let first = &lines[0];
+        let text: String = first.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains(theme::glyphs().board));
+        assert!(text.contains("agents"));
+    }
+
+    #[test]
+    fn token_holder_index_matches_current_agent() {
+        let mut wr = Workroom::new();
+        wr.init_from_config(
+            "orchestration:\n  pattern: ring\ncoordinator: c\nagents:\n- alpha\n- beta\n",
+        );
+        // No token holder initially.
+        assert_eq!(wr.token_holder_index(), None);
+        // The token moves to an agent via a DELEGATE marker in the stream.
+        wr.parse_streaming_line("<!--ARMADAI_DELEGATE:alpha-->");
+        let idx = wr.token_holder_index().expect("alpha holds the token");
+        assert_eq!(wr.agents[idx].name, "alpha");
+    }
+
+    #[test]
+    fn ring_lines_marks_token_holder_bold_brass() {
+        let mut wr = Workroom::new();
+        wr.init_from_config(
+            "orchestration:\n  pattern: ring\ncoordinator: c\nagents:\n- alpha\n- beta\n",
+        );
+        wr.parse_streaming_line("<!--ARMADAI_DELEGATE:alpha-->");
+        let lines = wr.ring_lines();
+        // The span carrying the holder name uses the bold selection (brass) style.
+        let holder_styled = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.content.contains("alpha") && s.style.add_modifier.contains(Modifier::BOLD));
+        assert!(holder_styled);
     }
 }
