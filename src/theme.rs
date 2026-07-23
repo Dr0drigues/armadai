@@ -248,6 +248,14 @@ pub fn border_style() -> Style {
     Style::default().fg(BORDER.color())
 }
 
+/// Style for the input block cursor: reverse-video (swaps the cell's
+/// foreground/background) so the cursor stays visible on both light and
+/// dark terminals. Rendered on a single space cell.
+#[allow(dead_code)]
+pub fn cursor() -> Style {
+    Style::default().add_modifier(Modifier::REVERSED)
+}
+
 /// Alias for `selection()` (bold brass accent used for highlights).
 /// Named `accent_style()` for UI compatibility.
 pub fn accent_style() -> Style {
@@ -345,5 +353,10 @@ mod tests {
 
         // Note: can't test ASCII variant easily without resetting OnceLock.
         // The behavior is correct by code inspection.
+    }
+
+    #[test]
+    fn cursor_is_reversed() {
+        assert!(cursor().add_modifier.contains(Modifier::REVERSED));
     }
 }
