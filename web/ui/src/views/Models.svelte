@@ -18,7 +18,7 @@
 
   function formatCost(n: number | null): string {
     if (n === null) return "—";
-    return fmtCost(n);
+    return `${fmtCost(n)}/1M`;
   }
 </script>
 
@@ -60,8 +60,8 @@
                 <td>{model.name ?? "—"}</td>
                 <td class="num mono">{fmtContext(model.context)}</td>
                 <td class="num mono">{fmtContext(model.max_output)}</td>
-                <td class="num mono">{formatCost(model.cost_input)}/1M</td>
-                <td class="num mono">{formatCost(model.cost_output)}/1M</td>
+                <td class="num mono">{formatCost(model.cost_input)}</td>
+                <td class="num mono">{formatCost(model.cost_output)}</td>
               </tr>
             {/each}
           </tbody>
