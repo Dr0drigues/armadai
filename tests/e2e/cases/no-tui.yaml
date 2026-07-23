@@ -10,8 +10,8 @@ setup:
   # `direct`/`ring`/etc. cases exercise that implicit path. This case instead
   # exercises the explicit `--no-tui` opt-out (`src/cli/run.rs`) and confirms
   # it's a genuine no-op on the event stream: same `events`/`event_counts` as
-  # a plain `--json` ring run (checked by hand against the real binary before
-  # writing this case — see `docs/superpowers/...task-4-report.md`).
+  # a plain `--json` ring run (verified by hand against the real binary when
+  # this case was written).
   flags: ["--json", "--no-tui"]
   input: "say hi"
 fake:
