@@ -12,17 +12,33 @@
 
   const r = $derived(router.current);
 
+  // One-time: topology + the trace list (route-independent).
   onMount(async () => {
     try {
       [topology, traces] = await Promise.all([getTopology(), getTraces()]);
-      if (r.param) {
-        traceDetail = await getTraceDetail(r.param);
-      }
     } catch (e) {
       error = String(e);
     } finally {
       loading = false;
     }
+  });
+
+  // Reactive: load a run's trace detail whenever the route param changes
+  // (clicking a trace navigates to #/orchestration/{run_id}, which changes the
+  // prop, not a remount).
+  $effect(() => {
+    const id = r.param;
+    if (!id) {
+      traceDetail = null;
+      return;
+    }
+    getTraceDetail(id)
+      .then((d) => {
+        traceDetail = d;
+      })
+      .catch((e) => {
+        error = String(e);
+      });
   });
 
 </script>

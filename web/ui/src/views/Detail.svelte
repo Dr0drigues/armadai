@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { navigate } from "../lib/route.svelte";
   import { getDetail } from "../lib/api";
   import Markdown from "../lib/Markdown.svelte";
@@ -13,20 +12,29 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
 
-  onMount(async () => {
-    if (!name) {
+  // Reload whenever kind/name changes (navigating between details of the same
+  // kind, e.g. agents/foo -> agents/bar, only changes the prop — not a remount).
+  $effect(() => {
+    const k = kind;
+    const n = name;
+    if (!n) {
+      data = null;
       error = "No name specified";
       loading = false;
       return;
     }
-
-    try {
-      data = await getDetail(kind, name);
-    } catch (e) {
-      error = e instanceof Error ? e.message : "Failed to load detail";
-    } finally {
-      loading = false;
-    }
+    loading = true;
+    error = null;
+    getDetail(k, n)
+      .then((d) => {
+        data = d;
+      })
+      .catch((e) => {
+        error = e instanceof Error ? e.message : "Failed to load detail";
+      })
+      .finally(() => {
+        loading = false;
+      });
   });
 
   function renderValue(value: unknown): string {
