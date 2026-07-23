@@ -611,13 +611,19 @@ impl Workroom {
             LayoutMode::Ring => self.ring_lines(),
         };
 
-        let panel = Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::border_style())
-                .title(format!(" Workroom · {} ", self.pattern))
-                .title_style(theme::heading()),
-        );
+        let panel = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border_style())
+                    .title(format!(" Workroom · {} ", self.pattern))
+                    .title_style(theme::heading()),
+            )
+            // Base style for the whole panel area so uncoloured content
+            // (e.g. plain `role_agent` names) inherits a neutral foreground
+            // instead of the terminal default fg (which reads blue on light
+            // terminals). Coloured roles/states override this.
+            .style(theme::border_style());
         frame.render_widget(panel, area);
     }
 
