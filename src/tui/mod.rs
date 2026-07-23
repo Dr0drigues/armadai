@@ -1,6 +1,7 @@
 mod app;
 pub mod filter;
 pub mod format;
+pub mod theme;
 pub mod views;
 pub mod widgets;
 
