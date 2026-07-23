@@ -82,6 +82,10 @@ pub struct Workroom {
     focused: bool,
     /// Active orchestration pattern (drives the focused layout).
     pattern: OrchestrationPattern,
+    /// Whether the orchestration has finished and the live TUI is holding the
+    /// final frame for the user to dismiss (Dimitri's visual-validation
+    /// request: fast providers used to make the workroom flash and vanish).
+    completed: bool,
 }
 
 impl Workroom {
@@ -95,6 +99,7 @@ impl Workroom {
             selected: 0,
             focused: false,
             pattern: OrchestrationPattern::Hierarchical,
+            completed: false,
         }
     }
 
@@ -106,6 +111,12 @@ impl Workroom {
     /// Whether the workroom currently has keyboard focus.
     pub fn is_focused(&self) -> bool {
         self.focused
+    }
+
+    /// Mark the orchestration as finished so the renderer holds the final
+    /// frame and shows the "press q/Esc to exit" hint instead of vanishing.
+    pub fn set_completed(&mut self, completed: bool) {
+        self.completed = completed;
     }
 
     /// Decide the layout from pattern, focus, and available inner width.
@@ -451,7 +462,15 @@ impl Workroom {
                 }
                 self.visible = true;
             }
-            RunEvent::AgentStart { agent, .. } => self.mark_working(agent, now),
+            RunEvent::AgentStart { agent, .. } => {
+                self.mark_working(agent, now);
+                // The ES ring/blackboard engines emit agent_start/agent_end/vote
+                // but never `Delegate`, so `current_agent` (which drives the
+                // ring layout's token-holder highlight via `token_holder_index`)
+                // would otherwise never update in the live path. The agent that
+                // just started is the one holding the token.
+                self.current_agent = Some(agent.clone());
+            }
             RunEvent::AgentEnd { agent, content, .. } => {
                 self.mark_done(agent, now);
                 let first = content.lines().next().unwrap_or("").trim();
@@ -805,6 +824,12 @@ impl Workroom {
             lines.push(Line::from(Span::styled("Enter detail", theme::muted())));
         } else {
             lines.push(Line::from(Span::styled("Ctrl+W focus", theme::muted())));
+        }
+        if self.completed {
+            lines.push(Line::from(Span::styled(
+                "✓ run complete · press q or Esc to exit",
+                theme::done(),
+            )));
         }
     }
 
@@ -1366,6 +1391,39 @@ orchestration:
         // The token moves to an agent via a DELEGATE marker in the stream.
         wr.parse_streaming_line("<!--ARMADAI_DELEGATE:alpha-->");
         let idx = wr.token_holder_index().expect("alpha holds the token");
+        assert_eq!(wr.agents[idx].name, "alpha");
+    }
+
+    #[test]
+    fn agent_start_sets_token_holder_without_delegate() {
+        // ES ring/blackboard engines never emit `Delegate` — only
+        // agent_start/agent_end/vote — so the token-holder highlight must be
+        // driven by `AgentStart` alone (review finding M2).
+        let mut wr = Workroom::new();
+        let t = Instant::now();
+        wr.on_run_event_at(
+            &RunEvent::RunStart {
+                v: 1,
+                agents: vec!["alpha".into(), "beta".into()],
+                prov: "fake".into(),
+                model: "m".into(),
+                in_chars: 0,
+            },
+            t,
+        );
+        assert_eq!(wr.token_holder_index(), None);
+
+        wr.on_run_event_at(
+            &RunEvent::AgentStart {
+                agent: "alpha".into(),
+                prov: "fake".into(),
+                model: "m".into(),
+            },
+            t,
+        );
+        let idx = wr
+            .token_holder_index()
+            .expect("alpha holds the token after AgentStart");
         assert_eq!(wr.agents[idx].name, "alpha");
     }
 

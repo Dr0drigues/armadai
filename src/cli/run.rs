@@ -42,10 +42,21 @@ pub async fn execute(
     // headless is implied by json (machine output cannot be interrupted by a prompt)
     let headless = headless || json;
 
-    // Live Workroom TUI: only for orchestrated runs, only when nothing else
-    // demands plain/machine output, and only when attached to a real
-    // terminal. Falls through to the unchanged headless path otherwise.
-    let use_tui = orchestrate.is_some()
+    // Orchestration can also be turned on purely via project config
+    // (`orchestration.enabled: true` in armadai.yaml), with no explicit
+    // `--orchestrate` flag — `run_inner` auto-detects that case on its own
+    // (see the `AgentResolution::Project` branch below). The live TUI must
+    // trigger for that path too, or config-driven runs silently stay headless.
+    let config_orchestrated = project::find_project_config()
+        .and_then(|(_, cfg)| cfg.orchestration)
+        .map(|o| o.enabled)
+        .unwrap_or(false);
+
+    // Live Workroom TUI: only for orchestrated runs (explicit `--orchestrate`
+    // or config-driven auto-detect), only when nothing else demands
+    // plain/machine output, and only when attached to a real terminal. Falls
+    // through to the unchanged headless path otherwise.
+    let use_tui = (orchestrate.is_some() || config_orchestrated)
         && !json
         && !quiet
         && !no_tui

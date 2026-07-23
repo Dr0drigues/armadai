@@ -117,9 +117,10 @@ where
     render_result
 }
 
-/// Drain events, redraw, and poll input until the orchestration finishes (or
-/// the user quits/aborts). Returns the final `RunEvent::Result` content (if
-/// any) for the caller to print once the terminal is restored.
+/// Drain events, redraw, and poll input until the orchestration finishes and
+/// the user dismisses the final frame (or aborts early). Returns the final
+/// `RunEvent::Result` content (if any) for the caller to print once the
+/// terminal is restored.
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     workroom: &mut Workroom,
@@ -127,6 +128,12 @@ async fn run_loop(
     handle: tokio::task::JoinHandle<anyhow::Result<()>>,
 ) -> anyhow::Result<Option<String>> {
     let mut final_content: Option<String> = None;
+    // Flipped once the orchestration has finished and the channel is fully
+    // drained. From that point the loop no longer auto-exits: it keeps
+    // rendering the final Workroom frame (with a dismissal hint) and waits
+    // for the user to press q/Esc — otherwise fast providers make the
+    // workroom flash and disappear before it can be seen.
+    let mut finished = false;
     loop {
         // Drain all pending events.
         while let Ok(ev) = rx.try_recv() {
@@ -135,10 +142,18 @@ async fn run_loop(
             }
             workroom.on_run_event_at(&ev, Instant::now());
         }
+
+        if !finished && handle.is_finished() && rx.is_empty() {
+            finished = true;
+            workroom.set_completed(true);
+        }
+
         workroom.tick();
         terminal.draw(|f| workroom.render(f, f.area()))?;
 
-        // Input: Ctrl+W focus/drill-down (already implemented), Ctrl+C/q quit.
+        // Input: Ctrl+W focus/drill-down (already implemented, and still
+        // active during the post-completion hold), Ctrl+C aborts anytime,
+        // q/Esc dismiss the held final frame once `finished`.
         if event::poll(Duration::from_millis(80))?
             && let Event::Key(k) = event::read()?
             && k.kind == KeyEventKind::Press
@@ -155,24 +170,13 @@ async fn run_loop(
                 KeyCode::Down | KeyCode::Char('j') if workroom.is_focused() => {
                     workroom.select_next()
                 }
+                KeyCode::Char('q') | KeyCode::Esc if finished => break,
                 KeyCode::Char('q') if !workroom.is_focused() => {
                     handle.abort();
                     break;
                 }
                 _ => {}
             }
-        }
-
-        // Exit once the orchestration finished and the channel is drained.
-        if handle.is_finished() && rx.is_empty() {
-            // Apply any last events.
-            while let Ok(ev) = rx.try_recv() {
-                if let RunEvent::Result { content, .. } = &ev {
-                    final_content = Some(content.clone());
-                }
-                workroom.on_run_event_at(&ev, Instant::now());
-            }
-            break;
         }
     }
 
