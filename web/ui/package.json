@@ -17,5 +17,8 @@
     "typescript": "^5",
     "vite": "^6",
     "vitest": "^1"
+  },
+  "dependencies": {
+    "marked": "^18.0.7"
   }
 }

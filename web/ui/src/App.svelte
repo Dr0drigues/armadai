@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { router } from "./lib/route.svelte";
   import Shell from "./lib/Shell.svelte";
   import Agents from "./views/Agents.svelte";
   import History from "./views/History.svelte";
@@ -7,8 +8,6 @@
   import Starters from "./views/Starters.svelte";
   import Costs from "./views/Costs.svelte";
   import Models from "./views/Models.svelte";
-
-  let active = $state("agents");
 
   const tabs = [
     { id: "agents", label: "Agents", count: 6, icon: "agents" },
@@ -20,12 +19,11 @@
     { id: "models", label: "Models", count: 37, icon: "models" },
   ];
 
-  function handleSelect(id: string) {
-    active = id;
-  }
+  const r = $derived(router.current);
+  const active = $derived(r.view);
 </script>
 
-<Shell {tabs} {active} onselect={handleSelect}>
+<Shell {tabs} {active}>
   <div class="page-head">
     <h1>
       {#if active === "agents"}
