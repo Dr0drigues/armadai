@@ -164,6 +164,6 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
 
     // Render search bar if in search mode
     if app.search_mode {
-        search_bar(frame, &app.search_query, area);
+        search_bar(frame, app, &app.search_query, area);
     }
 }

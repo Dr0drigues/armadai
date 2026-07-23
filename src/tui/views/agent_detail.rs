@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -55,7 +55,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!(" {} ", agent.name), theme::heading()),
         Span::styled(
             format!("  ({})", agent.source.display()),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.text_muted()),
         ),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -79,7 +79,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Fallback: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(
                 meta.model_fallback.join(", "),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(app.theme.text_muted()),
             ),
         ]));
     }
@@ -101,7 +101,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if !meta.scope.is_empty() {
         meta_lines.push(Line::from(vec![
             Span::styled("Scope:    ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(meta.scope.join(", "), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                meta.scope.join(", "),
+                Style::default().fg(app.theme.signal(crate::tui::theme::Signal::Running)),
+            ),
         ]));
     }
 
@@ -136,7 +139,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         if let Some(ref pattern) = agent.metadata.orchestration {
             orch_lines.push(Line::from(vec![
                 Span::styled("Pattern:  ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(pattern.to_string(), Style::default().fg(Color::Magenta)),
+                Span::styled(
+                    pattern.to_string(),
+                    Style::default().fg(app.theme.brass_strong()),
+                ),
             ]));
         }
 
@@ -157,7 +163,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             parts.push(format!("priority: {}", triggers.priority));
             orch_lines.push(Line::from(vec![
                 Span::styled("Triggers: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(parts.join(", "), Style::default().fg(Color::Yellow)),
+                Span::styled(parts.join(", "), Style::default().fg(app.theme.brass())),
             ]));
         }
 
@@ -171,7 +177,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             }
             orch_lines.push(Line::from(vec![
                 Span::styled("Ring:     ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(parts.join(", "), Style::default().fg(Color::Blue)),
+                Span::styled(
+                    parts.join(", "),
+                    Style::default().fg(app.theme.brass_strong()),
+                ),
             ]));
         }
 
@@ -200,8 +209,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     format!("{:<10}", target),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" → ", Style::default().fg(Color::DarkGray)),
-                Span::styled(resolved.as_str(), Style::default().fg(Color::Green)),
+                Span::styled(" → ", Style::default().fg(app.theme.text_muted())),
+                Span::styled(
+                    resolved.as_str(),
+                    Style::default().fg(app.theme.signal(crate::tui::theme::Signal::Ok)),
+                ),
             ])
         })
         .collect();
@@ -243,7 +255,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .title(" Instructions ")
                 .title_style(Style::default().add_modifier(Modifier::BOLD)),
         )
-        .style(Style::default().fg(Color::Gray))
+        .style(Style::default().fg(app.theme.text_secondary()))
         .wrap(Wrap { trim: false });
     frame.render_widget(instr_widget, chunks[4 + orch_offset]);
 }

@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -66,7 +66,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!(" {} ", skill.name), theme::heading()),
         Span::styled(
             format!("  ({})", skill.source.display()),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.text_muted()),
         ),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -101,14 +101,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 "Tools:       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::styled(skill.tools.join(", "), Style::default().fg(Color::Green)),
+            Span::styled(
+                skill.tools.join(", "),
+                Style::default().fg(app.theme.signal(crate::tui::theme::Signal::Ok)),
+            ),
         ]));
     }
 
     if meta_lines.is_empty() {
         meta_lines.push(Line::from(Span::styled(
             "(no metadata)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.text_muted()),
         )));
     }
 
@@ -150,11 +153,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     .title(format!(" {name} "))
                     .title_style(
                         Style::default()
-                            .fg(Color::Yellow)
+                            .fg(app.theme.brass())
                             .add_modifier(Modifier::BOLD),
                     ),
             )
-            .style(Style::default().fg(Color::Gray))
+            .style(Style::default().fg(app.theme.text_secondary()))
             .wrap(Wrap { trim: false });
         frame.render_widget(ref_widget, chunks[3 + i]);
     }
@@ -183,7 +186,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     .title(" Other Files ")
                     .title_style(Style::default().add_modifier(Modifier::BOLD)),
             )
-            .style(Style::default().fg(Color::DarkGray));
+            .style(Style::default().fg(app.theme.text_muted()));
         frame.render_widget(files_widget, chunks[3 + ref_contents.len()]);
     }
 }

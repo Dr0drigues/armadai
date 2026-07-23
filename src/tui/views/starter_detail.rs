@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -57,7 +57,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!(" {} ", pack.name), theme::heading()),
         Span::styled(
             format!("  — {}", pack.description),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.text_muted()),
         ),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -70,8 +70,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .agents
             .iter()
             .map(|a| {
-                // Was `fg(Color::White)` — white-on-white on a light terminal.
-                Line::from(Span::styled(format!("  • {a}"), Style::default()))
+                Line::from(Span::styled(
+                    format!("  • {a}"),
+                    Style::default().fg(app.theme.text_primary()),
+                ))
             })
             .collect();
         let widget = Paragraph::new(lines)
@@ -94,7 +96,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .map(|p| {
                 Line::from(Span::styled(
                     format!("  • {p}"),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(app.theme.brass()),
                 ))
             })
             .collect();
@@ -118,7 +120,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .map(|s| {
                 Line::from(Span::styled(
                     format!("  • {s}"),
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(app.theme.signal(crate::tui::theme::Signal::Ok)),
                 ))
             })
             .collect();

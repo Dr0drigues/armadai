@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -38,7 +38,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!(" {} ", prompt.name), theme::heading()),
         Span::styled(
             format!("  ({})", prompt.source.display()),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.text_muted()),
         ),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -65,7 +65,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(
                 prompt.apply_to.join(", "),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(app.theme.brass()),
             ),
         ]));
     }
@@ -73,7 +73,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if meta_lines.is_empty() {
         meta_lines.push(Line::from(Span::styled(
             "(no metadata)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.text_muted()),
         )));
     }
 

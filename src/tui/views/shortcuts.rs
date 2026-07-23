@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -139,11 +139,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(
                     format!(" {key} "),
                     Style::default()
-                        .bg(Color::DarkGray)
-                        .fg(Color::White)
+                        .bg(app.theme.surface_panel())
+                        .fg(app.theme.text_primary())
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(format!(" {desc}  "), Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!(" {desc}  "),
+                    Style::default().fg(app.theme.text_secondary()),
+                ),
             ]
         })
         .collect();
@@ -153,7 +156,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(
             format!("  {msg}"),
             Style::default()
-                .fg(Color::Green)
+                .fg(app.theme.signal(crate::tui::theme::Signal::Ok))
                 .add_modifier(Modifier::ITALIC),
         ));
     }

@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -38,7 +38,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!(" {} ", entry.id), theme::heading()),
         Span::styled(
             format!("  ({})", provider),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.text_muted()),
         ),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -95,11 +95,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("Cost (input):   ", bold),
-            Span::styled(&cost_in, Style::default().fg(Color::Yellow)),
+            Span::styled(&cost_in, Style::default().fg(app.theme.brass())),
         ]),
         Line::from(vec![
             Span::styled("Cost (output):  ", bold),
-            Span::styled(&cost_out, Style::default().fg(Color::Yellow)),
+            Span::styled(&cost_out, Style::default().fg(app.theme.brass())),
         ]),
     ];
 
@@ -122,7 +122,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .title(" Display Label ")
                 .title_style(bold),
         )
-        .style(Style::default().fg(Color::Green))
+        .style(Style::default().fg(app.theme.signal(crate::tui::theme::Signal::Ok)))
         .wrap(Wrap { trim: false });
     frame.render_widget(label_widget, chunks[2]);
 }

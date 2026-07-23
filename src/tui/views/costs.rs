@@ -109,6 +109,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Render search bar if in search mode
     if app.search_mode {
-        search_bar(frame, &app.search_query, area);
+        search_bar(frame, app, &app.search_query, area);
     }
 }
