@@ -37,3 +37,6 @@ config/
 
 # Session state (not shipped)
 docs/SESSION-STATE.md
+
+# Web UI (node_modules ignored, dist committed)
+web/ui/node_modules/
