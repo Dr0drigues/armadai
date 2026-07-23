@@ -4,8 +4,14 @@
 
 function parse(hash: string): { view: string; param: string | null } {
   const path = hash.replace(/^#\/?/, ""); // Remove "#/" prefix
-  const [view = "agents", param = null] = path.split("/");
-  return { view, param: param || null };
+  const [rawView, rawParam] = path.split("/");
+  // Empty hash (#, #/, or no hash) → default view. Note a "" segment is not
+  // `undefined`, so a destructuring default wouldn't catch it.
+  const view = rawView || "agents";
+  // Decode the param: navigate() encodes it (encodeURIComponent), and names
+  // can contain spaces/slashes ("Dev Lead" → "Dev%20Lead").
+  const param = rawParam ? decodeURIComponent(rawParam) : null;
+  return { view, param };
 }
 
 class Router {

@@ -11,19 +11,33 @@
   import Orchestration from "./views/Orchestration.svelte";
   import Detail from "./views/Detail.svelte";
 
+  // No hardcoded counts — a fake number is worse than none (a real count would
+  // need fetching every list up front).
   const tabs = [
-    { id: "agents", label: "Agents", count: 6, icon: "agents" },
-    { id: "prompts", label: "Prompts", count: 12, icon: "prompts" },
-    { id: "skills", label: "Skills", count: 8, icon: "skills" },
-    { id: "starters", label: "Starters", count: 5, icon: "starters" },
-    { id: "history", label: "History", count: 148, icon: "history" },
+    { id: "agents", label: "Agents", icon: "agents" },
+    { id: "prompts", label: "Prompts", icon: "prompts" },
+    { id: "skills", label: "Skills", icon: "skills" },
+    { id: "starters", label: "Starters", icon: "starters" },
+    { id: "history", label: "History", icon: "history" },
     { id: "costs", label: "Costs", icon: "costs" },
-    { id: "models", label: "Models", count: 37, icon: "models" },
+    { id: "models", label: "Models", icon: "models" },
     { id: "orchestration", label: "Orchestration", icon: "orchestration" },
   ];
 
+  const SUBTITLES: Record<string, string> = {
+    agents: "agents de la flotte",
+    prompts: "fragments de prompt",
+    skills: "compétences",
+    starters: "packs de démarrage",
+    history: "historique des runs",
+    costs: "coûts & tokens",
+    models: "catalogue de modèles",
+    orchestration: "topologie & traces",
+  };
+
   const r = $derived(router.current);
   const active = $derived(r.view);
+  const subtitle = $derived(r.param ? "détail" : (SUBTITLES[active] ?? ""));
 </script>
 
 <Shell {tabs} {active}>
@@ -49,7 +63,7 @@
         {active}
       {/if}
     </h1>
-    <span class="sub">Page de la flotte ArmadAI</span>
+    {#if subtitle}<span class="sub">{subtitle}</span>{/if}
   </div>
 
   {#if active === "agents"}

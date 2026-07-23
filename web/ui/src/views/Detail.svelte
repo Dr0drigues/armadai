@@ -90,11 +90,25 @@
               {#if key === "description" && isLongText(value)}
                 <Markdown source={String(value)} />
               {:else if isArray(value)}
-                <div class="tags">
-                  {#each (value as unknown[]) as item (item)}
-                    <span class="tag">{renderValue(item)}</span>
-                  {/each}
-                </div>
+                {#if (value as unknown[]).every((i) => typeof i === "string" || typeof i === "number")}
+                  <div class="tags">
+                    {#each value as unknown[] as item (item)}
+                      <span class="tag">{renderValue(item)}</span>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="ref-list">
+                    {#each value as unknown[] as item, i (i)}
+                      {#if item && typeof item === "object" && typeof (item as Record<string, unknown>).content === "string"}
+                        <div class="ref-item">
+                          <Markdown source={(item as Record<string, unknown>).content as string} />
+                        </div>
+                      {:else}
+                        <pre>{JSON.stringify(item, null, 2)}</pre>
+                      {/if}
+                    {/each}
+                  </div>
+                {/if}
               {:else if isObject(value)}
                 <pre>{JSON.stringify(value, null, 2)}</pre>
               {:else if isLongText(value)}
@@ -231,5 +245,18 @@
 
   .panel.error p {
     color: var(--signal-critical-fg);
+  }
+
+  .ref-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .ref-item {
+    border: 1px solid var(--border-faint);
+    border-radius: 6px;
+    padding: 10px 14px;
+    background: var(--surface-2);
   }
 </style>

@@ -26,6 +26,17 @@
     color: var(--text-secondary);
   }
 
+  .md :global(ul),
+  .md :global(ol) {
+    margin: 0.4em 0;
+    padding-left: 1.5em;
+    color: var(--text-secondary);
+  }
+
+  .md :global(li) {
+    margin: 0.15em 0;
+  }
+
   .md :global(code) {
     font-family: var(--font-mono);
     font-size: var(--text-sm);
