@@ -27,10 +27,17 @@
 
 <div class="topbar">
   <div class="wordmark">
-    <div class="mark">▚</div>
-    <div>
-      <div class="name">ARMAD<b>AI</b></div>
-    </div>
+    <svg class="mark" width="21" height="21" viewBox="0 0 64 64" aria-hidden="true">
+      <circle cx="32" cy="32" r="22" fill="none" stroke="var(--brass)" stroke-width="2.2" opacity="0.5" />
+      <polygon points="32,10 43,31 21,31" fill="var(--brass)" />
+      <g stroke="var(--brass-dim)" stroke-width="3" stroke-linecap="round">
+        <line x1="32" y1="37" x2="32" y2="52" />
+        <line x1="17" y1="32" x2="24" y2="32" />
+        <line x1="47" y1="32" x2="40" y2="32" />
+      </g>
+      <circle cx="32" cy="32" r="3.2" fill="var(--brass-strong)" />
+    </svg>
+    <span class="name">Armad<b>AI</b></span>
     <span class="tag">pont de commandement</span>
   </div>
   <div class="topbar-spacer"></div>
@@ -89,22 +96,14 @@
   }
 
   .wordmark .mark {
-    width: 26px;
-    height: 26px;
-    border-radius: 5px;
-    display: grid;
-    place-items: center;
-    background: linear-gradient(160deg, var(--brass-strong), var(--brass-dim));
-    color: var(--text-on-accent);
-    font-weight: 700;
-    font-size: 14px;
-    box-shadow: 0 0 0 1px var(--brass-border);
+    flex: none;
   }
 
   .wordmark .name {
     font-weight: 700;
-    letter-spacing: var(--tracking-wide);
+    letter-spacing: -0.02em;
     font-size: var(--text-lg);
+    white-space: nowrap;
   }
 
   .wordmark .name :global(b) {
