@@ -2,17 +2,20 @@
   import Shell from "./lib/Shell.svelte";
   import Agents from "./views/Agents.svelte";
   import History from "./views/History.svelte";
+  import Prompts from "./views/Prompts.svelte";
+  import Skills from "./views/Skills.svelte";
+  import Starters from "./views/Starters.svelte";
 
   let active = $state("agents");
 
   const tabs = [
-    { id: "agents", label: "Agents", count: 6 },
-    { id: "prompts", label: "Prompts", count: 12 },
-    { id: "skills", label: "Skills", count: 8 },
-    { id: "starters", label: "Starters", count: 5 },
-    { id: "history", label: "History", count: 148 },
-    { id: "costs", label: "Costs" },
-    { id: "models", label: "Models", count: 37 },
+    { id: "agents", label: "Agents", count: 6, icon: "agents" },
+    { id: "prompts", label: "Prompts", count: 12, icon: "prompts" },
+    { id: "skills", label: "Skills", count: 8, icon: "skills" },
+    { id: "starters", label: "Starters", count: 5, icon: "starters" },
+    { id: "history", label: "History", count: 148, icon: "history" },
+    { id: "costs", label: "Costs", icon: "costs" },
+    { id: "models", label: "Models", count: 37, icon: "models" },
   ];
 
   function handleSelect(id: string) {
@@ -46,11 +49,25 @@
 
   {#if active === "agents"}
     <Agents />
+  {:else if active === "prompts"}
+    <Prompts />
+  {:else if active === "skills"}
+    <Skills />
+  {:else if active === "starters"}
+    <Starters />
   {:else if active === "history"}
     <History />
+  {:else if active === "costs"}
+    <div class="panel">
+      <p>Vue « Costs » — à venir en W2b.</p>
+    </div>
+  {:else if active === "models"}
+    <div class="panel">
+      <p>Vue « Models » — à venir en W2b.</p>
+    </div>
   {:else}
     <div class="panel">
-      <p>Vue « {active} » — à venir en W2.</p>
+      <p>Vue « {active} » — à venir.</p>
     </div>
   {/if}
 </Shell>
