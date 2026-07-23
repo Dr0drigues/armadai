@@ -2,7 +2,6 @@ mod api;
 
 use axum::{
     Router,
-    response::Html,
     routing::{get, post},
 };
 use include_dir::{Dir, include_dir};
@@ -37,25 +36,25 @@ fn index_html_response() -> axum::response::Response {
         .into_response()
 }
 
-/// `GET /next` — serve the SPA entrypoint.
-async fn serve_next_root() -> axum::response::Response {
+/// `GET /` — serve the Svelte SPA entrypoint. Client routing is hash-based, so
+/// every in-app view is this same document.
+async fn serve_spa() -> axum::response::Response {
     index_html_response()
 }
 
-/// `GET /next/{*path}` — serve an embedded asset by path, or fall back to the
-/// SPA `index.html` for client-side routes (paths without a file extension or
-/// not found), so deep links into the SPA work.
-pub async fn serve_next(
+/// `GET /assets/{*path}` — serve an embedded build asset (JS/CSS/fonts/…).
+async fn serve_asset(
     axum::extract::Path(path): axum::extract::Path<String>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    match WEB_DIST.get_file(&path) {
+    let full = format!("assets/{path}");
+    match WEB_DIST.get_file(&full) {
         Some(f) => (
-            [(axum::http::header::CONTENT_TYPE, content_type_for(&path))],
+            [(axum::http::header::CONTENT_TYPE, content_type_for(&full))],
             f.contents(),
         )
             .into_response(),
-        None => index_html_response(),
+        None => axum::http::StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -69,10 +68,8 @@ async fn shutdown_signal() {
 /// Serve the web UI on the given port.
 pub async fn serve(port: u16) -> anyhow::Result<()> {
     let app = Router::new()
-        .route("/", get(index))
-        .route("/next", get(serve_next_root))
-        .route("/next/", get(serve_next_root))
-        .route("/next/{*path}", get(serve_next))
+        .route("/", get(serve_spa))
+        .route("/assets/{*path}", get(serve_asset))
         .route("/api/agents", get(api::list_agents))
         .route("/api/agents/{name}", get(api::get_agent))
         .route("/api/history", get(api::get_history))
@@ -113,10 +110,6 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn index() -> Html<&'static str> {
-    Html(include_str!("index.html"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,18 +131,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn next_root_serves_html() {
-        let (status, ct, len) = parts(serve_next_root().await).await;
+    async fn root_serves_the_spa_html() {
+        let (status, ct, len) = parts(serve_spa().await).await;
         assert_eq!(status, StatusCode::OK);
         assert!(ct.starts_with("text/html"));
         assert!(len > 0);
     }
 
     #[tokio::test]
-    async fn unknown_client_route_falls_back_to_index_html() {
-        // A path with no file extension = client route → SPA fallback (index.html).
-        let (status, ct, _) = parts(serve_next(Path("agents".to_string())).await).await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(ct.starts_with("text/html"));
+    async fn unknown_asset_is_404() {
+        let (status, _, _) = parts(serve_asset(Path("does-not-exist.js".to_string())).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }
