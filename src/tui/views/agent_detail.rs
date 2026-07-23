@@ -16,7 +16,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             let msg = Paragraph::new("No agent selected. Go to Agents tab and select one.").block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Agent Detail "),
+                    .title(" Agent Detail ")
+                    .style(theme::border_style()),
             );
             frame.render_widget(msg, area);
             return;
@@ -58,7 +59,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ),
     ]))
-    .block(Block::default().borders(Borders::ALL));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(theme::border_style()),
+    );
     frame.render_widget(title, chunks[0]);
 
     // Metadata section
@@ -124,7 +129,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Metadata ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(Style::default().add_modifier(Modifier::BOLD))
+                .style(theme::border_style()),
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(meta_widget, chunks[1]);
@@ -180,7 +186,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Orchestration ")
-                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .style(theme::border_style()),
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(orch_widget, chunks[2]);
@@ -210,7 +217,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Model Resolution (link targets) ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(Style::default().add_modifier(Modifier::BOLD))
+                .style(theme::border_style()),
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(res_widget, chunks[2 + orch_offset]);
@@ -226,7 +234,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" System Prompt ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(Style::default().add_modifier(Modifier::BOLD))
+                .style(theme::border_style()),
         )
         // Was `fg(Color::White)` — white-on-white on a light terminal.
         .style(Style::default())
@@ -241,7 +250,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Instructions ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(Style::default().add_modifier(Modifier::BOLD))
+                .style(theme::border_style()),
         )
         .style(Style::default().fg(Color::Gray))
         .wrap(Wrap { trim: false });

@@ -12,8 +12,12 @@ use crate::tui::widgets::search_bar;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.starters.is_empty() {
-        let msg = Paragraph::new("No starter packs found.")
-            .block(Block::default().borders(Borders::ALL).title(" Starters "));
+        let msg = Paragraph::new("No starter packs found.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Starters ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -23,8 +27,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         filter::apply_filter_and_sort_starters(&app.starters, &app.search_query, app.sort_mode);
 
     if display_indices.is_empty() {
-        let msg = Paragraph::new("No starters match your search.")
-            .block(Block::default().borders(Borders::ALL).title(" Starters "));
+        let msg = Paragraph::new("No starters match your search.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Starters ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -79,12 +87,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        " Starters — {} packs, {} shown{} ",
-        app.starters.len(),
-        display_indices.len(),
-        app.sort_indicator()
-    )));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                " Starters — {} packs, {} shown{} ",
+                app.starters.len(),
+                display_indices.len(),
+                app.sort_indicator()
+            ))
+            .style(theme::border_style()),
+    );
 
     frame.render_widget(table, area);
 

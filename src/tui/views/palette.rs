@@ -36,7 +36,8 @@ pub fn render(frame: &mut Frame, app: &App) {
             .borders(Borders::ALL)
             .title(" Command Palette ")
             .title_style(theme::heading())
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(Color::Cyan))
+            .style(theme::border_style()),
     );
     frame.render_widget(input, chunks[0]);
 
@@ -66,7 +67,8 @@ pub fn render(frame: &mut Frame, app: &App) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(Color::Cyan))
+            .style(theme::border_style()),
     );
     frame.render_widget(list, chunks[1]);
 }

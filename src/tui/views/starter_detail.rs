@@ -17,7 +17,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Starter Detail "),
+                        .title(" Starter Detail ")
+                        .style(theme::border_style()),
                 );
             frame.render_widget(msg, area);
             return;
@@ -60,7 +61,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ),
     ]))
-    .block(Block::default().borders(Borders::ALL));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(theme::border_style()),
+    );
     frame.render_widget(title, chunks[chunk_idx]);
     chunk_idx += 1;
 
@@ -79,7 +84,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(format!(" Agents ({}) ", pack.agents.len()))
-                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .style(theme::border_style()),
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(widget, chunks[chunk_idx]);
@@ -103,7 +109,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(format!(" Prompts ({}) ", pack.prompts.len()))
-                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .style(theme::border_style()),
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(widget, chunks[chunk_idx]);
@@ -127,7 +134,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(format!(" Skills ({}) ", pack.skills.len()))
-                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .style(theme::border_style()),
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(widget, chunks[chunk_idx]);

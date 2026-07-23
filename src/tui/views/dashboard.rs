@@ -65,7 +65,8 @@ pub fn render(frame: &mut Frame, app: &App) {
                 msg.block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Orchestration "),
+                        .title(" Orchestration ")
+                        .style(theme::border_style()),
                 ),
                 chunks[1],
             );
