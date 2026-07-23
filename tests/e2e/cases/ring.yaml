@@ -48,8 +48,21 @@ expect:
     # t-alpha, t-bravo), not the alphabetical BTreeMap order (t-alpha, t-bravo,
     # t-charlie) Bug A produced (`RingDecider`'s vote-completeness scan walks the
     # same `agent_order` circulation does).
+    #
+    # Circulation subsequence (asserted 2026-07-24): the first lap's
+    # agent_start -> agent_end pairs, in chain order (t-charlie, t-alpha,
+    # t-bravo), confirmed by running this case against the real binary. This
+    # is a *within-lap* check only (see the comment above on why a
+    # multi-lap `agent_start`-only chain wouldn't unambiguously prove chain
+    # order) — the `vote` sequence right after remains the proof that
+    # circulation itself used chain order, not the alphabetical one.
     - { t: run_start }
     - { t: agent_start, agent: t-charlie }
+    - { t: agent_end, agent: t-charlie }
+    - { t: agent_start, agent: t-alpha }
+    - { t: agent_end, agent: t-alpha }
+    - { t: agent_start, agent: t-bravo }
+    - { t: agent_end, agent: t-bravo }
     - { t: vote, agent: t-charlie }
     - { t: vote, agent: t-alpha }
     - { t: vote, agent: t-bravo }

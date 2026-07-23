@@ -28,9 +28,21 @@ fake:
 expect:
   exit_code: 0
   events:
+    # Per-delegate subsequence (asserted 2026-07-24): each delegated specialist
+    # gets its own `delegate` immediately followed by its `agent_start`/
+    # `agent_end` pair — this is exactly the info `on_run_event_at` (Task 1)
+    # turns into a Workroom Working->Done transition. Order confirmed by
+    # running this case against the real binary: t-coord's synthesis call
+    # (`@t-a:`/`@t-b:` dispatch) is followed by t-a's full invocation, then
+    # t-b's, both before t-coord's second (synthesis) call.
     - { t: run_start }
     - { t: agent_start, agent: t-coord }
-    - { t: delegate, from: t-coord }
+    - { t: delegate, from: t-coord, to: t-a }
+    - { t: agent_start, agent: t-a }
+    - { t: agent_end, agent: t-a }
+    - { t: delegate, from: t-coord, to: t-b }
+    - { t: agent_start, agent: t-b }
+    - { t: agent_end, agent: t-b }
     - { t: result, content: "Synthesis: token flow and session store both check out." }
   # contrat per-tour ES (un start/end par invocation) — décision 2026-07-22
   # coordinator delegate call + 2 subordinates (parallel) + coordinator synthesis call = 4 invocations

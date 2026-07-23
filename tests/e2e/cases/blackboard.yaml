@@ -29,10 +29,26 @@ fake:
 expect:
   exit_code: 0
   events:
+    # Per-agent subsequence (asserted 2026-07-24): every participant's
+    # invocation is asserted as a full agent_start -> board -> agent_end
+    # triple, round by round — the exact info `on_run_event_at` (Task 1)
+    # transforms into a Workroom Working->Done transition per agent. Order
+    # confirmed by running this case against the real binary: round 1 is
+    # t-a then t-b (both FINDING), round 2 is t-a then t-b again (both
+    # CONFIRMATION, which triggers convergence).
     - { t: run_start }
     - { t: agent_start, agent: t-a }
-    - { t: board, kind: finding }
-    - { t: board, kind: confirmation }
+    - { t: board, agent: t-a, kind: finding }
+    - { t: agent_end, agent: t-a }
+    - { t: agent_start, agent: t-b }
+    - { t: board, agent: t-b, kind: finding }
+    - { t: agent_end, agent: t-b }
+    - { t: agent_start, agent: t-a }
+    - { t: board, agent: t-a, kind: confirmation }
+    - { t: agent_end, agent: t-a }
+    - { t: agent_start, agent: t-b }
+    - { t: board, agent: t-b, kind: confirmation }
+    - { t: agent_end, agent: t-b }
     - { t: result }
   # contrat per-tour ES (un start/end par invocation) — décision 2026-07-22
   # 2 agents x 2 rounds (round 2 converges via consensus, no round 3) = 4 invocations
