@@ -15,7 +15,7 @@ use ratatui::prelude::*;
 
 use app::PaletteAction;
 
-pub async fn run() -> Result<()> {
+pub async fn run(ascii: bool) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -24,6 +24,7 @@ pub async fn run() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = app::App::new();
+    app.theme = crate::tui::theme::Theme::detect(ascii);
     app.load_agents();
     app.load_prompts();
     app.load_skills();
