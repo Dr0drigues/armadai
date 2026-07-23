@@ -25,7 +25,8 @@ fn cache_path() -> PathBuf {
 }
 
 /// Load models for a given provider from cache only (sync).
-/// Returns None if cache is missing or stale.
+/// Returns None only if the cache is missing/unreadable (ignores cache age —
+/// a stale catalog is still shown; see [`read_cache`]).
 #[cfg(not(feature = "providers-api"))]
 pub fn load_models(provider: &str) -> Option<Vec<ModelEntry>> {
     let cached = read_cache(&cache_path())?;
@@ -571,8 +572,9 @@ mod tests {
 
         save_cache_to(&path, &registry);
 
-        // Temporarily override cache path by loading directly
-        let loaded = load_cache_from(&path).expect("cache should load");
+        // The display loaders read via read_cache (age-agnostic) — exercise
+        // that path here.
+        let loaded = read_cache(&path).expect("cache should load");
         assert_eq!(loaded.providers.len(), 2);
         assert!(loaded.providers.contains_key("anthropic"));
         assert!(loaded.providers.contains_key("openai"));
@@ -597,7 +599,7 @@ mod tests {
         };
 
         save_cache_to(&path, &registry);
-        let loaded = load_cache_from(&path).expect("cache should load");
+        let loaded = read_cache(&path).expect("cache should load");
         let google = loaded.providers.get("google").unwrap();
         assert_eq!(google.len(), 1);
         assert_eq!(google[0].id, "gemini-2.5-pro");
