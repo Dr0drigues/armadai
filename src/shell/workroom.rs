@@ -542,8 +542,8 @@ impl Workroom {
         let lines = match self.layout_mode(inner_width) {
             LayoutMode::Compact => self.compact_lines(),
             LayoutMode::Hierarchical => self.hierarchical_lines(),
-            // Blackboard/Ring rich layouts land in T3b; degrade until then.
-            LayoutMode::Blackboard | LayoutMode::Ring => self.compact_lines(),
+            LayoutMode::Blackboard => self.blackboard_lines(),
+            LayoutMode::Ring => self.compact_lines(), // Ring lands in Task 5
         };
 
         let panel = Paragraph::new(lines).block(
@@ -693,6 +693,46 @@ impl Workroom {
             ]));
         }
         if lines.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No agents configured",
+                theme::muted(),
+            )));
+        }
+        self.push_footer(&mut lines);
+        lines
+    }
+
+    /// The focused blackboard layout: a shared-board header, then a flat
+    /// list of agents (no hierarchy — all react to shared state).
+    fn blackboard_lines(&self) -> Vec<Line<'_>> {
+        let mut lines: Vec<Line> = Vec::new();
+        let g = theme::glyphs();
+        lines.push(Line::from(Span::styled(
+            format!("{} shared board · {} agents", g.board, self.agents.len()),
+            theme::heading(),
+        )));
+        for (idx, agent) in self.agents.iter().enumerate() {
+            let (icon, state_str, style) = self.state_display(agent);
+            let role_style = self.role_style(agent);
+            let is_selected = self.focused && idx == self.selected;
+            let name_style = if is_selected {
+                role_style.add_modifier(Modifier::REVERSED)
+            } else {
+                role_style
+            };
+            let suffix = if agent.state == AgentState::Idle {
+                "  idle (waiting on board)".to_string()
+            } else {
+                format!("  {state_str}")
+            };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{icon} "), style),
+                Span::styled(&agent.name, name_style),
+                Span::styled(suffix, style),
+            ]));
+        }
+        if self.agents.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No agents configured",
                 theme::muted(),
@@ -1134,5 +1174,19 @@ orchestration:
         assert!(md.contains("working"));
         assert!(md.contains("done"));
         assert!(md.contains("Last action:** complete"));
+    }
+
+    #[test]
+    fn blackboard_lines_has_board_header() {
+        let mut wr = Workroom::new();
+        wr.init_from_config(
+            "orchestration:\n  pattern: blackboard\ncoordinator: c\nagents:\n- a\n- b\n",
+        );
+        let lines = wr.blackboard_lines();
+        // First line is the shared-board header carrying the board glyph.
+        let first = &lines[0];
+        let text: String = first.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains(theme::glyphs().board));
+        assert!(text.contains("agents"));
     }
 }
