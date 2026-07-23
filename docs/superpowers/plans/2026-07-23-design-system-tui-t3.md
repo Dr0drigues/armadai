@@ -908,7 +908,136 @@ git add src/tui/views/palette.rs src/tui/views/agent_detail.rs
 git commit -m "style(tui): route remaining hardcoded colors through the theme"
 ```
 
-**➡️ Fin du sous-lot T3c (Tasks 6–7). PR + revue indépendante + validation visuelle Dimitri (palette ⌃P, agent detail, popup) avant merge.**
+---
+
+### Task 8: Cohérence `--ascii` — glyphes `pointer`/`arrow_back` + flag shell + `theme::init`
+
+**Contexte (ajout T3c, décidé 2026-07-23) :** la revue de T3b a relevé que le marqueur `▸` (compact/ring) et le `←` de « holds token » sont des littéraux Unicode hors `glyphs()`, donc **non dégradés en `--ascii`**. De plus `armadai shell` — surface qui HÉBERGE la Workroom (seul vrai consommateur des glyphes) — n'a ni flag `--ascii` ni appel à `theme::init`, donc le fallback ASCII de la Workroom est intestable. Cette tâche route ces deux glyphes et câble `--ascii` sur le shell.
+
+**Files:**
+- Modify: `src/theme.rs` (struct `Glyphs` + `UNICODE`/`ASCII` + test)
+- Modify: `src/shell/workroom.rs` (routage `▸`/`←` dans `compact_lines`, `ring_lines`)
+- Modify: `src/cli/mod.rs` (variante `Shell` → `Shell { ascii: bool }`, handler)
+- Modify: `src/shell/app.rs` (`run_shell(ascii: bool)` + `theme::init(ascii)`)
+
+**Interfaces:**
+- Produces: champs `Glyphs.pointer: &'static str`, `Glyphs.arrow_back: &'static str`.
+
+- [ ] **Step 1: Étendre le test des glyphes** — dans `#[cfg(test)] mod tests` de `src/theme.rs`, ajouter à `glyphs_expose_tree_and_flow_symbols` (ou un nouveau test) :
+
+```rust
+    #[test]
+    fn glyphs_expose_pointer_and_back_arrow() {
+        assert_eq!(Glyphs::UNICODE.pointer, "▸");
+        assert_eq!(Glyphs::UNICODE.arrow_back, "←");
+        assert_eq!(Glyphs::ASCII.pointer, ">");
+        assert_eq!(Glyphs::ASCII.arrow_back, "<-");
+    }
+```
+
+- [ ] **Step 2: Lancer — échoue** (`no field pointer`).
+
+Run: `cargo test --no-default-features --features tui theme::tests::glyphs_expose_pointer 2>&1 | tail -5`
+Expected: erreur de compilation.
+
+- [ ] **Step 3: Ajouter les deux champs** à `pub struct Glyphs` (après `board`) :
+
+```rust
+    pub pointer: &'static str,
+    pub arrow_back: &'static str,
+```
+Dans `const UNICODE` (après `board: "▤",`) : `pointer: "▸",` et `arrow_back: "←",`.
+Dans `const ASCII` (après `board: "#",`) : `pointer: ">",` et `arrow_back: "<-",`.
+
+- [ ] **Step 4: Router les littéraux dans `src/shell/workroom.rs`.**
+Dans `compact_lines`, ajouter en tête `let g = theme::glyphs();` (s'il n'y est pas déjà) et remplacer :
+```rust
+            let marker = if is_selected { "▸ " } else { "" };
+```
+par :
+```rust
+            let marker = if is_selected {
+                format!("{} ", g.pointer)
+            } else {
+                String::new()
+            };
+```
+(adapter le `Span::raw(marker)` en `Span::raw(marker)` — `String` accepté par `Span::raw`.)
+
+Dans `ring_lines` (qui a déjà `let g = theme::glyphs();`), remplacer :
+```rust
+            let marker = if is_holder { "▸ " } else { "  " };
+```
+par :
+```rust
+            let marker = if is_holder {
+                format!("{} ", g.pointer)
+            } else {
+                "  ".to_string()
+            };
+```
+et remplacer :
+```rust
+                spans.push(Span::styled("   ← holds token", theme::selection()));
+```
+par :
+```rust
+                spans.push(Span::styled(
+                    format!("   {} holds token", g.arrow_back),
+                    theme::selection(),
+                ));
+```
+
+- [ ] **Step 5: Flag `--ascii` sur `armadai shell`.** Dans `src/cli/mod.rs`, remplacer la variante unit `Shell,` (~l.254, garder le `#[command(long_about = …)]` au-dessus) par :
+
+```rust
+    Shell {
+        /// Use ASCII glyphs instead of Unicode (for limited terminals)
+        #[arg(long)]
+        ascii: bool,
+    },
+```
+et le handler (~l.532) :
+```rust
+        Command::Shell => crate::shell::app::run_shell().await,
+```
+par :
+```rust
+        Command::Shell { ascii } => crate::shell::app::run_shell(ascii).await,
+```
+
+- [ ] **Step 6: `run_shell(ascii)` + `theme::init`.** Dans `src/shell/app.rs`, changer la signature :
+```rust
+pub async fn run_shell() -> Result<()> {
+```
+en :
+```rust
+pub async fn run_shell(ascii: bool) -> Result<()> {
+    crate::theme::init(ascii);
+```
+(l'appel `theme::init(ascii)` en toute première ligne du corps, avant tout rendu ; idempotent — cf. `src/theme.rs`.)
+
+- [ ] **Step 7: Gate 3 modes + suite.**
+
+Run:
+```bash
+cargo fmt --all
+cargo clippy --all-targets --no-default-features --features tui -- -D warnings
+cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
+cargo clippy --all-targets --no-default-features --features tui,web,storage -- -D warnings
+cargo test --no-default-features --features tui 2>&1 | tail -5
+grep -n '▸\|←' src/shell/workroom.rs
+```
+Expected: `No issues found` (3 modes) + suite verte + le `grep` ne renvoie que le commentaire doc (« holds token » en toutes lettres reste dans un commentaire, pas de littéral `▸`/`←` dans le code de rendu).
+
+- [ ] **Step 8: Commit (fin de T3c)**
+
+```bash
+git add src/theme.rs src/shell/workroom.rs src/cli/mod.rs src/shell/app.rs
+git commit -m "feat(shell): wire --ascii flag and route pointer/back-arrow glyphs for ASCII fallback"
+```
+
+**➡️ Fin du sous-lot T3c (Tasks 6–8). PR + revue indépendante + validation visuelle Dimitri (palette ⌃P, agent detail, popup, `armadai shell --ascii`) avant merge.**
 
 ---
 
