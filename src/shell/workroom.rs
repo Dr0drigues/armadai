@@ -13,6 +13,7 @@ use ratatui::{
 use std::time::Instant;
 
 use super::SPINNER_FRAMES as SPINNER;
+use crate::core::events::RunEvent;
 use crate::core::orchestration::OrchestrationPattern;
 use crate::theme;
 
@@ -426,6 +427,94 @@ impl Workroom {
     /// Set visibility directly
     pub fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
+    }
+
+    /// Apply one core `RunEvent` to the workroom state (provider-agnostic
+    /// projection). `now` is injected so timing is deterministic in tests;
+    /// the live renderer passes `Instant::now()`.
+    pub fn on_run_event_at(&mut self, ev: &RunEvent, now: Instant) {
+        match ev {
+            RunEvent::RunStart { agents, .. } => {
+                for name in agents {
+                    if !self.agents.iter().any(|a| a.name == *name) {
+                        self.agents.push(TrackedAgent {
+                            name: name.clone(),
+                            state: AgentState::Idle,
+                            role: AgentRole::Agent,
+                            started_at: None,
+                            finished_at: None,
+                            spinner_frame: 0,
+                            last_action: None,
+                            transitions: Vec::new(),
+                        });
+                    }
+                }
+                self.visible = true;
+            }
+            RunEvent::AgentStart { agent, .. } => self.mark_working(agent, now),
+            RunEvent::AgentEnd { agent, content, .. } => {
+                self.mark_done(agent, now);
+                let first = content.lines().next().unwrap_or("").trim();
+                if !first.is_empty() {
+                    self.set_action(agent, first.to_string());
+                }
+            }
+            RunEvent::Delegate { from, to } => {
+                self.transition(from, AgentState::Delegating, now);
+                self.current_agent = Some(to.clone());
+            }
+            RunEvent::NestedStart { team_lead, .. } => {
+                self.transition(team_lead, AgentState::Delegating, now)
+            }
+            RunEvent::NestedEnd { team_lead } => self.transition(team_lead, AgentState::Done, now),
+            RunEvent::AgentSelect { selected, .. } => {
+                for a in selected {
+                    self.mark_working(a, now);
+                }
+            }
+            RunEvent::Vote { agent, conf } => self.set_action(agent, format!("vote {conf:.2}")),
+            RunEvent::Board { agent, kind } => self.set_action(agent, format!("board {kind}")),
+            RunEvent::Route { agent, tier, .. } => self.set_action(agent, format!("→ {tier}")),
+            RunEvent::Result { .. } => self.on_complete(),
+            RunEvent::Error { msg, .. } => {
+                if let Some(cur) = self.current_agent.clone() {
+                    self.set_action(&cur, format!("error: {msg}"));
+                }
+            }
+            RunEvent::Warning { .. } => {}
+        }
+    }
+
+    fn mark_working(&mut self, name: &str, now: Instant) {
+        if let Some(a) = self.agents.iter_mut().find(|a| a.name == name) {
+            a.state = AgentState::Working;
+            a.started_at.get_or_insert(now);
+            a.transitions.push((AgentState::Working, now));
+        }
+    }
+
+    fn mark_done(&mut self, name: &str, now: Instant) {
+        if let Some(a) = self.agents.iter_mut().find(|a| a.name == name) {
+            a.state = AgentState::Done;
+            a.finished_at = Some(now);
+            a.transitions.push((AgentState::Done, now));
+        }
+    }
+
+    fn transition(&mut self, name: &str, state: AgentState, now: Instant) {
+        if let Some(a) = self.agents.iter_mut().find(|a| a.name == name) {
+            if state == AgentState::Delegating && a.started_at.is_none() {
+                a.started_at = Some(now);
+            }
+            a.transitions.push((state.clone(), now));
+            a.state = state;
+        }
+    }
+
+    fn set_action(&mut self, name: &str, action: String) {
+        if let Some(a) = self.agents.iter_mut().find(|a| a.name == name) {
+            a.last_action = Some(action);
+        }
     }
 
     /// Push a state transition for an agent, updating timestamps + history.
@@ -1294,5 +1383,140 @@ orchestration:
             .flat_map(|l| l.spans.iter())
             .any(|s| s.content.contains("alpha") && s.style.add_modifier.contains(Modifier::BOLD));
         assert!(holder_styled);
+    }
+
+    use crate::core::events::RunEvent;
+    use std::time::Instant;
+
+    fn rs(agents: &[&str]) -> RunEvent {
+        RunEvent::RunStart {
+            v: 1,
+            agents: agents.iter().map(|s| s.to_string()).collect(),
+            prov: "fake".into(),
+            model: "m".into(),
+            in_chars: 0,
+        }
+    }
+
+    #[test]
+    fn on_run_event_seeds_and_transitions() {
+        let mut wr = Workroom::new();
+        let t = Instant::now();
+        wr.on_run_event_at(&rs(&["dev-lead", "core-specialist"]), t);
+        assert_eq!(wr.agents.len(), 2);
+        assert!(wr.is_visible());
+
+        wr.on_run_event_at(
+            &RunEvent::Delegate {
+                from: "dev-lead".into(),
+                to: "core-specialist".into(),
+            },
+            t,
+        );
+        assert_eq!(
+            wr.agents
+                .iter()
+                .find(|a| a.name == "dev-lead")
+                .unwrap()
+                .state,
+            AgentState::Delegating
+        );
+
+        wr.on_run_event_at(
+            &RunEvent::AgentStart {
+                agent: "core-specialist".into(),
+                prov: "fake".into(),
+                model: "m".into(),
+            },
+            t,
+        );
+        assert_eq!(
+            wr.agents
+                .iter()
+                .find(|a| a.name == "core-specialist")
+                .unwrap()
+                .state,
+            AgentState::Working
+        );
+
+        wr.on_run_event_at(
+            &RunEvent::AgentEnd {
+                agent: "core-specialist".into(),
+                tin: 1,
+                tout: 2,
+                cost: 0.0,
+                content: "done reticulating\nsplines".into(),
+            },
+            t,
+        );
+        let a = wr
+            .agents
+            .iter()
+            .find(|a| a.name == "core-specialist")
+            .unwrap();
+        assert_eq!(a.state, AgentState::Done);
+        assert_eq!(a.last_action.as_deref(), Some("done reticulating"));
+    }
+
+    #[test]
+    fn on_run_event_result_finalizes() {
+        let mut wr = Workroom::new();
+        let t = Instant::now();
+        wr.on_run_event_at(&rs(&["a"]), t);
+        wr.on_run_event_at(
+            &RunEvent::AgentStart {
+                agent: "a".into(),
+                prov: "f".into(),
+                model: "m".into(),
+            },
+            t,
+        );
+        wr.on_run_event_at(
+            &RunEvent::Result {
+                content: "x".into(),
+                tin: 0,
+                tout: 0,
+                cost: 0.0,
+                agents: 1,
+            },
+            t,
+        );
+        // on_complete turns any Working agent into Done.
+        assert_eq!(
+            wr.agents.iter().find(|a| a.name == "a").unwrap().state,
+            AgentState::Done
+        );
+    }
+
+    #[test]
+    fn on_run_event_unknown_variants_are_noops() {
+        let mut wr = Workroom::new();
+        let t = Instant::now();
+        wr.on_run_event_at(&rs(&["a"]), t);
+        wr.on_run_event_at(
+            &RunEvent::Warning {
+                code: "w".into(),
+                from: None,
+                to: None,
+            },
+            t,
+        );
+        wr.on_run_event_at(
+            &RunEvent::Route {
+                agent: "a".into(),
+                tier: "fast".into(),
+                reason: "r".into(),
+            },
+            t,
+        );
+        assert_eq!(
+            wr.agents
+                .iter()
+                .find(|a| a.name == "a")
+                .unwrap()
+                .last_action
+                .as_deref(),
+            Some("→ fast")
+        );
     }
 }
