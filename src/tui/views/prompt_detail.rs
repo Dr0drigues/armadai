@@ -17,7 +17,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Prompt Detail "),
+                        .title(" Prompt Detail ")
+                        .style(theme::border_style()),
                 );
             frame.render_widget(msg, area);
             return;
@@ -41,7 +42,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ),
     ]))
-    .block(Block::default().borders(Borders::ALL));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(theme::border_style()),
+    );
     frame.render_widget(title, chunks[0]);
 
     // Metadata section
@@ -82,7 +87,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Metadata ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(Style::default().add_modifier(Modifier::BOLD))
+                .style(theme::border_style()),
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(meta_widget, chunks[1]);
@@ -98,7 +104,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Content ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(Style::default().add_modifier(Modifier::BOLD))
+                .style(theme::border_style()),
         )
         // Was `fg(Color::White)` — white-on-white on a light terminal.
         .style(Style::default())

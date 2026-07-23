@@ -13,8 +13,12 @@ use crate::tui::widgets::search_bar;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.costs.is_empty() {
-        let msg = Paragraph::new("No cost data. Run agents to start tracking costs.")
-            .block(Block::default().borders(Borders::ALL).title(" Costs "));
+        let msg = Paragraph::new("No cost data. Run agents to start tracking costs.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Costs ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -25,8 +29,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         filter::apply_filter_and_sort_costs(&app.costs, &app.search_query, app.sort_mode);
 
     if display_indices.is_empty() {
-        let msg = Paragraph::new("No cost entries match your search.")
-            .block(Block::default().borders(Borders::ALL).title(" Costs "));
+        let msg = Paragraph::new("No cost entries match your search.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Costs ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -98,12 +106,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        " Costs — {} loaded, {} shown{} ",
-        app.costs.len(),
-        display_indices.len(),
-        app.sort_indicator()
-    )));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                " Costs — {} loaded, {} shown{} ",
+                app.costs.len(),
+                display_indices.len(),
+                app.sort_indicator()
+            ))
+            .style(theme::border_style()),
+    );
 
     frame.render_widget(table, area);
 

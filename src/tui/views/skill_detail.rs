@@ -17,7 +17,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             let msg = Paragraph::new("No skill selected. Go to Skills tab and select one.").block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Skill Detail "),
+                    .title(" Skill Detail ")
+                    .style(theme::border_style()),
             );
             frame.render_widget(msg, area);
             return;
@@ -69,7 +70,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ),
     ]))
-    .block(Block::default().borders(Borders::ALL));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(theme::border_style()),
+    );
     frame.render_widget(title, chunks[0]);
 
     // Metadata section
@@ -117,7 +122,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Metadata ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(Style::default().add_modifier(Modifier::BOLD))
+                .style(theme::border_style()),
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(meta_widget, chunks[1]);
@@ -133,7 +139,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" SKILL.md ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(Style::default().add_modifier(Modifier::BOLD))
+                .style(theme::border_style()),
         )
         // Was `fg(Color::White)` — white-on-white on a light terminal.
         .style(Style::default())
@@ -152,7 +159,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
-                    ),
+                    )
+                    .style(theme::border_style()),
             )
             .style(Style::default().fg(Color::Gray))
             .wrap(Wrap { trim: false });
@@ -181,7 +189,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Other Files ")
-                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .style(theme::border_style()),
             )
             .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(files_widget, chunks[3 + ref_contents.len()]);

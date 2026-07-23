@@ -20,7 +20,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Orchestration "),
+                .title(" Orchestration ")
+                .style(theme::border_style()),
         );
         frame.render_widget(msg, area);
         return;
@@ -37,7 +38,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         let msg = Paragraph::new("No orchestration runs match your search.").block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Orchestration "),
+                .title(" Orchestration ")
+                .style(theme::border_style()),
         );
         frame.render_widget(msg, area);
         return;
@@ -90,12 +92,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        " Orchestration — {} runs, {} shown{} ",
-        app.orchestration_runs.len(),
-        display_indices.len(),
-        app.sort_indicator()
-    )));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                " Orchestration — {} runs, {} shown{} ",
+                app.orchestration_runs.len(),
+                display_indices.len(),
+                app.sort_indicator()
+            ))
+            .style(theme::border_style()),
+    );
 
     frame.render_widget(table, area);
 
@@ -161,14 +168,19 @@ pub fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(format!(" Run {} ", entry.run_id)),
+                    .title(format!(" Run {} ", entry.run_id))
+                    .style(theme::border_style()),
             )
             .scroll((app.detail_scroll, 0));
 
         frame.render_widget(paragraph, area);
     } else {
-        let msg = Paragraph::new("No orchestration run selected")
-            .block(Block::default().borders(Borders::ALL).title(" Run Detail "));
+        let msg = Paragraph::new("No orchestration run selected").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Run Detail ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
     }
 }

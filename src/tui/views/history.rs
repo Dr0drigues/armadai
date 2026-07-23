@@ -26,7 +26,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.history.is_empty() {
         let msg =
             Paragraph::new("No execution history. Run an agent first: armadai run <agent> <input>")
-                .block(Block::default().borders(Borders::ALL).title(" History "));
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" History ")
+                        .style(theme::border_style()),
+                );
         frame.render_widget(msg, area);
         return;
     }
@@ -36,8 +41,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         filter::apply_filter_and_sort_history(&app.history, &app.search_query, app.sort_mode);
 
     if display_indices.is_empty() {
-        let msg = Paragraph::new("No history entries match your search.")
-            .block(Block::default().borders(Borders::ALL).title(" History "));
+        let msg = Paragraph::new("No history entries match your search.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" History ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -101,12 +110,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        " History — {} runs, {} shown{} ",
-        app.history.len(),
-        display_indices.len(),
-        app.sort_indicator()
-    )));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                " History — {} runs, {} shown{} ",
+                app.history.len(),
+                display_indices.len(),
+                app.sort_indicator()
+            ))
+            .style(theme::border_style()),
+    );
 
     frame.render_widget(table, area);
 

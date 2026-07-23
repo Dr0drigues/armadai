@@ -14,7 +14,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.skills.is_empty() {
         let msg =
             Paragraph::new("No skills found. Install built-in skills with: armadai init --skills")
-                .block(Block::default().borders(Borders::ALL).title(" Skills "));
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Skills ")
+                        .style(theme::border_style()),
+                );
         frame.render_widget(msg, area);
         return;
     }
@@ -24,8 +29,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         filter::apply_filter_and_sort_skills(&app.skills, &app.search_query, app.sort_mode);
 
     if display_indices.is_empty() {
-        let msg = Paragraph::new("No skills match your search.")
-            .block(Block::default().borders(Borders::ALL).title(" Skills "));
+        let msg = Paragraph::new("No skills match your search.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Skills ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -83,12 +92,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        " Skills — {} loaded, {} shown{} ",
-        app.skills.len(),
-        display_indices.len(),
-        app.sort_indicator()
-    )));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                " Skills — {} loaded, {} shown{} ",
+                app.skills.len(),
+                display_indices.len(),
+                app.sort_indicator()
+            ))
+            .style(theme::border_style()),
+    );
 
     frame.render_widget(table, area);
 

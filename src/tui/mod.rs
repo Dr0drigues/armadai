@@ -1,7 +1,6 @@
 mod app;
 pub mod filter;
 pub mod format;
-pub mod theme;
 pub mod views;
 pub mod widgets;
 
@@ -23,8 +22,10 @@ pub async fn run(ascii: bool) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Initialize theme once (color tier detection + ASCII preference)
+    crate::theme::init(ascii);
+
     let mut app = app::App::new();
-    app.theme = crate::tui::theme::Theme::detect(ascii);
     app.load_agents();
     app.load_prompts();
     app.load_skills();

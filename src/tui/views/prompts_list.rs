@@ -13,7 +13,12 @@ use crate::tui::widgets::search_bar;
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.prompts.is_empty() {
         let msg = Paragraph::new("No prompts found. Add .md files to ~/.config/armadai/prompts/")
-            .block(Block::default().borders(Borders::ALL).title(" Prompts "));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Prompts ")
+                    .style(theme::border_style()),
+            );
         frame.render_widget(msg, area);
         return;
     }
@@ -23,8 +28,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         filter::apply_filter_and_sort_prompts(&app.prompts, &app.search_query, app.sort_mode);
 
     if display_indices.is_empty() {
-        let msg = Paragraph::new("No prompts match your search.")
-            .block(Block::default().borders(Borders::ALL).title(" Prompts "));
+        let msg = Paragraph::new("No prompts match your search.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Prompts ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -73,12 +82,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        " Prompts — {} loaded, {} shown{} ",
-        app.prompts.len(),
-        display_indices.len(),
-        app.sort_indicator()
-    )));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                " Prompts — {} loaded, {} shown{} ",
+                app.prompts.len(),
+                display_indices.len(),
+                app.sort_indicator()
+            ))
+            .style(theme::border_style()),
+    );
 
     frame.render_widget(table, area);
 

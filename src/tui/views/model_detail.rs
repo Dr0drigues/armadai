@@ -17,7 +17,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             let msg = Paragraph::new("No model selected. Go to Models tab and select one.").block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Model Detail "),
+                    .title(" Model Detail ")
+                    .style(theme::border_style()),
             );
             frame.render_widget(msg, area);
             return;
@@ -41,7 +42,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ),
     ]))
-    .block(Block::default().borders(Borders::ALL));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(theme::border_style()),
+    );
     frame.render_widget(title, chunks[0]);
 
     // Details section
@@ -108,7 +113,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Details ")
-                .title_style(bold),
+                .title_style(bold)
+                .style(theme::border_style()),
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(detail_widget, chunks[1]);
@@ -120,7 +126,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Display Label ")
-                .title_style(bold),
+                .title_style(bold)
+                .style(theme::border_style()),
         )
         .style(Style::default().fg(Color::Green))
         .wrap(Wrap { trim: false });

@@ -13,8 +13,12 @@ use crate::tui::widgets::search_bar;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.models_flat.is_empty() {
-        let msg = Paragraph::new("No model data cached. Run `armadai new -i` to populate.")
-            .block(Block::default().borders(Borders::ALL).title(" Models "));
+        let msg = Paragraph::new("No model data cached. Run `armadai new -i` to populate.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Models ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -24,8 +28,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         filter::apply_filter_and_sort_models(&app.models_flat, &app.search_query, app.sort_mode);
 
     if display_indices.is_empty() {
-        let msg = Paragraph::new("No models match your search.")
-            .block(Block::default().borders(Borders::ALL).title(" Models "));
+        let msg = Paragraph::new("No models match your search.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Models ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -107,12 +115,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        " Models — {} shown, {} providers{} ",
-        display_indices.len(),
-        provider_count,
-        app.sort_indicator()
-    )));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                " Models — {} shown, {} providers{} ",
+                display_indices.len(),
+                provider_count,
+                app.sort_indicator()
+            ))
+            .style(theme::border_style()),
+    );
 
     frame.render_widget(table, area);
 

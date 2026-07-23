@@ -12,6 +12,8 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 
+use crate::theme;
+
 /// Render the search/filter bar as the last line of `list_area`.
 pub fn search_bar(frame: &mut Frame, query: &str, list_area: Rect) {
     let search_area = Rect {
@@ -24,6 +26,6 @@ pub fn search_bar(frame: &mut Frame, query: &str, list_area: Rect) {
     let query_display = format!("/ {query}\u{2588}");
     let search = Paragraph::new(query_display)
         .style(Style::default().fg(Color::Yellow))
-        .block(Block::default());
+        .block(Block::default().style(theme::border_style()));
     frame.render_widget(search, search_area);
 }
