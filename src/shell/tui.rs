@@ -786,11 +786,12 @@ impl ShellApp {
 
         // Messages area (with optional workroom panel)
         if self.workroom.is_visible() {
+            let workroom_width = if self.workroom.is_focused() { 60 } else { 35 };
             let h_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Min(0),     // Messages (main)
-                    Constraint::Length(35), // Workroom panel
+                    Constraint::Min(0),                 // Messages (main)
+                    Constraint::Length(workroom_width), // Workroom panel (widens on focus)
                 ])
                 .split(chunks[1]);
             self.render_messages_area(frame, h_chunks[0]);

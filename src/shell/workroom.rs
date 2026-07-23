@@ -53,6 +53,19 @@ pub enum AgentRole {
     Agent,
 }
 
+/// Which layout the workroom renders. Compact is the idle/narrow fallback;
+/// the three rich modes only appear when focused and wide enough.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutMode {
+    Compact,
+    Hierarchical,
+    Blackboard,
+    Ring,
+}
+
+/// Minimum inner width (columns, borders excluded) to render a rich layout.
+const RICH_WIDTH_MIN: u16 = 44;
+
 /// The workroom tracks all agents and their states
 pub struct Workroom {
     agents: Vec<TrackedAgent>,
@@ -92,6 +105,21 @@ impl Workroom {
     /// Whether the workroom currently has keyboard focus.
     pub fn is_focused(&self) -> bool {
         self.focused
+    }
+
+    /// Decide the layout from pattern, focus, and available inner width.
+    pub(crate) fn layout_mode(&self, inner_width: u16) -> LayoutMode {
+        if !self.focused || inner_width < RICH_WIDTH_MIN {
+            return LayoutMode::Compact;
+        }
+        // `OrchestrationPattern` has more variants than the three the workroom
+        // renders (Direct/Auto also exist); everything that isn't Blackboard
+        // or Ring falls back to the hierarchical tree.
+        match self.pattern {
+            OrchestrationPattern::Blackboard => LayoutMode::Blackboard,
+            OrchestrationPattern::Ring => LayoutMode::Ring,
+            _ => LayoutMode::Hierarchical,
+        }
     }
 
     /// Move the selection to the next agent (wraps around). No-op if empty.
@@ -510,38 +538,35 @@ impl Workroom {
 
     /// Render the workroom panel
     pub fn render(&self, frame: &mut Frame, area: Rect) {
+        let inner_width = area.width.saturating_sub(2); // exclude borders
+        let lines = match self.layout_mode(inner_width) {
+            LayoutMode::Compact => self.compact_lines(),
+            LayoutMode::Hierarchical => self.hierarchical_lines(),
+            // Blackboard/Ring rich layouts land in T3b; degrade until then.
+            LayoutMode::Blackboard | LayoutMode::Ring => self.compact_lines(),
+        };
+
+        let panel = Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border_style())
+                .title(format!(" Workroom · {} ", self.pattern))
+                .title_style(theme::heading()),
+        );
+        frame.render_widget(panel, area);
+    }
+
+    /// The idle/narrow layout: role-indented flat list (historical rendering).
+    fn compact_lines(&self) -> Vec<Line<'_>> {
         let mut lines: Vec<Line> = Vec::new();
-
         for (idx, agent) in self.agents.iter().enumerate() {
-            let (icon, state_str, style) = match agent.state {
-                AgentState::Working => {
-                    let spinner = SPINNER[agent.spinner_frame];
-                    let elapsed = agent
-                        .started_at
-                        .map(|s| format!(" {:.0}s", s.elapsed().as_secs_f64()))
-                        .unwrap_or_default();
-                    (spinner, format!("working{elapsed}"), theme::working())
-                }
-                AgentState::Delegating => {
-                    let spinner = SPINNER[agent.spinner_frame];
-                    (spinner, "delegating".to_string(), theme::delegating())
-                }
-                AgentState::Done => ("✓", "done".to_string(), theme::done()),
-                AgentState::Idle => ("○", "idle".to_string(), theme::muted()),
-            };
-
-            let role_style = match agent.role {
-                AgentRole::Coordinator => theme::role_coordinator(),
-                AgentRole::Lead => theme::role_lead(),
-                AgentRole::Agent => theme::role_agent(),
-            };
-
+            let (icon, state_str, style) = self.state_display(agent);
+            let role_style = self.role_style(agent);
             let indent = match agent.role {
                 AgentRole::Coordinator => "",
                 AgentRole::Lead => "  ",
                 AgentRole::Agent => "    ",
             };
-
             let is_selected = self.focused && idx == self.selected;
             let name_style = if is_selected {
                 role_style.add_modifier(Modifier::REVERSED)
@@ -549,7 +574,6 @@ impl Workroom {
                 role_style
             };
             let marker = if is_selected { "▸ " } else { "" };
-
             lines.push(Line::from(vec![
                 Span::raw(indent),
                 Span::raw(marker),
@@ -558,15 +582,55 @@ impl Workroom {
                 Span::styled(format!("  {state_str}"), style),
             ]));
         }
-
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No agents configured",
                 theme::muted(),
             )));
         }
+        self.push_footer(&mut lines);
+        lines
+    }
 
-        // Footer hint — compact, panel is only 35 cols wide.
+    /// Shared state icon/label/style for an agent (used by every layout).
+    fn state_display(&self, agent: &TrackedAgent) -> (String, String, Style) {
+        match agent.state {
+            AgentState::Working => {
+                let spinner = SPINNER[agent.spinner_frame];
+                let elapsed = agent
+                    .started_at
+                    .map(|s| format!(" {:.0}s", s.elapsed().as_secs_f64()))
+                    .unwrap_or_default();
+                (
+                    spinner.to_string(),
+                    format!("working{elapsed}"),
+                    theme::working(),
+                )
+            }
+            AgentState::Delegating => {
+                let spinner = SPINNER[agent.spinner_frame];
+                (
+                    spinner.to_string(),
+                    "delegating".to_string(),
+                    theme::delegating(),
+                )
+            }
+            AgentState::Done => ("✓".to_string(), "done".to_string(), theme::done()),
+            AgentState::Idle => ("○".to_string(), "idle".to_string(), theme::muted()),
+        }
+    }
+
+    /// Role-based name style.
+    fn role_style(&self, agent: &TrackedAgent) -> Style {
+        match agent.role {
+            AgentRole::Coordinator => theme::role_coordinator(),
+            AgentRole::Lead => theme::role_lead(),
+            AgentRole::Agent => theme::role_agent(),
+        }
+    }
+
+    /// Append the blank line + Ctrl+W hint footer shared by all layouts.
+    fn push_footer(&self, lines: &mut Vec<Line>) {
         lines.push(Line::from(""));
         if self.focused {
             lines.push(Line::from(Span::styled(
@@ -577,19 +641,65 @@ impl Workroom {
         } else {
             lines.push(Line::from(Span::styled("Ctrl+W focus", theme::muted())));
         }
+    }
 
-        // NOTE: the border color (`Rgb(48, 54, 61)`) is left as-is — it's a
-        // decorative box-drawing accent, not body text, and is legible on
-        // both dark and light terminals. See theme-report.md follow-ups.
-        let panel = Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(48, 54, 61)))
-                .title(" Workroom ")
-                .title_style(theme::heading()),
-        );
+    /// Rank for tree nesting: Coordinator=0, Lead=1, Agent=2.
+    fn role_rank(role: &AgentRole) -> u8 {
+        match role {
+            AgentRole::Coordinator => 0,
+            AgentRole::Lead => 1,
+            AgentRole::Agent => 2,
+        }
+    }
 
-        frame.render_widget(panel, area);
+    /// Box-drawing connector prefix for the agent at `i` in the tree layout.
+    /// Coordinators have no connector; a node is "last" when the next node
+    /// climbs back to a shallower level (or the list ends).
+    fn tree_prefix(&self, i: usize) -> String {
+        let agent = &self.agents[i];
+        if agent.role == AgentRole::Coordinator {
+            return String::new();
+        }
+        let g = theme::glyphs();
+        let rank = Self::role_rank(&agent.role);
+        let is_last =
+            i + 1 >= self.agents.len() || Self::role_rank(&self.agents[i + 1].role) < rank;
+        let connector = if is_last { g.tree_last } else { g.tree_branch };
+        let indent = if agent.role == AgentRole::Agent {
+            "  "
+        } else {
+            ""
+        };
+        format!("{indent}{connector} ")
+    }
+
+    /// The focused hierarchical (pyramid) layout with box-drawing connectors.
+    fn hierarchical_lines(&self) -> Vec<Line<'_>> {
+        let mut lines: Vec<Line> = Vec::new();
+        for (idx, agent) in self.agents.iter().enumerate() {
+            let (icon, state_str, style) = self.state_display(agent);
+            let role_style = self.role_style(agent);
+            let is_selected = self.focused && idx == self.selected;
+            let name_style = if is_selected {
+                role_style.add_modifier(Modifier::REVERSED)
+            } else {
+                role_style
+            };
+            lines.push(Line::from(vec![
+                Span::styled(self.tree_prefix(idx), theme::muted()),
+                Span::styled(format!("{icon} "), style),
+                Span::styled(&agent.name, name_style),
+                Span::styled(format!("  {state_str}"), style),
+            ]));
+        }
+        if lines.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No agents configured",
+                theme::muted(),
+            )));
+        }
+        self.push_footer(&mut lines);
+        lines
     }
 }
 
@@ -966,6 +1076,45 @@ orchestration:
     fn test_selected_detail_markdown_none_when_empty() {
         let wr = Workroom::new();
         assert!(wr.selected_detail_markdown().is_none());
+    }
+
+    #[test]
+    fn layout_mode_compact_when_unfocused() {
+        let mut wr = Workroom::new();
+        wr.pattern = OrchestrationPattern::Ring;
+        wr.set_focused(false);
+        assert_eq!(wr.layout_mode(60), LayoutMode::Compact);
+    }
+
+    #[test]
+    fn layout_mode_rich_when_focused_and_wide() {
+        let mut wr = Workroom::new();
+        wr.pattern = OrchestrationPattern::Ring;
+        wr.set_focused(true);
+        assert_eq!(wr.layout_mode(60), LayoutMode::Ring);
+    }
+
+    #[test]
+    fn layout_mode_degrades_when_narrow() {
+        let mut wr = Workroom::new();
+        wr.pattern = OrchestrationPattern::Blackboard;
+        wr.set_focused(true);
+        assert_eq!(wr.layout_mode(30), LayoutMode::Compact);
+    }
+
+    #[test]
+    fn tree_prefix_marks_last_sibling() {
+        let mut wr = Workroom::new();
+        wr.init_from_config("coordinator: lead\nagents:\n- a\n- b\n");
+        // index 0 = coordinator (no connector)
+        assert_eq!(wr.tree_prefix(0), "");
+        // last agent uses the "last" connector, earlier ones the branch
+        let last = wr.agents.len() - 1;
+        assert!(wr.tree_prefix(last).contains(theme::glyphs().tree_last));
+        assert!(
+            wr.tree_prefix(last - 1)
+                .contains(theme::glyphs().tree_branch)
+        );
     }
 
     #[test]
