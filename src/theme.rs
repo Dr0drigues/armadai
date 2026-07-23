@@ -251,7 +251,6 @@ pub fn border_style() -> Style {
 /// Style for the input block cursor: reverse-video (swaps the cell's
 /// foreground/background) so the cursor stays visible on both light and
 /// dark terminals. Rendered on a single space cell.
-#[allow(dead_code)]
 pub fn cursor() -> Style {
     Style::default().add_modifier(Modifier::REVERSED)
 }

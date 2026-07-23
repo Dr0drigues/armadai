@@ -1379,7 +1379,7 @@ mod tests {
         assert_eq!(byte_idx, 1);
     }
 
-    /// Helper to find cursor position in rendered buffer (background white/black)
+    /// Helper to find cursor position in rendered buffer (reverse-video space cell)
     fn find_cursor_in_buffer(
         terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
     ) -> Option<(u16, u16)> {
