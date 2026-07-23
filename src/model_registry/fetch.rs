@@ -6,6 +6,10 @@ use crate::core::config::config_dir;
 use super::ModelEntry;
 
 const CACHE_FILE: &str = "models-cache.json";
+// Only the refetch decision (load_cache_from, online path) consults the TTL;
+// the cache-only display loaders ignore age. Gated to where it's used so
+// non-providers-api builds don't flag it dead.
+#[cfg(any(feature = "providers-api", test))]
 const CACHE_TTL_SECS: u64 = 86400; // 24h
 pub(crate) const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
@@ -24,7 +28,7 @@ fn cache_path() -> PathBuf {
 /// Returns None if cache is missing or stale.
 #[cfg(not(feature = "providers-api"))]
 pub fn load_models(provider: &str) -> Option<Vec<ModelEntry>> {
-    let cached = load_cache_from(&cache_path())?;
+    let cached = read_cache(&cache_path())?;
     cached.providers.get(provider).cloned()
 }
 
@@ -237,19 +241,32 @@ pub async fn refresh_registry() -> anyhow::Result<usize> {
 
 /// Load models for a provider from cache (sync). Always available, no feature gate.
 pub fn load_models_cached(provider: &str) -> Option<Vec<ModelEntry>> {
-    let cached = load_cache_from(&cache_path())?;
+    let cached = read_cache(&cache_path())?;
     cached.providers.get(provider).cloned()
 }
 
 /// Load all providers from cache (sync). Always available, no feature gate.
 pub fn load_all_providers_cached() -> Option<HashMap<String, Vec<ModelEntry>>> {
-    let cached = load_cache_from(&cache_path())?;
+    let cached = read_cache(&cache_path())?;
     Some(cached.providers)
 }
 
-fn load_cache_from(path: &Path) -> Option<CachedRegistry> {
+/// Read and parse the cache file, **ignoring age**. Used by the cache-only
+/// display loaders (`load_all_providers_cached`/`load_models_cached`/
+/// `load_models`): the model catalog changes slowly, so showing a stale
+/// catalog (History/Costs/Models tabs, TUI, `new -i`) is far better than
+/// showing nothing. Freshness only matters when deciding whether to *refetch*
+/// — that decision uses [`load_cache_from`] instead.
+fn read_cache(path: &Path) -> Option<CachedRegistry> {
     let content = std::fs::read_to_string(path).ok()?;
-    let cached: CachedRegistry = serde_json::from_str(&content).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// Read the cache **only if fresh** (within [`CACHE_TTL_SECS`]). Used by the
+/// online fetch path to decide cache-hit vs. refetch.
+#[cfg(any(feature = "providers-api", test))]
+fn load_cache_from(path: &Path) -> Option<CachedRegistry> {
+    let cached = read_cache(path)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -335,6 +352,32 @@ mod tests {
         assert!(
             load_cache_from(&path).is_none(),
             "expired cache should return None"
+        );
+    }
+
+    #[test]
+    fn expired_cache_still_readable_for_display() {
+        // The display path (read_cache) must return a stale catalog rather than
+        // nothing, so the web/TUI Models tab shows models even when the cache
+        // is older than the TTL. Only the refetch decision (load_cache_from)
+        // treats a stale cache as absent.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CACHE_FILE);
+
+        let registry = CachedRegistry {
+            fetched_at: 0, // epoch — well past the TTL
+            providers: HashMap::from([("openai".to_string(), vec![])]),
+        };
+        save_cache_to(&path, &registry);
+
+        assert!(
+            load_cache_from(&path).is_none(),
+            "refetch decision still treats a stale cache as absent"
+        );
+        let read = read_cache(&path).expect("display read ignores age");
+        assert!(
+            read.providers.contains_key("openai"),
+            "stale cache must still expose its providers for display"
         );
     }
 
