@@ -8,6 +8,7 @@
   import Starters from "./views/Starters.svelte";
   import Costs from "./views/Costs.svelte";
   import Models from "./views/Models.svelte";
+  import Orchestration from "./views/Orchestration.svelte";
   import Detail from "./views/Detail.svelte";
 
   const tabs = [
@@ -18,6 +19,7 @@
     { id: "history", label: "History", count: 148, icon: "history" },
     { id: "costs", label: "Costs", icon: "costs" },
     { id: "models", label: "Models", count: 37, icon: "models" },
+    { id: "orchestration", label: "Orchestration", icon: "orchestration" },
   ];
 
   const r = $derived(router.current);
@@ -41,6 +43,8 @@
         Costs
       {:else if active === "models"}
         Models
+      {:else if active === "orchestration"}
+        Orchestration
       {:else}
         {active}
       {/if}
@@ -78,6 +82,8 @@
     <Costs />
   {:else if active === "models"}
     <Models />
+  {:else if active === "orchestration"}
+    <Orchestration />
   {:else}
     <div class="panel">
       <p>Vue « {active} » — à venir.</p>

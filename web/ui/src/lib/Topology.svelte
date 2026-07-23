@@ -1,0 +1,284 @@
+<script lang="ts">
+  import type { OrchestrationTopology } from "./api";
+
+  interface Props {
+    topology: OrchestrationTopology;
+  }
+
+  let { topology }: Props = $props();
+
+  // Compute layout
+  const diamondSize = 26;
+  const agentRadius = 13;
+  const padding = 40;
+  const verticalGap = 100;
+
+  // Coordinator is at top center
+  const coordX = $derived(padding + 100); // Will adjust based on SVG width
+  const coordY = padding;
+
+  // Calculate team positions
+  interface LayoutTeam {
+    x: number;
+    y: number;
+    agents: Array<{ x: number; y: number; name: string }>;
+  }
+
+  const layoutTeams = $derived.by(() => {
+    const teams: LayoutTeam[] = [];
+    if (!topology.teams || topology.teams.length === 0) {
+      return teams;
+    }
+
+    const teamCount = topology.teams.length;
+    const totalWidth = 200 * teamCount; // Estimate width
+    const baseX = padding;
+    const teamSpacing = totalWidth / Math.max(teamCount, 1);
+
+    topology.teams.forEach((team, idx) => {
+      const x = baseX + teamSpacing / 2 + idx * teamSpacing - totalWidth / 2 + coordX;
+      const y = coordY + verticalGap;
+
+      const agentCount = team.agents?.length || 0;
+      const agents: Array<{ x: number; y: number; name: string }> = [];
+
+      if (agentCount > 0) {
+        const agentSpacing = Math.max(60, 80 / Math.max(agentCount, 1));
+        team.agents?.forEach((agent, agentIdx) => {
+          const agentX = x - (agentSpacing * (agentCount - 1)) / 2 + agentIdx * agentSpacing;
+          const agentY = y + verticalGap / 2;
+          agents.push({ x: agentX, y: agentY, name: agent });
+        });
+      }
+
+      teams.push({ x, y, agents });
+    });
+
+    return teams;
+  });
+
+  // Calculate standalone agent positions
+  const standaloneAgents = $derived.by(() => {
+    const agents: Array<{ x: number; y: number; name: string }> = [];
+    if (!topology.agents || topology.agents.length === 0) {
+      return agents;
+    }
+
+    const agentCount = topology.agents.length;
+    const totalWidth = 80 * agentCount;
+    const baseX = coordX - totalWidth / 2;
+    const baseY = coordY + (topology.teams && topology.teams.length > 0 ? 200 : verticalGap);
+
+    topology.agents.forEach((agent, idx) => {
+      const x = baseX + idx * (totalWidth / agentCount);
+      agents.push({ x, y: baseY, name: agent });
+    });
+
+    return agents;
+  });
+
+  // Truncate label to initials or short name
+  function getLabel(name: string): string {
+    if (!name) return "?";
+    if (name.length <= 3) return name;
+    // Try to get initials from camelCase or snake_case
+    const parts = name.split(/[_-]/).filter((p) => p);
+    if (parts.length > 1) {
+      return parts.map((p) => p[0]).join("").toUpperCase();
+    }
+    // Fallback: first 3 chars
+    return name.substring(0, 3);
+  }
+
+  // Compute SVG dimensions
+  const svgWidth = $derived(topology.teams && topology.teams.length > 0 ? 600 : 400);
+  const svgHeight = $derived(
+    topology.teams && topology.teams.length > 0
+      ? coordY + 200 + (topology.agents && topology.agents.length > 0 ? 80 : 0)
+      : coordY + 150 + (topology.agents && topology.agents.length > 0 ? 80 : 0)
+  );
+</script>
+
+<div class="topology-container">
+  {#if !topology.enabled || !topology.coordinator}
+    <p class="no-topology">Aucune topologie disponible.</p>
+  {:else}
+    <svg width={svgWidth} height={svgHeight} viewBox="0 0 {svgWidth} {svgHeight}" class="topology-svg">
+      <!-- Draw edges: coordinator -> teams -->
+      {#each layoutTeams as team}
+        <line x1={coordX} y1={coordY} x2={team.x} y2={team.y} class="edge" />
+
+        <!-- Draw edges: team -> agents -->
+        {#each team.agents as agent}
+          <line x1={team.x} y1={team.y} x2={agent.x} y2={agent.y} class="edge" />
+        {/each}
+      {/each}
+
+      <!-- Draw edges: coordinator -> standalone agents -->
+      {#each standaloneAgents as agent}
+        <line x1={coordX} y1={coordY} x2={agent.x} y2={agent.y} class="edge" />
+      {/each}
+
+      <!-- Draw coordinator (diamond) -->
+      <g class="node coordinator">
+        <rect
+          x={coordX - diamondSize / 2}
+          y={coordY - diamondSize / 2}
+          width={diamondSize}
+          height={diamondSize}
+          rx="2"
+          class="diamond"
+          transform="rotate(45 {coordX} {coordY})"
+        />
+        <text x={coordX} y={coordY} class="label" text-anchor="middle" dominant-baseline="middle">
+          <title>{topology.coordinator}</title>
+          {getLabel(topology.coordinator)}
+        </text>
+      </g>
+
+      <!-- Draw team nodes and agents -->
+      {#each layoutTeams as team}
+        <!-- Team lead (diamond) -->
+        {#if team && team.x !== undefined && team.y !== undefined}
+          <g class="node team">
+            <rect
+              x={team.x - diamondSize / 2}
+              y={team.y - diamondSize / 2}
+              width={diamondSize}
+              height={diamondSize}
+              rx="2"
+              class="diamond"
+              transform="rotate(45 {team.x} {team.y})"
+            />
+            <text
+              x={team.x}
+              y={team.y}
+              class="label"
+              text-anchor="middle"
+              dominant-baseline="middle"
+            >
+              {#if topology.teams[layoutTeams.indexOf(team)] && topology.teams[layoutTeams.indexOf(team)].lead}
+                <title>{topology.teams[layoutTeams.indexOf(team)].lead || "Équipe"}</title>
+                {getLabel(topology.teams[layoutTeams.indexOf(team)].lead || "")}
+              {:else}
+                <title>Équipe</title>
+                T
+              {/if}
+            </text>
+          </g>
+
+          <!-- Agents under this team -->
+          {#each team.agents as agent}
+            <g class="node agent">
+              <circle cx={agent.x} cy={agent.y} r={agentRadius} class="agent-circle" />
+              <text
+                x={agent.x}
+                y={agent.y}
+                class="label agent-label"
+                text-anchor="middle"
+                dominant-baseline="middle"
+              >
+                <title>{agent.name}</title>
+                {getLabel(agent.name)}
+              </text>
+            </g>
+          {/each}
+        {/if}
+      {/each}
+
+      <!-- Standalone agents (not in teams) -->
+      {#each standaloneAgents as agent}
+        <g class="node agent">
+          <circle cx={agent.x} cy={agent.y} r={agentRadius} class="agent-circle" />
+          <text
+            x={agent.x}
+            y={agent.y}
+            class="label agent-label"
+            text-anchor="middle"
+            dominant-baseline="middle"
+          >
+            <title>{agent.name}</title>
+            {getLabel(agent.name)}
+          </text>
+        </g>
+      {/each}
+    </svg>
+  {/if}
+</div>
+
+<style>
+  .topology-container {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: var(--panel-pad);
+    overflow-x: auto;
+    margin: var(--gutter) 0;
+  }
+
+  .no-topology {
+    color: var(--text-secondary);
+    margin: 0;
+    text-align: center;
+    padding: 24px;
+  }
+
+  .topology-svg {
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    display: block;
+  }
+
+  .edge {
+    stroke: var(--border-strong);
+    stroke-width: 1.4;
+    fill: none;
+  }
+
+  .node {
+    pointer-events: auto;
+  }
+
+  .diamond {
+    fill: var(--brass-bg);
+    stroke: var(--brass-border);
+    stroke-width: 1.5;
+  }
+
+  .node.coordinator .diamond {
+    fill: var(--brass-bg);
+    stroke: var(--brass-border);
+  }
+
+  .node.team .diamond {
+    fill: var(--brass-bg);
+    stroke: var(--brass-border);
+  }
+
+  .agent-circle {
+    fill: var(--surface-3);
+    stroke: var(--border-strong);
+    stroke-width: 1.4;
+  }
+
+  .label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    fill: var(--text-primary);
+    pointer-events: none;
+  }
+
+  .node.coordinator .label {
+    fill: var(--brass-strong);
+  }
+
+  .node.team .label {
+    fill: var(--brass-strong);
+  }
+
+  .agent-label {
+    fill: var(--text-secondary);
+  }
+</style>
