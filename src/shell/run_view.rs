@@ -35,9 +35,22 @@ impl EventSink for WorkroomSink {
     }
 }
 
+/// Restore the terminal to normal state. Called on exit and on panic — mirrors
+/// `src/shell/app.rs::restore_terminal`. Operates on `io::stdout()` directly
+/// (rather than through a `Terminal`/backend handle) so it can also run from
+/// the panic hook, where no `Terminal` is reachable.
+fn restore_terminal() {
+    if let Err(e) = disable_raw_mode() {
+        tracing::warn!("Failed to disable raw mode: {:?}", e);
+    }
+    if let Err(e) = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show) {
+        tracing::warn!("Failed to restore terminal state: {:?}", e);
+    }
+}
+
 /// Run an orchestration (`run`) while showing a live Workroom TUI fed by its
-/// event stream. Restores the terminal on exit (including on error), and
-/// returns the final answer (if the run produced one) for the caller to
+/// event stream. Restores the terminal on exit (including on error or panic),
+/// and returns the final answer (if the run produced one) for the caller to
 /// print *after* the terminal has been restored.
 pub async fn run_orchestration_tui<F>(
     run: impl FnOnce(Arc<dyn EventSink>) -> F,
@@ -57,22 +70,49 @@ where
     }
     workroom.set_visible(true);
 
+    // Install a panic hook that restores the terminal before the default
+    // handler runs (mirrors `src/shell/app.rs`). Without this, a panic while
+    // raw mode + the alternate screen are active leaves the user's terminal
+    // unusable (no echo, stuck on the alternate buffer) after the process
+    // exits, since the sequential restore code below would never run.
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        default_panic(info);
+    }));
+
     // Launch the orchestration in the background.
     let handle = tokio::spawn(run(sink));
 
-    // Enter alternate screen (mirrors src/shell/app.rs).
-    enable_raw_mode()?;
+    // Enter alternate screen (mirrors src/shell/app.rs). Each step is
+    // unwound individually on failure rather than bare-`?`-ing through: if
+    // `EnterAlternateScreen` fails after raw mode was already enabled, or
+    // `Terminal::new` fails after the alternate screen was already entered,
+    // a bare `?` would return with the terminal left half-initialized.
+    if let Err(e) = enable_raw_mode() {
+        handle.abort();
+        return Err(e.into());
+    }
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+        disable_raw_mode().ok();
+        handle.abort();
+        return Err(e.into());
+    }
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = match Terminal::new(backend) {
+        Ok(t) => t,
+        Err(e) => {
+            restore_terminal();
+            handle.abort();
+            return Err(e.into());
+        }
+    };
 
     let render_result = run_loop(&mut terminal, &mut workroom, &mut rx, handle).await;
 
     // Always restore the terminal, even if the loop errored.
-    disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
-    terminal.show_cursor().ok();
+    restore_terminal();
 
     render_result
 }
@@ -115,7 +155,10 @@ async fn run_loop(
                 KeyCode::Down | KeyCode::Char('j') if workroom.is_focused() => {
                     workroom.select_next()
                 }
-                KeyCode::Char('q') if !workroom.is_focused() => break,
+                KeyCode::Char('q') if !workroom.is_focused() => {
+                    handle.abort();
+                    break;
+                }
                 _ => {}
             }
         }

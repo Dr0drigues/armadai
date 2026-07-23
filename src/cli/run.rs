@@ -49,6 +49,7 @@ pub async fn execute(
         && !json
         && !quiet
         && !no_tui
+        && !dry_run
         && std::io::IsTerminal::is_terminal(&std::io::stdout());
 
     #[cfg(feature = "tui")]
@@ -65,6 +66,7 @@ pub async fn execute(
                     pipe,
                     orchestrate,
                     true,
+                    false,
                     false,
                     false,
                     max_content,
@@ -100,6 +102,7 @@ pub async fn execute(
         headless,
         json,
         quiet,
+        true,
         max_content,
         route,
         tags,
@@ -158,6 +161,7 @@ async fn run_inner(
     headless: bool,
     json: bool,
     quiet: bool,
+    human_output: bool,
     max_content: Option<usize>,
     route: Option<String>,
     tags: Option<Vec<String>>,
@@ -193,6 +197,7 @@ async fn run_inner(
             route.as_deref(),
             &tags,
             dry_run,
+            human_output,
         )
         .await;
     }
@@ -227,6 +232,7 @@ async fn run_inner(
                 route.as_deref(),
                 &tags,
                 dry_run,
+                human_output,
             )
             .await;
         }
@@ -1088,6 +1094,7 @@ async fn run_orchestrated(
     route: Option<&str>,
     tags: &[String],
     dry_run: bool,
+    human_output: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
@@ -1130,6 +1137,7 @@ async fn run_orchestrated(
         route,
         tags,
         dry_run,
+        human_output,
     )
     .await
 }
@@ -1165,6 +1173,18 @@ async fn run_orchestrated_inner(
     route: Option<&str>,
     tags: &[String],
     dry_run: bool,
+    // Gate for the direct human-readable `eprintln!`/`println!` writes below
+    // (roster-size banners, "Halted"/"status"/"Done" lines, and the final
+    // outcome). `true` on the plain headless/TTY path (unchanged behavior).
+    // `false` only on the live Workroom TUI path (`run_view.rs`), where
+    // stdout/stderr are the alternate screen: these direct writes would
+    // corrupt the display, and the same final content already reaches the
+    // caller via the `RunEvent::Result` emitted at the end of each branch
+    // below (captured by `WorkroomSink`, printed after terminal restore).
+    // Deliberately NOT `quiet` — `quiet` also suppresses the `RunEvent`s
+    // themselves (agent_start/agent_end/board), which the Workroom needs to
+    // animate; see `tests/e2e/cases/quiet-orchestrated.yaml`.
+    human_output: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
@@ -1306,11 +1326,13 @@ async fn run_orchestrated_inner(
                 provider_map.insert(name.clone(), provider);
             }
 
-            eprintln!(
-                "[blackboard] Starting with {} agent(s), max {} rounds",
-                agent_map.len(),
-                config.max_rounds
-            );
+            if human_output {
+                eprintln!(
+                    "[blackboard] Starting with {} agent(s), max {} rounds",
+                    agent_map.len(),
+                    config.max_rounds
+                );
+            }
 
             let (state, _run_id) = dispatch_blackboard_es(
                 input,
@@ -1325,7 +1347,9 @@ async fn run_orchestrated_inner(
             )
             .await?;
 
-            eprintln!("[blackboard] Halted: {:?}", state.status);
+            if human_output {
+                eprintln!("[blackboard] Halted: {:?}", state.status);
+            }
 
             #[cfg(feature = "storage")]
             {
@@ -1343,7 +1367,7 @@ async fn run_orchestrated_inner(
 
             let outcome_text = super::run_es_record::blackboard_display(&state);
 
-            if !json {
+            if !json && human_output {
                 println!("{outcome_text}");
             }
 
@@ -1382,11 +1406,13 @@ async fn run_orchestrated_inner(
                 provider_map.insert(name.clone(), provider);
             }
 
-            eprintln!(
-                "[ring] Starting with {} agent(s), max {} laps",
-                agent_map.len(),
-                config.max_laps
-            );
+            if human_output {
+                eprintln!(
+                    "[ring] Starting with {} agent(s), max {} laps",
+                    agent_map.len(),
+                    config.max_laps
+                );
+            }
 
             let (state, events, _run_id) = dispatch_ring_es(
                 input,
@@ -1417,8 +1443,10 @@ async fn run_orchestrated_inner(
             }
 
             let outcome_text = super::run_es_record::ring_display(&state, &events);
-            eprintln!("[ring] status: {:?}", state.status);
-            if !json {
+            if human_output {
+                eprintln!("[ring] status: {:?}", state.status);
+            }
+            if !json && human_output {
                 println!("{outcome_text}");
             }
 
@@ -1471,11 +1499,13 @@ async fn run_orchestrated_inner(
                 agent_map.insert(name.clone(), agent);
             }
 
-            eprintln!(
-                "[hierarchical] Starting with coordinator '{}', {} agent(s)",
-                coordinator_name,
-                agent_map.len()
-            );
+            if human_output {
+                eprintln!(
+                    "[hierarchical] Starting with coordinator '{}', {} agent(s)",
+                    coordinator_name,
+                    agent_map.len()
+                );
+            }
 
             let (state, events, _run_id) = dispatch_hierarchical_es(
                 &coordinator_name,
@@ -1496,10 +1526,12 @@ async fn run_orchestrated_inner(
             // `to_orchestration_result`'s doc comment.
             let result = to_orchestration_result(&state, &events);
 
-            eprintln!(
-                "[hierarchical] Done: {} invocations, {} tokens in, {} tokens out",
-                result.invocation_count, result.total_tokens_in, result.total_tokens_out
-            );
+            if human_output {
+                eprintln!(
+                    "[hierarchical] Done: {} invocations, {} tokens in, {} tokens out",
+                    result.invocation_count, result.total_tokens_in, result.total_tokens_out
+                );
+            }
 
             #[cfg(feature = "storage")]
             {
@@ -1515,7 +1547,7 @@ async fn run_orchestrated_inner(
                 }
             }
 
-            if !json {
+            if !json && human_output {
                 println!("{}", result.content);
             }
 
@@ -3260,6 +3292,7 @@ mod es_switch_tests {
             None,
             &[],
             false,
+            true,
         )
         .await
         .unwrap();
@@ -3289,6 +3322,7 @@ mod es_switch_tests {
             None,
             &[],
             false,
+            true,
         )
         .await
         .unwrap();
@@ -3326,6 +3360,7 @@ mod es_switch_tests {
             None,
             &[],
             false,
+            true,
         )
         .await
         .unwrap();
