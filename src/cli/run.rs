@@ -37,9 +37,59 @@ pub async fn execute(
     route: Option<String>,
     tags: Option<Vec<String>>,
     dry_run: bool,
+    no_tui: bool,
 ) -> anyhow::Result<()> {
     // headless is implied by json (machine output cannot be interrupted by a prompt)
     let headless = headless || json;
+
+    // Live Workroom TUI: only for orchestrated runs, only when nothing else
+    // demands plain/machine output, and only when attached to a real
+    // terminal. Falls through to the unchanged headless path otherwise.
+    let use_tui = orchestrate.is_some()
+        && !json
+        && !quiet
+        && !no_tui
+        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+
+    #[cfg(feature = "tui")]
+    if use_tui {
+        // Load project orchestration config (for role seeding), best-effort.
+        let cfg_yaml = std::fs::read_to_string(".armadai/config.yaml")
+            .or_else(|_| std::fs::read_to_string("armadai.yaml"))
+            .ok();
+        let printed = crate::shell::run_view::run_orchestration_tui(
+            move |sink| async move {
+                run_inner(
+                    agent_name,
+                    input,
+                    pipe,
+                    orchestrate,
+                    true,
+                    false,
+                    false,
+                    max_content,
+                    route,
+                    tags,
+                    dry_run,
+                    &sink,
+                )
+                .await
+            },
+            cfg_yaml,
+        )
+        .await;
+        return match printed {
+            Ok(Some(content)) => {
+                println!("{content}");
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(e) => Err(e),
+        };
+    }
+    #[cfg(not(feature = "tui"))]
+    let _ = use_tui;
+
     let sink = crate::core::events::make_sink(json);
 
     let result = run_inner(

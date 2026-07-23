@@ -1,7 +1,19 @@
 #![cfg(feature = "tui")]
 
-use crate::core::events::{EventSink, RunEvent};
+use std::io;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+
+use crate::core::events::{EventSink, RunEvent};
+use crate::shell::workroom::Workroom;
 
 /// An `EventSink` that forwards a clone of every `RunEvent` into a channel,
 /// so a TUI render loop can drain and project them onto a `Workroom`.
@@ -20,6 +32,115 @@ impl EventSink for WorkroomSink {
     fn emit(&self, ev: &RunEvent) {
         // Receiver gone (TUI exited) → drop silently; the run still completes.
         let _ = self.tx.send(ev.clone());
+    }
+}
+
+/// Run an orchestration (`run`) while showing a live Workroom TUI fed by its
+/// event stream. Restores the terminal on exit (including on error), and
+/// returns the final answer (if the run produced one) for the caller to
+/// print *after* the terminal has been restored.
+pub async fn run_orchestration_tui<F>(
+    run: impl FnOnce(Arc<dyn EventSink>) -> F,
+    config_yaml: Option<String>,
+) -> anyhow::Result<Option<String>>
+where
+    F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    let (sink, mut rx) = WorkroomSink::new();
+    let sink: Arc<dyn EventSink> = Arc::new(sink);
+
+    // Seed roles from the orchestration config if available (RunStart carries
+    // no roles); otherwise the flotte stays flat.
+    let mut workroom = Workroom::new();
+    if let Some(cfg) = config_yaml {
+        workroom.init_from_config(&cfg);
+    }
+    workroom.set_visible(true);
+
+    // Launch the orchestration in the background.
+    let handle = tokio::spawn(run(sink));
+
+    // Enter alternate screen (mirrors src/shell/app.rs).
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let render_result = run_loop(&mut terminal, &mut workroom, &mut rx, handle).await;
+
+    // Always restore the terminal, even if the loop errored.
+    disable_raw_mode().ok();
+    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
+    terminal.show_cursor().ok();
+
+    render_result
+}
+
+/// Drain events, redraw, and poll input until the orchestration finishes (or
+/// the user quits/aborts). Returns the final `RunEvent::Result` content (if
+/// any) for the caller to print once the terminal is restored.
+async fn run_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    workroom: &mut Workroom,
+    rx: &mut UnboundedReceiver<RunEvent>,
+    handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+) -> anyhow::Result<Option<String>> {
+    let mut final_content: Option<String> = None;
+    loop {
+        // Drain all pending events.
+        while let Ok(ev) = rx.try_recv() {
+            if let RunEvent::Result { content, .. } = &ev {
+                final_content = Some(content.clone());
+            }
+            workroom.on_run_event_at(&ev, Instant::now());
+        }
+        workroom.tick();
+        terminal.draw(|f| workroom.render(f, f.area()))?;
+
+        // Input: Ctrl+W focus/drill-down (already implemented), Ctrl+C/q quit.
+        if event::poll(Duration::from_millis(80))?
+            && let Event::Key(k) = event::read()?
+            && k.kind == KeyEventKind::Press
+        {
+            match k.code {
+                KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    handle.abort();
+                    break;
+                }
+                KeyCode::Char('w') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    workroom.set_focused(!workroom.is_focused());
+                }
+                KeyCode::Up | KeyCode::Char('k') if workroom.is_focused() => workroom.select_prev(),
+                KeyCode::Down | KeyCode::Char('j') if workroom.is_focused() => {
+                    workroom.select_next()
+                }
+                KeyCode::Char('q') if !workroom.is_focused() => break,
+                _ => {}
+            }
+        }
+
+        // Exit once the orchestration finished and the channel is drained.
+        if handle.is_finished() && rx.is_empty() {
+            // Apply any last events.
+            while let Ok(ev) = rx.try_recv() {
+                if let RunEvent::Result { content, .. } = &ev {
+                    final_content = Some(content.clone());
+                }
+                workroom.on_run_event_at(&ev, Instant::now());
+            }
+            break;
+        }
+    }
+
+    // Propagate the orchestration's result / return final content for the
+    // caller to print after restoring the terminal.
+    let outcome = handle.await;
+    match outcome {
+        Ok(Ok(())) => Ok(final_content),
+        Ok(Err(e)) => Err(e),
+        Err(join_err) if join_err.is_cancelled() => Ok(None), // Ctrl+C abort: nothing to print
+        Err(join_err) => Err(anyhow::anyhow!(join_err)),
     }
 }
 
