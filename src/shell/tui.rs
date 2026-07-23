@@ -777,11 +777,7 @@ impl ShellApp {
             "ArmadAI Shell — {}{} — Turn #{}",
             model_info, pty_indicator, self.turn_count
         );
-        let header = Paragraph::new(header_text).style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
+        let header = Paragraph::new(header_text).style(theme::heading());
         frame.render_widget(header, chunks[0]);
 
         // Messages area (with optional workroom panel)
@@ -835,7 +831,7 @@ impl ShellApp {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             " Esc to close │ ↑↓ scroll",
-            Style::default().fg(Color::DarkGray),
+            theme::muted(),
         )));
 
         let popup = Paragraph::new(lines)
@@ -855,7 +851,12 @@ impl ShellApp {
     fn render_messages_area(&self, frame: &mut Frame, area: Rect) {
         if self.messages.is_empty() {
             let placeholder = Paragraph::new("Welcome to ArmadAI Shell!\n\nType your message and press Enter to get started. Press Ctrl+L to clear conversation, Ctrl+W to focus the workroom panel, Ctrl+C or Esc to quit.")
-                .block(Block::default().borders(Borders::ALL))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border_style()),
+                )
+                .style(theme::border_style())
                 .wrap(Wrap { trim: false });
             frame.render_widget(placeholder, area);
             return;
@@ -867,17 +868,11 @@ impl ShellApp {
         for msg in &self.messages {
             // Add role label
             let role_style = if msg.is_system {
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM)
+                theme::muted().add_modifier(Modifier::DIM)
             } else if msg.is_user {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
+                theme::stack().add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                theme::heading()
             };
 
             let role_prefix = if msg.is_system { "⚙ " } else { "" };
@@ -909,9 +904,7 @@ impl ShellApp {
                 .unwrap_or(0.0);
             lines.push(Line::from(vec![Span::styled(
                 format!("{spinner} Generating response… {elapsed:.0}s"),
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
+                theme::muted().add_modifier(Modifier::ITALIC),
             )]));
         }
 
@@ -943,9 +936,17 @@ impl ShellApp {
             max_scroll
         };
 
-        // Create paragraph with message content
+        // Create paragraph with message content. The base `.style()` gives the
+        // whole panel a neutral foreground so unstyled message bodies (plain
+        // user lines, markdown text) don't inherit the terminal default fg
+        // (which reads blue on light terminals). Styled role labels override it.
         let messages_text = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border_style()),
+            )
+            .style(theme::border_style())
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0));
 
@@ -1066,19 +1067,16 @@ impl ShellApp {
                 input_spans.push(Span::raw(c.to_string()));
             }
             if !self.loading {
-                input_spans.push(Span::styled(
-                    " ",
-                    Style::default().bg(Color::White).fg(Color::Black),
-                ));
+                input_spans.push(Span::styled(" ", theme::cursor()));
             }
 
             let input_paragraph = Paragraph::new(Line::from(input_spans))
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray))
+                        .border_style(theme::border_style())
                         .title(" Input ")
-                        .title_style(Style::default().fg(Color::Cyan)),
+                        .title_style(theme::heading()),
                 )
                 .wrap(Wrap { trim: false });
 
@@ -1130,10 +1128,7 @@ impl ShellApp {
 
             // Add this character to current line
             if is_cursor_pos {
-                current_line_spans.push(Span::styled(
-                    c.to_string(),
-                    Style::default().bg(Color::White).fg(Color::Black),
-                ));
+                current_line_spans.push(Span::styled(c.to_string(), theme::cursor()));
             } else {
                 current_line_spans.push(Span::raw(c.to_string()));
             }
@@ -1153,17 +1148,11 @@ impl ShellApp {
             if current_col < available_width {
                 // Cursor fits on current line
                 if let Some(last_line) = lines.last_mut() {
-                    last_line.spans.push(Span::styled(
-                        " ",
-                        Style::default().bg(Color::White).fg(Color::Black),
-                    ));
+                    last_line.spans.push(Span::styled(" ", theme::cursor()));
                 }
             } else if current_col > 0 {
                 // Cursor would wrap to next line (edge case: cursor at exact wrap boundary)
-                let cursor_span = vec![Span::styled(
-                    " ",
-                    Style::default().bg(Color::White).fg(Color::Black),
-                )];
+                let cursor_span = vec![Span::styled(" ", theme::cursor())];
                 lines.push(Line::from(cursor_span));
                 cursor_on_new_line = true;
             }
@@ -1189,9 +1178,9 @@ impl ShellApp {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
+                    .border_style(theme::border_style())
                     .title(" Input ")
-                    .title_style(Style::default().fg(Color::Cyan)),
+                    .title_style(theme::heading()),
             )
             .wrap(Wrap { trim: false })
             .scroll((scroll_offset, 0));
@@ -1403,7 +1392,7 @@ mod tests {
         assert_eq!(byte_idx, 1);
     }
 
-    /// Helper to find cursor position in rendered buffer (background white/black)
+    /// Helper to find cursor position in rendered buffer (reverse-video space cell)
     fn find_cursor_in_buffer(
         terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
     ) -> Option<(u16, u16)> {
@@ -1411,9 +1400,9 @@ mod tests {
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
                 if let Some(cell) = buf.cell((x, y)) {
-                    // Cursor is styled with bg=White, fg=Black
-                    if cell.bg == ratatui::prelude::Color::White
-                        && cell.fg == ratatui::prelude::Color::Black
+                    // Cursor is styled reverse-video on a single space cell.
+                    if cell.symbol() == " "
+                        && cell.modifier.contains(ratatui::style::Modifier::REVERSED)
                     {
                         return Some((x, y));
                     }
