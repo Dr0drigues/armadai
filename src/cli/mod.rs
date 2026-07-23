@@ -262,6 +262,9 @@ pub enum Command {
         /// Show agents from the global library (~/.config/armadai/) only
         #[arg(long)]
         global: bool,
+        /// Use ASCII glyphs instead of Unicode (for limited terminals)
+        #[arg(long)]
+        ascii: bool,
     },
     /// Launch the web UI
     #[cfg(feature = "web")]
@@ -528,9 +531,9 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         #[cfg(feature = "tui")]
         Command::Shell => crate::shell::app::run_shell().await,
         #[cfg(feature = "tui")]
-        Command::Tui { global } => {
+        Command::Tui { global, ascii } => {
             crate::core::config::set_force_global(global);
-            crate::tui::run().await
+            crate::tui::run(ascii).await
         }
         #[cfg(feature = "web")]
         Command::Web { port, global } => {

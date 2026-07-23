@@ -6,7 +6,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Row, Table, Tabs},
 };
 
-use crate::theme;
 use crate::tui::app::{App, Tab};
 use crate::tui::filter;
 use crate::tui::widgets::search_bar;
@@ -28,12 +27,16 @@ pub fn render(frame: &mut Frame, app: &App) {
         .collect();
 
     let tabs = Tabs::new(titles)
-        .block(Block::default().borders(Borders::ALL).title(" ArmadAI "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" ArmadAI ")
+                .style(app.theme.border_style()),
+        )
         .select(app.tab_index)
-        // Was `fg(Color::White)` — white-on-white on a light terminal.
         // Default terminal fg adapts to either theme.
         .style(Style::default())
-        .highlight_style(theme::selection());
+        .highlight_style(app.theme.accent_style());
     frame.render_widget(tabs, chunks[0]);
 
     // Content area — dispatch to the right view
@@ -78,7 +81,12 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
             "No agents found. Create one with: armadai new my-agent\n\n\
              Press ':' to open command palette",
         )
-        .block(Block::default().borders(Borders::ALL).title(" Agents "));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Agents ")
+                .style(app.theme.border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -88,8 +96,12 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         filter::apply_filter_and_sort_agents(&app.agents, &app.search_query, app.sort_mode);
 
     if display_indices.is_empty() {
-        let msg = Paragraph::new("No agents match your search.")
-            .block(Block::default().borders(Borders::ALL).title(" Agents "));
+        let msg = Paragraph::new("No agents match your search.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Agents ")
+                .style(app.theme.border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
@@ -110,7 +122,7 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
             let agent = &app.agents[agent_i];
             let tags = agent.metadata.tags.join(", ");
             let style = if display_i == app.selected_agent {
-                theme::selection()
+                app.theme.accent_style()
             } else {
                 Style::default()
             };
@@ -136,12 +148,17 @@ fn render_agent_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        " Agents — {} loaded, {} shown{} ",
-        app.agents.len(),
-        display_indices.len(),
-        app.sort_indicator()
-    )));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                " Agents — {} loaded, {} shown{} ",
+                app.agents.len(),
+                display_indices.len(),
+                app.sort_indicator()
+            ))
+            .style(app.theme.border_style()),
+    );
 
     frame.render_widget(table, area);
 
