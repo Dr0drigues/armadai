@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { router } from "./lib/route.svelte";
   import Shell from "./lib/Shell.svelte";
   import Agents from "./views/Agents.svelte";
@@ -10,9 +11,17 @@
   import Models from "./views/Models.svelte";
   import Orchestration from "./views/Orchestration.svelte";
   import Detail from "./views/Detail.svelte";
+  import {
+    getAgents,
+    getPrompts,
+    getSkills,
+    getStarters,
+    getHistory,
+    getModels,
+  } from "./lib/api";
 
-  // No hardcoded counts — a fake number is worse than none (a real count would
-  // need fetching every list up front).
+  let counts = $state<Record<string, number>>({});
+
   const tabs = [
     { id: "agents", label: "Agents", icon: "agents" },
     { id: "prompts", label: "Prompts", icon: "prompts" },
@@ -35,12 +44,44 @@
     orchestration: "topologie & traces",
   };
 
+  onMount(async () => {
+    try {
+      const [agents, prompts, skills, starters, history, models] = await Promise.all([
+        getAgents(),
+        getPrompts(),
+        getSkills(),
+        getStarters(),
+        getHistory(),
+        getModels(),
+      ]);
+
+      counts.agents = agents.length;
+      counts.prompts = prompts.length;
+      counts.skills = skills.length;
+      counts.starters = starters.length;
+      counts.history = history.length;
+      // Models is ProviderModels[] → sum of all models across providers
+      counts.models = models.reduce((sum, pm) => sum + pm.models.length, 0);
+    } catch (err) {
+      console.error("Failed to load counts:", err);
+      // Continue without counts if fetch fails
+    }
+  });
+
   const r = $derived(router.current);
   const active = $derived(r.view);
   const subtitle = $derived(r.param ? "détail" : (SUBTITLES[active] ?? ""));
+
+  // Inject counts into tabs
+  const tabsWithCounts = $derived(
+    tabs.map((tab) => ({
+      ...tab,
+      count: counts[tab.id],
+    }))
+  );
 </script>
 
-<Shell {tabs} {active}>
+<Shell tabs={tabsWithCounts} {active}>
   <div class="page-head">
     <h1>
       {#if active === "agents"}

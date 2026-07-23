@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { navigate } from "./route.svelte";
   import type { OrchestrationTopology } from "./api";
 
   interface Props {
@@ -18,6 +19,9 @@
   let panStartY = $state(0);
   let panStartTx = $state(0);
   let panStartTy = $state(0);
+
+  // Click vs pan threshold (pixels)
+  const CLICK_THRESHOLD = 5;
 
   // Compute layout
   const diamondSize = 26;
@@ -150,6 +154,34 @@
     ty = 0;
     scale = 1;
   }
+
+  // Node click handler: distinguish click from pan
+  let nodeClickStart: { x: number; y: number } | null = null;
+
+  function onNodePointerDown(e: PointerEvent) {
+    nodeClickStart = { x: e.clientX, y: e.clientY };
+  }
+
+  function onNodeClick(name: string, e: PointerEvent) {
+    // Check if this is actually a click (not a pan)
+    if (!nodeClickStart) return;
+    const distance = Math.sqrt(
+      Math.pow(e.clientX - nodeClickStart.x, 2) + Math.pow(e.clientY - nodeClickStart.y, 2)
+    );
+    if (distance > CLICK_THRESHOLD) {
+      // This was a pan, not a click
+      nodeClickStart = null;
+      return;
+    }
+    nodeClickStart = null;
+    navigate(`agents/${encodeURIComponent(name)}`);
+  }
+
+  function onNodeKeyDown(name: string, e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      navigate(`agents/${encodeURIComponent(name)}`);
+    }
+  }
 </script>
 
 <div class="topology-container">
@@ -190,7 +222,15 @@
           {/each}
 
           <!-- Draw coordinator (diamond) -->
-          <g class="node coordinator">
+          <g
+            class="node coordinator clickable"
+            role="button"
+            tabindex="0"
+            onpointerdown={onNodePointerDown}
+            onpointerup={(e) => onNodeClick(topology.coordinator || "", e)}
+            onkeydown={(e) => onNodeKeyDown(topology.coordinator || "", e)}
+            aria-label="Coordinator {topology.coordinator}"
+          >
             <rect
               x={coordX - diamondSize / 2}
               y={coordY - diamondSize / 2}
@@ -207,39 +247,74 @@
           </g>
 
           <!-- Draw team nodes and agents -->
-          {#each layoutTeams as team}
+          {#each layoutTeams as team, teamIdx}
             <!-- Team lead (diamond) -->
             {#if team && team.x !== undefined && team.y !== undefined}
-              <g class="node team">
-                <rect
-                  x={team.x - diamondSize / 2}
-                  y={team.y - diamondSize / 2}
-                  width={diamondSize}
-                  height={diamondSize}
-                  rx="2"
-                  class="diamond"
-                  transform="rotate(45 {team.x} {team.y})"
-                />
-                <text
-                  x={team.x}
-                  y={team.y}
-                  class="label"
-                  text-anchor="middle"
-                  dominant-baseline="middle"
+              {#if topology.teams[teamIdx]?.lead}
+                <g
+                  class="node team clickable"
+                  role="button"
+                  tabindex="0"
+                  onpointerdown={onNodePointerDown}
+                  onpointerup={(e) => onNodeClick(topology.teams[teamIdx].lead || "", e)}
+                  onkeydown={(e) => onNodeKeyDown(topology.teams[teamIdx].lead || "", e)}
+                  aria-label="Team lead {topology.teams[teamIdx].lead}"
                 >
-                  {#if topology.teams[layoutTeams.indexOf(team)] && topology.teams[layoutTeams.indexOf(team)].lead}
-                    <title>{topology.teams[layoutTeams.indexOf(team)].lead || "Équipe"}</title>
-                    {getLabel(topology.teams[layoutTeams.indexOf(team)].lead || "")}
-                  {:else}
+                  <rect
+                    x={team.x - diamondSize / 2}
+                    y={team.y - diamondSize / 2}
+                    width={diamondSize}
+                    height={diamondSize}
+                    rx="2"
+                    class="diamond"
+                    transform="rotate(45 {team.x} {team.y})"
+                  />
+                  <text
+                    x={team.x}
+                    y={team.y}
+                    class="label"
+                    text-anchor="middle"
+                    dominant-baseline="middle"
+                  >
+                    <title>{topology.teams[teamIdx].lead}</title>
+                    {getLabel(topology.teams[teamIdx].lead || "")}
+                  </text>
+                </g>
+              {:else}
+                <g class="node team">
+                  <rect
+                    x={team.x - diamondSize / 2}
+                    y={team.y - diamondSize / 2}
+                    width={diamondSize}
+                    height={diamondSize}
+                    rx="2"
+                    class="diamond"
+                    transform="rotate(45 {team.x} {team.y})"
+                  />
+                  <text
+                    x={team.x}
+                    y={team.y}
+                    class="label"
+                    text-anchor="middle"
+                    dominant-baseline="middle"
+                  >
                     <title>Équipe</title>
                     T
-                  {/if}
-                </text>
-              </g>
+                  </text>
+                </g>
+              {/if}
 
               <!-- Agents under this team -->
               {#each team.agents as agent}
-                <g class="node agent">
+                <g
+                  class="node agent clickable"
+                  role="button"
+                  tabindex="0"
+                  onpointerdown={onNodePointerDown}
+                  onpointerup={(e) => onNodeClick(agent.name, e)}
+                  onkeydown={(e) => onNodeKeyDown(agent.name, e)}
+                  aria-label="Agent {agent.name}"
+                >
                   <circle cx={agent.x} cy={agent.y} r={agentRadius} class="agent-circle" />
                   <text
                     x={agent.x}
@@ -258,7 +333,15 @@
 
           <!-- Standalone agents (not in teams) -->
           {#each standaloneAgents as agent}
-            <g class="node agent">
+            <g
+              class="node agent clickable"
+              role="button"
+              tabindex="0"
+              onpointerdown={onNodePointerDown}
+              onpointerup={(e) => onNodeClick(agent.name, e)}
+              onkeydown={(e) => onNodeKeyDown(agent.name, e)}
+              aria-label="Agent {agent.name}"
+            >
               <circle cx={agent.x} cy={agent.y} r={agentRadius} class="agent-circle" />
               <text
                 x={agent.x}
@@ -329,10 +412,26 @@
     pointer-events: auto;
   }
 
+  .node.clickable {
+    cursor: pointer;
+  }
+
+  .node.clickable:hover .diamond,
+  .node.clickable:hover .agent-circle {
+    stroke-width: 2;
+    filter: brightness(1.1);
+  }
+
+  .node.clickable:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
   .diamond {
     fill: var(--brass-bg);
     stroke: var(--brass-border);
     stroke-width: 1.5;
+    transition: stroke-width 150ms ease, filter 150ms ease;
   }
 
   .node.coordinator .diamond {
@@ -349,6 +448,7 @@
     fill: var(--surface-3);
     stroke: var(--border-strong);
     stroke-width: 1.4;
+    transition: stroke-width 150ms ease, filter 150ms ease;
   }
 
   .label {

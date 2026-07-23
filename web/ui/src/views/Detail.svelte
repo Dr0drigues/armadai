@@ -111,7 +111,7 @@
               {:else if isArray(value)}
                 {#if isLinkableField(key, value)}
                   <div class="tags">
-                    {#each value as unknown[] as item (item)}
+                    {#each value as unknown[] as item, i (i)}
                       <button
                         class="tag tag-link"
                         onclick={() => navigateToResource(key, String(item))}
@@ -122,7 +122,7 @@
                   </div>
                 {:else if (value as unknown[]).every((i) => typeof i === "string" || typeof i === "number")}
                   <div class="tags">
-                    {#each value as unknown[] as item (item)}
+                    {#each value as unknown[] as item, i (i)}
                       <span class="tag">{renderValue(item)}</span>
                     {/each}
                   </div>
