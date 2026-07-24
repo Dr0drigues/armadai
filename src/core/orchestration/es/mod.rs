@@ -22,7 +22,10 @@ pub mod state;
 #[allow(unused_imports)]
 pub use bridge::{SinkProjectingLog, map_execution_to_run_events, to_orchestration_result};
 #[allow(unused_imports)]
-pub use engine::{Action, Decider, EffectRunner, replay, run_event_sourced};
+pub use engine::{
+    Action, Decider, EffectRunner, config_snapshot, replay, resume_event_sourced,
+    run_event_sourced, run_started_roster_and_input,
+};
 #[allow(unused_imports)]
 pub use event::ExecutionEvent;
 #[cfg(feature = "storage")]

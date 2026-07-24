@@ -789,6 +789,60 @@ pub async fn run_blackboard_es(
     run_event_sourced(run_id, initial, &decider, &effects, log).await
 }
 
+/// Resume a previously interrupted `blackboard` run (OH1 Lot 6, Task 3):
+/// recovers the run's original `input` and the pattern's `BlackboardConfig`
+/// from the log (`RunStarted`/`ConfigSnapshot` — see
+/// [`super::engine::run_started_roster_and_input`]/[`super::engine::config_snapshot`]),
+/// rebuilds the SAME [`BlackboardDecider`]/[`BlackboardEffectRunner`] pair
+/// [`run_blackboard_es`] would (including `agent_order` derived from
+/// `agents.keys()`, exactly like the live path — deterministic given the
+/// same roster, so it needs no log-recovered ordering), and drives
+/// [`super::engine::resume_event_sourced`] instead of appending a fresh
+/// `RunStarted`/`ConfigSnapshot`.
+///
+/// `agents`/`providers` must be the roster reloaded from the project on disk
+/// (keyed by the same roster keys the original run used — see
+/// `ExecutionState::agents`, folded from `RunStarted`); `cost_limit` is
+/// re-derived from the project's top-level `orchestration.cost_limit`
+/// exactly as [`run_blackboard_es`]'s caller does, since it lives outside
+/// `BlackboardConfig` and is never captured by `ConfigSnapshot`.
+///
+/// Bails if `run_id` has no recorded `RunStarted` (unknown run) or isn't
+/// currently `Running` (see `resume_event_sourced`).
+pub async fn resume_blackboard_es(
+    run_id: &str,
+    agents: BTreeMap<String, Agent>,
+    providers: BTreeMap<String, Arc<dyn Provider>>,
+    routing_rules: RoutingRules,
+    cost_limit: Option<f64>,
+    log: &mut impl EventLog,
+) -> anyhow::Result<ExecutionState> {
+    use super::engine::{config_snapshot, resume_event_sourced, run_started_roster_and_input};
+
+    let events = log.events(run_id)?;
+    let (_roster, input) = run_started_roster_and_input(&events)
+        .ok_or_else(|| anyhow::anyhow!("no run found for id {run_id}"))?;
+    let config: BlackboardConfig = config_snapshot(&events);
+
+    let agent_order: Vec<String> = agents.keys().cloned().collect();
+    let max_rounds = config.max_rounds;
+    let token_budget = Some(u32::try_from(config.token_budget).unwrap_or(u32::MAX));
+
+    let decider = BlackboardDecider::new(
+        agents.clone(),
+        agent_order,
+        input,
+        config.clone(),
+        routing_rules,
+        max_rounds,
+        token_budget,
+        cost_limit,
+    );
+    let effects = BlackboardEffectRunner::new(agents, providers, config);
+
+    resume_event_sourced(run_id, &decider, &effects, log).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2001,6 +2055,112 @@ mod tests {
                 !final_content(&log, "run-converge").trim().is_empty(),
                 "expected a non-empty final board digest"
             );
+        }
+
+        /// OH1 Lot 6, Task 3: `resume_blackboard_es` reconstructs the same
+        /// `BlackboardDecider`/`BlackboardEffectRunner` a fresh
+        /// `run_blackboard_es` would from a log that only has `RunStarted` +
+        /// `ConfigSnapshot` recorded (simulating a crash immediately after
+        /// config capture, before any round started) — proving
+        /// `BlackboardConfig` round-trips through `ConfigSnapshot` correctly
+        /// (the ConfigSnapshot-sufficiency finding this task investigates).
+        /// Same scripted scenario as `es_blackboard_converges_and_completes`
+        /// above, seeded by hand instead of via `run_blackboard_es`.
+        #[tokio::test]
+        async fn resume_blackboard_es_converges_from_a_config_snapshot_only_log() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), es_test_agent("a", "concrete-model"));
+            agents.insert("b".to_string(), es_test_agent("b", "concrete-model"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert(
+                "a".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:tout est cohérent",
+                ])),
+            );
+            providers.insert(
+                "b".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:confirmé",
+                ])),
+            );
+
+            let config = BlackboardConfig::default();
+            let agent_order: Vec<String> = agents.keys().cloned().collect();
+
+            let mut log = InMemoryLog::default();
+            log.append(
+                "run-resume-bb",
+                &ExecutionEvent::RunStarted {
+                    run_id: "run-resume-bb".to_string(),
+                    pattern: "blackboard".to_string(),
+                    agents: agent_order,
+                    input: "task".to_string(),
+                    project: None,
+                },
+            )
+            .unwrap();
+            log.append(
+                "run-resume-bb",
+                &ExecutionEvent::ConfigSnapshot {
+                    config_json: serde_json::to_string(&config).unwrap(),
+                },
+            )
+            .unwrap();
+
+            let st = resume_blackboard_es(
+                "run-resume-bb",
+                agents,
+                providers,
+                RoutingRules::default(),
+                None,
+                &mut log,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(st.status, RunStatus::Completed);
+            assert!(
+                st.board.entries.iter().all(|e| e.kind == "confirmation"),
+                "expected only confirmation entries, got {:?}",
+                st.board.entries
+            );
+            assert!(!final_content(&log, "run-resume-bb").trim().is_empty());
+        }
+
+        #[tokio::test]
+        async fn resume_blackboard_es_bails_on_completed_run() {
+            let mut log = InMemoryLog::default();
+            log.append(
+                "run-resume-bb",
+                &ExecutionEvent::RunStarted {
+                    run_id: "run-resume-bb".to_string(),
+                    pattern: "blackboard".to_string(),
+                    agents: vec!["a".to_string()],
+                    input: "task".to_string(),
+                    project: None,
+                },
+            )
+            .unwrap();
+            log.append(
+                "run-resume-bb",
+                &ExecutionEvent::Completed {
+                    content: "done".to_string(),
+                },
+            )
+            .unwrap();
+
+            let err = resume_blackboard_es(
+                "run-resume-bb",
+                BTreeMap::new(),
+                BTreeMap::new(),
+                RoutingRules::default(),
+                None,
+                &mut log,
+            )
+            .await
+            .unwrap_err();
+            assert!(err.to_string().contains("not resumable"));
         }
 
         // Scenario 2: both agents post plain `FINDING`s every round — never

@@ -125,13 +125,38 @@ where
         append_and_apply(log, run_id, &mut state, event)?;
     }
 
+    run_loop(run_id, &mut state, decider, effects, log).await?;
+
+    Ok(state)
+}
+
+/// Drive the generic event-sourced loop body for `run_id`, given an
+/// already-seeded `state` — the part of [`run_event_sourced`] that runs
+/// `while state.status == RunStatus::Running`, factored out so
+/// [`resume_event_sourced`] can seed `state` via [`replay`] (no re-append of
+/// `initial`) instead of `ExecutionState::default()`, while sharing the
+/// exact same decide/act/append/fold sequence — see [`run_event_sourced`]'s
+/// own doc comment for the full behavior this implements (iteration cap,
+/// per-`Action` handling, etc.), which is unchanged by this extraction.
+async fn run_loop<D, R, L>(
+    run_id: &str,
+    state: &mut ExecutionState,
+    decider: &D,
+    effects: &R,
+    log: &mut L,
+) -> anyhow::Result<()>
+where
+    D: Decider,
+    R: EffectRunner,
+    L: EventLog,
+{
     let mut iterations = 0usize;
     while state.status == RunStatus::Running {
         if iterations >= MAX_ITERATIONS {
             append_and_apply(
                 log,
                 run_id,
-                &mut state,
+                state,
                 ExecutionEvent::Halted {
                     reason: "iteration_cap".to_string(),
                 },
@@ -140,7 +165,7 @@ where
         }
         iterations += 1;
 
-        let actions = decider.decide(&state);
+        let actions = decider.decide(state);
         if actions.is_empty() {
             break;
         }
@@ -154,34 +179,105 @@ where
                     append_and_apply(
                         log,
                         run_id,
-                        &mut state,
+                        state,
                         ExecutionEvent::AgentInvoked {
                             agent: agent.clone(),
                             input: input.clone(),
                         },
                     )?;
-                    let observed = effects.run_invoke(&agent, &input, &state).await?;
-                    append_and_apply(log, run_id, &mut state, observed)?;
+                    let observed = effects.run_invoke(&agent, &input, state).await?;
+                    append_and_apply(log, run_id, state, observed)?;
                 }
                 Action::Emit(event) => {
-                    append_and_apply(log, run_id, &mut state, event)?;
+                    append_and_apply(log, run_id, state, event)?;
                 }
                 Action::Halt { reason } => {
-                    append_and_apply(log, run_id, &mut state, ExecutionEvent::Halted { reason })?;
+                    append_and_apply(log, run_id, state, ExecutionEvent::Halted { reason })?;
                 }
                 Action::Complete { content } => {
-                    append_and_apply(
-                        log,
-                        run_id,
-                        &mut state,
-                        ExecutionEvent::Completed { content },
-                    )?;
+                    append_and_apply(log, run_id, state, ExecutionEvent::Completed { content })?;
                 }
             }
         }
     }
 
+    Ok(())
+}
+
+/// Resume a previously interrupted event-sourced run: seed `state` by
+/// [`replay`]ing `run_id` from `log` (a pure fold — NO re-append of the
+/// events already recorded), then drive the same [`run_loop`] a fresh run
+/// would use, appending only the NEW events resuming produces.
+///
+/// Bails if `run_id` has no recorded events at all (unknown run — `replay`
+/// alone can't distinguish "unknown id" from "a real, empty-by-construction
+/// state", since both fold to `ExecutionState::default()`), or if the
+/// replayed run's status isn't [`RunStatus::Running`] (already
+/// `Completed`/`Halted` — nothing to resume).
+///
+/// `decider`/`effects` must be reconstructed by the caller (see the
+/// `resume_*_es` entry points in `es::direct`/`blackboard`/`ring`/
+/// `hierarchical`) from data recoverable at resume time: the roster/input
+/// carried by the log's `RunStarted` event, the pattern config carried by
+/// `ConfigSnapshot`, and the agents/providers reloaded from the project on
+/// disk — never from anything the caller must have kept around since the
+/// original run started.
+pub async fn resume_event_sourced<D, R, L>(
+    run_id: &str,
+    decider: &D,
+    effects: &R,
+    log: &mut L,
+) -> anyhow::Result<ExecutionState>
+where
+    D: Decider,
+    R: EffectRunner,
+    L: EventLog,
+{
+    if log.events(run_id)?.is_empty() {
+        anyhow::bail!("no run found for id {run_id}");
+    }
+
+    let mut state = replay(run_id, log)?;
+    if state.status != RunStatus::Running {
+        anyhow::bail!("run {run_id} is not resumable (status: {:?})", state.status);
+    }
+
+    run_loop(run_id, &mut state, decider, effects, log).await?;
+
     Ok(state)
+}
+
+/// Recover the roster (`RunStarted.agents`, in original order) and original
+/// user `input` from the first `RunStarted` event in `events`. Returns
+/// `None` if no `RunStarted` is present (an unknown/empty log) — the only
+/// piece of `RunStarted` not preserved by the pure `ExecutionState`
+/// projection (`apply` deliberately discards `input`, see `state.rs`), so
+/// every `resume_*_es` entry point needs this raw-event scan (mirroring
+/// `run_es_record::project_run`'s own `RunStarted` extraction) to rebuild a
+/// `Decider` that needs the run's original input text.
+pub fn run_started_roster_and_input(events: &[ExecutionEvent]) -> Option<(Vec<String>, String)> {
+    events.iter().find_map(|e| match e {
+        ExecutionEvent::RunStarted { agents, input, .. } => Some((agents.clone(), input.clone())),
+        _ => None,
+    })
+}
+
+/// Recover a pattern's orchestration config (`BlackboardConfig`/`RingConfig`/
+/// `OrchestrationConfig`) from the log's `ConfigSnapshot` event, deserializing
+/// its `config_json`. Falls back to `C::default()` when no `ConfigSnapshot`
+/// is present (direct runs never emit one) or it fails to deserialize —
+/// same fallback `run_es_record::project_run` already relies on via
+/// `ExecutionState::config_json`.
+pub fn config_snapshot<C: serde::de::DeserializeOwned + Default>(events: &[ExecutionEvent]) -> C {
+    events
+        .iter()
+        .find_map(|e| match e {
+            ExecutionEvent::ConfigSnapshot { config_json } => {
+                serde_json::from_str(config_json).ok()
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 /// Reconstruct an `ExecutionState` for `run_id` purely from `log`, executing
@@ -260,5 +356,195 @@ mod tests {
         assert_eq!(format!("{st:?}"), format!("{replayed:?}"));
         // log contains RunStarted, AgentInvoked, AgentObserved, Completed
         assert!(log.events("r").unwrap().len() >= 4);
+    }
+
+    // ── `resume_event_sourced` (OH1 Lot 6, Task 3) ──────────────────────
+
+    /// Two-step decider: invoke "a", then "b", then complete — needed
+    /// (unlike the single-step `D` above) to prove a resume genuinely
+    /// *continues* mid-sequence rather than trivially completing on its
+    /// first `decide` call.
+    struct TwoStep;
+    impl Decider for TwoStep {
+        fn decide(&self, s: &ExecutionState) -> Vec<Action> {
+            let observed = |agent: &str| {
+                s.conversations
+                    .get(agent)
+                    .map(|c| c.iter().any(|m| m.role == "assistant"))
+                    .unwrap_or(false)
+            };
+            if !observed("a") {
+                vec![Action::Invoke {
+                    agent: "a".into(),
+                    input: "go".into(),
+                }]
+            } else if !observed("b") {
+                vec![Action::Invoke {
+                    agent: "b".into(),
+                    input: "go".into(),
+                }]
+            } else {
+                vec![Action::Complete {
+                    content: "final".into(),
+                }]
+            }
+        }
+    }
+
+    /// Effect runner that records every agent it's asked to invoke, so tests
+    /// can assert an already-observed agent (replayed from the log, not
+    /// re-invoked) never appears in the recorded list.
+    #[derive(Default)]
+    struct TrackingEff {
+        invoked: std::sync::Mutex<Vec<String>>,
+    }
+    #[async_trait]
+    impl EffectRunner for TrackingEff {
+        async fn run_invoke(
+            &self,
+            agent: &str,
+            _input: &str,
+            _s: &ExecutionState,
+        ) -> anyhow::Result<E> {
+            self.invoked.lock().unwrap().push(agent.to_string());
+            Ok(E::AgentObserved {
+                agent: agent.into(),
+                content: "resp".into(),
+                tokens_in: 1,
+                tokens_out: 1,
+                cost: 0.0,
+                model: "m".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_event_sourced_continues_without_reinvoking_observed_agent() {
+        let mut log = InMemoryLog::default();
+        // Simulate a crash: the process recorded `RunStarted` + invoked/
+        // observed "a", then died before deciding on "b" — status is still
+        // `Running` (no terminal event recorded).
+        log.append(
+            "r",
+            &E::RunStarted {
+                run_id: "r".into(),
+                pattern: "direct".into(),
+                agents: vec!["a".into(), "b".into()],
+                input: "go".into(),
+                project: None,
+            },
+        )
+        .unwrap();
+        log.append(
+            "r",
+            &E::AgentInvoked {
+                agent: "a".into(),
+                input: "go".into(),
+            },
+        )
+        .unwrap();
+        log.append(
+            "r",
+            &E::AgentObserved {
+                agent: "a".into(),
+                content: "resp-a".into(),
+                tokens_in: 1,
+                tokens_out: 1,
+                cost: 0.0,
+                model: "m".into(),
+            },
+        )
+        .unwrap();
+
+        let eff = TrackingEff::default();
+        let state = resume_event_sourced("r", &TwoStep, &eff, &mut log)
+            .await
+            .unwrap();
+
+        assert_eq!(state.status, RunStatus::Completed);
+        // Only "b" was invoked by the resumed run — "a" (already observed
+        // before the crash) was never re-invoked.
+        assert_eq!(*eff.invoked.lock().unwrap(), vec!["b".to_string()]);
+        // The log now also contains the pre-crash events, unchanged.
+        let events = log.events("r").unwrap();
+        assert!(matches!(events[0], E::RunStarted { .. }));
+        assert!(
+            events
+                .iter()
+                .filter(|e| matches!(e, E::AgentInvoked { agent, .. } if agent == "a"))
+                .count()
+                == 1,
+            "\"a\" must appear invoked exactly once across the whole log"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_event_sourced_bails_on_completed_run() {
+        let mut log = InMemoryLog::default();
+        log.append(
+            "r",
+            &E::RunStarted {
+                run_id: "r".into(),
+                pattern: "direct".into(),
+                agents: vec!["a".into()],
+                input: "go".into(),
+                project: None,
+            },
+        )
+        .unwrap();
+        log.append(
+            "r",
+            &E::Completed {
+                content: "done".into(),
+            },
+        )
+        .unwrap();
+
+        let eff = TrackingEff::default();
+        let err = resume_event_sourced("r", &D, &eff, &mut log)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not resumable"));
+        // No effect should have been run against an already-terminal log.
+        assert!(eff.invoked.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resume_event_sourced_bails_on_halted_run() {
+        let mut log = InMemoryLog::default();
+        log.append(
+            "r",
+            &E::RunStarted {
+                run_id: "r".into(),
+                pattern: "direct".into(),
+                agents: vec!["a".into()],
+                input: "go".into(),
+                project: None,
+            },
+        )
+        .unwrap();
+        log.append(
+            "r",
+            &E::Halted {
+                reason: "budget".into(),
+            },
+        )
+        .unwrap();
+
+        let eff = TrackingEff::default();
+        let err = resume_event_sourced("r", &D, &eff, &mut log)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not resumable"));
+    }
+
+    #[tokio::test]
+    async fn resume_event_sourced_bails_on_unknown_run() {
+        let mut log = InMemoryLog::default();
+        let eff = TrackingEff::default();
+        let err = resume_event_sourced("nope", &D, &eff, &mut log)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no run found"));
     }
 }

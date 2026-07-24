@@ -646,6 +646,31 @@ pub fn delete_projection_for_run(db: &Database, run_id: &str) -> anyhow::Result<
     Ok(total_deleted)
 }
 
+/// Fetch the stored `pattern` (`"direct"`/`"blackboard"`/`"ring"`/
+/// `"hierarchical"`) for `run_id` from `orchestration_runs`, or `None` if no
+/// row exists there.
+///
+/// **Known gap**: `"direct"` runs never get an `orchestration_runs` row (see
+/// `cli::run_es_record::project_run`'s own `"direct" => {}` no-op arm —
+/// direct runs have no orchestration metadata to project), so this returns
+/// `None` for them even though the run itself is real and present in the
+/// event log. Callers that need the pattern for EVERY run (e.g.
+/// `armadai run --resume`) must fall back to the event-sourced
+/// `ExecutionState::pattern` (folded from the log's own `RunStarted` event
+/// via [`crate::core::orchestration::es::engine::replay`]), which is always
+/// populated regardless of pattern.
+pub fn get_run_pattern(db: &Database, run_id: &str) -> anyhow::Result<Option<String>> {
+    let conn = db
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Database lock poisoned: {}", e))?;
+    let mut stmt = conn.prepare("SELECT pattern FROM orchestration_runs WHERE run_id = ?1")?;
+    let mut rows = stmt.query_map(params![run_id], |row| row.get::<_, String>(0))?;
+    match rows.next() {
+        Some(row) => Ok(Some(row?)),
+        None => Ok(None),
+    }
+}
+
 /// Get all distinct run_ids present in the execution_events log.
 ///
 /// Returns run IDs in sorted order. Used by `armadai projections rebuild --all`
@@ -759,6 +784,44 @@ mod tests {
         let r = result.unwrap();
         assert_eq!(r.pattern, "blackboard");
         assert_eq!(r.rounds, 3);
+    }
+
+    #[test]
+    fn test_get_run_pattern_returns_stored_pattern() {
+        let db = init_embedded().unwrap();
+        // `orchestration_runs.run_id` is a FK into `runs.id` — insert the
+        // parent row first, exactly like `test_insert_and_get_orchestration_run`.
+        insert_run_with_id(
+            &db,
+            "run-hier-1",
+            sample_run("orchestration:hierarchical", 0.0),
+        )
+        .unwrap();
+        let orch = OrchestrationRunRecord {
+            run_id: "run-hier-1".to_string(),
+            pattern: "hierarchical".to_string(),
+            config_json: "{}".to_string(),
+            outcome_json: None,
+            rounds: 0,
+            halt_reason: None,
+            parent_run_id: None,
+        };
+        insert_orchestration_run(&db, orch).unwrap();
+
+        assert_eq!(
+            get_run_pattern(&db, "run-hier-1").unwrap(),
+            Some("hierarchical".to_string())
+        );
+    }
+
+    /// `"direct"` runs never get an `orchestration_runs` row (see
+    /// `get_run_pattern`'s doc comment) — `--resume` must fall back to the
+    /// event-sourced `ExecutionState::pattern` for them, not treat this
+    /// `None` as "unknown run".
+    #[test]
+    fn test_get_run_pattern_none_for_unknown_run() {
+        let db = init_embedded().unwrap();
+        assert_eq!(get_run_pattern(&db, "no-such-run").unwrap(), None);
     }
 
     #[test]

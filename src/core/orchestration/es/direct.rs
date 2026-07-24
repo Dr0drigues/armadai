@@ -278,6 +278,43 @@ pub async fn run_direct_es(
     run_event_sourced(run_id, initial, &decider, &effects, log).await
 }
 
+/// Resume a previously interrupted `direct` run (OH1 Lot 6, Task 3): recovers
+/// the invoked agent's name and the run's original `input` from the log's
+/// `RunStarted` event (see [`super::engine::run_started_roster_and_input`] —
+/// `direct`'s `RunStarted.agents` is always a single-element roster, the
+/// invoked agent), rebuilds the SAME [`DirectDecider`]/[`DirectEffectRunner`]
+/// pair [`run_direct_es`] would have from a fresh `agents`/`providers`
+/// reload (the caller is expected to have re-parsed the agent from the
+/// project on disk, exactly as a live run does — the log carries no `Agent`
+/// definitions, only the roster's key), and drives
+/// [`super::engine::resume_event_sourced`] instead of appending a fresh
+/// `RunStarted`.
+///
+/// Bails if `run_id` has no recorded `RunStarted` (unknown run) or isn't
+/// currently `Running` (see `resume_event_sourced`).
+pub async fn resume_direct_es(
+    run_id: &str,
+    agents: BTreeMap<String, Agent>,
+    providers: BTreeMap<String, Arc<dyn Provider>>,
+    routing_rules: RoutingRules,
+    log: &mut impl EventLog,
+) -> anyhow::Result<ExecutionState> {
+    use super::engine::{resume_event_sourced, run_started_roster_and_input};
+
+    let events = log.events(run_id)?;
+    let (roster, input) = run_started_roster_and_input(&events)
+        .ok_or_else(|| anyhow::anyhow!("no run found for id {run_id}"))?;
+    let agent = roster
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("run {run_id} has an empty agent roster"))?;
+
+    let decider = DirectDecider::new(&agent, &input, agents.clone(), routing_rules);
+    let effects = DirectEffectRunner::new(agents, providers);
+
+    resume_event_sourced(run_id, &decider, &effects, log).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,6 +481,177 @@ mod tests {
         // Replay reconstructs the same state purely from the log.
         let replayed = super::super::engine::replay("run-direct", &log).unwrap();
         assert_eq!(format!("{st:?}"), format!("{replayed:?}"));
+    }
+
+    /// OH1 Lot 6, Task 3: a `direct` run interrupted right after
+    /// `RunStarted` (crashed before ever invoking the agent) resumes to
+    /// completion via `resume_direct_es`, invoking the provider exactly
+    /// once — same end-to-end shape `run_direct_es` produces, but starting
+    /// from a log that already has a `RunStarted` recorded.
+    #[tokio::test]
+    async fn resume_direct_es_completes_a_run_interrupted_before_any_invoke() {
+        let mut agents = BTreeMap::new();
+        agents.insert("solo".to_string(), test_agent("solo", "concrete-model"));
+        let capturing = Arc::new(CapturingProvider::new("the answer"));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert("solo".to_string(), capturing.clone() as Arc<dyn Provider>);
+
+        let mut log = InMemoryLog::default();
+        // Simulate a crash: only `RunStarted` was persisted before the
+        // process died — the agent was never invoked.
+        log.append(
+            "run-direct",
+            &ExecutionEvent::RunStarted {
+                run_id: "run-direct".to_string(),
+                pattern: "direct".to_string(),
+                agents: vec!["solo".to_string()],
+                input: "do the thing".to_string(),
+                project: None,
+            },
+        )
+        .unwrap();
+
+        let st = resume_direct_es(
+            "run-direct",
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+        assert_eq!(capturing.requests().len(), 1);
+        assert_eq!(
+            event_kinds(&log, "run-direct"),
+            vec![
+                "run_started",
+                "agent_invoked",
+                "agent_observed",
+                "completed"
+            ]
+        );
+    }
+
+    /// OH1 Lot 6, Task 3: a `direct` run interrupted AFTER the agent
+    /// answered (crashed between `AgentObserved` and `Completed`) resumes to
+    /// completion WITHOUT calling the provider again — the already-observed
+    /// response from the log is reused, proving `resume_direct_es` doesn't
+    /// re-invoke.
+    #[tokio::test]
+    async fn resume_direct_es_does_not_reinvoke_an_already_observed_agent() {
+        let mut agents = BTreeMap::new();
+        agents.insert("solo".to_string(), test_agent("solo", "concrete-model"));
+        let capturing = Arc::new(CapturingProvider::new("should never be sent"));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert("solo".to_string(), capturing.clone() as Arc<dyn Provider>);
+
+        let mut log = InMemoryLog::default();
+        log.append(
+            "run-direct",
+            &ExecutionEvent::RunStarted {
+                run_id: "run-direct".to_string(),
+                pattern: "direct".to_string(),
+                agents: vec!["solo".to_string()],
+                input: "do the thing".to_string(),
+                project: None,
+            },
+        )
+        .unwrap();
+        log.append(
+            "run-direct",
+            &ExecutionEvent::AgentInvoked {
+                agent: "solo".to_string(),
+                input: "do the thing".to_string(),
+            },
+        )
+        .unwrap();
+        log.append(
+            "run-direct",
+            &ExecutionEvent::AgentObserved {
+                agent: "solo".to_string(),
+                content: "already answered".to_string(),
+                tokens_in: 3,
+                tokens_out: 4,
+                cost: 0.02,
+                model: "concrete-model".to_string(),
+            },
+        )
+        .unwrap();
+
+        let st = resume_direct_es(
+            "run-direct",
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+        // The provider was never called: the response came from the log.
+        assert!(capturing.requests().is_empty());
+        let final_content = log
+            .events("run-direct")
+            .unwrap()
+            .into_iter()
+            .find_map(|e| match e {
+                ExecutionEvent::Completed { content } => Some(content),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(final_content, "already answered");
+    }
+
+    #[tokio::test]
+    async fn resume_direct_es_bails_on_completed_run() {
+        let mut log = InMemoryLog::default();
+        log.append(
+            "run-direct",
+            &ExecutionEvent::RunStarted {
+                run_id: "run-direct".to_string(),
+                pattern: "direct".to_string(),
+                agents: vec!["solo".to_string()],
+                input: "do the thing".to_string(),
+                project: None,
+            },
+        )
+        .unwrap();
+        log.append(
+            "run-direct",
+            &ExecutionEvent::Completed {
+                content: "done".to_string(),
+            },
+        )
+        .unwrap();
+
+        let err = resume_direct_es(
+            "run-direct",
+            BTreeMap::new(),
+            BTreeMap::new(),
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("not resumable"));
+    }
+
+    #[tokio::test]
+    async fn resume_direct_es_bails_on_unknown_run() {
+        let mut log = InMemoryLog::default();
+        let err = resume_direct_es(
+            "nope",
+            BTreeMap::new(),
+            BTreeMap::new(),
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("no run found"));
     }
 
     // `latest:auto` must route: a `ModelRouted` event is emitted before the

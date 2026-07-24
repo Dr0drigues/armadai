@@ -45,14 +45,14 @@ pub async fn execute(
     // `replay`) guarantees exactly one of the three is present, so these
     // branches are exhaustive — the `else` below is the pre-existing agent
     // path, safe to `expect()` since `resume`/`replay` are both `None` there.
-    // Task 3 will replace the `--resume` stub with the actual resume logic;
-    // `--replay` (Task 2) is fully wired below, ahead of any agent/TUI
-    // concern (replay never has an `agent_name` to route through them).
+    // `--replay` (Task 2) and `--resume` (Task 3) are both fully wired below,
+    // ahead of any agent/TUI concern (neither has an `agent_name` to route
+    // through them).
     if let Some(run_id) = replay {
         return execute_replay(&run_id, json, quiet, headless).await;
     }
-    if resume.is_some() {
-        anyhow::bail!("--resume not yet wired");
+    if let Some(run_id) = resume {
+        return execute_resume(&run_id, json, quiet, headless, max_content, no_tui).await;
     }
     let agent_name =
         agent_name.expect("clap ArgGroup guarantees agent is present when resume/replay are not");
@@ -216,6 +216,301 @@ async fn execute_replay(
         }
         return Err(e);
     }
+
+    Ok(())
+}
+
+/// `--resume <run_id>` entry point (OH1 Lot 6, Task 3): continues a
+/// previously interrupted event-sourced run (one whose process died/was
+/// killed mid-run, leaving `RunStatus::Running` in the persisted log) from
+/// where it left off, executing REAL effects (provider calls) for whatever
+/// work remains — unlike `--replay`, which only re-emits the past.
+///
+/// Requires the `storage` feature (the event log this reads/appends to only
+/// persists under it); without it, funnels a clear bail through the same
+/// headless error-event/exit-code handling [`execute_replay`] uses, rather
+/// than a bare panic.
+///
+/// The live Workroom TUI is offered the same way the normal agent path does
+/// (`use_tui` gate in [`execute`]) — except the pattern (which layout to
+/// render) isn't known from a CLI flag here, only from the log itself, so
+/// this peeks the run's pattern/status via a synchronous [`replay`] BEFORE
+/// deciding `use_tui` and building the `explicit_pattern` hint. `direct`
+/// pattern runs never use the TUI, mirroring the live path (a single-agent
+/// run never sets `orchestrate`, so it never reaches the TUI branch either).
+async fn execute_resume(
+    run_id: &str,
+    json: bool,
+    quiet: bool,
+    headless: bool,
+    max_content: Option<usize>,
+    no_tui: bool,
+) -> anyhow::Result<()> {
+    #[cfg(not(feature = "storage"))]
+    {
+        let _ = (run_id, json, quiet, headless, max_content, no_tui);
+        anyhow::bail!("--resume requires the 'storage' feature (event log persistence)")
+    }
+
+    #[cfg(feature = "storage")]
+    {
+        use crate::core::orchestration::es::engine::replay;
+        use crate::core::orchestration::es::log::SqliteLog;
+        use crate::core::orchestration::es::state::RunStatus;
+
+        let headless = headless || json;
+
+        // Peek the run's pattern/status before deciding on the live TUI —
+        // mirrors the agent path's own `use_tui` gate in `execute`, which
+        // needs to know the pattern is "orchestrated" before offering it.
+        let peek = {
+            let db = crate::storage::init_db()?;
+            let log = SqliteLog::new(db);
+            replay(run_id, &log)?
+        };
+        if peek.pattern.is_empty() {
+            anyhow::bail!("no run found for id {run_id}");
+        }
+        if peek.status != RunStatus::Running {
+            anyhow::bail!("run {run_id} is not resumable (status: {:?})", peek.status);
+        }
+
+        let use_tui = peek.pattern != "direct"
+            && !json
+            && !quiet
+            && !no_tui
+            && std::io::IsTerminal::is_terminal(&std::io::stdout());
+
+        #[cfg(feature = "tui")]
+        if use_tui {
+            let explicit_pattern = match peek.pattern.as_str() {
+                "blackboard" => Some(crate::core::orchestration::OrchestrationPattern::Blackboard),
+                "ring" => Some(crate::core::orchestration::OrchestrationPattern::Ring),
+                _ => None,
+            };
+            let run_id_owned = run_id.to_string();
+            let printed = crate::shell::run_view::run_orchestration_tui(
+                move |sink| async move {
+                    // `false, false` for json/quiet: guaranteed by the
+                    // `use_tui` gate above (mirrors `execute`'s own TUI
+                    // closure, which hardcodes the same for `run_inner`).
+                    resume_run(&run_id_owned, &sink, false, false, max_content, false).await
+                },
+                None,
+                explicit_pattern,
+            )
+            .await;
+            return match printed {
+                Ok(Some(content)) => {
+                    println!("{content}");
+                    Ok(())
+                }
+                Ok(None) => Ok(()),
+                Err(e) => Err(e),
+            };
+        }
+        #[cfg(not(feature = "tui"))]
+        let _ = use_tui;
+
+        let sink = crate::core::events::make_sink(json);
+
+        // `human_output = true` here (unconditional, like the live
+        // orchestrated path's non-TUI branch): `resume_run` gates its own
+        // `--json`/`--quiet` suppression at each print site instead, since
+        // `human_output` here means "not the TUI's alternate screen", not
+        // "not machine output" (see `run_orchestrated_inner`'s identical
+        // convention).
+        let result = resume_run(run_id, &sink, json, quiet, max_content, true).await;
+
+        if let Err(e) = result {
+            if headless {
+                let code = exit_code_for(&e);
+                sink.emit(&RunEvent::Error {
+                    code: match code {
+                        3 => "budget_exceeded",
+                        4 => "provider_unavailable",
+                        _ => "agent_failed",
+                    }
+                    .into(),
+                    msg: e.to_string(),
+                });
+                std::process::exit(code);
+            }
+            return Err(e);
+        }
+
+        Ok(())
+    }
+}
+
+/// Core of `--resume`: reload the roster from the project on disk (keyed by
+/// the run's own `ExecutionState::agents`, folded from the log's
+/// `RunStarted`), dispatch to the pattern-matching `resume_*_es` engine entry
+/// point wrapped in the same [`SinkProjectingLog`]/[`QuietMaxContentSink`]
+/// observability every live `dispatch_*_es` uses, then project/print/emit
+/// the result exactly like a live orchestrated run's terminal steps.
+///
+/// Requires `run_id` to name a `Running` run recorded in the persisted event
+/// log — checked again here (not just by the `execute_resume` peek above,
+/// which only gates the TUI decision) since this is also the function real
+/// tests would call directly.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "storage")]
+async fn resume_run(
+    run_id: &str,
+    sink: &Arc<dyn EventSink>,
+    json: bool,
+    quiet: bool,
+    max_content: Option<usize>,
+    human_output: bool,
+) -> anyhow::Result<()> {
+    use crate::core::orchestration::es::engine::replay;
+    use crate::core::orchestration::es::log::SqliteLog;
+    use crate::core::orchestration::es::state::RunStatus;
+
+    let db = crate::storage::init_db()?;
+    let log = SqliteLog::new(db.clone());
+    let state = replay(run_id, &log)?;
+    if state.pattern.is_empty() {
+        anyhow::bail!("no run found for id {run_id}");
+    }
+    if state.status != RunStatus::Running {
+        anyhow::bail!("run {run_id} is not resumable (status: {:?})", state.status);
+    }
+
+    // Prefer the stored `orchestration_runs.pattern` when present, falling
+    // back to the log-folded `state.pattern` — the ONLY source available for
+    // `direct` runs, which never get an `orchestration_runs` row (see
+    // `queries::get_run_pattern`'s doc comment).
+    let pattern = crate::storage::queries::get_run_pattern(&db, run_id)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| state.pattern.clone());
+
+    if !json && !quiet && human_output {
+        let m = crate::cli::style::muted();
+        anstream::eprintln!("{m}resume {run_id}{m:#}");
+    }
+
+    // Reload the agent roster from the project on disk — the log carries no
+    // `Agent` definitions (system prompt/model/temperature/…), only the
+    // roster's KEYS (`state.agents`, folded from `RunStarted`) and the
+    // pattern's config (`ConfigSnapshot`). `headless = true` here: a resume
+    // is a non-interactive continuation, so it must never block on the
+    // model-updater's interactive prompt the way a fresh `armadai run` might.
+    let resolution = resolve_agents_dir(true);
+    let routing_rules = match &resolution {
+        AgentResolution::Project { config, .. } => config.routing.clone().unwrap_or_default(),
+        _ => crate::core::routing::RoutingRules::default(),
+    };
+    let cost_limit = orchestration_cost_limit(&resolution);
+
+    let mut agents_map: std::collections::BTreeMap<String, Agent> =
+        std::collections::BTreeMap::new();
+    let mut providers_map: std::collections::BTreeMap<
+        String,
+        Arc<dyn crate::providers::traits::Provider>,
+    > = std::collections::BTreeMap::new();
+    for name in &state.agents {
+        let agent_path = resolve_agent_path(&resolution, name)?;
+        let mut agent = crate::parser::parse_agent_file(&agent_path)?;
+        crate::linker::model_aliases::resolve_model_deprecations(
+            &mut agent.metadata.model,
+            &mut agent.metadata.model_fallback,
+        );
+        let provider = create_provider(&agent)?;
+        providers_map.insert(name.clone(), Arc::from(provider));
+        agents_map.insert(name.clone(), agent);
+    }
+
+    let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
+    let agent_meta = agent_meta_from_roster(&agents_map);
+    let mut proj_log = SinkProjectingLog::with_meta(log, &filtered_sink, agent_meta);
+
+    let final_state = match pattern.as_str() {
+        "direct" => {
+            use crate::core::orchestration::es::direct::resume_direct_es;
+            resume_direct_es(
+                run_id,
+                agents_map,
+                providers_map,
+                routing_rules,
+                &mut proj_log,
+            )
+            .await?
+        }
+        "blackboard" => {
+            use crate::core::orchestration::es::blackboard::resume_blackboard_es;
+            resume_blackboard_es(
+                run_id,
+                agents_map,
+                providers_map,
+                routing_rules,
+                cost_limit,
+                &mut proj_log,
+            )
+            .await?
+        }
+        "ring" => {
+            use crate::core::orchestration::es::ring::resume_ring_es;
+            resume_ring_es(
+                run_id,
+                agents_map,
+                providers_map,
+                routing_rules,
+                cost_limit,
+                &mut proj_log,
+            )
+            .await?
+        }
+        "hierarchical" => {
+            use crate::core::orchestration::es::hierarchical::resume_hierarchical_es;
+            resume_hierarchical_es(
+                run_id,
+                agents_map,
+                providers_map,
+                routing_rules,
+                &mut proj_log,
+            )
+            .await?
+        }
+        other => anyhow::bail!("unknown orchestration pattern '{other}' for run {run_id}"),
+    };
+
+    let events = proj_log.events(run_id)?;
+
+    match crate::storage::init_db() {
+        Ok(db2) => {
+            if let Err(e) = crate::cli::run_es_record::project_run(&db2, run_id) {
+                tracing::warn!("failed to project resumed run {}: {}", run_id, e);
+            }
+        }
+        Err(e) => {
+            tracing::warn!("event log storage unavailable, run not projected: {}", e);
+        }
+    }
+
+    let content = match pattern.as_str() {
+        "blackboard" => super::run_es_record::blackboard_display(&final_state),
+        "ring" => super::run_es_record::ring_display(&final_state, &events),
+        _ => to_orchestration_result(&final_state, &events).content,
+    };
+
+    if human_output {
+        let s = status_style(&final_state.status);
+        anstream::eprintln!("{s}resume {}: {:?}{s:#}", run_id, final_state.status);
+    }
+    if !json && human_output {
+        println!("{content}");
+    }
+
+    sink.emit(&RunEvent::Result {
+        content,
+        tin: u32::try_from(final_state.budget_tokens_in).unwrap_or(u32::MAX),
+        tout: u32::try_from(final_state.budget_tokens_out).unwrap_or(u32::MAX),
+        cost: final_state.budget_cost,
+        agents: final_state.agents.len(),
+    });
 
     Ok(())
 }
