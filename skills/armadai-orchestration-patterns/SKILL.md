@@ -1,13 +1,18 @@
 ---
 name: armadai-orchestration-patterns
-description: Reference for ArmadAI's 4 orchestration patterns with decision matrix and YAML examples
+description: Reference for ArmadAI's orchestration patterns (Direct, Blackboard, Ring, Hierarchical, Auto) with decision matrix and YAML examples
 version: 1.0.0
 tools: []
 ---
 
 # ArmadAI Orchestration Patterns
 
-ArmadAI supports 4 orchestration patterns for multi-agent workflows. Pick the right one based on your use case.
+ArmadAI supports 4 orchestration patterns for multi-agent workflows — Direct, Blackboard, Ring,
+Hierarchical — plus `Auto`, which auto-detects the best pattern from the task and config instead
+of a hardcoded one. Pick the right one based on your use case.
+
+Note: `armadai run --orchestrate <pattern>` only accepts `blackboard` or `ring` on the CLI.
+`hierarchical` (and `auto`) are config-only — set `orchestration.pattern` in `armadai.yaml`.
 
 ## Decision matrix
 
@@ -148,6 +153,58 @@ When to use sub-teams:
 - More than ~6 specialists → group by domain
 - Distinct domains (e.g., testing team separate from dev team)
 - A domain needs its own coordination before synthesis
+
+### C9: nested sub-patterns per team
+
+A team can run as a `blackboard` or `ring` sub-pattern internally instead of flat delegation, via
+`TeamConfig.pattern: NestedPattern` (`blackboard` | `ring`). This requires the team to declare a
+`lead` (the arbiter that synthesizes the sub-pattern's result before reporting up).
+
+```yaml
+orchestration:
+  enabled: true
+  pattern: hierarchical
+  coordinator: architect
+  teams:
+    - lead: security-lead
+      pattern: ring          # this team runs as a Ring internally
+      agents: [security-reviewer, compliance-reviewer]
+      max_laps: 2            # per-team override (else global/default)
+    - lead: research-lead
+      pattern: blackboard    # this team runs as a Blackboard internally
+      agents: [market-analyst, tech-analyst]
+      max_rounds: 3
+```
+
+## C8: routes and tags (agent selection)
+
+Instead of hardcoding `agents:` in the orchestration config, select the agent set at run time:
+
+- **Named routes**: declare `orchestration.routes` (route name → agent list) and select one with
+  `armadai run --route <name>`.
+- **Tag/stack matching**: `armadai run --tags <comma-separated>` selects agents whose tags/stacks
+  intersect the given list.
+- **Dry run**: `armadai run --dry-run` resolves and prints the selection without executing
+  (0 tokens) — useful to sanity-check a route or tag filter before spending a run.
+
+```yaml
+orchestration:
+  enabled: true
+  pattern: blackboard
+  routes:
+    security-audit: [rust-security, rust-reviewer]
+    frontend: [ui-specialist]
+```
+
+```bash
+armadai run coordinator "..." --route security-audit
+armadai run coordinator "..." --tags rust,security --dry-run
+```
+
+## Auto
+
+`pattern: auto` (config-only, not a valid `--orchestrate` CLI value) lets the engine pick the best
+of Direct/Blackboard/Ring/Hierarchical from the task and config shape, instead of a fixed pattern.
 
 ## Cost control
 

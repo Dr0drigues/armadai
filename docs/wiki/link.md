@@ -17,8 +17,10 @@ armadai link <target> --force   # Overwrite existing files
 | Claude Code | `claude` | `CLAUDE.md` + `.claude/commands/*.md` |
 | GitHub Copilot | `copilot` | `.github/copilot-instructions.md` + `.github/agents/*.agent.md` |
 | Gemini CLI | `gemini` | `GEMINI.md` |
+| Codex | `codex` | `.codex/AGENTS.md` + `.codex/config.toml` + `.codex/agents/*.toml` |
+| opencode | `opencode` | `.opencode/instructions.md` + `.opencode/agents/*.md` |
 
-More targets (Cursor, Aider, Codex, Windsurf, Cline) are planned.
+More targets (Cursor, Aider, Windsurf, Cline) may be added later.
 
 ## How It Works
 
@@ -57,6 +59,27 @@ armadai link gemini
 
 Generates:
 - `GEMINI.md` — Project instructions for Gemini CLI
+
+### Codex
+
+```bash
+armadai link codex
+```
+
+Generates:
+- `.codex/AGENTS.md` — Project instructions listing available agents
+- `.codex/config.toml` — Agent registry config
+- `.codex/agents/<agent>.toml` — One agent file per agent
+
+### opencode
+
+```bash
+armadai link opencode
+```
+
+Generates:
+- `.opencode/instructions.md` — Project instructions listing available agents (only generated when the project has a coordinator agent)
+- `.opencode/agents/<agent>.md` — One agent file per agent
 
 ## Conflict Detection
 
