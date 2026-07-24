@@ -51,12 +51,13 @@ async fn list() -> anyhow::Result<()> {
     let skills = collect_skills();
 
     if skills.is_empty() {
-        println!("No skills found.");
-        println!(
-            "Add skill directories (containing SKILL.md) in skills/ or ~/.config/armadai/skills/"
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}No skills found.{m:#}");
+        anstream::println!(
+            "{m}Add skill directories (containing SKILL.md) in skills/ or ~/.config/armadai/skills/{m:#}"
         );
-        println!(
-            "Or run `armadai skills sync` then `armadai skills search <query>` to discover remote skills."
+        anstream::println!(
+            "{m}Or run `armadai skills sync` then `armadai skills search <query>` to discover remote skills.{m:#}"
         );
         return Ok(());
     }
@@ -82,12 +83,16 @@ async fn list() -> anyhow::Result<()> {
         .max(7);
 
     // Header
-    println!(
-        "  {:<name_w$}  {:<desc_w$}  {:<ver_w$}  TOOLS",
-        "NAME", "DESCRIPTION", "VERSION",
+    let h = crate::cli::style::header();
+    anstream::println!(
+        "{h}  {:<name_w$}  {:<desc_w$}  {:<ver_w$}  TOOLS{h:#}",
+        "NAME",
+        "DESCRIPTION",
+        "VERSION",
     );
-    println!(
-        "  {:<name_w$}  {:<desc_w$}  {:<ver_w$}  -----",
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{m}  {:<name_w$}  {:<desc_w$}  {:<ver_w$}  -----{m:#}",
         "-".repeat(name_w),
         "-".repeat(desc_w),
         "-".repeat(ver_w),
@@ -102,13 +107,18 @@ async fn list() -> anyhow::Result<()> {
         } else {
             skill.tools.join(", ")
         };
-        println!(
-            "  {:<name_w$}  {:<desc_w$}  {:<ver_w$}  {}",
-            skill.name, desc, ver, tools,
+        let a = crate::cli::style::accent();
+        anstream::println!(
+            "  {a}{:<name_w$}{a:#}  {:<desc_w$}  {:<ver_w$}  {}",
+            skill.name,
+            desc,
+            ver,
+            tools,
         );
     }
 
-    println!("\n  {} skill(s) found.", skills.len());
+    let m = crate::cli::style::muted();
+    anstream::println!("\n{m}  {} skill(s) found.{m:#}", skills.len());
     Ok(())
 }
 
@@ -119,40 +129,53 @@ async fn show(name: &str) -> anyhow::Result<()> {
         .find(|s| s.name == name)
         .ok_or_else(|| anyhow::anyhow!("Skill '{name}' not found"))?;
 
-    println!("Skill: {}", skill.name);
-    println!("Source: {}", skill.source.display());
+    let h = crate::cli::style::header();
+    let a = crate::cli::style::accent();
+    anstream::println!("{h}Skill:{h:#} {a}{}{a:#}", skill.name);
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}Source: {}{m:#}", skill.source.display());
 
     if let Some(ref desc) = skill.description {
-        println!("Description: {desc}");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}Description:{m:#} {desc}");
     }
     if let Some(ref ver) = skill.version {
-        println!("Version: {ver}");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}Version:{m:#} {ver}");
     }
     if !skill.tools.is_empty() {
-        println!("Tools: [{}]", skill.tools.join(", "));
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}Tools:{m:#} [{}]", skill.tools.join(", "));
     }
 
     if !skill.scripts.is_empty() {
-        println!("\nScripts:");
+        let h = crate::cli::style::header();
+        anstream::println!("\n{h}Scripts:{h:#}");
         for s in &skill.scripts {
-            println!("  - {}", s.display());
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}  - {}{m:#}", s.display());
         }
     }
     if !skill.references.is_empty() {
-        println!("\nReferences:");
+        let h = crate::cli::style::header();
+        anstream::println!("\n{h}References:{h:#}");
         for r in &skill.references {
-            println!("  - {}", r.display());
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}  - {}{m:#}", r.display());
         }
     }
     if !skill.assets.is_empty() {
-        println!("\nAssets:");
+        let h = crate::cli::style::header();
+        anstream::println!("\n{h}Assets:{h:#}");
         for a in &skill.assets {
-            println!("  - {}", a.display());
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}  - {}{m:#}", a.display());
         }
     }
 
     println!();
-    println!("## Body");
+    let h = crate::cli::style::header();
+    anstream::println!("{h}## Body{h:#}");
     for line in skill.body.lines() {
         println!("  {line}");
     }
@@ -166,11 +189,14 @@ async fn show(name: &str) -> anyhow::Result<()> {
 
 async fn cmd_sync() -> anyhow::Result<()> {
     let sources = cache::effective_sources();
-    println!("Syncing {} skill source(s)...", sources.len());
+    let r = crate::cli::style::running();
+    anstream::println!("{r}Syncing {} skill source(s)...{r:#}", sources.len());
     sync::sync_all(&sources)?;
-    println!("Building search index...");
+    let r = crate::cli::style::running();
+    anstream::println!("{r}Building search index...{r:#}");
     let index = cache::build_index(&sources)?;
-    println!("Indexed {} skill(s).", index.entries.len());
+    let o = crate::cli::style::ok();
+    anstream::println!("{o}Indexed {} skill(s).{o:#}", index.entries.len());
     Ok(())
 }
 
@@ -180,14 +206,16 @@ async fn cmd_search(query: &str) -> anyhow::Result<()> {
     let index = cache::load_or_build_index(&sources)?;
 
     if index.entries.is_empty() {
-        println!("No skills indexed. Run `armadai skills sync` first.");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}No skills indexed. Run `armadai skills sync` first.{m:#}");
         return Ok(());
     }
 
     let results = search::search(&index.entries, query);
 
     if results.is_empty() {
-        println!("No skills matching '{query}'.");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}No skills matching '{query}'.{m:#}");
         return Ok(());
     }
 
@@ -205,12 +233,16 @@ async fn cmd_search(query: &str) -> anyhow::Result<()> {
         .unwrap_or(6)
         .max(6);
 
-    println!(
-        "  {:<name_w$}  {:>5}  {:<repo_w$}  DESCRIPTION",
-        "NAME", "SCORE", "SOURCE",
+    let h = crate::cli::style::header();
+    anstream::println!(
+        "{h}  {:<name_w$}  {:>5}  {:<repo_w$}  DESCRIPTION{h:#}",
+        "NAME",
+        "SCORE",
+        "SOURCE",
     );
-    println!(
-        "  {:<name_w$}  {:>5}  {:<repo_w$}  -----------",
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{m}  {:<name_w$}  {:>5}  {:<repo_w$}  -----------{m:#}",
         "-".repeat(name_w),
         "-----",
         "-".repeat(repo_w),
@@ -223,13 +255,18 @@ async fn cmd_search(query: &str) -> anyhow::Result<()> {
         } else {
             desc.to_string()
         };
-        println!(
-            "  {:<name_w$}  {:>5}  {:<repo_w$}  {}",
-            r.entry.name, r.score, r.entry.source_repo, desc_display,
+        let a = crate::cli::style::accent();
+        anstream::println!(
+            "  {a}{:<name_w$}{a:#}  {:>5}  {:<repo_w$}  {}",
+            r.entry.name,
+            r.score,
+            r.entry.source_repo,
+            desc_display,
         );
     }
 
-    println!("\n  {} result(s).", results.len());
+    let m = crate::cli::style::muted();
+    anstream::println!("\n{m}  {} result(s).{m:#}", results.len());
     Ok(())
 }
 
@@ -244,7 +281,8 @@ async fn cmd_add(source: &str, force: bool) -> anyhow::Result<()> {
 
     // Clone/pull the repo
     let repo_slug = format!("{owner}/{repo}");
-    println!("Syncing {repo_slug}...");
+    let r = crate::cli::style::running();
+    anstream::println!("{r}Syncing {repo_slug}...{r:#}");
     let repo_path = sync::sync_repo(&repo_slug)?;
 
     // Scan for skills in the repo
@@ -279,10 +317,12 @@ async fn cmd_add(source: &str, force: bool) -> anyhow::Result<()> {
     } else if skill_dirs.len() == 1 {
         skill_dirs[0].clone()
     } else {
-        println!("Multiple skills found in {repo_slug}:");
+        let h = crate::cli::style::header();
+        anstream::println!("{h}Multiple skills found in {repo_slug}:{h:#}");
         for (i, d) in skill_dirs.iter().enumerate() {
             let name = d.file_name().and_then(|s| s.to_str()).unwrap_or("?");
-            println!("  {}. {}", i + 1, name);
+            let a = crate::cli::style::accent();
+            anstream::println!("  {}. {a}{}{a:#}", i + 1, name);
         }
         anyhow::bail!(
             "Specify which skill to install: armadai skills add {repo_slug}/<skill-name>"
@@ -304,7 +344,14 @@ async fn cmd_add(source: &str, force: bool) -> anyhow::Result<()> {
     // Copy entire skill directory
     copy_dir_recursive(&skill_dir, &dest)?;
 
-    println!("Installed skill '{}' to {}", skill.name, dest.display());
+    let o = crate::cli::style::ok();
+    let a = crate::cli::style::accent();
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{o}Installed skill{o:#} {a}'{}'{a:#} {o}to{o:#} {m}{}{m:#}",
+        skill.name,
+        dest.display()
+    );
     Ok(())
 }
 
@@ -323,14 +370,16 @@ async fn cmd_info(name: &str) -> anyhow::Result<()> {
             )
         })?;
 
-    println!("Name:        {}", entry.name);
-    println!("Source:      {}", entry.source_repo);
-    println!("Path:        {}", entry.path);
+    let m = crate::cli::style::muted();
+    let a = crate::cli::style::accent();
+    anstream::println!("{m}Name:        {m:#}{a}{}{a:#}", entry.name);
+    anstream::println!("{m}Source:      {m:#}{}", entry.source_repo);
+    anstream::println!("{m}Path:        {m:#}{}", entry.path);
     if let Some(ref desc) = entry.description {
-        println!("Description: {desc}");
+        anstream::println!("{m}Description: {m:#}{desc}");
     }
     if !entry.tags.is_empty() {
-        println!("Tags:        [{}]", entry.tags.join(", "));
+        anstream::println!("{m}Tags:        {m:#}[{}]", entry.tags.join(", "));
     }
 
     // Try to show SKILL.md content from cloned repo
@@ -339,12 +388,14 @@ async fn cmd_info(name: &str) -> anyhow::Result<()> {
             .join(&entry.path)
             .join("SKILL.md");
         if skill_file.is_file() {
-            println!("\n--- SKILL.md ---");
+            let h = crate::cli::style::header();
+            anstream::println!("\n{h}--- SKILL.md ---{h:#}");
             let content = std::fs::read_to_string(&skill_file)?;
             for (i, line) in content.lines().enumerate() {
                 if i >= 40 {
-                    println!(
-                        "  ... (truncated, {} more lines)",
+                    let m = crate::cli::style::muted();
+                    anstream::println!(
+                        "{m}  ... (truncated, {} more lines){m:#}",
                         content.lines().count() - 40
                     );
                     break;
@@ -354,9 +405,11 @@ async fn cmd_info(name: &str) -> anyhow::Result<()> {
         }
     }
 
-    println!(
-        "\nInstall with: armadai skills add {}/{}",
-        entry.source_repo, entry.name
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "\n{m}Install with: armadai skills add {}/{}{m:#}",
+        entry.source_repo,
+        entry.name
     );
     Ok(())
 }
@@ -413,7 +466,10 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> anyhow::R
 /// Print a hint if the skills registry is stale.
 fn check_staleness() {
     if sync::is_stale(7) && sync::repos_dir().is_dir() {
-        eprintln!("hint: skills registry may be outdated. Run `armadai skills sync` to refresh.");
+        let w = crate::cli::style::warn();
+        anstream::eprintln!(
+            "{w}hint: skills registry may be outdated. Run `armadai skills sync` to refresh.{w:#}"
+        );
     }
 }
 
@@ -425,12 +481,19 @@ fn collect_skills() -> Vec<Skill> {
     if let Some((root, config)) = project::find_project_config() {
         let (paths, errors) = project::resolve_all_skills(&config, &root);
         for err in &errors {
-            eprintln!("  warn: {err}");
+            let w = crate::cli::style::warn();
+            anstream::eprintln!("{w}  warn: {err}{w:#}");
         }
         for path in &paths {
             match Skill::load(path) {
                 Ok(s) => skills.push(s),
-                Err(e) => eprintln!("  warn: failed to load skill {}: {e}", path.display()),
+                Err(e) => {
+                    let w = crate::cli::style::warn();
+                    anstream::eprintln!(
+                        "{w}  warn: failed to load skill {}: {e}{w:#}",
+                        path.display()
+                    );
+                }
             }
         }
 
