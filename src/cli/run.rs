@@ -326,7 +326,8 @@ async fn run_inner(
 
     for (i, name) in chain.iter().enumerate() {
         if chain.len() > 1 && !json {
-            eprintln!("--- [{}/{} {}] ---", i + 1, chain.len(), name);
+            let h = crate::cli::style::header();
+            anstream::eprintln!("{h}--- [{}/{} {}] ---{h:#}", i + 1, chain.len(), name);
         }
 
         let agent_path = resolve_agent_path(&resolution, name)?;
@@ -525,7 +526,10 @@ async fn run_single_agent(
             let mut last_err = err;
             let mut fallback_resp = None;
             for fallback_model in &agent.metadata.model_fallback {
-                eprintln!("[{agent_name}] Model unavailable, falling back to {fallback_model}...");
+                let w = crate::cli::style::warn();
+                anstream::eprintln!(
+                    "{w}[{agent_name}] Model unavailable, falling back to {fallback_model}...{w:#}"
+                );
                 let mut retry_request = request.clone();
                 retry_request.model = fallback_model.clone();
                 match provider.complete(retry_request).await {
@@ -562,8 +566,10 @@ async fn run_single_agent(
 
     // 7. Print summary to stderr (so stdout is clean for piping)
     let duration_ms = duration.as_millis() as i64;
-    eprintln!(
-        "\n[{}] model={} tokens={}/{} cost=${:.6} duration={}ms",
+    let acc = crate::cli::style::accent();
+    let mut_ = crate::cli::style::muted();
+    anstream::eprintln!(
+        "\n{acc}[{}]{acc:#} {mut_}model={} tokens={}/{} cost=${:.6} duration={}ms{mut_:#}",
         agent_name,
         response.model,
         response.tokens_in,
@@ -1179,6 +1185,19 @@ async fn run_orchestrated(
 /// provider/model (via [`agent_meta_from_roster`]) and real per-turn content.
 /// Only `--pipe`/legacy sequential runs (`run_single_agent`) still emit their
 /// own inline `AgentStart`/`AgentEnd`; those paths never reach this fn.
+/// Style for a terminal orchestration status line: `Completed` reads as
+/// success, anything else (`Halted`, or the in-flight `Running` default,
+/// which should not appear at a terminal print site) as a warning — factual,
+/// not alarming, since a halt is often a budget/round limit rather than an
+/// error.
+fn status_style(status: &crate::core::orchestration::es::state::RunStatus) -> anstyle::Style {
+    use crate::core::orchestration::es::state::RunStatus;
+    match status {
+        RunStatus::Completed => crate::cli::style::ok(),
+        RunStatus::Halted | RunStatus::Running => crate::cli::style::warn(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_orchestrated_inner(
     resolution: &AgentResolution,
@@ -1349,8 +1368,9 @@ async fn run_orchestrated_inner(
             }
 
             if human_output {
-                eprintln!(
-                    "[blackboard] Starting with {} agent(s), max {} rounds",
+                let r = crate::cli::style::running();
+                anstream::eprintln!(
+                    "{r}[blackboard] Starting with {} agent(s), max {} rounds{r:#}",
                     agent_map.len(),
                     config.max_rounds
                 );
@@ -1370,7 +1390,8 @@ async fn run_orchestrated_inner(
             .await?;
 
             if human_output {
-                eprintln!("[blackboard] Halted: {:?}", state.status);
+                let s = status_style(&state.status);
+                anstream::eprintln!("{s}[blackboard] Halted: {:?}{s:#}", state.status);
             }
 
             #[cfg(feature = "storage")]
@@ -1429,8 +1450,9 @@ async fn run_orchestrated_inner(
             }
 
             if human_output {
-                eprintln!(
-                    "[ring] Starting with {} agent(s), max {} laps",
+                let r = crate::cli::style::running();
+                anstream::eprintln!(
+                    "{r}[ring] Starting with {} agent(s), max {} laps{r:#}",
                     agent_map.len(),
                     config.max_laps
                 );
@@ -1466,7 +1488,8 @@ async fn run_orchestrated_inner(
 
             let outcome_text = super::run_es_record::ring_display(&state, &events);
             if human_output {
-                eprintln!("[ring] status: {:?}", state.status);
+                let s = status_style(&state.status);
+                anstream::eprintln!("{s}[ring] status: {:?}{s:#}", state.status);
             }
             if !json && human_output {
                 println!("{outcome_text}");
@@ -1522,8 +1545,9 @@ async fn run_orchestrated_inner(
             }
 
             if human_output {
-                eprintln!(
-                    "[hierarchical] Starting with coordinator '{}', {} agent(s)",
+                let r = crate::cli::style::running();
+                anstream::eprintln!(
+                    "{r}[hierarchical] Starting with coordinator '{}', {} agent(s){r:#}",
                     coordinator_name,
                     agent_map.len()
                 );
@@ -1549,9 +1573,12 @@ async fn run_orchestrated_inner(
             let result = to_orchestration_result(&state, &events);
 
             if human_output {
-                eprintln!(
-                    "[hierarchical] Done: {} invocations, {} tokens in, {} tokens out",
-                    result.invocation_count, result.total_tokens_in, result.total_tokens_out
+                let s = status_style(&state.status);
+                anstream::eprintln!(
+                    "{s}[hierarchical] Done: {} invocations, {} tokens in, {} tokens out{s:#}",
+                    result.invocation_count,
+                    result.total_tokens_in,
+                    result.total_tokens_out
                 );
             }
 

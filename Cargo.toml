@@ -74,6 +74,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 portable-pty = { version = "0.8", optional = true }
 strip-ansi-escapes = { version = "0.2", optional = true }
 regex = "1"
+anstyle = "1.0.14"
+anstream = "1.0.0"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
