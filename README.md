@@ -1,9 +1,15 @@
-# ArmadAI
+<p align="center">
+  <img src="assets/brand/armadai-wordmark.svg" alt="ArmadAI" width="300">
+</p>
 
-AI agent orchestrator — define, manage and run specialized agents from Markdown files.
+<p align="center">
+  AI agent orchestrator — define, manage and run specialized agents from Markdown files.
+</p>
 
-[![CI](https://github.com/Dr0drigues/swarm-festai/actions/workflows/ci.yml/badge.svg)](https://github.com/Dr0drigues/swarm-festai/actions/workflows/ci.yml)
-[![Security Audit](https://github.com/Dr0drigues/swarm-festai/actions/workflows/audit.yml/badge.svg)](https://github.com/Dr0drigues/swarm-festai/actions/workflows/audit.yml)
+<p align="center">
+  <a href="https://github.com/Dr0drigues/armadai/actions/workflows/ci.yml"><img src="https://github.com/Dr0drigues/armadai/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Dr0drigues/armadai/actions/workflows/audit.yml"><img src="https://github.com/Dr0drigues/armadai/actions/workflows/audit.yml/badge.svg" alt="Security Audit"></a>
+</p>
 
 ## Overview
 
@@ -21,7 +27,7 @@ armadai tui
 - **Multi-provider** — unified tool names (`claude`, `gemini`, `gpt`, `aider`) auto-detect CLI vs API; explicit API/CLI/proxy modes also supported
 - **Multi-pattern orchestration** — Direct (single-shot), Blackboard (parallel shared-state), Ring (sequential consensus), Hierarchical (coordinator → leads → agents)
 - **Pipeline mode** — chain agents sequentially (output A becomes input B)
-- **TUI dashboard** — agent library management with browser, detail view, history, costs, and command palette
+- **TUI & Web dashboards** — agent library management with browser, detail view, history, costs, and command palette
 - **Shell completion** — auto-complete for bash, zsh, fish, powershell, elvish
 - **Cost tracking** — per-agent, per-run cost monitoring stored in SQLite
 
@@ -29,9 +35,7 @@ armadai tui
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) (1.86+)
-- [Docker](https://docs.docker.com/get-docker/) (optional, for LiteLLM proxy)
-- [SOPS](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age) (optional, for secret management)
+- [Rust](https://rustup.rs/) (1.86+) — only needed to build from source
 
 ### Install
 
@@ -43,60 +47,11 @@ curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.s
 Options: `INSTALL_DIR=~/.local/bin` (default), `VERSION=v0.1.0` (default: latest).
 
 ```bash
-# Custom install directory
-INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
-
-# Specific version
-VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
-```
-
-### Install from source
-
-```bash
-git clone https://github.com/Dr0drigues/armadai.git
-cd armadai
-cargo build --release
-```
-
-The binary is at `target/release/armadai`.
-
-### Configure providers
-
-```bash
-# Option A: Encrypted secrets (recommended)
-armadai config secrets init       # Generates age key + .sops.yaml
-sops config/providers.sops.yaml # Edit encrypted API keys
-
-# Option B: Environment variables
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...
-
-# Option C: Plain file (quick testing, gitignored)
-cat > config/providers.secret.yaml << 'EOF'
-providers:
-  anthropic:
-    api_key: sk-ant-...
-  openai:
-    api_key: sk-...
-EOF
-
-# Check provider status
-armadai config providers
-```
-
-### Create your first agent
-
-```bash
-armadai new --template basic my-assistant
-```
-
-This creates `agents/my-assistant.md` — edit it to customize the system prompt, model, and behavior.
-
-### Run an agent
-
-```bash
+armadai new --template basic my-assistant   # create your first agent
 armadai run my-assistant "Explain how async/await works in Rust"
 ```
+
+See [Getting Started](docs/wiki/getting-started.md) for building from source, configuring providers, and starter packs.
 
 ## Usage
 
@@ -112,19 +67,13 @@ armadai run my-assistant "Explain how async/await works in Rust"
 | `armadai history --replay <id>` | Replay a past execution | Planned |
 | `armadai costs [--agent a] [--from d]` | View cost tracking | Done |
 | `armadai config providers` | Show provider configs and secrets status | Done |
-| `armadai config secrets init` | Initialize SOPS + age encryption | Done |
-| `armadai config secrets rotate` | Rotate age encryption key | Done |
-| `armadai config starters-dir list\|add\|remove` | Manage custom starter directories | Done |
 | `armadai init [--force] [--project]` | Initialize ArmadAI configuration (.armadai/) | Done |
-| `armadai init --pack <name>` | Install a starter pack (rust-dev, fullstack) | Done |
+| `armadai init --pack <name>` | Install a starter pack (rust-dev, fullstack, ...) | Done |
 | `armadai link --target <t> [--dry-run]` | Generate native AI assistant configs | Done |
 | `armadai registry sync/search/list/add` | Browse and import community agents | Done |
 | `armadai prompts list/show` | Manage composable prompts | Done |
-| `armadai skills list/show` | Manage composable skills | Done |
-| `armadai skills sync/search/add/info` | Discover and install skills from GitHub | Done |
-| `armadai models check [--all] [--prune]` | Check for deprecated models in agents | Done |
-| `armadai models update [--all]` | Update deprecated models in-place | Done |
-| `armadai models list` | List registered projects | Done |
+| `armadai skills list/show/sync/search/add/info` | Manage and discover composable skills | Done |
+| `armadai models check/update/list` | Check, update, and list registered models | Done |
 | `armadai update` | Self-update to latest release | Done |
 | `armadai tui` | Launch the TUI dashboard | Done |
 | `armadai web [--port N]` | Launch the web UI | Done |
@@ -154,79 +103,13 @@ You are an expert code reviewer...
 
 1. Understand the context of the change
 2. Identify bugs, security issues, performance problems
-3. Provide constructive feedback
 
 ## Output Format
 
 Structured review: bugs, security, performance, style.
 ```
 
-### Provider names
-
-Use unified tool names — ArmadAI auto-detects CLI tool vs API:
-
-| Provider | CLI tool detected | CLI not found |
-|---|---|---|
-| `claude` | Uses `claude` CLI | Falls back to Anthropic API |
-| `gemini` | Uses `gemini` CLI | Falls back to Google API |
-| `gpt` | Uses `gpt` CLI | Falls back to OpenAI API |
-| `aider` | Uses `aider` CLI | Falls back to OpenAI API |
-
-You can also use explicit providers: `anthropic`, `openai`, `google`, `cli`, `proxy`.
-
-### Available sections
-
-| Section | Required | Description |
-|---|---|---|
-| `# Title` (H1) | Yes | Agent name |
-| `## Metadata` | Yes | Provider, model, temperature, tags, stacks, etc. |
-| `## System Prompt` | Yes | System prompt sent to the model |
-| `## Instructions` | No | Step-by-step execution instructions |
-| `## Output Format` | No | Expected output format description |
-| `## Pipeline` | No | List of agents to chain after this one |
-| `## Context` | No | Additional context injected at runtime |
-
-### Using explicit CLI provider
-
-For custom scripts or tools not in the known list:
-
-```markdown
-# Custom Tool Agent
-
-## Metadata
-- provider: cli
-- command: ./scripts/my-tool.sh
-- args: ["--format", "json"]
-- timeout: 60
-
-## System Prompt
-
-You are a versatile development assistant.
-```
-
-## Templates
-
-| Template | Description |
-|---|---|
-| `basic` | General-purpose agent |
-| `dev-review` | Code review specialist |
-| `dev-test` | Test generation specialist |
-| `cli-generic` | Wrapper for any CLI tool |
-| `planning` | Sprint/project planning agent |
-| `security-review` | Security audit specialist |
-| `debug` | Debugging assistant |
-| `tech-debt` | Technical debt analyzer |
-| `tdd-red` | TDD red phase (write failing tests) |
-| `tdd-green` | TDD green phase (make tests pass) |
-| `tdd-refactor` | TDD refactor phase |
-| `tech-writer` | Documentation writer |
-
-Create an agent from a template:
-
-```bash
-armadai new my-reviewer --template dev-review --stack rust
-armadai new my-tool --template cli-generic
-```
+See the [Agent Format](docs/wiki/agent-format.md) page for the full section reference and provider configuration options.
 
 ## Starter Packs
 
@@ -235,83 +118,10 @@ Install curated bundles of agents, prompts and skills:
 ```bash
 armadai init --pack rust-dev              # Rust essentials (3 agents + conventions prompt)
 armadai init --pack fullstack             # Full stack web (6 agents)
-armadai init --pack armadai-authoring     # ArmadAI authoring team (4 agents + skills)
-
-# Combined mode: install pack + create project config
-armadai init --pack rust-dev --project
+armadai init --pack rust-dev --project    # Combined: install pack + create project config
 ```
 
-Available packs:
-
-| Pack | Agents | Description |
-|---|---|---|
-| `rust-dev` | code-reviewer, test-writer, debug | Rust development essentials + conventions prompt |
-| `fullstack` | code-reviewer, test-writer, doc-generator, claude-cli-reviewer, gemini-reviewer, echo-reviewer | Full stack web development |
-| `code-analysis-rust` | lead-analyst, rust-reviewer, rust-test-analyzer, rust-doc-writer, rust-security | Rust code analysis team + analysis standards prompt |
-| `code-analysis-web` | lead-analyst, web-reviewer, web-test-analyzer, web-doc-writer, web-security | Web code analysis team + analysis standards prompt |
-| `armadai-authoring` | authoring-lead, agent-builder, prompt-builder, skill-builder | ArmadAI content authoring + conventions prompt + built-in skills |
-| `pirate-crew` | capitaine, cartographe, vigie, charpentier | Pirate-themed demo pack with coordinator pattern |
-
-## Shell Completion
-
-Generate completion scripts for your shell:
-
-```bash
-# Bash
-armadai completion bash > ~/.local/share/bash-completion/completions/armadai
-
-# Zsh
-armadai completion zsh > ~/.zfunc/_armadai
-
-# Fish
-armadai completion fish > ~/.config/fish/completions/armadai.fish
-```
-
-## TUI Dashboard
-
-Launch with `armadai tui`. The dashboard provides agent library management views:
-
-| Tab | Description |
-|---|---|
-| **Agents** | Browse all loaded agents with provider, model, and tags |
-| **Prompts** | Browse composable prompt fragments |
-| **Skills** | Browse installed skills with reference file contents |
-| **Starters** | Browse starter packs, init projects with `i` key |
-| **History** | Execution history with tokens, costs, and duration |
-| **Costs** | Aggregated cost summary per agent |
-| **Models** | Cached model catalog from models.dev, grouped by provider |
-
-### Keyboard shortcuts
-
-| Key | Action |
-|---|---|
-| `Tab` / `Shift+Tab` | Switch tabs |
-| `1-7` | Jump to tab directly |
-| `j/k` or arrows | Navigate lists |
-| `Enter` | View detail |
-| `i` | Init project from selected starter (Starters tab) |
-| `:` or `Ctrl+P` | Open command palette |
-| `r` | Refresh data |
-| `q` / `Esc` | Quit |
-
-## Web UI
-
-Launch with `armadai web` (default port 3000):
-
-```bash
-armadai web              # http://localhost:3000
-armadai web --port 8080  # custom port
-```
-
-The web UI provides a read-only dashboard for your agent library:
-
-- **Agents** — browse all loaded agents, click to view full configuration
-- **Prompts** — browse composable prompt fragments with full content
-- **Skills** — browse skills with collapsible reference file contents
-- **Starters** — browse packs and download pre-configured `config.yaml`
-- **History** — execution history with tokens, costs, and duration
-- **Costs** — aggregated cost summary per agent
-- **Models** — cached model catalog from models.dev, grouped by provider
+See [Starter Packs](docs/wiki/starter-packs.md) for the full list (`rust-dev`, `fullstack`, `code-analysis-rust`, `code-analysis-web`, `armadai-authoring`, `pirate-crew`) and their contents.
 
 ## Architecture
 
@@ -342,56 +152,29 @@ Heavy dependencies are gated behind optional feature flags for faster compilatio
 | `providers-api` | Yes | HTTP API providers (Anthropic, OpenAI, Google) |
 
 ```bash
-# Full build (all features)
-cargo build --release
-
-# Lightweight build (no storage, no TUI)
-cargo build --release --no-default-features
-
-# CLI + storage (no TUI)
-cargo build --release --no-default-features --features storage
+cargo build --release                                    # Full build (all features)
+cargo build --release --no-default-features               # Lightweight build
+cargo build --release --no-default-features --features storage  # CLI + storage (no TUI)
 ```
 
-### Configuration
+## Documentation
 
-ArmadAI supports two project configuration formats:
+Full documentation lives in [`docs/wiki/`](docs/wiki/) (and the published site once available):
 
-- **`.armadai/config.yaml`** (preferred) — project config inside a `.armadai/` directory
-- **`armadai.yaml`** / **`armadai.yml`** (legacy) — project config at the repository root
-
-Run `armadai init --project` to create the `.armadai/` structure:
-
-```
-.armadai/
-├── config.yaml     # Project configuration
-├── agents/         # Project-local agents
-├── prompts/        # Project-local prompts
-├── skills/         # Project-local skills
-└── starters/       # Project-local starter packs
-```
-
-Resource resolution order: `.armadai/{type}/` → `{type}/` (legacy root) → `~/.config/armadai/{type}/`.
-
-### Environment Variables
-
-| Variable | Description |
-|---|---|
-| `ARMADAI_CONFIG_DIR` | Override global config directory |
-| `ARMADAI_PROVIDER` | Override default provider |
-| `ARMADAI_MODEL` | Override default model |
-| `ARMADAI_TEMPERATURE` | Override default temperature |
-| `ARMADAI_STARTERS_DIRS` | Additional starter directories (colon-separated) |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `GOOGLE_API_KEY` | Google API key |
+- [Getting Started](docs/wiki/getting-started.md)
+- [Agent format](docs/wiki/agent-format.md)
+- [Orchestration guide](docs/wiki/orchestration-guide.md)
+- [Providers](docs/wiki/providers.md)
+- [Skills & Prompts](docs/wiki/skills-prompts.md)
+- [Migration v0 → v1](docs/wiki/migration-v0-to-v1.md)
 
 ## Development
 
 ### Setup
 
 ```bash
-git clone https://github.com/Dr0drigues/swarm-festai.git
-cd swarm-festai
+git clone https://github.com/Dr0drigues/armadai.git
+cd armadai
 git config core.hooksPath .githooks    # Enable commit message validation
 ```
 
@@ -427,19 +210,6 @@ refactor(providers): extract common HTTP logic
 ```
 
 Changelogs are generated automatically via `cz bump`.
-
-## Wiki
-
-Detailed documentation is available in [`docs/wiki/`](docs/wiki/):
-
-- [Getting Started](docs/wiki/getting-started.md) — installation, first agent, first run
-- [Agent Format](docs/wiki/agent-format.md) — complete reference for agent Markdown files
-- [Providers](docs/wiki/providers.md) — configuring API, CLI, and proxy providers
-- [Templates](docs/wiki/templates.md) — using and creating agent templates
-- [Starter Packs](docs/wiki/starter-packs.md) — curated agent bundles
-- [Link Command](docs/wiki/link.md) — generating native configs for AI CLI tools
-- [Skills & Prompts](docs/wiki/skills-prompts.md) — composable prompt fragments and skills
-- [Registry](docs/wiki/registry.md) — browsing and importing community agents
 
 ## License
 
