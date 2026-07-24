@@ -22,7 +22,7 @@ mod up;
 mod update;
 mod validate;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -53,15 +53,23 @@ pub enum Command {
         long_about = "Run an agent with the given input.\n\n\
             Loads the agent definition from agents/<name>.md, sends the input to the \
             configured provider, and prints the response. Use --pipe to chain multiple \
-            agents sequentially (output of one becomes input of the next).",
+            agents sequentially (output of one becomes input of the next).\n\n\
+            Exactly one of <AGENT>, --resume, or --replay must be given.",
         after_help = "Examples:\n  \
             armadai run code-reviewer \"Review this function\"\n  \
             armadai run summarizer @long-document.txt\n  \
-            armadai run --pipe reviewer writer src/main.rs"
+            armadai run --pipe reviewer writer src/main.rs\n  \
+            armadai run --resume <RUN_ID>\n  \
+            armadai run --replay <RUN_ID>",
+        group(
+            ArgGroup::new("run_mode")
+                .args(["agent", "resume", "replay"])
+                .required(true)
+        )
     )]
     Run {
         /// Agent name (filename without .md)
-        agent: String,
+        agent: Option<String>,
         /// Input text or file path (use @file.txt for files)
         input: Option<String>,
         /// Pipeline mode: chain agents sequentially
@@ -94,6 +102,12 @@ pub enum Command {
         /// Disable the live orchestration TUI (force plain headless output)
         #[arg(long = "no-tui")]
         no_tui: bool,
+        /// Resume a previously interrupted run by its run_id (OH1 Lot 6)
+        #[arg(long, value_name = "RUN_ID")]
+        resume: Option<String>,
+        /// Replay a previously recorded run by its run_id (OH1 Lot 6)
+        #[arg(long, value_name = "RUN_ID")]
+        replay: Option<String>,
     },
     /// Create a new agent from a template
     #[command(
@@ -492,6 +506,8 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             tags,
             dry_run,
             no_tui,
+            resume,
+            replay,
         } => {
             run::execute(
                 agent,
@@ -506,6 +522,8 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
                 tags,
                 dry_run,
                 no_tui,
+                resume,
+                replay,
             )
             .await
         }

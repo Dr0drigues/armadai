@@ -1479,6 +1479,7 @@ orchestration:
         let t = Instant::now();
         wr.on_run_event_at(
             &RunEvent::RunStart {
+                run_id: "r1".into(),
                 v: 1,
                 agents: vec!["alpha".into(), "beta".into()],
                 prov: "fake".into(),
@@ -1524,6 +1525,7 @@ orchestration:
 
     fn rs(agents: &[&str]) -> RunEvent {
         RunEvent::RunStart {
+            run_id: "r1".into(),
             v: 1,
             agents: agents.iter().map(|s| s.to_string()).collect(),
             prov: "fake".into(),

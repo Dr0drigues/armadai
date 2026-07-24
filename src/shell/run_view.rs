@@ -325,6 +325,7 @@ mod tests {
     fn sink_forwards_events_to_projection() {
         let (sink, mut rx) = WorkroomSink::new();
         sink.emit(&RunEvent::RunStart {
+            run_id: "r1".into(),
             v: 1,
             agents: vec!["a".into(), "b".into()],
             prov: "f".into(),

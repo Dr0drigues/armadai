@@ -26,7 +26,7 @@ accurate, relevant output.";
 /// configuration flags; grouping into a struct would obscure the caller's argument binding.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute(
-    agent_name: String,
+    agent_name: Option<String>,
     input: Option<String>,
     pipe: Option<Vec<String>>,
     orchestrate: Option<String>,
@@ -38,7 +38,23 @@ pub async fn execute(
     tags: Option<Vec<String>>,
     dry_run: bool,
     no_tui: bool,
+    resume: Option<String>,
+    replay: Option<String>,
 ) -> anyhow::Result<()> {
+    // OH1 Lot 6: the clap `ArgGroup` on `Command::Run` (`agent`/`resume`/
+    // `replay`) guarantees exactly one of the three is present, so these
+    // branches are exhaustive — the `else` below is the pre-existing agent
+    // path, safe to `expect()` since `resume`/`replay` are both `None` there.
+    // Tasks 2/3 replace these stubs with the actual resume/replay logic.
+    if replay.is_some() {
+        anyhow::bail!("--replay not yet wired");
+    }
+    if resume.is_some() {
+        anyhow::bail!("--resume not yet wired");
+    }
+    let agent_name =
+        agent_name.expect("clap ArgGroup guarantees agent is present when resume/replay are not");
+
     // headless is implied by json (machine output cannot be interrupted by a prompt)
     let headless = headless || json;
 
@@ -94,6 +110,8 @@ pub async fn execute(
                     route,
                     tags,
                     dry_run,
+                    resume,
+                    replay,
                     &sink,
                 )
                 .await
@@ -129,6 +147,8 @@ pub async fn execute(
         route,
         tags,
         dry_run,
+        resume,
+        replay,
         &sink,
     )
     .await;
@@ -188,8 +208,15 @@ async fn run_inner(
     route: Option<String>,
     tags: Option<Vec<String>>,
     dry_run: bool,
+    // OH1 Lot 6: threaded through for signature stability across Tasks 2/3
+    // (resume/replay execution). `execute` already bails before calling
+    // `run_inner` when either is `Some`, so this function never branches on
+    // them yet.
+    resume: Option<String>,
+    replay: Option<String>,
     sink: &Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
+    let _ = (&resume, &replay);
     let resolution = resolve_agents_dir(headless);
     let tags = tags.unwrap_or_default();
 
@@ -275,13 +302,29 @@ async fn run_inner(
     // `armadai.yaml` was found (still useful to distinguish ad-hoc runs).
     let project = project_display_string(&resolution);
 
+    // Generated once, up front, so the emitted `RunStart` (surfaced to the
+    // user for a future `--resume`/`--replay`) carries the SAME run_id the
+    // single-agent ES dispatch below (`dispatch_direct_es`) persists the ES
+    // log under.
+    let run_id = uuid::Uuid::new_v4().to_string();
+
     sink.emit(&RunEvent::RunStart {
+        run_id: run_id.clone(),
         v: 1,
         agents: chain.clone(),
         prov: String::new(), // filled per-agent in agent_start; kept minimal here
         model: String::new(),
         in_chars: current_input.chars().count(),
     });
+
+    // Surface the run_id on the human path (OH1 Lot 6, Task 1) so it can be
+    // copied for a future `--resume`/`--replay`. Not on `--json` (the id
+    // already travels in `RunStart`) or `--quiet`, and gated on
+    // `human_output` too, mirroring the orchestrated path below.
+    if !json && !quiet && human_output {
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}run {run_id}{m:#}");
+    }
 
     // Single-agent direct execution (OH1 Lot 5, T5a): switched onto the
     // event-sourced `direct` engine (`run_direct_es`), wrapped in a
@@ -293,6 +336,7 @@ async fn run_inner(
         let name = &chain[0];
         let agent_path = resolve_agent_path(&resolution, name)?;
         let (content, tin, tout, cost) = run_single_agent_es(
+            &run_id,
             &agent_path,
             name,
             &current_input,
@@ -714,6 +758,7 @@ fn quiet_max_content_sink(
 /// the log (the `record_*_es` will disappear).
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_direct_es(
+    run_id: &str,
     agent_key: &str,
     agent: Agent,
     provider: Arc<dyn crate::providers::traits::Provider>,
@@ -744,7 +789,6 @@ async fn dispatch_direct_es(
     let mut providers = BTreeMap::new();
     providers.insert(agent_key.to_string(), provider);
 
-    let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
 
     // Deduplication macro (Fix 2): single definition of the run_direct_es call,
@@ -753,7 +797,7 @@ async fn dispatch_direct_es(
         ($log:expr) => {{
             let mut log = SinkProjectingLog::with_meta($log, &filtered_sink, agent_meta);
             let state = run_direct_es(
-                &run_id,
+                run_id,
                 agent_key,
                 input,
                 agents,
@@ -762,7 +806,7 @@ async fn dispatch_direct_es(
                 &mut log,
             )
             .await?;
-            let events = log.events(&run_id)?;
+            let events = log.events(run_id)?;
             (state, events)
         }};
     }
@@ -810,6 +854,7 @@ async fn dispatch_direct_es(
 /// `run_single_agent`'s step 6.
 #[allow(clippy::too_many_arguments)]
 async fn run_single_agent_es(
+    run_id: &str,
     agent_path: &Path,
     agent_key: &str,
     input: &str,
@@ -867,6 +912,7 @@ async fn run_single_agent_es(
     // AgentStart/AgentEnd observability, the actual provider call).
     let start = Instant::now();
     let dispatch = dispatch_direct_es(
+        run_id,
         agent_key,
         agent,
         provider,
@@ -1251,13 +1297,31 @@ async fn run_orchestrated_inner(
         _ => crate::core::routing::RoutingRules::default(),
     };
 
+    // Generated once, up front, so the emitted `RunStart` (surfaced to the
+    // user for a future `--resume`/`--replay`) carries the SAME run_id the
+    // `dispatch_*_es` pattern dispatch below persists the ES log under —
+    // otherwise the human-visible id and the one actually usable for replay
+    // would silently diverge.
+    let run_id = uuid::Uuid::new_v4().to_string();
+
     sink.emit(&RunEvent::RunStart {
+        run_id: run_id.clone(),
         v: 1,
         agents: agent_names.to_vec(),
         prov: String::new(),
         model: pattern.to_string(),
         in_chars: input.chars().count(),
     });
+
+    // Surface the run_id on the human path (OH1 Lot 6, Task 1) so it can be
+    // copied for a future `--resume`/`--replay`. Not on `--json` (the id
+    // already travels in `RunStart`) or `--quiet`, and gated on
+    // `human_output` too — `false` on the live Workroom TUI path, where a
+    // direct stdout write would corrupt the alternate-screen display.
+    if !json && !quiet && human_output {
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}run {run_id}{m:#}");
+    }
 
     // Replay deprecation warnings collected during roster load, right after
     // `RunStart` (same order as the pre-split load loop emitted them).
@@ -1377,6 +1441,7 @@ async fn run_orchestrated_inner(
             }
 
             let (state, _run_id) = dispatch_blackboard_es(
+                &run_id,
                 input,
                 agent_map,
                 provider_map,
@@ -1459,6 +1524,7 @@ async fn run_orchestrated_inner(
             }
 
             let (state, events, _run_id) = dispatch_ring_es(
+                &run_id,
                 input,
                 agent_map,
                 agent_names.to_vec(),
@@ -1554,6 +1620,7 @@ async fn run_orchestrated_inner(
             }
 
             let (state, events, _run_id) = dispatch_hierarchical_es(
+                &run_id,
                 &coordinator_name,
                 input,
                 orch_config,
@@ -1678,6 +1745,7 @@ fn agent_meta_from_roster(
 /// `tests::blackboard_es`).
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_blackboard_es(
+    run_id: &str,
     input: &str,
     agents: std::collections::BTreeMap<String, Agent>,
     providers: std::collections::BTreeMap<String, Arc<dyn crate::providers::traits::Provider>>,
@@ -1690,7 +1758,6 @@ async fn dispatch_blackboard_es(
 ) -> anyhow::Result<(ExecutionState, String)> {
     use crate::core::orchestration::es::blackboard::run_blackboard_es;
 
-    let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
 
     // Deduplication macro (Fix 2): single definition of the run_blackboard_es call.
@@ -1699,7 +1766,7 @@ async fn dispatch_blackboard_es(
             let mut log =
                 SinkProjectingLog::with_meta($log, &filtered_sink, agent_meta_from_roster(&agents));
             run_blackboard_es(
-                &run_id,
+                run_id,
                 input,
                 agents,
                 providers,
@@ -1725,7 +1792,7 @@ async fn dispatch_blackboard_es(
     };
     #[cfg(not(feature = "storage"))]
     let state = run_with_log!(InMemoryLog::default());
-    Ok((state, run_id))
+    Ok((state, run_id.to_string()))
 }
 
 /// Drive the event-sourced `ring` engine end-to-end for an already-loaded
@@ -1737,6 +1804,7 @@ async fn dispatch_blackboard_es(
 /// reconciliation Task 5).
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_ring_es(
+    run_id: &str,
     input: &str,
     agents: std::collections::BTreeMap<String, Agent>,
     agent_order: Vec<String>,
@@ -1750,7 +1818,6 @@ async fn dispatch_ring_es(
 ) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>, String)> {
     use crate::core::orchestration::es::ring::run_ring_es;
 
-    let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
 
     // Deduplication macro (Fix 2): single definition of the run_ring_es call.
@@ -1759,7 +1826,7 @@ async fn dispatch_ring_es(
             let mut log =
                 SinkProjectingLog::with_meta($log, &filtered_sink, agent_meta_from_roster(&agents));
             let state = run_ring_es(
-                &run_id,
+                run_id,
                 input,
                 agents,
                 agent_order,
@@ -1770,7 +1837,7 @@ async fn dispatch_ring_es(
                 &mut log,
             )
             .await?;
-            let events = log.events(&run_id)?;
+            let events = log.events(run_id)?;
             (state, events)
         }};
     }
@@ -1788,7 +1855,7 @@ async fn dispatch_ring_es(
     };
     #[cfg(not(feature = "storage"))]
     let (state, events) = run_with_log!(InMemoryLog::default());
-    Ok((state, events, run_id))
+    Ok((state, events, run_id.to_string()))
 }
 
 /// Drive the event-sourced `hierarchical` engine end-to-end for an
@@ -1802,6 +1869,7 @@ async fn dispatch_ring_es(
 /// reconciliation Task 5).
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_hierarchical_es(
+    run_id: &str,
     coordinator: &str,
     input: &str,
     config: crate::core::orchestration::OrchestrationConfig,
@@ -1814,7 +1882,6 @@ async fn dispatch_hierarchical_es(
 ) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>, String)> {
     use crate::core::orchestration::es::hierarchical::run_hierarchical_es;
 
-    let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
 
     // Deduplication macro (Fix 2): single definition of the run_hierarchical_es call.
@@ -1823,7 +1890,7 @@ async fn dispatch_hierarchical_es(
             let mut log =
                 SinkProjectingLog::with_meta($log, &filtered_sink, agent_meta_from_roster(&agents));
             let state = run_hierarchical_es(
-                &run_id,
+                run_id,
                 coordinator,
                 input,
                 config,
@@ -1833,7 +1900,7 @@ async fn dispatch_hierarchical_es(
                 &mut log,
             )
             .await?;
-            let events = log.events(&run_id)?;
+            let events = log.events(run_id)?;
             (state, events)
         }};
     }
@@ -1851,7 +1918,7 @@ async fn dispatch_hierarchical_es(
     };
     #[cfg(not(feature = "storage"))]
     let (state, events) = run_with_log!(InMemoryLog::default());
-    Ok((state, events, run_id))
+    Ok((state, events, run_id.to_string()))
 }
 
 /// Apply project-level orchestration overrides to a BlackboardConfig.
@@ -2507,6 +2574,7 @@ mod es_switch_tests {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
 
         let dispatch = dispatch_direct_es(
+            &uuid::Uuid::new_v4().to_string(),
             "solo",
             test_agent("solo"),
             provider,
@@ -2550,6 +2618,7 @@ mod es_switch_tests {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
 
         let dispatch = dispatch_direct_es(
+            &uuid::Uuid::new_v4().to_string(),
             "solo",
             test_agent("solo"),
             provider,
@@ -2581,6 +2650,7 @@ mod es_switch_tests {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the full answer"]));
 
         let dispatch = dispatch_direct_es(
+            &uuid::Uuid::new_v4().to_string(),
             "solo",
             test_agent("solo"),
             provider,
@@ -2614,6 +2684,7 @@ mod es_switch_tests {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
 
         dispatch_direct_es(
+            &uuid::Uuid::new_v4().to_string(),
             "solo",
             test_agent("solo"),
             provider,
@@ -2688,6 +2759,7 @@ mod es_switch_tests {
         let (agents, providers) = hierarchical_roster();
 
         let (state, events, _run_id) = dispatch_hierarchical_es(
+            &uuid::Uuid::new_v4().to_string(),
             "dev-lead",
             "build X",
             flat_config("dev-lead", &["core-specialist"]),
@@ -2732,6 +2804,7 @@ mod es_switch_tests {
         let config = flat_config("dev-lead", &["core-specialist"]);
 
         let (state, events, _dispatch_run_id) = dispatch_hierarchical_es(
+            &uuid::Uuid::new_v4().to_string(),
             "dev-lead",
             "build X",
             config.clone(),
@@ -2801,6 +2874,7 @@ mod es_switch_tests {
         let (agents, providers) = blackboard_roster();
 
         let (state, _run_id) = dispatch_blackboard_es(
+            &uuid::Uuid::new_v4().to_string(),
             "task",
             agents,
             providers,
@@ -2850,6 +2924,7 @@ mod es_switch_tests {
         let config = BlackboardConfig::default();
 
         let (state, _dispatch_run_id) = dispatch_blackboard_es(
+            &uuid::Uuid::new_v4().to_string(),
             "task",
             agents,
             providers,
@@ -3143,6 +3218,7 @@ mod es_switch_tests {
         };
 
         let (state, events, _run_id) = dispatch_ring_es(
+            &uuid::Uuid::new_v4().to_string(),
             "task",
             agents,
             vec!["a".to_string(), "b".to_string()],
@@ -3197,6 +3273,7 @@ mod es_switch_tests {
         };
 
         let (state, _events, _dispatch_run_id) = dispatch_ring_es(
+            &uuid::Uuid::new_v4().to_string(),
             "task",
             agents,
             vec!["a".to_string(), "b".to_string()],
