@@ -16,6 +16,7 @@ mod run;
 mod run_es_record;
 pub(crate) mod setup;
 mod skills;
+mod style;
 mod unlink;
 mod up;
 mod update;
