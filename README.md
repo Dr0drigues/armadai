@@ -37,17 +37,17 @@ armadai tui
 
 ```bash
 # One-liner (downloads the latest release binary)
-curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 ```
 
 Options: `INSTALL_DIR=~/.local/bin` (default), `VERSION=v0.1.0` (default: latest).
 
 ```bash
 # Custom install directory
-INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 
 # Specific version
-VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 ```
 
 ### Install from source
@@ -409,11 +409,10 @@ RUST_LOG=debug cargo run  # Run with debug logs
 
 | Branch | Purpose |
 |---|---|
-| `master` | Production releases only |
-| `develop` | Integration branch (default) |
-| `feature/*` | New features (branch from `develop`) |
-| `release/*` | Release preparation (branch from `develop`, merge to `master` + `develop`) |
-| `hotfix/*` | Emergency fixes (branch from `master`, merge to `master` + `develop`) |
+| `master` | Default trunk — all PRs squash-merge here |
+| `feature/*` | New features (branch from `master`, PR back to `master`) |
+| `release/*` | Release-line stabilization (branch from `master`, merge back to `master` + tag) |
+| `hotfix/*` | Emergency fixes (branch from `master`, PR back to `master`) |
 
 ### Commits
 

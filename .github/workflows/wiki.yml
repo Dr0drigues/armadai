@@ -1,6 +1,6 @@
 # Wiki sync — publish docs/wiki/ pages to the GitHub Wiki
 #
-# Triggers on pushes to develop that modify files in docs/wiki/.
+# Triggers on pushes to master that modify files in docs/wiki/.
 # Converts filenames from kebab-case to Title-Case (GitHub wiki convention),
 # fixes internal markdown links, and pushes to the wiki repository.
 #
@@ -10,7 +10,7 @@ name: Wiki Sync
 
 on:
   push:
-    branches: [develop]
+    branches: [master]
     paths:
       - "docs/wiki/**"
 

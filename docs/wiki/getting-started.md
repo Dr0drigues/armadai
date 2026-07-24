@@ -7,7 +7,7 @@ Welcome to ArmadAI — follow the steps below to get up and running.
 ### Quick install (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 ```
 
 This downloads the latest release binary for your platform (Linux/macOS, x86_64/aarch64) and installs it to `~/.local/bin/`.
@@ -21,10 +21,10 @@ This downloads the latest release binary for your platform (Linux/macOS, x86_64/
 
 ```bash
 # Custom install directory
-INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 
 # Specific version
-VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 ```
 
 ### From source
@@ -229,7 +229,7 @@ ArmadAI provides a JSON Schema for `armadai.yaml` that enables autocompletion an
 **VS Code** (with [YAML extension by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)) and **IntelliJ** — add this comment as the first line of your `armadai.yaml`:
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/Dr0drigues/armadai/develop/schemas/armadai.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Dr0drigues/armadai/master/schemas/armadai.schema.json
 ```
 
 Once added, your editor will provide:

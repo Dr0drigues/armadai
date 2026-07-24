@@ -99,9 +99,9 @@ trait Provider: Send + Sync {
 
 ## Git Conventions
 
-- **Branch model**: `master` (releases), `develop` (default/integration), `release/*` (release-line stabilization), `feature/*` branches
+- **Branch model** (master-only): `master` (default/trunk), `release/*` (release-line stabilization), `feature/*` branches. No `develop`.
 - **Conventional Commits** enforced by `.githooks/commit-msg` hook and CI. Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`, `perf`, `style`, `build`, `revert`
-- **PR process**: Always squash merge to `develop`. Before merging: check for Dependabot PRs, verify CI passes (all 6 checks: fmt, clippy, test, build, conventional commits, audit).
+- **PR process**: Always squash merge to `master`. Before merging: check for Dependabot PRs, verify CI passes (all 6 checks: fmt, clippy, test, build, conventional commits, audit).
 - Enable hooks after clone: `git config core.hooksPath .githooks`
 
 ## Language

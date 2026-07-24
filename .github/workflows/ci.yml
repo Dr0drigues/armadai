@@ -7,7 +7,7 @@
 # 4. Follows formatting conventions (rustfmt)
 # 5. Commit messages follow Conventional Commits (on PRs)
 #
-# Runs on: every push to master/develop, every pull request
+# Runs on: every push to master, every pull request
 #
 # Performance strategy:
 # - Heavy optional deps (ratatui, rusqlite) are behind feature flags
@@ -15,15 +15,15 @@
 # - build --release compiles with all default features (full binary)
 # - Swatinem/rust-cache caches ~/.cargo and target/ between runs
 # - Cache is shared across clippy/test/build via shared-key
-# - Cache is only saved on develop pushes (save-if), PRs read from it
+# - Cache is only saved on master pushes (save-if), PRs read from it
 
 name: CI
 
 on:
   push:
-    branches: [master, develop, "release/**", "refactor/**"]
+    branches: [master, "release/**", "refactor/**"]
   pull_request:
-    branches: [master, develop, "release/**", "refactor/**"]
+    branches: [master, "release/**", "refactor/**"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -52,7 +52,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-cargo
-          save-if: ${{ github.ref == 'refs/heads/develop' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       # Clippy in every feature combination the code is gated for, so a lint
       # that only trips under one combo (e.g. a needless_borrow visible only
       # under web+storage, or providers-api-gated HTTP code) is caught in CI,
@@ -70,7 +70,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-cargo
-          save-if: ${{ github.ref == 'refs/heads/develop' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo test --no-default-features --features tui
       # storage (SQLite) is not covered by the default `tui` feature set —
       # run its tests explicitly so src/storage/ and the storage-gated
@@ -99,7 +99,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-cargo-release
-          save-if: ${{ github.ref == 'refs/heads/develop' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       # Build with storage (SQLite bundled) to verify full compilation.
       - run: cargo build --release --no-default-features --features tui,storage
 
