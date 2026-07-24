@@ -125,12 +125,39 @@ mod tests {
 
     #[test]
     fn test_resolve_shell_model_aliases() {
+        // Hermetic: force an empty, private `ARMADAI_CONFIG_DIR` so this test
+        // never sees the ambient/machine-local models.dev cache. Without this,
+        // `resolve_shell_model` → `resolve_model_for_tier` reads the shared,
+        // mutable cache file via `load_models_cached`; under the parallel test
+        // suite other tests populate/clear/refresh that cache between the two
+        // calls below, so the two resolutions could observe different cache
+        // states and diverge — flaky (passes in isolation / on a clean CI
+        // runner, fails under `--test-threads>1`). With no cache reachable,
+        // resolution always takes the deterministic hardcoded-fallback path
+        // (`fallback_model_for_tier`), while still exercising the real
+        // low/fast → Fast tier and high/max → Max tier collapsing invariant
+        // this test is meant to guard. Mirrors
+        // `linker::model_resolution::test_preview_resolution_with_latest`.
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // SAFETY: env mutation is serialised via ENV_MUTEX for the duration
+        // of this test, and the original value is restored before returning.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", tmp.path());
+        }
+
         let low = resolve_shell_model("claude", "latest:low");
         let fast = resolve_shell_model("claude", "latest:fast");
-        assert_eq!(low, fast);
-
         let high = resolve_shell_model("claude", "latest:high");
         let max = resolve_shell_model("claude", "latest:max");
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
+
+        assert_eq!(low, fast);
         assert_eq!(high, max);
     }
 
