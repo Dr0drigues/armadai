@@ -14,6 +14,7 @@ mod prompts;
 mod registry;
 mod run;
 mod run_es_record;
+mod run_replay;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;

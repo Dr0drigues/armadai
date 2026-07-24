@@ -45,9 +45,11 @@ pub async fn execute(
     // `replay`) guarantees exactly one of the three is present, so these
     // branches are exhaustive — the `else` below is the pre-existing agent
     // path, safe to `expect()` since `resume`/`replay` are both `None` there.
-    // Tasks 2/3 replace these stubs with the actual resume/replay logic.
-    if replay.is_some() {
-        anyhow::bail!("--replay not yet wired");
+    // Task 3 will replace the `--resume` stub with the actual resume logic;
+    // `--replay` (Task 2) is fully wired below, ahead of any agent/TUI
+    // concern (replay never has an `agent_name` to route through them).
+    if let Some(run_id) = replay {
+        return execute_replay(&run_id, json, quiet, headless).await;
     }
     if resume.is_some() {
         anyhow::bail!("--resume not yet wired");
@@ -152,6 +154,51 @@ pub async fn execute(
         &sink,
     )
     .await;
+
+    if let Err(e) = result {
+        if headless {
+            let code = exit_code_for(&e);
+            sink.emit(&RunEvent::Error {
+                code: match code {
+                    3 => "budget_exceeded",
+                    4 => "provider_unavailable",
+                    _ => "agent_failed",
+                }
+                .into(),
+                msg: e.to_string(),
+            });
+            std::process::exit(code);
+        }
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// `--replay <run_id>` entry point (OH1 Lot 6, Task 2): builds the sink the
+/// same way the normal path does (`make_sink(json)`), delegates to
+/// [`crate::cli::run_replay::replay_run`] — which reads the persisted
+/// `ExecutionEvent` log back and re-emits it as `RunEvent`s, executing no
+/// effects — and funnels any error through the SAME headless
+/// error-event/exit-code handler [`execute`] uses for the normal run path, so
+/// `--replay --json` on an unknown/errored id behaves like any other failed
+/// headless run (an `error` JSONL line + a CI-friendly exit code) rather than
+/// a bare panic or a silent non-zero exit.
+async fn execute_replay(
+    run_id: &str,
+    json: bool,
+    quiet: bool,
+    headless: bool,
+) -> anyhow::Result<()> {
+    let headless = headless || json;
+    let sink = crate::core::events::make_sink(json);
+    // No TUI concern here (unlike the agent path in `execute`): replay has no
+    // `orchestrate`/config-driven auto-detect to check and no `agent_name` to
+    // route through the live Workroom, so `human_output` collapses to the
+    // same `!json && !quiet` gate the agent path's `RunStart` banner uses.
+    let human_output = !json && !quiet;
+
+    let result = crate::cli::run_replay::replay_run(run_id, &sink, human_output).await;
 
     if let Err(e) = result {
         if headless {
@@ -3525,5 +3572,152 @@ mod es_switch_tests {
     fn scripted_provider_call_count_tracks_calls() {
         let p = ScriptedProvider::new(&["one", "two"]);
         assert_eq!(p.call_count(), 0);
+    }
+
+    // ── OH1 Lot 6, Task 2: `--replay` determinism ─────────────────────
+    //
+    // These tests drive `run_replay::replay_from_log` — the `pub(crate)`,
+    // generic-over-`EventLog` core `replay_run` wraps around its own
+    // `crate::storage::init_db()` call — directly against an in-memory
+    // `SqliteLog` (`init_embedded()`), the SAME idiom
+    // `blackboard_es_run_persists_event_log`/`ring_es_run_persists_event_log`
+    // already use above. This deliberately avoids exercising `init_db()`
+    // itself (which resolves the real, global, config-dependent DB path):
+    // an earlier version of this test mutated `ARMADAI_CONFIG_DIR`/
+    // `XDG_DATA_HOME` process-wide to sandbox `init_db()`, which raced with
+    // OTHER tests in this same file (`dispatch_ring_es` et al.) that also
+    // call `crate::storage::init_db()` internally under `storage` but hold
+    // no such guard — those tests intermittently failed to open their own
+    // (unrelated) DB while this test's temp dirs existed/were torn down
+    // concurrently. Testing the generic core instead sidesteps that
+    // entirely: no env mutation, no cross-test interference, and it's the
+    // same read-back+projection logic `replay_run` itself runs.
+
+    /// Drive the event-sourced `direct` engine directly against an injected
+    /// `SqliteLog` (mirroring `blackboard_es_run_persists_event_log`'s
+    /// pattern) so the "live" side of the determinism test below persists
+    /// through the exact same `SqliteLog`/`SinkProjectingLog` machinery a
+    /// real `--storage` run does, without going through `dispatch_direct_es`
+    /// (which would call the real `crate::storage::init_db()`).
+    #[cfg(feature = "storage")]
+    async fn run_direct_against_sqlite_log(
+        db: crate::storage::Database,
+        run_id: &str,
+        sink: &Arc<dyn EventSink>,
+    ) {
+        use std::collections::BTreeMap;
+
+        use crate::core::orchestration::es::direct::run_direct_es;
+        use crate::core::orchestration::es::log::SqliteLog;
+
+        let mut agent_meta = BTreeMap::new();
+        agent_meta.insert(
+            "solo".to_string(),
+            ("anthropic".to_string(), "concrete-model".to_string()),
+        );
+        let mut log = SinkProjectingLog::with_meta(SqliteLog::new(db), sink.as_ref(), agent_meta);
+
+        let mut agents = BTreeMap::new();
+        agents.insert("solo".to_string(), test_agent("solo"));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "solo".to_string(),
+            Arc::new(ScriptedProvider::new(&["the answer"])) as Arc<dyn Provider>,
+        );
+
+        run_direct_es(
+            run_id,
+            "solo",
+            "do the thing",
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Strip the fields `replay_run` cannot reconstruct from the persisted
+    /// event log alone (see `run_replay.rs`'s module doc: `AgentStart`'s
+    /// `prov`/`model` need the pre-run roster, which the log never carries)
+    /// before comparing a live vs. replayed `RunEvent` sequence. Every other
+    /// field of every other event must still match exactly.
+    #[cfg(feature = "storage")]
+    fn normalize_for_replay_comparison(mut v: serde_json::Value) -> serde_json::Value {
+        if v["t"] == "agent_start" {
+            v["prov"] = serde_json::Value::String(String::new());
+            v["model"] = serde_json::Value::String(String::new());
+        }
+        v
+    }
+
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn replay_reproduces_the_live_run_event_sequence() {
+        use crate::storage::init_embedded;
+
+        let db = init_embedded().unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        let (live_capture, live_sink) = capture_sink();
+        run_direct_against_sqlite_log(db.clone(), &run_id, &live_sink).await;
+
+        let replay_log = crate::core::orchestration::es::log::SqliteLog::new(db);
+        let (replay_capture, replay_sink) = capture_sink();
+        crate::cli::run_replay::replay_from_log(&replay_log, &run_id, &replay_sink, false).unwrap();
+
+        let live: Vec<_> = live_capture
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .map(normalize_for_replay_comparison)
+            .collect();
+        let replayed: Vec<_> = replay_capture
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .map(normalize_for_replay_comparison)
+            .collect();
+
+        assert!(!live.is_empty(), "sanity: the live run must emit events");
+        assert_eq!(
+            live, replayed,
+            "replay must reproduce the same RunEvent sequence (modulo the \
+             non-reconstructable AgentStart.prov/model gap, already stripped above)"
+        );
+    }
+
+    #[cfg(feature = "storage")]
+    #[test]
+    fn replay_unknown_run_id_errors() {
+        use crate::core::orchestration::es::log::SqliteLog;
+        use crate::storage::init_embedded;
+
+        let log = SqliteLog::new(init_embedded().unwrap());
+        let (_capture, sink) = capture_sink();
+        let err = crate::cli::run_replay::replay_from_log(&log, "does-not-exist", &sink, false)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("does-not-exist"),
+            "expected the unknown run_id in the error message, got: {err}"
+        );
+    }
+
+    #[cfg(not(feature = "storage"))]
+    #[tokio::test]
+    async fn replay_requires_storage_feature() {
+        let (_capture, sink) = capture_sink();
+        let err = crate::cli::run_replay::replay_run("any-id", &sink, false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("storage"),
+            "expected the storage-feature-required message, got: {err}"
+        );
     }
 }
