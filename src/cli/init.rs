@@ -35,7 +35,12 @@ fn init_global(force: bool) -> anyhow::Result<()> {
 
     // Create directory tree
     config::ensure_config_dirs()?;
-    println!("Created config directory: {}", dir.display());
+    let o = crate::cli::style::ok();
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{o}Created config directory:{o:#} {m}{}{m:#}",
+        dir.display()
+    );
 
     // Write config.yaml
     let config_path = config::config_file_path();
@@ -48,15 +53,30 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     // Install built-in skills
     let skills_installed = crate::core::skill::install_embedded_skills(force)?;
 
-    println!("\nArmadAI initialized at {}", dir.display());
-    println!("  config:    {}", config_path.display());
-    println!("  providers: {}", providers_path.display());
-    println!("  agents:    {}", config::user_agents_dir().display());
-    println!("  prompts:   {}", config::user_prompts_dir().display());
-    println!("  skills:    {}", config::user_skills_dir().display());
-    println!("  registry:  {}", config::registry_cache_dir().display());
+    anstream::println!("\n{o}ArmadAI initialized at{o:#} {m}{}{m:#}", dir.display());
+    anstream::println!("{m}  config:    {}{m:#}", config_path.display());
+    anstream::println!("{m}  providers: {}{m:#}", providers_path.display());
+    anstream::println!(
+        "{m}  agents:    {}{m:#}",
+        config::user_agents_dir().display()
+    );
+    anstream::println!(
+        "{m}  prompts:   {}{m:#}",
+        config::user_prompts_dir().display()
+    );
+    anstream::println!(
+        "{m}  skills:    {}{m:#}",
+        config::user_skills_dir().display()
+    );
+    anstream::println!(
+        "{m}  registry:  {}{m:#}",
+        config::registry_cache_dir().display()
+    );
     if skills_installed > 0 {
-        println!("  built-in:  {} skill(s) installed", skills_installed);
+        anstream::println!(
+            "{o}  built-in:  {} skill(s) installed{o:#}",
+            skills_installed
+        );
     }
 
     Ok(())
@@ -83,7 +103,10 @@ pub(crate) fn resolve_pack_dir(name: &str) -> Option<std::path::PathBuf> {
     if sources.is_empty() {
         return None;
     }
-    eprintln!("Pack '{name}' not found locally — syncing remote starter registries...");
+    let r = crate::cli::style::running();
+    anstream::eprintln!(
+        "{r}Pack '{name}' not found locally — syncing remote starter registries...{r:#}"
+    );
     let _ = crate::starters_registry::sync_starters(&sources);
     find_pack_dir(name)
 }
@@ -106,15 +129,23 @@ fn install_pack(name: &str, force: bool) -> anyhow::Result<StarterPack> {
     };
 
     let pack = StarterPack::load(&pack_dir)?;
-    println!(
-        "\nInstalling starter pack: {} — {}",
-        pack.name, pack.description
+    let r = crate::cli::style::running();
+    let a = crate::cli::style::accent();
+    anstream::println!(
+        "\n{r}Installing starter pack:{r:#} {a}{}{a:#} — {}",
+        pack.name,
+        pack.description
     );
 
     let (agents, prompts, skills) = pack.install(&pack_dir, force)?;
-    println!(
-        "\nPack '{}' installed: {} agent(s), {} prompt(s), {} skill(s)",
-        pack.name, agents, prompts, skills
+    let o = crate::cli::style::ok();
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "\n{o}Pack{o:#} {a}'{}'{a:#} {o}installed:{o:#} {m}{} agent(s), {} prompt(s), {} skill(s){m:#}",
+        pack.name,
+        agents,
+        prompts,
+        skills
     );
 
     Ok(pack)
@@ -182,13 +213,17 @@ fn init_project() -> anyhow::Result<()> {
 
     let content = generate_empty_project_yaml();
     std::fs::write(&dotarmadai_config, content)?;
-    println!("Created .armadai/ project structure:");
-    println!("  .armadai/config.yaml");
-    println!("  .armadai/agents/");
-    println!("  .armadai/prompts/");
-    println!("  .armadai/skills/");
-    println!("  .armadai/starters/");
-    println!("\n  Edit .armadai/config.yaml to declare agents, prompts, skills and link targets.");
+    let o = crate::cli::style::ok();
+    let m = crate::cli::style::muted();
+    anstream::println!("{o}Created .armadai/ project structure:{o:#}");
+    anstream::println!("{m}  .armadai/config.yaml{m:#}");
+    anstream::println!("{m}  .armadai/agents/{m:#}");
+    anstream::println!("{m}  .armadai/prompts/{m:#}");
+    anstream::println!("{m}  .armadai/skills/{m:#}");
+    anstream::println!("{m}  .armadai/starters/{m:#}");
+    anstream::println!(
+        "\n{m}  Edit .armadai/config.yaml to declare agents, prompts, skills and link targets.{m:#}"
+    );
 
     // Check for deprecated models in newly created project
     if let Some((root, _)) = crate::core::project::find_project_config() {
@@ -299,11 +334,14 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
 
     let content = generate_project_yaml(pack, pack_name);
     std::fs::write(&dotarmadai_config, &content)?;
-    println!(
-        "\nCreated .armadai/config.yaml with pack '{}' agents",
+    let o = crate::cli::style::ok();
+    let a = crate::cli::style::accent();
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "\n{o}Created .armadai/config.yaml with pack{o:#} {a}'{}'{a:#} {o}agents{o:#}",
         pack.name
     );
-    println!("  Run `armadai link` to generate target config files.");
+    anstream::println!("{m}  Run `armadai link` to generate target config files.{m:#}");
 
     // Check for deprecated models in newly created project
     if let Some((root, _)) = crate::core::project::find_project_config() {
@@ -378,14 +416,17 @@ fn write_if_missing_or_force(
     force: bool,
 ) -> anyhow::Result<()> {
     if path.exists() && !force {
-        println!("  skip (exists): {}", path.display());
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}  skip (exists): {}{m:#}", path.display());
         return Ok(());
     }
     std::fs::write(path, content)?;
     if force && path.exists() {
-        println!("  overwritten:   {}", path.display());
+        let w = crate::cli::style::warn();
+        anstream::println!("{w}  overwritten:   {}{w:#}", path.display());
     } else {
-        println!("  created:       {}", path.display());
+        let o = crate::cli::style::ok();
+        anstream::println!("{o}  created:       {}{o:#}", path.display());
     }
     Ok(())
 }

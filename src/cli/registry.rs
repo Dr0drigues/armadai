@@ -107,14 +107,24 @@ pub async fn execute(action: RegistryAction) -> anyhow::Result<()> {
 
 async fn cmd_sync() -> anyhow::Result<()> {
     let sources = sync::effective_sources();
-    println!("Syncing {} agent registry source(s)...", sources.len());
+    let r = crate::cli::style::running();
+    anstream::println!(
+        "{r}Syncing {} agent registry source(s)...{r:#}",
+        sources.len()
+    );
     sync::registry_sync(&sources)?;
-    println!("Building search index...");
+    let r = crate::cli::style::running();
+    anstream::println!("{r}Building search index...{r:#}");
     let index = cache::build_index(&sources)?;
-    println!("Indexed {} agent(s).", index.entries.len());
+    let o = crate::cli::style::ok();
+    anstream::println!("{o}Indexed {} agent(s).{o:#}", index.entries.len());
 
     let starter_sources = effective_starter_sources();
-    println!("Syncing {} starter source(s)...", starter_sources.len());
+    let r = crate::cli::style::running();
+    anstream::println!(
+        "{r}Syncing {} starter source(s)...{r:#}",
+        starter_sources.len()
+    );
     if !starter_sources.is_empty() {
         crate::starters_registry::sync_starters(&starter_sources);
     }
@@ -160,7 +170,8 @@ async fn cmd_search(query: &str, category: Option<&str>) -> anyhow::Result<()> {
     let results = search::search(&entries, query);
 
     if results.is_empty() {
-        println!("No agents matching '{query}'.");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}No agents matching '{query}'.{m:#}");
         return Ok(());
     }
 
@@ -172,15 +183,27 @@ async fn cmd_search(query: &str, category: Option<&str>) -> anyhow::Result<()> {
         .unwrap_or(4)
         .max(4);
 
-    println!("  {:<name_w$}  SCORE  DESCRIPTION", "NAME",);
-    println!("  {:<name_w$}  -----  -----------", "-".repeat(name_w),);
+    let h = crate::cli::style::header();
+    anstream::println!("{h}  {:<name_w$}  SCORE  DESCRIPTION{h:#}", "NAME",);
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{m}  {:<name_w$}  -----  -----------{m:#}",
+        "-".repeat(name_w),
+    );
 
     for r in &results {
         let desc = r.entry.description.as_deref().unwrap_or("-");
-        println!("  {:<name_w$}  {:>5}  {}", r.entry.name, r.score, desc);
+        let a = crate::cli::style::accent();
+        anstream::println!(
+            "  {a}{:<name_w$}{a:#}  {:>5}  {}",
+            r.entry.name,
+            r.score,
+            desc
+        );
     }
 
-    println!("\n  {} result(s).", results.len());
+    let m = crate::cli::style::muted();
+    anstream::println!("\n{m}  {} result(s).{m:#}", results.len());
     Ok(())
 }
 
@@ -195,9 +218,11 @@ async fn cmd_list(category: Option<&str>) -> anyhow::Result<()> {
     };
 
     if entries.is_empty() {
-        println!("No agents in registry.");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}No agents in registry.{m:#}");
         if !sync::sources_dir().is_dir() {
-            println!("Run `armadai registry sync` to fetch the registry.");
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}Run `armadai registry sync` to fetch the registry.{m:#}");
         }
         return Ok(());
     }
@@ -216,9 +241,15 @@ async fn cmd_list(category: Option<&str>) -> anyhow::Result<()> {
         .unwrap_or(8)
         .max(8);
 
-    println!("  {:<name_w$}  {:<cat_w$}  DESCRIPTION", "NAME", "CATEGORY",);
-    println!(
-        "  {:<name_w$}  {:<cat_w$}  -----------",
+    let h = crate::cli::style::header();
+    anstream::println!(
+        "{h}  {:<name_w$}  {:<cat_w$}  DESCRIPTION{h:#}",
+        "NAME",
+        "CATEGORY",
+    );
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{m}  {:<name_w$}  {:<cat_w$}  -----------{m:#}",
         "-".repeat(name_w),
         "-".repeat(cat_w),
     );
@@ -232,13 +263,17 @@ async fn cmd_list(category: Option<&str>) -> anyhow::Result<()> {
         } else {
             desc.to_string()
         };
-        println!(
-            "  {:<name_w$}  {:<cat_w$}  {}",
-            entry.name, cat, desc_display
+        let a = crate::cli::style::accent();
+        anstream::println!(
+            "  {a}{:<name_w$}{a:#}  {:<cat_w$}  {}",
+            entry.name,
+            cat,
+            desc_display
         );
     }
 
-    println!("\n  {} agent(s) in registry.", entries.len());
+    let m = crate::cli::style::muted();
+    anstream::println!("\n{m}  {} agent(s) in registry.{m:#}", entries.len());
     Ok(())
 }
 
@@ -254,10 +289,17 @@ async fn cmd_add(agent: &str, force: bool) -> anyhow::Result<()> {
         .find(|e| e.name == agent || e.path == agent)
         .ok_or_else(|| not_found_error(agent, &index))?;
 
-    println!("Converting {} ...", entry.name);
+    let r = crate::cli::style::running();
+    let a = crate::cli::style::accent();
+    anstream::println!("{r}Converting {r:#}{a}{}{a:#} ...", entry.name);
     let dst = convert::import_to_library(&entry.source, &entry.path, force)?;
-    println!("Installed: {}", dst.display());
-    println!("\nAgent '{}' added to your library.", entry.name);
+    let o = crate::cli::style::ok();
+    let m = crate::cli::style::muted();
+    anstream::println!("{o}Installed:{o:#} {m}{}{m:#}", dst.display());
+    anstream::println!(
+        "\n{o}Agent{o:#} {a}'{}'{a:#} {o}added to your library.{o:#}",
+        entry.name
+    );
     Ok(())
 }
 
@@ -272,32 +314,36 @@ async fn cmd_info(agent: &str) -> anyhow::Result<()> {
         .find(|e| e.name == agent || e.path == agent)
         .ok_or_else(|| not_found_error(agent, &index))?;
 
-    println!("Name:        {}", entry.name);
-    println!("Path:        {}", entry.path);
+    let m = crate::cli::style::muted();
+    let a = crate::cli::style::accent();
+    anstream::println!("{m}Name:        {m:#}{a}{}{a:#}", entry.name);
+    anstream::println!("{m}Path:        {m:#}{}", entry.path);
     if !entry.source.is_empty() {
-        println!("Source:      {}", entry.source);
+        anstream::println!("{m}Source:      {m:#}{}", entry.source);
     }
     if let Some(ref cat) = entry.category {
-        println!("Category:    {cat}");
+        anstream::println!("{m}Category:    {m:#}{cat}");
     }
     if let Some(ref desc) = entry.description {
-        println!("Description: {desc}");
+        anstream::println!("{m}Description: {m:#}{desc}");
     }
     if !entry.tags.is_empty() {
-        println!("Tags:        [{}]", entry.tags.join(", "));
+        anstream::println!("{m}Tags:        {m:#}[{}]", entry.tags.join(", "));
     }
 
     // Show the raw content
     let repo = sync::dir_for_key(&entry.source);
     let src = repo.join(&entry.path);
     if src.is_file() {
-        println!("\n--- Content ---");
+        let h = crate::cli::style::header();
+        anstream::println!("\n{h}--- Content ---{h:#}");
         let content = std::fs::read_to_string(&src)?;
         // Print first 40 lines max
         for (i, line) in content.lines().enumerate() {
             if i >= 40 {
-                println!(
-                    "  ... (truncated, {} more lines)",
+                let m = crate::cli::style::muted();
+                anstream::println!(
+                    "{m}  ... (truncated, {} more lines){m:#}",
                     content.lines().count() - 40
                 );
                 break;
@@ -333,14 +379,18 @@ fn not_found_error(agent: &str, index: &cache::Index) -> anyhow::Error {
 /// version.
 fn check_staleness() {
     if cache::has_legacy_cache() {
-        eprintln!(
-            "hint: registry cache is from an older ArmadAI version and will be ignored. Run `armadai registry sync` to refresh."
+        let w = crate::cli::style::warn();
+        anstream::eprintln!(
+            "{w}hint: registry cache is from an older ArmadAI version and will be ignored. Run `armadai registry sync` to refresh.{w:#}"
         );
         return;
     }
 
     if sync::is_stale(7) && sync::sources_dir().is_dir() {
-        eprintln!("hint: registry may be outdated. Run `armadai registry sync` to refresh.");
+        let w = crate::cli::style::warn();
+        anstream::eprintln!(
+            "{w}hint: registry may be outdated. Run `armadai registry sync` to refresh.{w:#}"
+        );
     }
 }
 
@@ -352,54 +402,69 @@ async fn sources_list() -> anyhow::Result<()> {
         .and_then(|cfg| cfg.registries);
 
     // Agents
-    println!("Agents:");
-    println!("  [default] {}", sync::DEFAULT_REGISTRY_URL);
+    let h = crate::cli::style::header();
+    anstream::println!("{h}Agents:{h:#}");
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}  [default] {}{m:#}", sync::DEFAULT_REGISTRY_URL);
     for source in &user.agents {
-        println!("  [user]    {}", source.url);
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}  [user]    {}{m:#}", source.url);
     }
     if let Some(ref proj) = project {
         for source in &proj.agents {
-            println!("  [project] {}", source.url);
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}  [project] {}{m:#}", source.url);
         }
     }
 
     // Skills
-    println!("\nSkills:");
+    let h = crate::cli::style::header();
+    anstream::println!("\n{h}Skills:{h:#}");
     for default_url in crate::skills_registry::sync::default_sources() {
-        println!("  [default] {}", default_url);
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}  [default] {}{m:#}", default_url);
     }
     for source in &user.skills {
-        println!("  [user]    {}", source.url);
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}  [user]    {}{m:#}", source.url);
     }
     if let Some(ref proj) = project {
         for source in &proj.skills {
-            println!("  [project] {}", source.url);
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}  [project] {}{m:#}", source.url);
         }
     }
 
     // Models
-    println!("\nModels:");
-    println!(
-        "  [default] {}",
+    let h = crate::cli::style::header();
+    anstream::println!("\n{h}Models:{h:#}");
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{m}  [default] {}{m:#}",
         crate::model_registry::fetch::MODELS_DEV_URL
     );
     for source in &user.models {
-        println!("  [user]    {}", source.url);
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}  [user]    {}{m:#}", source.url);
     }
     if let Some(ref proj) = project {
         for source in &proj.models {
-            println!("  [project] {}", source.url);
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}  [project] {}{m:#}", source.url);
         }
     }
 
     // Starters (no built-in default registry — user/project sources only)
-    println!("\nStarters:");
+    let h = crate::cli::style::header();
+    anstream::println!("\n{h}Starters:{h:#}");
     for source in &user.starters {
-        println!("  [user]    {}", source.url);
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}  [user]    {}{m:#}", source.url);
     }
     if let Some(ref proj) = project {
         for source in &proj.starters {
-            println!("  [project] {}", source.url);
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}  [project] {}{m:#}", source.url);
         }
     }
 
@@ -420,7 +485,8 @@ async fn sources_add(kind: SourceKind, url: &str) -> anyhow::Result<()> {
 
     // Check if already present (idempotent)
     if sources.iter().any(|s| s.url == url) {
-        println!("Source already registered: {url}");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}Source already registered: {url}{m:#}");
         return Ok(());
     }
 
@@ -430,8 +496,13 @@ async fn sources_add(kind: SourceKind, url: &str) -> anyhow::Result<()> {
     });
 
     save_registries_config(&config)?;
-    println!("Added {} registry source: {url}", kind_name(registry_kind));
-    println!("  Saved to {}", registries_config_path().display());
+    let o = crate::cli::style::ok();
+    anstream::println!(
+        "{o}Added {} registry source: {url}{o:#}",
+        kind_name(registry_kind)
+    );
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}  Saved to {}{m:#}", registries_config_path().display());
 
     Ok(())
 }
@@ -452,16 +523,19 @@ async fn sources_remove(kind: SourceKind, url: &str) -> anyhow::Result<()> {
     sources.retain(|s| s.url != url);
 
     if sources.len() == before {
-        println!("Source not found in config: {url}");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}Source not found in config: {url}{m:#}");
         return Ok(());
     }
 
     save_registries_config(&config)?;
-    println!(
-        "Removed {} registry source: {url}",
+    let o = crate::cli::style::ok();
+    anstream::println!(
+        "{o}Removed {} registry source: {url}{o:#}",
         kind_name(registry_kind)
     );
-    println!("  Saved to {}", registries_config_path().display());
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}  Saved to {}{m:#}", registries_config_path().display());
 
     Ok(())
 }

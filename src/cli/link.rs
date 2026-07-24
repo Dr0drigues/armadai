@@ -37,9 +37,10 @@ pub async fn execute(
         && orch.enabled
         && let Err(errors) = crate::core::orchestration::validate_config(orch)
     {
-        eprintln!("Orchestration validation failed:\n");
+        let e = crate::cli::style::err();
+        anstream::eprintln!("{e}Orchestration validation failed:{e:#}\n");
         for error in &errors {
-            eprintln!("  - {}", error);
+            anstream::eprintln!("{e}  - {}{e:#}", error);
         }
         anyhow::bail!(
             "Cannot link with invalid orchestration config. {} error(s) found.",
@@ -50,14 +51,18 @@ pub async fn execute(
     // 2. Resolve and parse agents
     let (paths, errors) = project::resolve_all_agents(&config, &root);
     for err in &errors {
-        eprintln!("  warn: {err}");
+        let w = crate::cli::style::warn();
+        anstream::eprintln!("{w}  warn: {err}{w:#}");
     }
 
     let mut link_agents: Vec<LinkAgent> = Vec::new();
     for path in &paths {
         match parser::parse_agent_file(path) {
             Ok(agent) => link_agents.push(LinkAgent::from(&agent)),
-            Err(e) => eprintln!("  warn: failed to parse {}: {e}", path.display()),
+            Err(e) => {
+                let w = crate::cli::style::warn();
+                anstream::eprintln!("{w}  warn: failed to parse {}: {e}{w:#}", path.display());
+            }
         }
     }
 
@@ -182,7 +187,8 @@ pub async fn execute(
     let files = linker.generate(&link_agents, coordinator.as_ref(), sources);
 
     if files.is_empty() {
-        println!("No files to generate.");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}No files to generate.{m:#}");
         return Ok(());
     }
 
@@ -201,7 +207,8 @@ pub async fn execute(
     // 8b. Resolve and collect skill files
     let (skill_dirs, skill_errors) = project::resolve_all_skills(&config, &root);
     for err in &skill_errors {
-        eprintln!("  warn: {err}");
+        let w = crate::cli::style::warn();
+        anstream::eprintln!("{w}  warn: {err}{w:#}");
     }
 
     let mut extra_files: Vec<(PathBuf, String)> = Vec::new();
@@ -227,7 +234,8 @@ pub async fn execute(
     // 8c. Resolve and collect prompt files
     let (prompt_paths, prompt_errors) = project::resolve_all_prompts(&config, &root);
     for err in &prompt_errors {
-        eprintln!("  warn: {err}");
+        let w = crate::cli::style::warn();
+        anstream::eprintln!("{w}  warn: {err}{w:#}");
     }
 
     let mut prompt_count = 0;
@@ -245,18 +253,21 @@ pub async fn execute(
 
     // 9. Dry run or write
     if dry_run {
-        println!(
-            "Dry run — files that would be generated for '{}':\n",
+        let h = crate::cli::style::header();
+        let a = crate::cli::style::accent();
+        let m = crate::cli::style::muted();
+        anstream::println!(
+            "{h}Dry run{h:#} — files that would be generated for {a}'{}'{a:#}:\n",
             target_name
         );
         for (path, _) in &output_files {
-            println!("  {}", path.display());
+            anstream::println!("{m}  {}{m:#}", path.display());
         }
         for (path, _) in &extra_files {
-            println!("  {}", path.display());
+            anstream::println!("{m}  {}{m:#}", path.display());
         }
-        println!(
-            "\n  {} file(s) total.",
+        anstream::println!(
+            "\n{m}  {} file(s) total.{m:#}",
             output_files.len() + extra_files.len()
         );
         return Ok(());
@@ -267,8 +278,9 @@ pub async fn execute(
 
     for (path, content) in output_files.iter().chain(extra_files.iter()) {
         if path.exists() && !force {
-            eprintln!(
-                "  skip: {} already exists (use --force to overwrite)",
+            let w = crate::cli::style::warn();
+            anstream::eprintln!(
+                "{w}  skip: {} already exists (use --force to overwrite){w:#}",
                 path.display()
             );
             skipped += 1;
@@ -279,7 +291,8 @@ pub async fn execute(
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, content)?;
-        println!("  wrote {}", path.display());
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}  wrote {}{m:#}", path.display());
         written += 1;
     }
 
@@ -290,9 +303,15 @@ pub async fn execute(
     if prompt_count > 0 {
         summary.push_str(&format!(", {} prompt(s)", prompt_count));
     }
-    println!(
-        "\n{} to '{}': {} written, {} skipped.",
-        summary, target_name, written, skipped
+    let o = crate::cli::style::ok();
+    let a = crate::cli::style::accent();
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "\n{o}{}{o:#} to {a}'{}'{a:#}: {m}{} written, {} skipped.{m:#}",
+        summary,
+        target_name,
+        written,
+        skipped
     );
 
     Ok(())

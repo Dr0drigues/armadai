@@ -17,12 +17,22 @@ pub async fn execute(path: Option<PathBuf>) -> anyhow::Result<()> {
 
     let (mode, issues) = if pack_yaml.is_file() {
         // Pack mode
-        println!("Validating starter pack at: {}", target_path.display());
+        let h = crate::cli::style::header();
+        let a = crate::cli::style::accent();
+        anstream::println!(
+            "{h}Validating starter pack at:{h:#} {a}{}{a:#}",
+            target_path.display()
+        );
         println!();
         ("pack", validate_pack(&target_path))
     } else if armadai_config_yaml.is_file() || armadai_yaml.is_file() || armadai_yml.is_file() {
         // Project mode
-        println!("Validating project config at: {}", target_path.display());
+        let h = crate::cli::style::header();
+        let a = crate::cli::style::accent();
+        anstream::println!(
+            "{h}Validating project config at:{h:#} {a}{}{a:#}",
+            target_path.display()
+        );
         println!();
         ("project", validate_project_config(&target_path))
     } else {
@@ -38,26 +48,39 @@ pub async fn execute(path: Option<PathBuf>) -> anyhow::Result<()> {
     let mut warning_count = 0;
 
     for issue in &issues {
-        let (color, prefix) = match issue.severity {
+        let (style, prefix) = match issue.severity {
             Severity::Error => {
                 error_count += 1;
-                ("\x1b[31m", "ERROR")
+                (crate::cli::style::err(), "ERROR")
             }
             Severity::Warning => {
                 warning_count += 1;
-                ("\x1b[33m", "WARN ")
+                (crate::cli::style::warn(), "WARN ")
             }
         };
 
-        println!(
-            "{}{}\x1b[0m {}: {}",
-            color, prefix, issue.location, issue.message
+        anstream::println!(
+            "{style}{}{style:#} {}: {}",
+            prefix,
+            issue.location,
+            issue.message
         );
     }
 
     // Footer
     println!();
-    println!("{} error(s), {} warning(s)", error_count, warning_count);
+    let footer_style = if error_count > 0 {
+        crate::cli::style::err()
+    } else if warning_count > 0 {
+        crate::cli::style::warn()
+    } else {
+        crate::cli::style::ok()
+    };
+    anstream::println!(
+        "{footer_style}{} error(s), {} warning(s){footer_style:#}",
+        error_count,
+        warning_count
+    );
 
     // Exit code logic
     if error_count > 0 {
@@ -65,8 +88,9 @@ pub async fn execute(path: Option<PathBuf>) -> anyhow::Result<()> {
     }
 
     println!();
-    println!(
-        "Validation passed for {} at {}",
+    let o = crate::cli::style::ok();
+    anstream::println!(
+        "{o}Validation passed for {} at {}{o:#}",
         mode,
         target_path.display()
     );
