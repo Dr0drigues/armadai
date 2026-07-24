@@ -669,7 +669,12 @@ impl Workroom {
             let (icon, state_str, style) = self.state_display(agent);
             let is_holder = holder == Some(idx);
             let is_selected = self.focused && idx == self.selected;
-            let name_style = if is_holder {
+            let name_style = if is_holder && is_selected {
+                // Both the token holder and the keyboard selection: keep the
+                // brass accent but still show the selection (reversed), so the
+                // token holder stays focusable/visible when navigated to.
+                theme::selection().add_modifier(Modifier::REVERSED)
+            } else if is_holder {
                 theme::selection()
             } else if is_selected {
                 self.role_style(agent).add_modifier(Modifier::REVERSED)
