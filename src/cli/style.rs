@@ -10,13 +10,13 @@
 use anstyle::{AnsiColor, Color, RgbColor, Style};
 
 // Design-system accents (assets/terminal-palette.json).
-// `#[allow(dead_code)]` on the remaining unwired items below: this lot only
-// wires `cli/run.rs`; other call sites (and `err()`/`agent()`) land in a
+// `#[allow(dead_code)]` on the remaining unwired items below: CLI-1 wired
+// `cli/run.rs`, CLI-2 (this lot) wires the discovery/read commands (`err()`
+// now used by `models.rs`/`validate.rs`); `agent()` still lands in a
 // follow-up lot (same convention as `crate::theme`).
 const BRASS: Color = Color::Rgb(RgbColor(0xc7, 0x9a, 0x4a));
 const SIGNAL_OK: Color = Color::Rgb(RgbColor(0x5c, 0xbf, 0x87));
 const SIGNAL_WARNING: Color = Color::Rgb(RgbColor(0xe2, 0xb2, 0x4c));
-#[allow(dead_code)]
 const SIGNAL_CRITICAL: Color = Color::Rgb(RgbColor(0xd7, 0x5f, 0x4d));
 const SIGNAL_RUNNING: Color = Color::Rgb(RgbColor(0x57, 0xa9, 0xcc));
 
@@ -37,7 +37,6 @@ pub fn warn() -> Style {
     Style::new().fg_color(Some(SIGNAL_WARNING))
 }
 /// Error / critical status.
-#[allow(dead_code)]
 pub fn err() -> Style {
     Style::new().fg_color(Some(SIGNAL_CRITICAL))
 }
