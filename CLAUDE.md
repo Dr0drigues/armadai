@@ -58,7 +58,7 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`.
 - `cli/` — One file per command, each exports `async fn execute(...)`. Add new commands in `cli/mod.rs` (enum variant + handler).
 - `parser/` — Converts Markdown agent files into `Agent` struct. Required sections: H1 (name), `## Metadata`, `## System Prompt`.
 - `providers/` — `Provider` trait (in `traits.rs`) with `complete()` and `stream()` methods. Factory (`factory.rs`) constructs the right provider from agent metadata. Implementations: `api/anthropic.rs` (full), `api/google.rs` (full), `cli.rs` (full); `api/openai.rs` and `proxy.rs` are `todo!()` stubs.
-- `core/` — Domain types: `Agent`, `AgentMetadata`, `PipelineConfig`, `events::RunEvent`/`EventSink`, `routing.rs` (agent selection). Orchestration lives under `core/orchestration/` (`OrchestrationPattern { Direct, Blackboard, Ring, Hierarchical, Auto }`) with the event-sourced engine under `core/orchestration/es/`. There is no `Task`/`SharedContext`/`Coordinator`/`Pipeline` type.
+- `core/` — Domain types: `Agent`, `AgentMetadata`, `PipelineConfig`, `events::RunEvent`/`EventSink`, `routing.rs` (model-tier auto-routing for `latest:auto`). Orchestration lives under `core/orchestration/` (`OrchestrationPattern { Direct, Blackboard, Ring, Hierarchical, Auto }`) with the event-sourced engine under `core/orchestration/es/`. There is no `Task`/`SharedContext`/`Coordinator`/`Pipeline` type.
 - `core/project.rs` — Project config (`armadai.yaml`) with agent/prompt/skill resolution.
 - `core/prompt.rs` — Composable prompt fragments with YAML frontmatter.
 - `core/skill.rs` — Skills following the Agent Skills open standard (SKILL.md).
@@ -67,7 +67,8 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`.
 - `core/starter.rs` — Starter packs: curated agent bundles installed via `armadai init --pack`.
 - `core/embedded.rs` — Version-based extraction for embedded resources (`.armadai-version` marker).
 - `core/events.rs` — `RunEvent`/`EventSink`: the provider-agnostic event stream emitted by a run (consumed by `--json` and by the TUI Workroom).
-- `core/routing.rs` — C8 agent selection: named routes (`orchestration.routes`) and tag/stack matching for `--route`/`--tags`.
+- `core/routing.rs` — model-tier auto-routing for `latest:auto` agents (Fast/Pro/Max tiers via length/keyword/budget rules; `RoutingRules`).
+- `core/orchestration/agent_selection.rs` — C8 deterministic declarative agent selection: named routes (`orchestration.routes`) + capability tag/stack matching for `--route`/`--tags`.
 - `parser/frontmatter.rs` — Generic YAML frontmatter extraction reused by prompts and skills.
 - `linker/` — Generates native config files for target AI CLIs. Trait `Linker` with one implementation per CLI (**claude, codex, copilot, gemini, opencode**). `model_resolution.rs` handles model remapping per target and exposes `preview_model_resolution()` for UI previews. `model_aliases.rs` maps deprecated model names to their replacements (embedded YAML registry). `armadai_protocol_block()` (in `mod.rs`) injects the `<!--ARMADAI_DELEGATE/META/END-->` marker protocol into generated configs (shell-relay delegation, see below).
 - `registry/` — awesome-copilot integration. Sync, search, convert agents from the community catalog.

@@ -30,7 +30,9 @@ config/
 .docker/
 
 # Claude Code
-.claude/
+.claude/*
+!.claude/CLAUDE.md
+!.claude/agents/
 
 # ArmadAI project-local config
 .armadai/

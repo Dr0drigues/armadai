@@ -78,7 +78,7 @@ armadai link opencode
 ```
 
 Generates:
-- `.opencode/instructions.md` — Project instructions listing available agents
+- `.opencode/instructions.md` — Project instructions listing available agents (only generated when the project has a coordinator agent)
 - `.opencode/agents/<agent>.md` — One agent file per agent
 
 ## Conflict Detection
