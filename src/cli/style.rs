@@ -10,36 +10,29 @@
 use anstyle::{AnsiColor, Color, RgbColor, Style};
 
 // Design-system accents (assets/terminal-palette.json).
-// `#[allow(dead_code)]`: this lot only lands the module; call sites in `cli/*`
-// wire these up in a follow-up lot (same convention as `crate::theme`).
-#[allow(dead_code)]
+// `#[allow(dead_code)]` on the remaining unwired items below: this lot only
+// wires `cli/run.rs`; other call sites (and `err()`/`agent()`) land in a
+// follow-up lot (same convention as `crate::theme`).
 const BRASS: Color = Color::Rgb(RgbColor(0xc7, 0x9a, 0x4a));
-#[allow(dead_code)]
 const SIGNAL_OK: Color = Color::Rgb(RgbColor(0x5c, 0xbf, 0x87));
-#[allow(dead_code)]
 const SIGNAL_WARNING: Color = Color::Rgb(RgbColor(0xe2, 0xb2, 0x4c));
 #[allow(dead_code)]
 const SIGNAL_CRITICAL: Color = Color::Rgb(RgbColor(0xd7, 0x5f, 0x4d));
-#[allow(dead_code)]
 const SIGNAL_RUNNING: Color = Color::Rgb(RgbColor(0x57, 0xa9, 0xcc));
 
 /// Section heading / active element: bold brass.
-#[allow(dead_code)]
 pub fn header() -> Style {
     Style::new().bold().fg_color(Some(BRASS))
 }
 /// Accent (brass) without bold.
-#[allow(dead_code)]
 pub fn accent() -> Style {
     Style::new().fg_color(Some(BRASS))
 }
 /// Success / done status.
-#[allow(dead_code)]
 pub fn ok() -> Style {
     Style::new().fg_color(Some(SIGNAL_OK))
 }
 /// Warning status.
-#[allow(dead_code)]
 pub fn warn() -> Style {
     Style::new().fg_color(Some(SIGNAL_WARNING))
 }
@@ -49,12 +42,10 @@ pub fn err() -> Style {
     Style::new().fg_color(Some(SIGNAL_CRITICAL))
 }
 /// In-progress / running status.
-#[allow(dead_code)]
 pub fn running() -> Style {
     Style::new().fg_color(Some(SIGNAL_RUNNING))
 }
 /// Secondary / muted text: bright-black (named, adapts to terminal theme).
-#[allow(dead_code)]
 pub fn muted() -> Style {
     Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlack)))
 }
