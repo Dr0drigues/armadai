@@ -35,7 +35,8 @@ fn template_create(
     // Load template
     let template_path = templates_dir.join(format!("{template}.md"));
     if !template_path.exists() {
-        eprintln!("Template '{template}' not found.\n");
+        let e = crate::cli::style::err();
+        anstream::eprintln!("{e}Template '{template}' not found.{e:#}\n");
         list_templates(templates_dir)?;
         anyhow::bail!("Use --template <name> with one of the templates above");
     }
@@ -82,18 +83,24 @@ fn template_create(
     // Write the agent file
     std::fs::write(&output_path, &content)?;
 
-    println!("Agent created: {}", output_path.display());
-    println!("  Template: {template}");
-    println!("  Name: {title}");
+    let o = crate::cli::style::ok();
+    let m = crate::cli::style::muted();
+    let a = crate::cli::style::accent();
+    anstream::println!("{o}Agent created:{o:#} {m}{}{m:#}", output_path.display());
+    anstream::println!("{m}  Template: {template}{m:#}");
+    anstream::println!("{m}  Name:{m:#} {a}{title}{a:#}");
 
     if !remaining.is_empty() {
         let unique: Vec<&str> = {
             let mut seen = std::collections::HashSet::new();
             remaining.into_iter().filter(|p| seen.insert(*p)).collect()
         };
-        println!("\n  Note: the following placeholders need to be filled in manually:");
+        let w = crate::cli::style::warn();
+        anstream::println!(
+            "\n{w}  Note: the following placeholders need to be filled in manually:{w:#}"
+        );
         for p in &unique {
-            println!("    - {p}");
+            anstream::println!("{w}    - {p}{w:#}");
         }
     }
 
@@ -106,7 +113,8 @@ async fn interactive_create() -> anyhow::Result<()> {
     let templates_dir = &paths.templates_dir;
     let agents_dir = &paths.agents_dir;
 
-    println!("🧙 ArmadAI Agent Creation Wizard\n");
+    let h = crate::cli::style::header();
+    anstream::println!("{h}🧙 ArmadAI Agent Creation Wizard{h:#}\n");
 
     // 1. Agent name
     let name: String = Input::new()
@@ -299,11 +307,14 @@ async fn interactive_create() -> anyhow::Result<()> {
     std::fs::create_dir_all(agents_dir)?;
     std::fs::write(&output_path, &content)?;
 
-    println!("\nAgent created: {}", output_path.display());
-    println!("  Name: {}", slug_to_title(&name));
-    println!("  Provider: {provider}");
-    if let Some(ref m) = model {
-        println!("  Model: {m}");
+    let o = crate::cli::style::ok();
+    let m = crate::cli::style::muted();
+    let a = crate::cli::style::accent();
+    anstream::println!("\n{o}Agent created:{o:#} {m}{}{m:#}", output_path.display());
+    anstream::println!("{m}  Name:{m:#} {a}{}{a:#}", slug_to_title(&name));
+    anstream::println!("{m}  Provider: {provider}{m:#}");
+    if let Some(ref model_name) = model {
+        anstream::println!("{m}  Model: {model_name}{m:#}");
     }
 
     Ok(())
@@ -564,9 +575,11 @@ fn collect_template_names(templates_dir: &Path) -> Vec<String> {
 }
 
 fn list_templates(templates_dir: &Path) -> anyhow::Result<()> {
-    println!("Available templates:");
+    let h = crate::cli::style::header();
+    let m = crate::cli::style::muted();
+    anstream::println!("{h}Available templates:{h:#}");
     if !templates_dir.exists() {
-        println!("  (no templates directory found)");
+        anstream::println!("{m}  (no templates directory found){m:#}");
         return Ok(());
     }
 
@@ -577,13 +590,14 @@ fn list_templates(templates_dir: &Path) -> anyhow::Result<()> {
         if path.extension().is_some_and(|e| e == "md")
             && let Some(stem) = path.file_stem()
         {
-            println!("  - {}", stem.to_string_lossy());
+            let a = crate::cli::style::accent();
+            anstream::println!("  - {a}{}{a:#}", stem.to_string_lossy());
             found = true;
         }
     }
 
     if !found {
-        println!("  (no templates found)");
+        anstream::println!("{m}  (no templates found){m:#}");
     }
 
     Ok(())
