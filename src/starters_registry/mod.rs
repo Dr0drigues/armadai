@@ -75,15 +75,93 @@ fn run_git(args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Check whether an archive entry's path is safe to extract under a fixed
+/// `dest` directory (zip-slip guard).
+///
+/// Rejects:
+/// - an absolute path (leading `/`, i.e. a `RootDir` path component),
+/// - any `..` (`ParentDir`) path component, at any depth,
+/// - Windows-style separators (`\`) or a drive-absolute prefix (`C:\...`,
+///   `C:/...`) — we only expect POSIX-style entries from `tar -tzf`/
+///   `unzip -Z1`, so anything shaped like this is already suspicious and
+///   `Path` on a non-Windows host wouldn't otherwise recognize it as
+///   absolute.
+///
+/// Pure and testable in isolation from the actual shell-out extraction.
+fn archive_entry_is_safe(name: &str) -> bool {
+    if name.is_empty() || name.contains('\\') {
+        return false;
+    }
+    let mut chars = name.chars();
+    if let (Some(letter), Some(':')) = (chars.next(), chars.next())
+        && letter.is_ascii_alphabetic()
+    {
+        // Drive-absolute, e.g. `C:/foo` — not a `RootDir` component on a
+        // non-Windows host, so it must be checked explicitly.
+        return false;
+    }
+    !Path::new(name).components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::RootDir | std::path::Component::ParentDir
+        )
+    })
+}
+
+/// List entry paths inside an archive without extracting it, so they can be
+/// validated by [`archive_entry_is_safe`] before anything is written to disk.
+// Only called by `extract_archive`, itself only called by `ArchiveFetcher`
+// (gated `providers-api`); without that feature this helper is unused (still
+// exercised indirectly through `extract_archive`'s own tests).
+#[cfg_attr(not(feature = "providers-api"), allow(dead_code))]
+fn list_archive_entries(archive: &Path, is_zip: bool) -> anyhow::Result<Vec<String>> {
+    let out = if is_zip {
+        std::process::Command::new("unzip")
+            .args(["-Z1", archive.to_str().unwrap_or("")])
+            .output()?
+    } else {
+        std::process::Command::new("tar")
+            .args(["-tzf", archive.to_str().unwrap_or("")])
+            .output()?
+    };
+    if !out.status.success() {
+        anyhow::bail!(
+            "failed to list archive entries for {}: {}",
+            archive.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 /// Extract a downloaded archive (.tar.gz/.tgz or .zip) into `dest` by shelling
 /// out to system `tar`/`unzip` (no extra crate). `dest` is created.
+///
+/// Before extracting, every entry is listed and validated with
+/// [`archive_entry_is_safe`]: a malicious archive with a `../../etc/x` or
+/// absolute-path entry (zip-slip) is rejected up front rather than allowed to
+/// write outside `dest`.
 // Only called by `ArchiveFetcher`, which is gated `providers-api`; without
 // that feature this helper is unused (still exercised directly by tests).
 #[cfg_attr(not(feature = "providers-api"), allow(dead_code))]
 fn extract_archive(archive: &Path, dest: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dest)?;
     let name = archive.to_string_lossy().to_lowercase();
-    let status = if name.ends_with(".zip") {
+    let is_zip = name.ends_with(".zip");
+
+    let entries = list_archive_entries(archive, is_zip)?;
+    if let Some(unsafe_entry) = entries.iter().find(|e| !archive_entry_is_safe(e)) {
+        anyhow::bail!(
+            "refusing to extract archive {}: unsafe entry path '{unsafe_entry}' (zip-slip guard)",
+            archive.display()
+        );
+    }
+
+    let status = if is_zip {
         std::process::Command::new("unzip")
             .args([
                 "-q",
@@ -310,6 +388,47 @@ mod tests {
             kind: None,
         };
         assert!(fetch_starter_source(&src).is_err());
+    }
+
+    #[test]
+    fn archive_entry_is_safe_accepts_normal_nested_path() {
+        assert!(archive_entry_is_safe("dir/sub/file.txt"));
+    }
+
+    #[test]
+    fn archive_entry_is_safe_accepts_flat_path() {
+        assert!(archive_entry_is_safe("a/b/c"));
+    }
+
+    #[test]
+    fn archive_entry_is_safe_rejects_leading_parent_dir() {
+        assert!(!archive_entry_is_safe("../escape"));
+    }
+
+    #[test]
+    fn archive_entry_is_safe_rejects_embedded_parent_dir() {
+        assert!(!archive_entry_is_safe("a/../../b"));
+    }
+
+    #[test]
+    fn archive_entry_is_safe_rejects_absolute_path() {
+        assert!(!archive_entry_is_safe("/abs"));
+    }
+
+    #[test]
+    fn archive_entry_is_safe_rejects_windows_separator() {
+        assert!(!archive_entry_is_safe("a\\..\\b"));
+    }
+
+    #[test]
+    fn archive_entry_is_safe_rejects_windows_drive_absolute() {
+        assert!(!archive_entry_is_safe("C:/windows/system32"));
+        assert!(!archive_entry_is_safe("C:\\windows\\system32"));
+    }
+
+    #[test]
+    fn archive_entry_is_safe_rejects_empty() {
+        assert!(!archive_entry_is_safe(""));
     }
 
     #[test]

@@ -250,6 +250,11 @@ pub enum SortMode {
     NameDesc,
 }
 
+/// How many lines a single PageUp/PageDown jumps in a scrollable detail
+/// view. Mirrors the shell TUI's popup page-scroll step
+/// (`src/shell/tui.rs`'s `popup_scroll` PageUp/PageDown handling).
+const DETAIL_PAGE_SIZE: u16 = 10;
+
 pub struct App {
     pub current_tab: Tab,
     pub tab_index: usize,
@@ -289,6 +294,16 @@ pub struct App {
     pub sort_mode: SortMode,
     // Detail view scroll offset (reset on tab switch / selection change).
     pub detail_scroll: u16,
+    // Upper bound for `detail_scroll`, recomputed each render pass by the
+    // active detail view from its actual content + panel size (see
+    // `tui::wrap::wrapped_line_count`). Zero when content fits without
+    // scrolling, or no detail view is active.
+    pub detail_scroll_max: u16,
+    // "Press Esc again to quit" arming (top-level safety net — mirrors
+    // `src/shell/tui.rs`'s `esc_armed`). Set when Esc is pressed on a
+    // top-level list view (no popup/search/detail active); a second,
+    // consecutive Esc then confirms the quit. Any other key disarms it.
+    pub esc_armed: bool,
 }
 
 impl App {
@@ -320,6 +335,8 @@ impl App {
             search_query: String::new(),
             sort_mode: SortMode::Default,
             detail_scroll: 0,
+            detail_scroll_max: 0,
+            esc_armed: false,
         }
     }
 
@@ -327,6 +344,7 @@ impl App {
         self.tab_index = (self.tab_index + 1) % Tab::ALL.len();
         self.current_tab = Tab::ALL[self.tab_index];
         self.detail_scroll = 0;
+        self.detail_scroll_max = 0;
     }
 
     pub fn prev_tab(&mut self) {
@@ -337,24 +355,54 @@ impl App {
         };
         self.current_tab = Tab::ALL[self.tab_index];
         self.detail_scroll = 0;
+        self.detail_scroll_max = 0;
     }
 
     pub fn switch_tab(&mut self, tab: Tab) {
         self.current_tab = tab;
         self.tab_index = tab.index();
         self.detail_scroll = 0;
+        self.detail_scroll_max = 0;
     }
 
-    /// Scroll a detail view down by one line (saturating at the content's end
-    /// is handled by ratatui simply rendering nothing past it — no need to
-    /// track content length here).
+    /// Scroll a detail view down by one line, bounds-checked against
+    /// `detail_scroll_max` (computed from the panel's actual content on the
+    /// last render pass) so it never scrolls past the content's end.
     pub fn scroll_detail_down(&mut self) {
-        self.detail_scroll = self.detail_scroll.saturating_add(1);
+        self.detail_scroll = self
+            .detail_scroll
+            .saturating_add(1)
+            .min(self.detail_scroll_max);
     }
 
-    /// Scroll a detail view up by one line.
+    /// Scroll a detail view up by one line (saturates at 0).
     pub fn scroll_detail_up(&mut self) {
         self.detail_scroll = self.detail_scroll.saturating_sub(1);
+    }
+
+    /// Scroll a detail view down by one page, bounds-checked.
+    pub fn scroll_detail_page_down(&mut self) {
+        self.detail_scroll = self
+            .detail_scroll
+            .saturating_add(DETAIL_PAGE_SIZE)
+            .min(self.detail_scroll_max);
+    }
+
+    /// Scroll a detail view up by one page (saturates at 0).
+    pub fn scroll_detail_page_up(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(DETAIL_PAGE_SIZE);
+    }
+
+    /// Update the active detail view's scroll bound. Called once per render
+    /// pass by whichever detail view is currently on screen, from its
+    /// actual content + panel size — also clamps the stored offset in case
+    /// a terminal resize (or switching to shorter content) shrank the
+    /// scrollable range out from under it.
+    pub fn set_detail_scroll_max(&mut self, max: u16) {
+        self.detail_scroll_max = max;
+        if self.detail_scroll > max {
+            self.detail_scroll = max;
+        }
     }
 
     pub fn load_agents(&mut self) {
@@ -793,5 +841,81 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod detail_scroll_tests {
+    use super::*;
+
+    #[test]
+    fn scroll_down_is_bounds_checked_against_max() {
+        let mut app = App::new();
+        app.set_detail_scroll_max(3);
+        for _ in 0..10 {
+            app.scroll_detail_down();
+        }
+        assert_eq!(
+            app.detail_scroll, 3,
+            "scrolling down must never exceed the content's end"
+        );
+    }
+
+    #[test]
+    fn scroll_up_never_goes_negative() {
+        let mut app = App::new();
+        app.set_detail_scroll_max(5);
+        app.detail_scroll = 1;
+        app.scroll_detail_up();
+        app.scroll_detail_up();
+        assert_eq!(
+            app.detail_scroll, 0,
+            "scrolling up must never go past the content's start"
+        );
+    }
+
+    #[test]
+    fn page_down_is_bounds_checked_against_max() {
+        let mut app = App::new();
+        app.set_detail_scroll_max(3);
+        app.scroll_detail_page_down();
+        assert_eq!(
+            app.detail_scroll, 3,
+            "a page jump larger than the remaining content must clamp to the end"
+        );
+    }
+
+    #[test]
+    fn shrinking_max_clamps_an_out_of_range_offset() {
+        let mut app = App::new();
+        app.set_detail_scroll_max(20);
+        app.detail_scroll = 15;
+        // Simulates a render pass discovering the panel/content got
+        // smaller (e.g. terminal resize) — the stored offset must not be
+        // left pointing past the new end.
+        app.set_detail_scroll_max(5);
+        assert_eq!(app.detail_scroll, 5);
+        assert_eq!(app.detail_scroll_max, 5);
+    }
+
+    #[test]
+    fn switching_tab_resets_scroll_and_bound() {
+        let mut app = App::new();
+        app.detail_scroll = 7;
+        app.set_detail_scroll_max(12);
+        app.switch_tab(Tab::AgentDetail);
+        assert_eq!(app.detail_scroll, 0);
+        assert_eq!(app.detail_scroll_max, 0);
+    }
+}
+
+#[cfg(test)]
+mod esc_armed_tests {
+    use super::*;
+
+    #[test]
+    fn esc_armed_starts_disarmed() {
+        let app = App::new();
+        assert!(!app.esc_armed);
     }
 }
