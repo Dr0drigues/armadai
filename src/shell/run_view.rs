@@ -47,6 +47,10 @@ fn restore_terminal() {
     if let Err(e) = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show) {
         tracing::warn!("Failed to restore terminal state: {:?}", e);
     }
+    // Restore tracing output now that the alternate screen is gone — safe to
+    // interleave with stdout again. Must run after the terminal is restored
+    // (not before) so a log emitted between the two doesn't land mid-frame.
+    crate::logging::restore();
 }
 
 /// Run an orchestration (`run`) while showing a live Workroom TUI fed by its
@@ -96,6 +100,15 @@ where
 
     // Launch the orchestration in the background.
     let handle = tokio::spawn(run(sink));
+
+    // Silence tracing (e.g. the provider factory's `INFO … using CLI …` logs
+    // emitted while the background orchestration builds providers) before we
+    // ever touch the terminal: once the alternate screen is entered, stderr
+    // writes from other tasks interleave with the TUI's own draws, corrupting
+    // the rendered frame (observed as a cut-off top border on first render).
+    // Restored in `restore_terminal()` above once the alternate screen is
+    // torn down.
+    crate::logging::suppress();
 
     // Enter alternate screen (mirrors src/shell/app.rs). Each step is
     // unwound individually on failure rather than bare-`?`-ing through: if
