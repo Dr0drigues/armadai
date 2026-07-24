@@ -13,6 +13,7 @@ use ratatui::{
 use std::time::Instant;
 
 use super::SPINNER_FRAMES as SPINNER;
+use crate::core::events::RunEvent;
 use crate::core::orchestration::OrchestrationPattern;
 use crate::theme;
 
@@ -81,6 +82,10 @@ pub struct Workroom {
     focused: bool,
     /// Active orchestration pattern (drives the focused layout).
     pattern: OrchestrationPattern,
+    /// Whether the orchestration has finished and the live TUI is holding the
+    /// final frame for the user to dismiss (Dimitri's visual-validation
+    /// request: fast providers used to make the workroom flash and vanish).
+    completed: bool,
 }
 
 impl Workroom {
@@ -94,6 +99,7 @@ impl Workroom {
             selected: 0,
             focused: false,
             pattern: OrchestrationPattern::Hierarchical,
+            completed: false,
         }
     }
 
@@ -102,9 +108,30 @@ impl Workroom {
         self.focused = focused;
     }
 
+    /// Override the active orchestration pattern (drives the focused layout).
+    /// Used to apply an explicit `--orchestrate <pattern>` flag, which takes
+    /// precedence over whatever `init_from_config` inferred from the project
+    /// config's `pattern:` key (or its `Hierarchical` default).
+    pub fn set_pattern(&mut self, pattern: OrchestrationPattern) {
+        self.pattern = pattern;
+    }
+
     /// Whether the workroom currently has keyboard focus.
     pub fn is_focused(&self) -> bool {
         self.focused
+    }
+
+    /// Number of tracked agents — used by the fullscreen run view to size the
+    /// centered panel (rich layouts need roughly two lines per agent, plus
+    /// arrows/footer).
+    pub fn agent_count(&self) -> usize {
+        self.agents.len()
+    }
+
+    /// Mark the orchestration as finished so the renderer holds the final
+    /// frame and shows the "press q/Esc to exit" hint instead of vanishing.
+    pub fn set_completed(&mut self, completed: bool) {
+        self.completed = completed;
     }
 
     /// Decide the layout from pattern, focus, and available inner width.
@@ -428,6 +455,102 @@ impl Workroom {
         self.visible = visible;
     }
 
+    /// Apply one core `RunEvent` to the workroom state (provider-agnostic
+    /// projection). `now` is injected so timing is deterministic in tests;
+    /// the live renderer passes `Instant::now()`.
+    pub fn on_run_event_at(&mut self, ev: &RunEvent, now: Instant) {
+        match ev {
+            RunEvent::RunStart { agents, .. } => {
+                for name in agents {
+                    if !self.agents.iter().any(|a| a.name == *name) {
+                        self.agents.push(TrackedAgent {
+                            name: name.clone(),
+                            state: AgentState::Idle,
+                            role: AgentRole::Agent,
+                            started_at: None,
+                            finished_at: None,
+                            spinner_frame: 0,
+                            last_action: None,
+                            transitions: Vec::new(),
+                        });
+                    }
+                }
+                self.visible = true;
+            }
+            RunEvent::AgentStart { agent, .. } => {
+                self.mark_working(agent, now);
+                // The ES ring/blackboard engines emit agent_start/agent_end/vote
+                // but never `Delegate`, so `current_agent` (which drives the
+                // ring layout's token-holder highlight via `token_holder_index`)
+                // would otherwise never update in the live path. The agent that
+                // just started is the one holding the token.
+                self.current_agent = Some(agent.clone());
+            }
+            RunEvent::AgentEnd { agent, content, .. } => {
+                self.mark_done(agent, now);
+                let first = content.lines().next().unwrap_or("").trim();
+                if !first.is_empty() {
+                    self.set_action(agent, first.to_string());
+                }
+            }
+            RunEvent::Delegate { from, to } => {
+                self.transition(from, AgentState::Delegating, now);
+                self.current_agent = Some(to.clone());
+            }
+            RunEvent::NestedStart { team_lead, .. } => {
+                self.transition(team_lead, AgentState::Delegating, now)
+            }
+            RunEvent::NestedEnd { team_lead } => self.transition(team_lead, AgentState::Done, now),
+            RunEvent::AgentSelect { selected, .. } => {
+                for a in selected {
+                    self.mark_working(a, now);
+                }
+            }
+            RunEvent::Vote { agent, conf } => self.set_action(agent, format!("vote {conf:.2}")),
+            RunEvent::Board { agent, kind } => self.set_action(agent, format!("board {kind}")),
+            RunEvent::Route { agent, tier, .. } => self.set_action(agent, format!("→ {tier}")),
+            RunEvent::Result { .. } => self.on_complete(),
+            RunEvent::Error { msg, .. } => {
+                if let Some(cur) = self.current_agent.clone() {
+                    self.set_action(&cur, format!("error: {msg}"));
+                }
+            }
+            RunEvent::Warning { .. } => {}
+        }
+    }
+
+    fn mark_working(&mut self, name: &str, now: Instant) {
+        if let Some(a) = self.agents.iter_mut().find(|a| a.name == name) {
+            a.state = AgentState::Working;
+            a.started_at.get_or_insert(now);
+            a.transitions.push((AgentState::Working, now));
+        }
+    }
+
+    fn mark_done(&mut self, name: &str, now: Instant) {
+        if let Some(a) = self.agents.iter_mut().find(|a| a.name == name) {
+            a.state = AgentState::Done;
+            a.finished_at = Some(now);
+            a.transitions.push((AgentState::Done, now));
+        }
+    }
+
+    fn transition(&mut self, name: &str, state: AgentState, now: Instant) {
+        if let Some(a) = self.agents.iter_mut().find(|a| a.name == name) {
+            if state == AgentState::Delegating && a.started_at.is_none() {
+                a.started_at = Some(now);
+            }
+            a.transitions.push((state.clone(), now));
+            a.state = state;
+        }
+    }
+
+    fn set_action(&mut self, name: &str, action: String) {
+        if let Some(a) = self.agents.iter_mut().find(|a| a.name == name) {
+            a.last_action = Some(action);
+        }
+    }
+
     /// Push a state transition for an agent, updating timestamps + history.
     fn set_state(&mut self, name: &str, state: AgentState) {
         if let Some(agent) = self.agents.iter_mut().find(|a| a.name == name) {
@@ -553,7 +676,12 @@ impl Workroom {
             let (icon, state_str, style) = self.state_display(agent);
             let is_holder = holder == Some(idx);
             let is_selected = self.focused && idx == self.selected;
-            let name_style = if is_holder {
+            let name_style = if is_holder && is_selected {
+                // Both the token holder and the keyboard selection: keep the
+                // brass accent but still show the selection (reversed), so the
+                // token holder stays focusable/visible when navigated to.
+                theme::selection().add_modifier(Modifier::REVERSED)
+            } else if is_holder {
                 theme::selection()
             } else if is_selected {
                 self.role_style(agent).add_modifier(Modifier::REVERSED)
@@ -716,6 +844,13 @@ impl Workroom {
             lines.push(Line::from(Span::styled("Enter detail", theme::muted())));
         } else {
             lines.push(Line::from(Span::styled("Ctrl+W focus", theme::muted())));
+        }
+        if self.completed {
+            let check = theme::glyphs().check;
+            lines.push(Line::from(Span::styled(
+                format!("{check} run complete · press q or Esc to exit"),
+                theme::muted(),
+            )));
         }
     }
 
@@ -1219,6 +1354,61 @@ orchestration:
     }
 
     #[test]
+    fn completion_hint_uses_muted_theme_and_glyph_check() {
+        let mut wr = Workroom::new();
+        wr.set_completed(true);
+        let mut lines = Vec::new();
+        wr.push_footer(&mut lines);
+        let hint_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains("run complete")))
+            .expect("completion hint line present");
+        let span = hint_line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("run complete"))
+            .unwrap();
+        assert_eq!(span.style, theme::muted());
+        // Glyph comes from theme::glyphs() (unicode ✓ or its ASCII fallback
+        // depending on init(ascii)), never a hardcoded character.
+        assert!(span.content.starts_with(theme::glyphs().check));
+    }
+
+    #[test]
+    fn no_completion_hint_when_not_completed() {
+        let wr = Workroom::new();
+        let mut lines = Vec::new();
+        wr.push_footer(&mut lines);
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.spans.iter().any(|s| s.content.contains("run complete")))
+        );
+    }
+
+    #[test]
+    fn set_pattern_overrides_default() {
+        let mut wr = Workroom::new();
+        wr.set_focused(true);
+        // Default pattern (no config parsed) is Hierarchical → Hierarchical layout.
+        assert_eq!(wr.layout_mode(60), LayoutMode::Hierarchical);
+        wr.set_pattern(OrchestrationPattern::Ring);
+        assert_eq!(wr.layout_mode(60), LayoutMode::Ring);
+    }
+
+    #[test]
+    fn set_pattern_overrides_config_after_init() {
+        let mut wr = Workroom::new();
+        wr.set_focused(true);
+        // Config has no `pattern:` key → parse_pattern defaults to Hierarchical.
+        wr.init_from_config("coordinator: lead\nagents:\n- a\n- b\n");
+        assert_eq!(wr.layout_mode(60), LayoutMode::Hierarchical);
+        // An explicit `--orchestrate blackboard` flag must win over that default.
+        wr.set_pattern(OrchestrationPattern::Blackboard);
+        assert_eq!(wr.layout_mode(60), LayoutMode::Blackboard);
+    }
+
+    #[test]
     fn tree_prefix_marks_last_sibling() {
         let mut wr = Workroom::new();
         wr.init_from_config("coordinator: lead\nagents:\n- a\n- b\n");
@@ -1281,6 +1471,39 @@ orchestration:
     }
 
     #[test]
+    fn agent_start_sets_token_holder_without_delegate() {
+        // ES ring/blackboard engines never emit `Delegate` — only
+        // agent_start/agent_end/vote — so the token-holder highlight must be
+        // driven by `AgentStart` alone (review finding M2).
+        let mut wr = Workroom::new();
+        let t = Instant::now();
+        wr.on_run_event_at(
+            &RunEvent::RunStart {
+                v: 1,
+                agents: vec!["alpha".into(), "beta".into()],
+                prov: "fake".into(),
+                model: "m".into(),
+                in_chars: 0,
+            },
+            t,
+        );
+        assert_eq!(wr.token_holder_index(), None);
+
+        wr.on_run_event_at(
+            &RunEvent::AgentStart {
+                agent: "alpha".into(),
+                prov: "fake".into(),
+                model: "m".into(),
+            },
+            t,
+        );
+        let idx = wr
+            .token_holder_index()
+            .expect("alpha holds the token after AgentStart");
+        assert_eq!(wr.agents[idx].name, "alpha");
+    }
+
+    #[test]
     fn ring_lines_marks_token_holder_bold_brass() {
         let mut wr = Workroom::new();
         wr.init_from_config(
@@ -1294,5 +1517,140 @@ orchestration:
             .flat_map(|l| l.spans.iter())
             .any(|s| s.content.contains("alpha") && s.style.add_modifier.contains(Modifier::BOLD));
         assert!(holder_styled);
+    }
+
+    use crate::core::events::RunEvent;
+    use std::time::Instant;
+
+    fn rs(agents: &[&str]) -> RunEvent {
+        RunEvent::RunStart {
+            v: 1,
+            agents: agents.iter().map(|s| s.to_string()).collect(),
+            prov: "fake".into(),
+            model: "m".into(),
+            in_chars: 0,
+        }
+    }
+
+    #[test]
+    fn on_run_event_seeds_and_transitions() {
+        let mut wr = Workroom::new();
+        let t = Instant::now();
+        wr.on_run_event_at(&rs(&["dev-lead", "core-specialist"]), t);
+        assert_eq!(wr.agents.len(), 2);
+        assert!(wr.is_visible());
+
+        wr.on_run_event_at(
+            &RunEvent::Delegate {
+                from: "dev-lead".into(),
+                to: "core-specialist".into(),
+            },
+            t,
+        );
+        assert_eq!(
+            wr.agents
+                .iter()
+                .find(|a| a.name == "dev-lead")
+                .unwrap()
+                .state,
+            AgentState::Delegating
+        );
+
+        wr.on_run_event_at(
+            &RunEvent::AgentStart {
+                agent: "core-specialist".into(),
+                prov: "fake".into(),
+                model: "m".into(),
+            },
+            t,
+        );
+        assert_eq!(
+            wr.agents
+                .iter()
+                .find(|a| a.name == "core-specialist")
+                .unwrap()
+                .state,
+            AgentState::Working
+        );
+
+        wr.on_run_event_at(
+            &RunEvent::AgentEnd {
+                agent: "core-specialist".into(),
+                tin: 1,
+                tout: 2,
+                cost: 0.0,
+                content: "done reticulating\nsplines".into(),
+            },
+            t,
+        );
+        let a = wr
+            .agents
+            .iter()
+            .find(|a| a.name == "core-specialist")
+            .unwrap();
+        assert_eq!(a.state, AgentState::Done);
+        assert_eq!(a.last_action.as_deref(), Some("done reticulating"));
+    }
+
+    #[test]
+    fn on_run_event_result_finalizes() {
+        let mut wr = Workroom::new();
+        let t = Instant::now();
+        wr.on_run_event_at(&rs(&["a"]), t);
+        wr.on_run_event_at(
+            &RunEvent::AgentStart {
+                agent: "a".into(),
+                prov: "f".into(),
+                model: "m".into(),
+            },
+            t,
+        );
+        wr.on_run_event_at(
+            &RunEvent::Result {
+                content: "x".into(),
+                tin: 0,
+                tout: 0,
+                cost: 0.0,
+                agents: 1,
+            },
+            t,
+        );
+        // on_complete turns any Working agent into Done.
+        assert_eq!(
+            wr.agents.iter().find(|a| a.name == "a").unwrap().state,
+            AgentState::Done
+        );
+    }
+
+    #[test]
+    fn on_run_event_unknown_variants_are_noops() {
+        let mut wr = Workroom::new();
+        let t = Instant::now();
+        wr.on_run_event_at(&rs(&["a"]), t);
+        wr.on_run_event_at(
+            &RunEvent::Warning {
+                code: "w".into(),
+                from: None,
+                to: None,
+            },
+            t,
+        );
+        wr.on_run_event_at(
+            &RunEvent::Route {
+                agent: "a".into(),
+                tier: "fast".into(),
+                reason: "r".into(),
+            },
+            t,
+        );
+        assert_eq!(
+            wr.agents
+                .iter()
+                .find(|a| a.name == "a")
+                .unwrap()
+                .last_action
+                .as_deref(),
+            Some("→ fast")
+        );
     }
 }

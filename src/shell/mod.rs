@@ -29,6 +29,8 @@ pub mod session;
 #[cfg(feature = "tui")]
 pub mod pty_runner;
 #[cfg(feature = "tui")]
+pub mod run_view;
+#[cfg(feature = "tui")]
 pub mod workroom;
 
 /// Braille spinner frames shared by the shell TUI (`tui.rs`) and the

@@ -90,6 +90,9 @@ pub enum Command {
         /// C8: resolve and print the agent selection without executing (0 tokens)
         #[arg(long)]
         dry_run: bool,
+        /// Disable the live orchestration TUI (force plain headless output)
+        #[arg(long = "no-tui")]
+        no_tui: bool,
     },
     /// Create a new agent from a template
     #[command(
@@ -487,6 +490,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             route,
             tags,
             dry_run,
+            no_tui,
         } => {
             run::execute(
                 agent,
@@ -500,6 +504,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
                 route,
                 tags,
                 dry_run,
+                no_tui,
             )
             .await
         }

@@ -37,9 +37,83 @@ pub async fn execute(
     route: Option<String>,
     tags: Option<Vec<String>>,
     dry_run: bool,
+    no_tui: bool,
 ) -> anyhow::Result<()> {
     // headless is implied by json (machine output cannot be interrupted by a prompt)
     let headless = headless || json;
+
+    // Orchestration can also be turned on purely via project config
+    // (`orchestration.enabled: true` in armadai.yaml), with no explicit
+    // `--orchestrate` flag — `run_inner` auto-detects that case on its own
+    // (see the `AgentResolution::Project` branch below). The live TUI must
+    // trigger for that path too, or config-driven runs silently stay headless.
+    let config_orchestrated = project::find_project_config()
+        .and_then(|(_, cfg)| cfg.orchestration)
+        .map(|o| o.enabled)
+        .unwrap_or(false);
+
+    // Live Workroom TUI: only for orchestrated runs (explicit `--orchestrate`
+    // or config-driven auto-detect), only when nothing else demands
+    // plain/machine output, and only when attached to a real terminal. Falls
+    // through to the unchanged headless path otherwise.
+    let use_tui = (orchestrate.is_some() || config_orchestrated)
+        && !json
+        && !quiet
+        && !no_tui
+        && !dry_run
+        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+
+    #[cfg(feature = "tui")]
+    if use_tui {
+        // Load project orchestration config (for role seeding), best-effort.
+        let cfg_yaml = std::fs::read_to_string(".armadai/config.yaml")
+            .or_else(|_| std::fs::read_to_string("armadai.yaml"))
+            .ok();
+        // Map an explicit `--orchestrate <pattern>` flag to the Workroom's
+        // pattern enum, so the fullscreen live view renders the matching
+        // rich layout (ring/blackboard) instead of relying on the project
+        // config's `pattern:` key, which is often absent for a one-off
+        // explicit run and would otherwise default to Hierarchical.
+        let explicit_pattern = orchestrate.as_deref().and_then(|o| match o {
+            "blackboard" => Some(crate::core::orchestration::OrchestrationPattern::Blackboard),
+            "ring" => Some(crate::core::orchestration::OrchestrationPattern::Ring),
+            _ => None,
+        });
+        let printed = crate::shell::run_view::run_orchestration_tui(
+            move |sink| async move {
+                run_inner(
+                    agent_name,
+                    input,
+                    pipe,
+                    orchestrate,
+                    true,
+                    false,
+                    false,
+                    false,
+                    max_content,
+                    route,
+                    tags,
+                    dry_run,
+                    &sink,
+                )
+                .await
+            },
+            cfg_yaml,
+            explicit_pattern,
+        )
+        .await;
+        return match printed {
+            Ok(Some(content)) => {
+                println!("{content}");
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(e) => Err(e),
+        };
+    }
+    #[cfg(not(feature = "tui"))]
+    let _ = use_tui;
+
     let sink = crate::core::events::make_sink(json);
 
     let result = run_inner(
@@ -50,6 +124,7 @@ pub async fn execute(
         headless,
         json,
         quiet,
+        true,
         max_content,
         route,
         tags,
@@ -108,6 +183,7 @@ async fn run_inner(
     headless: bool,
     json: bool,
     quiet: bool,
+    human_output: bool,
     max_content: Option<usize>,
     route: Option<String>,
     tags: Option<Vec<String>>,
@@ -143,6 +219,7 @@ async fn run_inner(
             route.as_deref(),
             &tags,
             dry_run,
+            human_output,
         )
         .await;
     }
@@ -177,6 +254,7 @@ async fn run_inner(
                 route.as_deref(),
                 &tags,
                 dry_run,
+                human_output,
             )
             .await;
         }
@@ -1038,6 +1116,7 @@ async fn run_orchestrated(
     route: Option<&str>,
     tags: &[String],
     dry_run: bool,
+    human_output: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
@@ -1080,6 +1159,7 @@ async fn run_orchestrated(
         route,
         tags,
         dry_run,
+        human_output,
     )
     .await
 }
@@ -1115,6 +1195,18 @@ async fn run_orchestrated_inner(
     route: Option<&str>,
     tags: &[String],
     dry_run: bool,
+    // Gate for the direct human-readable `eprintln!`/`println!` writes below
+    // (roster-size banners, "Halted"/"status"/"Done" lines, and the final
+    // outcome). `true` on the plain headless/TTY path (unchanged behavior).
+    // `false` only on the live Workroom TUI path (`run_view.rs`), where
+    // stdout/stderr are the alternate screen: these direct writes would
+    // corrupt the display, and the same final content already reaches the
+    // caller via the `RunEvent::Result` emitted at the end of each branch
+    // below (captured by `WorkroomSink`, printed after terminal restore).
+    // Deliberately NOT `quiet` — `quiet` also suppresses the `RunEvent`s
+    // themselves (agent_start/agent_end/board), which the Workroom needs to
+    // animate; see `tests/e2e/cases/quiet-orchestrated.yaml`.
+    human_output: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
@@ -1256,11 +1348,13 @@ async fn run_orchestrated_inner(
                 provider_map.insert(name.clone(), provider);
             }
 
-            eprintln!(
-                "[blackboard] Starting with {} agent(s), max {} rounds",
-                agent_map.len(),
-                config.max_rounds
-            );
+            if human_output {
+                eprintln!(
+                    "[blackboard] Starting with {} agent(s), max {} rounds",
+                    agent_map.len(),
+                    config.max_rounds
+                );
+            }
 
             let (state, _run_id) = dispatch_blackboard_es(
                 input,
@@ -1275,7 +1369,9 @@ async fn run_orchestrated_inner(
             )
             .await?;
 
-            eprintln!("[blackboard] Halted: {:?}", state.status);
+            if human_output {
+                eprintln!("[blackboard] Halted: {:?}", state.status);
+            }
 
             #[cfg(feature = "storage")]
             {
@@ -1293,7 +1389,7 @@ async fn run_orchestrated_inner(
 
             let outcome_text = super::run_es_record::blackboard_display(&state);
 
-            if !json {
+            if !json && human_output {
                 println!("{outcome_text}");
             }
 
@@ -1332,11 +1428,13 @@ async fn run_orchestrated_inner(
                 provider_map.insert(name.clone(), provider);
             }
 
-            eprintln!(
-                "[ring] Starting with {} agent(s), max {} laps",
-                agent_map.len(),
-                config.max_laps
-            );
+            if human_output {
+                eprintln!(
+                    "[ring] Starting with {} agent(s), max {} laps",
+                    agent_map.len(),
+                    config.max_laps
+                );
+            }
 
             let (state, events, _run_id) = dispatch_ring_es(
                 input,
@@ -1367,8 +1465,10 @@ async fn run_orchestrated_inner(
             }
 
             let outcome_text = super::run_es_record::ring_display(&state, &events);
-            eprintln!("[ring] status: {:?}", state.status);
-            if !json {
+            if human_output {
+                eprintln!("[ring] status: {:?}", state.status);
+            }
+            if !json && human_output {
                 println!("{outcome_text}");
             }
 
@@ -1421,11 +1521,13 @@ async fn run_orchestrated_inner(
                 agent_map.insert(name.clone(), agent);
             }
 
-            eprintln!(
-                "[hierarchical] Starting with coordinator '{}', {} agent(s)",
-                coordinator_name,
-                agent_map.len()
-            );
+            if human_output {
+                eprintln!(
+                    "[hierarchical] Starting with coordinator '{}', {} agent(s)",
+                    coordinator_name,
+                    agent_map.len()
+                );
+            }
 
             let (state, events, _run_id) = dispatch_hierarchical_es(
                 &coordinator_name,
@@ -1446,10 +1548,12 @@ async fn run_orchestrated_inner(
             // `to_orchestration_result`'s doc comment.
             let result = to_orchestration_result(&state, &events);
 
-            eprintln!(
-                "[hierarchical] Done: {} invocations, {} tokens in, {} tokens out",
-                result.invocation_count, result.total_tokens_in, result.total_tokens_out
-            );
+            if human_output {
+                eprintln!(
+                    "[hierarchical] Done: {} invocations, {} tokens in, {} tokens out",
+                    result.invocation_count, result.total_tokens_in, result.total_tokens_out
+                );
+            }
 
             #[cfg(feature = "storage")]
             {
@@ -1465,7 +1569,7 @@ async fn run_orchestrated_inner(
                 }
             }
 
-            if !json {
+            if !json && human_output {
                 println!("{}", result.content);
             }
 
@@ -3210,6 +3314,7 @@ mod es_switch_tests {
             None,
             &[],
             false,
+            true,
         )
         .await
         .unwrap();
@@ -3239,6 +3344,7 @@ mod es_switch_tests {
             None,
             &[],
             false,
+            true,
         )
         .await
         .unwrap();
@@ -3276,6 +3382,7 @@ mod es_switch_tests {
             None,
             &[],
             false,
+            true,
         )
         .await
         .unwrap();
