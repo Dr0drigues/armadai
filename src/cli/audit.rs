@@ -143,8 +143,9 @@ pub async fn execute(
     let mut audit = run_audit(&root, &settings);
     if audit.detected.is_empty() {
         let o = crate::cli::style::ok();
+        let m = crate::cli::style::muted();
         anstream::println!(
-            "{o}No native agentic configuration detected in {}.{o:#}",
+            "{o}No native agentic configuration detected in{o:#} {m}{}.{m:#}",
             root.display()
         );
         return Ok(());

@@ -49,6 +49,15 @@ impl AuditReport {
         }
     }
 
+    /// Accent style for a severity level (terminal output only).
+    fn severity_style(s: Severity) -> anstyle::Style {
+        match s {
+            Severity::Critical => crate::cli::style::err(),
+            Severity::Warning => crate::cli::style::warn(),
+            Severity::Info => crate::cli::style::ok(),
+        }
+    }
+
     /// Per-rule counts, e.g. `A01×2  A06×1(+3)  A08×1(+23)`.
     fn breakdown_line(&self) -> String {
         let mut per_rule: std::collections::BTreeMap<&str, (usize, usize)> =
@@ -100,9 +109,12 @@ impl AuditReport {
     /// `anyhow::bail!` on critical findings is what signals errors on
     /// stderr, so this only ever writes to stdout.
     pub fn print_terminal(&self, min_severity: Severity) {
-        println!("armadai audit - {}", self.root.display());
-        println!(
-            "  Detected: {} ({} agent(s), {} skill(s))",
+        let h = crate::cli::style::header();
+        anstream::println!("{h}armadai audit - {}{h:#}", self.root.display());
+        let m = crate::cli::style::muted();
+        let a = crate::cli::style::accent();
+        anstream::println!(
+            "  {m}Detected:{m:#} {a}{}{a:#} {m}({} agent(s), {} skill(s)){m:#}",
             self.detected.join(", "),
             self.agent_count,
             self.skill_count
@@ -119,23 +131,30 @@ impl AuditReport {
             if group.is_empty() {
                 continue;
             }
-            println!();
-            println!("  {} ({})", Self::severity_title(severity), group.len());
+            anstream::println!();
+            let s = Self::severity_style(severity);
+            anstream::println!(
+                "  {s}{} ({}){s:#}",
+                Self::severity_title(severity),
+                group.len()
+            );
             for f in group {
                 let related = if f.related.is_empty() {
                     String::new()
                 } else {
                     format!(" (+{} others)", f.related.len())
                 };
-                println!(
-                    "    {:<4} {}{}  {}",
+                let a = crate::cli::style::accent();
+                let m = crate::cli::style::muted();
+                anstream::println!(
+                    "    {a}{:<4}{a:#} {m}{}{related}{m:#}  {}",
                     f.rule,
                     self.rel(&f.file),
-                    related,
                     f.message
                 );
                 if let Some(s) = &f.suggestion {
-                    println!("         -> {s}");
+                    let m = crate::cli::style::muted();
+                    anstream::println!("         {m}-> {s}{m:#}");
                 }
             }
         }
@@ -144,28 +163,36 @@ impl AuditReport {
             .iter()
             .filter(|f| f.severity > min_severity)
             .count();
-        println!();
-        println!("  Summary: {}", self.summary_line());
+        anstream::println!();
+        let h = crate::cli::style::header();
+        anstream::println!("  {h}Summary:{h:#} {}", self.summary_line());
         if !self.findings.is_empty() {
-            println!("  Breakdown: {}", self.breakdown_line());
+            anstream::println!("  {h}Breakdown:{h:#} {}", self.breakdown_line());
         }
         if hidden > 0 {
-            println!("  ({hidden} finding(s) hidden below the severity threshold)");
+            let m = crate::cli::style::muted();
+            anstream::println!(
+                "  {m}({hidden} finding(s) hidden below the severity threshold){m:#}"
+            );
         }
         let funnel = self.funnel_lines();
         if !funnel.is_empty() {
-            println!();
-            println!("  What ArmadAI would give you:");
+            anstream::println!();
+            let h = crate::cli::style::header();
+            anstream::println!("  {h}What ArmadAI would give you:{h:#}");
+            let m = crate::cli::style::muted();
             for l in funnel {
-                println!("    - {l}");
+                anstream::println!("    {m}- {l}{m:#}");
             }
-            println!("    Run `armadai audit --propose` to generate the config.");
+            let a = crate::cli::style::accent();
+            anstream::println!("    {a}Run `armadai audit --propose` to generate the config.{a:#}");
         }
         if let Some(raw) = &self.deep_raw {
-            println!();
-            println!("  Deep analysis (unstructured):");
+            anstream::println!();
+            let h = crate::cli::style::header();
+            anstream::println!("  {h}Deep analysis (unstructured):{h:#}");
             for line in raw.lines() {
-                println!("    {line}");
+                anstream::println!("    {line}");
             }
         }
     }

@@ -72,8 +72,9 @@ async fn show_providers() -> anyhow::Result<()> {
     if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)?;
         let h = crate::cli::style::header();
+        let m = crate::cli::style::muted();
         anstream::println!(
-            "{h}Provider configuration ({}):{h:#}\n",
+            "{h}Provider configuration{h:#} {m}({}):{m:#}\n",
             config_path.display()
         );
         anstream::println!("{content}");
