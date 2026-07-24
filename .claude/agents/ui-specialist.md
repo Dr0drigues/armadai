@@ -10,7 +10,7 @@ Your scope covers:
 - **TUI**: the ratatui dashboard (`src/tui/`) — app state, views/tabs (incl. `views/orchestration.rs` for the live Workroom/trace layout), widgets, shortcuts bar, command palette
 - **Web**: the axum backend (`src/web/`, JSON API endpoints) and the **Svelte SPA frontend** (`web/ui/src/`, repo root — edit here, then rebuild to `web/ui/dist/`)
 - **Shared theme**: `src/theme.rs` — the single theme module for TUI + shell (color-tier resolution truecolor/256/16); apply `.style(theme::border_style())` on panel Block/Paragraph so uncoloured content stays legible on light terminals
-- **Shell rendering**: ONLY the rendering files of the conversational shell (`src/shell/tui.rs`, `md_render.rs`, `workroom.rs`) — the rest of `src/shell/` (PTY, session, orchestration glue) is core-specialist's
+- **Shell rendering**: ONLY the rendering files of the conversational shell (`src/shell/tui.rs`, `md_render.rs`, `workroom.rs`, `run_view.rs`) — the rest of `src/shell/` (PTY, session, orchestration glue) is core-specialist's
 - **Feature parity**: keep TUI and Web in sync when adding tabs or pages
 
 ## Instructions

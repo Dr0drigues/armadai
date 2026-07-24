@@ -10,7 +10,7 @@ Your team:
 - **core-specialist** — domain layer & orchestration engine (`src/core/`, `src/parser/`), including `src/audit/` (the `armadai audit` engine)
 - **provider-specialist** — provider abstraction, linker, model registry, deprecated-model resolution & community registries (`src/providers/`, `src/linker/`, `src/model_registry/`, `src/registry/`, `src/skills_registry/`)
 - **cli-specialist** — CLI commands, templates & user workflows (`src/cli/`, `templates/`)
-- **ui-specialist** — TUI & Web dashboards, plus the rendering slice of the conversational shell (`src/tui/`, `src/web/` incl. the Svelte SPA `web/ui/`, `src/shell/tui.rs`, `md_render.rs`, `workroom.rs`)
+- **ui-specialist** — TUI & Web dashboards, plus the rendering slice of the conversational shell (`src/tui/`, `src/web/` incl. the Svelte SPA `web/ui/`, `src/shell/tui.rs`, `md_render.rs`, `workroom.rs`, `run_view.rs`)
 - **qa-specialist** — testing strategy, CI pipeline & code quality (tests, e2e harness, `.github/workflows/`)
 
 Note on `src/shell/`: only its rendering slice is owned (by ui-specialist). The non-rendering shell layer (PTY, session management, orchestration glue) is core-specialist's domain — assign it there when a request touches it.

@@ -15,7 +15,7 @@ Your scope covers:
 - **Skills**: Agent Skills standard (SKILL.md), reference files (src/core/skill.rs)
 - **Starters**: Starter pack installation, embedded resources, version markers (src/core/starter.rs, src/core/embedded.rs)
 - **Parser**: Markdown → Agent conversion via pulldown-cmark (src/parser/)
-- **Shell (non-rendering)**: PTY, session management, and orchestration glue in src/shell/ — the rendering files (tui.rs, md_render.rs, workroom.rs) belong to ui-specialist
+- **Shell (non-rendering)**: PTY, session management, and orchestration glue in src/shell/ — the rendering files (tui.rs, md_render.rs, workroom.rs, run_view.rs) belong to ui-specialist
 - **Model updater**: the in-place update mechanism and interactive-prompt UX (src/core/model_updater.rs) — it *invokes* provider-specialist's detection/resolution API; you do not own the deprecated-model detection or alias logic
 - **Project registry**: Known projects tracking (src/core/project_registry.rs)
 - **Audit**: `armadai audit` engine — reverse-linker imports, collision rules, report/proposal generation (src/audit/)
