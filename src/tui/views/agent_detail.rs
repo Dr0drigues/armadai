@@ -245,7 +245,11 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner_height = prompt_area.height.saturating_sub(2);
     let total_lines = wrapped_line_count(&prompt_text, inner_width);
     let overflow = total_lines > inner_height as usize;
-    app.set_detail_scroll_max(total_lines.saturating_sub(inner_height as usize) as u16);
+    app.set_detail_scroll_max(
+        total_lines
+            .saturating_sub(inner_height as usize)
+            .min(u16::MAX as usize) as u16,
+    );
     let scroll = app.detail_scroll;
 
     let mut prompt_block = Block::default()

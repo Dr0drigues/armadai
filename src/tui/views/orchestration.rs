@@ -177,7 +177,11 @@ pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
         let inner_height = area.height.saturating_sub(2);
         let total_lines = detail_content.lines().count().max(1);
         let overflow = total_lines > inner_height as usize;
-        app.set_detail_scroll_max(total_lines.saturating_sub(inner_height as usize) as u16);
+        app.set_detail_scroll_max(
+            total_lines
+                .saturating_sub(inner_height as usize)
+                .min(u16::MAX as usize) as u16,
+        );
         let scroll = app.detail_scroll;
 
         let mut block = Block::default()
