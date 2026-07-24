@@ -364,13 +364,19 @@ async fn resume_run(
     max_content: Option<usize>,
     human_output: bool,
 ) -> anyhow::Result<()> {
-    use crate::core::orchestration::es::engine::replay;
+    use crate::core::orchestration::es::bridge::synthetic_run_start;
     use crate::core::orchestration::es::log::SqliteLog;
-    use crate::core::orchestration::es::state::RunStatus;
+    use crate::core::orchestration::es::state::{RunStatus, fold};
 
     let db = crate::storage::init_db()?;
     let log = SqliteLog::new(db.clone());
-    let state = replay(run_id, &log)?;
+    // Read the raw log back once, up front: `fold` gives the roster/status
+    // needed to validate + dispatch the resume below, and the SAME raw
+    // `pre_resume_events` also feeds `synthetic_run_start`'s `in_chars`
+    // recovery (the original `RunStarted.input`, discarded by `apply` but
+    // still present verbatim in the event list) — see that fn's doc comment.
+    let pre_resume_events = log.events(run_id)?;
+    let state = fold(&pre_resume_events);
     if state.pattern.is_empty() {
         anyhow::bail!("no run found for id {run_id}");
     }
@@ -391,6 +397,38 @@ async fn resume_run(
         let m = crate::cli::style::muted();
         anstream::eprintln!("{m}resume {run_id}{m:#}");
     }
+
+    // I3 (whole-branch review, light must-fix): the roster below is reloaded
+    // from the CURRENT directory's project, not the original run's
+    // (`RunStarted.project` is logged but never read back — full
+    // project-pinning is backlog, not attempted here). Warn once, concisely,
+    // so resuming from a different directory than the original run doesn't
+    // silently execute the remaining steps against different agent
+    // definitions.
+    if !json && !quiet && human_output {
+        let w = crate::cli::style::warn();
+        anstream::eprintln!(
+            "{w}resuming {run_id} — agents reloaded from the current project; \
+             not-yet-run steps use current definitions{w:#}"
+        );
+    }
+
+    // HEAD bookend (whole-branch review, I2): a live orchestrated run's
+    // `RunStart` is what seeds the Workroom's agent roster
+    // (`Workroom::on_run_event_at`'s `RunStart { agents, .. }` arm —
+    // `AgentStart` only mutates an already-present agent, it never inserts
+    // one). `resume_run` never emitted one, so an interactive `--resume`
+    // showed an empty Workroom even though `execute_resume` already routes
+    // orchestrated resumes through `run_orchestration_tui` (mirroring
+    // `execute`'s own `use_tui` gate). Emitting it here, from the folded
+    // roster, before the engine resumes fixes that for both the TUI and
+    // `--json`/headless consumers (the bookend is harmless/expected on json
+    // too — it matches what a live run emits).
+    sink.emit(&synthetic_run_start(
+        run_id,
+        &state.agents,
+        &pre_resume_events,
+    ));
 
     // Reload the agent roster from the project on disk — the log carries no
     // `Agent` definitions (system prompt/model/temperature/…), only the
@@ -3980,11 +4018,89 @@ mod es_switch_tests {
             .collect();
 
         assert!(!live.is_empty(), "sanity: the live run must emit events");
+
+        // `run_direct_against_sqlite_log` drives the bare ES engine
+        // (`run_direct_es`) directly, NOT the CLI's `run_inner` — so `live`
+        // here is the engine-level mid-stream slice only, with no
+        // `RunStart`/`Result` bookends (those are built by `run.rs`, never by
+        // the engine projection — see `run_replay.rs`'s module doc).
+        // `replayed` DOES carry both (that's `replay_from_log`'s job, OH1
+        // Lot 6 whole-branch review I1). Assert their presence/shape
+        // explicitly here, then strip them before the mid-stream comparison
+        // below — this doesn't weaken that comparison, it just scopes it to
+        // what `live` actually contains; `replay_full_stream_starts_with_run_start_and_ends_with_result`
+        // below is the dedicated test for the bookends themselves.
         assert_eq!(
-            live, replayed,
-            "replay must reproduce the same RunEvent sequence (modulo the \
+            replayed.first().unwrap()["t"],
+            "run_start",
+            "replay must lead with a synthetic RunStart bookend, got: {replayed:?}"
+        );
+        assert_eq!(replayed.first().unwrap()["run_id"], run_id);
+        assert_eq!(
+            replayed.last().unwrap()["t"],
+            "result",
+            "replay must end with a Result bookend, got: {replayed:?}"
+        );
+
+        let replayed_mid_stream: Vec<_> = replayed[1..replayed.len() - 1].to_vec();
+        assert_eq!(
+            live, replayed_mid_stream,
+            "replay must reproduce the same mid-stream RunEvent sequence (modulo the \
              non-reconstructable AgentStart.prov/model gap, already stripped above)"
         );
+    }
+
+    /// OH1 Lot 6 whole-branch review, I1: dedicated coverage for the
+    /// `RunStart`/`Result` bookends — this is the test that would have
+    /// caught their absence (the sibling
+    /// `replay_reproduces_the_live_run_event_sequence` test's "live"
+    /// baseline is engine-level only and never had them to compare
+    /// against). Asserts the FULL replayed stream, as a `--json` consumer
+    /// would see it, starts with `run_start` and ends with `result`, with
+    /// the fields `synthetic_run_start`/`to_orchestration_result` are
+    /// documented to fill.
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn replay_full_stream_starts_with_run_start_and_ends_with_result() {
+        use crate::storage::init_embedded;
+
+        let db = init_embedded().unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        let (_live_capture, live_sink) = capture_sink();
+        run_direct_against_sqlite_log(db.clone(), &run_id, &live_sink).await;
+
+        let replay_log = crate::core::orchestration::es::log::SqliteLog::new(db);
+        let (replay_capture, replay_sink) = capture_sink();
+        crate::cli::run_replay::replay_from_log(&replay_log, &run_id, &replay_sink, false).unwrap();
+
+        let tags = replay_capture.tags();
+        assert_eq!(
+            tags.first().map(String::as_str),
+            Some("run_start"),
+            "replayed stream must start with run_start, got: {tags:?}"
+        );
+        assert_eq!(
+            tags.last().map(String::as_str),
+            Some("result"),
+            "replayed stream must end with result, got: {tags:?}"
+        );
+
+        let events = replay_capture.events.lock().unwrap();
+        let head = events.first().unwrap();
+        assert_eq!(head["run_id"], run_id);
+        assert_eq!(head["v"], 1);
+        assert_eq!(head["agents"], serde_json::json!(["solo"]));
+        assert_eq!(head["prov"], "");
+        assert_eq!(head["model"], "");
+        assert_eq!(
+            head["in_chars"],
+            serde_json::json!("do the thing".chars().count())
+        );
+
+        let tail = events.last().unwrap();
+        assert_eq!(tail["content"], "the answer");
+        assert_eq!(tail["agents"], serde_json::json!(1));
     }
 
     #[cfg(feature = "storage")]
@@ -4014,5 +4130,120 @@ mod es_switch_tests {
             err.to_string().contains("storage"),
             "expected the storage-feature-required message, got: {err}"
         );
+    }
+
+    // ── OH1 Lot 6 whole-branch review, I2: `--resume` RunStart bookend ──
+    //
+    // `resume_run` (the CLI wrapper) reloads its roster from real agent
+    // files on disk via `resolve_agents_dir`/`resolve_agent_path` — driving
+    // it directly in a hermetic unit test would mean mutating the process
+    // CWD/project resolution, racing every other test in this file that
+    // also touches `crate::storage::init_db()`/project resolution (same
+    // reasoning as the big comment above the `--replay` determinism tests).
+    // This test instead drives the EXACT sequence `resume_run` performs on
+    // an injected `SqliteLog`: fold the log, emit `synthetic_run_start` from
+    // the folded roster, dispatch `resume_direct_es` through a
+    // `SinkProjectingLog`, then emit the terminal `Result` via
+    // `to_orchestration_result` — the same idiom
+    // `run_direct_against_sqlite_log` above uses for the `--replay` tests.
+    //
+    // This is what would have caught the Workroom-population regression:
+    // before the fix, nothing in `resume_run` ever emitted a `RunStart`, so
+    // `Workroom::on_run_event_at`'s `RunStart { agents, .. }` arm — the ONLY
+    // arm that inserts a new tracked agent, `AgentStart` only mutates one
+    // already present — never ran, and an interactive `--resume` showed an
+    // empty live Workroom.
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn resume_emits_run_start_bookend_before_the_mid_stream_events() {
+        use crate::core::orchestration::es::bridge::synthetic_run_start;
+        use crate::core::orchestration::es::direct::resume_direct_es;
+        use crate::core::orchestration::es::log::SqliteLog;
+        use crate::core::orchestration::es::state::fold;
+        use crate::storage::init_embedded;
+
+        let db = init_embedded().unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        // Simulate a crashed run: only `RunStarted` was ever persisted (the
+        // process died before the single agent was invoked) — this folds to
+        // `RunStatus::Running`, exactly what `resume_run` requires to
+        // proceed with a resume.
+        let mut log = SqliteLog::new(db);
+        log.append(
+            &run_id,
+            &ExecutionEvent::RunStarted {
+                run_id: run_id.clone(),
+                pattern: "direct".to_string(),
+                agents: vec!["solo".to_string()],
+                input: "do the thing".to_string(),
+                project: None,
+            },
+        )
+        .unwrap();
+
+        let pre_resume_events = log.events(&run_id).unwrap();
+        let state = fold(&pre_resume_events);
+        assert_eq!(state.status, RunStatus::Running, "sanity: resumable");
+
+        let (capture, sink) = capture_sink();
+
+        // HEAD bookend — same call `resume_run` makes, from the same folded
+        // roster/events, before the engine resumes.
+        sink.emit(&synthetic_run_start(
+            &run_id,
+            &state.agents,
+            &pre_resume_events,
+        ));
+
+        let mut agents = BTreeMap::new();
+        agents.insert("solo".to_string(), test_agent("solo"));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "solo".to_string(),
+            Arc::new(ScriptedProvider::new(&["resumed answer"])) as Arc<dyn Provider>,
+        );
+
+        let mut proj_log = SinkProjectingLog::with_meta(log, sink.as_ref(), BTreeMap::new());
+        let final_state = resume_direct_es(
+            &run_id,
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut proj_log,
+        )
+        .await
+        .unwrap();
+
+        // TERMINAL bookend — same call `resume_run` makes after the engine
+        // resumes.
+        let events = proj_log.events(&run_id).unwrap();
+        let result = to_orchestration_result(&final_state, &events);
+        sink.emit(&RunEvent::Result {
+            content: result.content.clone(),
+            tin: result.total_tokens_in,
+            tout: result.total_tokens_out,
+            cost: result.total_cost,
+            agents: final_state.agents.len(),
+        });
+
+        let tags = capture.tags();
+        assert_eq!(
+            tags.first().map(String::as_str),
+            Some("run_start"),
+            "resume must emit a RunStart bookend at the head, got: {tags:?}"
+        );
+        assert_eq!(
+            tags.last().map(String::as_str),
+            Some("result"),
+            "resume must still end with the terminal Result, got: {tags:?}"
+        );
+
+        let captured = capture.events.lock().unwrap();
+        let head = captured.first().unwrap();
+        assert_eq!(head["run_id"], run_id);
+        assert_eq!(head["agents"], serde_json::json!(["solo"]));
+        let tail = captured.last().unwrap();
+        assert_eq!(tail["content"], "resumed answer");
     }
 }

@@ -321,6 +321,49 @@ pub fn to_orchestration_result(
     }
 }
 
+/// Build the synthetic `RunEvent::RunStart` bookend for a run reconstructed
+/// purely from its persisted `ExecutionEvent` log (`--replay`/`--resume`).
+///
+/// Neither path gets a `RunStart` "for free" the way a live run does: a live
+/// run's `RunStart` is emitted by `run.rs` itself (`run_inner`/
+/// `run_orchestrated`), not by the ES engine — `RunStarted` maps to `[]` in
+/// [`map_execution_to_run_events`] (see its doc comment) since building the
+/// CLI-shaped bookend needs context (the pre-run roster) the per-event
+/// projection doesn't have. `--replay`/`--resume` read the log back with no
+/// such live context either, so both synthesize it here from what IS
+/// reconstructable:
+///
+/// - `run_id`: the id being replayed/resumed, verbatim.
+/// - `v`: `1`, matching every live `RunStart`.
+/// - `agents`: the folded roster (`ExecutionState::agents`, from
+///   `RunStarted`).
+/// - `prov`/`model`: empty strings — not reconstructable from the log alone
+///   (same documented gap as replayed `AgentStart`s, see `run_replay.rs`'s
+///   module doc).
+/// - `in_chars`: recovered from the FIRST `ExecutionEvent::RunStarted.input`
+///   found in `events` (`0` if somehow absent). Unlike `prov`/`model`, the
+///   original input IS logged verbatim — `ExecutionState::apply` just
+///   discards it (keeping only `agents`/`pattern` from `RunStarted`) — so
+///   scanning the raw event list recovers it exactly instead of stubbing it.
+pub fn synthetic_run_start(run_id: &str, agents: &[String], events: &[ExecutionEvent]) -> RunEvent {
+    let in_chars = events
+        .iter()
+        .find_map(|e| match e {
+            ExecutionEvent::RunStarted { input, .. } => Some(input.chars().count()),
+            _ => None,
+        })
+        .unwrap_or(0);
+
+    RunEvent::RunStart {
+        run_id: run_id.to_string(),
+        v: 1,
+        agents: agents.to_vec(),
+        prov: String::new(),
+        model: String::new(),
+        in_chars,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;

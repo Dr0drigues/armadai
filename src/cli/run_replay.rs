@@ -13,6 +13,18 @@
 //! second `ExecutionEvent -> RunEvent` mapping) is what guarantees replay
 //! emits the same shape of events a live run did for the same log content.
 //!
+//! ## `RunStart`/`Result` bookends
+//!
+//! A live run's `RunEvent::RunStart` (head) and `RunEvent::Result` (terminal)
+//! are emitted by `run.rs`, NOT by the ES engine: `map_execution_to_run_events`
+//! maps `RunStarted`/`Completed` to `[]` (see its doc comment), since building
+//! either CLI-shaped event needs context the per-event projection doesn't
+//! have. `replay_from_log` therefore synthesizes both itself —
+//! [`crate::core::orchestration::es::bridge::synthetic_run_start`] for the
+//! head, `to_orchestration_result` (same fn the live hierarchical/direct path
+//! uses) for the terminal `Result` — so `--replay --json` produces the SAME
+//! complete `RunEvent` stream a live run did, not just its mid-stream slice.
+//!
 //! Split in two on purpose:
 //! - [`replay_run`] is the CLI-facing entry point: opens the real
 //!   `SqliteLog` via `crate::storage::init_db()` (the actual, global,
@@ -57,6 +69,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::core::events::EventSink;
+#[cfg(feature = "storage")]
+use crate::core::events::RunEvent;
 
 /// Replay a finished run: open the real, config-resolved event log
 /// (`crate::storage::init_db()` + `SqliteLog`) and re-emit the same
@@ -110,7 +124,7 @@ pub(crate) fn replay_from_log<L: crate::core::orchestration::es::log::EventLog>(
     human_output: bool,
 ) -> anyhow::Result<()> {
     use crate::core::orchestration::es::bridge::{
-        map_execution_to_run_events, to_orchestration_result,
+        map_execution_to_run_events, synthetic_run_start, to_orchestration_result,
     };
     use crate::core::orchestration::es::state::fold;
 
@@ -125,6 +139,18 @@ pub(crate) fn replay_from_log<L: crate::core::orchestration::es::log::EventLog>(
         anstream::eprintln!("{m}replay {run_id}{m:#}");
     }
 
+    // Folded once up front: the roster (`state.agents`) seeds the synthetic
+    // `RunStart` bookend below, and the same `state` feeds
+    // `to_orchestration_result` for the terminal `Result` bookend after the
+    // mid-stream loop.
+    let state = fold(&events);
+
+    // HEAD bookend: a live run's `RunStart` is emitted by `run.rs`, not the
+    // ES engine (`RunStarted` maps to `[]` in `map_execution_to_run_events`)
+    // — replay must synthesize it so `--replay --json` produces the SAME
+    // complete stream a live run does (see `synthetic_run_start`'s doc).
+    sink.emit(&synthetic_run_start(run_id, &state.agents, &events));
+
     // No roster is available on this read-only path (see module docs): every
     // `AgentInvoked` replays through the empty-`agent_meta` fallback, so its
     // `AgentStart` carries empty `prov`/`model` rather than the live run's.
@@ -135,14 +161,25 @@ pub(crate) fn replay_from_log<L: crate::core::orchestration::es::log::EventLog>(
         }
     }
 
+    // TERMINAL bookend: same reasoning as the head `RunStart` above — a live
+    // run's `Result` is built by `run.rs` from `to_orchestration_result`,
+    // never by the engine projection (`Completed` also maps to `[]`), so
+    // replay must build and emit it itself for the stream to end the same
+    // way a live run's does.
+    let result = to_orchestration_result(&state, &events);
+    sink.emit(&RunEvent::Result {
+        content: result.content.clone(),
+        tin: result.total_tokens_in,
+        tout: result.total_tokens_out,
+        cost: result.total_cost,
+        agents: state.agents.len(),
+    });
+
     // Human-mode convenience: print the run's final answer, same as a live
-    // run's `println!(content)` — reuses the same `to_orchestration_result`
-    // content extraction the live hierarchical/blackboard/ring paths already
-    // rely on (last `Completed`, else last `AgentObserved`). This is a plain
-    // stdout print, independent of the `RunEvent` stream above/`sink`.
+    // run's `println!(content)` — reuses `result.content` above instead of
+    // recomputing it. This is a plain stdout print, independent of the
+    // `RunEvent` stream above/`sink`.
     if human_output {
-        let state = fold(&events);
-        let result = to_orchestration_result(&state, &events);
         println!("{}", result.content);
     }
 
