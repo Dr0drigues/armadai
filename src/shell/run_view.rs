@@ -9,12 +9,19 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{
+    Frame, Terminal,
+    backend::CrosstermBackend,
+    layout::Rect,
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::core::events::{EventSink, RunEvent};
 use crate::core::orchestration::OrchestrationPattern;
 use crate::shell::workroom::Workroom;
+use crate::theme;
 
 /// An `EventSink` that forwards a clone of every `RunEvent` into a channel,
 /// so a TUI render loop can drain and project them onto a `Workroom`.
@@ -143,6 +150,58 @@ where
     render_result
 }
 
+/// Minimum sensible Workroom panel width (columns) — narrower than this and
+/// the rich pattern layouts (ring/tree/blackboard) start wrapping awkwardly.
+const WORKROOM_WIDTH: u16 = 72;
+const WORKROOM_WIDTH_MIN: u16 = 50;
+
+/// Roughly two lines per agent (arrow connectors between them in the
+/// ring/tree layouts) plus room for the footer hint block.
+const WORKROOM_HEIGHT_PER_AGENT: u16 = 2;
+const WORKROOM_HEIGHT_BASE: u16 = 8;
+
+/// Compute a `width` x `height` `Rect` centered within `area`, clamped so it
+/// never exceeds the terminal's own bounds (a terminal smaller than the
+/// requested size just gets the whole area).
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    let x = area.x + (area.width - w) / 2;
+    let y = area.y + (area.height - h) / 2;
+    Rect::new(x, y, w, h)
+}
+
+/// Render the agent detail popup (drill-down on `Enter`) as a centered
+/// overlay on top of the Workroom, mirroring `src/shell/tui.rs::render_popup`
+/// (Clear + markdown Paragraph + themed border) but sized ~70% of the
+/// terminal and titled " Detail ".
+fn render_detail_popup(frame: &mut Frame, area: Rect, markdown: &str) {
+    let popup_width = (area.width as f32 * 0.70) as u16;
+    let popup_height = (area.height as f32 * 0.70) as u16;
+    let popup_area = centered_rect(popup_width, popup_height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let mut lines: Vec<Line> = crate::shell::md_render::render_markdown(markdown);
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Enter/Esc to close",
+        theme::muted(),
+    )));
+
+    let popup = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border_style())
+                .title(" Detail ")
+                .title_style(theme::heading()),
+        )
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(popup, popup_area);
+}
+
 /// Drain events, redraw, and poll input until the orchestration finishes and
 /// the user dismisses the final frame (or aborts early). Returns the final
 /// `RunEvent::Result` content (if any) for the caller to print once the
@@ -160,6 +219,10 @@ async fn run_loop(
     // for the user to press q/Esc — otherwise fast providers make the
     // workroom flash and disappear before it can be seen.
     let mut finished = false;
+    // Markdown for the drill-down detail popup (Enter on a selected agent),
+    // built from `Workroom::selected_detail_markdown()`. `Some` while the
+    // popup overlay is open.
+    let mut detail: Option<String> = None;
     loop {
         // Drain all pending events.
         while let Ok(ev) = rx.try_recv() {
@@ -175,33 +238,67 @@ async fn run_loop(
         }
 
         workroom.tick();
-        terminal.draw(|f| workroom.render(f, f.area()))?;
+        terminal.draw(|f| {
+            let area = f.area();
+            // Clear the whole frame first so nothing from a previous
+            // (larger) draw lingers around the centered panel.
+            f.render_widget(Clear, area);
 
-        // Input: Ctrl+W focus/drill-down (already implemented, and still
-        // active during the post-completion hold), Ctrl+C aborts anytime,
-        // q/Esc dismiss the held final frame once `finished`.
+            let width = WORKROOM_WIDTH
+                .min(area.width)
+                .max(WORKROOM_WIDTH_MIN.min(area.width));
+            let needed_height = (workroom.agent_count() as u16)
+                .saturating_mul(WORKROOM_HEIGHT_PER_AGENT)
+                .saturating_add(WORKROOM_HEIGHT_BASE);
+            let height = needed_height.min(area.height);
+            let workroom_area = centered_rect(width, height, area);
+            workroom.render(f, workroom_area);
+
+            if let Some(md) = &detail {
+                render_detail_popup(f, area, md);
+            }
+        })?;
+
+        // Input: Ctrl+C aborts anytime (even with the popup open). While the
+        // detail popup is open, Enter/Esc close it first — that precedence
+        // matters so Esc doesn't fall through to the view-exit handler below
+        // in the same keypress. Ctrl+W toggles focus, Enter opens the detail
+        // popup for the selected agent (when focused), q/Esc dismiss the
+        // held final frame once `finished`.
         if event::poll(Duration::from_millis(80))?
             && let Event::Key(k) = event::read()?
             && k.kind == KeyEventKind::Press
         {
-            match k.code {
-                KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                    handle.abort();
-                    break;
+            if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
+                handle.abort();
+                break;
+            }
+
+            if detail.is_some() {
+                if matches!(k.code, KeyCode::Enter | KeyCode::Esc) {
+                    detail = None;
                 }
-                KeyCode::Char('w') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                    workroom.set_focused(!workroom.is_focused());
+            } else {
+                match k.code {
+                    KeyCode::Char('w') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                        workroom.set_focused(!workroom.is_focused());
+                    }
+                    KeyCode::Up | KeyCode::Char('k') if workroom.is_focused() => {
+                        workroom.select_prev()
+                    }
+                    KeyCode::Down | KeyCode::Char('j') if workroom.is_focused() => {
+                        workroom.select_next()
+                    }
+                    KeyCode::Enter if workroom.is_focused() => {
+                        detail = workroom.selected_detail_markdown();
+                    }
+                    KeyCode::Char('q') | KeyCode::Esc if finished => break,
+                    KeyCode::Char('q') if !workroom.is_focused() => {
+                        handle.abort();
+                        break;
+                    }
+                    _ => {}
                 }
-                KeyCode::Up | KeyCode::Char('k') if workroom.is_focused() => workroom.select_prev(),
-                KeyCode::Down | KeyCode::Char('j') if workroom.is_focused() => {
-                    workroom.select_next()
-                }
-                KeyCode::Char('q') | KeyCode::Esc if finished => break,
-                KeyCode::Char('q') if !workroom.is_focused() => {
-                    handle.abort();
-                    break;
-                }
-                _ => {}
             }
         }
     }

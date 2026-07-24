@@ -121,6 +121,13 @@ impl Workroom {
         self.focused
     }
 
+    /// Number of tracked agents — used by the fullscreen run view to size the
+    /// centered panel (rich layouts need roughly two lines per agent, plus
+    /// arrows/footer).
+    pub fn agent_count(&self) -> usize {
+        self.agents.len()
+    }
+
     /// Mark the orchestration as finished so the renderer holds the final
     /// frame and shows the "press q/Esc to exit" hint instead of vanishing.
     pub fn set_completed(&mut self, completed: bool) {
