@@ -88,4 +88,4 @@ Please review the changes in src/core/agent.rs and verify test coverage.
 - **Streaming support**: No need to wait for timeout or guess when response is complete
 - **Metadata extraction**: Status, delegation info, and other data can be extracted without LLM parsing
 - **Clean output**: Markers are stripped for display, users see only your actual response
-- **Composability**: Multiple agents can use the same protocol for hierarchical delegation
+- **Composability**: Multiple agents relayed through `armadai shell` can use the same marker protocol to signal delegation. This is a **shell-relay** mechanism only — it is unrelated to ArmadAI's core hierarchical orchestration engine (`armadai run --orchestrate` / `orchestration.enabled`), which uses its own `@agent-name: task` text protocol (see `agents/_coordinator.md` and the `armadai-orchestration-patterns` skill). Empirically, only Claude Code reliably emits these markers for sub-agent delegation.

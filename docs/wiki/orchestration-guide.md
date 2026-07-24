@@ -6,7 +6,7 @@ Orchestration is the art of making multiple AI agents work together on a single 
 
 Why use orchestration? Complex tasks often benefit from specialization, multiple perspectives, or systematic decomposition. A code review is stronger when security, performance, and architecture experts each contribute their angle. A system design is more complete when frontend, backend, and DevOps specialists work in parallel. A large project is more manageable when a coordinator breaks it down and delegates to team leads.
 
-ArmadAI supports four orchestration patterns: **Direct** (single agent, no orchestration), **Blackboard** (parallel independent work), **Ring** (sequential review with consensus voting), and **Hierarchical** (coordinator-led delegation with multi-level teams). Each pattern fits different collaboration styles and task structures.
+ArmadAI supports four orchestration patterns: **Direct** (single agent, no orchestration), **Blackboard** (parallel independent work), **Ring** (sequential review with consensus voting), and **Hierarchical** (coordinator-led delegation with multi-level teams) — plus **Auto**, a config-only meta-pattern that lets the engine pick one of the four for you. Each pattern fits different collaboration styles and task structures.
 
 ## Patterns
 
@@ -196,6 +196,16 @@ orchestration:
 **Delegation protocol:** The engine automatically injects an `## Orchestration Protocol` block into each agent's system prompt, describing their role, available team members, and the `@agent-name: message` delegation syntax.
 
 **Safety limits:** Configure `max_depth`, `max_iterations`, and `timeout` to prevent runaway delegation.
+
+**C9 — nested sub-patterns per team:** give a team its own `pattern: blackboard` or `pattern: ring`
+(plus a `lead`, required as the arbiter) to have it run internally as a sub-orchestration instead
+of flat delegation, e.g. a security team that runs a Ring vote before reporting its verdict up to
+the coordinator.
+
+**C8 — routes and tags:** instead of a fixed `agents:`/`teams:` list, resolve the participant set
+at run time via named `orchestration.routes` (select with `armadai run --route <name>`) or
+tag/stack matching (`armadai run --tags <comma-separated>`); `--dry-run` previews the resolved
+selection for free. See the [Orchestration Reference](orchestration.md) for full examples.
 
 ## Decision Matrix
 

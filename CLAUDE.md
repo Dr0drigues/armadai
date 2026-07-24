@@ -28,9 +28,12 @@ cargo test --no-default-features --features tui,providers-api test_name
 RUST_LOG=debug cargo run -- list
 ```
 
-CI runs clippy/test with `--no-default-features --features tui` (no `providers-api`) to minimize deps. Always verify clippy passes in **both** modes:
-- `--no-default-features --features tui` (CI mode)
-- `--no-default-features --features tui,providers-api` (with API providers)
+CI runs clippy in **3 feature modes** to catch lints that only trip under one combo (see `.github/workflows/ci.yml`):
+- `--no-default-features --features tui`
+- `--no-default-features --features tui,providers-api`
+- `--no-default-features --features tui,web,storage`
+
+Tests run in 2 modes: `--no-default-features --features tui` and `--no-default-features --features tui,storage` (the latter also covers the `e2e` integration test target). Build (`--release`) uses `--no-default-features --features tui,storage`.
 
 ## Feature Flags
 
@@ -54,8 +57,8 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`.
 **Key modules**:
 - `cli/` — One file per command, each exports `async fn execute(...)`. Add new commands in `cli/mod.rs` (enum variant + handler).
 - `parser/` — Converts Markdown agent files into `Agent` struct. Required sections: H1 (name), `## Metadata`, `## System Prompt`.
-- `providers/` — `Provider` trait (in `traits.rs`) with `complete()` and `stream()` methods. Factory (`factory.rs`) constructs the right provider from agent metadata. Implementations: `api/anthropic.rs` (full), `cli.rs` (full), openai/google/proxy (stubs).
-- `core/` — Domain types: `Agent`, `AgentMetadata`, `Task`, `SharedContext`, `Coordinator`, `Pipeline`.
+- `providers/` — `Provider` trait (in `traits.rs`) with `complete()` and `stream()` methods. Factory (`factory.rs`) constructs the right provider from agent metadata. Implementations: `api/anthropic.rs` (full), `api/google.rs` (full), `cli.rs` (full); `api/openai.rs` and `proxy.rs` are `todo!()` stubs.
+- `core/` — Domain types: `Agent`, `AgentMetadata`, `PipelineConfig`, `events::RunEvent`/`EventSink`, `routing.rs` (agent selection). Orchestration lives under `core/orchestration/` (`OrchestrationPattern { Direct, Blackboard, Ring, Hierarchical, Auto }`) with the event-sourced engine under `core/orchestration/es/`. There is no `Task`/`SharedContext`/`Coordinator`/`Pipeline` type.
 - `core/project.rs` — Project config (`armadai.yaml`) with agent/prompt/skill resolution.
 - `core/prompt.rs` — Composable prompt fragments with YAML frontmatter.
 - `core/skill.rs` — Skills following the Agent Skills open standard (SKILL.md).
@@ -63,14 +66,21 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`.
 - `core/project_registry.rs` — JSON registry of known projects (auto-registered on `run`/`link`). Supports `prune` for stale entries.
 - `core/starter.rs` — Starter packs: curated agent bundles installed via `armadai init --pack`.
 - `core/embedded.rs` — Version-based extraction for embedded resources (`.armadai-version` marker).
+- `core/events.rs` — `RunEvent`/`EventSink`: the provider-agnostic event stream emitted by a run (consumed by `--json` and by the TUI Workroom).
+- `core/routing.rs` — C8 agent selection: named routes (`orchestration.routes`) and tag/stack matching for `--route`/`--tags`.
 - `parser/frontmatter.rs` — Generic YAML frontmatter extraction reused by prompts and skills.
-- `linker/` — Generates native config files for target AI CLIs. Trait `Linker` with one implementation per CLI (claude, copilot, cursor, aider, codex, gemini, windsurf, cline). `model_resolution.rs` handles model remapping per target and exposes `preview_model_resolution()` for UI previews. `model_aliases.rs` maps deprecated model names to their replacements (embedded YAML registry).
+- `linker/` — Generates native config files for target AI CLIs. Trait `Linker` with one implementation per CLI (**claude, codex, copilot, gemini, opencode**). `model_resolution.rs` handles model remapping per target and exposes `preview_model_resolution()` for UI previews. `model_aliases.rs` maps deprecated model names to their replacements (embedded YAML registry). `armadai_protocol_block()` (in `mod.rs`) injects the `<!--ARMADAI_DELEGATE/META/END-->` marker protocol into generated configs (shell-relay delegation, see below).
 - `registry/` — awesome-copilot integration. Sync, search, convert agents from the community catalog.
 - `skills_registry/` — GitHub-based skills discovery. Sync repos, build search index, install skills (`sync.rs`, `cache.rs`, `search.rs`).
+- `starters_registry/` — Remote starter pack registry (fetch/install curated starter bundles from external sources).
 - `model_registry/` — Dynamic model catalog from models.dev. Fetches and caches model metadata (cost, context window) for enriched selection in `armadai new -i`. Gated behind `providers-api` for HTTP fetch, cache-only fallback otherwise. Sync cache-only helpers (`load_models_cached`, `load_all_providers_cached`) always available for TUI/Web.
 - `storage/` — SQLite wrapper (via rusqlite). `schema.rs` defines the `runs` table, `queries.rs` has CRUD operations.
-- `tui/` — Ratatui-based terminal UI. `app.rs` holds state (incl. command palette), `views/` renders tabs (Agents/Prompts/Skills/Starters/History/Costs/Models + detail views + shortcuts bar + command palette overlay), `widgets/` provides reusable components. Supports `i` key to init project from starters. Models tab (key `7`) shows cached model catalog from models.dev. Agent detail view includes model resolution preview for all link targets.
-- `web/` — Axum-based web UI. Embedded single-page HTML app with JSON API endpoints (`/api/agents`, `/api/prompts`, `/api/skills`, `/api/starters`, `/api/starters/{name}/config`, `/api/history`, `/api/costs`, `/api/models`). Skill detail views show collapsible reference file contents. Starter detail pages include YAML config download. Models tab shows grouped catalog by provider. Agent detail includes model resolution table.
+- `audit/` — `armadai audit`: agentic-asset adoption/collision audit engine (collision matrix, frontmatter passthrough).
+- `tui/` — Ratatui-based terminal UI. `app.rs` holds state (incl. command palette), `views/` renders tabs (Agents/Prompts/Skills/Starters/History/Costs/Models + detail views + shortcuts bar + command palette overlay + orchestration/Workroom view), `widgets/` provides reusable components. Supports `i` key to init project from starters. Models tab (key `7`) shows cached model catalog from models.dev. Agent detail view includes model resolution preview for all link targets.
+- `shell/` — `armadai shell`: conversational PTY shell relaying a native CLI. `app.rs`, `tui.rs`, `workroom.rs` (live run view), `json_runner.rs` (stream-json), `runner.rs`, `parser.rs`.
+- `theme.rs` — Single shared theme (TUI + shell), color-tier aware (truecolor/256/16).
+- `logging.rs` — Tracing setup, incl. a reload handle used to silence logs during the live Workroom view.
+- `web/` — Axum-based web UI. The frontend is a **Svelte SPA** (`web/ui/`, built to `web/ui/dist/`) embedded at compile time via `include_dir!`. JSON API endpoints: `/api/agents(/{name})`, `/api/prompts(/{name})`, `/api/skills(/{name})`, `/api/starters(/{name}, /{name}/config)`, `/api/history`, `/api/costs`, `/api/models` (+ `/api/models/refresh`), `/api/orchestration/trace(/{run_id})`, `/api/orchestration/topology`.
 - `secrets/` — SOPS + age encrypted secrets loader.
 
 **Provider trait** (`providers/traits.rs`):
@@ -88,7 +98,7 @@ trait Provider: Send + Sync {
 
 ## Git Conventions
 
-- **Branch model**: `master` (releases), `develop` (default/integration), `feature/*` branches
+- **Branch model**: `master` (releases), `develop` (default/integration), `release/*` (release-line stabilization), `feature/*` branches
 - **Conventional Commits** enforced by `.githooks/commit-msg` hook and CI. Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`, `perf`, `style`, `build`, `revert`
 - **PR process**: Always squash merge to `develop`. Before merging: check for Dependabot PRs, verify CI passes (all 6 checks: fmt, clippy, test, build, conventional commits, audit).
 - Enable hooks after clone: `git config core.hooksPath .githooks`
