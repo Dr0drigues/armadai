@@ -11,7 +11,7 @@ use crate::tui::app::{App, Tab};
 use crate::tui::filter;
 use crate::tui::widgets::search_bar;
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

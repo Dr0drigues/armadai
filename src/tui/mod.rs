@@ -3,6 +3,7 @@ pub mod filter;
 pub mod format;
 pub mod views;
 pub mod widgets;
+mod wrap;
 
 use anyhow::Result;
 use crossterm::{
@@ -35,7 +36,7 @@ pub async fn run(ascii: bool) -> Result<()> {
 
     loop {
         terminal.draw(|frame| {
-            views::dashboard::render(frame, &app);
+            views::dashboard::render(frame, &mut app);
             // Overlay command palette if visible
             views::palette::render(frame, &app);
         })?;
@@ -52,6 +53,12 @@ pub async fn run(ascii: bool) -> Result<()> {
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 break;
             }
+
+            // Disarm "press Esc again to quit" (see `handle_top_level_esc`
+            // below) on any key that isn't Esc — the double-Esc confirmation
+            // must be consecutive, mirroring `src/shell/tui.rs`'s
+            // `esc_armed` semantics.
+            disarm_esc_on_other_key(&mut app, key.code);
 
             // Command palette mode
             if app.palette.visible {
@@ -143,7 +150,17 @@ pub async fn run(ascii: bool) -> Result<()> {
                         app.switch_tab(app::Tab::Orchestration);
                         continue;
                     }
-                    _ => break, // Quit on Esc from top-level tabs
+                    // Top-level list view: Esc no longer quits instantly.
+                    // First press arms a "press Esc again to quit" safety
+                    // net (shown in the shortcuts bar); a second,
+                    // consecutive Esc confirms. Mirrors the shell TUI's
+                    // `esc_armed` (`src/shell/tui.rs`).
+                    _ => {
+                        if handle_top_level_esc(&mut app) {
+                            break;
+                        }
+                        continue;
+                    }
                 }
             }
 
@@ -224,13 +241,19 @@ pub async fn run(ascii: bool) -> Result<()> {
                         app.select_prev();
                     }
                 }
+                KeyCode::PageDown if is_scrollable_detail(app.current_tab) => {
+                    app.scroll_detail_page_down();
+                }
+                KeyCode::PageUp if is_scrollable_detail(app.current_tab) => {
+                    app.scroll_detail_page_up();
+                }
                 KeyCode::Char('R')
                     if matches!(app.current_tab, app::Tab::Models | app::Tab::ModelDetail) =>
                 {
                     app.status_msg = Some("Syncing models from models.dev…".to_string());
                     // Force redraw to show status message
                     terminal.draw(|frame| {
-                        views::dashboard::render(frame, &app);
+                        views::dashboard::render(frame, &mut app);
                         views::palette::render(frame, &app);
                     })?;
                     match sync_models_online().await {
@@ -357,6 +380,29 @@ fn is_scrollable_detail(tab: app::Tab) -> bool {
     )
 }
 
+/// Disarm the top-level "press Esc again to quit" safety net (see
+/// `handle_top_level_esc`) on any key that isn't Esc. The double-Esc
+/// confirmation must be consecutive — mirrors `src/shell/tui.rs`'s
+/// `esc_armed` semantics.
+fn disarm_esc_on_other_key(app: &mut app::App, code: KeyCode) {
+    if code != KeyCode::Esc {
+        app.esc_armed = false;
+    }
+}
+
+/// Handle Esc pressed on a top-level list view (no popup/search/detail
+/// active). First press arms `esc_armed` (surfaced in the shortcuts bar,
+/// see `views::shortcuts::render`) instead of quitting outright; a second,
+/// consecutive Esc confirms. Returns `true` if the caller should quit.
+fn handle_top_level_esc(app: &mut app::App) -> bool {
+    if app.esc_armed {
+        true
+    } else {
+        app.esc_armed = true;
+        false
+    }
+}
+
 #[cfg(feature = "storage")]
 fn load_storage_data(app: &mut app::App) {
     use crate::storage::{init_db, queries};
@@ -418,4 +464,39 @@ async fn sync_models_online() -> anyhow::Result<usize> {
 #[cfg(not(feature = "providers-api"))]
 async fn sync_models_online() -> anyhow::Result<usize> {
     anyhow::bail!("Model sync requires providers-api feature")
+}
+
+#[cfg(test)]
+mod esc_quit_tests {
+    use super::*;
+
+    #[test]
+    fn first_top_level_esc_arms_without_quitting() {
+        let mut app = app::App::new();
+        assert!(!handle_top_level_esc(&mut app));
+        assert!(app.esc_armed);
+    }
+
+    #[test]
+    fn second_consecutive_top_level_esc_quits() {
+        let mut app = app::App::new();
+        handle_top_level_esc(&mut app);
+        assert!(handle_top_level_esc(&mut app));
+    }
+
+    #[test]
+    fn any_other_key_disarms_the_pending_quit() {
+        let mut app = app::App::new();
+        app.esc_armed = true;
+        disarm_esc_on_other_key(&mut app, KeyCode::Char('q'));
+        assert!(!app.esc_armed);
+    }
+
+    #[test]
+    fn esc_itself_does_not_disarm() {
+        let mut app = app::App::new();
+        app.esc_armed = true;
+        disarm_esc_on_other_key(&mut app, KeyCode::Esc);
+        assert!(app.esc_armed);
+    }
 }

@@ -8,11 +8,13 @@ use ratatui::{
 
 use crate::theme;
 use crate::tui::app::App;
+use crate::tui::wrap::wrapped_line_count;
 
-pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let agent = match app.selected_agent() {
         Some(a) => a,
         None => {
+            app.set_detail_scroll_max(0);
             let msg = Paragraph::new("No agent selected. Go to Agents tab and select one.").block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -223,28 +225,52 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .wrap(Wrap { trim: false });
     frame.render_widget(res_widget, chunks[2 + orch_offset]);
 
-    // System Prompt section
+    // System Prompt section. Both bodies are pulled out as owned `String`s
+    // up front (rather than kept as `&agent.*` borrows) so `agent` (which
+    // borrows `app` via `selected_agent()`) is no longer live once we need
+    // `app` mutably below to record the scroll bound.
     let prompt_text = if agent.system_prompt.is_empty() {
         "(no system prompt)".to_string()
     } else {
         agent.system_prompt.clone()
     };
+    let instr_text = agent
+        .instructions
+        .as_deref()
+        .unwrap_or("(no instructions)")
+        .to_string();
+
+    let prompt_area = chunks[3 + orch_offset];
+    let inner_width = prompt_area.width.saturating_sub(2);
+    let inner_height = prompt_area.height.saturating_sub(2);
+    let total_lines = wrapped_line_count(&prompt_text, inner_width);
+    let overflow = total_lines > inner_height as usize;
+    app.set_detail_scroll_max(total_lines.saturating_sub(inner_height as usize) as u16);
+    let scroll = app.detail_scroll;
+
+    let mut prompt_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" System Prompt ")
+        .title_style(Style::default().add_modifier(Modifier::BOLD))
+        .style(theme::border_style());
+    if overflow {
+        // Scroll position indicator (only shown when content overflows the
+        // panel), right-aligned on the same border line as the title.
+        prompt_block = prompt_block.title(
+            Line::from(format!(" {}/{} ", scroll + 1, total_lines))
+                .right_aligned()
+                .style(theme::muted()),
+        );
+    }
     let prompt_widget = Paragraph::new(prompt_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" System Prompt ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD))
-                .style(theme::border_style()),
-        )
+        .block(prompt_block)
         // Was `fg(Color::White)` — white-on-white on a light terminal.
         .style(Style::default())
         .wrap(Wrap { trim: false })
-        .scroll((app.detail_scroll, 0));
-    frame.render_widget(prompt_widget, chunks[3 + orch_offset]);
+        .scroll((scroll, 0));
+    frame.render_widget(prompt_widget, prompt_area);
 
     // Instructions section
-    let instr_text = agent.instructions.as_deref().unwrap_or("(no instructions)");
     let instr_widget = Paragraph::new(instr_text)
         .block(
             Block::default()

@@ -4,6 +4,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Rect},
     style::{Modifier, Style},
+    text::Line,
     widgets::{Block, Borders, Paragraph, Row, Table},
 };
 
@@ -112,7 +113,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-pub fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
+pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(entry) = app.selected_orchestration_entry() {
         use crate::storage::{init_db, queries};
 
@@ -164,17 +165,40 @@ pub fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
             Err(e) => format!("Database error: {}", e),
         };
 
+        // Owned now (rather than kept as a format! borrowing `entry`) so
+        // `entry`'s borrow of `app` ends here, freeing `app` for the
+        // mutable scroll-bound call below.
+        let run_title = format!(" Run {} ", entry.run_id);
+
+        // This view renders unwrapped (no `.wrap(...)`, to preserve the
+        // pretty-printed JSON's indentation) — so, unlike the other detail
+        // views, its line count is just the raw newline count, not a
+        // wrapped-line estimate.
+        let inner_height = area.height.saturating_sub(2);
+        let total_lines = detail_content.lines().count().max(1);
+        let overflow = total_lines > inner_height as usize;
+        app.set_detail_scroll_max(total_lines.saturating_sub(inner_height as usize) as u16);
+        let scroll = app.detail_scroll;
+
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .title(run_title)
+            .style(theme::border_style());
+        if overflow {
+            block = block.title(
+                Line::from(format!(" {}/{} ", scroll + 1, total_lines))
+                    .right_aligned()
+                    .style(theme::muted()),
+            );
+        }
+
         let paragraph = Paragraph::new(detail_content)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" Run {} ", entry.run_id))
-                    .style(theme::border_style()),
-            )
-            .scroll((app.detail_scroll, 0));
+            .block(block)
+            .scroll((scroll, 0));
 
         frame.render_widget(paragraph, area);
     } else {
+        app.set_detail_scroll_max(0);
         let msg = Paragraph::new("No orchestration run selected").block(
             Block::default()
                 .borders(Borders::ALL)
