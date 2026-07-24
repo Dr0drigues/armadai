@@ -2,7 +2,8 @@ use ratatui::{
     Frame,
     layout::{Constraint, Rect},
     style::{Modifier, Style},
-    widgets::{Block, Borders, Paragraph, Row, Table},
+    text::Text,
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
 
 use crate::theme;
@@ -10,6 +11,12 @@ use crate::tui::app::App;
 use crate::tui::filter;
 use crate::tui::format::format_cost;
 use crate::tui::widgets::search_bar;
+
+/// Right-align a cell's content (numeric columns), matching the convention
+/// that numbers line up on their least-significant digit.
+fn right(text: impl Into<Text<'static>>) -> Cell<'static> {
+    Cell::from(text.into().right_aligned())
+}
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.costs.is_empty() {
@@ -39,16 +46,26 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // Column labels: right-aligned over the numeric columns (matching the
+    // values underneath) and muted, per the design-system convention that
+    // headers/labels use `theme::muted()`.
+    let header_style = theme::muted().add_modifier(Modifier::BOLD);
     let header = Row::new(vec![
-        "",
-        "AGENT",
-        "RUNS",
-        "COST (USD)",
-        "TOKENS IN",
-        "TOKENS OUT",
+        Cell::from(""),
+        Cell::from("AGENT"),
+        right("RUNS"),
+        right("COST (USD)"),
+        right("TOKENS IN"),
+        right("TOKENS OUT"),
     ])
-    .style(Style::default().add_modifier(Modifier::BOLD))
+    .style(header_style)
     .bottom_margin(1);
+
+    // Runs/tokens are secondary to the agent name and its cost (the point
+    // of this view), so they're muted to let AGENT/COST stand out — even
+    // on a selected row, where the row-level selection style still wins
+    // for foreground boldness but the muted fg keeps them de-emphasized.
+    let secondary_style = theme::muted();
 
     let mut rows: Vec<Row> = display_indices
         .iter()
@@ -66,12 +83,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default()
             };
             Row::new(vec![
-                marker.to_string(),
-                c.agent.clone(),
-                c.total_runs.to_string(),
-                format_cost(c.total_cost),
-                c.total_tokens_in.to_string(),
-                c.total_tokens_out.to_string(),
+                Cell::from(marker),
+                Cell::from(c.agent.clone()),
+                right(c.total_runs.to_string()).style(secondary_style),
+                right(format_cost(c.total_cost)),
+                right(c.total_tokens_in.to_string()).style(secondary_style),
+                right(c.total_tokens_out.to_string()).style(secondary_style),
             ])
             .style(style)
         })
@@ -83,12 +100,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let total_cost: f64 = app.costs.iter().map(|c| c.total_cost).sum();
     rows.push(
         Row::new(vec![
-            String::new(),
-            "TOTAL".to_string(),
-            String::new(),
-            format_cost(total_cost),
-            String::new(),
-            String::new(),
+            Cell::from(""),
+            Cell::from("TOTAL"),
+            Cell::from(""),
+            right(format_cost(total_cost)),
+            Cell::from(""),
+            Cell::from(""),
         ])
         .style(Style::default().add_modifier(Modifier::BOLD))
         .top_margin(1),
