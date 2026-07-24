@@ -1,3 +1,61 @@
+## v1.0.0 (2026-07-24)
+
+First stable release. After the RC line, the 1.0.0 scope was deliberately
+reopened to fold in the event-sourced orchestration core, the full Svelte web
+rewrite, and the complete design-system rollout across every surface. The
+imperative legacy engines are gone; a single event log now drives orchestration,
+its projections, and the live view.
+
+### Event-sourced orchestration core (OH1)
+
+- **Event-sourcing foundation** (#214): `ExecutionEvent` + reducer + `EventLog`
+  and a generic execution loop underneath every pattern.
+- **All patterns event-sourced** (#215, #216): hierarchical, blackboard and ring
+  rebuilt on the event core, with nested C9 pattern-mixing coexisting.
+- **`run` switched onto the ES engines** (#219); the **legacy imperative engines
+  were removed** as dead code (#221).
+- **Persistent event log + derived projections** (#222, #223): the ES log is
+  stored under `storage`, and the flat tables are now projections derived from it.
+- **Deterministic e2e harness** (#218): `fake-claude` + case files + weighted
+  report; CI runs clippy across all gated feature combinations (#224).
+
+### Provider-agnostic live Workroom
+
+- **Workroom driven by the core `RunEvent` stream** (#244): the live orchestration
+  view on `armadai run --orchestrate` is now provider-neutral, no longer tied to
+  shell-relay markers.
+
+### Web dashboard — Svelte rewrite
+
+- **Full rewrite of the web UI to a Svelte SPA** (#231→#236), embedded at compile
+  time via `include_dir`, CI stays 100% Rust. Foundations + Agents/History (#231),
+  IBM Plex fonts + icon system + Prompts/Skills/Starters (#232), Costs & Models
+  (#233), hash router + detail pages + Orchestration tab (#235); the legacy
+  `index.html` was removed and `/` now serves the app (#236).
+
+### Design system across TUI and CLI
+
+- **TUI** reskinned to the "pont de commandement" identity via the shared
+  `src/theme.rs` (accent-only, tier-aware) (#237, #239); adaptive Workroom layouts
+  for every pattern + drill-down + `--ascii` (#240→#243).
+- **CLI** human output styled through the new `src/cli/style.rs` (anstyle+anstream,
+  accent-only, auto-strip on `NO_COLOR`/non-TTY): `armadai run` (#246) then every
+  remaining command incl. the audit report by severity (#247).
+
+### Fixes
+
+- CLI provider now forwards the `system_prompt` instead of dropping it (#217).
+- Higher default token budgets + ring context growth capped (#220).
+- Model catalog is shown even when the cache is stale (#234).
+- Security audit fails only on true vulnerabilities, not warnings (#178).
+- Agentic-asset docs refreshed to match the code (#245).
+
+### Project
+
+- **master-only branch model** adopted (no `develop`); docs, CI and dependabot
+  updated accordingly.
+- Dependency bumps across the tree; `cargo audit` clean.
+
 ## v1.0.0-rc.4 (2026-07-21)
 
 Fourth release candidate for 1.0.0. Completes the RC roadmap with remote
