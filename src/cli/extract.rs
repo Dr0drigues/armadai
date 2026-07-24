@@ -429,15 +429,22 @@ fn run_wizard(mut args: ExtractArgs) -> anyhow::Result<ExtractArgs> {
 // ---------------------------------------------------------------------------
 
 fn print_summary(out: &Path, selected: &Selection, as_pack: bool) {
-    println!(
-        "\nExtracted {} agent(s), {} prompt(s), {} skill(s) -> {}",
+    let o = crate::cli::style::ok();
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "\n{o}Extracted {} agent(s), {} prompt(s), {} skill(s){o:#} {m}-> {}{m:#}",
         selected.agents.len(),
         selected.prompts.len(),
         selected.skills.len(),
         out.display()
     );
     if as_pack {
-        println!("Generated pack.yaml at {}", out.join("pack.yaml").display());
+        let o = crate::cli::style::ok();
+        let m = crate::cli::style::muted();
+        anstream::println!(
+            "{o}Generated pack.yaml at{o:#} {m}{}{m:#}",
+            out.join("pack.yaml").display()
+        );
     }
 }
 

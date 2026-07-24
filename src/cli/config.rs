@@ -71,29 +71,40 @@ async fn show_providers() -> anyhow::Result<()> {
     let config_path = config_dir.join("providers.yaml");
     if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)?;
-        println!("Provider configuration ({}):\n", config_path.display());
-        println!("{content}");
+        let h = crate::cli::style::header();
+        anstream::println!(
+            "{h}Provider configuration ({}):{h:#}\n",
+            config_path.display()
+        );
+        anstream::println!("{content}");
     } else {
-        println!(
-            "No provider configuration found at {}",
+        let m = crate::cli::style::muted();
+        anstream::println!(
+            "{m}No provider configuration found at {}{m:#}",
             config_path.display()
         );
     }
 
-    println!("---");
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}---{m:#}");
 
     // Show secrets status
     let sops_path = config_dir.join("providers.sops.yaml");
     let plain_path = config_dir.join("providers.secret.yaml");
 
     if sops_path.exists() {
-        println!("Secrets: encrypted (SOPS) at {}", sops_path.display());
+        let m = crate::cli::style::muted();
+        anstream::println!(
+            "{m}Secrets: encrypted (SOPS) at {}{m:#}",
+            sops_path.display()
+        );
         // Try to list provider names from decrypted content
         match crate::secrets::load_secrets(&config_dir) {
             Ok(secrets) => {
                 let names: Vec<&String> = secrets.providers.keys().collect();
-                println!(
-                    "  Configured API keys: {}",
+                let m = crate::cli::style::muted();
+                anstream::println!(
+                    "{m}  Configured API keys:{m:#} {}",
                     names
                         .iter()
                         .map(|s| s.as_str())
@@ -102,19 +113,22 @@ async fn show_providers() -> anyhow::Result<()> {
                 );
             }
             Err(e) => {
-                println!("  (could not decrypt: {e})");
+                let e_style = crate::cli::style::err();
+                anstream::println!("{e_style}  (could not decrypt: {e}){e_style:#}");
             }
         }
     } else if plain_path.exists() {
-        println!(
-            "Secrets: unencrypted at {} (consider running: armadai config secrets init)",
+        let m = crate::cli::style::muted();
+        anstream::println!(
+            "{m}Secrets: unencrypted at {} (consider running: armadai config secrets init){m:#}",
             plain_path.display()
         );
         match crate::secrets::load_secrets(&config_dir) {
             Ok(secrets) => {
                 let names: Vec<&String> = secrets.providers.keys().collect();
-                println!(
-                    "  Configured API keys: {}",
+                let m = crate::cli::style::muted();
+                anstream::println!(
+                    "{m}  Configured API keys:{m:#} {}",
                     names
                         .iter()
                         .map(|s| s.as_str())
@@ -123,28 +137,38 @@ async fn show_providers() -> anyhow::Result<()> {
                 );
             }
             Err(e) => {
-                println!("  (could not read: {e})");
+                let e_style = crate::cli::style::err();
+                anstream::println!("{e_style}  (could not read: {e}){e_style:#}");
             }
         }
     } else {
-        println!("No secrets file found. Create one:");
-        println!("  Option A: armadai config secrets init  (encrypted with SOPS + age)");
-        println!("  Option B: Create config/providers.secret.yaml manually (unencrypted)");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}No secrets file found. Create one:{m:#}");
+        anstream::println!(
+            "{m}  Option A: armadai config secrets init  (encrypted with SOPS + age){m:#}"
+        );
+        anstream::println!(
+            "{m}  Option B: Create config/providers.secret.yaml manually (unencrypted){m:#}"
+        );
     }
 
     // Check environment variables
-    println!("\n--- Environment variables ---");
+    let h = crate::cli::style::header();
+    anstream::println!("\n{h}--- Environment variables ---{h:#}");
     for (name, var) in [
         ("Anthropic", "ANTHROPIC_API_KEY"),
         ("OpenAI", "OPENAI_API_KEY"),
         ("Google", "GOOGLE_API_KEY"),
     ] {
-        let status = if std::env::var(var).is_ok_and(|v| !v.is_empty()) {
-            "set"
+        let is_set = std::env::var(var).is_ok_and(|v| !v.is_empty());
+        let status = if is_set { "set" } else { "not set" };
+        if is_set {
+            let o = crate::cli::style::ok();
+            anstream::println!("  {name}: ${var} = {o}{status}{o:#}");
         } else {
-            "not set"
-        };
-        println!("  {name}: ${var} = {status}");
+            let m = crate::cli::style::muted();
+            anstream::println!("  {name}: ${var} = {m}{status}{m:#}");
+        }
     }
 
     Ok(())
@@ -172,7 +196,8 @@ providers:
     api_key: "AIza-your-key-here"
 "#;
         std::fs::write(&sops_path, template)?;
-        println!("Template created at: {}", sops_path.display());
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}Template created at: {}{m:#}", sops_path.display());
 
         // Try to encrypt it with sops
         let encrypt = std::process::Command::new("sops")
@@ -181,28 +206,36 @@ providers:
 
         match encrypt {
             Ok(output) if output.status.success() => {
-                println!("File encrypted successfully.");
-                println!("\nEdit your secrets with:");
-                println!("  sops config/providers.sops.yaml");
+                let o = crate::cli::style::ok();
+                anstream::println!("{o}File encrypted successfully.{o:#}");
+                let m = crate::cli::style::muted();
+                anstream::println!("{m}\nEdit your secrets with:{m:#}");
+                anstream::println!("{m}  sops config/providers.sops.yaml{m:#}");
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                println!(
-                    "\nWarning: could not encrypt file: {stderr}\n\
+                let w = crate::cli::style::warn();
+                anstream::println!(
+                    "{w}\nWarning: could not encrypt file: {stderr}\n\
                      Make sure SOPS_AGE_KEY_FILE is set, then encrypt manually:\n  \
-                     sops --encrypt --in-place config/providers.sops.yaml"
+                     sops --encrypt --in-place config/providers.sops.yaml{w:#}"
                 );
             }
             Err(_) => {
-                println!(
-                    "\nWarning: sops not found. Install it and encrypt manually:\n  \
-                     sops --encrypt --in-place config/providers.sops.yaml"
+                let w = crate::cli::style::warn();
+                anstream::println!(
+                    "{w}\nWarning: sops not found. Install it and encrypt manually:\n  \
+                     sops --encrypt --in-place config/providers.sops.yaml{w:#}"
                 );
             }
         }
     } else {
-        println!("Secrets file already exists at: {}", sops_path.display());
-        println!("Edit with: sops config/providers.sops.yaml");
+        let m = crate::cli::style::muted();
+        anstream::println!(
+            "{m}Secrets file already exists at: {}{m:#}",
+            sops_path.display()
+        );
+        anstream::println!("{m}Edit with: sops config/providers.sops.yaml{m:#}");
     }
 
     Ok(())
@@ -229,13 +262,15 @@ async fn secrets_rotate() -> anyhow::Result<()> {
     }
 
     // 1. Decrypt current secrets
-    println!("Decrypting current secrets...");
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}Decrypting current secrets...{m:#}");
     let secrets = crate::secrets::sops::decrypt_file(&sops_path)?;
 
     // 2. Backup old key
     let backup_path = config_dir.join("age-key.txt.bak");
     std::fs::copy(&key_path, &backup_path)?;
-    println!("Old key backed up to: {}", backup_path.display());
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}Old key backed up to: {}{m:#}", backup_path.display());
 
     // 3. Generate new key
     std::fs::remove_file(&key_path)?;
@@ -251,7 +286,8 @@ async fn secrets_rotate() -> anyhow::Result<()> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    println!("New age key generated.");
+    let o = crate::cli::style::ok();
+    anstream::println!("{o}New age key generated.{o:#}");
 
     // 4. Update .sops.yaml with new public key
     let key_content = std::fs::read_to_string(&key_path)?;
@@ -269,7 +305,8 @@ async fn secrets_rotate() -> anyhow::Result<()> {
     );
     let sops_config_path = Path::new(".sops.yaml");
     std::fs::write(sops_config_path, sops_config)?;
-    println!("Updated .sops.yaml with new public key.");
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}Updated .sops.yaml with new public key.{m:#}");
 
     // 5. Re-encrypt secrets with new key
     let yaml = serde_yaml_ng::to_string(&secrets)?;
@@ -286,10 +323,12 @@ async fn secrets_rotate() -> anyhow::Result<()> {
         );
     }
 
-    println!("Secrets re-encrypted with new key.");
-    println!("\nDon't forget to update SOPS_AGE_KEY_FILE if needed.");
-    println!(
-        "You can delete the backup when confirmed: rm {}",
+    let o = crate::cli::style::ok();
+    anstream::println!("{o}Secrets re-encrypted with new key.{o:#}");
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}\nDon't forget to update SOPS_AGE_KEY_FILE if needed.{m:#}");
+    anstream::println!(
+        "{m}You can delete the backup when confirmed: rm {}{m:#}",
         backup_path.display()
     );
 
@@ -333,7 +372,8 @@ async fn starters_dir_list() -> anyhow::Result<()> {
         } else {
             "unknown"
         };
-        println!("  [{source}] {}", dir.display());
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}  [{source}]{m:#} {}", dir.display());
     }
 
     Ok(())
@@ -344,14 +384,20 @@ async fn starters_dir_add(path: &str) -> anyhow::Result<()> {
     let mut config = app_config::load_user_config();
 
     if config.starters_dirs.contains(&path.to_string()) {
-        println!("Directory already in config: {path}");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}Directory already in config: {path}{m:#}");
         return Ok(());
     }
 
     config.starters_dirs.push(path.to_string());
     app_config::save_user_config(&config)?;
-    println!("Added starter directory: {path}");
-    println!("  Saved to {}", app_config::config_file_path().display());
+    let o = crate::cli::style::ok();
+    anstream::println!("{o}Added starter directory: {path}{o:#}");
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{m}  Saved to {}{m:#}",
+        app_config::config_file_path().display()
+    );
 
     Ok(())
 }
@@ -364,13 +410,19 @@ async fn starters_dir_remove(path: &str) -> anyhow::Result<()> {
     config.starters_dirs.retain(|d| d != path);
 
     if config.starters_dirs.len() == before {
-        println!("Directory not found in config: {path}");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}Directory not found in config: {path}{m:#}");
         return Ok(());
     }
 
     app_config::save_user_config(&config)?;
-    println!("Removed starter directory: {path}");
-    println!("  Saved to {}", app_config::config_file_path().display());
+    let o = crate::cli::style::ok();
+    anstream::println!("{o}Removed starter directory: {path}{o:#}");
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{m}  Saved to {}{m:#}",
+        app_config::config_file_path().display()
+    );
 
     Ok(())
 }

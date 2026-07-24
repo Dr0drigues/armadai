@@ -101,7 +101,10 @@ async fn apply_deep_pass(
     let (_, config) = import_surfaces(root);
     let agent = build_deep_auditor(cli);
     let run = |prompt: &str| call_deep_auditor(&agent, prompt);
-    eprintln!("  Note: --deep sends (secret-redacted) prompt excerpts to the '{cli}' CLI.");
+    let w = crate::cli::style::warn();
+    anstream::eprintln!(
+        "{w}  Note: --deep sends (secret-redacted) prompt excerpts to the '{cli}' CLI.{w:#}"
+    );
     match run_deep(
         &config,
         &audit.findings,
@@ -139,8 +142,9 @@ pub async fn execute(
     let settings = AuditSettings::from_project(&root);
     let mut audit = run_audit(&root, &settings);
     if audit.detected.is_empty() {
-        println!(
-            "No native agentic configuration detected in {}.",
+        let o = crate::cli::style::ok();
+        anstream::println!(
+            "{o}No native agentic configuration detected in {}.{o:#}",
             root.display()
         );
         return Ok(());
@@ -157,31 +161,50 @@ pub async fn execute(
             .unwrap_or(false);
         if is_html {
             std::fs::write(&out, audit.to_html())?;
-            println!("\n  HTML report written to {}", out.display());
+            let o = crate::cli::style::ok();
+            let m = crate::cli::style::muted();
+            anstream::println!(
+                "\n  {o}HTML report written to{o:#} {m}{}{m:#}",
+                out.display()
+            );
         } else {
             std::fs::write(&out, audit.to_markdown())?;
-            println!("\n  Markdown report written to {}", out.display());
+            let o = crate::cli::style::ok();
+            let m = crate::cli::style::muted();
+            anstream::println!(
+                "\n  {o}Markdown report written to{o:#} {m}{}{m:#}",
+                out.display()
+            );
         }
     }
     if propose {
         let (_, config) = import_surfaces(&root);
         let summary = generate_proposal(&root, &config)?;
-        println!();
-        println!("  Proposal written to {}/", summary.out_dir.display());
-        println!(
-            "    {} agent(s), {} shared prompt(s), {} skill(s) ({} fixed)",
-            summary.agents, summary.prompts, summary.skills, summary.skill_fixes
+        anstream::println!();
+        let o = crate::cli::style::ok();
+        let m = crate::cli::style::muted();
+        anstream::println!(
+            "  {o}Proposal written to{o:#} {m}{}/{m:#}",
+            summary.out_dir.display()
+        );
+        anstream::println!(
+            "{m}    {} agent(s), {} shared prompt(s), {} skill(s) ({} fixed){m:#}",
+            summary.agents,
+            summary.prompts,
+            summary.skills,
+            summary.skill_fixes
         );
         if !summary.skipped_agents.is_empty() {
-            println!(
-                "    {} agent(s) skipped (unreadable): {}",
+            let w = crate::cli::style::warn();
+            anstream::println!(
+                "{w}    {} agent(s) skipped (unreadable): {}{w:#}",
                 summary.skipped_agents.len(),
                 summary.skipped_agents.join(", ")
             );
         }
-        println!("  Install it with:");
-        println!(
-            "    armadai init --pack {} --project",
+        anstream::println!("{m}  Install it with:{m:#}");
+        anstream::println!(
+            "{m}    armadai init --pack {} --project{m:#}",
             summary.out_dir.display()
         );
     }
