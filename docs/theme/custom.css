@@ -1,0 +1,72 @@
+/* IBM Plex @font-face declarations live in docs/theme/fonts/fonts.css
+   (mdBook's theme-fonts convention: `theme = "docs/theme"` in book.toml
+   makes it copy docs/theme/fonts/* to the site-root `fonts/` directory
+   and auto-link `fonts/fonts.css` — keeping the woff2 references correct
+   regardless of where this additional-css file itself is served from). */
+
+:root {
+  --ds-brass: #c79a4a;
+  --ds-brass-strong: #e0b45c;
+}
+
+html { font-family:"IBM Plex Sans","Segoe UI",system-ui,sans-serif; }
+code, pre, .hljs { font-family:"IBM Plex Mono",ui-monospace,monospace; }
+
+/* Light theme — DS light tokens (oklch from tokens.css) */
+.light {
+  --bg: oklch(0.985 0.004 236);
+  --fg: oklch(0.245 0.036 248);
+  --sidebar-bg: oklch(0.944 0.010 238);
+  --sidebar-fg: oklch(0.400 0.030 246);
+  --sidebar-non-existant: oklch(0.630 0.022 244);
+  --sidebar-active: var(--ds-brass);
+  --sidebar-spacer: oklch(0.868 0.013 240);
+  --scrollbar: oklch(0.770 0.022 242);
+  --icons: oklch(0.520 0.026 245);
+  --icons-hover: var(--ds-brass);
+  --links: oklch(0.560 0.110 78);
+  --inline-code-color: oklch(0.475 0.108 76);
+  --theme-popup-bg: oklch(0.980 0.006 237);
+  --theme-popup-border: oklch(0.868 0.013 240);
+  --theme-hover: oklch(0.944 0.010 238);
+  --quote-bg: oklch(0.944 0.010 238);
+  --quote-border: var(--ds-brass);
+  --table-border-color: oklch(0.868 0.013 240);
+  --table-header-bg: oklch(0.930 0.045 84);
+  --table-alternate-bg: oklch(0.980 0.006 237);
+  --searchbar-border-color: oklch(0.868 0.013 240);
+  --searchbar-bg: oklch(0.980 0.006 237);
+  --searchbar-fg: oklch(0.245 0.036 248);
+  --search-mark-bg: oklch(0.930 0.045 84);
+}
+
+/* Dark theme (navy slot) — DS dark tokens */
+.navy {
+  --bg: oklch(0.188 0.030 248);
+  --fg: oklch(0.955 0.008 240);
+  --sidebar-bg: oklch(0.223 0.031 247);
+  --sidebar-fg: oklch(0.790 0.015 240);
+  --sidebar-non-existant: oklch(0.505 0.020 244);
+  --sidebar-active: var(--ds-brass);
+  --sidebar-spacer: oklch(0.360 0.030 244);
+  --scrollbar: oklch(0.470 0.034 243);
+  --icons: oklch(0.635 0.020 242);
+  --icons-hover: var(--ds-brass-strong);
+  --links: var(--ds-brass);
+  --inline-code-color: var(--ds-brass-strong);
+  --theme-popup-bg: oklch(0.223 0.031 247);
+  --theme-popup-border: oklch(0.360 0.030 244);
+  --theme-hover: oklch(0.258 0.032 246);
+  --quote-bg: oklch(0.223 0.031 247);
+  --quote-border: var(--ds-brass);
+  --table-border-color: oklch(0.360 0.030 244);
+  --table-header-bg: oklch(0.300 0.045 82);
+  --table-alternate-bg: oklch(0.223 0.031 247);
+  --searchbar-border-color: oklch(0.360 0.030 244);
+  --searchbar-bg: oklch(0.223 0.031 247);
+  --searchbar-fg: oklch(0.955 0.008 240);
+  --search-mark-bg: oklch(0.300 0.045 82);
+}
+
+/* Brass menu title */
+.menu-title { font-weight:700; color:var(--ds-brass); }
