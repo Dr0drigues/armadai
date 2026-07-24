@@ -3495,6 +3495,168 @@ mod tests {
         assert!(!final_content(&log, "run-resume-hier").trim().is_empty());
     }
 
+    /// OH1 Lot 6, Task 4: crash→resume test for `hierarchical` where the
+    /// "crash" happens AFTER an agent has already been invoked and observed
+    /// — unlike `resume_hierarchical_es_completes_from_a_config_snapshot_only_log`
+    /// above (which crashes before any delegation at all), this is the exact
+    /// scenario the task brief calls out: an already-`AgentObserved` agent
+    /// must NOT be re-invoked on resume.
+    ///
+    /// Strategy: run the same scripted scenario as `es_single_delegation_completes`
+    /// once, straight through to completion, to obtain the canonical event
+    /// sequence a crash-free run produces. Then simulate a crash by
+    /// truncating that sequence right after core-specialist's
+    /// `AgentObserved` (dev-lead has delegated and gotten its answer back,
+    /// but hasn't yet been asked to synthesize) — the truncated log's folded
+    /// state is still `Running` (no terminal event recorded, verified below).
+    /// Resuming from there, with a FRESH `ScriptedProvider` per agent
+    /// (core-specialist's has NOTHING scripted, so any call to it would be a
+    /// bug this test must catch), must reach `Completed` without ever
+    /// calling core-specialist's provider again, and the resulting log must
+    /// be identical event-for-event (`Debug`-format comparison, the same
+    /// technique `run_event_sourced`'s own generic test and
+    /// `es_replay_reconstructs_state` above use) to the canonical
+    /// straight-through run — proving resume genuinely *continues* the same
+    /// deterministic sequence rather than merely reaching `Completed` by
+    /// some other, divergent path.
+    #[tokio::test]
+    async fn resume_hierarchical_es_does_not_reinvoke_an_already_observed_agent() {
+        let run_id = "run-crash";
+        let config = es_flat_config("dev-lead", &["core-specialist"]);
+
+        // 1. Canonical straight-through run (never interrupted) — the
+        // source of both the "pre-crash" prefix and the expected final
+        // event shape.
+        let mut canonical_agents = BTreeMap::new();
+        canonical_agents.insert(
+            "dev-lead".to_string(),
+            es_test_agent("dev-lead", "concrete-model"),
+        );
+        canonical_agents.insert(
+            "core-specialist".to_string(),
+            es_test_agent("core-specialist", "concrete-model"),
+        );
+        let mut canonical_providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        canonical_providers.insert(
+            "dev-lead".to_string(),
+            Arc::new(ScriptedProvider::new(&[
+                "@core-specialist: fais X",
+                "Synthèse : tout est prêt.",
+            ])),
+        );
+        canonical_providers.insert(
+            "core-specialist".to_string(),
+            Arc::new(ScriptedProvider::new(&["X est fait."])),
+        );
+        let mut canonical_log = InMemoryLog::default();
+        run_hierarchical_es(
+            run_id,
+            "dev-lead",
+            "build X",
+            config.clone(),
+            canonical_agents,
+            canonical_providers,
+            RoutingRules::default(),
+            &mut canonical_log,
+        )
+        .await
+        .unwrap();
+        let canonical_events = canonical_log.events(run_id).unwrap();
+
+        // 2. Truncate right after core-specialist's `AgentObserved` — the
+        // "crash point": core-specialist has already answered, dev-lead
+        // hasn't been asked to synthesize yet.
+        let cut = canonical_events
+            .iter()
+            .position(
+                |e| matches!(e, ExecutionEvent::AgentObserved { agent, .. } if agent == "core-specialist"),
+            )
+            .expect("expected core-specialist to be observed in the canonical run")
+            + 1;
+        let prefix = &canonical_events[..cut];
+        assert!(
+            prefix.iter().any(
+                |e| matches!(e, ExecutionEvent::AgentInvoked { agent, .. } if agent == "core-specialist")
+            ),
+            "sanity: the crash prefix must include core-specialist's AgentInvoked"
+        );
+        assert!(
+            cut < canonical_events.len(),
+            "sanity: the crash prefix must be a strict, non-trivial prefix of the canonical run \
+             (there must be remaining work — dev-lead's synthesis — for resume to do)"
+        );
+
+        let mut crashed_log = InMemoryLog::default();
+        for event in prefix {
+            crashed_log.append(run_id, event).unwrap();
+        }
+        assert_eq!(
+            replay(run_id, &crashed_log).unwrap().status,
+            RunStatus::Running,
+            "sanity: the truncated log must still be mid-run (no terminal event recorded)"
+        );
+
+        // 3. Resume with FRESH providers: dev-lead's has only the synthesis
+        // response left (it already answered the delegation question before
+        // the "crash"); core-specialist's has NOTHING scripted.
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "dev-lead".to_string(),
+            es_test_agent("dev-lead", "concrete-model"),
+        );
+        agents.insert(
+            "core-specialist".to_string(),
+            es_test_agent("core-specialist", "concrete-model"),
+        );
+        let dev_lead_provider = Arc::new(ScriptedProvider::new(&["Synthèse : tout est prêt."]));
+        let core_specialist_provider = Arc::new(ScriptedProvider::new(&[]));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "dev-lead".to_string(),
+            dev_lead_provider.clone() as Arc<dyn Provider>,
+        );
+        providers.insert(
+            "core-specialist".to_string(),
+            core_specialist_provider.clone() as Arc<dyn Provider>,
+        );
+
+        let st = resume_hierarchical_es(
+            run_id,
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut crashed_log,
+        )
+        .await
+        .unwrap();
+
+        // (a) reaches Completed.
+        assert_eq!(st.status, RunStatus::Completed);
+        // (c) core-specialist (already observed before the crash) is never
+        // re-invoked; dev-lead's only NEW call is the synthesis one.
+        assert_eq!(
+            core_specialist_provider.call_count(),
+            0,
+            "core-specialist already answered before the crash and must not be re-invoked"
+        );
+        assert_eq!(
+            dev_lead_provider.call_count(),
+            1,
+            "dev-lead's synthesis call is the only new work resume should perform"
+        );
+
+        // (b) the full expected event set is present: resuming from the
+        // crash point reconstructs a log event-for-event identical to the
+        // canonical straight-through run.
+        let resumed_events = crashed_log.events(run_id).unwrap();
+        assert_eq!(
+            format!("{canonical_events:?}"),
+            format!("{resumed_events:?}"),
+            "resume must reconstruct the exact same event log a crash-free run would have produced"
+        );
+        assert!(!final_content(&crashed_log, run_id).trim().is_empty());
+    }
+
     #[tokio::test]
     async fn resume_hierarchical_es_bails_on_completed_run() {
         let mut log = InMemoryLog::default();
