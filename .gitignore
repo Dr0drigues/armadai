@@ -30,4 +30,18 @@ config/
 .docker/
 
 # Claude Code
-.claude/
+.claude/*
+!.claude/CLAUDE.md
+!.claude/agents/
+
+# ArmadAI project-local config
+.armadai/
+
+# Session state (not shipped)
+docs/SESSION-STATE.md
+
+# Web UI (node_modules ignored, dist committed)
+web/ui/node_modules/
+
+# mdBook build output (docs site, not committed)
+book/

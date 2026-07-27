@@ -6,7 +6,7 @@ Orchestration is the art of making multiple AI agents work together on a single 
 
 Why use orchestration? Complex tasks often benefit from specialization, multiple perspectives, or systematic decomposition. A code review is stronger when security, performance, and architecture experts each contribute their angle. A system design is more complete when frontend, backend, and DevOps specialists work in parallel. A large project is more manageable when a coordinator breaks it down and delegates to team leads.
 
-ArmadAI supports four orchestration patterns: **Direct** (single agent, no orchestration), **Blackboard** (parallel independent work), **Ring** (sequential review with consensus voting), and **Hierarchical** (coordinator-led delegation with multi-level teams). Each pattern fits different collaboration styles and task structures.
+ArmadAI supports four orchestration patterns: **Direct** (single agent, no orchestration), **Blackboard** (parallel independent work), **Ring** (sequential review with consensus voting), and **Hierarchical** (coordinator-led delegation with multi-level teams) — plus **Auto**, a config-only meta-pattern that lets the engine pick one of the four for you. Each pattern fits different collaboration styles and task structures.
 
 ## Patterns
 
@@ -67,7 +67,7 @@ orchestration:
     - backend-dev
     - devops
   max_rounds: 5
-  token_budget: 50000
+  token_budget: 500000
 ```
 
 **Key parameters:**
@@ -78,7 +78,7 @@ orchestration:
 | max_rounds             | 5       | Maximum number of rounds before halting |
 | consensus_threshold    | 0.75    | Ratio of confirmations needed for consensus |
 | divergence_threshold   | 0.60    | Challenge ratio that triggers divergence halt |
-| token_budget           | 50000   | Maximum tokens across all agents |
+| token_budget           | 500000  | Safety cap on total tokens across all agents |
 | agent_timeout_secs     | 60      | Timeout per agent per round |
 | convergence_rounds     | 1       | Consecutive stable rounds before halting |
 
@@ -125,7 +125,7 @@ orchestration:
 | consensus_threshold   | 0.80    | Vote ratio required for consensus |
 | majority_threshold    | 0.60    | Vote ratio required for majority (if not consensus) |
 | similarity_threshold  | 0.85    | Jaccard threshold for grouping similar positions |
-| token_budget          | 40000   | Maximum tokens across all laps |
+| token_budget          | 500000  | Safety cap on total tokens across all laps |
 | agent_timeout_secs    | 90      | Timeout per agent per lap |
 
 **Agent actions:** Agents respond with structured actions: **Propose** (introduce idea), **Enrich** (build on prior contribution), **Contest** (argue against), **Endorse** (support), **Synthesize** (combine insights), **Pass** (nothing to add).
@@ -196,6 +196,16 @@ orchestration:
 **Delegation protocol:** The engine automatically injects an `## Orchestration Protocol` block into each agent's system prompt, describing their role, available team members, and the `@agent-name: message` delegation syntax.
 
 **Safety limits:** Configure `max_depth`, `max_iterations`, and `timeout` to prevent runaway delegation.
+
+**C9 — nested sub-patterns per team:** give a team its own `pattern: blackboard` or `pattern: ring`
+(plus a `lead`, required as the arbiter) to have it run internally as a sub-orchestration instead
+of flat delegation, e.g. a security team that runs a Ring vote before reporting its verdict up to
+the coordinator.
+
+**C8 — routes and tags:** instead of a fixed `agents:`/`teams:` list, resolve the participant set
+at run time via named `orchestration.routes` (select with `armadai run --route <name>`) or
+tag/stack matching (`armadai run --tags <comma-separated>`); `--dry-run` previews the resolved
+selection for free. See the [Orchestration Reference](orchestration.md) for full examples.
 
 ## Decision Matrix
 
@@ -298,7 +308,7 @@ orchestration:
     - backend-dev
     - devops
   max_rounds: 5
-  token_budget: 50000
+  token_budget: 500000
 ```
 
 **Run:**
@@ -411,7 +421,37 @@ When a budget or cost limit is hit:
 3. All completed contributions are returned in the result
 4. The halt reason is logged and visible in history (`armadai history`)
 
-**Best practice:** Start with conservative budgets (e.g., 50k tokens for Blackboard, 40k for Ring) and increase if needed. Monitor costs via `armadai costs`.
+**Best practice:** The default token budget (500k) is a generous safety cap meant to catch a runaway, not a tight limit — normal multi-round/multi-lap runs with verbose agents stay well under it. Lower it only if you want a tighter ceiling for a specific run, and monitor costs via `armadai costs`.
+
+## Resume & Replay
+
+Every run (Direct or orchestrated) prints its `run_id` as it starts:
+
+```
+run 3f2a1c9e-...
+```
+
+Keep that id — it lets you come back to the run later with either flag below. Both require the `storage` feature (they read from the persisted event log, which doesn't exist without it) and fail with an explicit `requires the 'storage' feature` error rather than doing nothing silently.
+
+### `--resume <run_id>`
+
+Continues a run that's still `Running` — typically because the process was killed or crashed mid-orchestration. Resume seeds its state by replaying the persisted event log (no LLM calls), then hands off to the same decider/effects loop the pattern would normally drive, picking up exactly where it left off: agents already invoked and observed before the interruption are **not** re-invoked, only the remaining work runs.
+
+```bash
+armadai run --resume 3f2a1c9e-...
+```
+
+Fails with a clear error if `run_id` is unknown, or if the run already reached a terminal state (`Completed`/`Halted` — nothing left to resume; use `--replay` instead).
+
+### `--replay <run_id>`
+
+Deterministically re-displays a run that has already finished, reconstructing the exact same `RunEvent` sequence the live run emitted — purely by folding the persisted event log. No agent is re-invoked and no LLM effect runs. Useful for re-inspecting a completed run's output/trace (a new terminal, cleared scrollback, `--json` post-processing, …) without spending tokens again.
+
+```bash
+armadai run --replay 3f2a1c9e-...
+```
+
+Fails with a clear error if `run_id` is unknown.
 
 ## Tips and Gotchas
 

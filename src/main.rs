@@ -1,6 +1,8 @@
+mod audit;
 mod cli;
 mod core;
 mod linker;
+mod logging;
 mod model_registry;
 mod parser;
 #[allow(dead_code)]
@@ -11,8 +13,11 @@ mod secrets;
 #[allow(dead_code)]
 mod shell;
 mod skills_registry;
+mod starters_registry;
 #[cfg(feature = "storage")]
 mod storage;
+#[cfg(feature = "tui")]
+mod theme;
 #[cfg(feature = "tui")]
 mod tui;
 #[cfg(feature = "web")]
@@ -22,12 +27,18 @@ use clap::Parser;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("armadai=info".parse()?),
-        )
-        .init();
+    {
+        use tracing_subscriber::prelude::*;
+
+        let filter = tracing_subscriber::EnvFilter::from_default_env()
+            .add_directive("armadai=info".parse()?);
+        let (filter_layer, reload_handle) = tracing_subscriber::reload::Layer::new(filter);
+        tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+        logging::install(reload_handle);
+    }
 
     core::config::check_migration_hint();
 

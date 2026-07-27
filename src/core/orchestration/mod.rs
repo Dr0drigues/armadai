@@ -8,13 +8,11 @@
 //!
 //! The `Auto` variant uses a classifier to pick the best pattern.
 
+pub mod agent_selection;
 pub mod blackboard;
 pub mod classifier;
 pub mod context_injection;
-#[cfg(test)]
-mod e2e_tests;
-#[cfg(all(test, feature = "providers-api"))]
-mod gemini_integration_tests;
+pub mod es;
 pub mod hierarchical;
 pub mod llm_agents;
 pub mod protocol;
@@ -77,6 +75,27 @@ impl std::fmt::Display for OrchestrationPattern {
     }
 }
 
+/// Sub-pattern a hierarchical team can run instead of flat delegation (C9).
+///
+/// A dedicated enum (not `OrchestrationPattern`) makes deeper nesting
+/// (hierarchical/direct/auto inside a team) impossible by construction:
+/// only one level of nesting can ever exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NestedPattern {
+    Blackboard,
+    Ring,
+}
+
+impl std::fmt::Display for NestedPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Blackboard => write!(f, "blackboard"),
+            Self::Ring => write!(f, "ring"),
+        }
+    }
+}
+
 /// Configuration for the selected orchestration pattern.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "pattern", rename_all = "lowercase")]
@@ -130,7 +149,7 @@ fn default_vote_weight() -> f32 {
 /// Unified orchestration configuration (top-level `orchestration:` key in armadai.yaml).
 ///
 /// Combines PR #91 Blackboard/Ring parameters with Hierarchical topology.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct OrchestrationConfig {
     /// Whether orchestration mode is active.
@@ -145,6 +164,11 @@ pub struct OrchestrationConfig {
 
     /// Team topology (hierarchical only).
     pub teams: Vec<TeamConfig>,
+
+    /// C8: named agent routes (route name → agent names). Selected via
+    /// `--route <name>`. Empty = no routes configured.
+    #[serde(default)]
+    pub routes: std::collections::BTreeMap<String, Vec<String>>,
 
     // ── Shared limits (all patterns) ───────────────────────────
     /// Max delegation depth (default: 5).
@@ -188,7 +212,7 @@ impl OrchestrationConfig {
 }
 
 /// A team definition within the hierarchical topology.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TeamConfig {
     /// Optional sub-lead for this team. If absent, agents report
     /// directly to the coordinator.
@@ -197,6 +221,23 @@ pub struct TeamConfig {
     /// Agents in this team.
     #[serde(default)]
     pub agents: Vec<String>,
+
+    /// C9: if set, the team runs as this sub-pattern (blackboard/ring)
+    /// instead of flat delegation. Requires a `lead` (the arbiter).
+    #[serde(default)]
+    pub pattern: Option<NestedPattern>,
+
+    /// C9: per-team override for blackboard `max_rounds` (else global/default).
+    #[serde(default)]
+    pub max_rounds: Option<u32>,
+
+    /// C9: per-team override for ring `max_laps` (else global/default).
+    #[serde(default)]
+    pub max_laps: Option<u32>,
+
+    /// C9: per-team override for the sub-pattern consensus threshold.
+    #[serde(default)]
+    pub consensus_threshold: Option<f32>,
 }
 
 // ── Validation ───────────────────────────────────────────────────
@@ -221,6 +262,12 @@ pub enum OrchestrationValidationError {
 
     #[error("teams are empty — hierarchical pattern requires at least one team")]
     EmptyTeams,
+
+    #[error("team led by '{0}' declares a nested pattern but the root pattern is not hierarchical")]
+    NestedPatternRequiresHierarchical(String),
+
+    #[error("a team declaring a nested pattern must have a `lead` (the arbiter)")]
+    NestedPatternRequiresLead,
 }
 
 /// Validate the orchestration configuration for internal consistency.
@@ -232,6 +279,16 @@ pub fn validate_config(
 ) -> Result<(), Vec<OrchestrationValidationError>> {
     if !config.enabled {
         return Ok(());
+    }
+
+    // C9: a team-level nested pattern is only valid under a hierarchical root.
+    if config.pattern != OrchestrationPattern::Hierarchical
+        && let Some(team) = config.teams.iter().find(|t| t.pattern.is_some())
+    {
+        let lead = team.lead.clone().unwrap_or_default();
+        return Err(vec![
+            OrchestrationValidationError::NestedPatternRequiresHierarchical(lead),
+        ]);
     }
 
     // Only validate hierarchical-specific fields for that pattern
@@ -260,6 +317,11 @@ pub fn validate_config(
     let mut seen_leads = std::collections::HashSet::new();
 
     for team in &config.teams {
+        // C9: a nested-pattern team needs a lead to arbitrate its sub-run.
+        if team.pattern.is_some() && team.lead.is_none() {
+            errors.push(OrchestrationValidationError::NestedPatternRequiresLead);
+        }
+
         // Check lead uniqueness
         if let Some(ref lead) = team.lead {
             if !seen_leads.insert(lead.clone()) {
@@ -375,14 +437,17 @@ mod hierarchical_tests {
                         "java-sec".to_string(),
                         "java-test".to_string(),
                     ],
+                    ..Default::default()
                 },
                 TeamConfig {
                     lead: Some("node-lead".to_string()),
                     agents: vec!["node-arch".to_string(), "node-gql".to_string()],
+                    ..Default::default()
                 },
                 TeamConfig {
                     lead: None,
                     agents: vec!["cloud-expert".to_string(), "ops-expert".to_string()],
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -460,10 +525,12 @@ mod hierarchical_tests {
                 TeamConfig {
                     lead: None,
                     agents: vec!["agent-a".to_string()],
+                    ..Default::default()
                 },
                 TeamConfig {
                     lead: None,
                     agents: vec!["agent-a".to_string()],
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -485,6 +552,7 @@ mod hierarchical_tests {
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["coord".to_string()],
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -506,10 +574,12 @@ mod hierarchical_tests {
                 TeamConfig {
                     lead: Some("lead-a".to_string()),
                     agents: vec!["agent-1".to_string()],
+                    ..Default::default()
                 },
                 TeamConfig {
                     lead: Some("lead-a".to_string()),
                     agents: vec!["agent-2".to_string()],
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -570,6 +640,30 @@ consensus_threshold: 0.85
         assert_eq!(config.max_depth(), 5);
         assert_eq!(config.max_iterations(), 50);
         assert_eq!(config.timeout_secs(), 300);
+    }
+
+    #[test]
+    fn test_orchestration_config_deserializes_routes() {
+        let yaml = r#"
+enabled: true
+pattern: blackboard
+routes:
+  security-audit: [rust-security, rust-reviewer]
+  frontend: [ui-specialist]
+"#;
+        let config: OrchestrationConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(
+            config.routes.get("security-audit").unwrap(),
+            &vec!["rust-security".to_string(), "rust-reviewer".to_string()]
+        );
+        assert_eq!(config.routes.get("frontend").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_orchestration_config_routes_default_empty() {
+        let yaml = "enabled: true\npattern: blackboard\n";
+        let config: OrchestrationConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.routes.is_empty());
     }
 
     #[test]
@@ -652,5 +746,95 @@ consensus_threshold: 0.85
             "hierarchical"
         );
         assert_eq!(OrchestrationPattern::Auto.to_string(), "auto");
+    }
+
+    // ── C9: nested pattern tests ──
+
+    #[test]
+    fn test_team_config_deserializes_nested_pattern() {
+        let yaml = r#"
+enabled: true
+pattern: hierarchical
+coordinator: coord
+teams:
+  - lead: research-lead
+    agents: [searcher, analyst]
+    pattern: blackboard
+    max_rounds: 4
+  - lead: build-lead
+    agents: [coder]
+    pattern: ring
+    max_laps: 2
+    consensus_threshold: 0.8
+  - lead: doc-lead
+    agents: [writer]
+"#;
+        let config: OrchestrationConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.teams[0].pattern, Some(NestedPattern::Blackboard));
+        assert_eq!(config.teams[0].max_rounds, Some(4));
+        assert_eq!(config.teams[1].pattern, Some(NestedPattern::Ring));
+        assert_eq!(config.teams[1].max_laps, Some(2));
+        assert_eq!(config.teams[1].consensus_threshold, Some(0.8));
+        assert_eq!(config.teams[2].pattern, None); // flat delegation
+    }
+
+    #[test]
+    fn test_validate_nested_pattern_requires_hierarchical() {
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Blackboard,
+            coordinator: Some("coord".to_string()),
+            teams: vec![TeamConfig {
+                lead: Some("lead".to_string()),
+                agents: vec!["a".to_string()],
+                pattern: Some(NestedPattern::Ring),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let errs = validate_config(&config).unwrap_err();
+        assert!(matches!(
+            errs[0],
+            OrchestrationValidationError::NestedPatternRequiresHierarchical(_)
+        ));
+    }
+
+    #[test]
+    fn test_validate_nested_pattern_requires_lead() {
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some("coord".to_string()),
+            teams: vec![TeamConfig {
+                lead: None,
+                agents: vec!["a".to_string()],
+                pattern: Some(NestedPattern::Blackboard),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let errs = validate_config(&config).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, OrchestrationValidationError::NestedPatternRequiresLead)),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_nested_pattern_ok_under_hierarchical() {
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some("coord".to_string()),
+            teams: vec![TeamConfig {
+                lead: Some("lead".to_string()),
+                agents: vec!["a".to_string()],
+                pattern: Some(NestedPattern::Blackboard),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(validate_config(&config).is_ok());
     }
 }

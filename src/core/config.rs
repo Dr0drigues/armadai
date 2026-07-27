@@ -1,7 +1,25 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Global mode flag
+// ---------------------------------------------------------------------------
+
+static FORCE_GLOBAL: AtomicBool = AtomicBool::new(false);
+
+/// Force all path resolution to return the global library paths,
+/// ignoring project-local directories.
+pub fn set_force_global(val: bool) {
+    FORCE_GLOBAL.store(val, Ordering::Relaxed);
+}
+
+/// Returns `true` when `--global` was passed on the CLI.
+pub fn is_force_global() -> bool {
+    FORCE_GLOBAL.load(Ordering::Relaxed)
+}
 
 // ---------------------------------------------------------------------------
 // XDG path helpers
@@ -26,6 +44,24 @@ pub fn config_dir() -> PathBuf {
     config_base.join("armadai")
 }
 
+/// Return the ArmadAI data root directory (for persistent storage, e.g. SQLite).
+///
+/// Resolution order:
+/// 1. `$XDG_DATA_HOME/armadai`
+/// 2. `$HOME/.local/share/armadai`
+///
+/// Unlike `config_dir()`, this is NOT overridable via `$ARMADAI_CONFIG_DIR` —
+/// config and data are separate XDG concerns.
+pub fn data_dir() -> PathBuf {
+    let data_base = std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".local").join("share")
+        });
+    data_base.join("armadai")
+}
+
 pub fn user_agents_dir() -> PathBuf {
     config_dir().join("agents")
 }
@@ -36,10 +72,6 @@ pub fn user_prompts_dir() -> PathBuf {
 
 pub fn user_skills_dir() -> PathBuf {
     config_dir().join("skills")
-}
-
-pub fn user_fleets_dir() -> PathBuf {
-    config_dir().join("fleets")
 }
 
 pub fn user_starters_dir() -> PathBuf {
@@ -62,6 +94,12 @@ pub fn providers_file_path() -> PathBuf {
     config_dir().join("providers.yaml")
 }
 
+/// Path to the user-level custom registries config
+/// (`~/.config/armadai/registries.yaml`). See `crate::core::registries`.
+pub fn registries_config_path() -> PathBuf {
+    config_dir().join("registries.yaml")
+}
+
 /// Create the full directory tree under the config root.
 pub fn ensure_config_dirs() -> anyhow::Result<()> {
     let dirs = [
@@ -69,7 +107,6 @@ pub fn ensure_config_dirs() -> anyhow::Result<()> {
         user_agents_dir(),
         user_prompts_dir(),
         user_skills_dir(),
-        user_fleets_dir(),
         registry_cache_dir(),
     ];
     for dir in &dirs {
@@ -147,7 +184,15 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             mode: "embedded".to_string(),
-            path: "data/armadai.sqlite".to_string(),
+            // Absolute path so History/Costs are shared across CWDs (was
+            // "data/armadai.sqlite", relative to the CWD — a different DB per
+            // directory, meaning `armadai run` and `armadai tui` only saw the
+            // same data when launched from the same directory). Explicit
+            // `storage.path` in an existing config.yaml is unaffected.
+            path: data_dir()
+                .join("armadai.sqlite")
+                .to_string_lossy()
+                .into_owned(),
         }
     }
 }
@@ -273,7 +318,18 @@ pub struct AppPaths {
 
 impl AppPaths {
     /// Resolve paths: prefer `.armadai/` → project-local → global.
+    ///
+    /// When `--global` is active (`is_force_global()`), always return the
+    /// global library paths regardless of local directories.
     pub fn resolve() -> Self {
+        if is_force_global() {
+            return Self {
+                agents_dir: user_agents_dir(),
+                templates_dir: config_dir().join("templates"),
+                config_dir: config_dir(),
+            };
+        }
+
         let dotarmadai_agents = Path::new(".armadai/agents");
         let local_agents = Path::new("agents");
         let local_templates = Path::new("templates");
@@ -332,7 +388,10 @@ defaults:
 
 storage:
   mode: embedded
-  path: data/armadai.sqlite
+  # `path` intentionally omitted: defaults to an absolute, shared location
+  # (~/.local/share/armadai/armadai.sqlite, or $XDG_DATA_HOME/armadai if set)
+  # so History/Costs are consistent regardless of CWD. Set explicitly here to
+  # override.
 
 rate_limits:
   anthropic: 50
@@ -524,7 +583,6 @@ providers:
             std::env::set_var("ARMADAI_CONFIG_DIR", "/tmp/armadai-test");
         }
         assert_eq!(user_agents_dir(), PathBuf::from("/tmp/armadai-test/agents"));
-        assert_eq!(user_fleets_dir(), PathBuf::from("/tmp/armadai-test/fleets"));
         assert_eq!(
             registry_cache_dir(),
             PathBuf::from("/tmp/armadai-test/registry")

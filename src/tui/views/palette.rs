@@ -1,11 +1,12 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
+use crate::theme;
 use crate::tui::app::App;
 
 /// Render the command palette as a centered overlay.
@@ -26,7 +27,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Input field
     let input = Paragraph::new(Line::from(vec![
-        Span::styled(": ", Style::default().fg(Color::Cyan)),
+        Span::styled(": ", theme::heading()),
         Span::raw(&app.palette.input),
         Span::styled("_", Style::default().fg(Color::DarkGray)),
     ]))
@@ -34,12 +35,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .title(" Command Palette ")
-            .title_style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .border_style(Style::default().fg(Color::Cyan)),
+            .title_style(theme::heading())
+            .style(theme::border_style()),
     );
     frame.render_widget(input, chunks[0]);
 
@@ -51,9 +48,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         .enumerate()
         .map(|(i, cmd)| {
             let style = if i == app.palette.selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                theme::selection()
             } else {
                 Style::default()
             };
@@ -71,7 +66,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .style(theme::border_style()),
     );
     frame.render_widget(list, chunks[1]);
 }

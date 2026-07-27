@@ -535,6 +535,7 @@ mod tests {
             teams: vec![TeamConfig {
                 lead: Some("lead-a".to_string()),
                 agents: vec!["worker-1".to_string(), "worker-2".to_string()],
+                ..Default::default()
             }],
             ..Default::default()
         }
@@ -583,6 +584,7 @@ mod tests {
             teams: vec![TeamConfig {
                 lead: None,
                 agents: vec!["agent-x".to_string()],
+                ..Default::default()
             }],
             ..Default::default()
         };

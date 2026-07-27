@@ -10,11 +10,34 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::runner::ShellRunner;
 use super::session::{SessionMessage, ShellSession};
 use super::tui::ShellApp;
+
+/// Fold one pipeline step's exact metrics into the running aggregate.
+///
+/// Pipeline steps run in **series**, each on a different input (step *n*'s
+/// input is step *n-1*'s output), so `tokens_in` must be **summed** across
+/// steps. This is the opposite of tandem mode, where every provider receives
+/// the *same* input and only the first `tokens_in` should be kept to avoid
+/// double-counting.
+fn accumulate_pipeline_metrics(
+    aggregated_tokens_in: &mut Option<u64>,
+    aggregated_tokens_out: &mut u64,
+    aggregated_cost: &mut f64,
+    resp: &super::json_runner::CliResponse,
+) {
+    *aggregated_tokens_in = Some(aggregated_tokens_in.unwrap_or(0) + resp.tokens_in.unwrap_or(0));
+    if let Some(out) = resp.tokens_out {
+        *aggregated_tokens_out += out;
+    }
+    if let Some(cost) = resp.cost_usd {
+        *aggregated_cost += cost;
+    }
+}
 
 /// Helper to save the current session state.
 fn save_current_session(
@@ -59,26 +82,53 @@ fn save_current_session(
 
 /// Restore the terminal to normal state. Called on exit and on panic.
 fn restore_terminal() {
-    let _ = disable_raw_mode();
-    let _ = execute!(
+    if let Err(e) = disable_raw_mode() {
+        tracing::warn!("Failed to disable raw mode: {:?}", e);
+    }
+    if let Err(e) = execute!(
         io::stdout(),
+        crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
         LeaveAlternateScreen,
         crossterm::cursor::Show
-    );
+    ) {
+        tracing::warn!("Failed to restore terminal state: {:?}", e);
+    }
 }
 
 /// Main shell entry point.
-pub async fn run_shell() -> Result<()> {
+pub async fn run_shell(ascii: bool) -> Result<()> {
+    crate::theme::init(ascii);
+
     // Run wizard to ensure project is ready
     let wizard_result = super::wizard::ensure_project_ready()?;
 
-    // Use wizard result for provider config
+    // Load shell config from project config (if available)
+    let shell_config = crate::core::project::find_project_config()
+        .and_then(|(_, cfg)| cfg.shell)
+        .unwrap_or_default();
+
+    // Build runner config: project config overrides wizard defaults
+    let command = shell_config
+        .default_provider
+        .clone()
+        .unwrap_or(wizard_result.provider_command.clone());
+    let base_args = super::detect::args_for_provider(&command);
+
+    // Resolve model and inject CLI flags if needed
+    let model_str = shell_config
+        .default_model
+        .as_deref()
+        .unwrap_or("latest:pro");
+    let resolved_model = super::config::resolve_shell_model(&command, model_str);
+    let mut args = base_args;
+    args.extend(super::config::model_cli_args(&command, &resolved_model));
+
     let config = super::runner::RunnerConfig {
-        command: wizard_result.provider_command.clone(),
-        args: wizard_result.provider_args,
-        max_history_turns: 5,
-        timeout: std::time::Duration::from_secs(120),
+        command: command.clone(),
+        args,
+        max_history_turns: shell_config.effective_max_history(),
+        timeout: shell_config.effective_timeout(),
     };
 
     let provider_name = super::detect::provider_display_name(&config.command).to_string();
@@ -104,13 +154,22 @@ pub async fn run_shell() -> Result<()> {
         stdout,
         EnterAlternateScreen,
         crossterm::cursor::Hide,
-        crossterm::event::EnableMouseCapture
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableBracketedPaste
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = ShellApp::new(provider_name.clone());
-    app.set_model_name(wizard_result.model_name.clone());
+    app.set_model_name(resolved_model.clone());
+
+    // Initialize workroom from project orchestration config
+    if let Ok(config_content) = std::fs::read_to_string(".armadai/config.yaml")
+        .or_else(|_| std::fs::read_to_string("armadai.yaml"))
+    {
+        app.workroom.init_from_config(&config_content);
+    }
+
     let mut runner = ShellRunner::new(config);
 
     // Event loop
@@ -121,18 +180,21 @@ pub async fn run_shell() -> Result<()> {
         &session_id,
         &project_dir,
         &provider_name,
-        &wizard_result.model_name,
+        &resolved_model,
+        &shell_config,
     )
     .await;
 
     // Final save on exit
-    let _ = save_current_session(
+    if let Err(e) = save_current_session(
         &session_id,
         &project_dir,
         &provider_name,
         &wizard_result.model_name,
         &runner,
-    );
+    ) {
+        tracing::warn!("Failed to save session on exit: {:?}", e);
+    }
 
     // Cleanup
     restore_terminal();
@@ -141,6 +203,7 @@ pub async fn run_shell() -> Result<()> {
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut ShellApp,
@@ -149,6 +212,7 @@ async fn event_loop(
     project_dir: &str,
     provider_name: &str,
     model_name: &str,
+    shell_config: &super::config::ShellConfig,
 ) -> Result<()> {
     loop {
         // Render
@@ -160,6 +224,17 @@ async fn event_loop(
         }
 
         let evt = event::read()?;
+
+        // Handle paste (bracketed paste mode)
+        if let Event::Paste(text) = &evt {
+            // Replace newlines with spaces for single-line input
+            let clean = text.replace('\n', " ").replace('\r', "");
+            for c in clean.chars() {
+                let byte_idx = app.char_to_byte_pub(app.cursor_pos());
+                app.insert_char_at(byte_idx, c);
+            }
+            continue;
+        }
 
         // Handle mouse scroll
         if let Event::Mouse(mouse) = &evt {
@@ -177,6 +252,12 @@ async fn event_loop(
             break;
         }
 
+        // While the workroom has drill-down focus, Enter is consumed by
+        // handle_key to open the agent detail popup — never submit input.
+        if app.workroom.is_focused() {
+            continue;
+        }
+
         // Check if user submitted input
         if key.code != KeyCode::Enter || app.should_quit() {
             continue;
@@ -186,9 +267,13 @@ async fn event_loop(
         };
 
         // Check for slash commands first
-        if let Some(result) =
-            super::commands::try_execute(&input, runner, app.provider_name(), app.model_name())
-        {
+        if let Some(result) = super::commands::try_execute(
+            &input,
+            runner,
+            app.provider_name(),
+            app.model_name(),
+            shell_config,
+        ) {
             use super::commands::CommandResult;
             match result {
                 CommandResult::Display(text) => {
@@ -281,6 +366,45 @@ async fn event_loop(
                     }
                     continue;
                 }
+                CommandResult::Tandem(providers) => {
+                    app.set_tandem(providers.clone());
+                    app.show_popup(format!(
+                        "# Tandem Mode\n\nNext message will be sent to **{}** in parallel.\n\nType your message and press Enter.",
+                        providers.join(", ")
+                    ));
+                    continue;
+                }
+                CommandResult::Pipeline(providers) => {
+                    app.set_pipeline(providers.clone());
+                    app.show_popup(format!(
+                        "# Pipeline Mode\n\nNext message: **{}** generates → **{}** reviews.\n\nType your message and press Enter.",
+                        providers.first().unwrap_or(&"?".to_string()),
+                        providers.get(1).unwrap_or(&"?".to_string()),
+                    ));
+                    continue;
+                }
+                CommandResult::ToggleWorkroom => {
+                    app.workroom.toggle_pin();
+                    let status = if app.workroom.is_pinned() {
+                        "pinned (always visible)"
+                    } else {
+                        "auto (visible during orchestration)"
+                    };
+                    app.show_popup(format!("# Workroom\n\nPanel is now **{}**.", status));
+                    continue;
+                }
+                CommandResult::TogglePty => {
+                    app.toggle_pty_mode();
+                    if app.is_pty_mode() {
+                        app.show_popup("# PTY Mode Enabled\n\nMessages will be sent through interactive CLI.\nThe CLI reads project agents and can delegate natively.\n\n**Note:** Response parsing may include CLI UI artifacts.".to_string());
+                    } else {
+                        app.show_popup(
+                            "# PTY Mode Disabled\n\nBack to one-shot mode with JSON metrics."
+                                .to_string(),
+                        );
+                    }
+                    continue;
+                }
                 CommandResult::SaveSession => {
                     match save_current_session(
                         session_id,
@@ -306,89 +430,1228 @@ async fn event_loop(
         }
 
         app.add_user_message(&input);
+
+        // Reset the workroom at the START of a new turn (not the end), so the
+        // previous turn's final agent states (Done / who participated) stay
+        // visible between turns instead of snapping back to idle immediately.
+        app.workroom.reset();
+
+        // PTY mode execution
+        if app.is_pty_mode() {
+            execute_pty_turn(
+                terminal,
+                app,
+                runner,
+                &input,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
+            continue;
+        }
+
+        // Check for explicit tandem/pipeline mode (from /tandem or /pipeline command)
+        if let Some(provider_names) = app.take_tandem() {
+            execute_tandem(
+                terminal,
+                app,
+                runner,
+                &input,
+                &provider_names,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
+            continue;
+        }
+        if let Some(provider_names) = app.take_pipeline() {
+            // Build implicit steps from provider names (one step per provider, no agent, no custom prompt)
+            let steps: Vec<super::config::PipelineStep> = provider_names
+                .iter()
+                .map(|p| super::config::PipelineStep {
+                    name: p.clone(),
+                    prompt: None,
+                    providers: vec![super::config::ShellProviderEntry {
+                        provider: p.clone(),
+                        model: None,
+                        agent: None,
+                    }],
+                })
+                .collect();
+            execute_pipeline_steps(
+                terminal,
+                app,
+                runner,
+                &input,
+                &steps,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
+            continue;
+        }
+
+        // Auto-pipeline from config (if pipeline steps are configured)
+        if let Some(ref pipeline) = shell_config.pipeline
+            && !pipeline.steps.is_empty()
+        {
+            execute_pipeline_steps(
+                terminal,
+                app,
+                runner,
+                &input,
+                &pipeline.steps,
+                session_id,
+                project_dir,
+                provider_name,
+                model_name,
+            )
+            .await?;
+            continue;
+        }
+
+        // Normal single-provider execution
         app.set_loading(true);
+        app.start_streaming_response();
 
         let input_clone = input.clone();
-        let (tx, mut rx) = tokio::sync::oneshot::channel();
-
         let cmd = runner.command().to_string();
         let args: Vec<String> = runner.args().to_vec();
         let prompt = runner.build_prompt_for(&input_clone);
-        let prompt_for_spawn = prompt.clone();
+        let is_json_mode = super::json_runner::supports_json(&cmd);
 
-        // Spawn the CLI call in background
-        let handle = tokio::spawn(async move {
-            let start = std::time::Instant::now();
-            let output = tokio::process::Command::new(&cmd)
-                .args(&args)
-                .arg(&prompt_for_spawn)
-                .output()
-                .await;
-            let _ = tx.send((output, start.elapsed()));
+        // Spawn CLI with piped stdout for streaming
+        let start_time = std::time::Instant::now();
+        let mut child = match tokio::process::Command::new(&cmd)
+            .args(&args)
+            .arg(&prompt)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                app.update_last_assistant(&format!("Error spawning {}: {}", cmd, e));
+                app.set_loading(false);
+                continue;
+            }
+        };
+
+        // Stream stdout line by line via channel
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let _ = stream_tx.send(line.clone());
+                    }
+                    Err(_) => break,
+                }
+            }
         });
 
-        // Keep rendering while waiting (spinner animation)
+        // Buffer stderr to prevent blocking (>64KB would cause hang)
+        let stderr_buffer = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = stderr_buffer.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut stderr = stderr;
+            let mut buf = vec![0u8; 4096];
+            loop {
+                match stderr.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(s) = String::from_utf8(buf[..n].to_vec()) {
+                            stderr_buf.lock().unwrap().push_str(&s);
+                        }
+                    }
+                }
+            }
+        });
+
+        // Render loop: drain stream chunks + handle cancel
         loop {
             app.tick_spinner();
+            app.workroom.tick();
             terminal.draw(|f| app.render(f))?;
 
-            // Check for cancel during loading
-            if event::poll(Duration::from_millis(80))?
+            // Check for cancel
+            if event::poll(Duration::from_millis(30))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
-                && (key.code == KeyCode::Esc
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers == crossterm::event::KeyModifiers::CONTROL))
+                && app.handle_streaming_key(&key)
             {
-                handle.abort();
+                if let Err(e) = child.kill().await {
+                    tracing::debug!("Failed to kill cancelled command: {:?}", e);
+                }
+                app.append_to_streaming("\n\n[Cancelled]");
                 app.set_loading(false);
-                app.add_assistant_message("[Cancelled]");
                 break;
             }
 
-            // Check if response arrived
-            let Ok((output_result, duration)) = rx.try_recv() else {
-                continue;
-            };
+            // Drain all available lines and parse as stream events
+            let mut got_data = false;
+            let mut result_event: Option<super::json_runner::CliResponse> = None;
 
-            match output_result {
-                Ok(output) if output.status.success() => {
-                    let raw = String::from_utf8_lossy(&output.stdout).to_string();
-                    let parsed = super::parser::parse_response(&raw);
-                    runner.record_turn(&input_clone, &parsed.content, duration);
-                    let metrics = runner.session_metrics();
-                    app.add_assistant_message(&parsed.content);
-                    app.set_session_metrics(
-                        metrics.total_tokens_in,
-                        metrics.total_tokens_out,
-                        metrics.total_cost_estimate,
-                        metrics.turn_count,
-                        duration,
-                    );
+            while let Ok(line) = stream_rx.try_recv() {
+                // Log raw stream event for debugging
+                super::session::log_stream_event(session_id, line.trim());
 
-                    // Auto-save session after each turn
-                    let _ = save_current_session(
-                        session_id,
-                        project_dir,
-                        provider_name,
-                        model_name,
-                        runner,
-                    );
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    app.add_assistant_message(&format!(
-                        "Error (exit {}): {}",
-                        output.status, stderr
-                    ));
-                }
-                Err(e) => {
-                    app.add_assistant_message(&format!("Error: {e}"));
+                if is_json_mode {
+                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    match parse_stream_event(&cmd, &line) {
+                        StreamEvent::Init { model, agents } => {
+                            if let Some(m) = model {
+                                app.set_model_name(m);
+                            }
+                            // Set agents from init (filtered, not all set to Working)
+                            app.workroom.set_agents_from_init(&agents);
+                            app.workroom.set_visible(true);
+                        }
+                        StreamEvent::Delta(text) => {
+                            // Detect agent mentions in streamed text
+                            app.workroom.apply_stream_text(&text);
+                            app.append_to_streaming(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Message(text) => {
+                            app.workroom.apply_stream_text(&text);
+                            app.append_to_streaming(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Result(resp) => {
+                            result_event = Some(resp);
+                        }
+                        StreamEvent::Error(msg) => {
+                            app.append_to_streaming(&format!("\n\nError: {}", msg));
+                            got_data = true;
+                        }
+                        StreamEvent::Ignored => {}
+                    }
+                } else {
+                    // Text mode fallback
+                    app.workroom.parse_streaming_line(&line);
+                    app.append_to_streaming(&line);
+                    got_data = true;
                 }
             }
+
+            if got_data {
+                terminal.draw(|f| app.render(f))?;
+            }
+
+            // Check if child process has finished
+            if let Ok(Some(status)) = child.try_wait() {
+                // Drain remaining
+                while let Ok(line) = stream_rx.try_recv() {
+                    if is_json_mode {
+                        use super::json_runner::{StreamEvent, parse_stream_event};
+                        match parse_stream_event(&cmd, &line) {
+                            StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                                app.append_to_streaming(&text);
+                            }
+                            StreamEvent::Result(resp) => {
+                                result_event = Some(resp);
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        app.append_to_streaming(&line);
+                    }
+                }
+
+                let duration = start_time.elapsed();
+                let content = app.get_last_assistant_content();
+
+                // Clean markers from content
+                let parsed = super::parser::parse_response(&content);
+                app.update_last_assistant(&parsed.content);
+
+                // Check for failure and append stderr if present
+                if !status.success() {
+                    let stderr_content = stderr_buffer.lock().unwrap();
+                    if !stderr_content.is_empty() {
+                        app.append_to_streaming(&format!(
+                            "\n\n[Failed with status: {}]\n{}",
+                            status, stderr_content
+                        ));
+                    } else {
+                        app.append_to_streaming(&format!("\n\n[Failed with status: {}]", status));
+                    }
+                }
+
+                if let Some(resp) = result_event {
+                    // Use real metrics from stream result event
+                    let tokens_in = resp.tokens_in.unwrap_or_else(|| {
+                        super::runner::ShellRunner::estimate_tokens(&prompt) as u64
+                    });
+                    let tokens_out = resp.tokens_out.unwrap_or_else(|| {
+                        super::runner::ShellRunner::estimate_tokens(&parsed.content) as u64
+                    });
+                    let cost = resp.cost_usd.unwrap_or(0.0);
+                    let real_duration = resp
+                        .duration_ms
+                        .map(Duration::from_millis)
+                        .unwrap_or(duration);
+
+                    if let Some(ref model) = resp.model {
+                        app.set_model_name(model.clone());
+                    }
+
+                    runner.record_turn_exact(
+                        &input_clone,
+                        &parsed.content,
+                        real_duration,
+                        tokens_in,
+                        tokens_out,
+                        cost,
+                    );
+                } else {
+                    runner.record_turn(&input_clone, &parsed.content, duration);
+                }
+
+                let metrics = runner.session_metrics();
+                app.set_session_metrics(
+                    metrics.total_tokens_in,
+                    metrics.total_tokens_out,
+                    metrics.total_cost_estimate,
+                    metrics.turn_count,
+                    duration,
+                );
+
+                if let Err(e) =
+                    save_current_session(session_id, project_dir, provider_name, model_name, runner)
+                {
+                    tracing::warn!("Failed to save session: {:?}", e);
+                }
+
+                app.workroom.on_complete();
+                app.set_loading(false);
+                break;
+            }
+        }
+        // NOTE: the workroom is reset at the START of the next turn (see
+        // `add_user_message` above), so the final Done states remain visible
+        // between turns rather than being wiped here.
+    }
+    Ok(())
+}
+
+/// Execute tandem mode: send to N providers in parallel, show all responses.
+#[allow(clippy::too_many_arguments)]
+async fn execute_tandem(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ShellApp,
+    runner: &mut ShellRunner,
+    input: &str,
+    provider_names: &[String],
+    session_id: &str,
+    project_dir: &str,
+    provider_name: &str,
+    model_name: &str,
+) -> Result<()> {
+    use super::detect::list_providers;
+
+    let all_providers = list_providers();
+    let start_time = std::time::Instant::now();
+
+    // Resolve provider infos
+    let mut resolved = Vec::new();
+    for name in provider_names {
+        if let Some(p) = all_providers
+            .iter()
+            .find(|p| p.command == *name || p.display_name.to_lowercase() == name.to_lowercase())
+        {
+            if p.available {
+                resolved.push(p.clone());
+            } else {
+                app.add_system_message(&format!("Provider '{}' not installed — skipped", name));
+            }
+        } else {
+            app.add_system_message(&format!("Unknown provider '{}' — skipped", name));
+        }
+    }
+
+    if resolved.is_empty() {
+        app.add_system_message(
+            "No valid providers for tandem. Use /providers to see available ones.",
+        );
+        return Ok(());
+    }
+
+    app.set_loading(true);
+    let prompt = runner.build_prompt_for(input);
+
+    // Spawn all providers in parallel with streaming
+    struct ProviderStream {
+        display_name: String,
+        stream_id: String, // Unique ID to prevent collision when same provider appears twice
+        cmd: String,
+        child: tokio::process::Child,
+        stream_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+        result_event: Option<super::json_runner::CliResponse>,
+        stderr_buffer: Arc<Mutex<String>>,
+    }
+
+    let mut streams = Vec::new();
+    for provider in &resolved {
+        let cmd = provider.command.clone();
+        let args = provider.args.clone();
+        let prompt = prompt.clone();
+        let display_name = provider.display_name.clone();
+
+        let mut child = match tokio::process::Command::new(&cmd)
+            .args(&args)
+            .arg(&prompt)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                app.add_system_message(&format!("Failed to spawn {}: {}", display_name, e));
+                continue;
+            }
+        };
+
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        // Spawn reader task for stdout
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let _ = stream_tx.send(line.clone());
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // Buffer to capture stderr for error reporting
+        let stderr_buffer = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = stderr_buffer.clone();
+
+        // Spawn reader task for stderr (to prevent buffer deadlock)
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut stderr = stderr;
+            let mut buf = vec![0u8; 4096];
+            loop {
+                match stderr.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(s) = String::from_utf8(buf[..n].to_vec()) {
+                            stderr_buf.lock().unwrap().push_str(&s);
+                        }
+                    }
+                }
+            }
+        });
+
+        // Create empty streaming message for this provider and get unique stream ID
+        let stream_id = app.start_tandem_stream(&display_name);
+
+        streams.push(ProviderStream {
+            display_name,
+            stream_id,
+            cmd,
+            child,
+            stream_rx,
+            result_event: None,
+            stderr_buffer,
+        });
+    }
+
+    if streams.is_empty() {
+        app.add_system_message("No providers could be started for tandem.");
+        app.set_loading(false);
+        return Ok(());
+    }
+
+    // Show spinner while waiting
+    app.add_system_message(&format!(
+        "⚡ Tandem: sending to {} in parallel...",
+        streams
+            .iter()
+            .map(|s| s.display_name.as_str())
+            .collect::<Vec<_>>()
+            .join(" + ")
+    ));
+    terminal.draw(|f| app.render(f))?;
+
+    // Stream loop: drain all channels and render incrementally
+    let mut active_streams = streams.len();
+    while active_streams > 0 {
+        app.tick_spinner();
+        app.workroom.tick();
+        terminal.draw(|f| app.render(f))?;
+
+        // Check for cancel
+        if event::poll(Duration::from_millis(30))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && app.handle_streaming_key(&key)
+        {
+            for stream in &mut streams {
+                let _ = stream.child.kill().await;
+            }
+            app.add_system_message("[Tandem cancelled]");
+            app.set_loading(false);
+            return Ok(());
+        }
+
+        // Drain all provider streams and append progressively
+        let mut got_data = false;
+        for stream in &mut streams {
+            while let Ok(line) = stream.stream_rx.try_recv() {
+                super::session::log_stream_event(session_id, line.trim());
+
+                let is_json_mode = super::json_runner::supports_json(&stream.cmd);
+                if is_json_mode {
+                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    match parse_stream_event(&stream.cmd, &line) {
+                        StreamEvent::Init { model, agents } => {
+                            if let Some(m) = model {
+                                app.set_model_name(m);
+                            }
+                            // Set agents from init (filtered, not all set to Working)
+                            app.workroom.set_agents_from_init(&agents);
+                            app.workroom.set_visible(true);
+                        }
+                        StreamEvent::Delta(text) => {
+                            app.workroom.apply_stream_text(&text);
+                            app.append_to_tandem_stream(&stream.stream_id, &text);
+                            got_data = true;
+                        }
+                        StreamEvent::Message(text) => {
+                            app.workroom.apply_stream_text(&text);
+                            app.append_to_tandem_stream(&stream.stream_id, &text);
+                            got_data = true;
+                        }
+                        StreamEvent::Result(resp) => {
+                            // Store result event for metrics, do NOT append content
+                            stream.result_event = Some(resp);
+                        }
+                        StreamEvent::Error(msg) => {
+                            app.append_to_tandem_stream(
+                                &stream.stream_id,
+                                &format!("\n\nError: {}", msg),
+                            );
+                            got_data = true;
+                        }
+                        StreamEvent::Ignored => {}
+                    }
+                } else {
+                    // Text mode fallback
+                    app.workroom.parse_streaming_line(&line);
+                    app.append_to_tandem_stream(&stream.stream_id, &line);
+                    got_data = true;
+                }
+            }
+        }
+
+        if got_data {
+            terminal.draw(|f| app.render(f))?;
+        }
+
+        // Check if any child has finished
+        active_streams = 0;
+        for stream in &mut streams {
+            match stream.child.try_wait() {
+                Ok(Some(_status)) => {
+                    // Child finished, continue to next
+                }
+                Ok(None) => {
+                    // Still running
+                    active_streams += 1;
+                }
+                Err(_) => {
+                    // Error checking status, assume finished
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    // Finalize: drain remaining events and wait for all children to complete
+    let mut combined_content = String::new();
+    let mut aggregated_tokens_in: Option<u64> = None;
+    let mut aggregated_tokens_out: u64 = 0;
+    let mut aggregated_cost: f64 = 0.0;
+
+    for mut stream in streams {
+        // Drain any remaining stream events
+        let is_json_mode = super::json_runner::supports_json(&stream.cmd);
+        while let Ok(line) = stream.stream_rx.try_recv() {
+            if is_json_mode {
+                use super::json_runner::{StreamEvent, parse_stream_event};
+                match parse_stream_event(&stream.cmd, &line) {
+                    StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                        app.append_to_tandem_stream(&stream.stream_id, &text);
+                    }
+                    StreamEvent::Result(resp) => {
+                        stream.result_event = Some(resp);
+                    }
+                    _ => {}
+                }
+            } else {
+                app.append_to_tandem_stream(&stream.stream_id, &line);
+            }
+        }
+
+        match stream.child.wait().await {
+            Ok(status) if status.success() => {
+                // Content was already streamed progressively, parse and clean markers
+                let content = app.get_assistant_content_by_stream_id(&stream.stream_id);
+                let parsed = super::parser::parse_response(&content);
+                // Update message with cleaned content (item 4: marker cleanup)
+                app.update_assistant_by_stream_id(&stream.stream_id, &parsed.content);
+                combined_content.push_str(&parsed.content);
+
+                // Aggregate real metrics from result_event
+                if let Some(resp) = stream.result_event {
+                    if aggregated_tokens_in.is_none() {
+                        aggregated_tokens_in = resp.tokens_in;
+                    }
+                    if let Some(out) = resp.tokens_out {
+                        aggregated_tokens_out += out;
+                    }
+                    if let Some(cost) = resp.cost_usd {
+                        aggregated_cost += cost;
+                    }
+                }
+            }
+            Ok(status) => {
+                let stderr_content = stream.stderr_buffer.lock().unwrap();
+                let error_msg = if stderr_content.is_empty() {
+                    format!("\n\n[Failed with status: {}]", status)
+                } else {
+                    format!("\n\n[Failed with status: {}]\n{}", status, stderr_content)
+                };
+                app.append_to_tandem_stream(&stream.stream_id, &error_msg);
+            }
+            Err(e) => {
+                app.append_to_tandem_stream(&stream.stream_id, &format!("\n\n[Error: {}]", e));
+            }
+        }
+        terminal.draw(|f| app.render(f))?;
+    }
+
+    // Use exact metrics from aggregated result_events, or fall back to estimation
+    let duration = start_time.elapsed();
+    if let Some(tokens_in) = aggregated_tokens_in {
+        runner.record_turn_exact(
+            input,
+            &combined_content,
+            duration,
+            tokens_in,
+            aggregated_tokens_out,
+            aggregated_cost,
+        );
+    } else {
+        runner.record_turn(input, &combined_content, duration);
+    }
+    let metrics = runner.session_metrics();
+    app.set_session_metrics(
+        metrics.total_tokens_in,
+        metrics.total_tokens_out,
+        metrics.total_cost_estimate,
+        metrics.turn_count,
+        duration,
+    );
+    app.set_loading(false);
+
+    if let Err(e) = save_current_session(session_id, project_dir, provider_name, model_name, runner)
+    {
+        tracing::warn!("Failed to save session: {:?}", e);
+    }
+    Ok(())
+}
+
+/// Resolve an agent file path by name from the current project config.
+fn resolve_project_agent(name: &str) -> Option<std::path::PathBuf> {
+    let (root, config) = crate::core::project::find_project_config()?;
+    for agent_ref in &config.agents {
+        let agent_name = match agent_ref {
+            crate::core::project::AgentRef::Named { name: n } => n.clone(),
+            crate::core::project::AgentRef::Path { path } => path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+            _ => continue,
+        };
+        if agent_name == name {
+            return crate::core::project::resolve_agent(agent_ref, &root).ok();
+        }
+    }
+    None
+}
+
+/// Resolved step data: command, args, combined prompt, display label.
+struct ResolvedStep {
+    cmd: String,
+    args: Vec<String>,
+    display_label: String,
+}
+
+/// Execute pipeline from a list of PipelineStep (supports both `provider:` and `agent:`).
+#[allow(clippy::too_many_arguments)]
+async fn execute_pipeline_steps(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ShellApp,
+    runner: &mut ShellRunner,
+    input: &str,
+    steps: &[super::config::PipelineStep],
+    session_id: &str,
+    project_dir: &str,
+    provider_name: &str,
+    model_name: &str,
+) -> Result<()> {
+    if steps.is_empty() {
+        app.add_system_message("Pipeline has no steps configured.");
+        return Ok(());
+    }
+
+    let start_time = std::time::Instant::now();
+    app.set_loading(true);
+
+    let mut current_input = input.to_string();
+    let total_steps = steps.len();
+    let mut aggregated_tokens_in: Option<u64> = None;
+    let mut aggregated_tokens_out: u64 = 0;
+    let mut aggregated_cost: f64 = 0.0;
+
+    for (i, step) in steps.iter().enumerate() {
+        let is_last = i == total_steps - 1;
+
+        // Each step may have multiple provider/agent entries — take the first for now
+        let Some(entry) = step.providers.first() else {
+            app.add_system_message(&format!("Step '{}' has no providers, skipping.", step.name));
+            continue;
+        };
+
+        // Resolve entry to cmd + args + optional agent system prompt
+        let (cmd, args, agent_system_prompt, display_label) = if let Some(agent_name) = &entry.agent
+        {
+            // Agent mode: load the agent from project config
+            match resolve_project_agent(agent_name) {
+                Some(path) => match crate::parser::parse_agent_file(&path) {
+                    Ok(agent) => {
+                        let cmd = agent.metadata.provider.clone();
+                        let args = super::detect::args_for_provider(&cmd);
+                        let label = format!("{} [{}]", agent_name, cmd);
+                        (cmd, args, Some(agent.system_prompt.clone()), label)
+                    }
+                    Err(e) => {
+                        app.add_system_message(&format!(
+                            "Failed to parse agent '{agent_name}': {e}"
+                        ));
+                        continue;
+                    }
+                },
+                None => {
+                    app.add_system_message(&format!(
+                        "Agent '{agent_name}' not found in project config"
+                    ));
+                    continue;
+                }
+            }
+        } else if !entry.provider.is_empty() {
+            // Provider mode: raw CLI invocation
+            let cmd = entry.provider.clone();
+            let args = super::detect::args_for_provider(&cmd);
+            (cmd, args, None, entry.provider.clone())
+        } else {
+            app.add_system_message(&format!(
+                "Step '{}' has neither agent nor provider set, skipping.",
+                step.name
+            ));
+            continue;
+        };
+
+        let resolved = ResolvedStep {
+            cmd: cmd.clone(),
+            args: args.clone(),
+            display_label: display_label.clone(),
+        };
+
+        let stage_label = if i == 0 { "starting" } else { "chained" };
+        app.add_system_message(&format!(
+            "⚙ Pipeline step {}/{}: {} — {} ({})",
+            i + 1,
+            total_steps,
+            step.name,
+            display_label,
+            stage_label
+        ));
+        terminal.draw(|f| app.render(f))?;
+
+        // Build the prompt: (agent system prompt)? + (step prompt)? + current input
+        let mut full_prompt = String::new();
+        if let Some(sp) = &agent_system_prompt {
+            full_prompt.push_str(sp);
+            full_prompt.push_str("\n\n");
+        }
+        if let Some(step_prompt) = &step.prompt {
+            full_prompt.push_str(step_prompt);
+            full_prompt.push_str("\n\n");
+        }
+        if i == 0 {
+            full_prompt.push_str(&current_input);
+        } else {
+            full_prompt.push_str(&format!(
+                "Previous step output:\n---\n{}\n---\n\nOriginal request: {}",
+                current_input, input
+            ));
+        }
+
+        // Start streaming for this step
+        app.start_streaming_response();
+
+        // Spawn process with streaming stdout
+        let mut child = match tokio::process::Command::new(&resolved.cmd)
+            .args(&resolved.args)
+            .arg(&full_prompt)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                app.update_last_assistant(&format!("Failed to spawn: {}", e));
+                app.set_loading(false);
+                return Ok(());
+            }
+        };
+
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        // Spawn reader task for stdout
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let _ = stream_tx.send(line.clone());
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // Buffer to capture stderr for error reporting
+        let stderr_buffer = Arc::new(Mutex::new(String::new()));
+        let stderr_buf = stderr_buffer.clone();
+
+        // Spawn reader task for stderr (to prevent buffer deadlock)
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut stderr = stderr;
+            let mut buf = vec![0u8; 4096];
+            loop {
+                match stderr.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(s) = String::from_utf8(buf[..n].to_vec()) {
+                            stderr_buf.lock().unwrap().push_str(&s);
+                        }
+                    }
+                }
+            }
+        });
+
+        let is_json_mode = super::json_runner::supports_json(&resolved.cmd);
+        let mut step_result_event: Option<super::json_runner::CliResponse> = None;
+
+        // Stream loop
+        loop {
+            app.tick_spinner();
+            app.workroom.tick();
+            terminal.draw(|f| app.render(f))?;
+
+            if event::poll(Duration::from_millis(30))?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+                && app.handle_streaming_key(&key)
+            {
+                let _ = child.kill().await;
+                app.append_to_streaming("\n\n[Pipeline cancelled]");
+                app.set_loading(false);
+                return Ok(());
+            }
+
+            // Drain stream and append to UI progressively
+            let mut got_data = false;
+            while let Ok(line) = stream_rx.try_recv() {
+                super::session::log_stream_event(session_id, line.trim());
+
+                if is_json_mode {
+                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    match parse_stream_event(&resolved.cmd, &line) {
+                        StreamEvent::Init { model, agents } => {
+                            if let Some(m) = model {
+                                app.set_model_name(m);
+                            }
+                            // Set agents from init (filtered, not all set to Working)
+                            app.workroom.set_agents_from_init(&agents);
+                            app.workroom.set_visible(true);
+                        }
+                        StreamEvent::Delta(text) => {
+                            app.workroom.apply_stream_text(&text);
+                            app.append_to_streaming(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Message(text) => {
+                            app.workroom.apply_stream_text(&text);
+                            app.append_to_streaming(&text);
+                            got_data = true;
+                        }
+                        StreamEvent::Result(resp) => {
+                            // Store result event for metrics, do NOT append content
+                            step_result_event = Some(resp);
+                        }
+                        StreamEvent::Error(msg) => {
+                            app.append_to_streaming(&format!("\n\nError: {}", msg));
+                            got_data = true;
+                        }
+                        StreamEvent::Ignored => {}
+                    }
+                } else {
+                    // Text mode fallback
+                    app.workroom.parse_streaming_line(&line);
+                    app.append_to_streaming(&line);
+                    got_data = true;
+                }
+            }
+
+            if got_data {
+                terminal.draw(|f| app.render(f))?;
+            }
+
+            // Check if child finished
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    // Drain remaining stream events
+                    while let Ok(line) = stream_rx.try_recv() {
+                        if is_json_mode {
+                            use super::json_runner::{StreamEvent, parse_stream_event};
+                            match parse_stream_event(&resolved.cmd, &line) {
+                                StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                                    app.append_to_streaming(&text);
+                                }
+                                StreamEvent::Result(resp) => {
+                                    step_result_event = Some(resp);
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            app.append_to_streaming(&line);
+                        }
+                    }
+
+                    if status.success() {
+                        // Get the streamed content
+                        let content = app.get_last_assistant_content();
+                        let parsed = super::parser::parse_response(&content);
+
+                        // Update message with label and parsed content
+                        let label = if is_last {
+                            format!("{} (final)", resolved.display_label)
+                        } else {
+                            format!("{} (step {})", resolved.display_label, i + 1)
+                        };
+
+                        app.update_last_assistant_with_label(&label, &parsed.content);
+                        current_input = parsed.content;
+
+                        // Aggregate real metrics from result_event. Pipeline steps run in
+                        // series on different inputs, so tokens_in is summed across steps
+                        // (unlike tandem mode, where the first value is kept — see
+                        // `accumulate_pipeline_metrics`).
+                        if let Some(resp) = &step_result_event {
+                            accumulate_pipeline_metrics(
+                                &mut aggregated_tokens_in,
+                                &mut aggregated_tokens_out,
+                                &mut aggregated_cost,
+                                resp,
+                            );
+                        }
+                    } else {
+                        // Process failed
+                        let stderr_content = stderr_buffer.lock().unwrap();
+                        let error_msg = if stderr_content.is_empty() {
+                            format!(
+                                "\n\n[Pipeline step '{}' failed with status: {}]",
+                                step.name, status
+                            )
+                        } else {
+                            format!(
+                                "\n\n[Pipeline step '{}' failed with status: {}]\n{}",
+                                step.name, status, stderr_content
+                            )
+                        };
+                        app.append_to_streaming(&error_msg);
+                        app.set_loading(false);
+                        return Ok(());
+                    }
+                    break;
+                }
+                Ok(None) => {
+                    // Still running, continue loop
+                }
+                Err(e) => {
+                    app.update_last_assistant(&format!("Error checking process: {}", e));
+                    app.set_loading(false);
+                    return Ok(());
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        terminal.draw(|f| app.render(f))?;
+    }
+
+    let duration = start_time.elapsed();
+    if let Some(tokens_in) = aggregated_tokens_in {
+        runner.record_turn_exact(
+            input,
+            &current_input,
+            duration,
+            tokens_in,
+            aggregated_tokens_out,
+            aggregated_cost,
+        );
+    } else {
+        runner.record_turn(input, &current_input, duration);
+    }
+    let metrics = runner.session_metrics();
+    app.set_session_metrics(
+        metrics.total_tokens_in,
+        metrics.total_tokens_out,
+        metrics.total_cost_estimate,
+        metrics.turn_count,
+        duration,
+    );
+    app.set_loading(false);
+
+    if let Err(e) = save_current_session(session_id, project_dir, provider_name, model_name, runner)
+    {
+        tracing::warn!("Failed to save session: {:?}", e);
+    }
+    Ok(())
+}
+
+/// Execute a turn in PTY mode — interactive CLI with native agent delegation.
+#[allow(clippy::too_many_arguments)]
+async fn execute_pty_turn(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut ShellApp,
+    runner: &mut ShellRunner,
+    input: &str,
+    session_id: &str,
+    project_dir: &str,
+    provider_name: &str,
+    model_name: &str,
+) -> Result<()> {
+    use super::pty_runner::{PtyConfig, PtySession, detect_agent_activity, filter_startup_noise};
+    use std::time::Instant;
+
+    let cmd = runner.command().to_string();
+    let config = PtyConfig {
+        command: cmd.clone(),
+        width: terminal.size()?.width,
+        height: 40,
+    };
+
+    app.set_loading(true);
+    app.start_streaming_response();
+    let start_time = Instant::now();
+
+    let mut pty = match PtySession::spawn(&config) {
+        Ok(pty) => pty,
+        Err(e) => {
+            app.update_last_assistant(&format!("Error spawning PTY for {}: {}", cmd, e));
+            app.set_loading(false);
+            return Ok(());
+        }
+    };
+
+    // Wait for startup noise
+    let _startup = pty.drain_until_silence(Duration::from_secs(3));
+
+    // Send the user's message
+    if let Err(e) = pty.send(input) {
+        app.update_last_assistant(&format!("Error sending to PTY: {}", e));
+        app.set_loading(false);
+        return Ok(());
+    }
+
+    // Stream output
+    let silence_timeout = Duration::from_secs(5);
+    let mut last_data_time = Instant::now();
+    let mut full_response = String::new();
+
+    loop {
+        app.tick_spinner();
+        app.workroom.tick();
+        terminal.draw(|f| app.render(f))?;
+
+        // Check for cancel
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && app.handle_streaming_key(&key)
+        {
+            pty.kill();
+            app.append_to_streaming("\n\n[Cancelled]");
             app.set_loading(false);
             break;
         }
+
+        let (new_text, done) = pty.drain();
+
+        if !new_text.is_empty() {
+            last_data_time = Instant::now();
+            let clean = filter_startup_noise(&new_text);
+            if !clean.is_empty() {
+                for agent in &detect_agent_activity(&clean) {
+                    app.workroom.on_delegate(agent);
+                }
+                app.append_to_streaming(&clean);
+                full_response.push_str(&clean);
+                terminal.draw(|f| app.render(f))?;
+            }
+        }
+
+        if done || !pty.is_running() {
+            let (remaining, _) = pty.drain();
+            if !remaining.is_empty() {
+                let clean = filter_startup_noise(&remaining);
+                app.append_to_streaming(&clean);
+                full_response.push_str(&clean);
+            }
+            break;
+        }
+
+        if last_data_time.elapsed() > silence_timeout && !full_response.is_empty() {
+            break;
+        }
+    }
+
+    let duration = start_time.elapsed();
+    let parsed = super::parser::parse_response(&full_response);
+    app.update_last_assistant(&parsed.content);
+    runner.record_turn(input, &parsed.content, duration);
+
+    let metrics = runner.session_metrics();
+    app.set_session_metrics(
+        metrics.total_tokens_in,
+        metrics.total_tokens_out,
+        metrics.total_cost_estimate,
+        metrics.turn_count,
+        duration,
+    );
+
+    app.workroom.on_complete();
+    app.set_loading(false);
+    if let Err(e) = save_current_session(session_id, project_dir, provider_name, model_name, runner)
+    {
+        tracing::warn!("Failed to save session: {:?}", e);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::json_runner::CliResponse;
+    use super::*;
+
+    /// Build a minimal `CliResponse` fixture with only the metrics fields set.
+    fn resp(tokens_in: Option<u64>, tokens_out: Option<u64>, cost_usd: Option<f64>) -> CliResponse {
+        CliResponse {
+            content: String::new(),
+            tokens_in,
+            tokens_out,
+            cost_usd,
+            duration_ms: None,
+            model: None,
+            session_id: None,
+            from_json: true,
+        }
+    }
+
+    #[test]
+    fn pipeline_metrics_sum_tokens_in_across_steps() {
+        // Regression test for PR #176: pipeline steps run in series on
+        // DIFFERENT inputs (each step's input is the previous step's
+        // output), so tokens_in must be summed, not taken from the first
+        // step only — otherwise steps 2..N's input tokens are silently lost.
+        let mut tokens_in = None;
+        let mut tokens_out = 0u64;
+        let mut cost = 0.0f64;
+
+        let steps = [
+            resp(Some(100), Some(20), Some(0.01)),
+            resp(Some(50), Some(10), Some(0.02)),
+            resp(Some(30), Some(5), Some(0.005)),
+        ];
+
+        for step in &steps {
+            accumulate_pipeline_metrics(&mut tokens_in, &mut tokens_out, &mut cost, step);
+        }
+
+        assert_eq!(tokens_in, Some(100 + 50 + 30));
+        assert_eq!(tokens_out, 20 + 10 + 5);
+        assert!((cost - (0.01 + 0.02 + 0.005)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn pipeline_metrics_treat_missing_tokens_in_as_zero_contribution() {
+        // A step whose result event doesn't report tokens_in shouldn't reset
+        // or block the running total — it contributes 0 and later steps'
+        // real values still get added on top.
+        let mut tokens_in = None;
+        let mut tokens_out = 0u64;
+        let mut cost = 0.0f64;
+
+        let steps = [resp(None, None, None), resp(Some(42), Some(7), Some(0.1))];
+
+        for step in &steps {
+            accumulate_pipeline_metrics(&mut tokens_in, &mut tokens_out, &mut cost, step);
+        }
+
+        assert_eq!(tokens_in, Some(42));
+        assert_eq!(tokens_out, 7);
+        assert!((cost - 0.1).abs() < f64::EPSILON);
+    }
 }

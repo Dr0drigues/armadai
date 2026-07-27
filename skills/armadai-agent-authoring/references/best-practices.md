@@ -43,7 +43,7 @@ Rule of thumb: lower temperature for tasks where **consistency** matters, higher
 
 ### Coordinator Agent
 
-A coordinator orchestrates a fleet of specialist agents. Tag it with `coordinator`:
+A coordinator orchestrates a team of specialist agents. Tag it with `coordinator`:
 
 ```markdown
 ## Metadata

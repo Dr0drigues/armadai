@@ -5,7 +5,6 @@ use serde::Deserialize;
 
 use super::agent::AgentMode;
 use super::config::{registry_cache_dir, user_agents_dir, user_prompts_dir, user_skills_dir};
-use super::fleet::FleetDefinition;
 use super::orchestration::OrchestrationConfig;
 
 // ---------------------------------------------------------------------------
@@ -58,10 +57,23 @@ pub struct ProjectConfig {
     pub skills: Vec<SkillRef>,
     pub sources: Vec<String>,
     pub link: Option<LinkConfig>,
-    #[serde(default)]
     pub defaults: ProjectDefaults,
     /// Top-level orchestration configuration (teams, coordinator, pattern).
     pub orchestration: Option<Box<OrchestrationConfig>>,
+    /// Shell configuration (default provider, tandem, pipeline).
+    pub shell: Option<crate::shell::config::ShellConfig>,
+    /// Dynamic model-router rules (thresholds, keywords, tags, budget cap)
+    /// for `latest:auto` agents. See `crate::core::routing::RoutingRules`.
+    /// Consumed in `cli::run::execute` to build the `RoutingRules` passed to
+    /// `run_single_agent` for `latest:auto` model resolution.
+    pub routing: Option<crate::core::routing::RoutingRules>,
+    /// Project-level custom registry sources (agents/skills/models), merged
+    /// with the user-level `~/.config/armadai/registries.yaml` and built-in
+    /// defaults. See `crate::core::registries`. Consumed by
+    /// `registry::sync::effective_sources`, `skills_registry::cache::effective_sources`
+    /// and `model_registry::fetch`'s source resolution (B2 Lot A Task 2).
+    #[serde(default)]
+    pub registries: Option<crate::core::registries::RegistriesConfig>,
 }
 
 /// Reference to an agent — resolved at runtime.
@@ -109,55 +121,12 @@ pub struct LinkOverride {
 // Loading
 // ---------------------------------------------------------------------------
 
-/// Intermediate struct used to detect the legacy fleet format.
-/// If the YAML contains a `fleet` key, it's the old format.
-#[derive(Deserialize)]
-struct FormatProbe {
-    fleet: Option<String>,
-}
-
 impl ProjectConfig {
     /// Load a project config from the given path.
-    /// Supports both the new format and the legacy fleet format.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-
-        // Detect format: if there's a `fleet:` key, it's the old format
-        let probe: FormatProbe =
-            serde_yaml_ng::from_str(&content).unwrap_or(FormatProbe { fleet: None });
-
-        if probe.fleet.is_some() {
-            tracing::warn!(
-                "Legacy fleet format detected in {}. \
-                 Migrate to the modern armadai.yaml format (see `armadai init --project`). \
-                 Fleet support will be removed in a future release.",
-                path.display()
-            );
-            let fleet: FleetDefinition = serde_yaml_ng::from_str(&content)?;
-            Ok(Self::from_legacy_fleet(&fleet))
-        } else {
-            let config: ProjectConfig = serde_yaml_ng::from_str(&content)?;
-            Ok(config)
-        }
-    }
-
-    /// Convert a legacy `FleetDefinition` into a `ProjectConfig`.
-    pub fn from_legacy_fleet(fleet: &FleetDefinition) -> Self {
-        let agents = fleet
-            .agents
-            .iter()
-            .map(|name| AgentRef::Named { name: name.clone() })
-            .collect();
-
-        Self {
-            agents,
-            prompts: Vec::new(),
-            skills: Vec::new(),
-            sources: Vec::new(),
-            link: None,
-            defaults: ProjectDefaults::default(),
-            orchestration: None,
-        }
+        let config: ProjectConfig = serde_yaml_ng::from_str(&content)?;
+        Ok(config)
     }
 }
 
@@ -617,53 +586,52 @@ link:
     }
 
     #[test]
-    fn test_from_legacy_fleet() {
-        let fleet = FleetDefinition {
-            fleet: "my-fleet".to_string(),
-            agents: vec!["code-reviewer".to_string(), "test-writer".to_string()],
-            source: PathBuf::from("/home/user/armadai"),
-        };
-
-        let config = ProjectConfig::from_legacy_fleet(&fleet);
-        assert_eq!(config.agents.len(), 2);
-        assert_eq!(
-            config.agents[0],
-            AgentRef::Named {
-                name: "code-reviewer".to_string()
-            }
-        );
-        assert_eq!(
-            config.agents[1],
-            AgentRef::Named {
-                name: "test-writer".to_string()
-            }
-        );
-        assert!(config.prompts.is_empty());
-        assert!(config.link.is_none());
+    fn parses_routing_section() {
+        let yaml = r#"
+agents: []
+routing:
+  length_thresholds: { fast_max: 100, pro_max: 1000 }
+  tags: { hot: max }
+"#;
+        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let r = cfg.routing.expect("routing present");
+        assert_eq!(r.length_thresholds.fast_max, 100);
+        assert_eq!(r.tags.get("hot").map(String::as_str), Some("max"));
+        // absent keys fall back to embedded defaults
+        assert_eq!(r.budget_downgrade_ratio, 0.2);
     }
 
     #[test]
-    fn test_legacy_format_detection() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("armadai.yaml");
+    fn routing_absent_gives_none() {
+        let yaml = "agents: []\n";
+        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(cfg.routing.is_none());
+    }
 
-        let legacy_yaml = "\
-fleet: my-fleet
-agents:
-  - code-reviewer
-  - test-writer
-source: /home/user/armadai
-";
-        std::fs::write(&path, legacy_yaml).unwrap();
+    #[test]
+    fn parses_registries_section() {
+        let yaml = r#"
+agents: []
+registries:
+  agents:
+    - url: https://example.com/agents.git
+  skills:
+    - url: https://example.com/skills.git
+"#;
+        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let r = cfg.registries.expect("registries present");
+        assert_eq!(r.agents.len(), 1);
+        assert_eq!(r.agents[0].url, "https://example.com/agents.git");
+        assert_eq!(r.skills.len(), 1);
+        assert_eq!(r.skills[0].url, "https://example.com/skills.git");
+        assert!(r.models.is_empty());
+    }
 
-        let config = ProjectConfig::load(&path).unwrap();
-        assert_eq!(config.agents.len(), 2);
-        assert_eq!(
-            config.agents[0],
-            AgentRef::Named {
-                name: "code-reviewer".to_string()
-            }
-        );
+    #[test]
+    fn registries_absent_gives_none() {
+        let yaml = "agents: []\n";
+        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(cfg.registries.is_none());
     }
 
     #[test]

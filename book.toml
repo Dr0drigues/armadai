@@ -1,0 +1,19 @@
+[book]
+title = "ArmadAI"
+description = "AI agent orchestrator — pont de commandement"
+authors = ["Dimitri Rodrigues-Oliveira"]
+language = "en"
+src = "docs/wiki"
+
+[output.html]
+theme = "docs/theme"
+default-theme = "light"
+preferred-dark-theme = "navy"
+additional-css = ["docs/theme/custom.css"]
+git-repository-url = "https://github.com/Dr0drigues/armadai"
+site-url = "/armadai/"
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1

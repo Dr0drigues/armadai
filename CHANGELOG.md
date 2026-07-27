@@ -1,3 +1,278 @@
+## v1.0.0-rc.5 (2026-07-27)
+
+Fifth release candidate. Consolidates the reopened-scope work: the full
+design-system rollout, the event-sourcing orchestration epic, real
+rate-limiting, and end-to-end hierarchical delegation. Also adopts a
+master-only branch model.
+
+### Design system (final surface: Docs)
+
+- **Docs surface** (#261): standalone brand assets (`assets/brand/`), an
+  identity-forward README (fixed badges), and an mdBook site reusing
+  `docs/wiki/` with a DS theme (oklch tokens, self-hosted IBM Plex) published
+  to GitHub Pages. Completes the DS rollout across Web + TUI + CLI + Docs.
+
+### Orchestration
+
+- **OH1 Lot 6** (#264): `armadai run --resume <run_id>` (continue an
+  interrupted event-sourced run) and `--replay <run_id>` (deterministic
+  re-display, no effects), with the `run_id` surfaced for the CLI and the live
+  Workroom. Closes the event-sourcing epic (Lots 1-6).
+- **End-to-end hierarchical delegation** (#273): the coordinator prompt now
+  delegates by default instead of stalling on a clarifying question, and the
+  orchestrated per-call timeout is raised to 600s (with an
+  `orchestration.agent_timeout_secs` override), so real delegated runs
+  complete on the CLI fleet.
+- **Live-run abort** (#275): Ctrl+C / q now abort a running orchestration
+  cleanly (the CLI subprocess is killed on drop instead of being orphaned),
+  and the Workroom footer advertises the real abort keys.
+
+### Providers
+
+- **Rate-limiting Lot 1** (#269): real proactive throttling via a
+  `RateLimitedProvider` decorator covering every provider call (event-sourced
+  engines included) — a shared per-provider limiter (`config.rate_limits`)
+  plus an optional per-agent limiter (frontmatter `rate_limit`). Fixes the
+  previously inert config and the `parse_rate("N/hour")` panic.
+
+### Debts
+
+- **Hardening** (#262): hermeticized the flaky `test_resolve_shell_model_aliases`,
+  zip-slip validation for remote-starter archives, and TUI UX (unified
+  quit-keys, detail-view scroll, Costs alignment).
+
+### Project
+
+- **master-only branch model**: dropped `develop`; `master` is the default
+  trunk. `develop` was reconciled into the release line first (#248).
+
+## v1.0.0-rc.4 (2026-07-21)
+
+Fourth release candidate for 1.0.0. Completes the RC roadmap with remote
+starter registries (B2 Lot B) and clears the post-rc.3 hygiene debts. Scope
+remains frozen (event-sourcing and the declarative engine stay in 1.1/v2).
+
+### New: B2 Lot B — Remote starter registries
+
+- **Fetch starter packs from remote registries** (#211, #212), transport-agnostic
+  behind a pluggable fetcher: **git** (clone/pull, always available) and
+  **archive** (download + `tar`/`unzip` extract, gated `providers-api`). A
+  `RegistrySource` declares its `kind` (git|archive), inferred from the URL or
+  explicit.
+- **Discovery norm (hybrid)**: any directory with a `pack.yaml` is a pack; an
+  optional `armadai-starters.yaml` manifest at the registry root enriches /
+  restricts what is exposed (with `..`/absolute paths rejected).
+- **Integration**: synced packs join the existing local starter resolution
+  (`find_pack_dir` / `load_all_packs`), with **local packs always winning** over
+  the remote cache; remote packs also resolve by their `name:` (not just dir).
+- **CLI**: `armadai registry sources add|remove|list starters <url>` and
+  `armadai registry sync` (now also syncs starter sources, user ∪ project).
+- **Auto-sync-on-miss**: `armadai init --pack <name>` syncs the configured
+  starter registries when the pack is missing locally, then retries — network
+  only on a miss (no starter sources ⇒ no network, behavior unchanged).
+
+### Fixed / hardening (#210)
+
+- **Hermetic model-tier resolution tests**: `resolve_model_for_tier` now
+  always returns a concrete pinned model (never a floating `-latest` alias or
+  the `latest:*` placeholder), and the affected tests are isolated from the
+  ambient model catalog cache — eliminating intermittent failures.
+- **Accurate CLI input-token count**: the CLI provider now sums
+  `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`, so
+  History/Costs no longer show a misleading near-zero "IN" for cached prompts.
+- **Trace list pagination**: `get_orchestration_trace` filters to root runs at
+  the SQL level (before `LIMIT`), so nested children no longer consume list
+  slots.
+
+## v1.0.0-rc.3 (2026-07-21)
+
+Third release candidate for 1.0.0. Completes the rc.3 scope (dynamic agent
+routing + an event-based shell Workroom) and adds a substantial UX pass across
+both terminal UIs plus genuinely useful run history/costs. Scope remains frozen
+(event-sourcing and the declarative engine stay in 1.1/v2).
+
+### New: C8 — Declarative agent routing
+
+- **Deterministic routing** (#187, #188): select which roster agents run a task
+  via **named routes** (`orchestration.routes:`) and/or **capability tags**
+  (`--tags`), on top of `--route`. New `armadai run` flags `--route`, `--tags`,
+  and `--dry-run` (preview the selection — agents + reason + pattern — with zero
+  tokens). Targets blackboard/ring; hierarchical keeps its own topology.
+
+### New: Event-based shell Workroom + drill-down
+
+- **Marker-driven state machine** (#189, #190): the shell Workroom panel is now
+  driven by the ArmadAI protocol markers in the stream (`ARMADAI_DELEGATE` /
+  `META` / `END`) instead of fuzzy text matching — robust to markers echoed in
+  recaps, resilient to chunk-split markers. `detect_mentions` removed.
+- **Drill-down** (#194): `Ctrl+W` focuses the Workroom; `j`/`k` select an agent;
+  `Enter` opens a detail popup (state, elapsed, last action, transition
+  timeline); `Esc`/`Ctrl+W` exit. Works between AND during a streaming turn.
+
+### New: Useful run history & costs
+
+- **Absolute shared DB** (#208): the default storage path is now
+  `~/.local/share/armadai/armadai.sqlite` (was a CWD-relative `data/…`), so runs
+  and `armadai tui` share one database regardless of directory.
+- **Per-run project** (#208): schema migration v2 tags every run (sequential and
+  orchestrated) with its originating project; the dashboard History shows a
+  PROJECT column.
+- **Real CLI cost/tokens** (#208): the CLI provider now parses the underlying
+  tool's stream-json output (`total_cost_usd` + usage) instead of reporting
+  `$0.00`. Agents with explicit `args:` are respected verbatim.
+
+### Changed: UX/UI pass across both TUIs
+
+- **Shared semantic theme + light-terminal support** (#195): a `theme.rs` with
+  named (terminal-adaptive) colors; the statusbar, detail views and markdown
+  rendering are now legible on light terminals (were white-on-white / dark bar).
+- **Safe Esc + shortcut bar** (#196): in the shell, Esc clears the input first,
+  then requires a second Esc to quit (Ctrl+C still quits immediately); a
+  persistent hint bar documents the shortcuts.
+- **Dashboard polish** (#197, #191): scrollable detail views, the Costs tab
+  brought to list conventions (selection/search/sort), `Ctrl+C` quits, and
+  consistency fixes (legible Workroom colors, centralized cost/context
+  formatting, deduped search bar & spinner).
+
+### Fixed
+
+- **Hierarchical orchestration was broken for kebab-keyed agents** (#198): the
+  engine keyed agents by their H1 title instead of the config key, so the
+  coordinator lookup failed (`No provider found for 'dev-lead'`). Now keyed by
+  the roster key. Same class of fix as C8's routing (#192).
+- **`--dry-run` now short-circuits without `--route`/`--tags`** (#192): a plain
+  `--dry-run` previews the full roster instead of executing.
+- **Workroom lifecycle** (#192, #193): CLI/provider pseudo-agents (e.g.
+  `claude`) filtered out; final agent states persist between turns (reset moved
+  to turn start).
+
+## v1.0.0-rc.2 (2026-07-20)
+
+Second release candidate for 1.0.0. Consolidates the post-rc.1 work: the
+OH3/OH4 orchestration instrumentation, audit refinements, the web trace UI,
+custom registries, and the full **C9 pattern mixing** feature. Scope remains
+frozen (event-sourcing and the declarative-engine vision stay in 1.1/v2).
+
+### New: C9 — Pattern mixing (hierarchical → nested blackboard/ring)
+
+- **Engine** (#183): a hierarchical team can declare a nested sub-pattern
+  (`teams[].pattern: blackboard|ring`) and run its agents as that sub-pattern
+  instead of flat delegation. Budget/depth are shared with the parent run,
+  metrics fold back, and the team lead gets an **arbitration turn** over the
+  sub-run outcome (accept/refine/override). New `NestedStart`/`NestedEnd`
+  JSONL events. A dedicated `NestedPattern` enum makes deeper nesting
+  impossible by construction (single level).
+- **Storage** (#184): a real schema migration mechanism (`PRAGMA
+  user_version`) — the missing brick — relaxes the orchestration CHECK to
+  allow `hierarchical`, adds `parent_run_id`, and a `delegation_events`
+  table. Hierarchical runs and their nested sub-runs are now persisted and
+  linked. Legacy databases migrate without data loss (foreign keys are
+  disabled only around the table rebuild).
+- **Exposition** (#185): the web trace UI renders hierarchical runs — a
+  delegation-tree diagram plus expandable nested sub-runs (reusing the
+  existing sequence/timeline views). The trace list shows root runs only.
+
+### New: Custom registries (B2 Lot A)
+
+- **Configurable registries** (#182): a `registries:` section (user
+  `~/.config/armadai/registries.yaml` and/or project `armadai.yaml`) adds
+  custom sources for agents, skills, and models on top of the built-in
+  defaults (union, dedup). New CLI: `armadai registry sources
+  list|add|remove <agents|skills|models> <url>`.
+
+### New: Web orchestration traces (C6)
+
+- **Traces tab** (#181): the web dashboard lists orchestration runs and shows
+  a run's flow (Mermaid sequence diagram + timeline) via a detail endpoint.
+
+### Changed
+
+- **OH3/OH4 consolidation** (#179): JSONL run events (`Delegate`/`Vote`/
+  `Board`) are now emitted across the orchestration engines, and
+  `model: latest:auto` tier routing applies inside orchestration
+  (blackboard/ring/hierarchical), not just single-agent runs.
+- **Audit refinements** (#180): post-rc backlog cleanups for `armadai audit`.
+
+## v1.0.0-rc.1 (2026-07-17)
+
+First release candidate for 1.0.0. Scope frozen (event-sourcing and the
+declarative-engine vision are deferred to 1.1/v2).
+
+### Fixed
+
+- **Beta.2/beta.3 technical debt resolved** (#176): exact metrics from
+  `result_event` now used in Pipeline/Tandem modes (previously
+  approximated), `deprecated_model` warning now emitted consistently in
+  orchestration mode (previously single-agent-only), plus assorted
+  cleanups (`content_out` clone avoidance, duplicate `exit_code_for` call,
+  obsolete `#[allow(dead_code)]` removal, documented lint suppressions,
+  redundant `#[serde(default)]` removal in `ProjectConfig`).
+
+### New: v0 → v1 Migration Guide
+
+- **[`docs/wiki/migration-v0-to-v1.md`](docs/wiki/migration-v0-to-v1.md)**:
+  step-by-step guide covering breaking changes for v0.x users — removal of
+  `fleet`, non-canonical `provider` syntax, deprecated models, the
+  `.armadai/` project format, and diagnostic tooling.
+- **[`scripts/migrate-v0-to-v1.sh`](scripts/migrate-v0-to-v1.sh)**: companion
+  automation script for the mechanical, deterministic parts of the
+  migration. Dry-run by default (nothing is written unless `--apply` is
+  passed), backs up every file it touches, and never deletes anything.
+
+## v1.0.0-beta.3 (2026-07-17)
+
+Third beta of the 1.0.0 release. Adds two OpenHands-study features: a
+CI-first headless mode for `armadai run` and a dynamic model-tier router.
+
+### Feat
+
+- **[OH3] Headless CI mode for `armadai run`** (#173): new `--headless`
+  (non-interactive, CI exit codes, skips the model-updater prompt), `--json`
+  (structured JSONL event stream on stdout), `--quiet` (result event only),
+  and `--max-content N` (truncates intermediate event content) flags.
+  Introduces `RunEvent`/`EventSink` (`NullSink`/`JsonlSink`) in
+  `core/events.rs`, with short JSON keys for token economy. High-level
+  events — `run_start`, `agent_start`, `agent_end`, `warning`, `result`,
+  `error` — are instrumented on the single-agent path, `--pipe`, and
+  orchestration (blackboard/ring/hierarchical) at the per-agent level. CI
+  exit codes: `0` success, `1` execution error, `2` usage error, `3` budget
+  exhaustion (`Err`-propagating paths only — orchestration budget halts
+  remain a graceful partial result with exit `0`), `4` provider unavailable.
+- **[OH4] Dynamic model-tier router (`model: latest:auto`)** (#174): an
+  agent declaring `model: latest:auto` has its tier (`Fast`/`Pro`/`Max`)
+  selected at run time by zero-token static heuristics — input length,
+  keyword matching, agent tags (override), and budget (cap) — then resolved
+  to a concrete model via `resolve_model_for_tier`. Signal precedence:
+  tag override → `max(length, keywords)` → budget cap. Defaults are
+  embedded and overridable per-field via `armadai.yaml > routing:`.
+  `ModelTier` is now orderable (`Fast < Pro < Max`). Emits
+  `RunEvent::Route { agent, tier, reason }` in `--json` mode (OH3 synergy).
+  Scoped to the single-agent/`--pipe` path in this release; orchestration
+  continues to use its own `agent_model` resolution.
+
+## v1.0.0-beta.2 (2026-07-17)
+
+Second beta of the 1.0.0 release. Resolves the four P0 blockers from the
+v1.0.0 review and integrates the RUSTSEC security fixes carried over from the
+dependency syncs.
+
+### Fixed
+
+- **[B1] Real streaming in Pipeline and Tandem modes** (#169): progressive
+  output rendering with a final drain, concurrent stderr capture that is also
+  shown on failure, and removal of the previous output duplication.
+- **[B2] Cursor wrapping on multi-line input** (#170): correct cursor position
+  on wrapped lines using `unicode-width`, with scroll support.
+- **[B3] Poisoned mutex handling in the hierarchical orchestration engine**
+  (#168): recovery and `Result`-based propagation instead of panicking.
+- **[B4] I/O errors are logged instead of silently ignored** (#167): failures
+  are surfaced via `tracing::warn!` / `tracing::debug!`.
+
+### Security
+
+- **RUSTSEC**: transitive advisories in `quick-xml` and `quinn-proto` resolved
+  via dependency sync bumps.
+
 ## v0.12.0 (2026-04-09)
 
 ### New: `armadai shell` — Interactive Conversational TUI

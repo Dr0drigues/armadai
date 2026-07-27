@@ -168,4 +168,38 @@ mod tests {
         let dir = repo_dir("anthropics", "skills");
         assert!(dir.ends_with("anthropics/skills"));
     }
+
+    #[test]
+    fn resolved_sources_defaults_only_without_custom_config() {
+        use crate::core::registries::{RegistriesConfig, RegistryKind, resolved_sources};
+
+        let defaults = default_sources();
+        let default_refs: Vec<&str> = defaults.iter().map(String::as_str).collect();
+        let user = RegistriesConfig::default();
+
+        let result = resolved_sources(RegistryKind::Skills, &default_refs, &user, None);
+        assert_eq!(result, defaults);
+    }
+
+    #[test]
+    fn resolved_sources_includes_default_and_custom_skill_source() {
+        use crate::core::registries::{
+            RegistriesConfig, RegistryKind, RegistrySource, resolved_sources,
+        };
+
+        let defaults = default_sources();
+        let default_refs: Vec<&str> = defaults.iter().map(String::as_str).collect();
+        let user = RegistriesConfig {
+            skills: vec![RegistrySource {
+                url: "https://github.com/custom-org/custom-skills".to_string(),
+                kind: None,
+            }],
+            ..Default::default()
+        };
+
+        let result = resolved_sources(RegistryKind::Skills, &default_refs, &user, None);
+        let mut expected = defaults;
+        expected.push("https://github.com/custom-org/custom-skills".to_string());
+        assert_eq!(result, expected);
+    }
 }

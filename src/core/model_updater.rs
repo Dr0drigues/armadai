@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].field, "model_fallback[0]");
         assert_eq!(findings[0].current, "gemini-3.0-pro");
-        assert_eq!(findings[0].replacement, "gemini-2.5-pro");
+        assert_eq!(findings[0].replacement, "latest:pro");
     }
 
     #[test]

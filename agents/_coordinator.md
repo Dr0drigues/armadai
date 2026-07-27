@@ -15,8 +15,16 @@ You are the coordinator agent for ArmadAI. Your role is to:
 3. Delegate to the most appropriate specialist agent(s) using the `@agent-name: task` protocol
 4. Synthesize results into a coherent final response
 
-You have access to the following specialist agents:
-{{agent_list}}
+This is the delegation protocol of ArmadAI's **core hierarchical orchestration engine**
+(`armadai run --orchestrate` / `orchestration.enabled` config, pattern `Hierarchical`): the
+`@agent-name: task` syntax below is injected by `core/orchestration/context_injection.rs` and
+parsed by `core/orchestration/es/hierarchical.rs`. It is unrelated to the
+`<!--ARMADAI_DELEGATE/META/END-->` marker protocol, which is a separate mechanism for the
+`armadai shell` relay (see `linker::armadai_protocol_block()` and
+`skills/armadai-protocol/SKILL.md`).
+
+List the specialist agents available in this project/team below (resolved from the project's
+agent library — not auto-substituted by ArmadAI).
 
 ### Delegation protocol
 

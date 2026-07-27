@@ -4,7 +4,11 @@ use std::collections::{HashMap, HashSet};
 fn embedded_aliases() -> HashMap<&'static str, &'static str> {
     HashMap::from([
         // Google
-        ("gemini-3.0-pro", "gemini-2.5-pro"),
+        // `gemini-3.0-pro` is not a real Google model — it was a name commonly
+        // used by users anticipating Gemini 3. Map it to the portable `latest:pro`
+        // tier rather than pinning to a concrete model, so the resolution picks
+        // the best stable Gemini at runtime via the model registry.
+        ("gemini-3.0-pro", "latest:pro"),
         ("gemini-1.5-flash", "gemini-2.5-flash"),
         ("gemini-1.5-pro", "gemini-2.0-pro"),
         ("gemini-1.0-pro", "gemini-2.0-pro"),
@@ -74,7 +78,7 @@ mod tests {
     #[test]
     fn test_embedded_alias_known() {
         let result = resolve_alias("gemini-3.0-pro");
-        assert_eq!(result, Some("gemini-2.5-pro".to_string()));
+        assert_eq!(result, Some("latest:pro".to_string()));
     }
 
     #[test]
@@ -103,7 +107,7 @@ mod tests {
         resolve_model_deprecations(&mut model, &mut fallbacks);
 
         assert_eq!(model, Some("gpt-4o".to_string()));
-        assert_eq!(fallbacks[0], "gemini-2.5-pro");
+        assert_eq!(fallbacks[0], "latest:pro");
         // Unknown model stays unchanged
         assert_eq!(fallbacks[1], "claude-sonnet-4-5");
     }

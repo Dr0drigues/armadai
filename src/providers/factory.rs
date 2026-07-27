@@ -95,17 +95,17 @@ fn cli_available(command: &str) -> bool {
 pub fn create_provider(agent: &Agent) -> anyhow::Result<Box<dyn Provider>> {
     let provider = agent.metadata.provider.as_str();
 
-    match provider {
+    let inner: Box<dyn Provider> = match provider {
         // Explicit CLI mode
-        "cli" => create_cli_provider(agent),
+        "cli" => create_cli_provider(agent)?,
 
         // Explicit API providers
-        "anthropic" | "openai" | "google" | "proxy" => create_api_provider(provider, agent),
+        "anthropic" | "openai" | "google" | "proxy" => create_api_provider(provider, agent)?,
 
         // Unified tool names — auto-detect CLI vs API
         _ => {
             if let Some(tool) = find_tool(provider) {
-                create_unified_provider(provider, tool, agent)
+                create_unified_provider(provider, tool, agent)?
             } else {
                 anyhow::bail!(
                     "Unknown provider: '{provider}'. \
@@ -113,7 +113,49 @@ pub fn create_provider(agent: &Agent) -> anyhow::Result<Box<dyn Provider>> {
                 )
             }
         }
+    };
+    Ok(wrap_rate_limited(agent, inner))
+}
+
+/// Map an agent's `provider` string to the `config.rate_limits` key, or `None`
+/// for providers with no per-account API quota (pure CLI).
+fn rate_limit_key(provider: &str) -> Option<String> {
+    match provider {
+        "anthropic" | "openai" | "google" | "proxy" => Some(provider.to_string()),
+        "claude" => Some("anthropic".to_string()),
+        "gemini" => Some("google".to_string()),
+        "gpt" => Some("openai".to_string()),
+        _ => None, // "cli", unknown, or unified-resolving-to-cli
     }
+}
+
+/// Wrap `inner` with the shared per-provider limiter (from `config.rate_limits`)
+/// and the optional per-agent limiter (from frontmatter `rate_limit`). Always
+/// wraps: with both limiters `None` the decorator's `throttle()` awaits
+/// nothing, so this is a zero-cost pass-through.
+fn wrap_rate_limited(agent: &Agent, inner: Box<dyn Provider>) -> Box<dyn Provider> {
+    use super::{Rate, RateLimitedProvider, RateLimiter, shared_provider_limiter};
+
+    let provider_limiter = rate_limit_key(agent.metadata.provider.as_str()).and_then(|key| {
+        let rate = crate::core::config::load_user_config()
+            .rate_limits
+            .get(&key)
+            .map(|&per_min| Rate::from_per_minute(per_min as f64));
+        shared_provider_limiter(&key, rate)
+    });
+
+    let agent_limiter = agent
+        .metadata
+        .rate_limit
+        .as_deref()
+        .and_then(Rate::parse)
+        .map(|r| std::sync::Arc::new(RateLimiter::new(r)));
+
+    Box::new(RateLimitedProvider::new(
+        std::sync::Arc::from(inner),
+        provider_limiter,
+        agent_limiter,
+    ))
 }
 
 /// Create a provider from a unified tool name, preferring CLI if available.
@@ -132,7 +174,13 @@ fn create_unified_provider(
 
     if cli_available(command) {
         let args = if has_custom_args {
+            // Respect the agent's explicit args verbatim (never override them).
             agent.metadata.args.clone().unwrap_or_default()
+        } else if crate::shell::json_runner::supports_json(command) {
+            // Default (no custom args) on a JSON-capable CLI: use the canonical
+            // stream-json args so the provider captures real cost/tokens
+            // instead of $0.00. The provider parses stdout opportunistically.
+            crate::shell::json_runner::json_mode_args(command)
         } else {
             tool.cli_args.iter().map(|s| (*s).to_string()).collect()
         };
@@ -239,5 +287,124 @@ mod tests {
         // echo should be available on all systems
         assert!(cli_available("echo"));
         assert!(!cli_available("this_command_does_not_exist_xyz"));
+    }
+
+    #[test]
+    fn rate_limit_key_maps_providers() {
+        assert_eq!(rate_limit_key("anthropic"), Some("anthropic".to_string()));
+        assert_eq!(rate_limit_key("openai"), Some("openai".to_string()));
+        assert_eq!(rate_limit_key("google"), Some("google".to_string()));
+        assert_eq!(rate_limit_key("proxy"), Some("proxy".to_string()));
+        // unified names map to their API backend key
+        assert_eq!(rate_limit_key("claude"), Some("anthropic".to_string()));
+        assert_eq!(rate_limit_key("gemini"), Some("google".to_string()));
+        assert_eq!(rate_limit_key("gpt"), Some("openai".to_string()));
+        // pure CLI: no per-provider quota key
+        assert_eq!(rate_limit_key("cli"), None);
+        assert_eq!(rate_limit_key("unknown-tool"), None);
+    }
+
+    /// `wrap_rate_limited` with an agent-level `rate_limit` throttles even
+    /// when no shared provider-key limiter applies. Uses `provider: "cli"`
+    /// (maps to no `rate_limit_key`) so this test never touches the
+    /// process-global `shared_provider_limiter` registry — no unique-key
+    /// concern here (contrast with tests that DO hit that registry, which
+    /// must use a key suffixed for the test to avoid cross-test collision
+    /// under parallel `cargo test`).
+    #[tokio::test]
+    async fn wrap_rate_limited_agent_limiter_throttles_without_provider_key() {
+        use crate::core::agent::AgentMetadata;
+        use crate::providers::traits::{
+            ChatMessage, CompletionRequest, CompletionResponse, ProviderMetadata, TokenStream,
+        };
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        struct CountingProvider {
+            calls: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait]
+        impl Provider for CountingProvider {
+            async fn complete(
+                &self,
+                _req: CompletionRequest,
+            ) -> anyhow::Result<CompletionResponse> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(CompletionResponse {
+                    content: "ok".into(),
+                    model: "m".into(),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    cost: 0.0,
+                })
+            }
+            async fn stream(&self, _req: CompletionRequest) -> anyhow::Result<TokenStream> {
+                anyhow::bail!("unused")
+            }
+            fn metadata(&self) -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "counting".into(),
+                    models: vec![],
+                    supports_streaming: false,
+                }
+            }
+        }
+
+        fn req() -> CompletionRequest {
+            CompletionRequest {
+                model: "m".into(),
+                system_prompt: String::new(),
+                messages: vec![ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }],
+                temperature: 0.0,
+                max_tokens: None,
+            }
+        }
+
+        let agent = Agent {
+            name: "test-agent".into(),
+            source: std::path::PathBuf::from("test.md"),
+            metadata: AgentMetadata {
+                provider: "cli".into(),
+                model: None,
+                command: Some("echo".into()),
+                args: None,
+                temperature: 0.7,
+                max_tokens: None,
+                timeout: None,
+                tags: vec![],
+                stacks: vec![],
+                scope: vec![],
+                model_fallback: vec![],
+                cost_limit: None,
+                rate_limit: Some("1/sec".to_string()),
+                context_window: None,
+                mode: None,
+                orchestration: None,
+                triggers: None,
+                ring_config: None,
+            },
+            system_prompt: String::new(),
+            instructions: None,
+            output_format: None,
+            pipeline: None,
+            context: None,
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner: Box<dyn Provider> = Box::new(CountingProvider {
+            calls: calls.clone(),
+        });
+        let wrapped = wrap_rate_limited(&agent, inner);
+
+        wrapped.complete(req()).await.unwrap();
+        let start = Instant::now();
+        wrapped.complete(req()).await.unwrap();
+        // Agent-level "1/sec" burst 1: the 2nd call must wait ~1s.
+        assert!(start.elapsed() >= Duration::from_millis(800));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

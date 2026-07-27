@@ -73,6 +73,26 @@ pub const COMMANDS: &[SlashCommand] = &[
         description: "Force save current session",
     },
     SlashCommand {
+        name: "workroom",
+        aliases: &["wr"],
+        description: "Toggle workroom panel (show/hide agent status)",
+    },
+    SlashCommand {
+        name: "pty",
+        aliases: &[],
+        description: "Toggle PTY mode [experimental] (interactive CLI — may hang with some CLIs)",
+    },
+    SlashCommand {
+        name: "tandem",
+        aliases: &["t"],
+        description: "Send next message to N providers in parallel (e.g. /tandem gemini,claude)",
+    },
+    SlashCommand {
+        name: "pipeline",
+        aliases: &["pipe"],
+        description: "Chain providers: A generates, B reviews (e.g. /pipeline gemini,claude)",
+    },
+    SlashCommand {
         name: "quit",
         aliases: &["q", "exit"],
         description: "Exit the shell",
@@ -94,6 +114,14 @@ pub enum CommandResult {
     ResumeSession(String),
     /// Save current session
     SaveSession,
+    /// Tandem mode: send next message to multiple providers in parallel
+    Tandem(Vec<String>),
+    /// Pipeline mode: chain providers sequentially (A generates → B reviews)
+    Pipeline(Vec<String>),
+    /// Toggle PTY mode
+    TogglePty,
+    /// Toggle workroom panel
+    ToggleWorkroom,
 }
 
 /// Find a command by name or alias
@@ -110,6 +138,7 @@ pub fn try_execute(
     runner: &ShellRunner,
     provider_name: &str,
     model_name: &str,
+    shell_config: &super::config::ShellConfig,
 ) -> Option<CommandResult> {
     let trimmed = input.trim();
     if !trimmed.starts_with('/') {
@@ -144,7 +173,58 @@ pub fn try_execute(
                 Some(CommandResult::ResumeSession(arg.to_string()))
             }
         }
+        Some(c) if c.name == "workroom" => Some(CommandResult::ToggleWorkroom),
+        Some(c) if c.name == "pty" => Some(CommandResult::TogglePty),
         Some(c) if c.name == "save" => Some(CommandResult::SaveSession),
+        Some(c) if c.name == "tandem" => {
+            let arg = trimmed[1..].split_whitespace().nth(1).unwrap_or("");
+            if arg.is_empty() {
+                // Use config defaults if available
+                if !shell_config.tandem.is_empty() {
+                    let providers = shell_config
+                        .tandem
+                        .iter()
+                        .map(|e| e.provider.clone())
+                        .collect();
+                    Some(CommandResult::Tandem(providers))
+                } else {
+                    Some(CommandResult::Display(
+                        "# Tandem Mode\n\nUsage: `/tandem provider1,provider2`\n\nOr configure defaults in `armadai.yaml`:\n\n```yaml\nshell:\n  tandem:\n    - provider: gemini\n      model: latest:fast\n    - provider: claude\n      model: latest:pro\n```\n\nUse `/providers` to see available providers.".to_string()
+                    ))
+                }
+            } else {
+                let providers: Vec<String> = arg.split(',').map(|s| s.trim().to_string()).collect();
+                Some(CommandResult::Tandem(providers))
+            }
+        }
+        Some(c) if c.name == "pipeline" => {
+            let arg = trimmed[1..].split_whitespace().nth(1).unwrap_or("");
+            if arg.is_empty() {
+                // Use config defaults if available
+                if let Some(ref pipeline) = shell_config.pipeline {
+                    if !pipeline.steps.is_empty() {
+                        // Flatten step providers into a list for the pipeline executor
+                        let providers = pipeline
+                            .steps
+                            .iter()
+                            .flat_map(|step| step.providers.iter().map(|e| e.provider.clone()))
+                            .collect();
+                        Some(CommandResult::Pipeline(providers))
+                    } else {
+                        Some(CommandResult::Display(
+                            "Pipeline configured but has no steps.".to_string(),
+                        ))
+                    }
+                } else {
+                    Some(CommandResult::Display(
+                        "# Pipeline Mode\n\nUsage: `/pipeline provider1,provider2`\n\nOr configure defaults in `armadai.yaml`:\n\n```yaml\nshell:\n  pipeline:\n    steps:\n      - name: analyze\n        prompt: \"Analyze this request\"\n        providers:\n          - provider: gemini\n      - name: review\n        prompt: \"Review the analysis\"\n        providers:\n          - provider: claude\n```\n\nUse `/providers` to see available providers.".to_string()
+                    ))
+                }
+            } else {
+                let providers: Vec<String> = arg.split(',').map(|s| s.trim().to_string()).collect();
+                Some(CommandResult::Pipeline(providers))
+            }
+        }
         Some(c) if c.name == "quit" => Some(CommandResult::Quit),
         _ => Some(CommandResult::Display(format!(
             "Unknown command: /{cmd_part}\nType /help for available commands."
@@ -613,7 +693,14 @@ prompts: []
     #[test]
     fn test_try_execute_unknown_command() {
         let runner = ShellRunner::new(Default::default());
-        let result = try_execute("/unknown", &runner, "Gemini", "gemini-2.5-flash");
+        let shell_config = crate::shell::config::ShellConfig::default();
+        let result = try_execute(
+            "/unknown",
+            &runner,
+            "Gemini",
+            "gemini-2.5-flash",
+            &shell_config,
+        );
         assert!(result.is_some());
         match result.unwrap() {
             CommandResult::Display(text) => {

@@ -24,7 +24,7 @@ pub fn classify_target(target: &str) -> TargetKind {
 // ── Model tiers ──────────────────────────────────────────────────
 
 /// Performance tier for model selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ModelTier {
     /// Cheap and fast (haiku, flash, gpt-4o-mini).
     Fast,
@@ -42,9 +42,9 @@ pub enum ModelTier {
 /// Syntax: `latest` (defaults to Pro), `latest:fast`, `latest:pro`, `latest:max`.
 pub fn parse_latest_placeholder(model: &str) -> Option<ModelTier> {
     match model.trim() {
-        "latest" | "latest:pro" => Some(ModelTier::Pro),
-        "latest:fast" => Some(ModelTier::Fast),
-        "latest:max" => Some(ModelTier::Max),
+        "latest" | "latest:pro" | "latest:medium" => Some(ModelTier::Pro),
+        "latest:fast" | "latest:low" => Some(ModelTier::Fast),
+        "latest:max" | "latest:high" => Some(ModelTier::Max),
         _ => None,
     }
 }
@@ -58,7 +58,7 @@ pub fn is_latest_placeholder(model: &str) -> bool {
 ///
 /// Returns `None` for non-chat models (embeddings, TTS, image, etc.)
 /// or unrecognised naming patterns.
-fn classify_model_tier(id: &str, provider: &str) -> Option<ModelTier> {
+pub(crate) fn classify_model_tier(id: &str, provider: &str) -> Option<ModelTier> {
     // Filter out non-chat models
     if id.contains("embedding")
         || id.contains("-tts")
@@ -106,6 +106,15 @@ fn classify_model_tier(id: &str, provider: &str) -> Option<ModelTier> {
     }
 }
 
+/// The portable placeholder string for a tier (inverse of `parse_latest_placeholder`).
+pub(crate) fn tier_placeholder(tier: ModelTier) -> &'static str {
+    match tier {
+        ModelTier::Fast => "latest:fast",
+        ModelTier::Pro => "latest:pro",
+        ModelTier::Max => "latest:max",
+    }
+}
+
 /// Hardcoded fallback model for a given provider and tier.
 ///
 /// Used when the model registry cache is unavailable.
@@ -136,15 +145,29 @@ pub fn fallback_model(provider: &str) -> &'static str {
 ///
 /// Strategy:
 /// 1. Filter cached models by tier (using `classify_model_tier`).
-/// 2. Exclude dated variants (IDs containing `-20` date suffixes).
-/// 3. Exclude preview models.
+/// 2. Exclude `latest`-alias IDs (e.g. `claude-3-5-sonnet-latest`) — real
+///    provider catalogs (models.dev) can list these alongside dated/bare
+///    variants, and since `"latest"` sorts alphabetically after any digit,
+///    an unfiltered `max()` would prefer them over a concrete pinned
+///    version. Callers (e.g. `latest:*` placeholder resolution) require a
+///    genuinely concrete model id — never one containing the literal
+///    substring `latest` — so these are excluded at every stage below, not
+///    just from the "clean" preference pass.
+/// 3. Exclude dated variants (IDs containing `-20` date suffixes) and
+///    preview models from the preferred ("clean") candidate set.
 /// 4. Among remaining, pick the one that sorts last alphabetically (highest version).
-/// 5. If no candidate survives filtering, fall back to hardcoded defaults.
+/// 5. If no "clean" candidate survives, fall back to any non-`latest` candidate.
+/// 6. If no candidate survives filtering at all, fall back to hardcoded defaults.
+///
+/// This guarantees `resolve_model_for_tier` never returns a string
+/// containing `"latest"`, regardless of what the ambient model registry
+/// cache does or doesn't contain.
 pub fn resolve_model_for_tier(provider: &str, tier: ModelTier) -> String {
     if let Some(entries) = crate::model_registry::fetch::load_models_cached(provider) {
         let candidates: Vec<&str> = entries
             .iter()
             .filter(|e| classify_model_tier(&e.id, provider) == Some(tier))
+            .filter(|e| !e.id.contains("latest"))
             .map(|e| e.id.as_str())
             .collect();
 
@@ -158,7 +181,7 @@ pub fn resolve_model_for_tier(provider: &str, tier: ModelTier) -> String {
             return (**best).to_string();
         }
 
-        // Fallback: any candidate, pick highest
+        // Fallback: any candidate (already excludes `latest`-alias ids), pick highest
         if let Some(best) = candidates.iter().max() {
             return best.to_string();
         }
@@ -337,11 +360,23 @@ pub fn prompt_model_interactive() -> anyhow::Result<String> {
     Ok(model)
 }
 
+/// Whether `warn_unknown_model` should skip its unknown-model warning for `model`.
+///
+/// True for `latest:*` placeholders (resolved at link time, see
+/// [`is_latest_placeholder`]) and for the `latest:auto` routing placeholder used by
+/// the OH4 router (deliberately NOT recognized by [`parse_latest_placeholder`],
+/// since it is resolved by tier-routing logic upstream rather than by the
+/// `latest:*` tier parser — see `run_single_agent` step 5).
+fn should_skip_unknown_model_warning(model: &str) -> bool {
+    is_latest_placeholder(model) || model == "latest:auto"
+}
+
 /// Warn if the model is not found in the cached models.dev registry.
 ///
-/// Skips the warning for `latest:*` placeholders (they are resolved at link time).
+/// Skips the warning for `latest:*` placeholders (they are resolved at link time)
+/// and for `latest:auto` (resolved by the router before the provider call).
 pub fn warn_unknown_model(model: &str, provider: &str) {
-    if is_latest_placeholder(model) {
+    if should_skip_unknown_model_warning(model) {
         return;
     }
     if let Some(entries) = crate::model_registry::fetch::load_models_cached(provider)
@@ -664,10 +699,68 @@ mod tests {
 
     #[test]
     fn test_preview_resolution_with_latest() {
+        // Hermetic: force an empty, private `ARMADAI_CONFIG_DIR` so this test
+        // never sees the ambient/machine-local models.dev cache (which may
+        // be present, absent, or contain `-latest` alias ids depending on
+        // machine + parallel test runs — see resolve_model_for_tier's
+        // doc-comment). With no cache reachable, resolution always takes the
+        // hardcoded-fallback path, making the assertion deterministic.
+        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // SAFETY: env mutation is serialised via ENV_MUTEX for the duration
+        // of this test, and the original value is restored before returning.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", tmp.path());
+        }
+
         let result = preview_model_resolution(Some("latest:fast"));
+
+        match orig {
+            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+        }
+
         for (_target, model) in &result {
             // All targets should resolve to a concrete model, not "latest:fast"
             assert!(!model.contains("latest"));
         }
+    }
+
+    // ── warn_unknown_model guard ──────────────────────────────────
+
+    #[test]
+    fn test_should_skip_unknown_model_warning_for_latest_auto() {
+        // Regression test: `latest:auto` must be treated as a placeholder to
+        // skip, even though `parse_latest_placeholder`/`is_latest_placeholder`
+        // deliberately do NOT recognize it (it's resolved by router tier
+        // logic, not the `latest:*` tier parser).
+        assert!(should_skip_unknown_model_warning("latest:auto"));
+    }
+
+    #[test]
+    fn test_should_skip_unknown_model_warning_for_latest_placeholders() {
+        assert!(should_skip_unknown_model_warning("latest"));
+        assert!(should_skip_unknown_model_warning("latest:pro"));
+        assert!(should_skip_unknown_model_warning("latest:fast"));
+        assert!(should_skip_unknown_model_warning("latest:max"));
+    }
+
+    #[test]
+    fn test_should_warn_for_concrete_models() {
+        // Concrete/`latest:pro`-resolved models must still get the normal
+        // unknown-model warning path (routing behavior must not change).
+        assert!(!should_skip_unknown_model_warning(
+            "claude-sonnet-4-5-20250929"
+        ));
+        assert!(!should_skip_unknown_model_warning("some-unknown-model"));
+        assert!(!should_skip_unknown_model_warning("latest:autopilot"));
+    }
+
+    #[test]
+    fn model_tier_is_ordered_fast_pro_max() {
+        use ModelTier::*;
+        assert!(Fast < Pro && Pro < Max);
+        assert_eq!([Pro, Fast, Max].iter().copied().max().unwrap(), Max);
     }
 }

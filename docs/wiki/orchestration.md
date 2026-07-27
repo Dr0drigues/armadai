@@ -1,6 +1,6 @@
 # Orchestration
 
-ArmadAI supports four multi-agent orchestration patterns: **Direct**, **Blackboard**, **Ring**, and **Hierarchical**.
+ArmadAI supports four multi-agent orchestration patterns — **Direct**, **Blackboard**, **Ring**, and **Hierarchical** — plus **Auto**, which lets the engine pick one of the four from the task and config shape instead of a fixed pattern.
 
 ## Quick Start
 
@@ -11,11 +11,11 @@ armadai run agent-a --pipe agent-b --orchestrate blackboard
 # Run three agents with Ring orchestration
 armadai run agent-a --pipe agent-b agent-c --orchestrate ring
 
-# Run with Hierarchical orchestration (uses armadai.yaml config)
-armadai run coordinator --orchestrate hierarchical
+# Run with Hierarchical orchestration (config-only — see below)
+armadai run coordinator
 ```
 
-At least 2 agents are required for Blackboard/Ring. Hierarchical mode reads the team topology from `armadai.yaml` and can also activate automatically when `orchestration.enabled: true` is set.
+At least 2 agents are required for Blackboard/Ring. `--orchestrate` only accepts `blackboard` or `ring` on the CLI. Hierarchical (and Auto) are **config-only**: set `orchestration.pattern` in `armadai.yaml` — Hierarchical mode reads the team topology from there and activates automatically when `orchestration.enabled: true` is set.
 
 ## Patterns
 
@@ -148,9 +148,42 @@ orchestration:
 
 When `orchestration.enabled: true` is set, `armadai run` automatically activates orchestration without needing `--orchestrate`.
 
+**C9 — nested sub-patterns per team:** a team can run as a `blackboard` or `ring` sub-pattern
+internally instead of flat delegation, via `pattern: blackboard|ring` on the team entry. This
+requires the team to declare a `lead` (the arbiter that synthesizes the sub-pattern's result
+before reporting up to the coordinator):
+
+```yaml
+orchestration:
+  enabled: true
+  pattern: hierarchical
+  coordinator: architect
+  teams:
+    - lead: security-lead
+      pattern: ring          # this team runs as a Ring internally
+      agents: [security-reviewer, compliance-reviewer]
+      max_laps: 2            # per-team override (else global/default)
+```
+
+**C8 — routes and tags:** instead of a fixed agent list, resolve the team/agent set at run time
+via named routes (`orchestration.routes`, selected with `armadai run --route <name>`) or tag/stack
+matching (`armadai run --tags <comma-separated>`). Use `--dry-run` to preview the resolved
+selection without executing (0 tokens):
+
+```yaml
+orchestration:
+  routes:
+    security-audit: [rust-security, rust-reviewer]
+```
+
+```bash
+armadai run coordinator "..." --route security-audit
+armadai run coordinator "..." --tags rust,security --dry-run
+```
+
 ## Automatic Pattern Selection
 
-When using `--orchestrate auto` (or when the classifier is invoked programmatically), ArmadAI selects the pattern based on:
+When `orchestration.pattern: auto` is set in `armadai.yaml` (this is config-only — `--orchestrate` does not accept `auto` on the CLI, only `blackboard`/`ring`), or when the classifier is invoked programmatically, ArmadAI selects the pattern based on:
 
 1. **Project config:** If `orchestration.coordinator` and `orchestration.teams` are configured → Hierarchical
 2. **Agent count:** Single matching agent → Direct (no orchestration)
@@ -207,7 +240,7 @@ orchestration:
 | Divergence threshold | 0.60 | — | — |
 | Majority threshold | — | 0.60 | — |
 | Similarity threshold | — | 0.85 | — |
-| Token budget | 50,000 | 40,000 | — |
+| Token budget | 500,000 | 500,000 | — |
 | Agent timeout | 60s | 90s | — |
 | Convergence rounds | 1 | — | — |
 | Global timeout | — | — | 300s |
@@ -322,10 +355,8 @@ You lead the backend team. Break down backend tasks and delegate to API and data
 
 ```bash
 # Orchestration activates automatically thanks to orchestration.enabled: true
+# (Hierarchical is config-only — there is no --orchestrate hierarchical CLI flag)
 armadai run architect "Design a user authentication system"
-
-# Or explicitly:
-armadai run architect --orchestrate hierarchical "Design a user authentication system"
 ```
 
 The coordinator receives the task, delegates via `@backend-lead: ...` directives, the lead sub-delegates to `@api-dev` and `@db-dev`, and results flow back up for synthesis.

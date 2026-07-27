@@ -1,18 +1,37 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, Borders, Paragraph, Row, Table},
 };
 
+use crate::theme;
 use crate::tui::app::App;
 use crate::tui::filter;
+use crate::tui::format::format_cost;
+use crate::tui::widgets::search_bar;
+
+/// Display value for the History table's PROJECT column: the basename of the
+/// project root path (the full path is long; the last component is enough
+/// to tell projects apart), or `—` when the run has no associated project
+/// (ad-hoc runs outside any `armadai.yaml`, or pre-migration rows).
+fn project_display(project: Option<&str>) -> String {
+    project
+        .and_then(|p| std::path::Path::new(p).file_name())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "—".to_string())
+}
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.history.is_empty() {
         let msg =
             Paragraph::new("No execution history. Run an agent first: armadai run <agent> <input>")
-                .block(Block::default().borders(Borders::ALL).title(" History "));
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" History ")
+                        .style(theme::border_style()),
+                );
         frame.render_widget(msg, area);
         return;
     }
@@ -22,14 +41,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         filter::apply_filter_and_sort_history(&app.history, &app.search_query, app.sort_mode);
 
     if display_indices.is_empty() {
-        let msg = Paragraph::new("No history entries match your search.")
-            .block(Block::default().borders(Borders::ALL).title(" History "));
+        let msg = Paragraph::new("No history entries match your search.").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" History ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
         return;
     }
 
     let header = Row::new(vec![
-        "", "AGENT", "PROVIDER", "MODEL", "IN", "OUT", "COST", "MS", "STATUS",
+        "", "AGENT", "PROJECT", "PROVIDER", "MODEL", "IN", "OUT", "COST", "MS", "STATUS",
     ])
     .style(Style::default().add_modifier(Modifier::BOLD))
     .bottom_margin(1);
@@ -49,21 +72,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 r.model.clone()
             };
+            let project_short = project_display(r.project.as_deref());
             let style = if display_i == app.selected_history {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                theme::selection()
             } else {
                 Style::default()
             };
             Row::new(vec![
                 marker.to_string(),
                 r.agent.clone(),
+                project_short,
                 r.provider.clone(),
                 model_short,
                 r.tokens_in.to_string(),
                 r.tokens_out.to_string(),
-                format!("{:.4}", r.cost),
+                format_cost(r.cost),
                 r.duration_ms.to_string(),
                 r.status.clone(),
             ])
@@ -75,9 +98,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         rows,
         [
             Constraint::Length(2),
-            Constraint::Min(12),
+            Constraint::Min(10),
+            Constraint::Length(14),
             Constraint::Length(10),
-            Constraint::Length(20),
+            Constraint::Length(16),
             Constraint::Length(6),
             Constraint::Length(6),
             Constraint::Length(8),
@@ -86,32 +110,49 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        " History — {} runs, {} shown{} ",
-        app.history.len(),
-        display_indices.len(),
-        app.sort_indicator()
-    )));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                " History — {} runs, {} shown{} ",
+                app.history.len(),
+                display_indices.len(),
+                app.sort_indicator()
+            ))
+            .style(theme::border_style()),
+    );
 
     frame.render_widget(table, area);
 
     // Render search bar if in search mode
     if app.search_mode {
-        render_search_bar(frame, app, area);
+        search_bar(frame, &app.search_query, area);
     }
 }
 
-fn render_search_bar(frame: &mut Frame, app: &App, list_area: Rect) {
-    let search_area = ratatui::layout::Rect {
-        x: list_area.x,
-        y: list_area.bottom() - 1,
-        width: list_area.width,
-        height: 1,
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let query_display = format!("/ {}\u{2588}", app.search_query);
-    let search = Paragraph::new(query_display)
-        .style(Style::default().fg(Color::Yellow))
-        .block(Block::default());
-    frame.render_widget(search, search_area);
+    #[test]
+    fn project_display_basename_of_a_path() {
+        assert_eq!(
+            project_display(Some("/home/user/projects/my-app")),
+            "my-app"
+        );
+    }
+
+    #[test]
+    fn project_display_none_shows_placeholder() {
+        assert_eq!(project_display(None), "—");
+    }
+
+    #[test]
+    fn project_display_trailing_slash_still_resolves_basename() {
+        // Path::file_name ignores a trailing separator.
+        assert_eq!(
+            project_display(Some("/home/user/projects/my-app/")),
+            "my-app"
+        );
+    }
 }

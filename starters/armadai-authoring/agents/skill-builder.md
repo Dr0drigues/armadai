@@ -1,7 +1,7 @@
 # Skill Builder
 
 ## Metadata
-- provider: cli claude
+- provider: claude
 - model: latest:pro
 - temperature: 0.3
 - max_tokens: 8192
@@ -76,5 +76,13 @@ When creating a skill:
 
 ## Output Format
 
-Output each file in a separate code block with its path as a header.
-Start with the SKILL.md, then each reference file.
+You MUST complete every skill generation by calling the `Write` tool **for each file** in the skill:
+- **SKILL.md path**: `{skill-root}/SKILL.md`
+- **Reference file paths**: `{skill-root}/references/{file-name}.md`
+- **Content**: The complete content of each file (frontmatter + body for SKILL.md, body for references)
+
+Write SKILL.md first, then each reference file in turn.
+
+**NEVER render the skill files only in chat.** The `Write` tool calls are your output contract.
+
+If a target file already exists, ask the user for confirmation before overwriting.

@@ -7,8 +7,9 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
     let mut agents = load_agents()?;
 
     if agents.is_empty() {
-        println!("No agents found.");
-        println!("Create one with: armadai new --template basic <name>");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}No agents found.{m:#}");
+        anstream::println!("{m}Create one with: armadai new --template basic <name>{m:#}");
         return Ok(());
     }
 
@@ -21,7 +22,8 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
     }
 
     if agents.is_empty() {
-        println!("No agents match the given filters.");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}No agents match the given filters.{m:#}");
         return Ok(());
     }
 
@@ -46,12 +48,16 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
         .max(5);
 
     // Header
-    println!(
-        "  {:<name_w$}  {:<provider_w$}  {:<model_w$}  TAGS  STACKS",
-        "NAME", "PROVIDER", "MODEL",
+    let h = crate::cli::style::header();
+    anstream::println!(
+        "{h}  {:<name_w$}  {:<provider_w$}  {:<model_w$}  TAGS  STACKS{h:#}",
+        "NAME",
+        "PROVIDER",
+        "MODEL",
     );
-    println!(
-        "  {:<name_w$}  {:<provider_w$}  {:<model_w$}  ----  ------",
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{m}  {:<name_w$}  {:<provider_w$}  {:<model_w$}  ----  ------{m:#}",
         "-".repeat(name_w),
         "-".repeat(provider_w),
         "-".repeat(model_w),
@@ -70,8 +76,9 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
             agent.metadata.stacks.join(", ")
         };
 
-        println!(
-            "  {:<name_w$}  {:<provider_w$}  {:<model_w$}  {}  {}",
+        let a = crate::cli::style::accent();
+        anstream::println!(
+            "  {a}{:<name_w$}{a:#}  {:<provider_w$}  {:<model_w$}  {}  {}",
             agent.name,
             agent.metadata.provider,
             agent.model_display(),
@@ -80,25 +87,32 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
         );
     }
 
-    println!("\n  {} agent(s) found.", agents.len());
+    let m = crate::cli::style::muted();
+    anstream::println!("\n{m}  {} agent(s) found.{m:#}", agents.len());
     Ok(())
 }
 
 /// Load agents: if a project config is found, resolve only declared agents.
 /// Otherwise, load all agents from the default directory.
+/// When `--global` is active, always load from the global library.
 fn load_agents() -> anyhow::Result<Vec<Agent>> {
-    if let Some((root, config)) = project::find_project_config()
+    if !crate::core::config::is_force_global()
+        && let Some((root, config)) = project::find_project_config()
         && !config.agents.is_empty()
     {
         let (paths, errors) = project::resolve_all_agents(&config, &root);
         for err in &errors {
-            eprintln!("  warn: {err}");
+            let w = crate::cli::style::warn();
+            anstream::eprintln!("{w}  warn: {err}{w:#}");
         }
         let mut agents = Vec::new();
         for path in &paths {
             match parser::parse_agent_file(path) {
                 Ok(agent) => agents.push(agent),
-                Err(e) => eprintln!("  warn: failed to parse {}: {e}", path.display()),
+                Err(e) => {
+                    let w = crate::cli::style::warn();
+                    anstream::eprintln!("{w}  warn: failed to parse {}: {e}{w:#}", path.display());
+                }
             }
         }
         return Ok(agents);

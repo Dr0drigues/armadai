@@ -216,7 +216,34 @@ impl ShellRunner {
         self.build_prompt(user_input)
     }
 
-    /// Record a completed turn in history (called by app.rs after CLI returns).
+    /// Record a completed turn with exact metrics from JSON output.
+    pub fn record_turn_exact(
+        &mut self,
+        _user_input: &str,
+        assistant_content: &str,
+        duration: Duration,
+        tokens_in: u64,
+        tokens_out: u64,
+        cost: f64,
+    ) {
+        self.turn_count += 1;
+        self.total_tokens_in += tokens_in as usize;
+        self.total_tokens_out += tokens_out as usize;
+        self.total_cost_estimate += cost;
+
+        self.history.push(Message {
+            role: MessageRole::Assistant,
+            content: assistant_content.to_string(),
+            metrics: Some(TurnMetrics {
+                tokens_in_estimate: tokens_in as usize,
+                tokens_out_estimate: tokens_out as usize,
+                duration,
+                turn_number: self.turn_count,
+            }),
+        });
+    }
+
+    /// Record a completed turn in history with estimated metrics (text mode fallback).
     pub fn record_turn(&mut self, _user_input: &str, assistant_content: &str, duration: Duration) {
         let tokens_in = Self::estimate_tokens(
             self.history

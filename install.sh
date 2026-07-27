@@ -2,7 +2,7 @@
 # ArmadAI installer — downloads the latest release binary for your platform.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/develop/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 #
 # Options (via environment variables):
 #   INSTALL_DIR   — where to install (default: ~/.local/bin)

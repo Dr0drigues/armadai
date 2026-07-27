@@ -26,8 +26,9 @@ async fn list() -> anyhow::Result<()> {
     let prompts = collect_prompts();
 
     if prompts.is_empty() {
-        println!("No prompts found.");
-        println!("Add .md files in prompts/ or ~/.config/armadai/prompts/");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}No prompts found.{m:#}");
+        anstream::println!("{m}Add .md files in prompts/ or ~/.config/armadai/prompts/{m:#}");
         return Ok(());
     }
 
@@ -46,12 +47,15 @@ async fn list() -> anyhow::Result<()> {
         .max(11);
 
     // Header
-    println!(
-        "  {:<name_w$}  {:<desc_w$}  APPLY_TO",
-        "NAME", "DESCRIPTION",
+    let h = crate::cli::style::header();
+    anstream::println!(
+        "{h}  {:<name_w$}  {:<desc_w$}  APPLY_TO{h:#}",
+        "NAME",
+        "DESCRIPTION",
     );
-    println!(
-        "  {:<name_w$}  {:<desc_w$}  --------",
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "{m}  {:<name_w$}  {:<desc_w$}  --------{m:#}",
         "-".repeat(name_w),
         "-".repeat(desc_w),
     );
@@ -64,10 +68,17 @@ async fn list() -> anyhow::Result<()> {
         } else {
             prompt.apply_to.join(", ")
         };
-        println!("  {:<name_w$}  {:<desc_w$}  {}", prompt.name, desc, apply);
+        let a = crate::cli::style::accent();
+        anstream::println!(
+            "  {a}{:<name_w$}{a:#}  {:<desc_w$}  {}",
+            prompt.name,
+            desc,
+            apply
+        );
     }
 
-    println!("\n  {} prompt(s) found.", prompts.len());
+    let m = crate::cli::style::muted();
+    anstream::println!("\n{m}  {} prompt(s) found.{m:#}", prompts.len());
     Ok(())
 }
 
@@ -78,18 +89,24 @@ async fn show(name: &str) -> anyhow::Result<()> {
         .find(|p| p.name == name)
         .ok_or_else(|| anyhow::anyhow!("Prompt '{name}' not found"))?;
 
-    println!("Prompt: {}", prompt.name);
-    println!("Source: {}", prompt.source.display());
+    let h = crate::cli::style::header();
+    let a = crate::cli::style::accent();
+    let m = crate::cli::style::muted();
+    anstream::println!("{h}Prompt:{h:#} {a}{}{a:#}", prompt.name);
+    anstream::println!("{m}Source: {}{m:#}", prompt.source.display());
 
     if let Some(ref desc) = prompt.description {
-        println!("Description: {desc}");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}Description:{m:#} {desc}");
     }
     if !prompt.apply_to.is_empty() {
-        println!("Apply to: [{}]", prompt.apply_to.join(", "));
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}Apply to:{m:#} [{}]", prompt.apply_to.join(", "));
     }
 
     println!();
-    println!("## Body");
+    let h = crate::cli::style::header();
+    anstream::println!("{h}## Body{h:#}");
     for line in prompt.body.lines() {
         println!("  {line}");
     }
@@ -105,12 +122,19 @@ fn collect_prompts() -> Vec<Prompt> {
     if let Some((root, config)) = project::find_project_config() {
         let (paths, errors) = project::resolve_all_prompts(&config, &root);
         for err in &errors {
-            eprintln!("  warn: {err}");
+            let w = crate::cli::style::warn();
+            anstream::eprintln!("{w}  warn: {err}{w:#}");
         }
         for path in &paths {
             match Prompt::load(path) {
                 Ok(p) => prompts.push(p),
-                Err(e) => eprintln!("  warn: failed to load prompt {}: {e}", path.display()),
+                Err(e) => {
+                    let w = crate::cli::style::warn();
+                    anstream::eprintln!(
+                        "{w}  warn: failed to load prompt {}: {e}{w:#}",
+                        path.display()
+                    );
+                }
             }
         }
 

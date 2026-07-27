@@ -25,19 +25,15 @@ pub struct ProviderInfo {
 ///
 /// Returns None if no supported CLI is found.
 pub fn detect_provider() -> Option<RunnerConfig> {
-    // Try each provider in order of preference
-    let providers = vec![
-        ("gemini", vec!["-p"]),
-        ("claude", vec![]),
-        ("aider", vec!["--yes"]),
-        ("codex", vec![]),
-    ];
+    let providers = ["gemini", "claude", "codex", "copilot", "opencode", "aider"];
 
-    for (command, args) in providers {
+    for command in providers {
         if is_command_available(command) {
+            // Use JSON mode args if supported, otherwise text fallback
+            let args = super::json_runner::json_mode_args(command);
             return Some(RunnerConfig {
                 command: command.to_string(),
-                args: args.iter().map(|s| s.to_string()).collect(),
+                args,
                 max_history_turns: 5,
                 timeout: Duration::from_secs(120),
             });
@@ -53,19 +49,21 @@ pub fn detect_provider() -> Option<RunnerConfig> {
 /// including whether each one is currently available (installed in PATH).
 pub fn list_providers() -> Vec<ProviderInfo> {
     let providers = [
-        ("gemini", vec!["-p"], "Gemini"),
-        ("claude", vec!["-p", "--output-format", "text"], "Claude"),
-        ("aider", vec!["--yes", "--message"], "Aider"),
-        ("codex", vec!["--quiet", "--full-auto"], "Codex"),
+        ("gemini", "Gemini"),
+        ("claude", "Claude"),
+        ("codex", "Codex"),
+        ("copilot", "Copilot"),
+        ("opencode", "OpenCode"),
+        ("aider", "Aider"),
     ];
 
     providers
         .iter()
-        .map(|(cmd, args, name)| {
+        .map(|(cmd, name)| {
             let available = is_command_available(cmd);
             ProviderInfo {
                 command: cmd.to_string(),
-                args: args.iter().map(|s| s.to_string()).collect(),
+                args: super::json_runner::json_mode_args(cmd),
                 display_name: name.to_string(),
                 model_name: if available {
                     detect_model_name(cmd)
@@ -108,6 +106,11 @@ pub fn is_command_available(command: &str) -> bool {
     }
 }
 
+/// Get the base CLI args for a provider (uses JSON mode if available).
+pub fn args_for_provider(command: &str) -> Vec<String> {
+    super::json_runner::json_mode_args(command)
+}
+
 /// Get the provider display name for the statusbar.
 pub fn provider_display_name(command: &str) -> &str {
     match command {
@@ -115,6 +118,8 @@ pub fn provider_display_name(command: &str) -> &str {
         "claude" => "Claude",
         "aider" => "Aider",
         "codex" => "Codex",
+        "copilot" => "Copilot",
+        "opencode" => "OpenCode",
         _ => command,
     }
 }

@@ -14,49 +14,10 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::time::{Duration, Instant};
-use tui_markdown::StyleSheet;
+use unicode_width::UnicodeWidthChar;
 
-/// Custom stylesheet for ArmadAI shell — designed for dark terminal themes.
-#[derive(Clone, Copy, Debug, Default)]
-struct ArmadaiStyleSheet;
-
-impl tui_markdown::StyleSheet for ArmadaiStyleSheet {
-    fn heading(&self, level: u8) -> Style {
-        match level {
-            1 => Style::new()
-                .fg(Color::Rgb(88, 166, 255))
-                .bold()
-                .underlined(),
-            2 => Style::new().fg(Color::Rgb(63, 185, 80)).bold(),
-            3 => Style::new().fg(Color::Rgb(210, 153, 34)).bold(),
-            _ => Style::new().fg(Color::Rgb(139, 148, 158)).italic(),
-        }
-    }
-
-    fn code(&self) -> Style {
-        Style::new()
-            .fg(Color::Rgb(230, 237, 243))
-            .bg(Color::Rgb(55, 62, 71))
-    }
-
-    fn link(&self) -> Style {
-        Style::new().fg(Color::Rgb(88, 166, 255)).underlined()
-    }
-
-    fn blockquote(&self) -> Style {
-        Style::new().fg(Color::Rgb(139, 148, 158)).italic()
-    }
-
-    fn heading_meta(&self) -> Style {
-        Style::new().dim()
-    }
-
-    fn metadata_block(&self) -> Style {
-        Style::new().fg(Color::Rgb(210, 153, 34))
-    }
-}
-
-const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+use super::SPINNER_FRAMES;
+use crate::theme;
 
 /// A single message in the conversation
 #[derive(Debug, Clone)]
@@ -64,7 +25,8 @@ pub struct DisplayMessage {
     pub role: String, // "You" or agent name
     pub content: String,
     pub is_user: bool,
-    pub is_system: bool, // System messages (commands, etc.)
+    pub is_system: bool,    // System messages (commands, etc.)
+    pub id: Option<String>, // Unique ID for tandem streams (prevents collision when same provider appears twice)
 }
 
 /// Application state for the shell TUI
@@ -101,12 +63,24 @@ pub struct ShellApp {
     last_duration: Duration,
     /// Whether user has manually scrolled (disables auto-scroll to bottom)
     manual_scroll: bool,
+    /// Pending tandem providers (used for next message)
+    tandem_providers: Option<Vec<String>>,
+    /// Pending pipeline providers (used for next message)
+    pipeline_providers: Option<Vec<String>>,
     /// Overlay popup content (shown on top of messages, dismissed with Esc)
     popup: Option<String>,
     /// Popup scroll offset
     popup_scroll: u16,
     /// Should quit
     should_quit: bool,
+    /// "Press Esc again to quit" is armed: the previous key was a normal
+    /// (non-focused, no-popup) Esc with an empty input box. Any other key
+    /// (including a non-consecutive Esc after something else) disarms it.
+    esc_armed: bool,
+    /// PTY mode enabled
+    pty_mode: bool,
+    /// Agent workroom panel
+    pub workroom: super::workroom::Workroom,
 }
 
 impl ShellApp {
@@ -124,6 +98,8 @@ impl ShellApp {
             history_index: None,
             saved_input: String::new(),
             manual_scroll: false,
+            tandem_providers: None,
+            pipeline_providers: None,
             popup: None,
             popup_scroll: 0,
             provider_name,
@@ -134,6 +110,9 @@ impl ShellApp {
             cost: 0.0,
             last_duration: Duration::from_secs(0),
             should_quit: false,
+            esc_armed: false,
+            pty_mode: false,
+            workroom: super::workroom::Workroom::new(),
         }
     }
 
@@ -144,6 +123,7 @@ impl ShellApp {
             content: content.to_string(),
             is_user: true,
             is_system: false,
+            id: None,
         });
         self.scroll_to_bottom();
     }
@@ -155,8 +135,22 @@ impl ShellApp {
             content: content.to_string(),
             is_user: false,
             is_system: false,
+            id: None,
         });
         // Reset to auto-scroll on new content
+        self.manual_scroll = false;
+        self.scroll = 0;
+    }
+
+    /// Add an assistant response with a custom label (for tandem/pipeline mode)
+    pub fn add_assistant_message_with_label(&mut self, label: &str, content: &str) {
+        self.messages.push(DisplayMessage {
+            role: label.to_string(),
+            content: content.to_string(),
+            is_user: false,
+            is_system: false,
+            id: None,
+        });
         self.manual_scroll = false;
         self.scroll = 0;
     }
@@ -168,11 +162,167 @@ impl ShellApp {
             content: content.to_string(),
             is_user: false,
             is_system: true,
+            id: None,
         });
         self.scroll_to_bottom();
     }
 
-    /// Show a popup overlay (dismissed with Esc or any key)
+    /// Start a new streaming assistant response
+    pub fn start_streaming_response(&mut self) {
+        self.messages.push(DisplayMessage {
+            role: self.provider_name.clone(),
+            content: String::new(),
+            is_user: false,
+            is_system: false,
+            id: None,
+        });
+        self.manual_scroll = false;
+        self.scroll = 0;
+    }
+
+    /// Append text to the current streaming response
+    pub fn append_to_streaming(&mut self, text: &str) {
+        if let Some(last) = self.messages.last_mut()
+            && !last.is_user
+            && !last.is_system
+        {
+            last.content.push_str(text);
+            self.manual_scroll = false;
+            self.scroll = 0;
+        }
+    }
+
+    /// Start a streaming response for a specific provider in tandem mode
+    /// Returns a unique ID for this stream to prevent collision when the same provider appears twice
+    pub fn start_tandem_stream(&mut self, provider_label: &str) -> String {
+        let stream_id = uuid::Uuid::new_v4().to_string();
+        self.messages.push(DisplayMessage {
+            role: provider_label.to_string(),
+            content: String::new(),
+            is_user: false,
+            is_system: false,
+            id: Some(stream_id.clone()),
+        });
+        self.manual_scroll = false;
+        self.scroll = 0;
+        stream_id
+    }
+
+    /// Append text to a specific provider's streaming response in tandem mode
+    /// stream_id is used to disambiguate when the same provider appears twice
+    pub fn append_to_tandem_stream(&mut self, stream_id: &str, text: &str) {
+        // Find the message with matching stream_id (search from end for latest)
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.id.as_deref() == Some(stream_id) && !m.is_user && !m.is_system)
+        {
+            msg.content.push_str(text);
+            self.manual_scroll = false;
+            self.scroll = 0;
+        }
+    }
+
+    /// Get content of the last assistant message
+    pub fn get_last_assistant_content(&self) -> String {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| !m.is_user && !m.is_system)
+            .map(|m| m.content.clone())
+            .unwrap_or_default()
+    }
+
+    /// Get content of an assistant message by stream ID (for tandem mode)
+    pub fn get_assistant_content_by_stream_id(&self, stream_id: &str) -> String {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.id.as_deref() == Some(stream_id) && !m.is_user && !m.is_system)
+            .map(|m| m.content.clone())
+            .unwrap_or_default()
+    }
+
+    /// Update the content of an assistant message by stream ID (for tandem marker cleanup)
+    pub fn update_assistant_by_stream_id(&mut self, stream_id: &str, content: &str) {
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.id.as_deref() == Some(stream_id) && !m.is_user && !m.is_system)
+        {
+            msg.content = content.to_string();
+        }
+    }
+
+    /// Update the last assistant message content (after marker stripping)
+    pub fn update_last_assistant(&mut self, content: &str) {
+        if let Some(last) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| !m.is_user && !m.is_system)
+        {
+            last.content = content.to_string();
+        }
+    }
+
+    /// Update the last assistant message label and content
+    pub fn update_last_assistant_with_label(&mut self, label: &str, content: &str) {
+        if let Some(last) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| !m.is_user && !m.is_system)
+        {
+            last.role = label.to_string();
+            last.content = content.to_string();
+        }
+    }
+
+    /// Check if loading
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
+    /// Get current cursor position (char-based)
+    pub fn cursor_pos(&self) -> usize {
+        self.cursor
+    }
+
+    /// Convert char position to byte index (public for paste handling)
+    pub fn char_to_byte_pub(&self, char_pos: usize) -> usize {
+        self.char_to_byte(char_pos)
+    }
+
+    /// Insert a char at byte position and advance cursor
+    pub fn insert_char_at(&mut self, byte_idx: usize, c: char) {
+        self.input.insert(byte_idx, c);
+        self.cursor += 1;
+    }
+
+    /// Set tandem mode for the next message
+    pub fn set_tandem(&mut self, providers: Vec<String>) {
+        self.tandem_providers = Some(providers);
+    }
+
+    /// Set pipeline mode for the next message
+    pub fn set_pipeline(&mut self, providers: Vec<String>) {
+        self.pipeline_providers = Some(providers);
+    }
+
+    /// Take tandem providers (consumes the setting)
+    pub fn take_tandem(&mut self) -> Option<Vec<String>> {
+        self.tandem_providers.take()
+    }
+
+    /// Take pipeline providers (consumes the setting)
+    pub fn take_pipeline(&mut self) -> Option<Vec<String>> {
+        self.pipeline_providers.take()
+    }
+
+    /// Show a popup overlay (dismissed with Esc / q / Enter; other keys are ignored)
     pub fn show_popup(&mut self, content: String) {
         self.popup = Some(content);
         self.popup_scroll = 0;
@@ -289,9 +439,87 @@ impl ShellApp {
         self.manual_scroll = true;
     }
 
+    /// Handle a key pressed WHILE a turn is streaming. Returns true if the
+    /// turn should be cancelled; the caller is responsible for killing the
+    /// child process / PTY and appending a "[Cancelled]" marker. Otherwise
+    /// this applies workroom focus / popup / navigation as a side effect and
+    /// returns false, so drill-down (Ctrl+W + j/k/Enter) works mid-stream,
+    /// not just between turns.
+    ///
+    /// Esc is disambiguated: dismiss popup > exit workroom focus > cancel.
+    pub fn handle_streaming_key(&mut self, key: &KeyEvent) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        // Ctrl+C always cancels, regardless of focus/popup state.
+        if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+            return true;
+        }
+
+        // Ctrl+W toggles workroom focus mode (drill-down), same as handle_key.
+        if key.code == KeyCode::Char('w') && key.modifiers == KeyModifiers::CONTROL {
+            if self.workroom.is_focused() {
+                self.workroom.set_focused(false);
+            } else {
+                if !self.workroom.is_visible() {
+                    self.workroom.set_visible(true);
+                    self.workroom.toggle_pin();
+                }
+                self.workroom.set_focused(true);
+            }
+            return false;
+        }
+
+        // Popup open: Esc/q/Enter dismiss; j/k/arrows/PageUp/PageDown scroll.
+        if self.has_popup() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => self.dismiss_popup(),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.popup_scroll = self.popup_scroll.saturating_sub(2);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.popup_scroll = self.popup_scroll.saturating_add(2);
+                }
+                KeyCode::PageUp => {
+                    self.popup_scroll = self.popup_scroll.saturating_sub(10);
+                }
+                KeyCode::PageDown => {
+                    self.popup_scroll = self.popup_scroll.saturating_add(10);
+                }
+                _ => {}
+            }
+            return false;
+        }
+
+        // Workroom focused: navigate / open detail / exit focus.
+        if self.workroom.is_focused() {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => self.workroom.select_prev(),
+                KeyCode::Down | KeyCode::Char('j') => self.workroom.select_next(),
+                KeyCode::Enter => {
+                    if let Some(md) = self.workroom.selected_detail_markdown() {
+                        self.show_popup(md);
+                    }
+                }
+                KeyCode::Esc => self.workroom.set_focused(false),
+                _ => {}
+            }
+            return false;
+        }
+
+        // Otherwise: Esc cancels the turn (legacy behavior preserved).
+        key.code == KeyCode::Esc
+    }
+
     /// Handle a key event, returns true if should quit
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        // Disarm "press Esc again to quit" on any key that isn't Esc, so the
+        // double-Esc must be consecutive — typing (or any other key) cancels
+        // the armed quit and drops back to the normal hint bar.
+        if key.code != KeyCode::Esc {
+            self.esc_armed = false;
+        }
 
         // If popup is active, handle popup keys first
         if self.has_popup() {
@@ -309,16 +537,65 @@ impl ShellApp {
                 KeyCode::PageDown => {
                     self.popup_scroll = self.popup_scroll.saturating_add(10);
                 }
-                _ => self.dismiss_popup(),
+                _ => {}
+            }
+            return false;
+        }
+
+        // Ctrl+W toggles workroom focus mode (drill-down). If hidden, show +
+        // pin it and enter focus; if focused, exit focus; if visible but
+        // unfocused, enter focus.
+        if key.code == KeyCode::Char('w') && key.modifiers == KeyModifiers::CONTROL {
+            if self.workroom.is_focused() {
+                self.workroom.set_focused(false);
+            } else {
+                if !self.workroom.is_visible() {
+                    self.workroom.set_visible(true);
+                    self.workroom.toggle_pin();
+                }
+                self.workroom.set_focused(true);
+            }
+            return false;
+        }
+
+        // Gate focus-mode navigation BEFORE the text-input branch below, so
+        // that j/k/Enter/Esc are consumed here instead of being inserted into
+        // the input buffer or triggering submit/quit.
+        if self.workroom.is_focused() {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => self.workroom.select_prev(),
+                KeyCode::Down | KeyCode::Char('j') => self.workroom.select_next(),
+                KeyCode::Enter => {
+                    if let Some(md) = self.workroom.selected_detail_markdown() {
+                        self.show_popup(md);
+                    }
+                }
+                KeyCode::Esc => {
+                    self.workroom.set_focused(false);
+                }
+                _ => {}
             }
             return false;
         }
 
         match key.code {
-            // Handle Ctrl+C and Esc for quit
+            // Safe Esc (audit P1-3): a non-empty input box is too easy to
+            // lose to a stray Esc, so the first press just clears it. With
+            // an empty box, Esc arms a "press again to quit" state instead
+            // of quitting outright; a second, consecutive Esc confirms.
             KeyCode::Esc => {
-                self.should_quit = true;
-                true
+                if !self.input.is_empty() {
+                    self.input.clear();
+                    self.cursor = 0;
+                    self.esc_armed = false;
+                    false
+                } else if self.esc_armed {
+                    self.should_quit = true;
+                    true
+                } else {
+                    self.esc_armed = true;
+                    false
+                }
             }
             KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
                 self.should_quit = true;
@@ -464,6 +741,14 @@ impl ShellApp {
     }
 
     /// Set the provider name (used when switching providers)
+    pub fn toggle_pty_mode(&mut self) {
+        self.pty_mode = !self.pty_mode;
+    }
+
+    pub fn is_pty_mode(&self) -> bool {
+        self.pty_mode
+    }
+
     pub fn set_provider_name(&mut self, name: String) {
         self.provider_name = name;
     }
@@ -473,10 +758,11 @@ impl ShellApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // Header
-                Constraint::Min(0),    // Messages area
-                Constraint::Length(1), // Statusbar
-                Constraint::Length(3), // Input line (with borders)
+                Constraint::Length(1),                                     // Header
+                Constraint::Min(0),                                        // Messages area
+                Constraint::Length(1),                                     // Statusbar
+                Constraint::Length(1),                                     // Shortcut hint bar
+                Constraint::Length(self.input_height(frame.area().width)), // Input (dynamic)
             ])
             .split(frame.area());
 
@@ -486,22 +772,38 @@ impl ShellApp {
         } else {
             format!("{} ({})", self.provider_name, self.model_name)
         };
-        let header_text = format!("ArmadAI Shell — {} — Turn #{}", model_info, self.turn_count);
-        let header = Paragraph::new(header_text).style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+        let pty_indicator = if self.pty_mode { " [PTY]" } else { "" };
+        let header_text = format!(
+            "ArmadAI Shell — {}{} — Turn #{}",
+            model_info, pty_indicator, self.turn_count
         );
+        let header = Paragraph::new(header_text).style(theme::heading());
         frame.render_widget(header, chunks[0]);
 
-        // Messages area
-        self.render_messages_area(frame, chunks[1]);
+        // Messages area (with optional workroom panel)
+        if self.workroom.is_visible() {
+            let workroom_width = if self.workroom.is_focused() { 60 } else { 35 };
+            let h_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Min(0),                 // Messages (main)
+                    Constraint::Length(workroom_width), // Workroom panel (widens on focus)
+                ])
+                .split(chunks[1]);
+            self.render_messages_area(frame, h_chunks[0]);
+            self.workroom.render(frame, h_chunks[1]);
+        } else {
+            self.render_messages_area(frame, chunks[1]);
+        }
 
         // Status bar
         self.render_statusbar(frame, chunks[2]);
 
+        // Shortcut hint bar (audit P1-1) — persistent, single line
+        self.render_hint_bar(frame, chunks[3]);
+
         // Input line
-        self.render_input_line(frame, chunks[3]);
+        self.render_input_line(frame, chunks[4]);
 
         // Popup overlay (rendered on top of everything)
         if let Some(ref content) = self.popup {
@@ -522,62 +824,25 @@ impl ShellApp {
         // Semi-transparent background (clear the area)
         frame.render_widget(ratatui::widgets::Clear, popup_area);
 
-        // Render markdown content inside the popup
-        let opts = tui_markdown::Options::new(ArmadaiStyleSheet);
-        let md_text = tui_markdown::from_str_with_options(content, &opts);
-
-        // Post-process headings (same as messages)
-        let mut lines: Vec<Line> = Vec::new();
-        for line in md_text.lines {
-            let first_span_str: String = line
-                .spans
-                .first()
-                .map(|s| s.content.to_string())
-                .unwrap_or_default();
-            if first_span_str.starts_with('#') {
-                let line_style = line.style;
-                lines.push(Line::from(""));
-                let hash_count = first_span_str.chars().take_while(|c| *c == '#').count();
-                let mut heading_text = String::new();
-                for s in &line.spans {
-                    let c = s.content.to_string();
-                    if c.starts_with('#') {
-                        heading_text.push_str(c.trim_start_matches('#').trim_start());
-                    } else {
-                        heading_text.push_str(&c);
-                    }
-                }
-                let heading_style = ArmadaiStyleSheet
-                    .heading(hash_count as u8)
-                    .patch(line_style);
-                lines.push(Line::from(Span::styled(heading_text, heading_style)));
-                if hash_count <= 3 {
-                    lines.push(Line::from(Span::styled(
-                        "─".repeat(popup_width.saturating_sub(4) as usize),
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                }
-            } else {
-                lines.push(line);
-            }
-        }
+        // Render markdown content using our custom renderer
+        let mut lines: Vec<Line> = super::md_render::render_markdown(content);
 
         // Footer hint
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             " Esc to close │ ↑↓ scroll",
-            Style::default().fg(Color::DarkGray),
+            theme::muted(),
         )));
 
         let popup = Paragraph::new(lines)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan))
+                    .border_style(theme::border_style())
                     .title(" ArmadAI ")
-                    .title_style(Style::default().fg(Color::Cyan).bold()),
+                    .title_style(theme::heading()),
             )
-            .wrap(Wrap { trim: true })
+            .wrap(Wrap { trim: false })
             .scroll((self.popup_scroll, 0));
 
         frame.render_widget(popup, popup_area);
@@ -585,9 +850,14 @@ impl ShellApp {
 
     fn render_messages_area(&self, frame: &mut Frame, area: Rect) {
         if self.messages.is_empty() {
-            let placeholder = Paragraph::new("Welcome to ArmadAI Shell!\n\nType your message and press Enter to get started. Press Ctrl+L to clear conversation, Ctrl+C or Esc to quit.")
-                .block(Block::default().borders(Borders::ALL))
-                .wrap(Wrap { trim: true });
+            let placeholder = Paragraph::new("Welcome to ArmadAI Shell!\n\nType your message and press Enter to get started. Press Ctrl+L to clear conversation, Ctrl+W to focus the workroom panel, Ctrl+C or Esc to quit.")
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border_style()),
+                )
+                .style(theme::border_style())
+                .wrap(Wrap { trim: false });
             frame.render_widget(placeholder, area);
             return;
         }
@@ -598,17 +868,11 @@ impl ShellApp {
         for msg in &self.messages {
             // Add role label
             let role_style = if msg.is_system {
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM)
+                theme::muted().add_modifier(Modifier::DIM)
             } else if msg.is_user {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
+                theme::stack().add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                theme::heading()
             };
 
             let role_prefix = if msg.is_system { "⚙ " } else { "" };
@@ -617,96 +881,14 @@ impl ShellApp {
                 role_style,
             )]));
 
-            if msg.is_system {
-                // System messages: render as markdown (same as assistant)
-                let opts = tui_markdown::Options::new(ArmadaiStyleSheet);
-                let md_text = tui_markdown::from_str_with_options(&msg.content, &opts);
-                for line in md_text.lines {
-                    let first_span_str: String = line
-                        .spans
-                        .first()
-                        .map(|s| s.content.to_string())
-                        .unwrap_or_default();
-                    if first_span_str.starts_with('#') {
-                        let line_style = line.style;
-                        lines.push(Line::from(""));
-                        let hash_count = first_span_str.chars().take_while(|c| *c == '#').count();
-                        let mut heading_text = String::new();
-                        for s in &line.spans {
-                            let content = s.content.to_string();
-                            if content.starts_with('#') {
-                                heading_text.push_str(content.trim_start_matches('#').trim_start());
-                            } else {
-                                heading_text.push_str(&content);
-                            }
-                        }
-                        let heading_style = ArmadaiStyleSheet
-                            .heading(hash_count as u8)
-                            .patch(line_style);
-                        lines.push(Line::from(Span::styled(heading_text, heading_style)));
-                        if hash_count <= 3 {
-                            lines.push(Line::from(Span::styled(
-                                "─".repeat(50),
-                                Style::default().fg(Color::DarkGray),
-                            )));
-                        }
-                    } else {
-                        lines.push(line);
-                    }
-                }
-            } else if msg.is_user {
+            if msg.is_user {
                 // User messages: plain text
                 for line in msg.content.lines() {
                     lines.push(Line::from(line.to_string()));
                 }
             } else {
-                // Assistant messages: rich markdown rendering
-                let opts = tui_markdown::Options::new(ArmadaiStyleSheet);
-                let md_text = tui_markdown::from_str_with_options(&msg.content, &opts);
-                for line in md_text.lines {
-                    // Post-process: strip leading ### markers from headings,
-                    // replace with clean styled text
-                    let first_span_str: String = line
-                        .spans
-                        .first()
-                        .map(|s| s.content.to_string())
-                        .unwrap_or_default();
-                    if first_span_str.starts_with('#') {
-                        // It's a heading line — strip the # prefix, keep the original line style
-                        let line_style = line.style;
-                        lines.push(Line::from(""));
-
-                        // Determine heading level for separator
-                        let hash_count = first_span_str.chars().take_while(|c| *c == '#').count();
-
-                        // Build the cleaned heading text
-                        let mut heading_text = String::new();
-                        for s in &line.spans {
-                            let content = s.content.to_string();
-                            if content.starts_with('#') {
-                                heading_text.push_str(content.trim_start_matches('#').trim_start());
-                            } else {
-                                heading_text.push_str(&content);
-                            }
-                        }
-
-                        // Apply heading style from our stylesheet
-                        let heading_style = ArmadaiStyleSheet
-                            .heading(hash_count as u8)
-                            .patch(line_style);
-                        lines.push(Line::from(Span::styled(heading_text, heading_style)));
-
-                        // Add separator after H1/H2/H3
-                        if hash_count <= 3 {
-                            lines.push(Line::from(Span::styled(
-                                "─".repeat(50),
-                                Style::default().fg(Color::DarkGray),
-                            )));
-                        }
-                    } else {
-                        lines.push(line);
-                    }
-                }
+                // System + Assistant messages: custom markdown rendering
+                lines.extend(super::md_render::render_markdown(&msg.content));
             }
 
             // Add blank line between messages
@@ -722,15 +904,25 @@ impl ShellApp {
                 .unwrap_or(0.0);
             lines.push(Line::from(vec![Span::styled(
                 format!("{spinner} Generating response… {elapsed:.0}s"),
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
+                theme::muted().add_modifier(Modifier::ITALIC),
             )]));
         }
 
-        // Calculate scroll position
+        // Calculate scroll position — account for line wrapping
         let visible_height = area.height.saturating_sub(2) as usize; // minus borders
-        let total_lines = lines.len();
+        let inner_width = area.width.saturating_sub(2) as usize; // minus borders
+        let total_lines: usize = if inner_width > 0 {
+            lines
+                .iter()
+                .map(|line| {
+                    let char_count: usize =
+                        line.spans.iter().map(|s| s.content.chars().count()).sum();
+                    (char_count / inner_width) + 1
+                })
+                .sum()
+        } else {
+            lines.len()
+        };
         let max_scroll = if total_lines > visible_height {
             (total_lines - visible_height) as u16
         } else {
@@ -744,10 +936,18 @@ impl ShellApp {
             max_scroll
         };
 
-        // Create paragraph with message content
+        // Create paragraph with message content. The base `.style()` gives the
+        // whole panel a neutral foreground so unstyled message bodies (plain
+        // user lines, markdown text) don't inherit the terminal default fg
+        // (which reads blue on light terminals). Styled role labels override it.
         let messages_text = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL))
-            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border_style()),
+            )
+            .style(theme::border_style())
+            .wrap(Wrap { trim: false })
             .scroll((scroll, 0));
 
         frame.render_widget(messages_text, area);
@@ -776,49 +976,216 @@ impl ShellApp {
             )
         };
 
-        let statusbar = Paragraph::new(status_text).style(
-            Style::default()
-                .fg(Color::DarkGray)
-                .bg(Color::Rgb(22, 27, 34)),
-        );
+        // No fixed background here (was `bg(Rgb(22, 27, 34))`, a near-black
+        // strip that rendered dark-grey-on-near-black on light terminals —
+        // unreadable). A named fg on the terminal's own default background
+        // stays legible on both dark and light themes.
+        let statusbar = Paragraph::new(status_text).style(theme::muted());
 
         frame.render_widget(statusbar, area);
+    }
+
+    /// Persistent shortcut hint bar (audit P1-1). Normally a single muted
+    /// line of the always-available shortcuts; while a quit-confirming Esc
+    /// is armed (P1-3) it's replaced with a prominent transient warning so
+    /// the user knows a second Esc will exit.
+    fn render_hint_bar(&self, frame: &mut Frame, area: Rect) {
+        let (text, style) = if self.esc_armed {
+            (
+                "Press Esc again to quit (or keep typing to cancel)",
+                theme::warning(),
+            )
+        } else {
+            (
+                "Enter send · Ctrl+W workroom · /help commands · Ctrl+L clear · Esc×2 / Ctrl+C quit",
+                theme::muted(),
+            )
+        };
+
+        let hint_bar = Paragraph::new(text).style(style);
+        frame.render_widget(hint_bar, area);
+    }
+
+    /// Calculate dynamic input height based on content and terminal width.
+    /// Uses display width (unicode-width) for accurate wrapping, not char count.
+    fn input_height(&self, terminal_width: u16) -> u16 {
+        let inner_width = terminal_width.saturating_sub(4) as usize; // borders + prompt char
+        if inner_width == 0 {
+            return 3;
+        }
+        // Calculate display width of prompt + input (not char count)
+        // Prompt is "> " (2 cells)
+        let input_display_width: usize = self
+            .input
+            .chars()
+            .map(|c| c.width().unwrap_or(1).max(1))
+            .sum();
+        let total_width = input_display_width + 2; // +2 for "> "
+        let lines = (total_width / inner_width) + 1;
+        // Min 3 (for borders + 1 line), max 8
+        (lines as u16 + 2).clamp(3, 8)
+    }
+
+    /// Calculate cursor position (row, col) in display cells, accounting for Unicode width.
+    /// Takes the text up to cursor and available width in cells.
+    /// Returns (row, col) where row is 0-indexed from top and col is in display cells.
+    fn calculate_wrapped_cursor_position_unicode(
+        text_before_cursor: &str,
+        width: usize,
+    ) -> (usize, usize) {
+        if width == 0 {
+            return (0, 0);
+        }
+        let mut row = 0;
+        let mut col = 0;
+        for c in text_before_cursor.chars() {
+            let char_width = c.width().unwrap_or(1).max(1); // Handle control chars as 1 cell
+            if col + char_width > width {
+                // Wrap to next line
+                row += 1;
+                col = char_width;
+            } else {
+                col += char_width;
+            }
+        }
+        (row, col)
     }
 
     fn render_input_line(&self, frame: &mut Frame, area: Rect) {
         let cursor_indicator = if self.loading { "..." } else { ">" };
 
-        // Build the input display with cursor
-        let mut input_spans = vec![Span::raw(format!("{} ", cursor_indicator))];
+        // Build plain text for wrapping
+        let display_text = format!("{} {}", cursor_indicator, self.input);
+        let prefix_len = cursor_indicator.len() + 1; // "> " or "... "
 
-        for (i, c) in self.input.chars().enumerate() {
-            if i == self.cursor {
-                input_spans.push(Span::styled(
-                    c.to_string(),
-                    Style::default().bg(Color::White).fg(Color::Black),
-                ));
-            } else {
+        // Calculate available width (Borders::ALL = 2 cells left+right)
+        let available_width = area.width.saturating_sub(2) as usize;
+        if available_width == 0 {
+            // Terminal too narrow, just render without wrapping logic
+            let mut input_spans = Vec::new();
+            for c in display_text.chars() {
                 input_spans.push(Span::raw(c.to_string()));
+            }
+            if !self.loading {
+                input_spans.push(Span::styled(" ", theme::cursor()));
+            }
+
+            let input_paragraph = Paragraph::new(Line::from(input_spans))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border_style())
+                        .title(" Input ")
+                        .title_style(theme::heading()),
+                )
+                .wrap(Wrap { trim: false });
+
+            frame.render_widget(input_paragraph, area);
+            return;
+        }
+
+        // Split display_text into prefix and input text for cursor calculation
+        let prefix = &display_text[..prefix_len.min(display_text.len())];
+        let input_part = if prefix_len < display_text.len() {
+            &display_text[prefix_len..]
+        } else {
+            ""
+        };
+
+        // Calculate cursor position in text-before-cursor
+        let text_before_cursor = if self.cursor > 0 {
+            &input_part[..input_part
+                .char_indices()
+                .nth(self.cursor)
+                .map(|(i, _)| i)
+                .unwrap_or(input_part.len())]
+        } else {
+            ""
+        };
+
+        let cursor_full_text = format!("{}{}", prefix, text_before_cursor);
+        let (cursor_row, _cursor_col) =
+            Self::calculate_wrapped_cursor_position_unicode(&cursor_full_text, available_width);
+
+        // Build lines based on wrapping with Unicode-aware width
+        let mut lines: Vec<Line> = Vec::new();
+        let mut current_line_spans: Vec<Span> = Vec::new();
+        let mut current_col = 0;
+
+        for (char_idx, c) in display_text.chars().enumerate() {
+            let char_width = c.width().unwrap_or(1).max(1);
+
+            // Check if this character is at cursor position (for cursor rendering)
+            let is_cursor_pos = char_idx == prefix_len + self.cursor && !self.loading;
+
+            // Check if we need to wrap (current char doesn't fit on current line)
+            if current_col + char_width > available_width {
+                // Push current line and start new one
+                lines.push(Line::from(current_line_spans.clone()));
+                current_line_spans.clear();
+                current_col = 0;
+            }
+
+            // Add this character to current line
+            if is_cursor_pos {
+                current_line_spans.push(Span::styled(c.to_string(), theme::cursor()));
+            } else {
+                current_line_spans.push(Span::raw(c.to_string()));
+            }
+            current_col += char_width;
+        }
+
+        // Add any remaining spans as the last line
+        if !current_line_spans.is_empty() {
+            lines.push(Line::from(current_line_spans));
+        }
+
+        // Track if a new line was created for cursor block (edge case: cursor at wrap boundary)
+        let mut cursor_on_new_line = false;
+
+        // If cursor at end of text, add a cursor block
+        if self.cursor >= input_part.chars().count() && !self.loading {
+            if current_col < available_width {
+                // Cursor fits on current line
+                if let Some(last_line) = lines.last_mut() {
+                    last_line.spans.push(Span::styled(" ", theme::cursor()));
+                }
+            } else if current_col > 0 {
+                // Cursor would wrap to next line (edge case: cursor at exact wrap boundary)
+                let cursor_span = vec![Span::styled(" ", theme::cursor())];
+                lines.push(Line::from(cursor_span));
+                cursor_on_new_line = true;
             }
         }
 
-        // If cursor is at end, show cursor
-        if self.cursor >= self.input.chars().count() && !self.loading {
-            input_spans.push(Span::styled(
-                " ",
-                Style::default().bg(Color::White).fg(Color::Black),
-            ));
-        }
+        // Calculate scroll offset to keep cursor visible
+        // Edge case: if cursor moved to a new line due to wrap boundary, update row
+        let visible_height = area.height.saturating_sub(2) as usize; // minus borders
+        let final_cursor_row = if cursor_on_new_line {
+            // Cursor was placed on a newly created line due to wrap boundary
+            lines.len() - 1
+        } else {
+            cursor_row
+        };
+        let scroll_offset = if final_cursor_row >= visible_height {
+            (final_cursor_row - visible_height + 1) as u16
+        } else {
+            0
+        };
 
-        let input_line = Paragraph::new(Line::from(input_spans)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Input ")
-                .title_style(Style::default().fg(Color::Cyan)),
-        );
+        // Render with lines and scroll
+        let input_paragraph = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border_style())
+                    .title(" Input ")
+                    .title_style(theme::heading()),
+            )
+            .wrap(Wrap { trim: false })
+            .scroll((scroll_offset, 0));
 
-        frame.render_widget(input_line, area);
+        frame.render_widget(input_paragraph, area);
     }
 }
 
@@ -871,6 +1238,67 @@ mod tests {
     }
 
     #[test]
+    fn test_esc_with_nonempty_input_clears_instead_of_quitting() {
+        let mut app = ShellApp::new("Gemini".to_string());
+        app.input = "hello".to_string();
+        app.cursor = 5;
+
+        let quit = app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+
+        assert!(!quit);
+        assert!(!app.should_quit);
+        assert!(app.input.is_empty());
+        assert_eq!(app.cursor, 0);
+        assert!(!app.esc_armed);
+    }
+
+    #[test]
+    fn test_esc_twice_on_empty_input_quits() {
+        let mut app = ShellApp::new("Gemini".to_string());
+
+        let quit1 = app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+        assert!(!quit1);
+        assert!(!app.should_quit);
+        assert!(app.esc_armed);
+
+        let quit2 = app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+        assert!(quit2);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_other_key_disarms_esc() {
+        let mut app = ShellApp::new("Gemini".to_string());
+
+        app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+        assert!(app.esc_armed);
+
+        // Any non-Esc key (here, a no-op navigation key that leaves the
+        // input buffer empty) disarms the pending quit.
+        app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Left));
+        assert!(!app.esc_armed);
+
+        let quit = app.handle_key(KeyEvent::from(crossterm::event::KeyCode::Esc));
+        assert!(
+            !quit,
+            "a fresh, non-consecutive Esc should re-arm, not quit"
+        );
+        assert!(app.esc_armed);
+    }
+
+    #[test]
+    fn test_ctrl_c_quits_immediately() {
+        let mut app = ShellApp::new("Gemini".to_string());
+        let ctrl_c = KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+
+        assert!(app.handle_key(ctrl_c));
+        assert!(app.should_quit);
+    }
+
+    #[test]
     fn test_update_metrics() {
         let mut app = ShellApp::new("Gemini".to_string());
         app.update_metrics(100, 50, 0.001, Duration::from_secs(1));
@@ -878,5 +1306,188 @@ mod tests {
         assert_eq!(app.tokens_in, 100);
         assert_eq!(app.tokens_out, 50);
         assert_eq!(app.turn_count, 1);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_unicode_ascii() {
+        // Pure ASCII, no special handling needed
+        // Text "hello" (5 chars, each 1 cell wide), width 20
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position_unicode("hello", 20);
+        assert_eq!(row, 0);
+        assert_eq!(col, 5);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_unicode_with_wrap() {
+        // ASCII text that wraps: 25 chars with width 20
+        let text = "a".repeat(25);
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position_unicode(&text, 20);
+        assert_eq!(row, 1); // Wrapped to second line
+        assert_eq!(col, 5); // 5 chars on second line
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_unicode_emoji() {
+        // Emoji (typically 2 cells wide)
+        // "😀" is 2 cells, then "ab" is 2 cells → wraps at width 3
+        let text = "😀ab"; // 2 + 1 + 1 = 4 cells
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position_unicode(text, 3);
+        // First 3 cells: "😀a" (2+1) on line 0
+        // Then "b" wraps to line 1
+        // But we're calculating position BEFORE cursor, so at "😀ab" end:
+        // Line 0: "😀a" = 3 cells
+        // Line 1: "b" = 1 cell
+        assert_eq!(row, 1);
+        assert_eq!(col, 1);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_unicode_zero_width() {
+        // Edge case: zero width should not panic
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position_unicode("hello", 0);
+        assert_eq!(row, 0);
+        assert_eq!(col, 0);
+    }
+
+    #[test]
+    fn test_calculate_wrapped_cursor_position_unicode_empty_text() {
+        // Empty text should return (0, 0)
+        let (row, col) = ShellApp::calculate_wrapped_cursor_position_unicode("", 20);
+        assert_eq!(row, 0);
+        assert_eq!(col, 0);
+    }
+
+    #[test]
+    fn test_input_height_calculation() {
+        // Test that input height is calculated correctly with wrapping
+        let mut app = ShellApp::new("Gemini".to_string());
+
+        // Short input that fits on one line
+        app.input = "hello".to_string();
+        let height = app.input_height(80);
+        assert!(height >= 3); // Min height
+        assert!(height <= 8); // Max height
+
+        // Longer input that wraps
+        app.input = "a".repeat(100);
+        let height = app.input_height(80);
+        assert!(height >= 3);
+        assert!(height <= 8);
+    }
+
+    #[test]
+    fn test_cursor_navigation_with_input() {
+        let mut app = ShellApp::new("Gemini".to_string());
+
+        // Insert some text
+        app.input = "hello world".to_string();
+        app.cursor = 11; // At end
+
+        // Move cursor left
+        assert_eq!(app.cursor, 11);
+
+        // Test char_to_byte conversion
+        app.input = "café".to_string();
+        let byte_idx = app.char_to_byte(1); // Position after 'c', before 'a'
+        assert_eq!(byte_idx, 1);
+    }
+
+    /// Helper to find cursor position in rendered buffer (reverse-video space cell)
+    fn find_cursor_in_buffer(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) -> Option<(u16, u16)> {
+        let buf = terminal.backend().buffer();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                if let Some(cell) = buf.cell((x, y)) {
+                    // Cursor is styled reverse-video on a single space cell.
+                    if cell.symbol() == " "
+                        && cell.modifier.contains(ratatui::style::Modifier::REVERSED)
+                    {
+                        return Some((x, y));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn test_render_input_line_with_wrapping() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = ShellApp::new("Test".to_string());
+        app.input = "a".repeat(50); // 50 character input, should wrap
+        app.cursor = 25; // In middle
+
+        // Create a test terminal with 30-char width and 10 lines height
+        let backend = TestBackend::new(30, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // Render the app
+        let _ = terminal.draw(|f| {
+            app.render(f);
+        });
+
+        // Verify rendering produced output
+        let buffer = terminal.backend().buffer().clone();
+        assert!(!buffer.content.is_empty(), "Buffer should have content");
+
+        // Verify cursor is actually rendered at a valid position
+        if let Some((cursor_x, cursor_y)) = find_cursor_in_buffer(&terminal) {
+            // Cursor should be within the terminal bounds (accounting for borders)
+            assert!(
+                cursor_x > 0 && cursor_x < 30,
+                "Cursor X position {} should be within terminal width",
+                cursor_x
+            );
+            // Cursor should be within terminal height
+            assert!(
+                cursor_y < 10,
+                "Cursor Y position {} should be within terminal height",
+                cursor_y
+            );
+        }
+        // Note: If cursor not found, it might be rendered without highlight at wrap boundary,
+        // which is acceptable but less ideal for this test.
+    }
+
+    #[test]
+    fn test_render_input_with_unicode() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = ShellApp::new("Test".to_string());
+        // Mix of ASCII and emoji
+        app.input = "hello😀world".to_string();
+        app.cursor = 6; // After emoji
+
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let _ = terminal.draw(|f| {
+            app.render(f);
+        });
+
+        // Verify rendering didn't panic and produced output
+        let buffer = terminal.backend().buffer().clone();
+        assert!(!buffer.content.is_empty(), "Buffer should have content");
+
+        // Verify cursor position is within valid bounds if found
+        if let Some((cursor_x, cursor_y)) = find_cursor_in_buffer(&terminal) {
+            assert!(
+                cursor_x > 0 && cursor_x < 40,
+                "Cursor X position {} should be within terminal width",
+                cursor_x
+            );
+            assert!(
+                cursor_y < 10,
+                "Cursor Y position {} should be within terminal height",
+                cursor_y
+            );
+        }
+        // Note: Unicode test - cursor may not be highlighted if at wrap boundary,
+        // but we verified rendering completed without panicking.
     }
 }

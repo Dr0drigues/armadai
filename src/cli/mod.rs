@@ -1,6 +1,7 @@
+mod audit;
 mod config;
 mod costs;
-mod fleet;
+mod extract;
 mod history;
 pub mod init;
 mod inspect;
@@ -8,23 +9,27 @@ mod link;
 mod list;
 mod models;
 pub(crate) mod new;
+mod projections;
 mod prompts;
 mod registry;
 mod run;
+mod run_es_record;
+mod run_replay;
 pub(crate) mod setup;
 mod skills;
+pub(crate) mod style;
 mod unlink;
 mod up;
 mod update;
 mod validate;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
     name = "armadai",
-    about = "AI agent fleet orchestrator",
-    long_about = "AI agent fleet orchestrator — define, manage and run specialized agents from Markdown files.\n\n\
+    about = "AI agent orchestrator",
+    long_about = "AI agent orchestrator — define, manage and run specialized agents from Markdown files.\n\n\
         Each agent is a .md file in agents/ with metadata, system prompt, and optional instructions.\n\
         Supports any LLM provider (Claude, GPT, Gemini) via CLI tools or API.",
     version,
@@ -39,7 +44,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -49,15 +54,23 @@ pub enum Command {
         long_about = "Run an agent with the given input.\n\n\
             Loads the agent definition from agents/<name>.md, sends the input to the \
             configured provider, and prints the response. Use --pipe to chain multiple \
-            agents sequentially (output of one becomes input of the next).",
+            agents sequentially (output of one becomes input of the next).\n\n\
+            Exactly one of <AGENT>, --resume, or --replay must be given.",
         after_help = "Examples:\n  \
             armadai run code-reviewer \"Review this function\"\n  \
             armadai run summarizer @long-document.txt\n  \
-            armadai run --pipe reviewer writer src/main.rs"
+            armadai run --pipe reviewer writer src/main.rs\n  \
+            armadai run --resume <RUN_ID>\n  \
+            armadai run --replay <RUN_ID>",
+        group(
+            ArgGroup::new("run_mode")
+                .args(["agent", "resume", "replay"])
+                .required(true)
+        )
     )]
     Run {
         /// Agent name (filename without .md)
-        agent: String,
+        agent: Option<String>,
         /// Input text or file path (use @file.txt for files)
         input: Option<String>,
         /// Pipeline mode: chain agents sequentially
@@ -66,6 +79,36 @@ pub enum Command {
         /// Orchestration pattern for multi-agent execution
         #[arg(long, value_parser = ["blackboard", "ring"])]
         orchestrate: Option<String>,
+        /// Non-interactive mode for CI: no prompts, CI exit codes
+        #[arg(long)]
+        headless: bool,
+        /// Emit a JSONL event stream on stdout (implies non-interactive)
+        #[arg(long)]
+        json: bool,
+        /// With --json: emit only the final `result` event
+        #[arg(long)]
+        quiet: bool,
+        /// With --json: truncate `content` of intermediate events to N chars
+        #[arg(long, value_name = "N")]
+        max_content: Option<usize>,
+        /// C8: select agents by a named route from `orchestration.routes`
+        #[arg(long, value_name = "NAME")]
+        route: Option<String>,
+        /// C8: select agents whose tags/stacks intersect these (comma-separated)
+        #[arg(long, value_name = "TAGS", value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        /// C8: resolve and print the agent selection without executing (0 tokens)
+        #[arg(long)]
+        dry_run: bool,
+        /// Disable the live orchestration TUI (force plain headless output)
+        #[arg(long = "no-tui")]
+        no_tui: bool,
+        /// Resume a previously interrupted run by its run_id (OH1 Lot 6)
+        #[arg(long, value_name = "RUN_ID")]
+        resume: Option<String>,
+        /// Replay a previously recorded run by its run_id (OH1 Lot 6)
+        #[arg(long, value_name = "RUN_ID")]
+        replay: Option<String>,
     },
     /// Create a new agent from a template
     #[command(
@@ -108,6 +151,9 @@ pub enum Command {
         /// Filter by stack
         #[arg(long)]
         stack: Option<String>,
+        /// Show agents from the global library (~/.config/armadai/) only
+        #[arg(long)]
+        global: bool,
     },
     /// Inspect an agent's parsed configuration
     #[command(long_about = "Inspect an agent's parsed configuration.\n\n\
@@ -117,16 +163,59 @@ pub enum Command {
         /// Agent name
         agent: String,
     },
-    /// Validate agent config without making API calls (dry-run)
+    /// Validate starter pack or project config
     #[command(
-        long_about = "Validate agent config without making API calls (dry-run).\n\n\
-            Checks that the Markdown file parses correctly and all required fields are present. \
-            If no agent name is given, validates all agents in the agents/ directory."
+        long_about = "Validate starter pack or project config.\n\n\
+            Auto-detects whether the target is a starter pack (pack.yaml) or project \
+            (armadai.yaml / .armadai/config.yaml) and runs the appropriate validation. \
+            Checks agent/prompt/skill references, orchestration config, and trigger sections.",
+        after_help = "Examples:\n  \
+            armadai validate\n  \
+            armadai validate starters/armadai-authoring\n  \
+            armadai validate /path/to/project"
     )]
     Validate {
-        /// Agent name (validates all if omitted)
-        agent: Option<String>,
+        /// Path to pack or project directory (default: current directory)
+        path: Option<std::path::PathBuf>,
     },
+    /// Audit native agentic configs (Claude Code) and report issues
+    #[command(long_about = "Audit native agentic configs and report issues.\n\n\
+            Scans .claude/agents/, .claude/skills/ and CLAUDE.md (no ArmadAI setup \
+            required), runs static rules (deprecated models, oversized prompts, \
+            duplicated blocks, broken references, plaintext secrets...) and prints \
+            an actionable report. Exits non-zero if critical findings exist.")]
+    Audit {
+        /// Project directory to audit (defaults to current directory)
+        path: Option<std::path::PathBuf>,
+        /// Write a report to this file (markdown, or HTML if the extension is .html)
+        #[arg(long)]
+        report: Option<std::path::PathBuf>,
+        /// Only display findings at or above this severity (exit code still counts everything)
+        #[arg(long, value_parser = ["crit", "warn", "info"], default_value = "info")]
+        min_severity: String,
+        /// Shortcut for --min-severity warn
+        #[arg(long, conflicts_with = "min_severity")]
+        quiet: bool,
+        /// Generate an installable ArmadAI pack from the audited config (.armadai-proposal/)
+        #[arg(long)]
+        propose: bool,
+        /// Run an optional LLM pass (needs an installed CLI: claude, gemini): sends prompt excerpts (with detected secrets redacted) to the CLI
+        #[arg(long)]
+        deep: bool,
+    },
+    /// Extract agents, prompts, and skills with dependency resolution
+    #[command(
+        long_about = "Extract agents, prompts, and skills with dependency resolution.\n\n\
+            Pulls resources from a starter pack, the user library, or the current project, \
+            optionally including prompts that target the selected agents via `apply_to`. \
+            When called with no flags, walks you through an interactive wizard.",
+        after_help = "Examples:\n  \
+            armadai extract\n  \
+            armadai extract -i\n  \
+            armadai extract --from armadai-authoring --agents authoring-lead --with-deps\n  \
+            armadai extract --from user --agents dev-lead --out ./snapshot --as-pack"
+    )]
+    Extract(extract::ExtractArgs),
     /// View execution history
     #[command(after_help = "Examples:\n  \
         armadai history\n  \
@@ -149,6 +238,19 @@ pub enum Command {
         #[arg(long)]
         from: Option<String>,
     },
+    /// Manage flat-table projections from the event log
+    #[command(
+        subcommand,
+        long_about = "Manage flat-table projections from the event log.\n\n\
+            Re-derives flat tables (runs, orchestration_runs, board_entries, ring_contributions, \
+            ring_votes, delegation_events) from the immutable execution_events log. \
+            The projector is idempotent: multiple rebuilds produce the same result.",
+        after_help = "Examples:\n  \
+            armadai projections rebuild\n  \
+            armadai projections rebuild --all\n  \
+            armadai projections rebuild --run <run-id>"
+    )]
+    Projections(projections::ProjectionsAction),
     /// Manage providers and secrets
     #[command(
         long_about = "Manage providers and secrets.\n\n\
@@ -168,14 +270,25 @@ pub enum Command {
             Conversational interface for interacting with LLM providers. \
             Type messages and press Enter to get responses. Use Ctrl+C or Esc to quit, \
             Ctrl+L to clear conversation.")]
-    Shell,
+    Shell {
+        /// Use ASCII glyphs instead of Unicode (for limited terminals)
+        #[arg(long)]
+        ascii: bool,
+    },
     /// Launch the TUI dashboard
     #[cfg(feature = "tui")]
     #[command(long_about = "Launch the TUI dashboard.\n\n\
             Interactive terminal interface for browsing agents, viewing history and costs. \
             Use Tab/Shift+Tab or 1-4 to switch views, j/k to navigate, Enter for details, \
             : or Ctrl+P for command palette, q to quit.")]
-    Tui,
+    Tui {
+        /// Show agents from the global library (~/.config/armadai/) only
+        #[arg(long)]
+        global: bool,
+        /// Use ASCII glyphs instead of Unicode (for limited terminals)
+        #[arg(long)]
+        ascii: bool,
+    },
     /// Launch the web UI
     #[cfg(feature = "web")]
     #[command(
@@ -190,6 +303,9 @@ pub enum Command {
         /// Port to listen on
         #[arg(long, short, default_value = "3000")]
         port: u16,
+        /// Show agents from the global library (~/.config/armadai/) only
+        #[arg(long)]
+        global: bool,
     },
     /// Start infrastructure services (Docker Compose)
     #[command(long_about = "Start infrastructure services (Docker Compose).\n\n\
@@ -199,20 +315,6 @@ pub enum Command {
     #[command(long_about = "Stop infrastructure services (Docker Compose).\n\n\
         Stops and removes the containers started by 'armadai up'.")]
     Down,
-    /// [deprecated] Manage agent fleets
-    #[command(
-        subcommand,
-        long_about = "[DEPRECATED] Manage agent fleets.\n\n\
-            This command uses the legacy fleet format which will be removed in a future release.\n\
-            Use `armadai init --project` to create a modern .armadai/config.yaml instead.\n\n\
-            Create named groups of agents and link them to project directories.",
-        after_help = "Examples:\n  \
-            armadai fleet create my-fleet --all\n  \
-            armadai fleet link my-fleet\n  \
-            armadai fleet list\n  \
-            armadai fleet show my-fleet"
-    )]
-    Fleet(fleet::FleetAction),
     /// Manage model deprecations and project registry
     #[command(
         subcommand,
@@ -297,7 +399,7 @@ pub enum Command {
     #[command(
         long_about = "Initialize ArmadAI configuration.\n\n\
             Creates ~/.config/armadai/ with default config.yaml, providers.yaml, \
-            and subdirectories (agents/, prompts/, skills/, fleets/, registry/).\n\n\
+            and subdirectories (agents/, prompts/, skills/, registry/).\n\n\
             Use --project to create a .armadai/ directory with config.yaml and \
             subdirectories (agents/, prompts/, skills/, starters/).",
         after_help = "Examples:\n  \
@@ -314,8 +416,8 @@ pub enum Command {
         /// Create a project-local .armadai/ directory with config.yaml
         #[arg(long)]
         project: bool,
-        /// Install a starter pack (e.g. rust-dev, fullstack)
-        #[arg(long, value_parser = crate::core::starter::pack_value_parser())]
+        /// Starter pack name, or path to a directory containing pack.yaml
+        #[arg(long)]
         pack: Option<String>,
     },
     /// Browse and import agents from the community registry
@@ -378,13 +480,54 @@ pub enum Command {
 }
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
-    match cli.command {
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            // No subcommand — launch the interactive shell
+            #[cfg(feature = "tui")]
+            return crate::shell::app::run_shell(false).await;
+            #[cfg(not(feature = "tui"))]
+            anyhow::bail!(
+                "Shell requires the 'tui' feature. Use `armadai shell` or `armadai --help`."
+            );
+        }
+    };
+
+    match command {
         Command::Run {
             agent,
             input,
             pipe,
             orchestrate,
-        } => run::execute(agent, input, pipe, orchestrate).await,
+            headless,
+            json,
+            quiet,
+            max_content,
+            route,
+            tags,
+            dry_run,
+            no_tui,
+            resume,
+            replay,
+        } => {
+            run::execute(
+                agent,
+                input,
+                pipe,
+                orchestrate,
+                headless,
+                json,
+                quiet,
+                max_content,
+                route,
+                tags,
+                dry_run,
+                no_tui,
+                resume,
+                replay,
+            )
+            .await
+        }
         Command::New {
             name,
             template,
@@ -392,20 +535,42 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             description,
             interactive,
         } => new::execute(name, template, stack, description, interactive).await,
-        Command::List { tags, stack } => list::execute(tags, stack).await,
+        Command::List {
+            tags,
+            stack,
+            global,
+        } => {
+            crate::core::config::set_force_global(global);
+            list::execute(tags, stack).await
+        }
         Command::Inspect { agent } => inspect::execute(agent).await,
-        Command::Validate { agent } => validate::execute(agent).await,
+        Command::Validate { path } => validate::execute(path).await,
+        Command::Audit {
+            path,
+            report,
+            min_severity,
+            quiet,
+            propose,
+            deep,
+        } => audit::execute(path, report, min_severity, quiet, propose, deep).await,
         Command::History { agent } => history::execute(agent).await,
         Command::Costs { agent, from } => costs::execute(agent, from).await,
+        Command::Projections(action) => projections::execute(action).await,
         Command::Config { action } => config::execute(action).await,
         #[cfg(feature = "tui")]
-        Command::Shell => crate::shell::app::run_shell().await,
+        Command::Shell { ascii } => crate::shell::app::run_shell(ascii).await,
         #[cfg(feature = "tui")]
-        Command::Tui => crate::tui::run().await,
+        Command::Tui { global, ascii } => {
+            crate::core::config::set_force_global(global);
+            crate::tui::run(ascii).await
+        }
         #[cfg(feature = "web")]
-        Command::Web { port } => crate::web::serve(port).await,
+        Command::Web { port, global } => {
+            crate::core::config::set_force_global(global);
+            crate::web::serve(port).await
+        }
         Command::Models(action) => models::execute(action).await,
-        Command::Fleet(action) => fleet::execute(action).await,
+        Command::Extract(args) => extract::execute(args).await,
         Command::Registry(action) => registry::execute(action).await,
         Command::Prompts(action) => prompts::execute(action).await,
         Command::Skills(action) => skills::execute(action).await,

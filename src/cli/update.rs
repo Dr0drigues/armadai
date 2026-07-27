@@ -15,8 +15,10 @@ pub async fn execute() -> anyhow::Result<()> {
 
     let repo = "Dr0drigues/swarm-festai";
     let current_version = env!("CARGO_PKG_VERSION");
-    println!("Current version: v{current_version}");
-    println!("Checking for updates...");
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}Current version: v{current_version}{m:#}");
+    let r = crate::cli::style::running();
+    anstream::println!("{r}Checking for updates...{r:#}");
 
     // Get latest release tag
     let output = ProcessCommand::new("curl")
@@ -45,11 +47,14 @@ pub async fn execute() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Could not parse latest version from GitHub API"))?;
 
     if latest_version == current_version {
-        println!("Already up to date (v{current_version}).");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}Already up to date (v{current_version}).{m:#}");
         return Ok(());
     }
 
-    println!("New version available: v{latest_version}");
+    let w = crate::cli::style::warn();
+    let a = crate::cli::style::accent();
+    anstream::println!("{w}New version available:{w:#} {a}v{latest_version}{a:#}");
 
     // Find where the current binary is installed
     let current_exe = std::env::current_exe()?;
@@ -61,7 +66,9 @@ pub async fn execute() -> anyhow::Result<()> {
     let download_url =
         format!("https://github.com/{repo}/releases/download/v{latest_version}/{artifact}");
 
-    println!("Downloading v{latest_version} for {platform}...");
+    let r = crate::cli::style::running();
+    let a = crate::cli::style::accent();
+    anstream::println!("{r}Downloading{r:#} {a}v{latest_version}{a:#} for {a}{platform}{a:#}...");
 
     // Download to temp file
     let tmp_path = install_dir.join(".armadai-update-tmp");
@@ -76,7 +83,9 @@ pub async fn execute() -> anyhow::Result<()> {
 
     if !status.success() {
         // Clean up
-        let _ = std::fs::remove_file(&tmp_path);
+        if let Err(e) = std::fs::remove_file(&tmp_path) {
+            tracing::debug!("Failed to remove temporary download file: {:?}", e);
+        }
         anyhow::bail!(
             "Download failed. Check your network connection or try: VERSION=v{latest_version} install.sh"
         );
@@ -94,8 +103,11 @@ pub async fn execute() -> anyhow::Result<()> {
     let target_path = install_dir.join("armadai");
     std::fs::rename(&tmp_path, &target_path)?;
 
-    println!("Updated to v{latest_version}!");
-    println!("Run 'armadai --version' to verify.");
+    let o = crate::cli::style::ok();
+    let a = crate::cli::style::accent();
+    anstream::println!("{o}Updated to{o:#} {a}v{latest_version}{a:#}{o}!{o:#}");
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}Run 'armadai --version' to verify.{m:#}");
 
     super::setup::prompt_shell_setup();
 

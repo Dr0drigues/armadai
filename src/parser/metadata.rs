@@ -101,34 +101,6 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
     })
 }
 
-/// Validate metadata fields for consistency.
-pub fn validate_metadata(metadata: &AgentMetadata) -> anyhow::Result<()> {
-    match metadata.provider.as_str() {
-        "cli" => {
-            if metadata.command.is_none() {
-                anyhow::bail!("CLI provider requires 'command' field in Metadata");
-            }
-        }
-        "anthropic" | "openai" | "google" | "proxy" => {
-            if metadata.model.is_none() {
-                anyhow::bail!(
-                    "API provider '{}' requires 'model' field in Metadata",
-                    metadata.provider
-                );
-            }
-        }
-        other => {
-            tracing::warn!("Unknown provider type: {other}");
-        }
-    }
-
-    if metadata.temperature < 0.0 || metadata.temperature > 2.0 {
-        anyhow::bail!("Temperature must be between 0.0 and 2.0");
-    }
-
-    Ok(())
-}
-
 /// Parse a bracket-delimited list like `[rust, typescript, java]` into a Vec<String>.
 fn parse_string_list(value: &str) -> Vec<String> {
     let trimmed = value.trim().trim_start_matches('[').trim_end_matches(']');

@@ -40,18 +40,21 @@ fn check(all: bool, prune: bool) -> anyhow::Result<()> {
         if prune {
             let pruned = project_registry::prune_stale(&mut registry);
             if !pruned.is_empty() {
-                println!("Pruned {} stale project(s):", pruned.len());
+                let m = crate::cli::style::muted();
+                anstream::println!("{m}Pruned {} stale project(s):{m:#}", pruned.len());
+                let a = crate::cli::style::accent();
                 for p in &pruned {
-                    println!("  - {p}");
+                    anstream::println!("  {a}- {p}{a:#}");
                 }
                 project_registry::save(&registry)?;
-                println!();
+                anstream::println!();
             }
         }
 
         if registry.projects.is_empty() {
-            println!(
-                "No registered projects. Run `armadai run` or `armadai link` in a project first."
+            let m = crate::cli::style::muted();
+            anstream::println!(
+                "{m}No registered projects. Run `armadai run` or `armadai link` in a project first.{m:#}"
             );
             return Ok(());
         }
@@ -61,25 +64,29 @@ fn check(all: bool, prune: bool) -> anyhow::Result<()> {
             let findings = match model_updater::check_project(std::path::Path::new(&entry.path)) {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("  warn: {}: {e}", entry.path);
+                    let w = crate::cli::style::warn();
+                    anstream::eprintln!("{w}  warn: {}: {e}{w:#}", entry.path);
                     continue;
                 }
             };
             if !findings.is_empty() {
-                println!("{}:", entry.path);
+                let h = crate::cli::style::header();
+                anstream::println!("{h}{}:{h:#}", entry.path);
                 print_findings(&findings);
                 total += findings.len();
             }
         }
 
         if total == 0 {
-            println!(
-                "All models are up to date across {} project(s).",
+            let o = crate::cli::style::ok();
+            anstream::println!(
+                "{o}All models are up to date across {} project(s).{o:#}",
                 registry.projects.len()
             );
         } else {
-            println!(
-                "\n{total} deprecated model(s) found. Run `armadai models update --all` to fix."
+            let w = crate::cli::style::warn();
+            anstream::println!(
+                "\n{w}{total} deprecated model(s) found. Run `armadai models update --all` to fix.{w:#}"
             );
         }
     } else {
@@ -89,11 +96,13 @@ fn check(all: bool, prune: bool) -> anyhow::Result<()> {
 
         let findings = model_updater::check_project(&root)?;
         if findings.is_empty() {
-            println!("All models are up to date.");
+            let o = crate::cli::style::ok();
+            anstream::println!("{o}All models are up to date.{o:#}");
         } else {
             print_findings(&findings);
-            println!(
-                "\n{} deprecated model(s) found. Run `armadai models update` to fix.",
+            let w = crate::cli::style::warn();
+            anstream::println!(
+                "\n{w}{} deprecated model(s) found. Run `armadai models update` to fix.{w:#}",
                 findings.len()
             );
         }
@@ -106,7 +115,8 @@ fn update(all: bool) -> anyhow::Result<()> {
     if all {
         let registry = project_registry::load();
         if registry.projects.is_empty() {
-            println!("No registered projects.");
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}No registered projects.{m:#}");
             return Ok(());
         }
 
@@ -116,7 +126,8 @@ fn update(all: bool) -> anyhow::Result<()> {
             let findings = match model_updater::check_project(root) {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("  warn: {}: {e}", entry.path);
+                    let w = crate::cli::style::warn();
+                    anstream::eprintln!("{w}  warn: {}: {e}{w:#}", entry.path);
                     continue;
                 }
             };
@@ -148,16 +159,24 @@ fn update(all: bool) -> anyhow::Result<()> {
                 match model_updater::update_agent_file(path, &owned) {
                     Ok(n) => {
                         if n > 0 {
-                            println!("  updated {}: {n} replacement(s)", path.display());
+                            let o = crate::cli::style::ok();
+                            anstream::println!(
+                                "{o}  updated {}: {n} replacement(s){o:#}",
+                                path.display()
+                            );
                             total_updated += n;
                         }
                     }
-                    Err(e) => eprintln!("  error: {}: {e}", path.display()),
+                    Err(e) => {
+                        let er = crate::cli::style::err();
+                        anstream::eprintln!("{er}  error: {}: {e}{er:#}", path.display());
+                    }
                 }
             }
         }
 
-        println!("\n{total_updated} model(s) updated across all projects.");
+        let o = crate::cli::style::ok();
+        anstream::println!("{o}\n{total_updated} model(s) updated across all projects.{o:#}");
     } else {
         let (root, _config) = project::find_project_config().ok_or_else(|| {
             anyhow::anyhow!("No project config found. Run from a project directory or use --all.")
@@ -165,7 +184,8 @@ fn update(all: bool) -> anyhow::Result<()> {
 
         let findings = model_updater::check_project(&root)?;
         if findings.is_empty() {
-            println!("All models are up to date.");
+            let o = crate::cli::style::ok();
+            anstream::println!("{o}All models are up to date.{o:#}");
             return Ok(());
         }
 
@@ -193,15 +213,23 @@ fn update(all: bool) -> anyhow::Result<()> {
             match model_updater::update_agent_file(path, &owned) {
                 Ok(n) => {
                     if n > 0 {
-                        println!("  updated {}: {n} replacement(s)", path.display());
+                        let o = crate::cli::style::ok();
+                        anstream::println!(
+                            "{o}  updated {}: {n} replacement(s){o:#}",
+                            path.display()
+                        );
                         total += n;
                     }
                 }
-                Err(e) => eprintln!("  error: {}: {e}", path.display()),
+                Err(e) => {
+                    let er = crate::cli::style::err();
+                    anstream::eprintln!("{er}  error: {}: {e}{er:#}", path.display());
+                }
             }
         }
 
-        println!("\n{total} model(s) updated.");
+        let o = crate::cli::style::ok();
+        anstream::println!("{o}\n{total} model(s) updated.{o:#}");
     }
 
     Ok(())
@@ -211,25 +239,43 @@ fn list() -> anyhow::Result<()> {
     let registry = project_registry::load();
 
     if registry.projects.is_empty() {
-        println!("No registered projects.");
-        println!("Projects are auto-registered when you run `armadai run` or `armadai link`.");
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}No registered projects.{m:#}");
+        anstream::println!(
+            "{m}Projects are auto-registered when you run `armadai run` or `armadai link`.{m:#}"
+        );
         return Ok(());
     }
 
-    println!("Registered projects:\n");
+    let h = crate::cli::style::header();
+    anstream::println!("{h}Registered projects:{h:#}\n");
     for entry in &registry.projects {
-        println!("  {}  (last seen: {})", entry.path, entry.last_seen);
+        let a = crate::cli::style::accent();
+        let m = crate::cli::style::muted();
+        anstream::println!(
+            "  {a}{}{a:#}  {m}(last seen: {}){m:#}",
+            entry.path,
+            entry.last_seen
+        );
     }
-    println!("\n{} project(s) total.", registry.projects.len());
+    let m = crate::cli::style::muted();
+    anstream::println!("\n{m}{} project(s) total.{m:#}", registry.projects.len());
 
     Ok(())
 }
 
 fn print_findings(findings: &[model_updater::DeprecationFinding]) {
+    let a = crate::cli::style::accent();
+    let m = crate::cli::style::muted();
+    let w = crate::cli::style::warn();
+    let o = crate::cli::style::ok();
     for f in findings {
-        println!(
-            "  {} [{}]: {} -> {}",
-            f.agent_name, f.field, f.current, f.replacement
+        anstream::println!(
+            "  {a}{}{a:#} {m}[{}]{m:#}: {w}{}{w:#} -> {o}{}{o:#}",
+            f.agent_name,
+            f.field,
+            f.current,
+            f.replacement
         );
     }
 }

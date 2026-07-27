@@ -7,7 +7,7 @@
 # 4. Follows formatting conventions (rustfmt)
 # 5. Commit messages follow Conventional Commits (on PRs)
 #
-# Runs on: every push to master/develop, every pull request
+# Runs on: every push to master, every pull request
 #
 # Performance strategy:
 # - Heavy optional deps (ratatui, rusqlite) are behind feature flags
@@ -15,15 +15,15 @@
 # - build --release compiles with all default features (full binary)
 # - Swatinem/rust-cache caches ~/.cargo and target/ between runs
 # - Cache is shared across clippy/test/build via shared-key
-# - Cache is only saved on develop pushes (save-if), PRs read from it
+# - Cache is only saved on master pushes (save-if), PRs read from it
 
 name: CI
 
 on:
   push:
-    branches: [master, develop]
+    branches: [master, "release/**", "refactor/**"]
   pull_request:
-    branches: [master, develop]
+    branches: [master, "release/**", "refactor/**"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,7 +35,7 @@ jobs:
     name: Formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -45,38 +45,61 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-cargo
-          save-if: ${{ github.ref == 'refs/heads/develop' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # Clippy in every feature combination the code is gated for, so a lint
+      # that only trips under one combo (e.g. a needless_borrow visible only
+      # under web+storage, or providers-api-gated HTTP code) is caught in CI,
+      # not just locally. See CLAUDE.md and the OH1 event-sourcing spec §9.
       - run: cargo clippy --all-targets --no-default-features --features tui -- -D warnings
+      - run: cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
+      - run: cargo clippy --all-targets --no-default-features --features tui,web,storage -- -D warnings
 
   test:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-cargo
-          save-if: ${{ github.ref == 'refs/heads/develop' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo test --no-default-features --features tui
+      # storage (SQLite) is not covered by the default `tui` feature set —
+      # run its tests explicitly so src/storage/ and the storage-gated
+      # code paths (e.g. SqliteLog) are actually exercised in CI. This is
+      # also the mode the `e2e` integration test target runs in (see
+      # tests/e2e/harness.rs `e2e_suite`), so its report ends up under
+      # target/e2e-report/ for the next step to upload.
+      - run: cargo test --no-default-features --features tui,storage
+      - name: Upload e2e report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            target/e2e-report/e2e-report.html
+            target/e2e-report/e2e-report.json
+          if-no-files-found: warn
+          retention-days: 14
 
   build:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-cargo-release
-          save-if: ${{ github.ref == 'refs/heads/develop' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       # Build with storage (SQLite bundled) to verify full compilation.
       - run: cargo build --release --no-default-features --features tui,storage
 
@@ -85,7 +108,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v6

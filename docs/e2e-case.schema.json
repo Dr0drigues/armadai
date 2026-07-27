@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CaseFile",
+  "description": "One end-to-end test case: setup + scripted fake responses + expectations.",
+  "type": "object",
+  "properties": {
+    "allow_fail": {
+      "description": "A known/tolerated failing case does not fail the overall suite.",
+      "type": "boolean",
+      "default": false
+    },
+    "expect": {
+      "$ref": "#/$defs/Expect"
+    },
+    "fake": {
+      "$ref": "#/$defs/FakeSpec"
+    },
+    "name": {
+      "description": "Human-readable case name (also used as the identifier in reports).",
+      "type": "string"
+    },
+    "setup": {
+      "$ref": "#/$defs/Setup"
+    },
+    "weight": {
+      "description": "Weight used by the report aggregator to prioritize failures.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "name",
+    "weight",
+    "setup",
+    "fake",
+    "expect"
+  ],
+  "$defs": {
+    "Expect": {
+      "description": "The expected outcome of a run.",
+      "type": "object",
+      "properties": {
+        "event_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "default": {}
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExpectedEvent"
+          }
+        },
+        "exit_code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "invariants": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "storage": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "default": null
+        }
+      },
+      "required": [
+        "exit_code"
+      ]
+    },
+    "ExpectedEvent": {
+      "description": "A partial match against one emitted event: `t` is the event type, and any other\nfield present is matched against the corresponding field on the actual event\n(fields absent here are not checked).",
+      "type": "object",
+      "properties": {
+        "t": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "t"
+      ]
+    },
+    "FakeSpec": {
+      "description": "The scripted `fake-claude` scenario for this case.\n\n`Serialize` is needed so the harness can round-trip this block back to YAML for\n`fake-claude` to read (see the module doc) — that round-trip is itself the proof\nthat this shape stays compatible with `src/bin/fake-claude.rs::Scenario`.",
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Rule"
+          }
+        }
+      },
+      "required": [
+        "rules"
+      ]
+    },
+    "Match": {
+      "description": "Match predicate for a [`Rule`]. All fields are optional; an empty `Match` (all\n`None`) is a catch-all that matches any agent/call/prompt.\n\nMirrors `Match` in `src/bin/fake-claude.rs` — keep in sync (see module doc).",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "call": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "prompt_contains": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "NestedTeamSetup": {
+      "description": "Describes a C9 nested team for a `hierarchical` [`Setup`]: `lead` runs the\nsub-`pattern` (`blackboard`/`ring`) over `agents` instead of delegating to\nthem individually. `lead` and every name in `agents` must also appear in\nthe parent [`Setup::agents`] list (that's what makes `harness::write_project`\ngenerate an `agents/<name>.md` file and a `fake-claude` provider for them).",
+      "type": "object",
+      "properties": {
+        "agents": {
+          "description": "Team members that actually run the sub-pattern (excludes `lead`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lead": {
+          "description": "Agent id that arbitrates the sub-run (the team's `lead`).",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Sub-pattern the team runs: `blackboard` or `ring`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "lead",
+        "pattern",
+        "agents"
+      ]
+    },
+    "Rule": {
+      "description": "A single rule: a `match` predicate plus the scripted response/metrics.\n\nMirrors `Rule` in `src/bin/fake-claude.rs` — see the module-level doc comment on\nwhy this is a duplicate rather than a shared type, and keep the two in sync.",
+      "type": "object",
+      "properties": {
+        "cost": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
+        },
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32",
+          "default": null
+        },
+        "latency_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "match": {
+          "$ref": "#/$defs/Match",
+          "default": {
+            "agent": null,
+            "call": null,
+            "prompt_contains": null
+          }
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "respond": {
+          "type": "string"
+        },
+        "tokens_in": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "tokens_out": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "respond"
+      ]
+    },
+    "Setup": {
+      "description": "How to invoke the real `armadai` binary for this case.",
+      "type": "object",
+      "properties": {
+        "agents": {
+          "description": "Agent ids involved in the run, in invocation order.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "flags": {
+          "description": "Extra CLI flags passed to `armadai run` (e.g. `--json`).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "input": {
+          "description": "Input piped/passed to the run.",
+          "type": "string",
+          "default": ""
+        },
+        "nested_team": {
+          "description": "C9 override for `hierarchical` cases: when set, `harness::project_yaml`\nemits a single `orchestration.teams` entry with this `lead`/`pattern`/\n`agents` (a nested blackboard/ring sub-team) instead of the default flat\nteam made of every non-coordinator agent. `serde(default)` keeps every\nexisting (non-nested) case file parsing exactly as before.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NestedTeamSetup"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pattern": {
+          "description": "Orchestration pattern under test (e.g. `direct`, `hierarchical`, `blackboard`).",
+          "type": "string"
+        },
+        "token_budget": {
+          "description": "OH1 Lot 4 Task 4: a low global token budget, rendered by\n`harness::project_yaml` as `defaults.orchestration.token_budget`.\nThat's the key `blackboard`/`ring` actually read (via\n`OrchestrationDefaults`/`apply_blackboard_overrides`/\n`apply_ring_overrides` in `src/cli/run.rs`) — NOT the top-level\n`orchestration.token_budget`, which only feeds the `hierarchical`\npattern's own `OrchestrationConfig`. Used to deterministically trigger\na graceful budget halt (`ExecutionEvent::Warned{code: \"token_budget\"}`\n+ a partial `Complete`) for `cases/budget-halt-visible.yaml`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  }
+}

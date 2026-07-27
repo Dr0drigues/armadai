@@ -3,12 +3,15 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
+    text::Line,
     widgets::{Block, Borders, Paragraph, Row, Table},
 };
 
+use crate::theme;
 use crate::tui::app::App;
 use crate::tui::filter;
+use crate::tui::widgets::search_bar;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.orchestration_runs.is_empty() {
@@ -18,7 +21,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Orchestration "),
+                .title(" Orchestration ")
+                .style(theme::border_style()),
         );
         frame.render_widget(msg, area);
         return;
@@ -35,7 +39,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         let msg = Paragraph::new("No orchestration runs match your search.").block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Orchestration "),
+                .title(" Orchestration ")
+                .style(theme::border_style()),
         );
         frame.render_widget(msg, area);
         return;
@@ -62,9 +67,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             };
             let halt_reason = r.halt_reason.as_deref().unwrap_or("—");
             let style = if display_i == app.selected_orchestration {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                theme::selection()
             } else {
                 Style::default()
             };
@@ -90,37 +93,27 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(format!(
-        " Orchestration — {} runs, {} shown{} ",
-        app.orchestration_runs.len(),
-        display_indices.len(),
-        app.sort_indicator()
-    )));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                " Orchestration — {} runs, {} shown{} ",
+                app.orchestration_runs.len(),
+                display_indices.len(),
+                app.sort_indicator()
+            ))
+            .style(theme::border_style()),
+    );
 
     frame.render_widget(table, area);
 
     // Render search bar if in search mode
     if app.search_mode {
-        render_search_bar(frame, app, area);
+        search_bar(frame, &app.search_query, area);
     }
 }
 
-fn render_search_bar(frame: &mut Frame, app: &App, list_area: Rect) {
-    let search_area = ratatui::layout::Rect {
-        x: list_area.x,
-        y: list_area.bottom() - 1,
-        width: list_area.width,
-        height: 1,
-    };
-
-    let query_display = format!("/ {}\u{2588}", app.search_query);
-    let search = Paragraph::new(query_display)
-        .style(Style::default().fg(Color::Yellow))
-        .block(Block::default());
-    frame.render_widget(search, search_area);
-}
-
-pub fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
+pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(entry) = app.selected_orchestration_entry() {
         use crate::storage::{init_db, queries};
 
@@ -172,18 +165,50 @@ pub fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
             Err(e) => format!("Database error: {}", e),
         };
 
+        // Owned now (rather than kept as a format! borrowing `entry`) so
+        // `entry`'s borrow of `app` ends here, freeing `app` for the
+        // mutable scroll-bound call below.
+        let run_title = format!(" Run {} ", entry.run_id);
+
+        // This view renders unwrapped (no `.wrap(...)`, to preserve the
+        // pretty-printed JSON's indentation) — so, unlike the other detail
+        // views, its line count is just the raw newline count, not a
+        // wrapped-line estimate.
+        let inner_height = area.height.saturating_sub(2);
+        let total_lines = detail_content.lines().count().max(1);
+        let overflow = total_lines > inner_height as usize;
+        app.set_detail_scroll_max(
+            total_lines
+                .saturating_sub(inner_height as usize)
+                .min(u16::MAX as usize) as u16,
+        );
+        let scroll = app.detail_scroll;
+
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .title(run_title)
+            .style(theme::border_style());
+        if overflow {
+            block = block.title(
+                Line::from(format!(" {}/{} ", scroll + 1, total_lines))
+                    .right_aligned()
+                    .style(theme::muted()),
+            );
+        }
+
         let paragraph = Paragraph::new(detail_content)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" Run {} ", entry.run_id)),
-            )
-            .scroll((0, 0));
+            .block(block)
+            .scroll((scroll, 0));
 
         frame.render_widget(paragraph, area);
     } else {
-        let msg = Paragraph::new("No orchestration run selected")
-            .block(Block::default().borders(Borders::ALL).title(" Run Detail "));
+        app.set_detail_scroll_max(0);
+        let msg = Paragraph::new("No orchestration run selected").block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Run Detail ")
+                .style(theme::border_style()),
+        );
         frame.render_widget(msg, area);
     }
 }

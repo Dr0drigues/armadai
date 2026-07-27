@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use crate::theme;
 use crate::tui::app::App;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -16,7 +17,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Starter Detail "),
+                        .title(" Starter Detail ")
+                        .style(theme::border_style()),
                 );
             frame.render_widget(msg, area);
             return;
@@ -53,18 +55,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Title bar
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!(" {} ", pack.name),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!(" {} ", pack.name), theme::heading()),
         Span::styled(
             format!("  — {}", pack.description),
             Style::default().fg(Color::DarkGray),
         ),
     ]))
-    .block(Block::default().borders(Borders::ALL));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(theme::border_style()),
+    );
     frame.render_widget(title, chunks[chunk_idx]);
     chunk_idx += 1;
 
@@ -74,10 +75,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .agents
             .iter()
             .map(|a| {
-                Line::from(Span::styled(
-                    format!("  • {a}"),
-                    Style::default().fg(Color::White),
-                ))
+                // Was `fg(Color::White)` — white-on-white on a light terminal.
+                Line::from(Span::styled(format!("  • {a}"), Style::default()))
             })
             .collect();
         let widget = Paragraph::new(lines)
@@ -85,7 +84,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(format!(" Agents ({}) ", pack.agents.len()))
-                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .style(theme::border_style()),
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(widget, chunks[chunk_idx]);
@@ -109,7 +109,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(format!(" Prompts ({}) ", pack.prompts.len()))
-                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .style(theme::border_style()),
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(widget, chunks[chunk_idx]);
@@ -133,7 +134,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(format!(" Skills ({}) ", pack.skills.len()))
-                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .style(theme::border_style()),
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(widget, chunks[chunk_idx]);

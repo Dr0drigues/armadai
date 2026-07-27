@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/Dr0drigues/armadai/develop/schemas/pack.schema.json",
+  "$id": "https://raw.githubusercontent.com/Dr0drigues/armadai/master/schemas/pack.schema.json",
   "title": "ArmadAI Starter Pack Configuration",
   "description": "Configuration file for ArmadAI starter packs (pack.yaml). Defines a curated bundle of agents, prompts, skills, and optional orchestration.",
   "type": "object",

@@ -46,8 +46,8 @@ pub fn ensure_project_ready() -> Result<WizardResult> {
 
     // Step 3: Check for existing link
     if let Some(linked) = detect_link() {
-        // Link exists, use it
-        return build_wizard_result(&linked.name);
+        // Link exists, use it — default to pro tier
+        return build_wizard_result(&linked.name, "latest:pro");
     }
 
     // Step 4: Prompt for link if needed
@@ -59,7 +59,11 @@ pub fn ensure_project_ready() -> Result<WizardResult> {
         eprintln!("Make sure it is installed and available before using the shell.");
     }
 
-    build_wizard_result(&provider)
+    // Step 5: Choose performance tier
+    let tier = prompt_model_tier()?;
+    eprintln!();
+
+    build_wizard_result(&provider, &tier)
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +376,27 @@ fn run_link(target: &str) -> Result<()> {
 // Result builder
 // ---------------------------------------------------------------------------
 
-fn build_wizard_result(provider: &str) -> Result<WizardResult> {
+/// Prompt user to choose a performance tier.
+fn prompt_model_tier() -> Result<String> {
+    println!("\nChoose performance level:");
+    println!("  1) Fast — cheapest, fastest (flash/haiku/mini)");
+    println!("  2) Pro — balanced quality & cost (recommended)");
+    println!("  3) Max — best quality, most expensive (opus/pro/o3)");
+    print!("\nChoice [2]: ");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let choice = input.trim();
+
+    match choice {
+        "1" => Ok("latest:fast".to_string()),
+        "3" => Ok("latest:max".to_string()),
+        _ => Ok("latest:pro".to_string()), // default
+    }
+}
+
+fn build_wizard_result(provider: &str, tier: &str) -> Result<WizardResult> {
     let (command, args) = match provider {
         "gemini" => ("gemini", vec!["-p".to_string()]),
         "claude" => ("claude", vec![]),
@@ -381,7 +405,8 @@ fn build_wizard_result(provider: &str) -> Result<WizardResult> {
         _ => (provider, vec![]),
     };
 
-    let model_name = detect_model_name(command);
+    // Resolve model from tier
+    let model_name = crate::shell::config::resolve_shell_model(command, tier);
     let project_name = detect_project_name();
 
     Ok(WizardResult {

@@ -1,5 +1,21 @@
 name: armadai-authoring
-description: "ArmadAI authoring pack — create agents, prompts, skills, and starters with built-in reference skills"
-agents: [authoring-lead, agent-builder, prompt-builder, skill-builder, starter-builder]
-prompts: [armadai-conventions]
-skills: [armadai-agent-authoring, armadai-prompt-authoring, armadai-skill-authoring, armadai-starter-authoring]
+description: "ArmadAI authoring pack — design, create, review, and test agents, prompts, skills, and starters"
+agents:
+  - authoring-lead
+  - authoring-architect
+  - agent-builder
+  - prompt-builder
+  - skill-builder
+  - starter-builder
+  - authoring-reviewer
+  - authoring-tester
+prompts:
+  - armadai-conventions
+  - armadai-v012-updates
+skills:
+  - armadai-agent-authoring
+  - armadai-prompt-authoring
+  - armadai-skill-authoring
+  - armadai-starter-authoring
+  - armadai-orchestration-patterns
+  - armadai-shell-config

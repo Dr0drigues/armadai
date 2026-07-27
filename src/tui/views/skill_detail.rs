@@ -7,16 +7,20 @@ use ratatui::{
 };
 
 use crate::core::skill::read_text_file;
+use crate::theme;
 use crate::tui::app::App;
+use crate::tui::wrap::wrapped_line_count;
 
-pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let skill = match app.selected_skill() {
         Some(s) => s,
         None => {
+            app.set_detail_scroll_max(0);
             let msg = Paragraph::new("No skill selected. Go to Skills tab and select one.").block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Skill Detail "),
+                    .title(" Skill Detail ")
+                    .style(theme::border_style()),
             );
             frame.render_widget(msg, area);
             return;
@@ -36,13 +40,31 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let has_other_files = !skill.scripts.is_empty() || !skill.assets.is_empty();
+    // Scripts/Assets summary line, extracted as owned data now (rather than
+    // read from `skill` further down, after the scrollable body section)
+    // so `skill`'s borrow of `app` ends here — freeing `app` for the
+    // mutable scroll-bound call the body section needs below.
+    let file_name = |p: &std::path::Path| -> String {
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
+    let mut file_parts: Vec<String> = Vec::new();
+    if !skill.scripts.is_empty() {
+        let names: Vec<String> = skill.scripts.iter().map(|p| file_name(p)).collect();
+        file_parts.push(format!("scripts: {}", names.join(", ")));
+    }
+    if !skill.assets.is_empty() {
+        let names: Vec<String> = skill.assets.iter().map(|p| file_name(p)).collect();
+        file_parts.push(format!("assets: {}", names.join(", ")));
+    }
+    let has_other_files = !file_parts.is_empty();
 
     // Build layout constraints dynamically
     let mut constraints = vec![
         Constraint::Length(3), // Title
         Constraint::Length(6), // Metadata
-        Constraint::Min(6),    // Body
+        Constraint::Min(0),    // Body (scrollable — j/k)
     ];
 
     // One block per reference file
@@ -62,18 +84,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Title bar
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!(" {} ", skill.name),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!(" {} ", skill.name), theme::heading()),
         Span::styled(
             format!("  ({})", skill.source.display()),
             Style::default().fg(Color::DarkGray),
         ),
     ]))
-    .block(Block::default().borders(Borders::ALL));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(theme::border_style()),
+    );
     frame.render_widget(title, chunks[0]);
 
     // Metadata section
@@ -121,7 +142,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Metadata ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(Style::default().add_modifier(Modifier::BOLD))
+                .style(theme::border_style()),
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(meta_widget, chunks[1]);
@@ -132,16 +154,38 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         skill.body.clone()
     };
+
+    let body_area = chunks[2];
+    let inner_width = body_area.width.saturating_sub(2);
+    let inner_height = body_area.height.saturating_sub(2);
+    let total_lines = wrapped_line_count(&body_text, inner_width);
+    let overflow = total_lines > inner_height as usize;
+    app.set_detail_scroll_max(
+        total_lines
+            .saturating_sub(inner_height as usize)
+            .min(u16::MAX as usize) as u16,
+    );
+    let scroll = app.detail_scroll;
+
+    let mut body_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" SKILL.md ")
+        .title_style(Style::default().add_modifier(Modifier::BOLD))
+        .style(theme::border_style());
+    if overflow {
+        body_block = body_block.title(
+            Line::from(format!(" {}/{} ", scroll + 1, total_lines))
+                .right_aligned()
+                .style(theme::muted()),
+        );
+    }
     let body_widget = Paragraph::new(body_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" SKILL.md ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
-        )
-        .style(Style::default().fg(Color::White))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(body_widget, chunks[2]);
+        .block(body_block)
+        // Was `fg(Color::White)` — white-on-white on a light terminal.
+        .style(Style::default())
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(body_widget, body_area);
 
     // Reference file content blocks
     for (i, (name, content)) in ref_contents.iter().enumerate() {
@@ -154,7 +198,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
-                    ),
+                    )
+                    .style(theme::border_style()),
             )
             .style(Style::default().fg(Color::Gray))
             .wrap(Wrap { trim: false });
@@ -163,27 +208,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Scripts/Assets summary (compact)
     if has_other_files {
-        let file_name = |p: &std::path::Path| -> String {
-            p.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default()
-        };
-        let mut file_parts: Vec<String> = Vec::new();
-        if !skill.scripts.is_empty() {
-            let names: Vec<String> = skill.scripts.iter().map(|p| file_name(p)).collect();
-            file_parts.push(format!("scripts: {}", names.join(", ")));
-        }
-        if !skill.assets.is_empty() {
-            let names: Vec<String> = skill.assets.iter().map(|p| file_name(p)).collect();
-            file_parts.push(format!("assets: {}", names.join(", ")));
-        }
-
         let files_widget = Paragraph::new(file_parts.join("  |  "))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Other Files ")
-                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                    .title_style(Style::default().add_modifier(Modifier::BOLD))
+                    .style(theme::border_style()),
             )
             .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(files_widget, chunks[3 + ref_contents.len()]);

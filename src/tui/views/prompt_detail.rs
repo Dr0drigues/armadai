@@ -6,17 +6,21 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use crate::theme;
 use crate::tui::app::App;
+use crate::tui::wrap::wrapped_line_count;
 
-pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let prompt = match app.selected_prompt() {
         Some(p) => p,
         None => {
+            app.set_detail_scroll_max(0);
             let msg = Paragraph::new("No prompt selected. Go to Prompts tab and select one.")
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Prompt Detail "),
+                        .title(" Prompt Detail ")
+                        .style(theme::border_style()),
                 );
             frame.render_widget(msg, area);
             return;
@@ -28,24 +32,23 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([
             Constraint::Length(3), // Title
             Constraint::Length(5), // Metadata
-            Constraint::Min(6),    // Body
+            Constraint::Min(0),    // Body (scrollable — j/k)
         ])
         .split(area);
 
     // Title bar
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!(" {} ", prompt.name),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!(" {} ", prompt.name), theme::heading()),
         Span::styled(
             format!("  ({})", prompt.source.display()),
             Style::default().fg(Color::DarkGray),
         ),
     ]))
-    .block(Block::default().borders(Borders::ALL));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(theme::border_style()),
+    );
     frame.render_widget(title, chunks[0]);
 
     // Metadata section
@@ -86,7 +89,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Metadata ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(Style::default().add_modifier(Modifier::BOLD))
+                .style(theme::border_style()),
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(meta_widget, chunks[1]);
@@ -97,14 +101,36 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         prompt.body.clone()
     };
+
+    let body_area = chunks[2];
+    let inner_width = body_area.width.saturating_sub(2);
+    let inner_height = body_area.height.saturating_sub(2);
+    let total_lines = wrapped_line_count(&body_text, inner_width);
+    let overflow = total_lines > inner_height as usize;
+    app.set_detail_scroll_max(
+        total_lines
+            .saturating_sub(inner_height as usize)
+            .min(u16::MAX as usize) as u16,
+    );
+    let scroll = app.detail_scroll;
+
+    let mut body_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Content ")
+        .title_style(Style::default().add_modifier(Modifier::BOLD))
+        .style(theme::border_style());
+    if overflow {
+        body_block = body_block.title(
+            Line::from(format!(" {}/{} ", scroll + 1, total_lines))
+                .right_aligned()
+                .style(theme::muted()),
+        );
+    }
     let body_widget = Paragraph::new(body_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Content ")
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
-        )
-        .style(Style::default().fg(Color::White))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(body_widget, chunks[2]);
+        .block(body_block)
+        // Was `fg(Color::White)` — white-on-white on a light terminal.
+        .style(Style::default())
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(body_widget, body_area);
 }

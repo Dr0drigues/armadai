@@ -6,7 +6,9 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use crate::theme;
 use crate::tui::app::App;
+use crate::tui::format::format_context;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let (provider, entry) = match app.selected_model_entry() {
@@ -15,7 +17,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             let msg = Paragraph::new("No model selected. Go to Models tab and select one.").block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Model Detail "),
+                    .title(" Model Detail ")
+                    .style(theme::border_style()),
             );
             frame.render_widget(msg, area);
             return;
@@ -33,18 +36,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Title bar
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!(" {} ", entry.id),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!(" {} ", entry.id), theme::heading()),
         Span::styled(
             format!("  ({})", provider),
             Style::default().fg(Color::DarkGray),
         ),
     ]))
-    .block(Block::default().borders(Borders::ALL));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(theme::border_style()),
+    );
     frame.render_widget(title, chunks[0]);
 
     // Details section
@@ -53,7 +55,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .limit
         .as_ref()
         .and_then(|l| l.context)
-        .map(|c| format!("{}", c))
+        .map(format_context)
         .unwrap_or_else(|| "(unknown)".to_string());
     let max_output = entry
         .limit
@@ -111,7 +113,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Details ")
-                .title_style(bold),
+                .title_style(bold)
+                .style(theme::border_style()),
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(detail_widget, chunks[1]);
@@ -123,7 +126,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Display Label ")
-                .title_style(bold),
+                .title_style(bold)
+                .style(theme::border_style()),
         )
         .style(Style::default().fg(Color::Green))
         .wrap(Wrap { trim: false });
