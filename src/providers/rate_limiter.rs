@@ -158,6 +158,8 @@ static PROVIDER_LIMITERS: OnceLock<Mutex<HashMap<String, Arc<RateLimiter>>>> = O
 
 /// Return (memoized, process-global) the shared limiter for `key`, creating it
 /// from `rate` on first use. `None` when no rate is configured for `key`.
+/// First-write-wins per key: if `key` is already registered, its existing
+/// rate is kept and this call's `rate` is ignored (even if it differs).
 pub fn shared_provider_limiter(key: &str, rate: Option<Rate>) -> Option<Arc<RateLimiter>> {
     let rate = rate?;
     let map = PROVIDER_LIMITERS.get_or_init(|| Mutex::new(HashMap::new()));
