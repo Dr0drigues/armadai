@@ -17,7 +17,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::blackboard::{build_board_result, run_blackboard_es};
-use super::engine::{Action, Decider, EffectRunner, run_event_sourced};
+use super::engine::{Action, Decider, EffectRunner, InvokeSpec, run_event_sourced};
 use super::event::ExecutionEvent;
 use super::log::{EventLog, InMemoryLog};
 use super::ring::{resolve_votes, run_ring_es, vote_weights_from_agents};
@@ -567,7 +567,14 @@ impl HierarchicalDecider {
     /// `NestedStarted` so that a delegation into a nested team is observed
     /// (`delegate`) before the team boundary opens (`nested_start`), matching
     /// the legacy engine's emission order.
-    fn invoke_actions(
+    /// The ordered bookkeeping `Emit(...)` actions that precede an invocation:
+    /// an optional `ModelRouted` (if it routes `latest:auto`), an optional
+    /// delegation event (`Delegated`/`AskedPeer`/`Escalated`, from
+    /// `plan_from_response`), then an optional `NestedStarted` (nested-team
+    /// lead). Split out of `invoke_actions` so the parallel dispatch path can
+    /// record every child's emits sequentially (in Vec order) before a single
+    /// `InvokeParallel`, while the sequential callers keep `Emit + Invoke`.
+    fn invoke_emit_actions(
         &self,
         agent_name: &str,
         input: &str,
@@ -584,6 +591,20 @@ impl HierarchicalDecider {
         if let Some(event) = self.nested_started_event(agent_name) {
             actions.push(Action::Emit(event));
         }
+        actions
+    }
+
+    /// The full sequential batch for one invocation: the bookkeeping emits
+    /// (`invoke_emit_actions`) followed by the `Invoke` itself. Used by the
+    /// coordinator kick-off and synthesis re-invokes (single-agent paths).
+    fn invoke_actions(
+        &self,
+        agent_name: &str,
+        input: &str,
+        state: &ExecutionState,
+        delegation_event: Option<ExecutionEvent>,
+    ) -> Vec<Action> {
+        let mut actions = self.invoke_emit_actions(agent_name, input, state, delegation_event);
         actions.push(Action::Invoke {
             agent: agent_name.to_string(),
             input: input.to_string(),
@@ -703,15 +724,47 @@ impl HierarchicalDecider {
                 },
             ];
         }
-        plan_from_response(&latest, agent, &self.config, depth)
-            .into_iter()
-            .flat_map(|step| match step {
-                PlannedStep::Invoke { agent, task, event } => {
-                    self.invoke_actions(&agent, &task, state, Some(event))
-                }
-                PlannedStep::Complete { .. } => Vec::new(),
-            })
-            .collect()
+        // Collect the invoke-steps (a `Complete` cannot occur here — only
+        // agents with pending directives reach dispatch — and is dropped
+        // defensively).
+        let invoke_steps: Vec<(String, String, ExecutionEvent)> =
+            plan_from_response(&latest, agent, &self.config, depth)
+                .into_iter()
+                .filter_map(|step| match step {
+                    PlannedStep::Invoke { agent, task, event } => Some((agent, task, event)),
+                    PlannedStep::Complete { .. } => None,
+                })
+                .collect();
+
+        // 0 or 1 child: keep the sequential `Emit(s) + Invoke` shape (no
+        // concurrency needed, byte-identical to before this lot).
+        if invoke_steps.len() <= 1 {
+            return invoke_steps
+                .into_iter()
+                .flat_map(|(child, task, event)| {
+                    self.invoke_actions(&child, &task, state, Some(event))
+                })
+                .collect();
+        }
+
+        // ≥2 children: record every child's bookkeeping emits in line order,
+        // then a single `InvokeParallel` whose batch is in line order. The
+        // socle records `AgentInvoked ×N` then outcomes in batch order, so
+        // replay stays deterministic.
+        let mut actions = Vec::new();
+        let mut batch = Vec::new();
+        for (child, task, event) in invoke_steps {
+            actions.extend(self.invoke_emit_actions(&child, &task, state, Some(event)));
+            batch.push(InvokeSpec {
+                agent: child,
+                input: task,
+            });
+        }
+        actions.push(Action::InvokeParallel {
+            batch,
+            max_concurrency: self.config.max_concurrency(),
+        });
+        actions
     }
 
     /// Build the synthesis re-injection for `agent`: collect each child's
@@ -1632,9 +1685,11 @@ mod tests {
             );
         }
 
-        // (c) coordinator's response carries 2 delegations → 2 Invoke (+ Delegated), in order
+        // (c) coordinator delegates to two siblings → one InvokeParallel
+        // (batch in line order, cap = default 4), preceded by both Delegated
+        // emits in order.
         #[test]
-        fn two_delegations_become_two_invokes_in_order() {
+        fn two_delegations_become_one_invoke_parallel_in_order() {
             let dec = test_decider(
                 "dev-lead",
                 &[
@@ -1666,15 +1721,35 @@ mod tests {
             let state = fold(&events);
             let actions = dec.decide(&state);
 
-            let invoke_targets: Vec<&str> = actions
+            // Exactly one InvokeParallel, batch in line order, default cap 4.
+            let batch_agents: Vec<&str> = actions
                 .iter()
                 .filter_map(|a| match a {
-                    Action::Invoke { agent, .. } => Some(agent.as_str()),
+                    Action::InvokeParallel {
+                        batch,
+                        max_concurrency,
+                    } => {
+                        assert_eq!(*max_concurrency, 4);
+                        Some(batch.iter().map(|s| s.agent.as_str()).collect::<Vec<_>>())
+                    }
                     _ => None,
                 })
+                .flatten()
                 .collect();
-            assert_eq!(invoke_targets, vec!["core-specialist", "qa-specialist"]);
+            assert_eq!(batch_agents, vec!["core-specialist", "qa-specialist"]);
+            assert_eq!(
+                actions
+                    .iter()
+                    .filter(|a| matches!(a, Action::InvokeParallel { .. }))
+                    .count(),
+                1
+            );
+            assert!(
+                !actions.iter().any(|a| matches!(a, Action::Invoke { .. })),
+                "fan-out of 2 must not emit any sequential Invoke"
+            );
 
+            // Both Delegated emitted in line order, before the InvokeParallel.
             let delegated_targets: Vec<&str> = actions
                 .iter()
                 .filter_map(|a| match a {
@@ -1683,17 +1758,15 @@ mod tests {
                 })
                 .collect();
             assert_eq!(delegated_targets, vec!["core-specialist", "qa-specialist"]);
-
-            // Delegated must precede its matching Invoke, in order.
-            let invoke_core_pos = actions
+            let parallel_pos = actions
                 .iter()
-                .position(|a| matches!(a, Action::Invoke{agent,..} if agent == "core-specialist"))
+                .position(|a| matches!(a, Action::InvokeParallel { .. }))
                 .unwrap();
-            let delegated_core_pos = actions
+            let last_delegated_pos = actions
                 .iter()
-                .position(|a| matches!(a, Action::Emit(ExecutionEvent::Delegated{to,..}) if to == "core-specialist"))
+                .rposition(|a| matches!(a, Action::Emit(ExecutionEvent::Delegated { .. })))
                 .unwrap();
-            assert!(delegated_core_pos < invoke_core_pos);
+            assert!(last_delegated_pos < parallel_pos);
         }
 
         // (d) depth ≥ max_depth → Warned + Complete
@@ -2520,7 +2593,8 @@ mod tests {
                 .collect();
             assert_eq!(routed, vec!["core-specialist"]);
 
-            // …and it precedes that agent's Invoke.
+            // …and it precedes the InvokeParallel batch that carries
+            // core-specialist (fan-out of 2 → InvokeParallel, not Invoke).
             let routed_pos = actions
                 .iter()
                 .position(|a| matches!(
@@ -2528,15 +2602,19 @@ mod tests {
                     Action::Emit(ExecutionEvent::ModelRouted { agent, .. }) if agent == "core-specialist"
                 ))
                 .unwrap();
-            let invoke_pos = actions
+            let invoke_parallel_pos = actions
                 .iter()
-                .position(
-                    |a| matches!(a, Action::Invoke { agent, .. } if agent == "core-specialist"),
-                )
+                .position(|a| {
+                    matches!(
+                        a,
+                        Action::InvokeParallel { batch, .. }
+                            if batch.iter().any(|s| s.agent == "core-specialist")
+                    )
+                })
                 .unwrap();
             assert!(
-                routed_pos < invoke_pos,
-                "ModelRouted must precede the Invoke it annotates"
+                routed_pos < invoke_parallel_pos,
+                "ModelRouted must precede the InvokeParallel it annotates"
             );
         }
 

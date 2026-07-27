@@ -28,20 +28,21 @@ fake:
 expect:
   exit_code: 0
   events:
-    # Per-delegate subsequence (asserted 2026-07-24): each delegated specialist
-    # gets its own `delegate` immediately followed by its `agent_start`/
-    # `agent_end` pair — this is exactly the info `on_run_event_at` (Task 1)
-    # turns into a Workroom Working->Done transition. Order confirmed by
-    # running this case against the real binary: t-coord's synthesis call
-    # (`@t-a:`/`@t-b:` dispatch) is followed by t-a's full invocation, then
-    # t-b's, both before t-coord's second (synthesis) call.
+    # Parallel fan-out subsequence (updated OH1 // Lot 2, #250): a ≥2-child
+    # dispatch now emits both `delegate`s (in line order) up front, then a
+    # single `InvokeParallel` batch — the engine socle records every
+    # `agent_start` in batch order before any `agent_end`, then every
+    # `agent_end` in batch order (not completion order), so t-a and t-b's
+    # starts are adjacent, and so are their ends, both before t-coord's
+    # second (synthesis) call. See `dispatch_actions` in
+    # `src/core/orchestration/es/hierarchical.rs`.
     - { t: run_start }
     - { t: agent_start, agent: t-coord }
     - { t: delegate, from: t-coord, to: t-a }
-    - { t: agent_start, agent: t-a }
-    - { t: agent_end, agent: t-a }
     - { t: delegate, from: t-coord, to: t-b }
+    - { t: agent_start, agent: t-a }
     - { t: agent_start, agent: t-b }
+    - { t: agent_end, agent: t-a }
     - { t: agent_end, agent: t-b }
     - { t: result, content: "Synthesis: token flow and session store both check out." }
   # contrat per-tour ES (un start/end par invocation) — décision 2026-07-22
