@@ -123,11 +123,10 @@ pub async fn execute(
         )
         .await;
         return match printed {
-            Ok(Some(content)) => {
-                println!("{content}");
+            Ok((run_id, content)) => {
+                print_tui_run_outcome(run_id, content);
                 Ok(())
             }
-            Ok(None) => Ok(()),
             Err(e) => Err(e),
         };
     }
@@ -301,11 +300,10 @@ async fn execute_resume(
             )
             .await;
             return match printed {
-                Ok(Some(content)) => {
-                    println!("{content}");
+                Ok((run_id, content)) => {
+                    print_tui_run_outcome(run_id, content);
                     Ok(())
                 }
-                Ok(None) => Ok(()),
                 Err(e) => Err(e),
             };
         }
@@ -553,6 +551,26 @@ async fn resume_run(
     });
 
     Ok(())
+}
+
+/// Print the `(run_id, content)` pair returned by
+/// [`crate::shell::run_view::run_orchestration_tui`] once the terminal has
+/// been restored (OH1 Lot 6): the alternate screen clears everything on
+/// exit, so this muted `run <id>` banner — mirroring the non-TUI orchestrated
+/// path's own banner in `run_orchestrated_inner` — is the only way the id
+/// survives in scrollback for a later `--resume`/`--replay` on the TUI path.
+/// `run_id` prints whenever a `RunStart` was observed by the Workroom (even
+/// on an early Ctrl+C abort, since the id is generated before the run's first
+/// effect); `content` prints only when the run produced a final answer.
+#[cfg(feature = "tui")]
+fn print_tui_run_outcome(run_id: Option<String>, content: Option<String>) {
+    if let Some(id) = run_id {
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}run {id}{m:#}");
+    }
+    if let Some(content) = content {
+        println!("{content}");
+    }
 }
 
 /// Map a run error to a CI-friendly exit code.
