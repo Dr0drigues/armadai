@@ -11,7 +11,6 @@ use crate::core::orchestration::es::log::{EventLog, InMemoryLog};
 use crate::core::orchestration::es::state::ExecutionState;
 use crate::core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
 use crate::providers::factory::create_provider;
-use crate::providers::rate_limiter::RateLimiter;
 use crate::providers::traits::{ChatMessage, CompletionRequest};
 
 const GUIDED_MODE_INSTRUCTION: &str = "\
@@ -903,14 +902,6 @@ async fn run_single_agent(
     // 2. Create provider
     let provider = create_provider(&agent)?;
 
-    // 3. Apply rate limiting if configured
-    if let Some(ref rate_str) = agent.metadata.rate_limit
-        && let Some(rpm) = RateLimiter::parse_rate(rate_str)
-    {
-        let limiter = RateLimiter::new(rpm);
-        limiter.acquire().await;
-    }
-
     // 4. Resolve effective mode and build system prompt
     let effective_mode = agent
         .metadata
@@ -1290,13 +1281,6 @@ async fn run_single_agent_es(
     // 2. Create provider (step 2).
     let provider_name = agent.metadata.provider.clone();
     let provider: Arc<dyn crate::providers::traits::Provider> = Arc::from(create_provider(&agent)?);
-
-    // 3. Rate limiting (step 3).
-    if let Some(ref rate_str) = agent.metadata.rate_limit
-        && let Some(rpm) = RateLimiter::parse_rate(rate_str)
-    {
-        RateLimiter::new(rpm).acquire().await;
-    }
 
     // 4. Guided-mode system-prompt augmentation (step 4).
     let effective_mode = agent
