@@ -272,7 +272,9 @@ impl<L: EventLog> EventLog for SinkProjectingLog<'_, L> {
 ///
 /// - `content`: the last `Completed { content }` in `events`; if the run
 ///   never completed (e.g. halted), falls back to the last `AgentObserved`
-///   content; otherwise empty.
+///   OR `AgentFailed` turn (whichever is more recent) — an `AgentFailed`
+///   surfaces via `delegation_failed_content` (the `[Delegation failed: ..]`
+///   marker); otherwise empty.
 /// - `total_tokens_in`/`total_tokens_out`: `state.budget_tokens_in/out`
 ///   (`u64` → `u32`, saturating via `unwrap_or(u32::MAX)`).
 /// - `total_cost`: `state.budget_cost`.
@@ -291,8 +293,14 @@ pub fn to_orchestration_result(
             _ => None,
         })
         .or_else(|| {
+            // Fall back to the last observed OR failed agent turn, so a run
+            // that ended on a failed delegation surfaces the failure marker
+            // rather than empty content.
             events.iter().rev().find_map(|e| match e {
                 ExecutionEvent::AgentObserved { content, .. } => Some(content.clone()),
+                ExecutionEvent::AgentFailed { error, .. } => {
+                    Some(crate::core::orchestration::es::event::delegation_failed_content(error))
+                }
                 _ => None,
             })
         })
@@ -955,5 +963,48 @@ mod tests {
         assert_eq!(result.content, "");
         assert_eq!(result.invocation_count, 0);
         assert!(result.trace.is_empty());
+    }
+
+    #[test]
+    fn to_orchestration_result_falls_back_to_agent_failed_when_no_completed_or_observed() {
+        // A halted run whose only outcome was a failed delegation: no Completed,
+        // no AgentObserved — the result must surface the failure, not be empty.
+        let events = vec![
+            ExecutionEvent::AgentInvoked {
+                agent: "b".into(),
+                input: "go".into(),
+            },
+            ExecutionEvent::AgentFailed {
+                agent: "b".into(),
+                error: "boom".into(),
+            },
+            ExecutionEvent::Halted {
+                reason: "no_progress".into(),
+            },
+        ];
+        let state = fold(&events);
+        let result = to_orchestration_result(&state, &events);
+        assert_eq!(result.content, "[Delegation failed: boom]");
+    }
+
+    #[test]
+    fn to_orchestration_result_prefers_completed_over_agent_failed() {
+        // A Completed still wins over any earlier AgentFailed.
+        let events = vec![
+            ExecutionEvent::AgentInvoked {
+                agent: "b".into(),
+                input: "go".into(),
+            },
+            ExecutionEvent::AgentFailed {
+                agent: "b".into(),
+                error: "boom".into(),
+            },
+            ExecutionEvent::Completed {
+                content: "final answer".into(),
+            },
+        ];
+        let state = fold(&events);
+        let result = to_orchestration_result(&state, &events);
+        assert_eq!(result.content, "final answer");
     }
 }
