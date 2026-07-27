@@ -54,6 +54,11 @@ pub enum ExecutionEvent {
     Halted { reason: String },
     /// The run completed successfully with final content.
     Completed { content: String },
+    /// A delegated invocation failed. Recorded instead of aborting the run
+    /// (collect-and-record): the reducer pushes an `assistant` marker so the
+    /// agent reads as "settled" (a coordinator that awaits this child then
+    /// synthesizes over the partial results), and the run continues.
+    AgentFailed { agent: String, error: String },
 
     // ── Hierarchical ─────────────────────────────────────────────
     /// A superior delegated a task to a subordinate.
@@ -124,4 +129,12 @@ pub enum ExecutionEvent {
     },
     /// The ring outcome was resolved.
     OutcomeResolved { outcome: String },
+}
+
+/// The `assistant`-role content recorded for a failed delegation. Single
+/// source of the marker string, consumed by both the reducer (`apply`) and
+/// the `RunEvent` bridge so they never drift. Contains no `@agent:` marker,
+/// so the hierarchical `is_final_answer` reads it as a plain final answer.
+pub fn delegation_failed_content(error: &str) -> String {
+    format!("[Delegation failed: {error}]")
 }

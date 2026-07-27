@@ -109,6 +109,13 @@ pub fn map_execution_to_run_events(
             cost: *cost,
             content: content.clone(),
         }],
+        ExecutionEvent::AgentFailed { agent, error } => vec![RunEvent::AgentEnd {
+            agent: agent.clone(),
+            tin: 0,
+            tout: 0,
+            cost: 0.0,
+            content: crate::core::orchestration::es::event::delegation_failed_content(error),
+        }],
         ExecutionEvent::ModelRouted {
             agent,
             tier,
@@ -436,6 +443,35 @@ mod tests {
                 assert_eq!(model, "claude-x");
             }
             other => panic!("expected [AgentStart with meta], got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_failed_maps_to_agent_end_with_marker() {
+        let meta: std::collections::BTreeMap<String, (String, String)> = Default::default();
+        let evs = map_execution_to_run_events(
+            &ExecutionEvent::AgentFailed {
+                agent: "b".into(),
+                error: "boom".into(),
+            },
+            &meta,
+        );
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            RunEvent::AgentEnd {
+                agent,
+                tin,
+                tout,
+                cost,
+                content,
+            } => {
+                assert_eq!(agent, "b");
+                assert_eq!(*tin, 0);
+                assert_eq!(*tout, 0);
+                assert_eq!(*cost, 0.0);
+                assert_eq!(content, "[Delegation failed: boom]");
+            }
+            other => panic!("expected AgentEnd, got {other:?}"),
         }
     }
 
