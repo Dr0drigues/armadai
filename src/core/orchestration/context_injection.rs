@@ -122,7 +122,11 @@ fn build_coordinator_prompt(
     prompt.push_str("### Rules\n\n");
     prompt.push_str("1. Analyze the user's request before delegating\n");
     prompt.push_str(
-        "2. If the request is unclear, ask clarifying questions FIRST (do not delegate yet)\n",
+        "2. Delegate by default: this is a non-interactive, one-shot run — there is no human \
+         available to answer follow-up questions. Make reasonable assumptions and delegate \
+         rather than asking. Only write a line with no `@` (a clarifying question, not a \
+         delegation) if you genuinely cannot proceed AND a human could plausibly answer it; \
+         otherwise state your assumptions inline and delegate anyway\n",
     );
     prompt.push_str("3. Delegate to the most appropriate agent(s) based on their specialization\n");
 
@@ -436,5 +440,41 @@ mod tests {
         let info = HashMap::new(); // empty — no descriptions
         let prompt = build_orchestration_prompt("coordinator", &config, &info).unwrap();
         assert!(prompt.contains("Specialist")); // default description
+    }
+
+    /// Regression for #268: real Opus coordinator runs took the old Rule 2
+    /// ("ask clarifying questions FIRST (do not delegate yet)") as an escape
+    /// hatch — answering in prose with no `@agent:` line, so
+    /// `parse_delegations` returned `FinalAnswer` and the run completed after
+    /// one turn with zero delegation (observed in 3/4 real runs). The
+    /// coordinator prompt must now bias hard toward delegating by default in
+    /// a one-shot, non-interactive run, and must no longer contain the old
+    /// unconditional instruction to ask first.
+    #[test]
+    fn test_coordinator_prompt_biases_toward_delegation_not_clarification() {
+        let config = sample_config();
+        let info = sample_agents_info();
+        let prompt = build_orchestration_prompt("coordinator", &config, &info).unwrap();
+
+        // The old escape-hatch wording must be gone.
+        assert!(
+            !prompt.contains("ask clarifying questions FIRST (do not delegate yet)"),
+            "coordinator prompt must not instruct asking before delegating"
+        );
+
+        // The new wording must bias toward delegating by default and only
+        // asking as a last resort in a non-interactive one-shot run.
+        assert!(
+            prompt.contains("Delegate by default"),
+            "coordinator prompt must instruct delegate-by-default"
+        );
+        assert!(
+            prompt.contains("non-interactive, one-shot run"),
+            "coordinator prompt must explain why asking is discouraged"
+        );
+        assert!(
+            prompt.contains("Make reasonable assumptions and delegate"),
+            "coordinator prompt must instruct making assumptions instead of asking"
+        );
     }
 }
