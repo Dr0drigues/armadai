@@ -321,6 +321,69 @@ pub fn to_orchestration_result(
     }
 }
 
+/// Build the synthetic `RunEvent::RunStart` bookend for a run reconstructed
+/// purely from its persisted `ExecutionEvent` log (`--replay`/`--resume`).
+///
+/// Neither path gets a `RunStart` "for free" the way a live run does: a live
+/// run's `RunStart` is emitted by `run.rs` itself (`run_inner`/
+/// `run_orchestrated`), not by the ES engine — `RunStarted` maps to `[]` in
+/// [`map_execution_to_run_events`] (see its doc comment) since building the
+/// CLI-shaped bookend needs context (the pre-run roster) the per-event
+/// projection doesn't have. `--replay`/`--resume` read the log back with no
+/// such live context either, so both synthesize it here from what IS
+/// reconstructable:
+///
+/// - `run_id`: the id being replayed/resumed, verbatim.
+/// - `v`: `1`, matching every live `RunStart`.
+/// - `agents`: the folded roster (`ExecutionState::agents`, from
+///   `RunStarted`).
+/// - `prov`: empty string — not reconstructable from the log alone (same
+///   documented gap as replayed `AgentStart`s, see `run_replay.rs`'s module
+///   doc).
+/// - `model`: matches what the live `RunStart` puts there for `pattern`
+///   (re-review fix — this used to be unconditionally empty here, diverging
+///   from live): `run.rs`'s live orchestrated `RunStart`
+///   (`run_orchestrated`) sets `model: pattern.to_string()`, while its live
+///   `direct`/sequential `RunStart` (`run_single_agent`) leaves it empty. So
+///   `pattern` (the SAME folded `ExecutionState::pattern` the caller already
+///   has) selects between the two: `""` for `"direct"`, the pattern name
+///   itself otherwise. `--json`/Workroom fidelity only — the Workroom itself
+///   only reads `agents` off this event.
+/// - `in_chars`: recovered from the FIRST `ExecutionEvent::RunStarted.input`
+///   found in `events` (`0` if somehow absent). Unlike `prov`/`model`, the
+///   original input IS logged verbatim — `ExecutionState::apply` just
+///   discards it (keeping only `agents`/`pattern` from `RunStarted`) — so
+///   scanning the raw event list recovers it exactly instead of stubbing it.
+pub fn synthetic_run_start(
+    run_id: &str,
+    pattern: &str,
+    agents: &[String],
+    events: &[ExecutionEvent],
+) -> RunEvent {
+    let in_chars = events
+        .iter()
+        .find_map(|e| match e {
+            ExecutionEvent::RunStarted { input, .. } => Some(input.chars().count()),
+            _ => None,
+        })
+        .unwrap_or(0);
+
+    let model = if pattern == "direct" {
+        String::new()
+    } else {
+        pattern.to_string()
+    };
+
+    RunEvent::RunStart {
+        run_id: run_id.to_string(),
+        v: 1,
+        agents: agents.to_vec(),
+        prov: String::new(),
+        model,
+        in_chars,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;

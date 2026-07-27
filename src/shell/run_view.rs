@@ -62,13 +62,17 @@ fn restore_terminal() {
 
 /// Run an orchestration (`run`) while showing a live Workroom TUI fed by its
 /// event stream. Restores the terminal on exit (including on error or panic),
-/// and returns the final answer (if the run produced one) for the caller to
-/// print *after* the terminal has been restored.
+/// and returns `(run_id, content)` for the caller to print *after* the
+/// terminal has been restored: `run_id` is `Some` once a `RunStart` has been
+/// observed (independent of whether the run produced a final answer), so a
+/// caller can still surface it — for a later `--resume`/`--replay` — even on
+/// an early abort. The alternate screen clears everything on exit, so this is
+/// the only way the id survives in scrollback for the TUI path (OH1 Lot 6).
 pub async fn run_orchestration_tui<F>(
     run: impl FnOnce(Arc<dyn EventSink>) -> F,
     config_yaml: Option<String>,
     explicit_pattern: Option<OrchestrationPattern>,
-) -> anyhow::Result<Option<String>>
+) -> anyhow::Result<(Option<String>, Option<String>)>
 where
     F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
 {
@@ -144,10 +148,15 @@ where
 
     let render_result = run_loop(&mut terminal, &mut workroom, &mut rx, handle).await;
 
+    // Captured before `restore_terminal()` merely for clarity — the workroom
+    // itself is untouched by the terminal teardown; read here so it's beside
+    // the `render_result` it's paired with below.
+    let run_id = workroom.run_id().map(str::to_string);
+
     // Always restore the terminal, even if the loop errored.
     restore_terminal();
 
-    render_result
+    render_result.map(|content| (run_id, content))
 }
 
 /// Minimum sensible Workroom panel width (columns) — narrower than this and
@@ -325,6 +334,7 @@ mod tests {
     fn sink_forwards_events_to_projection() {
         let (sink, mut rx) = WorkroomSink::new();
         sink.emit(&RunEvent::RunStart {
+            run_id: "r1".into(),
             v: 1,
             agents: vec!["a".into(), "b".into()],
             prov: "f".into(),

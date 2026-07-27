@@ -1068,6 +1068,64 @@ pub async fn run_ring_es(
     run_event_sourced(run_id, initial, &decider, &effects, log).await
 }
 
+/// Resume a previously interrupted `ring` run (OH1 Lot 6, Task 3): recovers
+/// the run's original `input` AND its circulation `agent_order` from the
+/// log's `RunStarted` event (see
+/// [`super::engine::run_started_roster_and_input`]) — unlike blackboard's
+/// alphabetical `agents.keys()` derivation, ring's circulation order is
+/// caller-supplied and NOT reconstructable from the `agents` `BTreeMap`
+/// alone, so it must come from the log, where `RunStarted.agents` preserves
+/// it verbatim (see `run_ring_es`'s own `agents: agent_order.clone()`). Also
+/// recovers the pattern's `RingConfig` from `ConfigSnapshot` (see
+/// [`super::engine::config_snapshot`]), rebuilds the SAME
+/// [`RingDecider`]/[`RingEffectRunner`] pair [`run_ring_es`] would (including
+/// `vote_weights`, recomputed from `agents` — pure function of the reloaded
+/// roster), and drives [`super::engine::resume_event_sourced`] instead of
+/// appending a fresh `RunStarted`/`ConfigSnapshot`.
+///
+/// `agents`/`providers` must be the roster reloaded from the project on disk
+/// (keyed by the same roster keys the original run used); `cost_limit` is
+/// re-derived from the project's top-level `orchestration.cost_limit`
+/// exactly as [`run_ring_es`]'s caller does, since it lives outside
+/// `RingConfig` and is never captured by `ConfigSnapshot`.
+///
+/// Bails if `run_id` has no recorded `RunStarted` (unknown run) or isn't
+/// currently `Running` (see `resume_event_sourced`).
+pub async fn resume_ring_es(
+    run_id: &str,
+    agents: BTreeMap<String, Agent>,
+    providers: BTreeMap<String, Arc<dyn Provider>>,
+    routing_rules: RoutingRules,
+    cost_limit: Option<f64>,
+    log: &mut impl EventLog,
+) -> anyhow::Result<ExecutionState> {
+    use super::engine::{config_snapshot, resume_event_sourced, run_started_roster_and_input};
+
+    let events = log.events(run_id)?;
+    let (agent_order, input) = run_started_roster_and_input(&events)
+        .ok_or_else(|| anyhow::anyhow!("no run found for id {run_id}"))?;
+    let config: RingConfig = config_snapshot(&events);
+
+    let vote_weights = vote_weights_from_agents(&agents);
+    let max_laps = config.max_laps;
+    let token_budget = Some(u32::try_from(config.token_budget).unwrap_or(u32::MAX));
+
+    let decider = RingDecider::new(
+        agents.clone(),
+        agent_order,
+        input,
+        config.clone(),
+        routing_rules,
+        max_laps,
+        vote_weights.clone(),
+        token_budget,
+        cost_limit,
+    );
+    let effects = RingEffectRunner::new(agents, providers, config, vote_weights);
+
+    resume_event_sourced(run_id, &decider, &effects, log).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2331,6 +2389,116 @@ mod tests {
                 "expected a non-empty resolved outcome"
             );
             assert_eq!(content, "Use Rust with Axum");
+        }
+
+        /// OH1 Lot 6, Task 3: `resume_ring_es` reconstructs the same
+        /// `RingDecider`/`RingEffectRunner` a fresh `run_ring_es` would from
+        /// a log that only has `RunStarted` + `ConfigSnapshot` recorded
+        /// (simulating a crash immediately after config capture, before any
+        /// lap started) — proving `RingConfig` round-trips through
+        /// `ConfigSnapshot` correctly AND that the circulation `agent_order`
+        /// (which, unlike blackboard, is NOT derivable from the `agents`
+        /// `BTreeMap` alone — see `resume_ring_es`'s own doc comment) is
+        /// correctly recovered from the log's `RunStarted.agents`. Same
+        /// scripted scenario as `es_ring_circulates_votes_and_resolves`
+        /// above, seeded by hand instead of via `run_ring_es`.
+        #[tokio::test]
+        async fn resume_ring_es_resolves_from_a_config_snapshot_only_log() {
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), es_test_agent("a", "concrete-model"));
+            agents.insert("b".to_string(), es_test_agent("b", "concrete-model"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert(
+                "a".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION: PROPOSE\nCONTENT: use Rust with Axum",
+                    "CONFIDENCE: 0.9\nUse Rust with Axum",
+                ])),
+            );
+            providers.insert(
+                "b".to_string(),
+                Arc::new(ScriptedProvider::new(&[
+                    "ACTION: PROPOSE\nCONTENT: agreed, Rust and Axum",
+                    "CONFIDENCE: 0.8\nUse Rust with Axum",
+                ])),
+            );
+
+            let config = RingConfig {
+                max_laps: 1,
+                ..RingConfig::default()
+            };
+
+            let mut log = InMemoryLog::default();
+            log.append(
+                "run-resume-ring",
+                &E::RunStarted {
+                    run_id: "run-resume-ring".to_string(),
+                    pattern: "ring".to_string(),
+                    agents: vec!["a".to_string(), "b".to_string()],
+                    input: "task".to_string(),
+                    project: None,
+                },
+            )
+            .unwrap();
+            log.append(
+                "run-resume-ring",
+                &E::ConfigSnapshot {
+                    config_json: serde_json::to_string(&config).unwrap(),
+                },
+            )
+            .unwrap();
+
+            let st = resume_ring_es(
+                "run-resume-ring",
+                agents,
+                providers,
+                RoutingRules::default(),
+                None,
+                &mut log,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(st.status, RunStatus::Completed);
+            assert_eq!(st.ring.contributions.len(), 2);
+            assert_eq!(st.ring.votes.len(), 2);
+            assert!(log_has_outcome_resolved(&log, "run-resume-ring"));
+            assert_eq!(final_content(&log, "run-resume-ring"), "Use Rust with Axum");
+        }
+
+        #[tokio::test]
+        async fn resume_ring_es_bails_on_completed_run() {
+            let mut log = InMemoryLog::default();
+            log.append(
+                "run-resume-ring",
+                &E::RunStarted {
+                    run_id: "run-resume-ring".to_string(),
+                    pattern: "ring".to_string(),
+                    agents: vec!["a".to_string()],
+                    input: "task".to_string(),
+                    project: None,
+                },
+            )
+            .unwrap();
+            log.append(
+                "run-resume-ring",
+                &E::Completed {
+                    content: "done".to_string(),
+                },
+            )
+            .unwrap();
+
+            let err = resume_ring_es(
+                "run-resume-ring",
+                BTreeMap::new(),
+                BTreeMap::new(),
+                RoutingRules::default(),
+                None,
+                &mut log,
+            )
+            .await
+            .unwrap_err();
+            assert!(err.to_string().contains("not resumable"));
         }
 
         // Scenario 2: two agents contribute a substantive (non-pass)

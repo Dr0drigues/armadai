@@ -86,6 +86,12 @@ pub struct Workroom {
     /// final frame for the user to dismiss (Dimitri's visual-validation
     /// request: fast providers used to make the workroom flash and vanish).
     completed: bool,
+    /// The run's id, captured from `RunEvent::RunStart` (OH1 Lot 6). Rendered
+    /// on the completion screen so the user can copy it for a later
+    /// `--resume`/`--replay` — the live TUI is the only path where it was
+    /// previously surfaced nowhere at all (the alternate screen hides
+    /// anything printed to stdout while it's active).
+    run_id: Option<String>,
 }
 
 impl Workroom {
@@ -100,7 +106,14 @@ impl Workroom {
             focused: false,
             pattern: OrchestrationPattern::Hierarchical,
             completed: false,
+            run_id: None,
         }
+    }
+
+    /// The captured run id (if a `RunStart` has been observed yet), for a
+    /// caller to print after the TUI exits (see `run_view::run_orchestration_tui`).
+    pub fn run_id(&self) -> Option<&str> {
+        self.run_id.as_deref()
     }
 
     /// Set whether the workroom has keyboard focus (drill-down mode).
@@ -460,7 +473,8 @@ impl Workroom {
     /// the live renderer passes `Instant::now()`.
     pub fn on_run_event_at(&mut self, ev: &RunEvent, now: Instant) {
         match ev {
-            RunEvent::RunStart { agents, .. } => {
+            RunEvent::RunStart { agents, run_id, .. } => {
+                self.run_id = Some(run_id.clone());
                 for name in agents {
                     if !self.agents.iter().any(|a| a.name == *name) {
                         self.agents.push(TrackedAgent {
@@ -851,6 +865,15 @@ impl Workroom {
                 format!("{check} run complete · press q or Esc to exit"),
                 theme::muted(),
             )));
+            // Last chance to copy the run_id before the alternate screen
+            // clears on exit (OH1 Lot 6): shown in full, on its own line, so
+            // it survives even at narrow widths without truncation logic.
+            if let Some(id) = &self.run_id {
+                lines.push(Line::from(Span::styled(
+                    format!("run {id}"),
+                    theme::muted(),
+                )));
+            }
         }
     }
 
@@ -1387,6 +1410,49 @@ orchestration:
     }
 
     #[test]
+    fn run_id_captured_from_run_start_and_shown_on_completion() {
+        // OH1 Lot 6 gap: an orchestrated run in the live Workroom TUI never
+        // surfaced its run_id anywhere (the non-TUI path prints it to
+        // stdout, but `human_output` is false for the TUI path to avoid
+        // corrupting the alt-screen). The Workroom itself must capture it
+        // from `RunStart` and render it on the hold-on-completion screen —
+        // the user's last chance to copy it before the alt-screen clears.
+        let mut wr = Workroom::new();
+        let t = Instant::now();
+        wr.on_run_event_at(
+            &RunEvent::RunStart {
+                run_id: "abc123".into(),
+                v: 1,
+                agents: vec!["alpha".into()],
+                prov: "fake".into(),
+                model: "m".into(),
+                in_chars: 0,
+            },
+            t,
+        );
+        assert_eq!(wr.run_id(), Some("abc123"));
+
+        // Not shown before completion — only on the hold-on-completion screen.
+        let mut lines = Vec::new();
+        wr.push_footer(&mut lines);
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.spans.iter().any(|s| s.content.contains("abc123")))
+        );
+
+        wr.set_completed(true);
+        let mut lines = Vec::new();
+        wr.push_footer(&mut lines);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.spans.iter().any(|s| s.content.contains("abc123"))),
+            "completion footer should render the run_id for a later --resume/--replay"
+        );
+    }
+
+    #[test]
     fn set_pattern_overrides_default() {
         let mut wr = Workroom::new();
         wr.set_focused(true);
@@ -1479,6 +1545,7 @@ orchestration:
         let t = Instant::now();
         wr.on_run_event_at(
             &RunEvent::RunStart {
+                run_id: "r1".into(),
                 v: 1,
                 agents: vec!["alpha".into(), "beta".into()],
                 prov: "fake".into(),
@@ -1524,6 +1591,7 @@ orchestration:
 
     fn rs(agents: &[&str]) -> RunEvent {
         RunEvent::RunStart {
+            run_id: "r1".into(),
             v: 1,
             agents: agents.iter().map(|s| s.to_string()).collect(),
             prov: "fake".into(),

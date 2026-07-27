@@ -7,6 +7,7 @@ use serde::Serialize;
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum RunEvent {
     RunStart {
+        run_id: String,
         v: u32,
         agents: Vec<String>,
         prov: String,
@@ -121,6 +122,7 @@ mod tests {
     #[test]
     fn run_start_serializes_with_short_keys() {
         let ev = RunEvent::RunStart {
+            run_id: "r1".into(),
             v: 1,
             agents: vec!["dev-lead".into()],
             prov: "claude".into(),
@@ -130,7 +132,27 @@ mod tests {
         let s = serde_json::to_string(&ev).unwrap();
         assert_eq!(
             s,
-            r#"{"t":"run_start","v":1,"agents":["dev-lead"],"prov":"claude","model":"claude-x","in_chars":412}"#
+            r#"{"t":"run_start","run_id":"r1","v":1,"agents":["dev-lead"],"prov":"claude","model":"claude-x","in_chars":412}"#
+        );
+    }
+
+    #[test]
+    fn run_start_serializes_run_id() {
+        // OH1 Lot 6, Task 1: `run_id` must round-trip through the JSONL
+        // contract so `--json` consumers (and a future `--resume <run_id>`)
+        // can identify the run.
+        let ev = RunEvent::RunStart {
+            run_id: "abc".into(),
+            v: 1,
+            agents: vec!["a".into()],
+            prov: "p".into(),
+            model: "m".into(),
+            in_chars: 1,
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert!(
+            s.contains(r#""run_id":"abc""#),
+            "expected run_id in serialized event, got: {s}"
         );
     }
 
@@ -197,6 +219,7 @@ mod tests {
             out: Mutex::new(Box::new(SharedBuf(buf.clone()))),
         };
         sink.emit(&RunEvent::RunStart {
+            run_id: "r1".into(),
             v: 1,
             agents: vec!["a".into()],
             prov: "p".into(),

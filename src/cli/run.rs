@@ -26,7 +26,7 @@ accurate, relevant output.";
 /// configuration flags; grouping into a struct would obscure the caller's argument binding.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute(
-    agent_name: String,
+    agent_name: Option<String>,
     input: Option<String>,
     pipe: Option<Vec<String>>,
     orchestrate: Option<String>,
@@ -38,7 +38,25 @@ pub async fn execute(
     tags: Option<Vec<String>>,
     dry_run: bool,
     no_tui: bool,
+    resume: Option<String>,
+    replay: Option<String>,
 ) -> anyhow::Result<()> {
+    // OH1 Lot 6: the clap `ArgGroup` on `Command::Run` (`agent`/`resume`/
+    // `replay`) guarantees exactly one of the three is present, so these
+    // branches are exhaustive — the `else` below is the pre-existing agent
+    // path, safe to `expect()` since `resume`/`replay` are both `None` there.
+    // `--replay` (Task 2) and `--resume` (Task 3) are both fully wired below,
+    // ahead of any agent/TUI concern (neither has an `agent_name` to route
+    // through them).
+    if let Some(run_id) = replay {
+        return execute_replay(&run_id, json, quiet, headless).await;
+    }
+    if let Some(run_id) = resume {
+        return execute_resume(&run_id, json, quiet, headless, max_content, no_tui).await;
+    }
+    let agent_name =
+        agent_name.expect("clap ArgGroup guarantees agent is present when resume/replay are not");
+
     // headless is implied by json (machine output cannot be interrupted by a prompt)
     let headless = headless || json;
 
@@ -94,6 +112,8 @@ pub async fn execute(
                     route,
                     tags,
                     dry_run,
+                    resume,
+                    replay,
                     &sink,
                 )
                 .await
@@ -103,11 +123,10 @@ pub async fn execute(
         )
         .await;
         return match printed {
-            Ok(Some(content)) => {
-                println!("{content}");
+            Ok((run_id, content)) => {
+                print_tui_run_outcome(run_id, content);
                 Ok(())
             }
-            Ok(None) => Ok(()),
             Err(e) => Err(e),
         };
     }
@@ -129,6 +148,8 @@ pub async fn execute(
         route,
         tags,
         dry_run,
+        resume,
+        replay,
         &sink,
     )
     .await;
@@ -151,6 +172,405 @@ pub async fn execute(
     }
 
     Ok(())
+}
+
+/// `--replay <run_id>` entry point (OH1 Lot 6, Task 2): builds the sink the
+/// same way the normal path does (`make_sink(json)`), delegates to
+/// [`crate::cli::run_replay::replay_run`] — which reads the persisted
+/// `ExecutionEvent` log back and re-emits it as `RunEvent`s, executing no
+/// effects — and funnels any error through the SAME headless
+/// error-event/exit-code handler [`execute`] uses for the normal run path, so
+/// `--replay --json` on an unknown/errored id behaves like any other failed
+/// headless run (an `error` JSONL line + a CI-friendly exit code) rather than
+/// a bare panic or a silent non-zero exit.
+async fn execute_replay(
+    run_id: &str,
+    json: bool,
+    quiet: bool,
+    headless: bool,
+) -> anyhow::Result<()> {
+    let headless = headless || json;
+    let sink = crate::core::events::make_sink(json);
+    // No TUI concern here (unlike the agent path in `execute`): replay has no
+    // `orchestrate`/config-driven auto-detect to check and no `agent_name` to
+    // route through the live Workroom, so `human_output` collapses to the
+    // same `!json && !quiet` gate the agent path's `RunStart` banner uses.
+    let human_output = !json && !quiet;
+
+    let result = crate::cli::run_replay::replay_run(run_id, &sink, human_output).await;
+
+    if let Err(e) = result {
+        if headless {
+            let code = exit_code_for(&e);
+            sink.emit(&RunEvent::Error {
+                code: match code {
+                    3 => "budget_exceeded",
+                    4 => "provider_unavailable",
+                    _ => "agent_failed",
+                }
+                .into(),
+                msg: e.to_string(),
+            });
+            std::process::exit(code);
+        }
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// `--resume <run_id>` entry point (OH1 Lot 6, Task 3): continues a
+/// previously interrupted event-sourced run (one whose process died/was
+/// killed mid-run, leaving `RunStatus::Running` in the persisted log) from
+/// where it left off, executing REAL effects (provider calls) for whatever
+/// work remains — unlike `--replay`, which only re-emits the past.
+///
+/// Requires the `storage` feature (the event log this reads/appends to only
+/// persists under it); without it, funnels a clear bail through the same
+/// headless error-event/exit-code handling [`execute_replay`] uses, rather
+/// than a bare panic.
+///
+/// The live Workroom TUI is offered the same way the normal agent path does
+/// (`use_tui` gate in [`execute`]) — except the pattern (which layout to
+/// render) isn't known from a CLI flag here, only from the log itself, so
+/// this peeks the run's pattern/status via a synchronous [`replay`] BEFORE
+/// deciding `use_tui` and building the `explicit_pattern` hint. `direct`
+/// pattern runs never use the TUI, mirroring the live path (a single-agent
+/// run never sets `orchestrate`, so it never reaches the TUI branch either).
+async fn execute_resume(
+    run_id: &str,
+    json: bool,
+    quiet: bool,
+    headless: bool,
+    max_content: Option<usize>,
+    no_tui: bool,
+) -> anyhow::Result<()> {
+    #[cfg(not(feature = "storage"))]
+    {
+        let _ = (run_id, json, quiet, headless, max_content, no_tui);
+        anyhow::bail!("--resume requires the 'storage' feature (event log persistence)")
+    }
+
+    #[cfg(feature = "storage")]
+    {
+        use crate::core::orchestration::es::engine::replay;
+        use crate::core::orchestration::es::log::SqliteLog;
+        use crate::core::orchestration::es::state::RunStatus;
+
+        let headless = headless || json;
+
+        // Peek the run's pattern/status before deciding on the live TUI —
+        // mirrors the agent path's own `use_tui` gate in `execute`, which
+        // needs to know the pattern is "orchestrated" before offering it.
+        let peek = {
+            let db = crate::storage::init_db()?;
+            let log = SqliteLog::new(db);
+            replay(run_id, &log)?
+        };
+        if peek.pattern.is_empty() {
+            anyhow::bail!("no run found for id {run_id}");
+        }
+        if peek.status != RunStatus::Running {
+            anyhow::bail!("run {run_id} is not resumable (status: {:?})", peek.status);
+        }
+
+        let use_tui = peek.pattern != "direct"
+            && !json
+            && !quiet
+            && !no_tui
+            && std::io::IsTerminal::is_terminal(&std::io::stdout());
+
+        #[cfg(feature = "tui")]
+        if use_tui {
+            let explicit_pattern = match peek.pattern.as_str() {
+                "blackboard" => Some(crate::core::orchestration::OrchestrationPattern::Blackboard),
+                "ring" => Some(crate::core::orchestration::OrchestrationPattern::Ring),
+                _ => None,
+            };
+            let run_id_owned = run_id.to_string();
+            let printed = crate::shell::run_view::run_orchestration_tui(
+                move |sink| async move {
+                    // `false, false` for json/quiet: guaranteed by the
+                    // `use_tui` gate above (mirrors `execute`'s own TUI
+                    // closure, which hardcodes the same for `run_inner`).
+                    resume_run(&run_id_owned, &sink, false, false, max_content, false).await
+                },
+                None,
+                explicit_pattern,
+            )
+            .await;
+            return match printed {
+                Ok((run_id, content)) => {
+                    print_tui_run_outcome(run_id, content);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            };
+        }
+        #[cfg(not(feature = "tui"))]
+        let _ = use_tui;
+
+        let sink = crate::core::events::make_sink(json);
+
+        // `human_output = true` here (unconditional, like the live
+        // orchestrated path's non-TUI branch): `resume_run` gates its own
+        // `--json`/`--quiet` suppression at each print site instead, since
+        // `human_output` here means "not the TUI's alternate screen", not
+        // "not machine output" (see `run_orchestrated_inner`'s identical
+        // convention).
+        let result = resume_run(run_id, &sink, json, quiet, max_content, true).await;
+
+        if let Err(e) = result {
+            if headless {
+                let code = exit_code_for(&e);
+                sink.emit(&RunEvent::Error {
+                    code: match code {
+                        3 => "budget_exceeded",
+                        4 => "provider_unavailable",
+                        _ => "agent_failed",
+                    }
+                    .into(),
+                    msg: e.to_string(),
+                });
+                std::process::exit(code);
+            }
+            return Err(e);
+        }
+
+        Ok(())
+    }
+}
+
+/// Core of `--resume`: reload the roster from the project on disk (keyed by
+/// the run's own `ExecutionState::agents`, folded from the log's
+/// `RunStarted`), dispatch to the pattern-matching `resume_*_es` engine entry
+/// point wrapped in the same [`SinkProjectingLog`]/[`QuietMaxContentSink`]
+/// observability every live `dispatch_*_es` uses, then project/print/emit
+/// the result exactly like a live orchestrated run's terminal steps.
+///
+/// Requires `run_id` to name a `Running` run recorded in the persisted event
+/// log — checked again here (not just by the `execute_resume` peek above,
+/// which only gates the TUI decision) since this is also the function real
+/// tests would call directly.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "storage")]
+async fn resume_run(
+    run_id: &str,
+    sink: &Arc<dyn EventSink>,
+    json: bool,
+    quiet: bool,
+    max_content: Option<usize>,
+    human_output: bool,
+) -> anyhow::Result<()> {
+    use crate::core::orchestration::es::bridge::synthetic_run_start;
+    use crate::core::orchestration::es::log::SqliteLog;
+    use crate::core::orchestration::es::state::{RunStatus, fold};
+
+    let db = crate::storage::init_db()?;
+    let log = SqliteLog::new(db.clone());
+    // Read the raw log back once, up front: `fold` gives the roster/status
+    // needed to validate + dispatch the resume below, and the SAME raw
+    // `pre_resume_events` also feeds `synthetic_run_start`'s `in_chars`
+    // recovery (the original `RunStarted.input`, discarded by `apply` but
+    // still present verbatim in the event list) — see that fn's doc comment.
+    let pre_resume_events = log.events(run_id)?;
+    let state = fold(&pre_resume_events);
+    if state.pattern.is_empty() {
+        anyhow::bail!("no run found for id {run_id}");
+    }
+    if state.status != RunStatus::Running {
+        anyhow::bail!("run {run_id} is not resumable (status: {:?})", state.status);
+    }
+
+    // Prefer the stored `orchestration_runs.pattern` when present, falling
+    // back to the log-folded `state.pattern` — the ONLY source available for
+    // `direct` runs, which never get an `orchestration_runs` row (see
+    // `queries::get_run_pattern`'s doc comment).
+    let pattern = crate::storage::queries::get_run_pattern(&db, run_id)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| state.pattern.clone());
+
+    if !json && !quiet && human_output {
+        let m = crate::cli::style::muted();
+        anstream::eprintln!("{m}resume {run_id}{m:#}");
+    }
+
+    // I3 (whole-branch review, light must-fix): the roster below is reloaded
+    // from the CURRENT directory's project, not the original run's
+    // (`RunStarted.project` is logged but never read back — full
+    // project-pinning is backlog, not attempted here). Warn once, concisely,
+    // so resuming from a different directory than the original run doesn't
+    // silently execute the remaining steps against different agent
+    // definitions.
+    if !json && !quiet && human_output {
+        let w = crate::cli::style::warn();
+        anstream::eprintln!(
+            "{w}resuming {run_id} — agents reloaded from the current project; \
+             not-yet-run steps use current definitions{w:#}"
+        );
+    }
+
+    // HEAD bookend (whole-branch review, I2): a live orchestrated run's
+    // `RunStart` is what seeds the Workroom's agent roster
+    // (`Workroom::on_run_event_at`'s `RunStart { agents, .. }` arm —
+    // `AgentStart` only mutates an already-present agent, it never inserts
+    // one). `resume_run` never emitted one, so an interactive `--resume`
+    // showed an empty Workroom even though `execute_resume` already routes
+    // orchestrated resumes through `run_orchestration_tui` (mirroring
+    // `execute`'s own `use_tui` gate). Emitting it here, from the folded
+    // roster, before the engine resumes fixes that for both the TUI and
+    // `--json`/headless consumers (the bookend is harmless/expected on json
+    // too — it matches what a live run emits).
+    sink.emit(&synthetic_run_start(
+        run_id,
+        &pattern,
+        &state.agents,
+        &pre_resume_events,
+    ));
+
+    // Reload the agent roster from the project on disk — the log carries no
+    // `Agent` definitions (system prompt/model/temperature/…), only the
+    // roster's KEYS (`state.agents`, folded from `RunStarted`) and the
+    // pattern's config (`ConfigSnapshot`). `headless = true` here: a resume
+    // is a non-interactive continuation, so it must never block on the
+    // model-updater's interactive prompt the way a fresh `armadai run` might.
+    let resolution = resolve_agents_dir(true);
+    let routing_rules = match &resolution {
+        AgentResolution::Project { config, .. } => config.routing.clone().unwrap_or_default(),
+        _ => crate::core::routing::RoutingRules::default(),
+    };
+    let cost_limit = orchestration_cost_limit(&resolution);
+
+    let mut agents_map: std::collections::BTreeMap<String, Agent> =
+        std::collections::BTreeMap::new();
+    let mut providers_map: std::collections::BTreeMap<
+        String,
+        Arc<dyn crate::providers::traits::Provider>,
+    > = std::collections::BTreeMap::new();
+    for name in &state.agents {
+        let agent_path = resolve_agent_path(&resolution, name)?;
+        let mut agent = crate::parser::parse_agent_file(&agent_path)?;
+        crate::linker::model_aliases::resolve_model_deprecations(
+            &mut agent.metadata.model,
+            &mut agent.metadata.model_fallback,
+        );
+        let provider = create_provider(&agent)?;
+        providers_map.insert(name.clone(), Arc::from(provider));
+        agents_map.insert(name.clone(), agent);
+    }
+
+    let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
+    let agent_meta = agent_meta_from_roster(&agents_map);
+    let mut proj_log = SinkProjectingLog::with_meta(log, &filtered_sink, agent_meta);
+
+    let final_state = match pattern.as_str() {
+        "direct" => {
+            use crate::core::orchestration::es::direct::resume_direct_es;
+            resume_direct_es(
+                run_id,
+                agents_map,
+                providers_map,
+                routing_rules,
+                &mut proj_log,
+            )
+            .await?
+        }
+        "blackboard" => {
+            use crate::core::orchestration::es::blackboard::resume_blackboard_es;
+            resume_blackboard_es(
+                run_id,
+                agents_map,
+                providers_map,
+                routing_rules,
+                cost_limit,
+                &mut proj_log,
+            )
+            .await?
+        }
+        "ring" => {
+            use crate::core::orchestration::es::ring::resume_ring_es;
+            resume_ring_es(
+                run_id,
+                agents_map,
+                providers_map,
+                routing_rules,
+                cost_limit,
+                &mut proj_log,
+            )
+            .await?
+        }
+        "hierarchical" => {
+            use crate::core::orchestration::es::hierarchical::resume_hierarchical_es;
+            resume_hierarchical_es(
+                run_id,
+                agents_map,
+                providers_map,
+                routing_rules,
+                &mut proj_log,
+            )
+            .await?
+        }
+        other => anyhow::bail!("unknown orchestration pattern '{other}' for run {run_id}"),
+    };
+
+    let events = proj_log.events(run_id)?;
+
+    match crate::storage::init_db() {
+        Ok(db2) => {
+            if let Err(e) = crate::cli::run_es_record::project_run(&db2, run_id) {
+                tracing::warn!("failed to project resumed run {}: {}", run_id, e);
+            }
+        }
+        Err(e) => {
+            tracing::warn!("event log storage unavailable, run not projected: {}", e);
+        }
+    }
+
+    // Re-review fix: routed through the shared `final_content` helper (used
+    // identically by `--replay`'s `replay_from_log`) instead of inlining the
+    // pattern branch here a second time — see that fn's doc for why (a
+    // second, drifted copy of this branch is exactly what let `--replay`'s
+    // `ring` output silently lose its vote tally).
+    let content = super::run_es_record::final_content(&final_state, &events);
+
+    if human_output {
+        let s = status_style(&final_state.status);
+        anstream::eprintln!("{s}resume {}: {:?}{s:#}", run_id, final_state.status);
+    }
+    if !json && human_output {
+        println!("{content}");
+    }
+
+    sink.emit(&RunEvent::Result {
+        content,
+        tin: u32::try_from(final_state.budget_tokens_in).unwrap_or(u32::MAX),
+        tout: u32::try_from(final_state.budget_tokens_out).unwrap_or(u32::MAX),
+        cost: final_state.budget_cost,
+        agents: final_state.agents.len(),
+    });
+
+    Ok(())
+}
+
+/// Print the `(run_id, content)` pair returned by
+/// [`crate::shell::run_view::run_orchestration_tui`] once the terminal has
+/// been restored (OH1 Lot 6): the alternate screen clears everything on
+/// exit, so this muted `run <id>` banner — mirroring the non-TUI orchestrated
+/// path's own banner in `run_orchestrated_inner` — is the only way the id
+/// survives in scrollback for a later `--resume`/`--replay` on the TUI path.
+/// `run_id` prints whenever a `RunStart` was observed by the Workroom (even
+/// on an early Ctrl+C abort, since the id is generated before the run's first
+/// effect); `content` prints only when the run produced a final answer.
+#[cfg(feature = "tui")]
+fn print_tui_run_outcome(run_id: Option<String>, content: Option<String>) {
+    if let Some(id) = run_id {
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}run {id}{m:#}");
+    }
+    if let Some(content) = content {
+        println!("{content}");
+    }
 }
 
 /// Map a run error to a CI-friendly exit code.
@@ -188,8 +608,15 @@ async fn run_inner(
     route: Option<String>,
     tags: Option<Vec<String>>,
     dry_run: bool,
+    // OH1 Lot 6: threaded through for signature stability across Tasks 2/3
+    // (resume/replay execution). `execute` already bails before calling
+    // `run_inner` when either is `Some`, so this function never branches on
+    // them yet.
+    resume: Option<String>,
+    replay: Option<String>,
     sink: &Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
+    let _ = (&resume, &replay);
     let resolution = resolve_agents_dir(headless);
     let tags = tags.unwrap_or_default();
 
@@ -275,13 +702,29 @@ async fn run_inner(
     // `armadai.yaml` was found (still useful to distinguish ad-hoc runs).
     let project = project_display_string(&resolution);
 
+    // Generated once, up front, so the emitted `RunStart` (surfaced to the
+    // user for a future `--resume`/`--replay`) carries the SAME run_id the
+    // single-agent ES dispatch below (`dispatch_direct_es`) persists the ES
+    // log under.
+    let run_id = uuid::Uuid::new_v4().to_string();
+
     sink.emit(&RunEvent::RunStart {
+        run_id: run_id.clone(),
         v: 1,
         agents: chain.clone(),
         prov: String::new(), // filled per-agent in agent_start; kept minimal here
         model: String::new(),
         in_chars: current_input.chars().count(),
     });
+
+    // Surface the run_id on the human path (OH1 Lot 6, Task 1) so it can be
+    // copied for a future `--resume`/`--replay`. Not on `--json` (the id
+    // already travels in `RunStart`) or `--quiet`, and gated on
+    // `human_output` too, mirroring the orchestrated path below.
+    if !json && !quiet && human_output {
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}run {run_id}{m:#}");
+    }
 
     // Single-agent direct execution (OH1 Lot 5, T5a): switched onto the
     // event-sourced `direct` engine (`run_direct_es`), wrapped in a
@@ -293,6 +736,7 @@ async fn run_inner(
         let name = &chain[0];
         let agent_path = resolve_agent_path(&resolution, name)?;
         let (content, tin, tout, cost) = run_single_agent_es(
+            &run_id,
             &agent_path,
             name,
             &current_input,
@@ -714,6 +1158,7 @@ fn quiet_max_content_sink(
 /// the log (the `record_*_es` will disappear).
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_direct_es(
+    run_id: &str,
     agent_key: &str,
     agent: Agent,
     provider: Arc<dyn crate::providers::traits::Provider>,
@@ -744,7 +1189,6 @@ async fn dispatch_direct_es(
     let mut providers = BTreeMap::new();
     providers.insert(agent_key.to_string(), provider);
 
-    let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
 
     // Deduplication macro (Fix 2): single definition of the run_direct_es call,
@@ -753,7 +1197,7 @@ async fn dispatch_direct_es(
         ($log:expr) => {{
             let mut log = SinkProjectingLog::with_meta($log, &filtered_sink, agent_meta);
             let state = run_direct_es(
-                &run_id,
+                run_id,
                 agent_key,
                 input,
                 agents,
@@ -762,7 +1206,7 @@ async fn dispatch_direct_es(
                 &mut log,
             )
             .await?;
-            let events = log.events(&run_id)?;
+            let events = log.events(run_id)?;
             (state, events)
         }};
     }
@@ -810,6 +1254,7 @@ async fn dispatch_direct_es(
 /// `run_single_agent`'s step 6.
 #[allow(clippy::too_many_arguments)]
 async fn run_single_agent_es(
+    run_id: &str,
     agent_path: &Path,
     agent_key: &str,
     input: &str,
@@ -867,6 +1312,7 @@ async fn run_single_agent_es(
     // AgentStart/AgentEnd observability, the actual provider call).
     let start = Instant::now();
     let dispatch = dispatch_direct_es(
+        run_id,
         agent_key,
         agent,
         provider,
@@ -1251,13 +1697,31 @@ async fn run_orchestrated_inner(
         _ => crate::core::routing::RoutingRules::default(),
     };
 
+    // Generated once, up front, so the emitted `RunStart` (surfaced to the
+    // user for a future `--resume`/`--replay`) carries the SAME run_id the
+    // `dispatch_*_es` pattern dispatch below persists the ES log under —
+    // otherwise the human-visible id and the one actually usable for replay
+    // would silently diverge.
+    let run_id = uuid::Uuid::new_v4().to_string();
+
     sink.emit(&RunEvent::RunStart {
+        run_id: run_id.clone(),
         v: 1,
         agents: agent_names.to_vec(),
         prov: String::new(),
         model: pattern.to_string(),
         in_chars: input.chars().count(),
     });
+
+    // Surface the run_id on the human path (OH1 Lot 6, Task 1) so it can be
+    // copied for a future `--resume`/`--replay`. Not on `--json` (the id
+    // already travels in `RunStart`) or `--quiet`, and gated on
+    // `human_output` too — `false` on the live Workroom TUI path, where a
+    // direct stdout write would corrupt the alternate-screen display.
+    if !json && !quiet && human_output {
+        let m = crate::cli::style::muted();
+        anstream::println!("{m}run {run_id}{m:#}");
+    }
 
     // Replay deprecation warnings collected during roster load, right after
     // `RunStart` (same order as the pre-split load loop emitted them).
@@ -1377,6 +1841,7 @@ async fn run_orchestrated_inner(
             }
 
             let (state, _run_id) = dispatch_blackboard_es(
+                &run_id,
                 input,
                 agent_map,
                 provider_map,
@@ -1459,6 +1924,7 @@ async fn run_orchestrated_inner(
             }
 
             let (state, events, _run_id) = dispatch_ring_es(
+                &run_id,
                 input,
                 agent_map,
                 agent_names.to_vec(),
@@ -1554,6 +2020,7 @@ async fn run_orchestrated_inner(
             }
 
             let (state, events, _run_id) = dispatch_hierarchical_es(
+                &run_id,
                 &coordinator_name,
                 input,
                 orch_config,
@@ -1678,6 +2145,7 @@ fn agent_meta_from_roster(
 /// `tests::blackboard_es`).
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_blackboard_es(
+    run_id: &str,
     input: &str,
     agents: std::collections::BTreeMap<String, Agent>,
     providers: std::collections::BTreeMap<String, Arc<dyn crate::providers::traits::Provider>>,
@@ -1690,7 +2158,6 @@ async fn dispatch_blackboard_es(
 ) -> anyhow::Result<(ExecutionState, String)> {
     use crate::core::orchestration::es::blackboard::run_blackboard_es;
 
-    let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
 
     // Deduplication macro (Fix 2): single definition of the run_blackboard_es call.
@@ -1699,7 +2166,7 @@ async fn dispatch_blackboard_es(
             let mut log =
                 SinkProjectingLog::with_meta($log, &filtered_sink, agent_meta_from_roster(&agents));
             run_blackboard_es(
-                &run_id,
+                run_id,
                 input,
                 agents,
                 providers,
@@ -1725,7 +2192,7 @@ async fn dispatch_blackboard_es(
     };
     #[cfg(not(feature = "storage"))]
     let state = run_with_log!(InMemoryLog::default());
-    Ok((state, run_id))
+    Ok((state, run_id.to_string()))
 }
 
 /// Drive the event-sourced `ring` engine end-to-end for an already-loaded
@@ -1737,6 +2204,7 @@ async fn dispatch_blackboard_es(
 /// reconciliation Task 5).
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_ring_es(
+    run_id: &str,
     input: &str,
     agents: std::collections::BTreeMap<String, Agent>,
     agent_order: Vec<String>,
@@ -1750,7 +2218,6 @@ async fn dispatch_ring_es(
 ) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>, String)> {
     use crate::core::orchestration::es::ring::run_ring_es;
 
-    let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
 
     // Deduplication macro (Fix 2): single definition of the run_ring_es call.
@@ -1759,7 +2226,7 @@ async fn dispatch_ring_es(
             let mut log =
                 SinkProjectingLog::with_meta($log, &filtered_sink, agent_meta_from_roster(&agents));
             let state = run_ring_es(
-                &run_id,
+                run_id,
                 input,
                 agents,
                 agent_order,
@@ -1770,7 +2237,7 @@ async fn dispatch_ring_es(
                 &mut log,
             )
             .await?;
-            let events = log.events(&run_id)?;
+            let events = log.events(run_id)?;
             (state, events)
         }};
     }
@@ -1788,7 +2255,7 @@ async fn dispatch_ring_es(
     };
     #[cfg(not(feature = "storage"))]
     let (state, events) = run_with_log!(InMemoryLog::default());
-    Ok((state, events, run_id))
+    Ok((state, events, run_id.to_string()))
 }
 
 /// Drive the event-sourced `hierarchical` engine end-to-end for an
@@ -1802,6 +2269,7 @@ async fn dispatch_ring_es(
 /// reconciliation Task 5).
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_hierarchical_es(
+    run_id: &str,
     coordinator: &str,
     input: &str,
     config: crate::core::orchestration::OrchestrationConfig,
@@ -1814,7 +2282,6 @@ async fn dispatch_hierarchical_es(
 ) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>, String)> {
     use crate::core::orchestration::es::hierarchical::run_hierarchical_es;
 
-    let run_id = uuid::Uuid::new_v4().to_string();
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
 
     // Deduplication macro (Fix 2): single definition of the run_hierarchical_es call.
@@ -1823,7 +2290,7 @@ async fn dispatch_hierarchical_es(
             let mut log =
                 SinkProjectingLog::with_meta($log, &filtered_sink, agent_meta_from_roster(&agents));
             let state = run_hierarchical_es(
-                &run_id,
+                run_id,
                 coordinator,
                 input,
                 config,
@@ -1833,7 +2300,7 @@ async fn dispatch_hierarchical_es(
                 &mut log,
             )
             .await?;
-            let events = log.events(&run_id)?;
+            let events = log.events(run_id)?;
             (state, events)
         }};
     }
@@ -1851,7 +2318,7 @@ async fn dispatch_hierarchical_es(
     };
     #[cfg(not(feature = "storage"))]
     let (state, events) = run_with_log!(InMemoryLog::default());
-    Ok((state, events, run_id))
+    Ok((state, events, run_id.to_string()))
 }
 
 /// Apply project-level orchestration overrides to a BlackboardConfig.
@@ -2507,6 +2974,7 @@ mod es_switch_tests {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
 
         let dispatch = dispatch_direct_es(
+            &uuid::Uuid::new_v4().to_string(),
             "solo",
             test_agent("solo"),
             provider,
@@ -2550,6 +3018,7 @@ mod es_switch_tests {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
 
         let dispatch = dispatch_direct_es(
+            &uuid::Uuid::new_v4().to_string(),
             "solo",
             test_agent("solo"),
             provider,
@@ -2581,6 +3050,7 @@ mod es_switch_tests {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the full answer"]));
 
         let dispatch = dispatch_direct_es(
+            &uuid::Uuid::new_v4().to_string(),
             "solo",
             test_agent("solo"),
             provider,
@@ -2614,6 +3084,7 @@ mod es_switch_tests {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
 
         dispatch_direct_es(
+            &uuid::Uuid::new_v4().to_string(),
             "solo",
             test_agent("solo"),
             provider,
@@ -2688,6 +3159,7 @@ mod es_switch_tests {
         let (agents, providers) = hierarchical_roster();
 
         let (state, events, _run_id) = dispatch_hierarchical_es(
+            &uuid::Uuid::new_v4().to_string(),
             "dev-lead",
             "build X",
             flat_config("dev-lead", &["core-specialist"]),
@@ -2732,6 +3204,7 @@ mod es_switch_tests {
         let config = flat_config("dev-lead", &["core-specialist"]);
 
         let (state, events, _dispatch_run_id) = dispatch_hierarchical_es(
+            &uuid::Uuid::new_v4().to_string(),
             "dev-lead",
             "build X",
             config.clone(),
@@ -2801,6 +3274,7 @@ mod es_switch_tests {
         let (agents, providers) = blackboard_roster();
 
         let (state, _run_id) = dispatch_blackboard_es(
+            &uuid::Uuid::new_v4().to_string(),
             "task",
             agents,
             providers,
@@ -2850,6 +3324,7 @@ mod es_switch_tests {
         let config = BlackboardConfig::default();
 
         let (state, _dispatch_run_id) = dispatch_blackboard_es(
+            &uuid::Uuid::new_v4().to_string(),
             "task",
             agents,
             providers,
@@ -3143,6 +3618,7 @@ mod es_switch_tests {
         };
 
         let (state, events, _run_id) = dispatch_ring_es(
+            &uuid::Uuid::new_v4().to_string(),
             "task",
             agents,
             vec!["a".to_string(), "b".to_string()],
@@ -3197,6 +3673,7 @@ mod es_switch_tests {
         };
 
         let (state, _events, _dispatch_run_id) = dispatch_ring_es(
+            &uuid::Uuid::new_v4().to_string(),
             "task",
             agents,
             vec!["a".to_string(), "b".to_string()],
@@ -3448,5 +3925,432 @@ mod es_switch_tests {
     fn scripted_provider_call_count_tracks_calls() {
         let p = ScriptedProvider::new(&["one", "two"]);
         assert_eq!(p.call_count(), 0);
+    }
+
+    // ── OH1 Lot 6, Task 2: `--replay` determinism ─────────────────────
+    //
+    // These tests drive `run_replay::replay_from_log` — the `pub(crate)`,
+    // generic-over-`EventLog` core `replay_run` wraps around its own
+    // `crate::storage::init_db()` call — directly against an in-memory
+    // `SqliteLog` (`init_embedded()`), the SAME idiom
+    // `blackboard_es_run_persists_event_log`/`ring_es_run_persists_event_log`
+    // already use above. This deliberately avoids exercising `init_db()`
+    // itself (which resolves the real, global, config-dependent DB path):
+    // an earlier version of this test mutated `ARMADAI_CONFIG_DIR`/
+    // `XDG_DATA_HOME` process-wide to sandbox `init_db()`, which raced with
+    // OTHER tests in this same file (`dispatch_ring_es` et al.) that also
+    // call `crate::storage::init_db()` internally under `storage` but hold
+    // no such guard — those tests intermittently failed to open their own
+    // (unrelated) DB while this test's temp dirs existed/were torn down
+    // concurrently. Testing the generic core instead sidesteps that
+    // entirely: no env mutation, no cross-test interference, and it's the
+    // same read-back+projection logic `replay_run` itself runs.
+
+    /// Drive the event-sourced `direct` engine directly against an injected
+    /// `SqliteLog` (mirroring `blackboard_es_run_persists_event_log`'s
+    /// pattern) so the "live" side of the determinism test below persists
+    /// through the exact same `SqliteLog`/`SinkProjectingLog` machinery a
+    /// real `--storage` run does, without going through `dispatch_direct_es`
+    /// (which would call the real `crate::storage::init_db()`).
+    #[cfg(feature = "storage")]
+    async fn run_direct_against_sqlite_log(
+        db: crate::storage::Database,
+        run_id: &str,
+        sink: &Arc<dyn EventSink>,
+    ) {
+        use std::collections::BTreeMap;
+
+        use crate::core::orchestration::es::direct::run_direct_es;
+        use crate::core::orchestration::es::log::SqliteLog;
+
+        let mut agent_meta = BTreeMap::new();
+        agent_meta.insert(
+            "solo".to_string(),
+            ("anthropic".to_string(), "concrete-model".to_string()),
+        );
+        let mut log = SinkProjectingLog::with_meta(SqliteLog::new(db), sink.as_ref(), agent_meta);
+
+        let mut agents = BTreeMap::new();
+        agents.insert("solo".to_string(), test_agent("solo"));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "solo".to_string(),
+            Arc::new(ScriptedProvider::new(&["the answer"])) as Arc<dyn Provider>,
+        );
+
+        run_direct_es(
+            run_id,
+            "solo",
+            "do the thing",
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Strip the fields `replay_run` cannot reconstruct from the persisted
+    /// event log alone (see `run_replay.rs`'s module doc: `AgentStart`'s
+    /// `prov`/`model` need the pre-run roster, which the log never carries)
+    /// before comparing a live vs. replayed `RunEvent` sequence. Every other
+    /// field of every other event must still match exactly.
+    #[cfg(feature = "storage")]
+    fn normalize_for_replay_comparison(mut v: serde_json::Value) -> serde_json::Value {
+        if v["t"] == "agent_start" {
+            v["prov"] = serde_json::Value::String(String::new());
+            v["model"] = serde_json::Value::String(String::new());
+        }
+        v
+    }
+
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn replay_reproduces_the_live_run_event_sequence() {
+        use crate::storage::init_embedded;
+
+        let db = init_embedded().unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        let (live_capture, live_sink) = capture_sink();
+        run_direct_against_sqlite_log(db.clone(), &run_id, &live_sink).await;
+
+        let replay_log = crate::core::orchestration::es::log::SqliteLog::new(db);
+        let (replay_capture, replay_sink) = capture_sink();
+        crate::cli::run_replay::replay_from_log(&replay_log, &run_id, &replay_sink, false).unwrap();
+
+        let live: Vec<_> = live_capture
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .map(normalize_for_replay_comparison)
+            .collect();
+        let replayed: Vec<_> = replay_capture
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .map(normalize_for_replay_comparison)
+            .collect();
+
+        assert!(!live.is_empty(), "sanity: the live run must emit events");
+
+        // `run_direct_against_sqlite_log` drives the bare ES engine
+        // (`run_direct_es`) directly, NOT the CLI's `run_inner` — so `live`
+        // here is the engine-level mid-stream slice only, with no
+        // `RunStart`/`Result` bookends (those are built by `run.rs`, never by
+        // the engine projection — see `run_replay.rs`'s module doc).
+        // `replayed` DOES carry both (that's `replay_from_log`'s job, OH1
+        // Lot 6 whole-branch review I1). Assert their presence/shape
+        // explicitly here, then strip them before the mid-stream comparison
+        // below — this doesn't weaken that comparison, it just scopes it to
+        // what `live` actually contains; `replay_full_stream_starts_with_run_start_and_ends_with_result`
+        // below is the dedicated test for the bookends themselves.
+        assert_eq!(
+            replayed.first().unwrap()["t"],
+            "run_start",
+            "replay must lead with a synthetic RunStart bookend, got: {replayed:?}"
+        );
+        assert_eq!(replayed.first().unwrap()["run_id"], run_id);
+        assert_eq!(
+            replayed.last().unwrap()["t"],
+            "result",
+            "replay must end with a Result bookend, got: {replayed:?}"
+        );
+
+        let replayed_mid_stream: Vec<_> = replayed[1..replayed.len() - 1].to_vec();
+        assert_eq!(
+            live, replayed_mid_stream,
+            "replay must reproduce the same mid-stream RunEvent sequence (modulo the \
+             non-reconstructable AgentStart.prov/model gap, already stripped above)"
+        );
+    }
+
+    /// OH1 Lot 6 whole-branch review, I1: dedicated coverage for the
+    /// `RunStart`/`Result` bookends — this is the test that would have
+    /// caught their absence (the sibling
+    /// `replay_reproduces_the_live_run_event_sequence` test's "live"
+    /// baseline is engine-level only and never had them to compare
+    /// against). Asserts the FULL replayed stream, as a `--json` consumer
+    /// would see it, starts with `run_start` and ends with `result`, with
+    /// the fields `synthetic_run_start`/`to_orchestration_result` are
+    /// documented to fill.
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn replay_full_stream_starts_with_run_start_and_ends_with_result() {
+        use crate::storage::init_embedded;
+
+        let db = init_embedded().unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        let (_live_capture, live_sink) = capture_sink();
+        run_direct_against_sqlite_log(db.clone(), &run_id, &live_sink).await;
+
+        let replay_log = crate::core::orchestration::es::log::SqliteLog::new(db);
+        let (replay_capture, replay_sink) = capture_sink();
+        crate::cli::run_replay::replay_from_log(&replay_log, &run_id, &replay_sink, false).unwrap();
+
+        let tags = replay_capture.tags();
+        assert_eq!(
+            tags.first().map(String::as_str),
+            Some("run_start"),
+            "replayed stream must start with run_start, got: {tags:?}"
+        );
+        assert_eq!(
+            tags.last().map(String::as_str),
+            Some("result"),
+            "replayed stream must end with result, got: {tags:?}"
+        );
+
+        let events = replay_capture.events.lock().unwrap();
+        let head = events.first().unwrap();
+        assert_eq!(head["run_id"], run_id);
+        assert_eq!(head["v"], 1);
+        assert_eq!(head["agents"], serde_json::json!(["solo"]));
+        assert_eq!(head["prov"], "");
+        assert_eq!(head["model"], "");
+        assert_eq!(
+            head["in_chars"],
+            serde_json::json!("do the thing".chars().count())
+        );
+
+        let tail = events.last().unwrap();
+        assert_eq!(tail["content"], "the answer");
+        assert_eq!(tail["agents"], serde_json::json!(1));
+    }
+
+    /// Re-review fix, regression lock: `--replay` of a `ring` run with
+    /// non-empty `state.ring.votes` must include the `[votes] …` tally in
+    /// the terminal `Result.content`, exactly like the live path and
+    /// `--resume` already do via `run_es_record::ring_display` — before the
+    /// fix, `replay_from_log` called `to_orchestration_result`
+    /// unconditionally, which has no notion of votes at all, so the tally
+    /// silently vanished on replay for the one pattern whose whole point is
+    /// the vote. Builds a minimal ring event log directly (bypassing the
+    /// live ring engine entirely — same idiom as `run_es_record.rs`'s own
+    /// `sample_blackboard_events` test helper: only what `fold` +
+    /// `ring_display` need), persists it through a real (embedded)
+    /// `SqliteLog`, then drives `replay_from_log` against it — the same
+    /// injectable-log harness every other test in this module uses, no
+    /// global env/config mutation.
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn replay_of_completed_ring_run_with_votes_includes_vote_tally() {
+        use crate::core::orchestration::es::log::SqliteLog;
+        use crate::storage::init_embedded;
+
+        let db = init_embedded().unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        let mut log = SqliteLog::new(db.clone());
+        let events = [
+            ExecutionEvent::RunStarted {
+                run_id: run_id.clone(),
+                pattern: "ring".to_string(),
+                agents: vec!["a".to_string(), "b".to_string()],
+                input: "review the design".to_string(),
+                project: None,
+            },
+            ExecutionEvent::LapStarted { lap: 1 },
+            ExecutionEvent::ContributionAdded {
+                agent: "a".to_string(),
+                lap: 1,
+                position: 0,
+                action: "propose".to_string(),
+                content: "initial proposal".to_string(),
+                tokens_in: 10,
+                tokens_out: 20,
+                cost: 0.01,
+            },
+            ExecutionEvent::VoteCast {
+                agent: "a".to_string(),
+                position: "approve".to_string(),
+                confidence: 0.9,
+                supports: vec![0],
+                concerns: vec![],
+            },
+            ExecutionEvent::VoteCast {
+                agent: "b".to_string(),
+                position: "approve".to_string(),
+                confidence: 0.8,
+                supports: vec![0],
+                concerns: vec![],
+            },
+            ExecutionEvent::OutcomeResolved {
+                outcome: "consensus reached".to_string(),
+            },
+            ExecutionEvent::Completed {
+                content: "consensus reached".to_string(),
+            },
+        ];
+        for event in &events {
+            log.append(&run_id, event).unwrap();
+        }
+
+        let replay_log = SqliteLog::new(db);
+        let (capture, sink) = capture_sink();
+        crate::cli::run_replay::replay_from_log(&replay_log, &run_id, &sink, false).unwrap();
+
+        let tags = capture.tags();
+        assert_eq!(tags.last().map(String::as_str), Some("result"));
+
+        let captured = capture.events.lock().unwrap();
+        let tail = captured.last().unwrap();
+        let content = tail["content"].as_str().unwrap();
+        assert!(
+            content.contains("[votes]"),
+            "replayed ring Result.content must include the vote tally like the \
+             live/--resume path, got: {content}"
+        );
+        assert!(content.starts_with("consensus reached"));
+    }
+
+    #[cfg(feature = "storage")]
+    #[test]
+    fn replay_unknown_run_id_errors() {
+        use crate::core::orchestration::es::log::SqliteLog;
+        use crate::storage::init_embedded;
+
+        let log = SqliteLog::new(init_embedded().unwrap());
+        let (_capture, sink) = capture_sink();
+        let err = crate::cli::run_replay::replay_from_log(&log, "does-not-exist", &sink, false)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("does-not-exist"),
+            "expected the unknown run_id in the error message, got: {err}"
+        );
+    }
+
+    #[cfg(not(feature = "storage"))]
+    #[tokio::test]
+    async fn replay_requires_storage_feature() {
+        let (_capture, sink) = capture_sink();
+        let err = crate::cli::run_replay::replay_run("any-id", &sink, false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("storage"),
+            "expected the storage-feature-required message, got: {err}"
+        );
+    }
+
+    // ── OH1 Lot 6 whole-branch review, I2: `--resume` RunStart bookend ──
+    //
+    // `resume_run` (the CLI wrapper) reloads its roster from real agent
+    // files on disk via `resolve_agents_dir`/`resolve_agent_path` — driving
+    // it directly in a hermetic unit test would mean mutating the process
+    // CWD/project resolution, racing every other test in this file that
+    // also touches `crate::storage::init_db()`/project resolution (same
+    // reasoning as the big comment above the `--replay` determinism tests).
+    // This test instead drives the EXACT sequence `resume_run` performs on
+    // an injected `SqliteLog`: fold the log, emit `synthetic_run_start` from
+    // the folded roster, dispatch `resume_direct_es` through a
+    // `SinkProjectingLog`, then emit the terminal `Result` via
+    // `to_orchestration_result` — the same idiom
+    // `run_direct_against_sqlite_log` above uses for the `--replay` tests.
+    //
+    // This is what would have caught the Workroom-population regression:
+    // before the fix, nothing in `resume_run` ever emitted a `RunStart`, so
+    // `Workroom::on_run_event_at`'s `RunStart { agents, .. }` arm — the ONLY
+    // arm that inserts a new tracked agent, `AgentStart` only mutates one
+    // already present — never ran, and an interactive `--resume` showed an
+    // empty live Workroom.
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn resume_emits_run_start_bookend_before_the_mid_stream_events() {
+        use crate::core::orchestration::es::bridge::synthetic_run_start;
+        use crate::core::orchestration::es::direct::resume_direct_es;
+        use crate::core::orchestration::es::log::SqliteLog;
+        use crate::core::orchestration::es::state::fold;
+        use crate::storage::init_embedded;
+
+        let db = init_embedded().unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        // Simulate a crashed run: only `RunStarted` was ever persisted (the
+        // process died before the single agent was invoked) — this folds to
+        // `RunStatus::Running`, exactly what `resume_run` requires to
+        // proceed with a resume.
+        let mut log = SqliteLog::new(db);
+        log.append(
+            &run_id,
+            &ExecutionEvent::RunStarted {
+                run_id: run_id.clone(),
+                pattern: "direct".to_string(),
+                agents: vec!["solo".to_string()],
+                input: "do the thing".to_string(),
+                project: None,
+            },
+        )
+        .unwrap();
+
+        let pre_resume_events = log.events(&run_id).unwrap();
+        let state = fold(&pre_resume_events);
+        assert_eq!(state.status, RunStatus::Running, "sanity: resumable");
+
+        let (capture, sink) = capture_sink();
+
+        // HEAD bookend — same call `resume_run` makes, from the same folded
+        // roster/events, before the engine resumes.
+        sink.emit(&synthetic_run_start(
+            &run_id,
+            &state.pattern,
+            &state.agents,
+            &pre_resume_events,
+        ));
+
+        let mut agents = BTreeMap::new();
+        agents.insert("solo".to_string(), test_agent("solo"));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "solo".to_string(),
+            Arc::new(ScriptedProvider::new(&["resumed answer"])) as Arc<dyn Provider>,
+        );
+
+        let mut proj_log = SinkProjectingLog::with_meta(log, sink.as_ref(), BTreeMap::new());
+        let final_state = resume_direct_es(
+            &run_id,
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut proj_log,
+        )
+        .await
+        .unwrap();
+
+        // TERMINAL bookend — same call `resume_run` makes after the engine
+        // resumes.
+        let events = proj_log.events(&run_id).unwrap();
+        let result = to_orchestration_result(&final_state, &events);
+        sink.emit(&RunEvent::Result {
+            content: result.content.clone(),
+            tin: result.total_tokens_in,
+            tout: result.total_tokens_out,
+            cost: result.total_cost,
+            agents: final_state.agents.len(),
+        });
+
+        let tags = capture.tags();
+        assert_eq!(
+            tags.first().map(String::as_str),
+            Some("run_start"),
+            "resume must emit a RunStart bookend at the head, got: {tags:?}"
+        );
+        assert_eq!(
+            tags.last().map(String::as_str),
+            Some("result"),
+            "resume must still end with the terminal Result, got: {tags:?}"
+        );
+
+        let captured = capture.events.lock().unwrap();
+        let head = captured.first().unwrap();
+        assert_eq!(head["run_id"], run_id);
+        assert_eq!(head["agents"], serde_json::json!(["solo"]));
+        let tail = captured.last().unwrap();
+        assert_eq!(tail["content"], "resumed answer");
     }
 }

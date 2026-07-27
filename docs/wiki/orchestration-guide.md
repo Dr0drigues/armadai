@@ -423,6 +423,36 @@ When a budget or cost limit is hit:
 
 **Best practice:** The default token budget (500k) is a generous safety cap meant to catch a runaway, not a tight limit — normal multi-round/multi-lap runs with verbose agents stay well under it. Lower it only if you want a tighter ceiling for a specific run, and monitor costs via `armadai costs`.
 
+## Resume & Replay
+
+Every run (Direct or orchestrated) prints its `run_id` as it starts:
+
+```
+run 3f2a1c9e-...
+```
+
+Keep that id — it lets you come back to the run later with either flag below. Both require the `storage` feature (they read from the persisted event log, which doesn't exist without it) and fail with an explicit `requires the 'storage' feature` error rather than doing nothing silently.
+
+### `--resume <run_id>`
+
+Continues a run that's still `Running` — typically because the process was killed or crashed mid-orchestration. Resume seeds its state by replaying the persisted event log (no LLM calls), then hands off to the same decider/effects loop the pattern would normally drive, picking up exactly where it left off: agents already invoked and observed before the interruption are **not** re-invoked, only the remaining work runs.
+
+```bash
+armadai run --resume 3f2a1c9e-...
+```
+
+Fails with a clear error if `run_id` is unknown, or if the run already reached a terminal state (`Completed`/`Halted` — nothing left to resume; use `--replay` instead).
+
+### `--replay <run_id>`
+
+Deterministically re-displays a run that has already finished, reconstructing the exact same `RunEvent` sequence the live run emitted — purely by folding the persisted event log. No agent is re-invoked and no LLM effect runs. Useful for re-inspecting a completed run's output/trace (a new terminal, cleared scrollback, `--json` post-processing, …) without spending tokens again.
+
+```bash
+armadai run --replay 3f2a1c9e-...
+```
+
+Fails with a clear error if `run_id` is unknown.
+
 ## Tips and Gotchas
 
 ### 1. Start Simple, Add Orchestration When Needed
