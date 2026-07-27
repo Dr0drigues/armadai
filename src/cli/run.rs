@@ -441,6 +441,19 @@ async fn resume_run(
     };
     let cost_limit = orchestration_cost_limit(&resolution);
 
+    // Fix B (#270) covered fresh orchestrated runs via `run_orchestrated`'s
+    // loading loop but not resume; without this, a resumed orchestrated run
+    // rebuilds its providers with the plain `create_provider(&agent)` default
+    // (300s) and re-hits the exact timeout this fix exists to prevent. Source
+    // the config override the same way `run_orchestrated` does, from the
+    // resolved project's `defaults.orchestration`.
+    let timeout_overrides = match &resolution {
+        AgentResolution::Project { config, .. } => {
+            config.defaults.orchestration.clone().unwrap_or_default()
+        }
+        _ => crate::core::project::OrchestrationDefaults::default(),
+    };
+
     let mut agents_map: std::collections::BTreeMap<String, Agent> =
         std::collections::BTreeMap::new();
     let mut providers_map: std::collections::BTreeMap<
@@ -454,6 +467,7 @@ async fn resume_run(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
         );
+        apply_orchestrated_timeout(&mut agent, timeout_overrides.agent_timeout_secs);
         let provider = create_provider(&agent)?;
         providers_map.insert(name.clone(), Arc::from(provider));
         agents_map.insert(name.clone(), agent);
@@ -1586,10 +1600,7 @@ async fn run_orchestrated(
             deprecations.push((model_before, agent.metadata.model.clone()));
         }
 
-        agent.metadata.timeout = Some(orchestrated_agent_timeout_secs(
-            agent.metadata.timeout,
-            timeout_overrides.agent_timeout_secs,
-        ));
+        apply_orchestrated_timeout(&mut agent, timeout_overrides.agent_timeout_secs);
 
         let provider = create_provider(&agent)?;
         providers.push(Arc::from(provider));
@@ -2365,6 +2376,24 @@ fn orchestrated_agent_timeout_secs(
         .unwrap_or(ORCHESTRATED_DEFAULT_TIMEOUT_SECS)
 }
 
+/// Apply the orchestrated-run timeout override (see
+/// [`orchestrated_agent_timeout_secs`]) to `agent.metadata.timeout` in place.
+///
+/// Both roster-loading loops that feed an orchestrated run — the fresh-run
+/// loop in `run_orchestrated` AND the `--resume` reconstruction loop in
+/// `resume_run` — MUST call this before `create_provider`, since
+/// `create_provider` only reads `agent.metadata.timeout` (`.unwrap_or(300)`)
+/// once and never re-reads it afterward. Extracted to a single fn so both
+/// paths share the exact same precedence and cannot drift (a resumed
+/// orchestrated run re-hitting the 300s default was the gap this closes —
+/// see `.superpowers/sdd/orch-e2e-report.md`).
+fn apply_orchestrated_timeout(agent: &mut Agent, config_override: Option<u64>) {
+    agent.metadata.timeout = Some(orchestrated_agent_timeout_secs(
+        agent.metadata.timeout,
+        config_override,
+    ));
+}
+
 /// Apply project-level orchestration overrides to a BlackboardConfig.
 fn apply_blackboard_overrides(
     mut config: crate::core::orchestration::blackboard::BlackboardConfig,
@@ -2498,6 +2527,7 @@ fn is_model_not_found(err: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::agent::AgentMetadata;
 
     #[test]
     fn test_is_model_not_found_google_404() {
@@ -2583,6 +2613,85 @@ mod tests {
     fn orchestrated_timeout_defaults_to_600_not_300() {
         assert_eq!(orchestrated_agent_timeout_secs(None, None), 600);
         assert_ne!(orchestrated_agent_timeout_secs(None, None), 300);
+    }
+
+    // --- resume-path coverage gap: `apply_orchestrated_timeout` is the SAME
+    // helper both `run_orchestrated`'s fresh-run loop and `resume_run`'s
+    // reconstruction loop call before `create_provider`. Exercising it here
+    // (rather than only `orchestrated_agent_timeout_secs`) locks both call
+    // sites to identical behavior and would fail if either loop stopped
+    // calling it. ---
+
+    fn agent_with_timeout(timeout: Option<u64>) -> Agent {
+        Agent {
+            name: "a".to_string(),
+            source: PathBuf::from("a.md"),
+            metadata: AgentMetadata {
+                provider: "mock".to_string(),
+                model: Some("mock".to_string()),
+                command: None,
+                args: None,
+                temperature: 0.7,
+                max_tokens: None,
+                timeout,
+                tags: vec![],
+                stacks: vec![],
+                scope: vec![],
+                model_fallback: vec![],
+                cost_limit: None,
+                rate_limit: None,
+                context_window: None,
+                mode: None,
+                orchestration: None,
+                triggers: None,
+                ring_config: None,
+            },
+            system_prompt: "p".to_string(),
+            instructions: None,
+            output_format: None,
+            pipeline: None,
+            context: None,
+        }
+    }
+
+    /// Mirrors `orchestrated_timeout_frontmatter_wins_over_config_override`
+    /// at the `apply_orchestrated_timeout` level: an agent's own frontmatter
+    /// `timeout` must survive the in-place mutation unchanged, even with a
+    /// project-level override present — this is the fn both
+    /// `run_orchestrated` and `resume_run` call on each roster agent before
+    /// `create_provider`.
+    #[test]
+    fn apply_orchestrated_timeout_frontmatter_wins_over_config_override() {
+        let mut agent = agent_with_timeout(Some(120));
+        apply_orchestrated_timeout(&mut agent, Some(900));
+        assert_eq!(agent.metadata.timeout, Some(120));
+    }
+
+    /// Mirrors `orchestrated_timeout_applies_config_override_when_no_frontmatter`:
+    /// with no frontmatter timeout, the project's
+    /// `defaults.orchestration.agent_timeout_secs` override must land on
+    /// `agent.metadata.timeout` — this is what `resume_run` was missing
+    /// before this fix (it called `create_provider` directly, skipping the
+    /// override entirely).
+    #[test]
+    fn apply_orchestrated_timeout_applies_config_override_when_no_frontmatter() {
+        let mut agent = agent_with_timeout(None);
+        apply_orchestrated_timeout(&mut agent, Some(900));
+        assert_eq!(agent.metadata.timeout, Some(900));
+    }
+
+    /// Mirrors `orchestrated_timeout_defaults_to_600_not_300`: with neither
+    /// frontmatter nor config override, a resumed orchestrated run must land
+    /// on the 600s orchestrated default, NOT silently fall back to
+    /// `create_provider`'s bare 300s default — that regression (a resumed
+    /// orchestrated run re-hitting the 300s wall) is exactly the gap this
+    /// fix closes.
+    #[test]
+    fn apply_orchestrated_timeout_defaults_to_600_not_300() {
+        let mut agent = agent_with_timeout(None);
+        apply_orchestrated_timeout(&mut agent, None);
+        assert_eq!(agent.metadata.timeout, Some(600));
+        assert_ne!(agent.metadata.timeout, Some(300));
     }
 }
 
