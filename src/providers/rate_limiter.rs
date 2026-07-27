@@ -1,4 +1,8 @@
-use std::sync::Mutex;
+use crate::providers::traits::{
+    CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
+};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// A parsed rate: sustained refill (`per_sec`) plus bucket capacity (`burst`).
@@ -100,6 +104,72 @@ impl RateLimiter {
     }
 }
 
+/// Wraps a `Provider` and awaits up to two limiters (shared-per-provider,
+/// then per-agent) before delegating. The tighter one effectively governs.
+pub struct RateLimitedProvider {
+    inner: Arc<dyn Provider>,
+    provider_limiter: Option<Arc<RateLimiter>>,
+    agent_limiter: Option<Arc<RateLimiter>>,
+}
+
+impl RateLimitedProvider {
+    pub fn new(
+        inner: Arc<dyn Provider>,
+        provider_limiter: Option<Arc<RateLimiter>>,
+        agent_limiter: Option<Arc<RateLimiter>>,
+    ) -> Self {
+        Self {
+            inner,
+            provider_limiter,
+            agent_limiter,
+        }
+    }
+
+    async fn throttle(&self) {
+        if let Some(l) = &self.provider_limiter {
+            tracing::debug!("rate-limit: throttling provider call (provider limiter)");
+            l.acquire().await;
+        }
+        if let Some(l) = &self.agent_limiter {
+            tracing::debug!("rate-limit: throttling provider call (agent limiter)");
+            l.acquire().await;
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for RateLimitedProvider {
+    async fn complete(&self, request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+        self.throttle().await;
+        self.inner.complete(request).await
+    }
+
+    async fn stream(&self, request: CompletionRequest) -> anyhow::Result<TokenStream> {
+        self.throttle().await;
+        self.inner.stream(request).await
+    }
+
+    fn metadata(&self) -> ProviderMetadata {
+        self.inner.metadata()
+    }
+}
+
+static PROVIDER_LIMITERS: OnceLock<Mutex<HashMap<String, Arc<RateLimiter>>>> = OnceLock::new();
+
+/// Return (memoized, process-global) the shared limiter for `key`, creating it
+/// from `rate` on first use. `None` when no rate is configured for `key`.
+pub fn shared_provider_limiter(key: &str, rate: Option<Rate>) -> Option<Arc<RateLimiter>> {
+    let rate = rate?;
+    let map = PROVIDER_LIMITERS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().expect("provider limiter registry poisoned");
+    Some(
+        guard
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(RateLimiter::new(rate)))
+            .clone(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +249,129 @@ mod tests {
         let start = Instant::now();
         limiter.acquire().await; // must not panic, must return promptly (burst available)
         assert!(start.elapsed() < Duration::from_millis(100));
+    }
+
+    use crate::providers::traits::{
+        ChatMessage, CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingProvider {
+        calls: Arc<AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl Provider for CountingProvider {
+        async fn complete(&self, _req: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(CompletionResponse {
+                content: "ok".into(),
+                model: "m".into(),
+                tokens_in: 0,
+                tokens_out: 0,
+                cost: 0.0,
+            })
+        }
+        async fn stream(&self, _req: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("unused")
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "counting".into(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+    fn req() -> CompletionRequest {
+        CompletionRequest {
+            model: "m".into(),
+            system_prompt: String::new(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hi".into(),
+            }],
+            temperature: 0.0,
+            max_tokens: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn no_limiters_never_blocks() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let p = RateLimitedProvider::new(
+            Arc::new(CountingProvider {
+                calls: calls.clone(),
+            }),
+            None,
+            None,
+        );
+        let start = Instant::now();
+        for _ in 0..50 {
+            p.complete(req()).await.unwrap();
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 50);
+        assert!(start.elapsed() < Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn shared_provider_limiter_throttles_across_decorators() {
+        // Two decorators sharing ONE provider limiter (burst 2, 1/sec refill).
+        let shared = Arc::new(RateLimiter::new(Rate {
+            per_sec: 1.0,
+            burst: 2.0,
+        }));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let a = RateLimitedProvider::new(
+            Arc::new(CountingProvider {
+                calls: calls.clone(),
+            }),
+            Some(shared.clone()),
+            None,
+        );
+        let b = RateLimitedProvider::new(
+            Arc::new(CountingProvider {
+                calls: calls.clone(),
+            }),
+            Some(shared.clone()),
+            None,
+        );
+        // 2 immediate (burst), then the 3rd (via the OTHER decorator) must wait ~1s.
+        a.complete(req()).await.unwrap();
+        a.complete(req()).await.unwrap();
+        let start = Instant::now();
+        b.complete(req()).await.unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(800));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn agent_limiter_tightens_and_both_must_pass() {
+        // Loose provider limiter, tight per-agent limiter -> agent limiter governs.
+        let provider = Arc::new(RateLimiter::new(Rate::from_per_minute(600.0))); // basically loose
+        let agent = Arc::new(RateLimiter::new(Rate {
+            per_sec: 1.0,
+            burst: 1.0,
+        })); // 1 then wait
+        let calls = Arc::new(AtomicUsize::new(0));
+        let p = RateLimitedProvider::new(
+            Arc::new(CountingProvider {
+                calls: calls.clone(),
+            }),
+            Some(provider),
+            Some(agent),
+        );
+        p.complete(req()).await.unwrap();
+        let start = Instant::now();
+        p.complete(req()).await.unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(800));
+    }
+
+    #[test]
+    fn shared_registry_memoizes_by_key() {
+        let a = shared_provider_limiter("anthropic", Some(Rate::from_per_minute(50.0))).unwrap();
+        let b = shared_provider_limiter("anthropic", Some(Rate::from_per_minute(50.0))).unwrap();
+        assert!(Arc::ptr_eq(&a, &b)); // same key -> same Arc
+        assert!(shared_provider_limiter("nokey", None).is_none());
     }
 }
