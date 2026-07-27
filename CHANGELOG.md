@@ -1,3 +1,51 @@
+## v1.0.0-rc.5 (2026-07-27)
+
+Fifth release candidate. Consolidates the reopened-scope work: the full
+design-system rollout, the event-sourcing orchestration epic, real
+rate-limiting, and end-to-end hierarchical delegation. Also adopts a
+master-only branch model.
+
+### Design system (final surface: Docs)
+
+- **Docs surface** (#261): standalone brand assets (`assets/brand/`), an
+  identity-forward README (fixed badges), and an mdBook site reusing
+  `docs/wiki/` with a DS theme (oklch tokens, self-hosted IBM Plex) published
+  to GitHub Pages. Completes the DS rollout across Web + TUI + CLI + Docs.
+
+### Orchestration
+
+- **OH1 Lot 6** (#264): `armadai run --resume <run_id>` (continue an
+  interrupted event-sourced run) and `--replay <run_id>` (deterministic
+  re-display, no effects), with the `run_id` surfaced for the CLI and the live
+  Workroom. Closes the event-sourcing epic (Lots 1-6).
+- **End-to-end hierarchical delegation** (#273): the coordinator prompt now
+  delegates by default instead of stalling on a clarifying question, and the
+  orchestrated per-call timeout is raised to 600s (with an
+  `orchestration.agent_timeout_secs` override), so real delegated runs
+  complete on the CLI fleet.
+- **Live-run abort** (#275): Ctrl+C / q now abort a running orchestration
+  cleanly (the CLI subprocess is killed on drop instead of being orphaned),
+  and the Workroom footer advertises the real abort keys.
+
+### Providers
+
+- **Rate-limiting Lot 1** (#269): real proactive throttling via a
+  `RateLimitedProvider` decorator covering every provider call (event-sourced
+  engines included) — a shared per-provider limiter (`config.rate_limits`)
+  plus an optional per-agent limiter (frontmatter `rate_limit`). Fixes the
+  previously inert config and the `parse_rate("N/hour")` panic.
+
+### Debts
+
+- **Hardening** (#262): hermeticized the flaky `test_resolve_shell_model_aliases`,
+  zip-slip validation for remote-starter archives, and TUI UX (unified
+  quit-keys, detail-view scroll, Costs alignment).
+
+### Project
+
+- **master-only branch model**: dropped `develop`; `master` is the default
+  trunk. `develop` was reconciled into the release line first (#248).
+
 ## v1.0.0-rc.4 (2026-07-21)
 
 Fourth release candidate for 1.0.0. Completes the RC roadmap with remote
