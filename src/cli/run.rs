@@ -273,7 +273,7 @@ async fn execute_resume(
             anyhow::bail!("run {run_id} is not resumable (status: {:?})", peek.status);
         }
 
-        let use_tui = peek.pattern != "direct"
+        let use_tui = is_orchestrated_pattern(&peek.pattern)
             && !json
             && !quiet
             && !no_tui
@@ -447,6 +447,16 @@ async fn resume_run(
     // (300s) and re-hits the exact timeout this fix exists to prevent. Source
     // the config override the same way `run_orchestrated` does, from the
     // resolved project's `defaults.orchestration`.
+    //
+    // EXCEPTION: `resume_run` also resumes `direct` (single-agent,
+    // non-orchestrated) runs — unlike `run_orchestrated`'s loop below, which
+    // is only ever reached for orchestrated patterns. `timeout_overrides` is
+    // read unconditionally (harmless: `Default` when absent from config), but
+    // MUST NOT be applied to a `direct` roster agent below — see the
+    // `is_orchestrated_pattern` gate on the `apply_orchestrated_timeout` call
+    // (a prior regression applied it unconditionally here, giving resumed
+    // `direct` runs the 600s+ orchestrated timeout instead of the correct
+    // 300s default — see `.superpowers/sdd/orch-e2e-report.md`).
     let timeout_overrides = match &resolution {
         AgentResolution::Project { config, .. } => {
             config.defaults.orchestration.clone().unwrap_or_default()
@@ -467,7 +477,12 @@ async fn resume_run(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
         );
-        apply_orchestrated_timeout(&mut agent, timeout_overrides.agent_timeout_secs);
+        // Gate: only orchestrated patterns get the orchestrated timeout
+        // override — a resumed `direct` run must keep `create_provider`'s
+        // own 300s default untouched.
+        if is_orchestrated_pattern(&pattern) {
+            apply_orchestrated_timeout(&mut agent, timeout_overrides.agent_timeout_secs);
+        }
         let provider = create_provider(&agent)?;
         providers_map.insert(name.clone(), Arc::from(provider));
         agents_map.insert(name.clone(), agent);
@@ -2394,6 +2409,29 @@ fn apply_orchestrated_timeout(agent: &mut Agent, config_override: Option<u64>) {
     ));
 }
 
+/// Whether `pattern` names an orchestrated run (`blackboard`/`ring`/
+/// `hierarchical`, or any future non-`direct` pattern) as opposed to a plain
+/// single-agent `direct` run.
+///
+/// This is the ONE gate deciding whether [`apply_orchestrated_timeout`] may
+/// touch `agent.metadata.timeout`: `resume_run` reconstructs the roster for
+/// BOTH `direct` and orchestrated resumes through the same loop, so calling
+/// the override unconditionally there once regressed a resumed `direct` run
+/// onto the 600s+ orchestrated timeout instead of the correct 300s default
+/// (see `.superpowers/sdd/orch-e2e-report.md`). `execute_resume`'s own
+/// `use_tui` decision uses the identical `!= "direct"` marker (the Workroom
+/// TUI never applies to `direct` runs either) — sharing this fn keeps both
+/// checks from drifting apart.
+// Both call sites (`resume_run`'s roster loop, `execute_resume`'s `use_tui`
+// gate) live under `#[cfg(feature = "storage")]` — without `storage` this fn
+// has no non-test caller, so silence dead-code rather than gate the fn itself
+// behind `storage` too (the predicate is pure and stays unit-tested in both
+// feature modes).
+#[cfg_attr(not(feature = "storage"), allow(dead_code))]
+fn is_orchestrated_pattern(pattern: &str) -> bool {
+    pattern != "direct"
+}
+
 /// Apply project-level orchestration overrides to a BlackboardConfig.
 fn apply_blackboard_overrides(
     mut config: crate::core::orchestration::blackboard::BlackboardConfig,
@@ -2692,6 +2730,25 @@ mod tests {
         apply_orchestrated_timeout(&mut agent, None);
         assert_eq!(agent.metadata.timeout, Some(600));
         assert_ne!(agent.metadata.timeout, Some(300));
+    }
+
+    // --- Re-review regression: `resume_run` must NOT apply the orchestrated
+    // timeout override to a resumed `direct` run (see
+    // `.superpowers/sdd/orch-e2e-report.md`). `is_orchestrated_pattern` is the
+    // single gate both `resume_run`'s roster loop and `execute_resume`'s
+    // `use_tui` decision share, so locking its behavior here locks both call
+    // sites. ---
+
+    #[test]
+    fn is_orchestrated_pattern_direct_is_false() {
+        assert!(!is_orchestrated_pattern("direct"));
+    }
+
+    #[test]
+    fn is_orchestrated_pattern_true_for_known_orchestrated_patterns() {
+        assert!(is_orchestrated_pattern("blackboard"));
+        assert!(is_orchestrated_pattern("ring"));
+        assert!(is_orchestrated_pattern("hierarchical"));
     }
 }
 
