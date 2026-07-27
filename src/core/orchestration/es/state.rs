@@ -172,6 +172,23 @@ pub fn apply(state: &mut ExecutionState, event: &ExecutionEvent) {
             state.budget_tokens_out += u64::from(*tokens_out);
             state.budget_cost += *cost;
         }
+        ExecutionEvent::AgentFailed { agent, error } => {
+            // Push an `assistant` marker so `latest_response(agent)` is
+            // `Some` and the child reads as settled — otherwise a hierarchical
+            // coordinator would await a child that never responds
+            // (`awaiting_in_flight`). Budget counters are deliberately left
+            // untouched (no successful call happened).
+            state
+                .conversations
+                .entry(agent.clone())
+                .or_default()
+                .push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: crate::core::orchestration::es::event::delegation_failed_content(
+                        error,
+                    ),
+                });
+        }
         ExecutionEvent::ModelRouted { agent, tier, .. } => {
             state.routed_tiers.insert(agent.clone(), tier.clone());
         }
@@ -348,6 +365,35 @@ mod tests {
         assert!((st.budget_cost - 0.01).abs() < 1e-9);
         // conversation recorded for dev-lead (invoked + observed)
         assert!(!st.conversations.get("dev-lead").unwrap().is_empty());
+    }
+
+    #[test]
+    fn agent_failed_pushes_assistant_marker_and_leaves_budget_untouched() {
+        let mut st = ExecutionState::default();
+        apply(
+            &mut st,
+            &E::AgentInvoked {
+                agent: "b".into(),
+                input: "do it".into(),
+            },
+        );
+        apply(
+            &mut st,
+            &E::AgentFailed {
+                agent: "b".into(),
+                error: "boom".into(),
+            },
+        );
+
+        let convo = st.conversations.get("b").expect("conversation exists");
+        assert_eq!(convo.len(), 2);
+        assert_eq!(convo[0].role, "user");
+        assert_eq!(convo[1].role, "assistant");
+        assert_eq!(convo[1].content, "[Delegation failed: boom]");
+        // AgentFailed must not move budget counters (unlike AgentObserved).
+        assert_eq!(st.budget_tokens_in, 0);
+        assert_eq!(st.budget_tokens_out, 0);
+        assert_eq!(st.budget_cost, 0.0);
     }
 
     #[test]
