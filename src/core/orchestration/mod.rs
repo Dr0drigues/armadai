@@ -177,6 +177,12 @@ pub struct OrchestrationConfig {
     /// Max total iterations across all agents (default: 50).
     pub max_iterations: Option<u32>,
 
+    /// Max number of delegations executed concurrently within a single
+    /// parallel fan-out batch (default: 4). Consumed by patterns that opt into
+    /// `Action::InvokeParallel` (hierarchical, Lot 2).
+    #[serde(default)]
+    pub max_concurrency: Option<u32>,
+
     /// Global timeout in seconds (default: 300).
     pub timeout: Option<u64>,
 
@@ -204,6 +210,10 @@ impl OrchestrationConfig {
 
     pub fn max_iterations(&self) -> u32 {
         self.max_iterations.unwrap_or(50)
+    }
+
+    pub fn max_concurrency(&self) -> usize {
+        self.max_concurrency.unwrap_or(4) as usize
     }
 
     pub fn timeout_secs(&self) -> u64 {
@@ -836,5 +846,20 @@ teams:
             ..Default::default()
         };
         assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn max_concurrency_defaults_to_four() {
+        let cfg = OrchestrationConfig::default();
+        assert_eq!(cfg.max_concurrency(), 4);
+    }
+
+    #[test]
+    fn max_concurrency_honors_override() {
+        let cfg = OrchestrationConfig {
+            max_concurrency: Some(8),
+            ..OrchestrationConfig::default()
+        };
+        assert_eq!(cfg.max_concurrency(), 8);
     }
 }
