@@ -22,6 +22,11 @@ on:
 
 permissions:
   contents: read
+  # `rustsec/audit-check` creates a check-run to surface advisories as
+  # annotations. On `push` events that requires `checks: write`; without it
+  # the action fails with "Resource not accessible by integration" even when
+  # the audit itself is clean.
+  checks: write
 
 jobs:
   audit:
