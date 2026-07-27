@@ -211,6 +211,65 @@ fn render_detail_popup(frame: &mut Frame, area: Rect, markdown: &str) {
     frame.render_widget(popup, popup_area);
 }
 
+/// Side-effect-free decision for a single keypress in `run_loop`, extracted
+/// so the quit/abort model can be unit tested without a real terminal or
+/// orchestration. `focused`/`finished`/`detail_open` mirror the loop's local
+/// state at the time the key was read.
+///
+/// Fix for #274: `q` (like Ctrl+C) must abort a running run **regardless of
+/// focus** — previously `q` only aborted when `!focused`, so pressing
+/// Ctrl+W to focus the Workroom silently disabled the `q` abort, leaving
+/// Ctrl+C as the only way out (and the CLI subprocess would then orphan
+/// unless `providers::cli` also sets `kill_on_drop`, see that module).
+/// Once `finished`, `q`/Esc keep their unrelated meaning: dismiss the held
+/// final frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyAction {
+    /// Abort the running orchestration (`handle.abort()`) and exit the loop.
+    Abort,
+    /// Exit the loop without aborting (only valid once `finished`).
+    Close,
+    ToggleFocus,
+    SelectPrev,
+    SelectNext,
+    OpenDetail,
+    CloseDetail,
+    None,
+}
+
+fn key_action(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    focused: bool,
+    finished: bool,
+    detail_open: bool,
+) -> KeyAction {
+    // Ctrl+C aborts anytime, even with the detail popup open.
+    if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+        return KeyAction::Abort;
+    }
+
+    if detail_open {
+        return if matches!(code, KeyCode::Enter | KeyCode::Esc) {
+            KeyAction::CloseDetail
+        } else {
+            KeyAction::None
+        };
+    }
+
+    match code {
+        KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => KeyAction::ToggleFocus,
+        KeyCode::Up | KeyCode::Char('k') if focused => KeyAction::SelectPrev,
+        KeyCode::Down | KeyCode::Char('j') if focused => KeyAction::SelectNext,
+        KeyCode::Enter if focused => KeyAction::OpenDetail,
+        KeyCode::Char('q') | KeyCode::Esc if finished => KeyAction::Close,
+        // `q` aborts a running run regardless of focus (#274) — deliberately
+        // not gated on `!focused` anymore.
+        KeyCode::Char('q') => KeyAction::Abort,
+        _ => KeyAction::None,
+    }
+}
+
 /// Drain events, redraw, and poll input until the orchestration finishes and
 /// the user dismisses the final frame (or aborts early). Returns the final
 /// `RunEvent::Result` content (if any) for the caller to print once the
@@ -268,46 +327,31 @@ async fn run_loop(
             }
         })?;
 
-        // Input: Ctrl+C aborts anytime (even with the popup open). While the
-        // detail popup is open, Enter/Esc close it first — that precedence
-        // matters so Esc doesn't fall through to the view-exit handler below
-        // in the same keypress. Ctrl+W toggles focus, Enter opens the detail
-        // popup for the selected agent (when focused), q/Esc dismiss the
-        // held final frame once `finished`.
+        // Input: decision is delegated to the pure `key_action` helper (see
+        // its doc comment for the quit/abort model) — this loop only
+        // performs the resulting side effects.
         if event::poll(Duration::from_millis(80))?
             && let Event::Key(k) = event::read()?
             && k.kind == KeyEventKind::Press
         {
-            if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
-                handle.abort();
-                break;
-            }
-
-            if detail.is_some() {
-                if matches!(k.code, KeyCode::Enter | KeyCode::Esc) {
-                    detail = None;
+            match key_action(
+                k.code,
+                k.modifiers,
+                workroom.is_focused(),
+                finished,
+                detail.is_some(),
+            ) {
+                KeyAction::Abort => {
+                    handle.abort();
+                    break;
                 }
-            } else {
-                match k.code {
-                    KeyCode::Char('w') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                        workroom.set_focused(!workroom.is_focused());
-                    }
-                    KeyCode::Up | KeyCode::Char('k') if workroom.is_focused() => {
-                        workroom.select_prev()
-                    }
-                    KeyCode::Down | KeyCode::Char('j') if workroom.is_focused() => {
-                        workroom.select_next()
-                    }
-                    KeyCode::Enter if workroom.is_focused() => {
-                        detail = workroom.selected_detail_markdown();
-                    }
-                    KeyCode::Char('q') | KeyCode::Esc if finished => break,
-                    KeyCode::Char('q') if !workroom.is_focused() => {
-                        handle.abort();
-                        break;
-                    }
-                    _ => {}
-                }
+                KeyAction::Close => break,
+                KeyAction::ToggleFocus => workroom.set_focused(!workroom.is_focused()),
+                KeyAction::SelectPrev => workroom.select_prev(),
+                KeyAction::SelectNext => workroom.select_next(),
+                KeyAction::OpenDetail => detail = workroom.selected_detail_markdown(),
+                KeyAction::CloseDetail => detail = None,
+                KeyAction::None => {}
             }
         }
     }
@@ -329,6 +373,145 @@ mod tests {
     use crate::core::events::{EventSink, RunEvent};
     use crate::shell::workroom::Workroom;
     use std::time::Instant;
+
+    // ── key_action: the #274 quit/abort decision table ──
+
+    const NONE: KeyModifiers = KeyModifiers::NONE;
+    const CTRL: KeyModifiers = KeyModifiers::CONTROL;
+
+    #[test]
+    fn q_aborts_a_running_run_when_unfocused() {
+        assert_eq!(
+            key_action(KeyCode::Char('q'), NONE, false, false, false),
+            KeyAction::Abort
+        );
+    }
+
+    #[test]
+    fn q_aborts_a_running_run_when_focused() {
+        // Regression for #274: previously `q` only aborted when unfocused,
+        // so Ctrl+W (focus toggle) silently disabled the `q` abort and left
+        // Ctrl+C as the only way to quit a live run.
+        assert_eq!(
+            key_action(KeyCode::Char('q'), NONE, true, false, false),
+            KeyAction::Abort
+        );
+    }
+
+    #[test]
+    fn ctrl_c_aborts_regardless_of_focus_or_detail_popup() {
+        for focused in [false, true] {
+            for detail_open in [false, true] {
+                assert_eq!(
+                    key_action(KeyCode::Char('c'), CTRL, focused, false, detail_open),
+                    KeyAction::Abort,
+                    "focused={focused} detail_open={detail_open}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn q_and_esc_dismiss_instead_of_abort_once_finished() {
+        assert_eq!(
+            key_action(KeyCode::Char('q'), NONE, true, true, false),
+            KeyAction::Close
+        );
+        assert_eq!(
+            key_action(KeyCode::Char('q'), NONE, false, true, false),
+            KeyAction::Close
+        );
+        assert_eq!(
+            key_action(KeyCode::Esc, NONE, true, true, false),
+            KeyAction::Close
+        );
+    }
+
+    #[test]
+    fn esc_does_not_abort_a_running_run() {
+        // Esc has no abort meaning while running (only q/Ctrl+C do); it's a
+        // no-op here so it doesn't fall through to anything destructive.
+        assert_eq!(
+            key_action(KeyCode::Esc, NONE, false, false, false),
+            KeyAction::None
+        );
+    }
+
+    #[test]
+    fn ctrl_w_toggles_focus_in_either_direction() {
+        assert_eq!(
+            key_action(KeyCode::Char('w'), CTRL, false, false, false),
+            KeyAction::ToggleFocus
+        );
+        assert_eq!(
+            key_action(KeyCode::Char('w'), CTRL, true, false, false),
+            KeyAction::ToggleFocus
+        );
+    }
+
+    #[test]
+    fn jk_select_only_when_focused() {
+        assert_eq!(
+            key_action(KeyCode::Char('j'), NONE, true, false, false),
+            KeyAction::SelectNext
+        );
+        assert_eq!(
+            key_action(KeyCode::Char('k'), NONE, true, false, false),
+            KeyAction::SelectPrev
+        );
+        assert_eq!(
+            key_action(KeyCode::Down, NONE, true, false, false),
+            KeyAction::SelectNext
+        );
+        assert_eq!(
+            key_action(KeyCode::Up, NONE, true, false, false),
+            KeyAction::SelectPrev
+        );
+        // Unfocused: j/k are not select shortcuts (and not the `q` abort key
+        // either), so they're a no-op.
+        assert_eq!(
+            key_action(KeyCode::Char('j'), NONE, false, false, false),
+            KeyAction::None
+        );
+        assert_eq!(
+            key_action(KeyCode::Char('k'), NONE, false, false, false),
+            KeyAction::None
+        );
+    }
+
+    #[test]
+    fn enter_opens_detail_only_when_focused_and_no_popup_open() {
+        assert_eq!(
+            key_action(KeyCode::Enter, NONE, true, false, false),
+            KeyAction::OpenDetail
+        );
+        assert_eq!(
+            key_action(KeyCode::Enter, NONE, false, false, false),
+            KeyAction::None
+        );
+    }
+
+    #[test]
+    fn enter_or_esc_close_an_open_detail_popup() {
+        assert_eq!(
+            key_action(KeyCode::Enter, NONE, true, false, true),
+            KeyAction::CloseDetail
+        );
+        assert_eq!(
+            key_action(KeyCode::Esc, NONE, true, false, true),
+            KeyAction::CloseDetail
+        );
+        // Any other key with the popup open is a no-op — it doesn't leak
+        // through to select/abort while the popup is up.
+        assert_eq!(
+            key_action(KeyCode::Char('j'), NONE, true, false, true),
+            KeyAction::None
+        );
+        assert_eq!(
+            key_action(KeyCode::Char('q'), NONE, true, false, true),
+            KeyAction::None
+        );
+    }
 
     #[test]
     fn sink_forwards_events_to_projection() {

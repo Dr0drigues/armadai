@@ -49,6 +49,15 @@ impl CliProvider {
         cmd.arg(input);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        // Ensure the child is SIGKILLed if the `Child`/future is dropped
+        // without being awaited to completion — e.g. when a caller aborts
+        // the `tokio::spawn`'d task driving `complete()`/`stream()` (see
+        // `shell::run_view::run_loop`'s Ctrl+C/`q` handling). Without this,
+        // an aborted run leaves the CLI subprocess (e.g. `claude`) running
+        // and orphaned, still writing to the inherited stdout/stderr after
+        // the TUI has torn down the alternate screen — looking like "the
+        // run keeps going" even though ArmadAI itself has exited (#274).
+        cmd.kill_on_drop(true);
         cmd
     }
 
@@ -243,6 +252,63 @@ mod tests {
         })
         .await;
         assert!(result.is_err());
+    }
+
+    // ── kill_on_drop (fix for #274: abort must not orphan the subprocess) ──
+
+    /// Best-effort liveness check via `kill -0 <pid>` (POSIX; both the CI
+    /// Linux runners and macOS dev machines have `kill`). A zombie still
+    /// occupies the process table until its parent reaps it, so this
+    /// correctly reports "alive" until the OS/tokio's orphan-queue reaper
+    /// has actually collected it.
+    fn process_alive(pid: i32) -> bool {
+        std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn dropping_child_kills_orphaned_process_via_kill_on_drop() {
+        // Regression test for #274: the Workroom's `run_loop` aborts a
+        // running orchestration by dropping the `tokio::spawn`'d task
+        // future. Without `kill_on_drop(true)` on the `Command` built in
+        // `build_command`, dropping the future (and its owned `Child`)
+        // leaves the CLI subprocess (e.g. `claude`) running and orphaned —
+        // it keeps writing to the inherited stdout/stderr after the TUI has
+        // torn down, which looks like "the run keeps going" even though
+        // ArmadAI has exited. This asserts the child is actually gone
+        // shortly after the `Child` handle is dropped, unawaited.
+        let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 10);
+        let mut cmd = provider.build_command("sleep 30");
+        let child = cmd.spawn().expect("failed to spawn `sh -c sleep 30`");
+        let pid = child.id().expect("spawned child should have a pid") as i32;
+
+        assert!(
+            process_alive(pid),
+            "sanity check: child {pid} should be running right after spawn"
+        );
+
+        // Simulate `handle.abort()`: drop the future (and the `Child` it
+        // owns) without ever calling `.wait()`/`.output()` on it.
+        drop(child);
+
+        // `kill_on_drop`'s `Drop` impl sends SIGKILL synchronously, but the
+        // process table entry is only cleared once tokio's orphan-queue
+        // reaper collects it (driven by SIGCHLD) — poll briefly instead of
+        // asserting instantaneously.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && process_alive(pid) {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        assert!(
+            !process_alive(pid),
+            "child process {pid} should have been killed+reaped when the Child was \
+             dropped (kill_on_drop); a still-running process here reproduces the #274 orphan"
+        );
     }
 
     #[tokio::test]

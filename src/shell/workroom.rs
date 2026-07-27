@@ -847,17 +847,26 @@ impl Workroom {
         }
     }
 
-    /// Append the blank line + Ctrl+W hint footer shared by all layouts.
+    /// Append the blank line + shortcuts hint footer shared by all layouts.
+    ///
+    /// While a run is in progress, `q`/Ctrl+C abort it regardless of focus
+    /// (see `shell::run_view::run_loop`) — Ctrl+W only ever *toggles focus*,
+    /// it never exits, so the RUNNING-state hint must say so (#274: the
+    /// previous "Ctrl+W exit" label was false and the real abort keys went
+    /// unadvertised once focused).
     fn push_footer(&self, lines: &mut Vec<Line>) {
         lines.push(Line::from(""));
         if self.focused {
             lines.push(Line::from(Span::styled(
-                "Ctrl+W exit · j/k select",
+                "q / Ctrl+C abort · Ctrl+W focus · j/k select",
                 theme::muted(),
             )));
             lines.push(Line::from(Span::styled("Enter detail", theme::muted())));
         } else {
-            lines.push(Line::from(Span::styled("Ctrl+W focus", theme::muted())));
+            lines.push(Line::from(Span::styled(
+                "q / Ctrl+C abort · Ctrl+W focus",
+                theme::muted(),
+            )));
         }
         if self.completed {
             let check = theme::glyphs().check;
