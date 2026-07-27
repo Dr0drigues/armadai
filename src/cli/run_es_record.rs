@@ -109,6 +109,38 @@ pub fn ring_display(state: &ExecutionState, events: &[ExecutionEvent]) -> String
     format!("{outcome}\n[votes] {votes}")
 }
 
+/// Single source of truth for a run's terminal `RunEvent::Result.content`,
+/// branching on the folded `state.pattern` exactly the way `resume_run`
+/// (`src/cli/run.rs`) used to inline it: `blackboard` and `ring` need their
+/// own display helpers (the ring vote tally in particular has no equivalent
+/// in the generic `OrchestrationResult` shape), everything else — `direct`,
+/// `hierarchical`, and any unexpected pattern — falls back to
+/// `to_orchestration_result`.
+///
+/// Factored out (re-review fix) so `resume_run` and `--replay`
+/// (`crate::cli::run_replay::replay_from_log`) call the SAME branch instead
+/// of each hand-rolling it: before this, `replay_from_log` used
+/// `to_orchestration_result` unconditionally for every pattern, so a
+/// replayed `ring` run silently dropped the `[votes] …` tally that live/
+/// `--resume` both include — replay diverged from live for exactly the
+/// pattern whose whole point is the vote. Routing both call sites through
+/// one function makes that drift structurally impossible to reintroduce.
+///
+/// Both current callers (`resume_run`, `replay_from_log`) only exist under
+/// `#[cfg(feature = "storage")]` (the event log this whole read-back/resume
+/// story depends on is only persisted with that feature), so this is gated
+/// the same way — unlike `blackboard_display`/`ring_display` above, which
+/// stay ungated because the LIVE orchestrated path also calls them
+/// unconditionally.
+#[cfg(feature = "storage")]
+pub(crate) fn final_content(state: &ExecutionState, events: &[ExecutionEvent]) -> String {
+    match state.pattern.as_str() {
+        "blackboard" => blackboard_display(state),
+        "ring" => ring_display(state, events),
+        _ => crate::core::orchestration::es::bridge::to_orchestration_result(state, events).content,
+    }
+}
+
 /// Plain-text summary of ring contributions (`[agent] action: content`, in
 /// insertion order). Used as the `runs.output` diagnostic column in
 /// [`record_ring_es_into`] — unlike [`ring_display`], it needs no `events`
@@ -803,5 +835,64 @@ mod storage_tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].agent, "a");
         assert_eq!(entries[0].kind, "finding");
+    }
+
+    // ── final_content: the shared resume/replay branch (storage-gated,
+    // same as the function itself — see its doc comment) ────────────
+
+    #[test]
+    fn final_content_uses_ring_display_for_ring_pattern() {
+        let mut state = ExecutionState {
+            pattern: "ring".to_string(),
+            ..Default::default()
+        };
+        state.ring.votes.insert(
+            "b".to_string(),
+            VoteRec {
+                agent: "b".to_string(),
+                position: "approve".to_string(),
+                confidence: 0.8,
+                supports: vec![0],
+                concerns: vec![],
+            },
+        );
+        let events = [ExecutionEvent::OutcomeResolved {
+            outcome: "consensus reached".to_string(),
+        }];
+        let content = final_content(&state, &events);
+        assert!(content.starts_with("consensus reached"));
+        assert!(
+            content.contains("[votes]"),
+            "ring's final_content must include the vote tally, got: {content}"
+        );
+    }
+
+    #[test]
+    fn final_content_uses_blackboard_display_for_blackboard_pattern() {
+        let mut state = ExecutionState {
+            pattern: "blackboard".to_string(),
+            ..Default::default()
+        };
+        state.board.entries.push(BoardEntryRec {
+            agent: "a".to_string(),
+            round: 1,
+            kind: "finding".to_string(),
+            content: "first finding".to_string(),
+            refs: vec![],
+            confidence: 0.9,
+        });
+        assert_eq!(final_content(&state, &[]), "[a] first finding");
+    }
+
+    #[test]
+    fn final_content_falls_back_to_orchestration_result_for_other_patterns() {
+        let state = ExecutionState {
+            pattern: "hierarchical".to_string(),
+            ..Default::default()
+        };
+        let events = [ExecutionEvent::Completed {
+            content: "final answer".to_string(),
+        }];
+        assert_eq!(final_content(&state, &events), "final answer");
     }
 }

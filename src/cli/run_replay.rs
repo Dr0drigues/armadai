@@ -21,8 +21,12 @@
 //! either CLI-shaped event needs context the per-event projection doesn't
 //! have. `replay_from_log` therefore synthesizes both itself —
 //! [`crate::core::orchestration::es::bridge::synthetic_run_start`] for the
-//! head, `to_orchestration_result` (same fn the live hierarchical/direct path
-//! uses) for the terminal `Result` — so `--replay --json` produces the SAME
+//! head, [`crate::cli::run_es_record::final_content`] (the SAME helper
+//! `resume_run` in `run.rs` calls, and the fix for a re-review fidelity gap:
+//! this module used to call `to_orchestration_result` unconditionally here,
+//! which has no notion of a `ring` run's vote tally — a replayed `ring` run
+//! would silently drop the `[votes] …` line live/`--resume` both include)
+//! for the terminal `Result` — so `--replay --json` produces the SAME
 //! complete `RunEvent` stream a live run did, not just its mid-stream slice.
 //!
 //! Split in two on purpose:
@@ -123,6 +127,7 @@ pub(crate) fn replay_from_log<L: crate::core::orchestration::es::log::EventLog>(
     sink: &Arc<dyn EventSink>,
     human_output: bool,
 ) -> anyhow::Result<()> {
+    use crate::cli::run_es_record::final_content;
     use crate::core::orchestration::es::bridge::{
         map_execution_to_run_events, synthetic_run_start, to_orchestration_result,
     };
@@ -149,7 +154,12 @@ pub(crate) fn replay_from_log<L: crate::core::orchestration::es::log::EventLog>(
     // ES engine (`RunStarted` maps to `[]` in `map_execution_to_run_events`)
     // — replay must synthesize it so `--replay --json` produces the SAME
     // complete stream a live run does (see `synthetic_run_start`'s doc).
-    sink.emit(&synthetic_run_start(run_id, &state.agents, &events));
+    sink.emit(&synthetic_run_start(
+        run_id,
+        &state.pattern,
+        &state.agents,
+        &events,
+    ));
 
     // No roster is available on this read-only path (see module docs): every
     // `AgentInvoked` replays through the empty-`agent_meta` fallback, so its
@@ -162,13 +172,20 @@ pub(crate) fn replay_from_log<L: crate::core::orchestration::es::log::EventLog>(
     }
 
     // TERMINAL bookend: same reasoning as the head `RunStart` above — a live
-    // run's `Result` is built by `run.rs` from `to_orchestration_result`,
-    // never by the engine projection (`Completed` also maps to `[]`), so
-    // replay must build and emit it itself for the stream to end the same
-    // way a live run's does.
+    // run's `Result` is built by `run.rs`, never by the engine projection
+    // (`Completed` also maps to `[]`), so replay must build and emit it
+    // itself for the stream to end the same way a live run's does.
+    //
+    // `content` goes through `final_content` (the SAME pattern-branching
+    // helper `resume_run` uses) rather than `to_orchestration_result`
+    // directly — that fixed a fidelity gap where a replayed `ring` run
+    // dropped its vote tally (see module doc). `tin`/`tout`/`cost` stay
+    // pattern-agnostic (always `state.budget_*`), so `to_orchestration_result`
+    // is still the right source for those.
     let result = to_orchestration_result(&state, &events);
+    let content = final_content(&state, &events);
     sink.emit(&RunEvent::Result {
-        content: result.content.clone(),
+        content: content.clone(),
         tin: result.total_tokens_in,
         tout: result.total_tokens_out,
         cost: result.total_cost,
@@ -176,11 +193,11 @@ pub(crate) fn replay_from_log<L: crate::core::orchestration::es::log::EventLog>(
     });
 
     // Human-mode convenience: print the run's final answer, same as a live
-    // run's `println!(content)` — reuses `result.content` above instead of
+    // run's `println!(content)` — reuses `content` above instead of
     // recomputing it. This is a plain stdout print, independent of the
     // `RunEvent` stream above/`sink`.
     if human_output {
-        println!("{}", result.content);
+        println!("{content}");
     }
 
     Ok(())

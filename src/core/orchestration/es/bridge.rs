@@ -337,15 +337,29 @@ pub fn to_orchestration_result(
 /// - `v`: `1`, matching every live `RunStart`.
 /// - `agents`: the folded roster (`ExecutionState::agents`, from
 ///   `RunStarted`).
-/// - `prov`/`model`: empty strings — not reconstructable from the log alone
-///   (same documented gap as replayed `AgentStart`s, see `run_replay.rs`'s
-///   module doc).
+/// - `prov`: empty string — not reconstructable from the log alone (same
+///   documented gap as replayed `AgentStart`s, see `run_replay.rs`'s module
+///   doc).
+/// - `model`: matches what the live `RunStart` puts there for `pattern`
+///   (re-review fix — this used to be unconditionally empty here, diverging
+///   from live): `run.rs`'s live orchestrated `RunStart`
+///   (`run_orchestrated`) sets `model: pattern.to_string()`, while its live
+///   `direct`/sequential `RunStart` (`run_single_agent`) leaves it empty. So
+///   `pattern` (the SAME folded `ExecutionState::pattern` the caller already
+///   has) selects between the two: `""` for `"direct"`, the pattern name
+///   itself otherwise. `--json`/Workroom fidelity only — the Workroom itself
+///   only reads `agents` off this event.
 /// - `in_chars`: recovered from the FIRST `ExecutionEvent::RunStarted.input`
 ///   found in `events` (`0` if somehow absent). Unlike `prov`/`model`, the
 ///   original input IS logged verbatim — `ExecutionState::apply` just
 ///   discards it (keeping only `agents`/`pattern` from `RunStarted`) — so
 ///   scanning the raw event list recovers it exactly instead of stubbing it.
-pub fn synthetic_run_start(run_id: &str, agents: &[String], events: &[ExecutionEvent]) -> RunEvent {
+pub fn synthetic_run_start(
+    run_id: &str,
+    pattern: &str,
+    agents: &[String],
+    events: &[ExecutionEvent],
+) -> RunEvent {
     let in_chars = events
         .iter()
         .find_map(|e| match e {
@@ -354,12 +368,18 @@ pub fn synthetic_run_start(run_id: &str, agents: &[String], events: &[ExecutionE
         })
         .unwrap_or(0);
 
+    let model = if pattern == "direct" {
+        String::new()
+    } else {
+        pattern.to_string()
+    };
+
     RunEvent::RunStart {
         run_id: run_id.to_string(),
         v: 1,
         agents: agents.to_vec(),
         prov: String::new(),
-        model: String::new(),
+        model,
         in_chars,
     }
 }

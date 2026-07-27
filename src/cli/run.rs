@@ -426,6 +426,7 @@ async fn resume_run(
     // too — it matches what a live run emits).
     sink.emit(&synthetic_run_start(
         run_id,
+        &pattern,
         &state.agents,
         &pre_resume_events,
     ));
@@ -528,11 +529,12 @@ async fn resume_run(
         }
     }
 
-    let content = match pattern.as_str() {
-        "blackboard" => super::run_es_record::blackboard_display(&final_state),
-        "ring" => super::run_es_record::ring_display(&final_state, &events),
-        _ => to_orchestration_result(&final_state, &events).content,
-    };
+    // Re-review fix: routed through the shared `final_content` helper (used
+    // identically by `--replay`'s `replay_from_log`) instead of inlining the
+    // pattern branch here a second time — see that fn's doc for why (a
+    // second, drifted copy of this branch is exactly what let `--replay`'s
+    // `ring` output silently lose its vote tally).
+    let content = super::run_es_record::final_content(&final_state, &events);
 
     if human_output {
         let s = status_style(&final_state.status);
@@ -4103,6 +4105,92 @@ mod es_switch_tests {
         assert_eq!(tail["agents"], serde_json::json!(1));
     }
 
+    /// Re-review fix, regression lock: `--replay` of a `ring` run with
+    /// non-empty `state.ring.votes` must include the `[votes] …` tally in
+    /// the terminal `Result.content`, exactly like the live path and
+    /// `--resume` already do via `run_es_record::ring_display` — before the
+    /// fix, `replay_from_log` called `to_orchestration_result`
+    /// unconditionally, which has no notion of votes at all, so the tally
+    /// silently vanished on replay for the one pattern whose whole point is
+    /// the vote. Builds a minimal ring event log directly (bypassing the
+    /// live ring engine entirely — same idiom as `run_es_record.rs`'s own
+    /// `sample_blackboard_events` test helper: only what `fold` +
+    /// `ring_display` need), persists it through a real (embedded)
+    /// `SqliteLog`, then drives `replay_from_log` against it — the same
+    /// injectable-log harness every other test in this module uses, no
+    /// global env/config mutation.
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn replay_of_completed_ring_run_with_votes_includes_vote_tally() {
+        use crate::core::orchestration::es::log::SqliteLog;
+        use crate::storage::init_embedded;
+
+        let db = init_embedded().unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        let mut log = SqliteLog::new(db.clone());
+        let events = [
+            ExecutionEvent::RunStarted {
+                run_id: run_id.clone(),
+                pattern: "ring".to_string(),
+                agents: vec!["a".to_string(), "b".to_string()],
+                input: "review the design".to_string(),
+                project: None,
+            },
+            ExecutionEvent::LapStarted { lap: 1 },
+            ExecutionEvent::ContributionAdded {
+                agent: "a".to_string(),
+                lap: 1,
+                position: 0,
+                action: "propose".to_string(),
+                content: "initial proposal".to_string(),
+                tokens_in: 10,
+                tokens_out: 20,
+                cost: 0.01,
+            },
+            ExecutionEvent::VoteCast {
+                agent: "a".to_string(),
+                position: "approve".to_string(),
+                confidence: 0.9,
+                supports: vec![0],
+                concerns: vec![],
+            },
+            ExecutionEvent::VoteCast {
+                agent: "b".to_string(),
+                position: "approve".to_string(),
+                confidence: 0.8,
+                supports: vec![0],
+                concerns: vec![],
+            },
+            ExecutionEvent::OutcomeResolved {
+                outcome: "consensus reached".to_string(),
+            },
+            ExecutionEvent::Completed {
+                content: "consensus reached".to_string(),
+            },
+        ];
+        for event in &events {
+            log.append(&run_id, event).unwrap();
+        }
+
+        let replay_log = SqliteLog::new(db);
+        let (capture, sink) = capture_sink();
+        crate::cli::run_replay::replay_from_log(&replay_log, &run_id, &sink, false).unwrap();
+
+        let tags = capture.tags();
+        assert_eq!(tags.last().map(String::as_str), Some("result"));
+
+        let captured = capture.events.lock().unwrap();
+        let tail = captured.last().unwrap();
+        let content = tail["content"].as_str().unwrap();
+        assert!(
+            content.contains("[votes]"),
+            "replayed ring Result.content must include the vote tally like the \
+             live/--resume path, got: {content}"
+        );
+        assert!(content.starts_with("consensus reached"));
+    }
+
     #[cfg(feature = "storage")]
     #[test]
     fn replay_unknown_run_id_errors() {
@@ -4192,6 +4280,7 @@ mod es_switch_tests {
         // roster/events, before the engine resumes.
         sink.emit(&synthetic_run_start(
             &run_id,
+            &state.pattern,
             &state.agents,
             &pre_resume_events,
         ));
