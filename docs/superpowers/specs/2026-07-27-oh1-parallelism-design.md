@@ -61,9 +61,12 @@ pub enum Action {
     Invoke { agent: String, input: String },
     /// Invoke several agents concurrently. The loop records one
     /// `AgentInvoked` per entry in Vec order, runs the effects concurrently
-    /// (bounded), then records each outcome in Vec order — independent of
-    /// completion order, so replay/resume stay deterministic.
-    InvokeParallel(Vec<InvokeSpec>),
+    /// (bounded by `max_concurrency`), then records each outcome in Vec order
+    /// — independent of completion order, so replay/resume stay deterministic.
+    InvokeParallel {
+        batch: Vec<InvokeSpec>,
+        max_concurrency: usize,
+    },
     Emit(ExecutionEvent),
     Halt { reason: String },
     Complete { content: String },
@@ -110,11 +113,14 @@ exactement `[AgentInvoked×N (ordre Vec)]` puis `[outcome×N (ordre Vec)]`,
 totalement indépendants de l'ordre de complétion → `replay` (fold pur) et
 `resume` restent déterministes.
 
-**Le cap `max_concurrency`** est passé en paramètre à `run_event_sourced`
-(dérivé de `OrchestrationConfig` au point d'appel, défaut 4). Choix : paramètre
-explicite du moteur plutôt que relecture de `state.config_json` dans la boucle —
-garde le moteur générique découplé du schéma de config. `Action::Invoke`
-(séquentiel) ignore le cap.
+**Le cap `max_concurrency` est porté par l'action `InvokeParallel` elle-même**
+(pas par la signature du moteur). Choix : le moteur générique
+(`run_event_sourced`/`resume_event_sourced`) garde sa signature **inchangée** →
+aucun des 8 points d'entrée (direct/blackboard/ring/hierarchical × run+resume)
+n'est touché en Lot 1, et un pattern qui n'opte pas ignore totalement le cap.
+Le décideur qui émet `InvokeParallel` fixe le cap (le hiérarchique lira
+`config.max_concurrency()` en Lot 2, défaut 4). `Action::Invoke` (séquentiel)
+n'a pas de cap.
 
 ### 3. Nouvel event `ExecutionEvent::AgentFailed { agent, error }`
 
@@ -180,34 +186,36 @@ successifs). Aucun changement Workroom dans ce périmètre.
 
 ## Impact par surface
 
-- **`es/engine.rs`** : `Action::InvokeParallel` + struct `Invoke` ; handler dans
-  `run_loop` ; param `max_concurrency` sur `run_event_sourced` (et le chemin
-  `resume`). Dép. `futures` (`buffer_unordered`) — déjà transitive, à confirmer
-  en dépendance directe.
+- **`es/engine.rs`** : `Action::InvokeParallel { batch, max_concurrency }` +
+  struct `InvokeSpec` ; handler dans `run_loop`. Signatures
+  `run_event_sourced`/`resume_event_sourced`/`run_loop` **inchangées** (cap
+  porté par l'action). Dép. `futures-util` (`buffer_unordered`) — déjà dans le
+  graphe (transitif via reqwest/tokio), à promouvoir en dépendance directe.
 - **`es/event.rs`** : variante `AgentFailed { agent, error }`.
 - **`es/state.rs`** : bras `apply(AgentFailed)` (push `assistant` + marqueur).
 - **`es/bridge.rs`** : bras `AgentFailed` → `RunEvent::AgentEnd`.
 - **`es/hierarchical.rs`** (Lot 2) : `dispatch_actions` émet `InvokeParallel`.
 - **`core/orchestration/mod.rs`** : champ `max_concurrency: Option<u32>` sur
   `OrchestrationConfig` (défaut 4), suivant le motif des autres limites partagées.
-- **Points d'appel** (`cli/run.rs`) : dériver `max_concurrency` de la config et le
-  passer à `run_event_sourced`/resume.
+- **Décideur hiérarchique** (Lot 2) : lit `config.max_concurrency()` et le place
+  dans l'action `InvokeParallel`. Aucun changement des points d'appel `cli/run.rs`.
 - **Ring / direct / blackboard** : **inchangés** (n'émettent pas `InvokeParallel`).
 - **`--resume`/`--replay`** : inchangés fonctionnellement (fold pur sur ordre
   enregistré stable).
 
 ## Découpage en sous-lots (une PR chacun + revue indé + validation Dimitri)
 
-- **Lot 1 — Socle** : `Action::InvokeParallel` + struct `Invoke` ;
-  `ExecutionEvent::AgentFailed` (event + `apply` + bridge) ; handler `run_loop`
-  (`buffer_unordered`, ordre Vec déterministe, collect-and-record) ; param
-  `max_concurrency` + champ `OrchestrationConfig` (défaut 4). Tests **sur mock
-  `EffectRunner`** (aucun pattern ne l'émet encore) : déterminisme d'ordre, cap
-  respecté, échec partiel enregistré + run continue.
-- **Lot 2 — Opt-in hiérarchique** : `dispatch_actions` émet `InvokeParallel` ;
-  câblage `max_concurrency` au point d'appel `run` ; test d'intégration
-  hiérarchique (fan-out concurrent, ordre enregistré déterministe, un enfant en
-  échec → synthèse sur partiel).
+- **Lot 1 — Socle** : `Action::InvokeParallel { batch, max_concurrency }` +
+  struct `InvokeSpec` ; `ExecutionEvent::AgentFailed` (event + `apply` + bridge) ;
+  handler `run_loop` (`buffer_unordered`, ordre Vec déterministe,
+  collect-and-record) ; champ `OrchestrationConfig::max_concurrency` +
+  accesseur `max_concurrency()` (défaut 4). Tests **sur mock `EffectRunner`**
+  (aucun pattern ne l'émet encore) : déterminisme d'ordre, cap respecté, échec
+  partiel enregistré + run continue.
+- **Lot 2 — Opt-in hiérarchique** : `dispatch_actions` émet `InvokeParallel` (cap
+  = `config.max_concurrency()`) ; test d'intégration hiérarchique (fan-out
+  concurrent, ordre enregistré déterministe, un enfant en échec → synthèse sur
+  partiel).
 
 ## Hors périmètre
 
