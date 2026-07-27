@@ -1562,6 +1562,17 @@ async fn run_orchestrated(
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
     let mut deprecations: Vec<(Option<String>, Option<String>)> = Vec::new();
 
+    // Fix B (#270 stopgap): read the project's `defaults.orchestration`
+    // ahead of provider construction so `agent_timeout_secs` can actually
+    // reach the CLI provider's timeout (see `orchestrated_agent_timeout_secs`
+    // doc comment for why this must happen here, before `create_provider`).
+    let timeout_overrides = match resolution {
+        AgentResolution::Project { config, .. } => {
+            config.defaults.orchestration.clone().unwrap_or_default()
+        }
+        _ => crate::core::project::OrchestrationDefaults::default(),
+    };
+
     for name in agent_names {
         let agent_path = resolve_agent_path(resolution, name)?;
         let mut agent = crate::parser::parse_agent_file(&agent_path)?;
@@ -1574,6 +1585,11 @@ async fn run_orchestrated(
         if agent.metadata.model != model_before {
             deprecations.push((model_before, agent.metadata.model.clone()));
         }
+
+        agent.metadata.timeout = Some(orchestrated_agent_timeout_secs(
+            agent.metadata.timeout,
+            timeout_overrides.agent_timeout_secs,
+        ));
 
         let provider = create_provider(&agent)?;
         providers.push(Arc::from(provider));
@@ -2305,6 +2321,50 @@ async fn dispatch_hierarchical_es(
     Ok((state, events, run_id.to_string()))
 }
 
+/// Default CLI provider timeout (seconds) for an agent taking part in an
+/// orchestrated run (blackboard/ring/hierarchical), used when neither the
+/// agent's own frontmatter `timeout` nor the project's
+/// `defaults.orchestration.agent_timeout_secs` sets one.
+///
+/// Higher than the non-orchestrated single-agent default (300s, see
+/// `providers::factory::create_provider`) because an orchestrated
+/// coordinator's `claude -p` turn is itself agentic (delegating, waiting on
+/// sub-agents, synthesizing) and can legitimately run past 300s — 242k-499k
+/// tokens/turn were observed on real hierarchical runs (#270). This is a
+/// stopgap pending the per-delegation-reset timeout design (#270); it does
+/// NOT change the non-orchestrated default.
+const ORCHESTRATED_DEFAULT_TIMEOUT_SECS: u64 = 600;
+
+/// Resolve the effective CLI provider timeout (seconds) for an agent
+/// participating in an orchestrated run.
+///
+/// Precedence: the agent's own frontmatter `timeout` always wins (explicit
+/// per-agent configuration is never overridden). Otherwise, the project's
+/// `defaults.orchestration.agent_timeout_secs` override applies. Otherwise,
+/// falls back to [`ORCHESTRATED_DEFAULT_TIMEOUT_SECS`].
+///
+/// This is the ONE place that actually reaches the provider timeout for
+/// orchestrated runs: `create_provider` only reads `agent.metadata.timeout`
+/// (`.unwrap_or(300)`), so this must run before `create_provider` is called
+/// on each agent in `run_orchestrated`'s loading loop — the BlackboardConfig/
+/// RingConfig `agent_timeout_secs` field (populated by
+/// `apply_blackboard_overrides`/`apply_ring_overrides`) is never read by the
+/// event-sourced engine (`es::blackboard`/`es::ring` call
+/// `provider.complete()` directly, no timeout wrapper), so setting it alone
+/// does not change any real timeout. Applying the override here, before
+/// provider construction, is therefore the single mechanism that covers
+/// blackboard, ring, AND hierarchical alike (they share this same loading
+/// loop) — see the Fix B investigation notes in
+/// `.superpowers/sdd/orch-e2e-report.md`.
+fn orchestrated_agent_timeout_secs(
+    frontmatter_timeout: Option<u64>,
+    config_override: Option<u64>,
+) -> u64 {
+    frontmatter_timeout
+        .or(config_override)
+        .unwrap_or(ORCHESTRATED_DEFAULT_TIMEOUT_SECS)
+}
+
 /// Apply project-level orchestration overrides to a BlackboardConfig.
 fn apply_blackboard_overrides(
     mut config: crate::core::orchestration::blackboard::BlackboardConfig,
@@ -2494,6 +2554,35 @@ mod tests {
                 assert!(!dir.to_string_lossy().is_empty());
             }
         }
+    }
+
+    // --- Fix B (#270 stopgap): orchestrated agent timeout resolution ---
+
+    /// The agent's own frontmatter `timeout` always wins, even over a
+    /// project-level `agent_timeout_secs` override — explicit per-agent
+    /// configuration must never be silently overridden.
+    #[test]
+    fn orchestrated_timeout_frontmatter_wins_over_config_override() {
+        assert_eq!(orchestrated_agent_timeout_secs(Some(120), Some(900)), 120);
+    }
+
+    /// With no frontmatter timeout, the hierarchical (and blackboard/ring)
+    /// path must apply the project's `defaults.orchestration.agent_timeout_secs`
+    /// override — this is the actual fix for #270's "hierarchical has no
+    /// agent_timeout_secs override" gap.
+    #[test]
+    fn orchestrated_timeout_applies_config_override_when_no_frontmatter() {
+        assert_eq!(orchestrated_agent_timeout_secs(None, Some(900)), 900);
+    }
+
+    /// With neither frontmatter nor config override, the orchestrated default
+    /// must be 600s, NOT the non-orchestrated single-agent default (300s) —
+    /// an orchestrated coordinator's agentic turn can legitimately exceed
+    /// 300s.
+    #[test]
+    fn orchestrated_timeout_defaults_to_600_not_300() {
+        assert_eq!(orchestrated_agent_timeout_secs(None, None), 600);
+        assert_ne!(orchestrated_agent_timeout_secs(None, None), 300);
     }
 }
 
