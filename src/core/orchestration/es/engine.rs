@@ -12,6 +12,7 @@
 use super::event::ExecutionEvent;
 use super::log::EventLog;
 use super::state::{ExecutionState, RunStatus, apply, fold};
+use futures_util::StreamExt;
 
 /// Maximum number of loop iterations `run_event_sourced` will perform before
 /// giving up and halting the run.
@@ -39,6 +40,24 @@ pub enum Action {
     /// Complete the run with final `content` (terminal — recorded as
     /// `Completed`).
     Complete { content: String },
+    /// Invoke several agents concurrently. The loop records one
+    /// `AgentInvoked` per `batch` entry in `Vec` order, runs the effects
+    /// concurrently (at most `max_concurrency` in flight), then records each
+    /// outcome back in `Vec` order — independent of completion order, so
+    /// replay/resume stay deterministic. A per-entry failure is recorded as
+    /// `AgentFailed` and the run continues (collect-and-record).
+    InvokeParallel {
+        batch: Vec<InvokeSpec>,
+        max_concurrency: usize,
+    },
+}
+
+/// One unit of work inside an [`Action::InvokeParallel`] batch. Named
+/// distinctly from the `Action::Invoke` variant to avoid confusion.
+#[derive(Debug, Clone)]
+pub struct InvokeSpec {
+    pub agent: String,
+    pub input: String,
 }
 
 /// Pure, deterministic decision function: given the current projected
@@ -197,6 +216,72 @@ where
                 Action::Complete { content } => {
                     append_and_apply(log, run_id, state, ExecutionEvent::Completed { content })?;
                 }
+                Action::InvokeParallel {
+                    batch,
+                    max_concurrency,
+                } => {
+                    // 1. Record every invocation up-front, in Vec order
+                    //    (deterministic). Emitting all AgentInvoked before any
+                    //    outcome also makes every agent read as "working" at
+                    //    once in the Workroom.
+                    for spec in &batch {
+                        append_and_apply(
+                            log,
+                            run_id,
+                            state,
+                            ExecutionEvent::AgentInvoked {
+                                agent: spec.agent.clone(),
+                                input: spec.input.clone(),
+                            },
+                        )?;
+                    }
+
+                    // 2. Run effects concurrently over a shared, immutable
+                    //    snapshot of the now-updated state. `buffer_unordered`
+                    //    polls the borrowing futures in place (no spawn, no
+                    //    'static bound). Nothing is appended during this phase,
+                    //    so only shared borrows of `state`/`effects` are live.
+                    let snapshot: &ExecutionState = state;
+                    let cap = max_concurrency.max(1);
+                    // NOTE: iterate over owned clones (`InvokeSpec` is two
+                    // `String`s — cheap) rather than `batch.iter()`. Borrowing
+                    // the batch here makes rustc infer the closure's argument
+                    // as a higher-ranked `for<'r> &'r InvokeSpec` (it must
+                    // unify with `Map`'s generic `Stream::Item` bound used by
+                    // `buffer_unordered`), which then fails to unify with the
+                    // concrete lifetime borrowed by the returned async block's
+                    // captured `spec` — "implementation of `FnOnce` is not
+                    // general enough". Owning the item removes the borrowed
+                    // lifetime from the closure signature entirely. Index
+                    // tagging + the later `sort_by_key` still restore Vec
+                    // order, so this changes nothing about ordering/semantics.
+                    let mut outcomes: Vec<(usize, anyhow::Result<ExecutionEvent>)> =
+                        futures_util::stream::iter(batch.iter().cloned().enumerate())
+                            .map(|(i, spec)| async move {
+                                (
+                                    i,
+                                    effects.run_invoke(&spec.agent, &spec.input, snapshot).await,
+                                )
+                            })
+                            .buffer_unordered(cap)
+                            .collect()
+                            .await;
+
+                    // 3. Restore Vec order (buffer_unordered yields in
+                    //    completion order), then append outcomes in Vec order.
+                    //    A failure becomes AgentFailed; the run continues.
+                    outcomes.sort_by_key(|(i, _)| *i);
+                    for (i, res) in outcomes {
+                        let event = match res {
+                            Ok(ev) => ev,
+                            Err(e) => ExecutionEvent::AgentFailed {
+                                agent: batch[i].agent.clone(),
+                                error: e.to_string(),
+                            },
+                        };
+                        append_and_apply(log, run_id, state, event)?;
+                    }
+                }
             }
         }
     }
@@ -294,6 +379,265 @@ mod tests {
     use crate::core::orchestration::es::event::ExecutionEvent as E;
     use crate::core::orchestration::es::log::InMemoryLog;
     use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+
+    struct ParDecider {
+        batch: Vec<InvokeSpec>,
+        cap: usize,
+    }
+    impl Decider for ParDecider {
+        fn decide(&self, s: &ExecutionState) -> Vec<Action> {
+            // Once any agent has an assistant turn, the batch has run: complete.
+            let ran = s
+                .conversations
+                .values()
+                .any(|c| c.iter().any(|m| m.role == "assistant"));
+            if ran {
+                vec![Action::Complete {
+                    content: "done".into(),
+                }]
+            } else {
+                vec![Action::InvokeParallel {
+                    batch: self.batch.clone(),
+                    max_concurrency: self.cap,
+                }]
+            }
+        }
+    }
+
+    // Runner: sleeps longer for lower-index agents so completions arrive in
+    // reverse Vec order; records the completion order it actually observed.
+    struct OrderedEff {
+        order: Vec<String>, // Vec order a,b,c → delays 30,20,10ms
+        completions: Arc<Mutex<Vec<String>>>,
+    }
+    #[async_trait]
+    impl EffectRunner for OrderedEff {
+        async fn run_invoke(
+            &self,
+            agent: &str,
+            _input: &str,
+            _s: &ExecutionState,
+        ) -> anyhow::Result<E> {
+            let idx = self.order.iter().position(|a| a == agent).unwrap_or(0);
+            let delay_ms = 30u64.saturating_sub(idx as u64 * 10);
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            self.completions.lock().unwrap().push(agent.to_string());
+            Ok(E::AgentObserved {
+                agent: agent.into(),
+                content: format!("resp-{agent}"),
+                tokens_in: 1,
+                tokens_out: 1,
+                cost: 0.0,
+                model: "m".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn invoke_parallel_records_in_vec_order_not_completion_order() {
+        let batch = vec![
+            InvokeSpec {
+                agent: "a".into(),
+                input: "x".into(),
+            },
+            InvokeSpec {
+                agent: "b".into(),
+                input: "x".into(),
+            },
+            InvokeSpec {
+                agent: "c".into(),
+                input: "x".into(),
+            },
+        ];
+        let completions = Arc::new(Mutex::new(Vec::new()));
+        let decider = ParDecider {
+            batch: batch.clone(),
+            cap: 4,
+        };
+        let eff = OrderedEff {
+            order: vec!["a".into(), "b".into(), "c".into()],
+            completions: completions.clone(),
+        };
+        let mut log = InMemoryLog::default();
+        let init = vec![E::RunStarted {
+            run_id: "r".into(),
+            pattern: "test".into(),
+            agents: vec!["a".into(), "b".into(), "c".into()],
+            input: "go".into(),
+            project: None,
+        }];
+        run_event_sourced("r", init, &decider, &eff, &mut log)
+            .await
+            .unwrap();
+
+        let events = log.events("r").unwrap();
+        // Recorded observation order == Vec order a,b,c.
+        let observed: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                E::AgentObserved { agent, .. } => Some(agent.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(observed, vec!["a", "b", "c"]);
+        // Recorded invocation order == Vec order a,b,c too.
+        let invoked: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                E::AgentInvoked { agent, .. } => Some(agent.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(invoked, vec!["a", "b", "c"]);
+        // Sanity: completions actually arrived in a different (reverse) order,
+        // proving the ordering above is not incidental.
+        let comp = completions.lock().unwrap().clone();
+        assert_eq!(comp, vec!["c", "b", "a"]);
+    }
+
+    struct CapEff {
+        live: std::sync::atomic::AtomicUsize,
+        max_seen: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait]
+    impl EffectRunner for CapEff {
+        async fn run_invoke(
+            &self,
+            agent: &str,
+            _input: &str,
+            _s: &ExecutionState,
+        ) -> anyhow::Result<E> {
+            let now = self.live.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            self.max_seen
+                .fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            self.live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(E::AgentObserved {
+                agent: agent.into(),
+                content: "r".into(),
+                tokens_in: 0,
+                tokens_out: 0,
+                cost: 0.0,
+                model: "m".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn invoke_parallel_respects_concurrency_cap() {
+        let batch: Vec<InvokeSpec> = (0..6)
+            .map(|i| InvokeSpec {
+                agent: format!("a{i}"),
+                input: "x".into(),
+            })
+            .collect();
+        let decider = ParDecider {
+            batch: batch.clone(),
+            cap: 2,
+        };
+        let eff = CapEff {
+            live: std::sync::atomic::AtomicUsize::new(0),
+            max_seen: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let mut log = InMemoryLog::default();
+        let init = vec![E::RunStarted {
+            run_id: "r".into(),
+            pattern: "test".into(),
+            agents: batch.iter().map(|s| s.agent.clone()).collect(),
+            input: "go".into(),
+            project: None,
+        }];
+        run_event_sourced("r", init, &decider, &eff, &mut log)
+            .await
+            .unwrap();
+        assert!(
+            eff.max_seen.load(std::sync::atomic::Ordering::SeqCst) <= 2,
+            "observed {} concurrent invocations, cap was 2",
+            eff.max_seen.load(std::sync::atomic::Ordering::SeqCst)
+        );
+    }
+
+    struct FailBEff;
+    #[async_trait]
+    impl EffectRunner for FailBEff {
+        async fn run_invoke(
+            &self,
+            agent: &str,
+            _input: &str,
+            _s: &ExecutionState,
+        ) -> anyhow::Result<E> {
+            if agent == "b" {
+                anyhow::bail!("boom");
+            }
+            Ok(E::AgentObserved {
+                agent: agent.into(),
+                content: format!("resp-{agent}"),
+                tokens_in: 0,
+                tokens_out: 0,
+                cost: 0.0,
+                model: "m".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn invoke_parallel_records_failure_and_continues() {
+        let batch = vec![
+            InvokeSpec {
+                agent: "a".into(),
+                input: "x".into(),
+            },
+            InvokeSpec {
+                agent: "b".into(),
+                input: "x".into(),
+            },
+            InvokeSpec {
+                agent: "c".into(),
+                input: "x".into(),
+            },
+        ];
+        let decider = ParDecider {
+            batch: batch.clone(),
+            cap: 4,
+        };
+        let mut log = InMemoryLog::default();
+        let init = vec![E::RunStarted {
+            run_id: "r".into(),
+            pattern: "test".into(),
+            agents: vec!["a".into(), "b".into(), "c".into()],
+            input: "go".into(),
+            project: None,
+        }];
+        let state = run_event_sourced("r", init, &decider, &FailBEff, &mut log)
+            .await
+            .unwrap();
+
+        // Run still completed (failure did not abort the loop).
+        assert_eq!(state.status, RunStatus::Completed);
+
+        // Outcomes recorded in Vec order: observed a, failed b, observed c.
+        let events = log.events("r").unwrap();
+        let outcome_kinds: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                E::AgentObserved { agent, .. } => Some(agent.as_str()),
+                E::AgentFailed { agent, .. } => Some(agent.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(outcome_kinds, vec!["a", "b", "c"]);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, E::AgentFailed { agent, .. } if agent == "b"))
+        );
+
+        // b reads as settled: last turn is the assistant failure marker.
+        let convo_b = state.conversations.get("b").unwrap();
+        assert_eq!(convo_b.last().unwrap().role, "assistant");
+        assert_eq!(convo_b.last().unwrap().content, "[Delegation failed: boom]");
+    }
 
     // Decider: invoke "a" once (when no observation yet), then complete.
     struct D;

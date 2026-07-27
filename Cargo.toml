@@ -26,6 +26,7 @@ providers-api = ["dep:reqwest"]
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["io-util"] }
 async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
