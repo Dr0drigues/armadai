@@ -17,7 +17,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::blackboard::{build_board_result, run_blackboard_es};
-use super::engine::{Action, Decider, EffectRunner, run_event_sourced};
+use super::engine::{Action, Decider, EffectRunner, InvokeSpec, run_event_sourced};
 use super::event::ExecutionEvent;
 use super::log::{EventLog, InMemoryLog};
 use super::ring::{resolve_votes, run_ring_es, vote_weights_from_agents};
@@ -567,7 +567,14 @@ impl HierarchicalDecider {
     /// `NestedStarted` so that a delegation into a nested team is observed
     /// (`delegate`) before the team boundary opens (`nested_start`), matching
     /// the legacy engine's emission order.
-    fn invoke_actions(
+    /// The ordered bookkeeping `Emit(...)` actions that precede an invocation:
+    /// an optional `ModelRouted` (if it routes `latest:auto`), an optional
+    /// delegation event (`Delegated`/`AskedPeer`/`Escalated`, from
+    /// `plan_from_response`), then an optional `NestedStarted` (nested-team
+    /// lead). Split out of `invoke_actions` so the parallel dispatch path can
+    /// record every child's emits sequentially (in Vec order) before a single
+    /// `InvokeParallel`, while the sequential callers keep `Emit + Invoke`.
+    fn invoke_emit_actions(
         &self,
         agent_name: &str,
         input: &str,
@@ -584,6 +591,20 @@ impl HierarchicalDecider {
         if let Some(event) = self.nested_started_event(agent_name) {
             actions.push(Action::Emit(event));
         }
+        actions
+    }
+
+    /// The full sequential batch for one invocation: the bookkeeping emits
+    /// (`invoke_emit_actions`) followed by the `Invoke` itself. Used by the
+    /// coordinator kick-off and synthesis re-invokes (single-agent paths).
+    fn invoke_actions(
+        &self,
+        agent_name: &str,
+        input: &str,
+        state: &ExecutionState,
+        delegation_event: Option<ExecutionEvent>,
+    ) -> Vec<Action> {
+        let mut actions = self.invoke_emit_actions(agent_name, input, state, delegation_event);
         actions.push(Action::Invoke {
             agent: agent_name.to_string(),
             input: input.to_string(),
@@ -703,15 +724,47 @@ impl HierarchicalDecider {
                 },
             ];
         }
-        plan_from_response(&latest, agent, &self.config, depth)
-            .into_iter()
-            .flat_map(|step| match step {
-                PlannedStep::Invoke { agent, task, event } => {
-                    self.invoke_actions(&agent, &task, state, Some(event))
-                }
-                PlannedStep::Complete { .. } => Vec::new(),
-            })
-            .collect()
+        // Collect the invoke-steps (a `Complete` cannot occur here — only
+        // agents with pending directives reach dispatch — and is dropped
+        // defensively).
+        let invoke_steps: Vec<(String, String, ExecutionEvent)> =
+            plan_from_response(&latest, agent, &self.config, depth)
+                .into_iter()
+                .filter_map(|step| match step {
+                    PlannedStep::Invoke { agent, task, event } => Some((agent, task, event)),
+                    PlannedStep::Complete { .. } => None,
+                })
+                .collect();
+
+        // 0 or 1 child: keep the sequential `Emit(s) + Invoke` shape (no
+        // concurrency needed, byte-identical to before this lot).
+        if invoke_steps.len() <= 1 {
+            return invoke_steps
+                .into_iter()
+                .flat_map(|(child, task, event)| {
+                    self.invoke_actions(&child, &task, state, Some(event))
+                })
+                .collect();
+        }
+
+        // ≥2 children: record every child's bookkeeping emits in line order,
+        // then a single `InvokeParallel` whose batch is in line order. The
+        // socle records `AgentInvoked ×N` then outcomes in batch order, so
+        // replay stays deterministic.
+        let mut actions = Vec::new();
+        let mut batch = Vec::new();
+        for (child, task, event) in invoke_steps {
+            actions.extend(self.invoke_emit_actions(&child, &task, state, Some(event)));
+            batch.push(InvokeSpec {
+                agent: child,
+                input: task,
+            });
+        }
+        actions.push(Action::InvokeParallel {
+            batch,
+            max_concurrency: self.config.max_concurrency(),
+        });
+        actions
     }
 
     /// Build the synthesis re-injection for `agent`: collect each child's
@@ -1632,9 +1685,11 @@ mod tests {
             );
         }
 
-        // (c) coordinator's response carries 2 delegations → 2 Invoke (+ Delegated), in order
+        // (c) coordinator delegates to two siblings → one InvokeParallel
+        // (batch in line order, cap = default 4), preceded by both Delegated
+        // emits in order.
         #[test]
-        fn two_delegations_become_two_invokes_in_order() {
+        fn two_delegations_become_one_invoke_parallel_in_order() {
             let dec = test_decider(
                 "dev-lead",
                 &[
@@ -1666,15 +1721,35 @@ mod tests {
             let state = fold(&events);
             let actions = dec.decide(&state);
 
-            let invoke_targets: Vec<&str> = actions
+            // Exactly one InvokeParallel, batch in line order, default cap 4.
+            let batch_agents: Vec<&str> = actions
                 .iter()
                 .filter_map(|a| match a {
-                    Action::Invoke { agent, .. } => Some(agent.as_str()),
+                    Action::InvokeParallel {
+                        batch,
+                        max_concurrency,
+                    } => {
+                        assert_eq!(*max_concurrency, 4);
+                        Some(batch.iter().map(|s| s.agent.as_str()).collect::<Vec<_>>())
+                    }
                     _ => None,
                 })
+                .flatten()
                 .collect();
-            assert_eq!(invoke_targets, vec!["core-specialist", "qa-specialist"]);
+            assert_eq!(batch_agents, vec!["core-specialist", "qa-specialist"]);
+            assert_eq!(
+                actions
+                    .iter()
+                    .filter(|a| matches!(a, Action::InvokeParallel { .. }))
+                    .count(),
+                1
+            );
+            assert!(
+                !actions.iter().any(|a| matches!(a, Action::Invoke { .. })),
+                "fan-out of 2 must not emit any sequential Invoke"
+            );
 
+            // Both Delegated emitted in line order, before the InvokeParallel.
             let delegated_targets: Vec<&str> = actions
                 .iter()
                 .filter_map(|a| match a {
@@ -1683,17 +1758,15 @@ mod tests {
                 })
                 .collect();
             assert_eq!(delegated_targets, vec!["core-specialist", "qa-specialist"]);
-
-            // Delegated must precede its matching Invoke, in order.
-            let invoke_core_pos = actions
+            let parallel_pos = actions
                 .iter()
-                .position(|a| matches!(a, Action::Invoke{agent,..} if agent == "core-specialist"))
+                .position(|a| matches!(a, Action::InvokeParallel { .. }))
                 .unwrap();
-            let delegated_core_pos = actions
+            let last_delegated_pos = actions
                 .iter()
-                .position(|a| matches!(a, Action::Emit(ExecutionEvent::Delegated{to,..}) if to == "core-specialist"))
+                .rposition(|a| matches!(a, Action::Emit(ExecutionEvent::Delegated { .. })))
                 .unwrap();
-            assert!(delegated_core_pos < invoke_core_pos);
+            assert!(last_delegated_pos < parallel_pos);
         }
 
         // (d) depth ≥ max_depth → Warned + Complete
@@ -2520,7 +2593,8 @@ mod tests {
                 .collect();
             assert_eq!(routed, vec!["core-specialist"]);
 
-            // …and it precedes that agent's Invoke.
+            // …and it precedes the InvokeParallel batch that carries
+            // core-specialist (fan-out of 2 → InvokeParallel, not Invoke).
             let routed_pos = actions
                 .iter()
                 .position(|a| matches!(
@@ -2528,15 +2602,19 @@ mod tests {
                     Action::Emit(ExecutionEvent::ModelRouted { agent, .. }) if agent == "core-specialist"
                 ))
                 .unwrap();
-            let invoke_pos = actions
+            let invoke_parallel_pos = actions
                 .iter()
-                .position(
-                    |a| matches!(a, Action::Invoke { agent, .. } if agent == "core-specialist"),
-                )
+                .position(|a| {
+                    matches!(
+                        a,
+                        Action::InvokeParallel { batch, .. }
+                            if batch.iter().any(|s| s.agent == "core-specialist")
+                    )
+                })
                 .unwrap();
             assert!(
-                routed_pos < invoke_pos,
-                "ModelRouted must precede the Invoke it annotates"
+                routed_pos < invoke_parallel_pos,
+                "ModelRouted must precede the InvokeParallel it annotates"
             );
         }
 
@@ -3311,6 +3389,30 @@ mod tests {
         }
     }
 
+    /// A provider whose every call fails — to exercise the collect-and-record
+    /// path (`run_invoke` `Err` → `AgentFailed`, run continues).
+    struct FailingProvider;
+
+    #[async_trait]
+    impl Provider for FailingProvider {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> anyhow::Result<CompletionResponse> {
+            anyhow::bail!("simulated provider failure")
+        }
+        async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("simulated provider failure")
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "scripted".to_string(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
     /// Base flat-team config: coordinator with a single team of `peers` (no
     /// nested lead) — the same topology as `decide`'s `base_config`.
     fn es_flat_config(coordinator: &str, peers: &[&str]) -> OrchestrationConfig {
@@ -3752,6 +3854,97 @@ mod tests {
         assert!(
             !final_content(&log, "run-multi").trim().is_empty(),
             "expected non-empty final content"
+        );
+    }
+
+    // Scenario: coordinator delegates to two siblings concurrently; one child's
+    // provider fails. Collect-and-record: the run still completes on the
+    // surviving child, and the failure is recorded (AgentFailed) rather than
+    // aborting the run.
+    #[tokio::test]
+    async fn es_parallel_fanout_survives_one_failed_child() {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "dev-lead".to_string(),
+            es_test_agent("dev-lead", "concrete-model"),
+        );
+        agents.insert(
+            "core-specialist".to_string(),
+            es_test_agent("core-specialist", "concrete-model"),
+        );
+        agents.insert(
+            "qa-specialist".to_string(),
+            es_test_agent("qa-specialist", "concrete-model"),
+        );
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "dev-lead".to_string(),
+            Arc::new(ScriptedProvider::new(&[
+                "@core-specialist: implémente X\n@qa-specialist: teste X",
+                "Synthèse : livré malgré un échec.",
+            ])),
+        );
+        // core-specialist fails; qa-specialist succeeds.
+        providers.insert("core-specialist".to_string(), Arc::new(FailingProvider));
+        providers.insert(
+            "qa-specialist".to_string(),
+            Arc::new(ScriptedProvider::new(&["X est testé, RAS."])),
+        );
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-partial-fail",
+            "dev-lead",
+            "build X",
+            es_flat_config("dev-lead", &["core-specialist", "qa-specialist"]),
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        // Run completed despite the failure (collect-and-record, not abort).
+        assert_eq!(st.status, RunStatus::Completed);
+
+        let events = log.events("run-partial-fail").unwrap();
+
+        // The failed child is recorded as AgentFailed, in Vec order (core
+        // before qa), and qa was still invoked and observed.
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ExecutionEvent::AgentFailed { agent, .. } if agent == "core-specialist"
+            )),
+            "expected AgentFailed for core-specialist"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ExecutionEvent::AgentObserved { agent, .. } if agent == "qa-specialist"
+            )),
+            "expected qa-specialist to still be observed"
+        );
+
+        // Deterministic recorded order: both AgentInvoked in batch order.
+        let invoked: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                ExecutionEvent::AgentInvoked { agent, .. }
+                    if agent == "core-specialist" || agent == "qa-specialist" =>
+                {
+                    Some(agent.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(invoked, vec!["core-specialist", "qa-specialist"]);
+
+        // Final content is the coordinator's synthesis (non-empty).
+        assert!(
+            !final_content(&log, "run-partial-fail").trim().is_empty(),
+            "expected non-empty final content after synthesizing partial results"
         );
     }
 
