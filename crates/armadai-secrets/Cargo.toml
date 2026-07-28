@@ -1,0 +1,13 @@
+[package]
+name = "armadai-secrets"
+version = "1.0.0-rc.5"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ArmadAI — SOPS + age encrypted provider secrets loader."
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+tracing = "0.1"

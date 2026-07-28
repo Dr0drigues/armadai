@@ -98,6 +98,7 @@ dependencies = [
  "anstream",
  "anstyle",
  "anyhow",
+ "armadai-secrets",
  "assert_cmd",
  "async-trait",
  "axum",
@@ -128,6 +129,16 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width",
  "uuid",
+]
+
+[[package]]
+name = "armadai-secrets"
+version = "1.0.0-rc.5"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_yaml_ng",
+ "tracing",
 ]
 
 [[package]]

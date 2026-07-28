@@ -1,3 +1,12 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/Dr0drigues/swarm-festai"
+
 [package]
 name = "armadai"
 version = "1.0.0-rc.5"
@@ -22,6 +31,9 @@ storage = ["dep:rusqlite"]
 providers-api = ["dep:reqwest"]
 
 [dependencies]
+# Workspace crates
+armadai-secrets = { path = "crates/armadai-secrets" }
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["io-util"] }

@@ -100,7 +100,7 @@ async fn show_providers() -> anyhow::Result<()> {
             sops_path.display()
         );
         // Try to list provider names from decrypted content
-        match crate::secrets::load_secrets(&config_dir) {
+        match armadai_secrets::load_secrets(&config_dir) {
             Ok(secrets) => {
                 let names: Vec<&String> = secrets.providers.keys().collect();
                 let m = crate::cli::style::muted();
@@ -124,7 +124,7 @@ async fn show_providers() -> anyhow::Result<()> {
             "{m}Secrets: unencrypted at {} (consider running: armadai config secrets init){m:#}",
             plain_path.display()
         );
-        match crate::secrets::load_secrets(&config_dir) {
+        match armadai_secrets::load_secrets(&config_dir) {
             Ok(secrets) => {
                 let names: Vec<&String> = secrets.providers.keys().collect();
                 let m = crate::cli::style::muted();
@@ -181,7 +181,7 @@ async fn secrets_init() -> anyhow::Result<()> {
     std::fs::create_dir_all(&config_dir)?;
 
     // Run init_sops which generates age key + .sops.yaml
-    crate::secrets::sops::init_sops(&config_dir)?;
+    armadai_secrets::sops::init_sops(&config_dir)?;
 
     // Create template providers.sops.yaml if it doesn't exist
     let sops_path = config_dir.join("providers.sops.yaml");
@@ -265,7 +265,7 @@ async fn secrets_rotate() -> anyhow::Result<()> {
     // 1. Decrypt current secrets
     let m = crate::cli::style::muted();
     anstream::println!("{m}Decrypting current secrets...{m:#}");
-    let secrets = crate::secrets::sops::decrypt_file(&sops_path)?;
+    let secrets = armadai_secrets::sops::decrypt_file(&sops_path)?;
 
     // 2. Backup old key
     let backup_path = config_dir.join("age-key.txt.bak");
