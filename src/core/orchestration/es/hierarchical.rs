@@ -23,6 +23,9 @@ use super::log::{EventLog, InMemoryLog};
 use super::ring::{resolve_votes, run_ring_es, vote_weights_from_agents};
 use super::state::ExecutionState;
 use crate::core::agent::Agent;
+#[cfg(test)]
+use crate::core::model_resolution::fallback_model_for_tier;
+use crate::core::model_resolution::{ModelTier, resolve_model_for_tier};
 use crate::core::orchestration::blackboard::BlackboardConfig;
 use crate::core::orchestration::context_injection::{AgentInfo, build_orchestration_prompt};
 use crate::core::orchestration::protocol::{
@@ -31,9 +34,6 @@ use crate::core::orchestration::protocol::{
 use crate::core::orchestration::ring::RingConfig;
 use crate::core::orchestration::{NestedPattern, OrchestrationConfig, TeamConfig};
 use crate::core::routing::{BudgetState, RoutingRules, route};
-#[cfg(test)]
-use crate::linker::model_resolution::fallback_model_for_tier;
-use crate::linker::model_resolution::{ModelTier, resolve_model_for_tier};
 use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// A single step planned from an LLM response, before any effect has run.
@@ -459,7 +459,7 @@ impl HierarchicalDecider {
     ///
     /// Note: this only decides *which tier* to record for the `ModelRouted`
     /// bookkeeping event. Resolving a tier to a concrete model string
-    /// (`resolve_model_for_tier`, in `crate::linker::model_resolution`) is
+    /// (`resolve_model_for_tier`, in `crate::core::model_resolution`) is
     /// an effectful concern for whatever `EffectRunner` actually calls the
     /// provider (a later lot) — `Action::Invoke` carries no model field, so
     /// this pure `Decider` has no need to call it.
@@ -1317,7 +1317,7 @@ impl EffectRunner for HierarchicalEffectRunner {
         // `model_routed_event`/`invoke_actions`), which `es::state::apply`
         // projects into `state.routed_tiers`. We read that tier back
         // here and resolve it to a concrete model via
-        // `crate::linker::model_resolution::resolve_model_for_tier` — this
+        // `crate::core::model_resolution::resolve_model_for_tier` — this
         // is the only place in the event-sourced hierarchical engine that
         // does so, keeping the pure `Decider` free of that effectful lookup.
         // Every other model string (a concrete id, or another `latest:*`

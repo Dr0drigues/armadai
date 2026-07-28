@@ -26,14 +26,14 @@ use super::event::ExecutionEvent;
 use super::log::EventLog;
 use super::state::{ExecutionState, RunStatus, VoteRec};
 use crate::core::agent::Agent;
+#[cfg(test)]
+use crate::core::model_resolution::fallback_model_for_tier;
+use crate::core::model_resolution::{ModelTier, resolve_model_for_tier};
 use crate::core::orchestration::llm_agents::{
     RING_ACTION_INSTRUCTIONS, parse_ring_action, parse_vote_confidence,
 };
 use crate::core::orchestration::ring::{ContributionAction, RingConfig};
 use crate::core::routing::{BudgetState, RoutingRules, route};
-#[cfg(test)]
-use crate::linker::model_resolution::fallback_model_for_tier;
-use crate::linker::model_resolution::{ModelTier, resolve_model_for_tier};
 use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// Maximum number of prior ring contributions re-emitted in a circulation

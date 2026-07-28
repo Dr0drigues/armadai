@@ -335,7 +335,7 @@ fn run_link(target: &str) -> Result<()> {
 
     // Resolve deprecated models
     for agent in &mut link_agents {
-        crate::linker::model_aliases::resolve_model_deprecations(
+        crate::core::model_aliases::resolve_model_deprecations(
             &mut agent.model,
             &mut agent.model_fallback,
         );

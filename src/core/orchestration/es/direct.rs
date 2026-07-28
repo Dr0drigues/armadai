@@ -27,8 +27,8 @@ use super::event::ExecutionEvent;
 use super::log::EventLog;
 use super::state::ExecutionState;
 use crate::core::agent::Agent;
+use crate::core::model_resolution::{ModelTier, resolve_model_for_tier};
 use crate::core::routing::{RoutingRules, route};
-use crate::linker::model_resolution::{ModelTier, resolve_model_for_tier};
 use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// Parse a tier string as stored in `ExecutionState::routed_tiers` back into
@@ -319,9 +319,9 @@ pub async fn resume_direct_es(
 mod tests {
     use super::*;
     use crate::core::agent::AgentMetadata;
+    use crate::core::model_resolution::fallback_model_for_tier;
     use crate::core::orchestration::es::log::InMemoryLog;
     use crate::core::orchestration::es::state::RunStatus;
-    use crate::linker::model_resolution::fallback_model_for_tier;
     use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
     use std::path::PathBuf;
     use std::sync::Mutex;

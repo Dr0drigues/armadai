@@ -21,12 +21,12 @@ use super::event::ExecutionEvent;
 use super::log::EventLog;
 use super::state::{BoardEntryRec, ExecutionState};
 use crate::core::agent::Agent;
+#[cfg(test)]
+use crate::core::model_resolution::fallback_model_for_tier;
+use crate::core::model_resolution::{ModelTier, resolve_model_for_tier};
 use crate::core::orchestration::blackboard::{BlackboardConfig, EntryKind, entry_kind_name};
 use crate::core::orchestration::llm_agents::{BOARD_ACTION_INSTRUCTIONS, parse_board_action};
 use crate::core::routing::{BudgetState, RoutingRules, route};
-#[cfg(test)]
-use crate::linker::model_resolution::fallback_model_for_tier;
-use crate::linker::model_resolution::{ModelTier, resolve_model_for_tier};
 use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// Agents eligible to contribute on the board's current round, ordered by

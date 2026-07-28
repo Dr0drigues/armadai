@@ -2,9 +2,8 @@
 
 use serde::Deserialize;
 
-use crate::linker::model_resolution::{
-    ModelTier, fallback_model_for_tier, parse_latest_placeholder, resolve_model_for_tier,
-};
+use crate::core::model_resolution::{ModelTier, fallback_model_for_tier, resolve_model_for_tier};
+use crate::linker::model_resolution::parse_latest_placeholder;
 
 /// Shell configuration section from armadai.yaml.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -137,7 +136,7 @@ mod tests {
         // (`fallback_model_for_tier`), while still exercising the real
         // low/fast → Fast tier and high/max → Max tier collapsing invariant
         // this test is meant to guard. Mirrors
-        // `linker::model_resolution::test_preview_resolution_with_latest`.
+        // `core::model_resolution::test_preview_resolution_with_latest`.
         let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         let tmp = tempfile::tempdir().expect("tempdir");

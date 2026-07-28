@@ -3,10 +3,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use super::reverse::{ImportedAgent, ImportedConfig};
-use crate::linker::model_aliases::resolve_alias;
-use crate::linker::model_resolution::{
-    classify_model_tier, is_latest_placeholder, tier_placeholder,
-};
+use crate::core::model_aliases::resolve_alias;
+use crate::core::model_resolution::classify_model_tier;
+use crate::linker::model_resolution::{is_latest_placeholder, tier_placeholder};
 
 /// Map a native model to a portable ArmadAI tier when possible.
 pub(crate) fn portable_model(model: Option<&str>) -> String {
