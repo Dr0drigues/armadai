@@ -254,7 +254,7 @@ async fn execute_resume(
     {
         use crate::core::orchestration::es::engine::replay;
         use crate::core::orchestration::es::state::RunStatus;
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
 
         let headless = headless || json;
 
@@ -363,7 +363,7 @@ async fn resume_run(
 ) -> anyhow::Result<()> {
     use crate::core::orchestration::es::bridge::synthetic_run_start;
     use crate::core::orchestration::es::state::{RunStatus, fold};
-    use crate::storage::es_log::SqliteLog;
+    use crate::es_log::SqliteLog;
 
     let db = crate::storage::init_db()?;
     let log = SqliteLog::new(db.clone());
@@ -1233,7 +1233,7 @@ async fn dispatch_direct_es(
 
     #[cfg(feature = "storage")]
     let (state, events) = {
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
         match crate::storage::init_db() {
             Ok(db) => run_with_log!(SqliteLog::new(db)),
             Err(e) => {
@@ -2207,7 +2207,7 @@ async fn dispatch_blackboard_es(
 
     #[cfg(feature = "storage")]
     let state = {
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
         match crate::storage::init_db() {
             Ok(db) => run_with_log!(SqliteLog::new(db)),
             Err(e) => {
@@ -2270,7 +2270,7 @@ async fn dispatch_ring_es(
 
     #[cfg(feature = "storage")]
     let (state, events) = {
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
         match crate::storage::init_db() {
             Ok(db) => run_with_log!(SqliteLog::new(db)),
             Err(e) => {
@@ -2333,7 +2333,7 @@ async fn dispatch_hierarchical_es(
 
     #[cfg(feature = "storage")]
     let (state, events) = {
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
         match crate::storage::init_db() {
             Ok(db) => run_with_log!(SqliteLog::new(db)),
             Err(e) => {
@@ -3658,7 +3658,7 @@ mod es_switch_tests {
     #[tokio::test]
     async fn blackboard_es_run_persists_event_log() {
         use crate::core::orchestration::es::blackboard::run_blackboard_es;
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
         use crate::storage::init_embedded;
 
         // (a): Setup — same roster as `blackboard_es_state_is_recorded_via_
@@ -3715,7 +3715,7 @@ mod es_switch_tests {
     #[tokio::test]
     async fn ring_es_run_persists_event_log() {
         use crate::core::orchestration::es::ring::run_ring_es;
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
         use crate::storage::init_embedded;
 
         let db = init_embedded().unwrap();
@@ -3766,7 +3766,7 @@ mod es_switch_tests {
     #[tokio::test]
     async fn hierarchical_es_run_persists_event_log() {
         use crate::core::orchestration::es::hierarchical::run_hierarchical_es;
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
         use crate::storage::init_embedded;
 
         let db = init_embedded().unwrap();
@@ -3815,7 +3815,7 @@ mod es_switch_tests {
     #[tokio::test]
     async fn blackboard_es_run_projects_tables_from_log() {
         use crate::core::orchestration::es::blackboard::run_blackboard_es;
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
         use crate::storage::{init_embedded, queries};
 
         let db = init_embedded().unwrap();
@@ -4255,7 +4255,7 @@ mod es_switch_tests {
         use std::collections::BTreeMap;
 
         use crate::core::orchestration::es::direct::run_direct_es;
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
 
         let mut agent_meta = BTreeMap::new();
         agent_meta.insert(
@@ -4310,7 +4310,7 @@ mod es_switch_tests {
         let (live_capture, live_sink) = capture_sink();
         run_direct_against_sqlite_log(db.clone(), &run_id, &live_sink).await;
 
-        let replay_log = crate::storage::es_log::SqliteLog::new(db);
+        let replay_log = crate::es_log::SqliteLog::new(db);
         let (replay_capture, replay_sink) = capture_sink();
         crate::cli::run_replay::replay_from_log(&replay_log, &run_id, &replay_sink, false).unwrap();
 
@@ -4384,7 +4384,7 @@ mod es_switch_tests {
         let (_live_capture, live_sink) = capture_sink();
         run_direct_against_sqlite_log(db.clone(), &run_id, &live_sink).await;
 
-        let replay_log = crate::storage::es_log::SqliteLog::new(db);
+        let replay_log = crate::es_log::SqliteLog::new(db);
         let (replay_capture, replay_sink) = capture_sink();
         crate::cli::run_replay::replay_from_log(&replay_log, &run_id, &replay_sink, false).unwrap();
 
@@ -4434,7 +4434,7 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn replay_of_completed_ring_run_with_votes_includes_vote_tally() {
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
         use crate::storage::init_embedded;
 
         let db = init_embedded().unwrap();
@@ -4506,7 +4506,7 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[test]
     fn replay_unknown_run_id_errors() {
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
         use crate::storage::init_embedded;
 
         let log = SqliteLog::new(init_embedded().unwrap());
@@ -4559,7 +4559,7 @@ mod es_switch_tests {
         use crate::core::orchestration::es::bridge::synthetic_run_start;
         use crate::core::orchestration::es::direct::resume_direct_es;
         use crate::core::orchestration::es::state::fold;
-        use crate::storage::es_log::SqliteLog;
+        use crate::es_log::SqliteLog;
         use crate::storage::init_embedded;
 
         let db = init_embedded().unwrap();
