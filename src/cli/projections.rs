@@ -88,7 +88,8 @@ pub async fn execute(action: ProjectionsAction) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::core::orchestration::es::event::ExecutionEvent;
-    use crate::core::orchestration::es::log::{EventLog, SqliteLog};
+    use crate::core::orchestration::es::log::EventLog;
+    use crate::storage::es_log::SqliteLog;
     use crate::storage::{init_embedded, queries};
 
     /// Helper: construct a minimal blackboard event log suitable for
