@@ -614,7 +614,8 @@ impl App {
 
     #[cfg(feature = "storage")]
     pub fn load_orchestration_runs(&mut self) {
-        use crate::storage::{init_db, queries};
+        use crate::db::init_db;
+        use crate::storage::queries;
 
         let db = match init_db() {
             Ok(db) => db,

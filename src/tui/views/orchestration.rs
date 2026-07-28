@@ -115,7 +115,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
 pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(entry) = app.selected_orchestration_entry() {
-        use crate::storage::{init_db, queries};
+        use crate::db::init_db;
+        use crate::storage::queries;
 
         let detail_content = match init_db() {
             Ok(db) => {

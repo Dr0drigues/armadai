@@ -405,7 +405,8 @@ fn handle_top_level_esc(app: &mut app::App) -> bool {
 
 #[cfg(feature = "storage")]
 fn load_storage_data(app: &mut app::App) {
-    use crate::storage::{init_db, queries};
+    use crate::db::init_db;
+    use crate::storage::queries;
 
     let db = match init_db() {
         Ok(db) => db,

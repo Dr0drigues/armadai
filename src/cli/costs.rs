@@ -1,7 +1,8 @@
 pub async fn execute(agent: Option<String>, _from: Option<String>) -> anyhow::Result<()> {
     #[cfg(feature = "storage")]
     {
-        use crate::storage::{init_db, queries};
+        use crate::db::init_db;
+        use crate::storage::queries;
 
         let db = init_db()?;
         let summaries = queries::get_costs_summary(&db, agent.as_deref())?;

@@ -262,7 +262,7 @@ async fn execute_resume(
         // mirrors the agent path's own `use_tui` gate in `execute`, which
         // needs to know the pattern is "orchestrated" before offering it.
         let peek = {
-            let db = crate::storage::init_db()?;
+            let db = crate::db::init_db()?;
             let log = SqliteLog::new(db);
             replay(run_id, &log)?
         };
@@ -365,7 +365,7 @@ async fn resume_run(
     use crate::core::orchestration::es::state::{RunStatus, fold};
     use crate::es_log::SqliteLog;
 
-    let db = crate::storage::init_db()?;
+    let db = crate::db::init_db()?;
     let log = SqliteLog::new(db.clone());
     // Read the raw log back once, up front: `fold` gives the roster/status
     // needed to validate + dispatch the resume below, and the SAME raw
@@ -544,7 +544,7 @@ async fn resume_run(
 
     let events = proj_log.events(run_id)?;
 
-    match crate::storage::init_db() {
+    match crate::db::init_db() {
         Ok(db2) => {
             if let Err(e) = crate::cli::run_es_record::project_run(&db2, run_id) {
                 tracing::warn!("failed to project resumed run {}: {}", run_id, e);
@@ -1234,7 +1234,7 @@ async fn dispatch_direct_es(
     #[cfg(feature = "storage")]
     let (state, events) = {
         use crate::es_log::SqliteLog;
-        match crate::storage::init_db() {
+        match crate::db::init_db() {
             Ok(db) => run_with_log!(SqliteLog::new(db)),
             Err(e) => {
                 tracing::warn!("event log storage unavailable, run will not be persisted: {e}");
@@ -1384,7 +1384,8 @@ struct RunMetrics {
 
 #[cfg(feature = "storage")]
 fn record_run(metrics: &RunMetrics, input: &str, output: &str, project: Option<&str>) {
-    use crate::storage::{init_db, queries};
+    use crate::db::init_db;
+    use crate::storage::queries;
 
     let db = match init_db() {
         Ok(db) => db,
@@ -1887,7 +1888,7 @@ async fn run_orchestrated_inner(
 
             #[cfg(feature = "storage")]
             {
-                match crate::storage::init_db() {
+                match crate::db::init_db() {
                     Ok(db) => {
                         if let Err(e) = crate::cli::run_es_record::project_run(&db, &_run_id) {
                             tracing::warn!("failed to project run {}: {}", _run_id, e);
@@ -1966,7 +1967,7 @@ async fn run_orchestrated_inner(
 
             #[cfg(feature = "storage")]
             {
-                match crate::storage::init_db() {
+                match crate::db::init_db() {
                     Ok(db) => {
                         if let Err(e) = crate::cli::run_es_record::project_run(&db, &_run_id) {
                             tracing::warn!("failed to project run {}: {}", _run_id, e);
@@ -2077,7 +2078,7 @@ async fn run_orchestrated_inner(
 
             #[cfg(feature = "storage")]
             {
-                match crate::storage::init_db() {
+                match crate::db::init_db() {
                     Ok(db) => {
                         if let Err(e) = crate::cli::run_es_record::project_run(&db, &_run_id) {
                             tracing::warn!("failed to project run {}: {}", _run_id, e);
@@ -2208,7 +2209,7 @@ async fn dispatch_blackboard_es(
     #[cfg(feature = "storage")]
     let state = {
         use crate::es_log::SqliteLog;
-        match crate::storage::init_db() {
+        match crate::db::init_db() {
             Ok(db) => run_with_log!(SqliteLog::new(db)),
             Err(e) => {
                 tracing::warn!("event log storage unavailable, run will not be persisted: {e}");
@@ -2271,7 +2272,7 @@ async fn dispatch_ring_es(
     #[cfg(feature = "storage")]
     let (state, events) = {
         use crate::es_log::SqliteLog;
-        match crate::storage::init_db() {
+        match crate::db::init_db() {
             Ok(db) => run_with_log!(SqliteLog::new(db)),
             Err(e) => {
                 tracing::warn!("event log storage unavailable, run will not be persisted: {e}");
@@ -2334,7 +2335,7 @@ async fn dispatch_hierarchical_es(
     #[cfg(feature = "storage")]
     let (state, events) = {
         use crate::es_log::SqliteLog;
-        match crate::storage::init_db() {
+        match crate::db::init_db() {
             Ok(db) => run_with_log!(SqliteLog::new(db)),
             Err(e) => {
                 tracing::warn!("event log storage unavailable, run will not be persisted: {e}");
@@ -3206,7 +3207,7 @@ mod es_switch_tests {
     }
 
     /// Redirect `storage` at a throwaway temp DB for the scope of a test, so
-    /// the ES dispatch's persistence (`SqliteLog` via `crate::storage::init_db`)
+    /// the ES dispatch's persistence (`SqliteLog` via `crate::db::init_db`)
     /// never writes into the user's real event log (#267). Points
     /// `ARMADAI_CONFIG_DIR` at a temp `config.yaml` whose `storage.path` is a
     /// scratch sqlite file; serialised via `ENV_MUTEX` and restored on drop.
@@ -4225,7 +4226,7 @@ mod es_switch_tests {
     //
     // These tests drive `run_replay::replay_from_log` — the `pub(crate)`,
     // generic-over-`EventLog` core `replay_run` wraps around its own
-    // `crate::storage::init_db()` call — directly against an in-memory
+    // `crate::db::init_db()` call — directly against an in-memory
     // `SqliteLog` (`init_embedded()`), the SAME idiom
     // `blackboard_es_run_persists_event_log`/`ring_es_run_persists_event_log`
     // already use above. This deliberately avoids exercising `init_db()`
@@ -4233,7 +4234,7 @@ mod es_switch_tests {
     // an earlier version of this test mutated `ARMADAI_CONFIG_DIR`/
     // `XDG_DATA_HOME` process-wide to sandbox `init_db()`, which raced with
     // OTHER tests in this same file (`dispatch_ring_es` et al.) that also
-    // call `crate::storage::init_db()` internally under `storage` but hold
+    // call `crate::db::init_db()` internally under `storage` but hold
     // no such guard — those tests intermittently failed to open their own
     // (unrelated) DB while this test's temp dirs existed/were torn down
     // concurrently. Testing the generic core instead sidesteps that
@@ -4245,7 +4246,7 @@ mod es_switch_tests {
     /// pattern) so the "live" side of the determinism test below persists
     /// through the exact same `SqliteLog`/`SinkProjectingLog` machinery a
     /// real `--storage` run does, without going through `dispatch_direct_es`
-    /// (which would call the real `crate::storage::init_db()`).
+    /// (which would call the real `crate::db::init_db()`).
     #[cfg(feature = "storage")]
     async fn run_direct_against_sqlite_log(
         db: crate::storage::Database,
@@ -4538,7 +4539,7 @@ mod es_switch_tests {
     // files on disk via `resolve_agents_dir`/`resolve_agent_path` — driving
     // it directly in a hermetic unit test would mean mutating the process
     // CWD/project resolution, racing every other test in this file that
-    // also touches `crate::storage::init_db()`/project resolution (same
+    // also touches `crate::db::init_db()`/project resolution (same
     // reasoning as the big comment above the `--replay` determinism tests).
     // This test instead drives the EXACT sequence `resume_run` performs on
     // an injected `SqliteLog`: fold the log, emit `synthetic_run_start` from

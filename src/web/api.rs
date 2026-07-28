@@ -292,7 +292,8 @@ pub async fn get_agent(Path(name): Path<String>) -> Json<serde_json::Value> {
 
 #[cfg(feature = "storage")]
 pub async fn get_history() -> Json<Vec<HistoryEntry>> {
-    use crate::storage::{init_db, queries};
+    use crate::db::init_db;
+    use crate::storage::queries;
 
     let db = match init_db() {
         Ok(db) => db,
@@ -326,7 +327,8 @@ pub async fn get_history() -> Json<Vec<HistoryEntry>> {
 
 #[cfg(feature = "storage")]
 pub async fn get_costs() -> Json<Vec<CostSummary>> {
-    use crate::storage::{init_db, queries};
+    use crate::db::init_db;
+    use crate::storage::queries;
 
     let db = match init_db() {
         Ok(db) => db,
@@ -632,7 +634,8 @@ pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {
 pub async fn get_orchestration_trace() -> Json<serde_json::Value> {
     #[cfg(feature = "storage")]
     {
-        use crate::storage::{init_db, queries};
+        use crate::db::init_db;
+        use crate::storage::queries;
         if let Ok(db) = init_db()
             && let Ok(runs) = queries::get_root_orchestration_runs(&db, 50)
         {
@@ -749,7 +752,8 @@ fn fetch_run_entries(
 /// `run_id`.
 #[cfg(feature = "storage")]
 pub async fn get_orchestration_trace_detail(Path(run_id): Path<String>) -> Json<serde_json::Value> {
-    use crate::storage::{init_db, queries};
+    use crate::db::init_db;
+    use crate::storage::queries;
 
     let empty = || {
         serde_json::json!({
@@ -956,7 +960,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_orchestration_trace_detail_returns_run_and_entries() {
         let _guard = TempStorageGuard::new();
-        let db = crate::storage::init_db().unwrap();
+        let db = crate::db::init_db().unwrap();
 
         // `orchestration_runs.run_id` references `runs(id)`, so seed the
         // parent row first (mirrors how the orchestration engine writes both
@@ -1053,7 +1057,7 @@ mod tests {
     async fn test_get_orchestration_trace_detail_unknown_run_is_null() {
         let _guard = TempStorageGuard::new();
         // Ensure the DB/schema exists even though no run is inserted.
-        drop(crate::storage::init_db().unwrap());
+        drop(crate::db::init_db().unwrap());
 
         let response = get_orchestration_trace_detail(Path("does-not-exist".to_string())).await;
         let value = response.0;
@@ -1066,7 +1070,7 @@ mod tests {
     #[tokio::test]
     async fn test_trace_detail_hierarchical_has_delegation_events_and_children() {
         let _guard = TempStorageGuard::new();
-        let db = crate::storage::init_db().unwrap();
+        let db = crate::db::init_db().unwrap();
 
         // Parent hierarchical run.
         insert_run_with_id(

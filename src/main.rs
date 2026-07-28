@@ -2,6 +2,8 @@ mod audit;
 mod cli;
 mod core;
 #[cfg(feature = "storage")]
+mod db;
+#[cfg(feature = "storage")]
 mod es_log;
 mod linker;
 mod logging;
