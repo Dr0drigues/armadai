@@ -6,9 +6,6 @@ mod db;
 mod es_log;
 mod linker;
 mod logging;
-mod model_registry;
-#[allow(dead_code)]
-mod providers;
 mod registry;
 #[allow(dead_code)]
 mod shell;

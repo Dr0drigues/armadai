@@ -449,6 +449,12 @@ fn parse_claude_json(json: &Value) -> CliResponse {
 }
 
 /// Parse Gemini CLI JSON response.
+// Only exercised via the `parse_json_response` test helper today — production
+// dispatch (`parse_gemini_stream_event`) never calls the batch parser for
+// this provider. Previously silent under the bin's blanket
+// `#[allow(dead_code)] mod providers;`; scoped here rather than adding an
+// allow at the crate root (OH7 #252 Lot 4, pure refactor, no behavior change).
+#[allow(dead_code)]
 fn parse_gemini_json(json: &Value) -> CliResponse {
     let content = json
         .get("response")
@@ -497,6 +503,9 @@ fn parse_gemini_json(json: &Value) -> CliResponse {
 }
 
 /// Parse JSONL output (Codex, Copilot, OpenCode) — each line is a JSON event.
+// Same situation as `parse_gemini_json` above: only reachable from the
+// `parse_json_response` test helper, not from production dispatch.
+#[allow(dead_code)]
 fn parse_jsonl_response(provider: &str, raw: &str) -> CliResponse {
     let mut content = String::new();
     let mut tokens_in: Option<u64> = None;

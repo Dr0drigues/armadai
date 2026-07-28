@@ -2,8 +2,8 @@ use std::path::Path;
 
 use dialoguer::{Confirm, Input, Select};
 
-use crate::providers::factory::api_backend_for_tool;
 use armadai_core::config::AppPaths;
+use armadai_providers::factory::api_backend_for_tool;
 
 pub async fn execute(
     name: Option<String>,
@@ -332,7 +332,8 @@ async fn prompt_model(provider: &str) -> anyhow::Result<Option<String>> {
 
     // Try models.dev registry (online fetch with cache)
     #[cfg(feature = "providers-api")]
-    if let Some(entries) = crate::model_registry::fetch::load_models_online(backend).await
+    if let Some(entries) =
+        armadai_providers::model_registry::fetch::load_models_online(backend).await
         && !entries.is_empty()
     {
         return prompt_from_registry_entries(&entries);
@@ -340,7 +341,7 @@ async fn prompt_model(provider: &str) -> anyhow::Result<Option<String>> {
 
     // Try models.dev cache only (no network)
     #[cfg(not(feature = "providers-api"))]
-    if let Some(entries) = crate::model_registry::fetch::load_models(backend)
+    if let Some(entries) = armadai_providers::model_registry::fetch::load_models(backend)
         && !entries.is_empty()
     {
         return prompt_from_registry_entries(&entries);
@@ -377,7 +378,7 @@ async fn prompt_model(provider: &str) -> anyhow::Result<Option<String>> {
 
 /// Display models from the registry with enriched labels (context window, cost).
 fn prompt_from_registry_entries(
-    entries: &[crate::model_registry::ModelEntry],
+    entries: &[armadai_providers::model_registry::ModelEntry],
 ) -> anyhow::Result<Option<String>> {
     let labels: Vec<String> = entries.iter().map(|e| e.display_label()).collect();
     let mut items = labels;

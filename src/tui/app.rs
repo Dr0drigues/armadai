@@ -1,8 +1,8 @@
-use crate::model_registry::ModelEntry;
 use armadai_core::agent::Agent;
 use armadai_core::prompt::Prompt;
 use armadai_core::skill::Skill;
 use armadai_core::starter::StarterPack;
+use armadai_providers::model_registry::ModelEntry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -596,7 +596,7 @@ impl App {
     }
 
     pub fn load_models(&mut self) {
-        use crate::model_registry::fetch::load_all_providers_cached;
+        use armadai_providers::model_registry::fetch::load_all_providers_cached;
         if let Some(providers) = load_all_providers_cached() {
             let mut flat: Vec<(String, ModelEntry)> = Vec::new();
             let mut keys: Vec<String> = providers.keys().cloned().collect();

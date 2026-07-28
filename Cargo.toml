@@ -28,11 +28,12 @@ default = ["tui", "web", "storage", "providers-api"]
 tui = ["dep:ratatui", "dep:crossterm", "dep:portable-pty", "dep:strip-ansi-escapes", "dep:unicode-width"]
 web = ["dep:axum", "dep:tower-http"]
 storage = ["dep:armadai-storage", "dep:rusqlite"]
-providers-api = ["dep:reqwest"]
+providers-api = ["dep:reqwest", "armadai-providers/api"]
 
 [dependencies]
 # Workspace crates
 armadai-core = { path = "crates/armadai-core" }
+armadai-providers = { path = "crates/armadai-providers" }
 armadai-secrets = { path = "crates/armadai-secrets" }
 armadai-storage = { path = "crates/armadai-storage", optional = true }
 

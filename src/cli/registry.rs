@@ -441,7 +441,7 @@ async fn sources_list() -> anyhow::Result<()> {
     let m = crate::cli::style::muted();
     anstream::println!(
         "{m}  [default] {}{m:#}",
-        crate::model_registry::fetch::MODELS_DEV_URL
+        armadai_providers::model_registry::fetch::MODELS_DEV_URL
     );
     for source in &user.models {
         let m = crate::cli::style::muted();

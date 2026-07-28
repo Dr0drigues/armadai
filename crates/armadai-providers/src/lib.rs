@@ -1,9 +1,10 @@
-#[cfg(feature = "providers-api")]
+#[cfg(feature = "api")]
 pub mod api;
 pub mod cli;
 pub mod factory;
 pub mod json_runner;
-#[cfg(feature = "providers-api")]
+pub mod model_registry;
+#[cfg(feature = "api")]
 pub mod proxy;
 pub mod rate_limiter;
 

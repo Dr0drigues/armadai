@@ -159,7 +159,8 @@ pub async fn prompt_model_interactive() -> anyhow::Result<String> {
         .interact()?;
     let provider = providers[idx];
 
-    if let Some(entries) = crate::model_registry::fetch::load_models_online(provider).await
+    if let Some(entries) =
+        armadai_providers::model_registry::fetch::load_models_online(provider).await
         && !entries.is_empty()
     {
         let labels: Vec<String> = entries.iter().map(|e| e.display_label()).collect();
@@ -200,7 +201,7 @@ pub fn prompt_model_interactive() -> anyhow::Result<String> {
         .interact()?;
     let provider = providers[idx];
 
-    if let Some(entries) = crate::model_registry::fetch::load_models(provider)
+    if let Some(entries) = armadai_providers::model_registry::fetch::load_models(provider)
         && !entries.is_empty()
     {
         let labels: Vec<String> = entries.iter().map(|e| e.display_label()).collect();
@@ -247,7 +248,7 @@ pub fn warn_unknown_model(model: &str, provider: &str) {
     if should_skip_unknown_model_warning(model) {
         return;
     }
-    if let Some(entries) = crate::model_registry::fetch::load_models_cached(provider)
+    if let Some(entries) = armadai_providers::model_registry::fetch::load_models_cached(provider)
         && !entries.iter().any(|e| e.id == model)
     {
         tracing::warn!(

@@ -459,7 +459,7 @@ fn load_storage_data(_app: &mut app::App) {
 /// Force-refresh model registry from models.dev.
 #[cfg(feature = "providers-api")]
 async fn sync_models_online() -> anyhow::Result<usize> {
-    crate::model_registry::fetch::refresh_registry().await
+    armadai_providers::model_registry::fetch::refresh_registry().await
 }
 
 #[cfg(not(feature = "providers-api"))]

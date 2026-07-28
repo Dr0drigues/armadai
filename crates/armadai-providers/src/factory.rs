@@ -11,7 +11,14 @@ struct ToolDef {
     cli_args: &'static [&'static str],
     /// Corresponding API provider name (e.g. "anthropic")
     api_backend: &'static str,
-    /// Environment variable for API key
+    /// Environment variable for API key.
+    // Populated for every entry but never read anywhere today (API key
+    // resolution goes through `get_api_key` with the env var name inlined
+    // per-provider in `api/*.rs`). Previously silent under the bin's blanket
+    // `#[allow(dead_code)] mod providers;`; scoped here rather than adding an
+    // allow at the crate root (OH7 #252 Lot 4, pure refactor, no behavior
+    // change).
+    #[allow(dead_code)]
     api_key_env: &'static str,
 }
 
@@ -176,11 +183,11 @@ fn create_unified_provider(
         let args = if has_custom_args {
             // Respect the agent's explicit args verbatim (never override them).
             agent.metadata.args.clone().unwrap_or_default()
-        } else if crate::providers::json_runner::supports_json(command) {
+        } else if crate::json_runner::supports_json(command) {
             // Default (no custom args) on a JSON-capable CLI: use the canonical
             // stream-json args so the provider captures real cost/tokens
             // instead of $0.00. The provider parses stdout opportunistically.
-            crate::providers::json_runner::json_mode_args(command)
+            crate::json_runner::json_mode_args(command)
         } else {
             tool.cli_args.iter().map(|s| (*s).to_string()).collect()
         };
@@ -213,7 +220,7 @@ fn create_cli_provider(agent: &Agent) -> anyhow::Result<Box<dyn Provider>> {
     )))
 }
 
-#[cfg(feature = "providers-api")]
+#[cfg(feature = "api")]
 fn create_api_provider(provider: &str, _agent: &Agent) -> anyhow::Result<Box<dyn Provider>> {
     match provider {
         "anthropic" => {
@@ -239,7 +246,7 @@ fn create_api_provider(provider: &str, _agent: &Agent) -> anyhow::Result<Box<dyn
     }
 }
 
-#[cfg(not(feature = "providers-api"))]
+#[cfg(not(feature = "api"))]
 fn create_api_provider(provider: &str, _agent: &Agent) -> anyhow::Result<Box<dyn Provider>> {
     anyhow::bail!(
         "Provider '{provider}' requires the 'providers-api' feature. \
@@ -248,7 +255,7 @@ fn create_api_provider(provider: &str, _agent: &Agent) -> anyhow::Result<Box<dyn
 }
 
 /// Resolve an API key from environment variable or secrets file.
-#[cfg(feature = "providers-api")]
+#[cfg(feature = "api")]
 fn get_api_key(env_var: &str, provider_name: &str) -> anyhow::Result<String> {
     if let Ok(key) = std::env::var(env_var)
         && !key.is_empty()

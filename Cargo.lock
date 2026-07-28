@@ -99,6 +99,7 @@ dependencies = [
  "anstyle",
  "anyhow",
  "armadai-core",
+ "armadai-providers",
  "armadai-secrets",
  "armadai-storage",
  "assert_cmd",
@@ -148,6 +149,23 @@ dependencies = [
  "serde_yaml_ng",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "armadai-providers"
+version = "1.0.0-rc.5"
+dependencies = [
+ "anyhow",
+ "armadai-core",
+ "armadai-secrets",
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tracing",
