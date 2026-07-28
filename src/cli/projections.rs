@@ -25,7 +25,7 @@ pub enum ProjectionsAction {
 }
 
 #[cfg(feature = "storage")]
-use crate::storage::Database;
+use armadai_storage::Database;
 
 /// Rebuild projections for a single run from its event log.
 ///
@@ -44,7 +44,7 @@ pub fn rebuild_run(db: &Database, run_id: &str) -> anyhow::Result<()> {
 /// projector is idempotent).
 #[cfg(feature = "storage")]
 pub fn rebuild_all(db: &Database) -> anyhow::Result<usize> {
-    let run_ids = crate::storage::queries::all_event_log_run_ids(db)?;
+    let run_ids = armadai_storage::queries::all_event_log_run_ids(db)?;
     let count = run_ids.len();
     for run_id in run_ids {
         rebuild_run(db, &run_id)?;
@@ -90,7 +90,7 @@ mod tests {
     use crate::core::orchestration::es::event::ExecutionEvent;
     use crate::core::orchestration::es::log::EventLog;
     use crate::es_log::SqliteLog;
-    use crate::storage::{init_embedded, queries};
+    use armadai_storage::{open_in_memory, queries};
 
     /// Helper: construct a minimal blackboard event log suitable for
     /// projection tests (copied from run_es_record.rs storage_tests).
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn rebuild_reprojects_a_run_from_the_log() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
 
         // Persist a log + project once.
         let run_id = "run-y";
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn rebuild_all_projects_all_runs_in_the_log() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
 
         // Persist two runs.
         let mut log = SqliteLog::new(db.clone());

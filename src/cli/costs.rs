@@ -2,7 +2,7 @@ pub async fn execute(agent: Option<String>, _from: Option<String>) -> anyhow::Re
     #[cfg(feature = "storage")]
     {
         use crate::db::init_db;
-        use crate::storage::queries;
+        use armadai_storage::queries;
 
         let db = init_db()?;
         let summaries = queries::get_costs_summary(&db, agent.as_deref())?;

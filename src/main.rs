@@ -15,8 +15,6 @@ mod registry;
 mod shell;
 mod skills_registry;
 mod starters_registry;
-#[cfg(feature = "storage")]
-mod storage;
 #[cfg(feature = "tui")]
 mod theme;
 #[cfg(feature = "tui")]

@@ -293,7 +293,7 @@ pub async fn get_agent(Path(name): Path<String>) -> Json<serde_json::Value> {
 #[cfg(feature = "storage")]
 pub async fn get_history() -> Json<Vec<HistoryEntry>> {
     use crate::db::init_db;
-    use crate::storage::queries;
+    use armadai_storage::queries;
 
     let db = match init_db() {
         Ok(db) => db,
@@ -328,7 +328,7 @@ pub async fn get_history() -> Json<Vec<HistoryEntry>> {
 #[cfg(feature = "storage")]
 pub async fn get_costs() -> Json<Vec<CostSummary>> {
     use crate::db::init_db;
-    use crate::storage::queries;
+    use armadai_storage::queries;
 
     let db = match init_db() {
         Ok(db) => db,
@@ -635,7 +635,7 @@ pub async fn get_orchestration_trace() -> Json<serde_json::Value> {
     #[cfg(feature = "storage")]
     {
         use crate::db::init_db;
-        use crate::storage::queries;
+        use armadai_storage::queries;
         if let Ok(db) = init_db()
             && let Ok(runs) = queries::get_root_orchestration_runs(&db, 50)
         {
@@ -690,14 +690,14 @@ pub async fn get_orchestration_trace() -> Json<serde_json::Value> {
 /// nested children so their entries render identically.
 #[cfg(feature = "storage")]
 fn fetch_run_entries(
-    db: &crate::storage::Database,
+    db: &armadai_storage::Database,
     run_id: &str,
 ) -> (
     Vec<serde_json::Value>,
     Vec<serde_json::Value>,
     Vec<serde_json::Value>,
 ) {
-    use crate::storage::queries;
+    use armadai_storage::queries;
 
     let board_entries = queries::get_board_entries(db, run_id)
         .unwrap_or_default()
@@ -753,7 +753,7 @@ fn fetch_run_entries(
 #[cfg(feature = "storage")]
 pub async fn get_orchestration_trace_detail(Path(run_id): Path<String>) -> Json<serde_json::Value> {
     use crate::db::init_db;
-    use crate::storage::queries;
+    use armadai_storage::queries;
 
     let empty = || {
         serde_json::json!({
@@ -905,7 +905,7 @@ pub async fn get_orchestration_topology() -> Json<serde_json::Value> {
 mod tests {
     use super::*;
     use crate::core::config::ENV_MUTEX;
-    use crate::storage::queries::{
+    use armadai_storage::queries::{
         BoardEntryRecord, DelegationEventRecord, OrchestrationRunRecord, RingVoteRecord, RunRecord,
         insert_board_entry, insert_delegation_event, insert_orchestration_run, insert_ring_vote,
         insert_run_with_id,

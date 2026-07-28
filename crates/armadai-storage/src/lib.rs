@@ -19,9 +19,9 @@ pub fn open(path: &Path) -> anyhow::Result<Database> {
     Ok(Arc::new(Mutex::new(conn)))
 }
 
-/// Initialize an in-memory SQLite database (for tests).
-#[cfg(test)]
-pub fn init_embedded() -> anyhow::Result<Database> {
+/// Open an in-memory SQLite database with the schema applied. Used by tests
+/// (bin-side and crate-side) that must not touch the real user database.
+pub fn open_in_memory() -> anyhow::Result<Database> {
     let conn = Connection::open_in_memory()?;
     schema::apply(&conn)?;
     Ok(Arc::new(Mutex::new(conn)))
