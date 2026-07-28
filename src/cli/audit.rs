@@ -7,9 +7,9 @@ use crate::audit::{
     rules::{AuditSettings, Severity},
     run_audit,
 };
-use crate::providers::factory::create_provider;
 use armadai_core::agent::{Agent, AgentMetadata};
 use armadai_core::provider::{ChatMessage, CompletionRequest};
+use armadai_providers::factory::create_provider;
 
 pub(crate) fn min_severity_from(flag: &str, quiet: bool) -> Severity {
     if quiet {

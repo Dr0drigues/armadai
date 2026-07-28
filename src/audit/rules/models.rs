@@ -32,7 +32,7 @@ pub(super) fn a03_with_resolver(
 /// A04 — model absent from the cached models.dev catalog.
 /// Silent when the cache is missing/expired (offline-friendly, spec §5).
 pub(super) fn a04_unknown_model(ctx: &AuditContext) -> Vec<Finding> {
-    let catalog = crate::model_registry::fetch::load_all_providers_cached();
+    let catalog = armadai_providers::model_registry::fetch::load_all_providers_cached();
     let known = catalog.map(|providers| {
         let ids: std::collections::HashSet<String> =
             providers.into_values().flatten().map(|m| m.id).collect();

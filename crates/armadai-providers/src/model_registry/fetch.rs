@@ -9,9 +9,13 @@ const CACHE_FILE: &str = "models-cache.json";
 // Only the refetch decision (load_cache_from, online path) consults the TTL;
 // the cache-only display loaders ignore age. Gated to where it's used so
 // non-providers-api builds don't flag it dead.
-#[cfg(any(feature = "providers-api", test))]
+#[cfg(any(feature = "api", test))]
 const CACHE_TTL_SECS: u64 = 86400; // 24h
-pub(crate) const MODELS_DEV_URL: &str = "https://models.dev/api.json";
+// `pub` (not `pub(crate)`): the bin reads this unconditionally to display the
+// default model registry source (`armadai registry sources`), regardless of
+// whether the `api` feature is enabled — so it must stay visible, and
+// unconditionally defined, even in api-off builds.
+pub const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 /// Cached registry: provider_id → Vec<ModelEntry>
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -27,14 +31,14 @@ fn cache_path() -> PathBuf {
 /// Load models for a given provider from cache only (sync).
 /// Returns None only if the cache is missing/unreadable (ignores cache age —
 /// a stale catalog is still shown; see [`read_cache`]).
-#[cfg(not(feature = "providers-api"))]
+#[cfg(not(feature = "api"))]
 pub fn load_models(provider: &str) -> Option<Vec<ModelEntry>> {
     let cached = read_cache(&cache_path())?;
     cached.providers.get(provider).cloned()
 }
 
 /// Load models, fetching from remote if cache is stale or missing.
-#[cfg(feature = "providers-api")]
+#[cfg(feature = "api")]
 pub async fn load_models_online(provider: &str) -> Option<Vec<ModelEntry>> {
     // Try fresh cache first
     if let Some(cached) = load_cache_from(&cache_path())
@@ -57,7 +61,7 @@ pub async fn load_models_online(provider: &str) -> Option<Vec<ModelEntry>> {
 /// Project config is looked up via `armadai_core::project::find_project_config`,
 /// which walks up from the current working directory. Without a
 /// `registries:` section anywhere, this returns exactly `[MODELS_DEV_URL]`.
-#[cfg(feature = "providers-api")]
+#[cfg(feature = "api")]
 fn resolved_model_sources() -> Vec<String> {
     let user = armadai_core::registries::load_user_registries();
     let project = armadai_core::project::find_project_config().map(|(_, cfg)| cfg);
@@ -74,7 +78,7 @@ fn resolved_model_sources() -> Vec<String> {
 /// sanitized version of the source URL. Kept separate from the merged
 /// `models-cache.json` (see `cache_path`) so a fetch failure on one source
 /// doesn't lose previously-fetched data for the others.
-#[cfg(feature = "providers-api")]
+#[cfg(feature = "api")]
 fn source_cache_dir() -> PathBuf {
     config_dir().join("models-sources")
 }
@@ -85,14 +89,14 @@ fn source_cache_dir() -> PathBuf {
 /// shared with `registry::sync::source_key` (previously each had its own,
 /// independently-maintained and collision-prone sanitization — see B2 Task 2
 /// review).
-#[cfg(feature = "providers-api")]
+#[cfg(feature = "api")]
 fn source_cache_path(url: &str) -> PathBuf {
     let key = armadai_core::registries::cache_key(url);
     source_cache_dir().join(format!("{key}.json"))
 }
 
 /// Fetch and parse a single source's catalog (models.dev format).
-#[cfg(feature = "providers-api")]
+#[cfg(feature = "api")]
 async fn fetch_source(url: &str) -> anyhow::Result<HashMap<String, Vec<ModelEntry>>> {
     let body: serde_json::Value = reqwest::get(url).await?.json().await?;
     Ok(parse_registry(&body))
@@ -121,7 +125,7 @@ async fn fetch_source(url: &str) -> anyhow::Result<HashMap<String, Vec<ModelEntr
 /// source had to fall back to its own stale cache, stamping the merged
 /// result as freshly-fetched would hide up to 24h (the per-source TTL) of
 /// degradation from consumers that only check the aggregate's freshness.
-#[cfg(feature = "providers-api")]
+#[cfg(feature = "api")]
 async fn fetch_and_cache() -> anyhow::Result<CachedRegistry> {
     let sources = resolved_model_sources();
     let mut merged: HashMap<String, Vec<ModelEntry>> = HashMap::new();
@@ -198,13 +202,13 @@ async fn fetch_and_cache() -> anyhow::Result<CachedRegistry> {
 /// fresher than its stalest ingredient. Pure function, kept separate from
 /// [`fetch_and_cache`] so this logic is unit-testable without a network
 /// call.
-#[cfg(any(feature = "providers-api", test))]
+#[cfg(any(feature = "api", test))]
 fn aggregate_fetched_at(contributing_timestamps: &[u64], now: u64) -> u64 {
     contributing_timestamps.iter().copied().min().unwrap_or(now)
 }
 
 /// Parse the models.dev JSON structure into a provider → models map.
-#[cfg(any(feature = "providers-api", test))]
+#[cfg(any(feature = "api", test))]
 fn parse_registry(body: &serde_json::Value) -> HashMap<String, Vec<ModelEntry>> {
     let mut providers = HashMap::new();
     let Some(obj) = body.as_object() else {
@@ -234,7 +238,7 @@ fn parse_registry(body: &serde_json::Value) -> HashMap<String, Vec<ModelEntry>> 
 
 /// Force-refresh the model registry from models.dev, ignoring cache TTL.
 /// Returns the number of providers fetched, or an error.
-#[cfg(feature = "providers-api")]
+#[cfg(feature = "api")]
 pub async fn refresh_registry() -> anyhow::Result<usize> {
     let registry = fetch_and_cache().await?;
     Ok(registry.providers.len())
@@ -265,7 +269,7 @@ fn read_cache(path: &Path) -> Option<CachedRegistry> {
 
 /// Read the cache **only if fresh** (within [`CACHE_TTL_SECS`]). Used by the
 /// online fetch path to decide cache-hit vs. refetch.
-#[cfg(any(feature = "providers-api", test))]
+#[cfg(any(feature = "api", test))]
 fn load_cache_from(path: &Path) -> Option<CachedRegistry> {
     let cached = read_cache(path)?;
 
@@ -281,7 +285,7 @@ fn load_cache_from(path: &Path) -> Option<CachedRegistry> {
     }
 }
 
-#[cfg(any(feature = "providers-api", test))]
+#[cfg(any(feature = "api", test))]
 fn save_cache_to(path: &Path, registry: &CachedRegistry) {
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
@@ -444,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "providers-api")]
+    #[cfg(feature = "api")]
     fn resolved_sources_defaults_only_without_custom_config() {
         use armadai_core::registries::{RegistriesConfig, RegistryKind, resolved_sources};
 
@@ -454,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "providers-api")]
+    #[cfg(feature = "api")]
     fn resolved_sources_includes_default_and_custom_model_source() {
         use armadai_core::registries::{
             RegistriesConfig, RegistryKind, RegistrySource, resolved_sources,
@@ -479,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "providers-api")]
+    #[cfg(feature = "api")]
     fn source_cache_path_is_stable_and_distinct_per_source() {
         let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let a = source_cache_path("https://models.dev/api.json");
@@ -490,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "providers-api")]
+    #[cfg(feature = "api")]
     fn resolved_model_sources_glue_includes_user_level_custom_source() {
         // Exercises the real `resolved_model_sources()` glue (not just the
         // pure `resolved_sources` helper) with a `RegistriesConfig` loaded

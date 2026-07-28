@@ -522,7 +522,7 @@ pub async fn get_starter(Path(name): Path<String>) -> Json<serde_json::Value> {
 }
 
 pub async fn list_models() -> Json<Vec<ProviderModels>> {
-    use crate::model_registry::fetch::load_all_providers_cached;
+    use armadai_providers::model_registry::fetch::load_all_providers_cached;
 
     let providers = load_all_providers_cached().unwrap_or_default();
     let mut keys: Vec<String> = providers.keys().cloned().collect();
@@ -574,7 +574,7 @@ pub struct RefreshResult {
 
 #[cfg(feature = "providers-api")]
 pub async fn refresh_models() -> Json<serde_json::Value> {
-    match crate::model_registry::fetch::refresh_registry().await {
+    match armadai_providers::model_registry::fetch::refresh_registry().await {
         Ok(count) => to_json(RefreshResult {
             status: "ok".to_string(),
             providers: count,

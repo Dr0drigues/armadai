@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::providers::factory::create_provider;
 use armadai_core::agent::{Agent, AgentMode};
 use armadai_core::config::AppPaths;
 use armadai_core::events::{EventSink, RunEvent};
@@ -12,6 +11,7 @@ use armadai_core::orchestration::es::log::{EventLog, InMemoryLog};
 use armadai_core::orchestration::es::state::ExecutionState;
 use armadai_core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
 use armadai_core::provider::{ChatMessage, CompletionRequest};
+use armadai_providers::factory::create_provider;
 
 const GUIDED_MODE_INSTRUCTION: &str = "\
 \n\n---\n\n\

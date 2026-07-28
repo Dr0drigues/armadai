@@ -30,7 +30,7 @@ pub fn detect_provider() -> Option<RunnerConfig> {
     for command in providers {
         if is_command_available(command) {
             // Use JSON mode args if supported, otherwise text fallback
-            let args = crate::providers::json_runner::json_mode_args(command);
+            let args = armadai_providers::json_runner::json_mode_args(command);
             return Some(RunnerConfig {
                 command: command.to_string(),
                 args,
@@ -63,7 +63,7 @@ pub fn list_providers() -> Vec<ProviderInfo> {
             let available = is_command_available(cmd);
             ProviderInfo {
                 command: cmd.to_string(),
-                args: crate::providers::json_runner::json_mode_args(cmd),
+                args: armadai_providers::json_runner::json_mode_args(cmd),
                 display_name: name.to_string(),
                 model_name: if available {
                     detect_model_name(cmd)
@@ -108,7 +108,7 @@ pub fn is_command_available(command: &str) -> bool {
 
 /// Get the base CLI args for a provider (uses JSON mode if available).
 pub fn args_for_provider(command: &str) -> Vec<String> {
-    crate::providers::json_runner::json_mode_args(command)
+    armadai_providers::json_runner::json_mode_args(command)
 }
 
 /// Get the provider display name for the statusbar.
