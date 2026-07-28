@@ -4,7 +4,7 @@
 //! (extracted from the composed prompt via the `FAKE_AGENT_ID:` marker) and a per-agent
 //! call counter (persisted under `FAKE_STATE_DIR/<agent>.count`), it picks the first
 //! matching rule and emits Claude Code's `stream-json` output format on stdout so that
-//! `src/shell/json_runner.rs` parses it exactly like a real `claude -p --output-format
+//! `src/providers/json_runner.rs` parses it exactly like a real `claude -p --output-format
 //! stream-json` invocation.
 //!
 //! The e2e runner shadows `claude` on `PATH` with this binary (see the e2e harness plan),

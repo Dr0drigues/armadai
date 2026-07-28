@@ -62,7 +62,7 @@ impl CliProvider {
     }
 
     fn parse_json_stdout(&self, raw: &str) -> CompletionResponse {
-        use crate::shell::json_runner::{StreamEvent, parse_stream_event};
+        use crate::providers::json_runner::{StreamEvent, parse_stream_event};
 
         let mut content = String::new();
         let mut result = None;

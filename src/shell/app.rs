@@ -28,7 +28,7 @@ fn accumulate_pipeline_metrics(
     aggregated_tokens_in: &mut Option<u64>,
     aggregated_tokens_out: &mut u64,
     aggregated_cost: &mut f64,
-    resp: &super::json_runner::CliResponse,
+    resp: &crate::providers::json_runner::CliResponse,
 ) {
     *aggregated_tokens_in = Some(aggregated_tokens_in.unwrap_or(0) + resp.tokens_in.unwrap_or(0));
     if let Some(out) = resp.tokens_out {
@@ -524,7 +524,7 @@ async fn event_loop(
         let cmd = runner.command().to_string();
         let args: Vec<String> = runner.args().to_vec();
         let prompt = runner.build_prompt_for(&input_clone);
-        let is_json_mode = super::json_runner::supports_json(&cmd);
+        let is_json_mode = crate::providers::json_runner::supports_json(&cmd);
 
         // Spawn CLI with piped stdout for streaming
         let start_time = std::time::Instant::now();
@@ -605,14 +605,14 @@ async fn event_loop(
 
             // Drain all available lines and parse as stream events
             let mut got_data = false;
-            let mut result_event: Option<super::json_runner::CliResponse> = None;
+            let mut result_event: Option<crate::providers::json_runner::CliResponse> = None;
 
             while let Ok(line) = stream_rx.try_recv() {
                 // Log raw stream event for debugging
                 super::session::log_stream_event(session_id, line.trim());
 
                 if is_json_mode {
-                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    use crate::providers::json_runner::{StreamEvent, parse_stream_event};
                     match parse_stream_event(&cmd, &line) {
                         StreamEvent::Init { model, agents } => {
                             if let Some(m) = model {
@@ -659,7 +659,7 @@ async fn event_loop(
                 // Drain remaining
                 while let Ok(line) = stream_rx.try_recv() {
                     if is_json_mode {
-                        use super::json_runner::{StreamEvent, parse_stream_event};
+                        use crate::providers::json_runner::{StreamEvent, parse_stream_event};
                         match parse_stream_event(&cmd, &line) {
                             StreamEvent::Delta(text) => {
                                 app.append_to_streaming(&text);
@@ -806,7 +806,7 @@ async fn execute_tandem(
         cmd: String,
         child: tokio::process::Child,
         stream_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
-        result_event: Option<super::json_runner::CliResponse>,
+        result_event: Option<crate::providers::json_runner::CliResponse>,
         stderr_buffer: Arc<Mutex<String>>,
     }
 
@@ -931,9 +931,9 @@ async fn execute_tandem(
             while let Ok(line) = stream.stream_rx.try_recv() {
                 super::session::log_stream_event(session_id, line.trim());
 
-                let is_json_mode = super::json_runner::supports_json(&stream.cmd);
+                let is_json_mode = crate::providers::json_runner::supports_json(&stream.cmd);
                 if is_json_mode {
-                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    use crate::providers::json_runner::{StreamEvent, parse_stream_event};
                     match parse_stream_event(&stream.cmd, &line) {
                         StreamEvent::Init { model, agents } => {
                             if let Some(m) = model {
@@ -1007,10 +1007,10 @@ async fn execute_tandem(
 
     for mut stream in streams {
         // Drain any remaining stream events
-        let is_json_mode = super::json_runner::supports_json(&stream.cmd);
+        let is_json_mode = crate::providers::json_runner::supports_json(&stream.cmd);
         while let Ok(line) = stream.stream_rx.try_recv() {
             if is_json_mode {
-                use super::json_runner::{StreamEvent, parse_stream_event};
+                use crate::providers::json_runner::{StreamEvent, parse_stream_event};
                 match parse_stream_event(&stream.cmd, &line) {
                     StreamEvent::Delta(text) => {
                         app.append_to_tandem_stream(&stream.stream_id, &text);
@@ -1296,8 +1296,8 @@ async fn execute_pipeline_steps(
             }
         });
 
-        let is_json_mode = super::json_runner::supports_json(&resolved.cmd);
-        let mut step_result_event: Option<super::json_runner::CliResponse> = None;
+        let is_json_mode = crate::providers::json_runner::supports_json(&resolved.cmd);
+        let mut step_result_event: Option<crate::providers::json_runner::CliResponse> = None;
 
         // Stream loop
         loop {
@@ -1322,7 +1322,7 @@ async fn execute_pipeline_steps(
                 super::session::log_stream_event(session_id, line.trim());
 
                 if is_json_mode {
-                    use super::json_runner::{StreamEvent, parse_stream_event};
+                    use crate::providers::json_runner::{StreamEvent, parse_stream_event};
                     match parse_stream_event(&resolved.cmd, &line) {
                         StreamEvent::Init { model, agents } => {
                             if let Some(m) = model {
@@ -1370,7 +1370,7 @@ async fn execute_pipeline_steps(
                     // Drain remaining stream events
                     while let Ok(line) = stream_rx.try_recv() {
                         if is_json_mode {
-                            use super::json_runner::{StreamEvent, parse_stream_event};
+                            use crate::providers::json_runner::{StreamEvent, parse_stream_event};
                             match parse_stream_event(&resolved.cmd, &line) {
                                 StreamEvent::Delta(text) => {
                                     app.append_to_streaming(&text);
@@ -1602,8 +1602,8 @@ async fn execute_pty_turn(
 
 #[cfg(test)]
 mod tests {
-    use super::super::json_runner::CliResponse;
     use super::*;
+    use crate::providers::json_runner::CliResponse;
 
     /// Build a minimal `CliResponse` fixture with only the metrics fields set.
     fn resp(tokens_in: Option<u64>, tokens_out: Option<u64>, cost_usd: Option<f64>) -> CliResponse {
