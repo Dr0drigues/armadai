@@ -28,7 +28,21 @@ tolérés dans un crate unique mais **interdits entre crates** :
 | `providers → shell` | `providers` utilise `shell::json_runner` (parsing stream-json) | `json_runner` **descend** dans `armadai-providers` ; shell en dépendra |
 | `core → storage` (feature) | `SqliteLog` couple `core` à rusqlite | `SqliteLog` **sort** de core vers le bin, impl de `core::EventLog` (trait qui reste dans core) |
 
-`secrets` et `storage` sont des **feuilles** (aucune dépendance interne).
+`secrets` est une **feuille** pure (aucun `use crate::`). `storage`, en
+revanche, a **deux arêtes descendantes résiduelles vers `core`** (découvert au
+cadrage du Lot 2, 2026-07-28) — ce ne sont pas des cycles (core ne pointe pas
+vers storage, l'invariant du Lot 1 tient), mais elles empêchent storage d'être
+une **feuille** :
+
+1. `storage::es_log` (`SqliteLog`, posé là en 1e) importe
+   `core::orchestration::es::{event, log}` ;
+2. `storage::mod` (`init_db`/`resolve_storage_path`) importe
+   `core::config::{data_dir, load_user_config}` pour résoudre le chemin depuis
+   la config utilisateur.
+
+Ces deux couplages sont cassés en **prélude du Lot 2** (`SqliteLog` et la
+résolution de chemin config remontent côté bin), pour que `armadai-storage` soit
+un pur wrapper rusqlite (schema/queries/open) conforme au design « feuille ».
 
 ## Décisions validées (Dimitri, 2026-07-28)
 
@@ -101,10 +115,37 @@ inter-modules n'a plus de cycle impliquant core/providers.
 
 ### Lot 2 — Workspace + feuilles
 
-Introduire `[workspace]` à la racine (le crate actuel devient un membre, p.ex.
-sous `crates/armadai/` ou racine + membres — voir « Disposition » ci-dessous).
-Extraire les deux feuilles triviales : `armadai-secrets`, `armadai-storage`
-(zéro dépendance interne). Le bin les référence.
+Casser d'abord les deux arêtes `storage → core` (prélude), puis introduire
+`[workspace]` à la racine (racine = `[workspace]` **et** `[package]`, voir
+« Disposition ») et extraire les deux feuilles. Sous-lots (1 PR chacun) :
+
+- **2a** — `storage::es_log` (`SqliteLog`) remonte dans un module **bin**
+  (`src/es_log.rs`, gated `storage`). Il dépend de `core::EventLog` +
+  `storage::Database`. Mise à jour des imports `crate::storage::es_log::SqliteLog`
+  → `crate::es_log::SqliteLog` (cli). *(casse storage→core edge #1)*
+- **2b** — `init_db`/`resolve_storage_path` + garde-fou test + résolution via
+  `core::config` remontent dans un module **bin** `src/db.rs` (gated `storage`).
+  `storage::mod` ne garde que `Database`, `open(path)` (Connection+schema) et
+  `init_embedded` (inchangé, `#[cfg(test)]` pour l'instant). Callers
+  `crate::storage::init_db()` → `crate::db::init_db()`. Après 2b :
+  `grep 'use crate::' src/storage/` = vide → **storage est core-free**.
+  *(casse storage→core edge #2)*
+- **2c** — Introduire `[workspace]` racine (`members = ["crates/*"]`,
+  `resolver = "3"`) et extraire **`armadai-secrets`** (feuille pure) sous
+  `crates/armadai-secrets/`. Le bin en dépend (`armadai-secrets = { path = … }`),
+  `crate::secrets::` → `armadai_secrets::`. Premier crate = validation du
+  workspace.
+- **2d** — Extraire **`armadai-storage`** sous `crates/armadai-storage/`.
+  Convertir `#[cfg(test)] pub fn init_embedded` → `pub fn open_in_memory()`
+  (non-gated : valide en crate lib, invisible sinon aux tests du bin), convertir
+  les 2 intra-doc-links `[crate::core::…]` (queries.rs, schema.rs) en texte
+  brut, mettre à jour `crate::storage::` → `armadai_storage::` (dont `es_log.rs`
+  et `db.rs` côté bin).
+
+**`[workspace.dependencies]`** (centralisation des versions) : **YAGNI au Lot
+2** — les 2 feuilles épinglent leurs versions directement (alignées sur la
+racine). La centralisation arrive quand plusieurs crates partagent des deps
+lourdes (Lots 3/4).
 
 ### Lot 3 — Extraire `armadai-core`
 
