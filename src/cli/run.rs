@@ -10,8 +10,8 @@ use crate::core::orchestration::es::event::ExecutionEvent;
 use crate::core::orchestration::es::log::{EventLog, InMemoryLog};
 use crate::core::orchestration::es::state::ExecutionState;
 use crate::core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
+use crate::core::provider::{ChatMessage, CompletionRequest};
 use crate::providers::factory::create_provider;
-use crate::providers::traits::{ChatMessage, CompletionRequest};
 
 const GUIDED_MODE_INSTRUCTION: &str = "\
 \n\n---\n\n\
@@ -468,7 +468,7 @@ async fn resume_run(
         std::collections::BTreeMap::new();
     let mut providers_map: std::collections::BTreeMap<
         String,
-        Arc<dyn crate::providers::traits::Provider>,
+        Arc<dyn crate::core::provider::Provider>,
     > = std::collections::BTreeMap::new();
     for name in &state.agents {
         let agent_path = resolve_agent_path(&resolution, name)?;
@@ -1181,7 +1181,7 @@ async fn dispatch_direct_es(
     run_id: &str,
     agent_key: &str,
     agent: Agent,
-    provider: Arc<dyn crate::providers::traits::Provider>,
+    provider: Arc<dyn crate::core::provider::Provider>,
     input: &str,
     routing_rules: &crate::core::routing::RoutingRules,
     sink: &Arc<dyn EventSink>,
@@ -1309,7 +1309,7 @@ async fn run_single_agent_es(
 
     // 2. Create provider (step 2).
     let provider_name = agent.metadata.provider.clone();
-    let provider: Arc<dyn crate::providers::traits::Provider> = Arc::from(create_provider(&agent)?);
+    let provider: Arc<dyn crate::core::provider::Provider> = Arc::from(create_provider(&agent)?);
 
     // 4. Guided-mode system-prompt augmentation (step 4).
     let effective_mode = agent
@@ -1490,14 +1490,14 @@ fn resolve_agents_dir(headless: bool) -> AgentResolution {
 fn apply_agent_selection(
     keys: &[String],
     agents: Vec<crate::core::agent::Agent>,
-    providers: Vec<std::sync::Arc<dyn crate::providers::traits::Provider>>,
+    providers: Vec<std::sync::Arc<dyn crate::core::provider::Provider>>,
     route: Option<&str>,
     tags: &[String],
     routes: &std::collections::BTreeMap<String, Vec<String>>,
 ) -> anyhow::Result<(
     Vec<String>,
     Vec<crate::core::agent::Agent>,
-    Vec<std::sync::Arc<dyn crate::providers::traits::Provider>>,
+    Vec<std::sync::Arc<dyn crate::core::provider::Provider>>,
     crate::core::orchestration::agent_selection::AgentSelection,
 )> {
     use std::collections::HashMap;
@@ -1530,7 +1530,7 @@ fn apply_agent_selection(
         String,
         (
             crate::core::agent::Agent,
-            std::sync::Arc<dyn crate::providers::traits::Provider>,
+            std::sync::Arc<dyn crate::core::provider::Provider>,
         ),
     > = HashMap::new();
     for ((key, a), p) in keys.iter().cloned().zip(agents).zip(providers) {
@@ -1585,7 +1585,7 @@ async fn run_orchestrated(
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
-    use crate::providers::traits::Provider;
+    use crate::core::provider::Provider;
 
     let mut agents = Vec::new();
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
@@ -1675,7 +1675,7 @@ async fn run_orchestrated_inner(
     resolution: &AgentResolution,
     agent_names: &[String],
     mut agents: Vec<crate::core::agent::Agent>,
-    mut providers: Vec<std::sync::Arc<dyn crate::providers::traits::Provider>>,
+    mut providers: Vec<std::sync::Arc<dyn crate::core::provider::Provider>>,
     deprecations: Vec<(Option<String>, Option<String>)>,
     input: &str,
     pattern: &str,
@@ -1704,7 +1704,7 @@ async fn run_orchestrated_inner(
     use crate::core::orchestration::blackboard::BlackboardConfig;
     use crate::core::orchestration::ring::RingConfig;
     use crate::core::project::OrchestrationDefaults;
-    use crate::providers::traits::Provider;
+    use crate::core::provider::Provider;
 
     // Read project-level orchestration overrides (if any).
     let orch_defaults = match resolution {
@@ -2174,7 +2174,7 @@ async fn dispatch_blackboard_es(
     run_id: &str,
     input: &str,
     agents: std::collections::BTreeMap<String, Agent>,
-    providers: std::collections::BTreeMap<String, Arc<dyn crate::providers::traits::Provider>>,
+    providers: std::collections::BTreeMap<String, Arc<dyn crate::core::provider::Provider>>,
     config: crate::core::orchestration::blackboard::BlackboardConfig,
     routing_rules: crate::core::routing::RoutingRules,
     cost_limit: Option<f64>,
@@ -2234,7 +2234,7 @@ async fn dispatch_ring_es(
     input: &str,
     agents: std::collections::BTreeMap<String, Agent>,
     agent_order: Vec<String>,
-    providers: std::collections::BTreeMap<String, Arc<dyn crate::providers::traits::Provider>>,
+    providers: std::collections::BTreeMap<String, Arc<dyn crate::core::provider::Provider>>,
     config: crate::core::orchestration::ring::RingConfig,
     routing_rules: crate::core::routing::RoutingRules,
     cost_limit: Option<f64>,
@@ -2300,7 +2300,7 @@ async fn dispatch_hierarchical_es(
     input: &str,
     config: crate::core::orchestration::OrchestrationConfig,
     agents: std::collections::BTreeMap<String, Agent>,
-    providers: std::collections::BTreeMap<String, Arc<dyn crate::providers::traits::Provider>>,
+    providers: std::collections::BTreeMap<String, Arc<dyn crate::core::provider::Provider>>,
     routing_rules: crate::core::routing::RoutingRules,
     sink: &Arc<dyn EventSink>,
     quiet: bool,
@@ -2762,7 +2762,7 @@ mod selection_tests {
     use std::path::PathBuf;
 
     use crate::core::agent::{Agent, AgentMetadata};
-    use crate::providers::traits::{
+    use crate::core::provider::{
         CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
     };
 
@@ -3073,10 +3073,10 @@ mod es_switch_tests {
     use crate::core::orchestration::es::state::RunStatus;
     use crate::core::orchestration::ring::RingConfig;
     use crate::core::orchestration::{OrchestrationConfig, OrchestrationPattern, TeamConfig};
-    use crate::core::routing::RoutingRules;
-    use crate::providers::traits::{
+    use crate::core::provider::{
         CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
     };
+    use crate::core::routing::RoutingRules;
 
     // ── Shared test infra ────────────────────────────────────────────
 

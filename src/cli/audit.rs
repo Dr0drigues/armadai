@@ -8,8 +8,8 @@ use crate::audit::{
     run_audit,
 };
 use crate::core::agent::{Agent, AgentMetadata};
+use crate::core::provider::{ChatMessage, CompletionRequest};
 use crate::providers::factory::create_provider;
-use crate::providers::traits::{ChatMessage, CompletionRequest};
 
 pub(crate) fn min_severity_from(flag: &str, quiet: bool) -> Severity {
     if quiet {

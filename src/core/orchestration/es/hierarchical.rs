@@ -33,8 +33,8 @@ use crate::core::orchestration::protocol::{
 };
 use crate::core::orchestration::ring::RingConfig;
 use crate::core::orchestration::{NestedPattern, OrchestrationConfig, TeamConfig};
+use crate::core::provider::{ChatMessage, CompletionRequest, Provider};
 use crate::core::routing::{BudgetState, RoutingRules, route};
-use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// A single step planned from an LLM response, before any effect has run.
 ///
@@ -2856,7 +2856,7 @@ mod tests {
         use super::*;
         use crate::core::agent::AgentMetadata;
         use crate::core::orchestration::es::state::fold;
-        use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+        use crate::core::provider::{CompletionResponse, ProviderMetadata, TokenStream};
         use std::path::PathBuf;
         use std::sync::Mutex;
 
@@ -3295,7 +3295,7 @@ mod tests {
     use crate::core::orchestration::es::engine::replay;
     use crate::core::orchestration::es::log::InMemoryLog;
     use crate::core::orchestration::es::state::RunStatus;
-    use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+    use crate::core::provider::{CompletionResponse, ProviderMetadata, TokenStream};
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};

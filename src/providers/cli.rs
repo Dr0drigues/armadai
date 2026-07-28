@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use tokio::process::Command;
 
-use super::traits::*;
+use crate::core::provider::*;
 
 /// Generic CLI provider that spawns any configured command.
 pub struct CliProvider {

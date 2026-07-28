@@ -28,8 +28,8 @@ use super::log::EventLog;
 use super::state::ExecutionState;
 use crate::core::agent::Agent;
 use crate::core::model_resolution::{ModelTier, resolve_model_for_tier};
+use crate::core::provider::{ChatMessage, CompletionRequest, Provider};
 use crate::core::routing::{RoutingRules, route};
-use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// Parse a tier string as stored in `ExecutionState::routed_tiers` back into
 /// a `ModelTier`. Identical in spirit to the same-named helper in
@@ -322,7 +322,7 @@ mod tests {
     use crate::core::model_resolution::fallback_model_for_tier;
     use crate::core::orchestration::es::log::InMemoryLog;
     use crate::core::orchestration::es::state::RunStatus;
-    use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+    use crate::core::provider::{CompletionResponse, ProviderMetadata, TokenStream};
     use std::path::PathBuf;
     use std::sync::Mutex;
 
