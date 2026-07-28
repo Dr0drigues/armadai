@@ -385,7 +385,7 @@ async fn resume_run(
     // back to the log-folded `state.pattern` — the ONLY source available for
     // `direct` runs, which never get an `orchestration_runs` row (see
     // `queries::get_run_pattern`'s doc comment).
-    let pattern = crate::storage::queries::get_run_pattern(&db, run_id)
+    let pattern = armadai_storage::queries::get_run_pattern(&db, run_id)
         .ok()
         .flatten()
         .unwrap_or_else(|| state.pattern.clone());
@@ -1385,7 +1385,7 @@ struct RunMetrics {
 #[cfg(feature = "storage")]
 fn record_run(metrics: &RunMetrics, input: &str, output: &str, project: Option<&str>) {
     use crate::db::init_db;
-    use crate::storage::queries;
+    use armadai_storage::queries;
 
     let db = match init_db() {
         Ok(db) => db,
@@ -2489,14 +2489,14 @@ fn apply_ring_overrides(
 /// delegation trace. Returns the provided hierarchical `run_id`.
 #[cfg(feature = "storage")]
 pub(crate) fn record_hierarchical_into(
-    db: &crate::storage::Database,
+    db: &armadai_storage::Database,
     run_id: &str,
     result: &crate::core::orchestration::hierarchical::OrchestrationResult,
     config: &crate::core::orchestration::OrchestrationConfig,
     input: &str,
     project: Option<&str>,
 ) -> anyhow::Result<String> {
-    use crate::storage::queries;
+    use armadai_storage::queries;
 
     // 1. Parent run record.
     let parent = queries::RunRecord {
@@ -2959,11 +2959,11 @@ mod storage_tests {
     use super::*;
     use crate::core::orchestration::OrchestrationConfig;
     use crate::core::orchestration::hierarchical::{DelegationEvent, OrchestrationResult};
-    use crate::storage::{init_embedded, queries};
+    use armadai_storage::{open_in_memory, queries};
 
     #[test]
     fn hierarchical_run_and_trace_are_persisted() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
 
         // A hierarchical result with one delegation event.
         let result = OrchestrationResult {
@@ -3001,7 +3001,7 @@ mod storage_tests {
 
     #[test]
     fn hierarchical_run_records_project_on_parent() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
 
         let result = OrchestrationResult {
             content: "final".to_string(),
@@ -3488,7 +3488,7 @@ mod es_switch_tests {
     #[tokio::test]
     async fn hierarchical_es_result_is_recorded_via_record_hierarchical_into() {
         let _storage = TempStorageGuard::new();
-        use crate::storage::{init_embedded, queries};
+        use armadai_storage::{open_in_memory, queries};
 
         let (_capture, sink) = capture_sink();
         let (agents, providers) = hierarchical_roster();
@@ -3513,7 +3513,7 @@ mod es_switch_tests {
         // (d): the same `record_hierarchical_into` the switched "hierarchical"
         // match arm calls (via `record_orchestration_hierarchical`) persists
         // the ES-derived `OrchestrationResult`.
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let run_id = uuid::Uuid::new_v4().to_string();
         let returned =
             record_hierarchical_into(&db, &run_id, &result, &config, "build X", None).unwrap();
@@ -3610,7 +3610,7 @@ mod es_switch_tests {
     #[tokio::test]
     async fn blackboard_es_state_is_recorded_via_record_blackboard_es_into() {
         let _storage = TempStorageGuard::new();
-        use crate::storage::{init_embedded, queries};
+        use armadai_storage::{open_in_memory, queries};
 
         let (_capture, sink) = capture_sink();
         let (agents, providers) = blackboard_roster();
@@ -3634,7 +3634,7 @@ mod es_switch_tests {
         // (d): the same `record_blackboard_es_into` the switched "blackboard"
         // match arm calls (via `record_blackboard_es`) persists the folded
         // `ExecutionState`.
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let run_id = uuid::Uuid::new_v4().to_string();
         let returned = crate::cli::run_es_record::record_blackboard_es_into(
             &db, &run_id, &state, &config, "task", None, None,
@@ -3660,12 +3660,12 @@ mod es_switch_tests {
     async fn blackboard_es_run_persists_event_log() {
         use crate::core::orchestration::es::blackboard::run_blackboard_es;
         use crate::es_log::SqliteLog;
-        use crate::storage::init_embedded;
+        use armadai_storage::open_in_memory;
 
         // (a): Setup — same roster as `blackboard_es_state_is_recorded_via_
         // record_blackboard_es_into`, but we drive the ES loop with a
         // SqliteLog directly to verify persistence.
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let run_id = "it-bb-log-1";
         let (agents, providers) = blackboard_roster();
         let config = BlackboardConfig::default();
@@ -3717,9 +3717,9 @@ mod es_switch_tests {
     async fn ring_es_run_persists_event_log() {
         use crate::core::orchestration::es::ring::run_ring_es;
         use crate::es_log::SqliteLog;
-        use crate::storage::init_embedded;
+        use armadai_storage::open_in_memory;
 
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let run_id = "it-ring-log-1";
         let (agents, providers) = ring_roster();
         let config = RingConfig {
@@ -3768,9 +3768,9 @@ mod es_switch_tests {
     async fn hierarchical_es_run_persists_event_log() {
         use crate::core::orchestration::es::hierarchical::run_hierarchical_es;
         use crate::es_log::SqliteLog;
-        use crate::storage::init_embedded;
+        use armadai_storage::open_in_memory;
 
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let run_id = "it-hier-log-1";
         let (agents, providers) = hierarchical_roster();
         let config = flat_config("dev-lead", &["core-specialist"]);
@@ -3817,9 +3817,9 @@ mod es_switch_tests {
     async fn blackboard_es_run_projects_tables_from_log() {
         use crate::core::orchestration::es::blackboard::run_blackboard_es;
         use crate::es_log::SqliteLog;
-        use crate::storage::{init_embedded, queries};
+        use armadai_storage::{open_in_memory, queries};
 
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let run_id = "it-bb-proj-1";
         let (agents, providers) = blackboard_roster();
         let config = BlackboardConfig::default();
@@ -3958,7 +3958,7 @@ mod es_switch_tests {
     #[tokio::test]
     async fn ring_es_state_is_recorded_via_record_ring_es_into() {
         let _storage = TempStorageGuard::new();
-        use crate::storage::{init_embedded, queries};
+        use armadai_storage::{open_in_memory, queries};
 
         let (_capture, sink) = capture_sink();
         let (agents, providers) = ring_roster();
@@ -3985,7 +3985,7 @@ mod es_switch_tests {
 
         // (d): the same `record_ring_es_into` the switched "ring" match arm
         // calls (via `record_ring_es`) persists the folded `ExecutionState`.
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let run_id = uuid::Uuid::new_v4().to_string();
         let returned = crate::cli::run_es_record::record_ring_es_into(
             &db, &run_id, &state, &config, "task", None, None,
@@ -4227,7 +4227,7 @@ mod es_switch_tests {
     // These tests drive `run_replay::replay_from_log` — the `pub(crate)`,
     // generic-over-`EventLog` core `replay_run` wraps around its own
     // `crate::db::init_db()` call — directly against an in-memory
-    // `SqliteLog` (`init_embedded()`), the SAME idiom
+    // `SqliteLog` (`open_in_memory()`), the SAME idiom
     // `blackboard_es_run_persists_event_log`/`ring_es_run_persists_event_log`
     // already use above. This deliberately avoids exercising `init_db()`
     // itself (which resolves the real, global, config-dependent DB path):
@@ -4249,7 +4249,7 @@ mod es_switch_tests {
     /// (which would call the real `crate::db::init_db()`).
     #[cfg(feature = "storage")]
     async fn run_direct_against_sqlite_log(
-        db: crate::storage::Database,
+        db: armadai_storage::Database,
         run_id: &str,
         sink: &Arc<dyn EventSink>,
     ) {
@@ -4303,9 +4303,9 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn replay_reproduces_the_live_run_event_sequence() {
-        use crate::storage::init_embedded;
+        use armadai_storage::open_in_memory;
 
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let run_id = uuid::Uuid::new_v4().to_string();
 
         let (live_capture, live_sink) = capture_sink();
@@ -4377,9 +4377,9 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn replay_full_stream_starts_with_run_start_and_ends_with_result() {
-        use crate::storage::init_embedded;
+        use armadai_storage::open_in_memory;
 
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let run_id = uuid::Uuid::new_v4().to_string();
 
         let (_live_capture, live_sink) = capture_sink();
@@ -4436,9 +4436,9 @@ mod es_switch_tests {
     #[tokio::test]
     async fn replay_of_completed_ring_run_with_votes_includes_vote_tally() {
         use crate::es_log::SqliteLog;
-        use crate::storage::init_embedded;
+        use armadai_storage::open_in_memory;
 
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let run_id = uuid::Uuid::new_v4().to_string();
 
         let mut log = SqliteLog::new(db.clone());
@@ -4508,9 +4508,9 @@ mod es_switch_tests {
     #[test]
     fn replay_unknown_run_id_errors() {
         use crate::es_log::SqliteLog;
-        use crate::storage::init_embedded;
+        use armadai_storage::open_in_memory;
 
-        let log = SqliteLog::new(init_embedded().unwrap());
+        let log = SqliteLog::new(open_in_memory().unwrap());
         let (_capture, sink) = capture_sink();
         let err = crate::cli::run_replay::replay_from_log(&log, "does-not-exist", &sink, false)
             .unwrap_err();
@@ -4561,9 +4561,9 @@ mod es_switch_tests {
         use crate::core::orchestration::es::direct::resume_direct_es;
         use crate::core::orchestration::es::state::fold;
         use crate::es_log::SqliteLog;
-        use crate::storage::init_embedded;
+        use armadai_storage::open_in_memory;
 
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let run_id = uuid::Uuid::new_v4().to_string();
 
         // Simulate a crashed run: only `RunStarted` was ever persisted (the

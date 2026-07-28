@@ -2,12 +2,12 @@
 //!
 //! Owns the config-driven path resolution that used to live in the storage
 //! module's `init_db`. Depends on `crate::core::config`; delegates the actual
-//! open+schema to the storage wrapper (`crate::storage::open`), which is
+//! open+schema to the storage wrapper (`armadai_storage::open`), which is
 //! core-free. Kept bin-side so `armadai-storage` stays a pure rusqlite leaf.
 
 use std::path::{Path, PathBuf};
 
-use crate::storage::Database;
+use armadai_storage::Database;
 
 /// Resolve a possibly-relative `storage.path` to an absolute path.
 ///
@@ -44,12 +44,12 @@ pub fn init_db() -> anyhow::Result<Database> {
         assert!(
             !path.starts_with(&real),
             "init_db() would open the real user database at {} during a test — \
-             redirect storage (ARMADAI_CONFIG_DIR -> temp config) or use init_embedded()",
+             redirect storage (ARMADAI_CONFIG_DIR -> temp config) or use open_in_memory()",
             path.display()
         );
     }
 
-    crate::storage::open(&path)
+    armadai_storage::open(&path)
 }
 
 #[cfg(test)]

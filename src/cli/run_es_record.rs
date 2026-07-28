@@ -166,7 +166,7 @@ fn ring_contributions_text(state: &ExecutionState) -> String {
 /// live `blackboard::Board`. Returns the provided `run_id`.
 #[cfg(feature = "storage")]
 pub fn record_blackboard_es_into(
-    db: &crate::storage::Database,
+    db: &armadai_storage::Database,
     run_id: &str,
     state: &ExecutionState,
     config: &BlackboardConfig,
@@ -174,7 +174,7 @@ pub fn record_blackboard_es_into(
     parent_run_id: Option<&str>,
     project: Option<&str>,
 ) -> anyhow::Result<String> {
-    use crate::storage::queries;
+    use armadai_storage::queries;
 
     let status = match state.status {
         RunStatus::Halted => "halted",
@@ -241,7 +241,7 @@ pub fn record_blackboard_es_into(
 /// provided `run_id`.
 #[cfg(feature = "storage")]
 pub fn record_ring_es_into(
-    db: &crate::storage::Database,
+    db: &armadai_storage::Database,
     run_id: &str,
     state: &ExecutionState,
     config: &RingConfig,
@@ -249,7 +249,7 @@ pub fn record_ring_es_into(
     parent_run_id: Option<&str>,
     project: Option<&str>,
 ) -> anyhow::Result<String> {
-    use crate::storage::queries;
+    use armadai_storage::queries;
 
     let status = match state.status {
         RunStatus::Halted => "halted",
@@ -332,7 +332,7 @@ pub fn record_ring_es_into(
 /// Returns `Ok(())` when the projection succeeds, or an error if the event log
 /// is malformed (e.g. no `RunStarted`) or storage fails.
 #[cfg(feature = "storage")]
-pub fn project_run(db: &crate::storage::Database, run_id: &str) -> anyhow::Result<()> {
+pub fn project_run(db: &armadai_storage::Database, run_id: &str) -> anyhow::Result<()> {
     use crate::core::orchestration::es::log::EventLog;
     use crate::core::orchestration::es::state::fold;
     use crate::es_log::SqliteLog;
@@ -364,7 +364,7 @@ pub fn project_run(db: &crate::storage::Database, run_id: &str) -> anyhow::Resul
         .ok_or_else(|| anyhow::anyhow!("No RunStarted event in log for run {}", run_id))?;
 
     // 4. Delete any existing projection rows (idempotence: clear before rebuilding).
-    crate::storage::queries::delete_projection_for_run(db, run_id)?;
+    armadai_storage::queries::delete_projection_for_run(db, run_id)?;
 
     // 5. Rebuild the projection by calling the pattern-specific record function.
     match pattern.as_str() {
@@ -559,7 +559,7 @@ mod tests {
 mod storage_tests {
     use super::*;
     use crate::core::orchestration::es::state::{BoardEntryRec, ContribRec, VoteRec};
-    use crate::storage::{init_embedded, queries};
+    use armadai_storage::{open_in_memory, queries};
 
     fn sample_blackboard_state() -> ExecutionState {
         let mut state = ExecutionState {
@@ -637,7 +637,7 @@ mod storage_tests {
 
     #[test]
     fn record_blackboard_es_into_persists_run_and_entries() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let state = sample_blackboard_state();
         let config = BlackboardConfig::default();
 
@@ -675,7 +675,7 @@ mod storage_tests {
 
     #[test]
     fn record_blackboard_es_into_links_parent_run_id_and_project() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let state = sample_blackboard_state();
         let config = BlackboardConfig::default();
 
@@ -703,7 +703,7 @@ mod storage_tests {
 
     #[test]
     fn record_ring_es_into_persists_run_contributions_and_votes() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let state = sample_ring_state();
         let config = RingConfig::default();
 
@@ -748,7 +748,7 @@ mod storage_tests {
 
     #[test]
     fn record_blackboard_es_into_uses_caller_run_id() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let state = sample_blackboard_state();
         let cfg = BlackboardConfig::default();
         let returned =
@@ -802,7 +802,7 @@ mod storage_tests {
 
     #[test]
     fn project_run_is_idempotent() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
 
         // Persist a minimal blackboard log via SqliteLog.
         let mut log = crate::es_log::SqliteLog::new(db.clone());

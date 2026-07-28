@@ -657,7 +657,7 @@ pub fn delete_projection_for_run(db: &Database, run_id: &str) -> anyhow::Result<
 /// event log. Callers that need the pattern for EVERY run (e.g.
 /// `armadai run --resume`) must fall back to the event-sourced
 /// `ExecutionState::pattern` (folded from the log's own `RunStarted` event
-/// via [`crate::core::orchestration::es::engine::replay`]), which is always
+/// via `core::orchestration::es::engine::replay`), which is always
 /// populated regardless of pattern.
 pub fn get_run_pattern(db: &Database, run_id: &str) -> anyhow::Result<Option<String>> {
     let conn = db
@@ -692,7 +692,7 @@ pub fn all_event_log_run_ids(db: &Database) -> anyhow::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::init_embedded;
+    use crate::open_in_memory;
 
     fn sample_run(agent: &str, cost: f64) -> RunRecord {
         RunRecord {
@@ -712,7 +712,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_get_history() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         insert_run(&db, sample_run("agent-a", 0.01)).unwrap();
         insert_run(&db, sample_run("agent-b", 0.02)).unwrap();
 
@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn test_run_project_roundtrips_through_history() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let mut with_project = sample_run("agent-a", 0.01);
         with_project.project = Some("/home/user/my-project".to_string());
         insert_run(&db, with_project).unwrap();
@@ -742,7 +742,7 @@ mod tests {
 
     #[test]
     fn test_costs_summary() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         insert_run(&db, sample_run("agent-a", 0.01)).unwrap();
         insert_run(&db, sample_run("agent-a", 0.02)).unwrap();
         insert_run(&db, sample_run("agent-b", 0.05)).unwrap();
@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_get_orchestration_run() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         // First insert a parent run
         insert_run(&db, sample_run("agent-a", 0.01)).unwrap();
         let run_id = {
@@ -788,7 +788,7 @@ mod tests {
 
     #[test]
     fn test_get_run_pattern_returns_stored_pattern() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         // `orchestration_runs.run_id` is a FK into `runs.id` — insert the
         // parent row first, exactly like `test_insert_and_get_orchestration_run`.
         insert_run_with_id(
@@ -820,7 +820,7 @@ mod tests {
     /// `None` as "unknown run".
     #[test]
     fn test_get_run_pattern_none_for_unknown_run() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         assert_eq!(get_run_pattern(&db, "no-such-run").unwrap(), None);
     }
 
@@ -831,7 +831,7 @@ mod tests {
         // `limit` rows and filtering roots out in Rust afterwards — the
         // latter lets children consume slots in the LIMIT window and can
         // silently return fewer than `limit` roots.
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
 
         insert_run_with_id(&db, "root-1", sample_run("agent-a", 0.01)).unwrap();
         insert_run_with_id(&db, "root-2", sample_run("agent-a", 0.02)).unwrap();
@@ -895,7 +895,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_get_board_entries() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         insert_run(&db, sample_run("agent-a", 0.01)).unwrap();
         let run_id = {
             let conn = db.lock().unwrap();
@@ -958,7 +958,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_get_ring_contributions() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         insert_run(&db, sample_run("agent-a", 0.01)).unwrap();
         let run_id = {
             let conn = db.lock().unwrap();
@@ -1004,7 +1004,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_get_ring_votes() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         insert_run(&db, sample_run("agent-a", 0.01)).unwrap();
         let run_id = {
             let conn = db.lock().unwrap();
@@ -1058,35 +1058,35 @@ mod tests {
 
     #[test]
     fn test_get_orchestration_run_not_found() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let result = get_orchestration_run(&db, "nonexistent").unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_get_board_entries_empty() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let entries = get_board_entries(&db, "nonexistent").unwrap();
         assert!(entries.is_empty());
     }
 
     #[test]
     fn test_get_ring_contributions_empty() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let contribs = get_ring_contributions(&db, "nonexistent").unwrap();
         assert!(contribs.is_empty());
     }
 
     #[test]
     fn test_get_ring_votes_empty() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         let votes = get_ring_votes(&db, "nonexistent").unwrap();
         assert!(votes.is_empty());
     }
 
     #[test]
     fn test_orchestration_run_parent_and_children() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         // parent hierarchical run
         insert_run(&db, sample_run("coord", 0.0)).unwrap();
         let parent_id = {
@@ -1145,7 +1145,7 @@ mod tests {
 
     #[test]
     fn test_delegation_events_roundtrip() {
-        let db = init_embedded().unwrap();
+        let db = open_in_memory().unwrap();
         insert_run(&db, sample_run("coord", 0.0)).unwrap();
         let run_id = {
             let conn = db.lock().unwrap();

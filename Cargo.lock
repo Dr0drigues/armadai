@@ -99,6 +99,7 @@ dependencies = [
  "anstyle",
  "anyhow",
  "armadai-secrets",
+ "armadai-storage",
  "assert_cmd",
  "async-trait",
  "axum",
@@ -139,6 +140,16 @@ dependencies = [
  "serde",
  "serde_yaml_ng",
  "tracing",
+]
+
+[[package]]
+name = "armadai-storage"
+version = "1.0.0-rc.5"
+dependencies = [
+ "anyhow",
+ "rusqlite",
+ "serde",
+ "uuid",
 ]
 
 [[package]]

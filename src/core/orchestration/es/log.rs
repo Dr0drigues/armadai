@@ -2,7 +2,7 @@
 //!
 //! `EventLog` is the storage-agnostic trait; `InMemoryLog` is the always-on
 //! implementation (used by tests and non-persistent runs). A SQL-backed
-//! implementation lives bin-side under `crate::storage` (behind the
+//! implementation lives bin-side under `armadai_storage` (behind the
 //! `storage` feature), since `core` must stay storage-free.
 
 use std::collections::HashMap;

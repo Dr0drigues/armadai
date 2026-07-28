@@ -27,12 +27,13 @@ path = "src/bin/fake-claude.rs"
 default = ["tui", "web", "storage", "providers-api"]
 tui = ["dep:ratatui", "dep:crossterm", "dep:portable-pty", "dep:strip-ansi-escapes", "dep:unicode-width"]
 web = ["dep:axum", "dep:tower-http"]
-storage = ["dep:rusqlite"]
+storage = ["dep:armadai-storage", "dep:rusqlite"]
 providers-api = ["dep:reqwest"]
 
 [dependencies]
 # Workspace crates
 armadai-secrets = { path = "crates/armadai-secrets" }
+armadai-storage = { path = "crates/armadai-storage", optional = true }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

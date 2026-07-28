@@ -216,7 +216,7 @@ fn migrate_to_v2(conn: &Connection) -> anyhow::Result<()> {
 }
 
 /// v2 → v3: add `execution_events`, the append-only event-sourcing log for
-/// orchestration runs (OH1 Lot 1 socle — `crate::core::orchestration::es`).
+/// orchestration runs (OH1 Lot 1 socle — `core::orchestration::es`).
 /// `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` are both
 /// idempotent, so this is safe to run unconditionally (a fresh database
 /// already has the table from `apply`'s base batch above, in which case this

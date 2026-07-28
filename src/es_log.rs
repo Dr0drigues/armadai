@@ -1,8 +1,8 @@
 //! SQLite-backed `EventLog` implementation (OH7 Lot 1 Task 1e).
 //!
 //! `SqliteLog` persists into the `execution_events` table (schema v3, see
-//! `crate::storage::schema`). It lives bin-side (not in `core`) because it
-//! depends on `rusqlite` and `crate::storage::Database` — `core` only owns
+//! `armadai_storage::schema`). It lives bin-side (not in `core`) because it
+//! depends on `rusqlite` and `armadai_storage::Database` — `core` only owns
 //! the storage-agnostic `EventLog` trait and the always-on `InMemoryLog`
 //! (see `crate::core::orchestration::es::log`).
 
@@ -23,12 +23,12 @@ fn event_kind(event: &ExecutionEvent) -> anyhow::Result<String> {
 /// SQLite-backed `EventLog`, persisting into `execution_events`
 /// (schema v3).
 pub struct SqliteLog {
-    db: crate::storage::Database,
+    db: armadai_storage::Database,
 }
 
 impl SqliteLog {
     /// Wrap an existing storage handle.
-    pub fn new(db: crate::storage::Database) -> Self {
+    pub fn new(db: armadai_storage::Database) -> Self {
         Self { db }
     }
 }
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn sqlite_log_roundtrip() {
-        let db = crate::storage::init_embedded().unwrap();
+        let db = armadai_storage::open_in_memory().unwrap();
         let mut log = SqliteLog::new(db);
         for e in sample() {
             log.append("r1", &e).unwrap();
@@ -149,7 +149,7 @@ mod tests {
     /// different crate/module and that helper is private to core's tests.)
     #[test]
     fn sqlite_multi_run_id_seq_isolation() {
-        let db = crate::storage::init_embedded().unwrap();
+        let db = armadai_storage::open_in_memory().unwrap();
         let mut log = SqliteLog::new(db);
         let run_ids = ["rA", "rB", "rA", "rB", "rA"];
         for (idx, run_id) in run_ids.iter().enumerate() {
