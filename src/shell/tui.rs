@@ -192,6 +192,28 @@ impl ShellApp {
         }
     }
 
+    /// Append a **complete message block** (as opposed to a token delta) to the
+    /// current streaming response, inserting a paragraph boundary first so two
+    /// consecutive whole messages don't glue together. Claude Code's
+    /// `stream-json` emits one complete `assistant` event per message, so a
+    /// turn with a preamble message followed by the answer would otherwise
+    /// render as `…preamble.## Heading` — the `##` lands mid-line and stops
+    /// being a markdown heading (#293). Deltas (true token chunks) keep using
+    /// [`Self::append_to_streaming`] and are never separated.
+    pub fn append_message_block(&mut self, text: &str) {
+        if let Some(last) = self.messages.last_mut()
+            && !last.is_user
+            && !last.is_system
+        {
+            if !last.content.is_empty() && !last.content.ends_with('\n') {
+                last.content.push_str("\n\n");
+            }
+            last.content.push_str(text);
+            self.manual_scroll = false;
+            self.scroll = 0;
+        }
+    }
+
     /// Start a streaming response for a specific provider in tandem mode
     /// Returns a unique ID for this stream to prevent collision when the same provider appears twice
     pub fn start_tandem_stream(&mut self, provider_label: &str) -> String {
@@ -218,6 +240,25 @@ impl ShellApp {
             .rev()
             .find(|m| m.id.as_deref() == Some(stream_id) && !m.is_user && !m.is_system)
         {
+            msg.content.push_str(text);
+            self.manual_scroll = false;
+            self.scroll = 0;
+        }
+    }
+
+    /// Tandem-stream counterpart of [`Self::append_message_block`]: append a
+    /// complete message to the matching tandem stream, separating it from a
+    /// previous message with a paragraph boundary (#293).
+    pub fn append_to_tandem_stream_block(&mut self, stream_id: &str, text: &str) {
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.id.as_deref() == Some(stream_id) && !m.is_user && !m.is_system)
+        {
+            if !msg.content.is_empty() && !msg.content.ends_with('\n') {
+                msg.content.push_str("\n\n");
+            }
             msg.content.push_str(text);
             self.manual_scroll = false;
             self.scroll = 0;
@@ -1212,6 +1253,45 @@ mod tests {
         assert!(!app.messages[1].is_user);
         assert!(!app.messages[0].is_system);
         assert!(!app.messages[1].is_system);
+    }
+
+    #[test]
+    fn append_message_block_separates_messages_so_heading_renders() {
+        // #293: two complete assistant messages (a preamble, then an answer
+        // opening with a markdown heading) must be paragraph-separated, so the
+        // `##` starts a line and renders as a heading instead of gluing to the
+        // preamble (`…agents.## Synthèse`, which pulldown-cmark reads as plain
+        // text).
+        let mut app = ShellApp::new("Claude".to_string());
+        app.start_streaming_response();
+        app.append_message_block("Je lance les deux agents.");
+        app.append_message_block("## Synthèse\nRésultat.");
+
+        let content = app.get_last_assistant_content();
+        assert!(
+            content.contains("agents.\n\n## Synthèse"),
+            "expected a paragraph boundary before the heading, got: {content:?}"
+        );
+
+        // The renderer now yields a bold heading span for "Synthèse" — which it
+        // would not if the `##` were mid-line.
+        let lines = crate::shell::md_render::render_markdown(&content);
+        let has_heading = lines.iter().any(|l| {
+            l.spans.iter().any(|s| {
+                s.content.contains("Synthèse") && s.style.add_modifier.contains(Modifier::BOLD)
+            })
+        });
+        assert!(has_heading, "## Synthèse should render as a bold heading");
+    }
+
+    #[test]
+    fn append_message_block_no_double_boundary_when_prev_ends_with_newline() {
+        let mut app = ShellApp::new("Claude".to_string());
+        app.start_streaming_response();
+        app.append_message_block("line\n");
+        app.append_message_block("next");
+        // Previous block already ended with a newline: no extra "\n\n".
+        assert_eq!(app.get_last_assistant_content(), "line\nnext");
     }
 
     #[test]
