@@ -1,7 +1,7 @@
 use crate::core::agent::Agent;
 use crate::core::config::AppPaths;
+use crate::core::parser::parse_agent_file;
 use crate::core::project::{self, AgentRef};
-use crate::parser::parse_agent_file;
 
 pub async fn execute(agent_name: String) -> anyhow::Result<()> {
     let path = resolve_agent_file(&agent_name)?;

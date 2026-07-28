@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use include_dir::{Dir, include_dir};
 use serde::Deserialize;
 
-use crate::parser::frontmatter::extract_frontmatter;
+use crate::core::parser::frontmatter::extract_frontmatter;
 
 use super::config::user_skills_dir;
 

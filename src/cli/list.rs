@@ -1,7 +1,7 @@
 use crate::core::agent::Agent;
 use crate::core::config::AppPaths;
+use crate::core::parser;
 use crate::core::project;
-use crate::parser;
 
 pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow::Result<()> {
     let mut agents = load_agents()?;

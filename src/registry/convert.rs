@@ -30,7 +30,7 @@ use crate::core::config::user_agents_dir;
 /// <instructions body>
 /// ```
 pub fn convert_to_armadai(content: &str, fallback_name: &str) -> String {
-    let (frontmatter, body) = crate::parser::frontmatter::extract_frontmatter(content);
+    let (frontmatter, body) = crate::core::parser::frontmatter::extract_frontmatter(content);
 
     let mut name = fallback_name.to_string();
     let mut description = String::new();

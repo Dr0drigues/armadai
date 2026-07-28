@@ -4,7 +4,6 @@ mod core;
 mod linker;
 mod logging;
 mod model_registry;
-mod parser;
 #[allow(dead_code)]
 mod providers;
 mod registry;

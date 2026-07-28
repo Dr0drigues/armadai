@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::sync::{default_sources, parse_source, repo_dir, repos_dir};
 use crate::core::config::skills_registry_dir;
+use crate::core::parser::frontmatter::extract_frontmatter;
 use crate::core::skill::SkillFrontmatter;
-use crate::parser::frontmatter::extract_frontmatter;
 
 // ---------------------------------------------------------------------------
 // Index data model

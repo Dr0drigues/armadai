@@ -22,7 +22,7 @@ pub struct DeprecationFinding {
 
 /// Check a single agent file for deprecated model references.
 pub fn check_agent_file(path: &Path) -> Vec<DeprecationFinding> {
-    let agent = match crate::parser::parse_agent_file(path) {
+    let agent = match crate::core::parser::parse_agent_file(path) {
         Ok(a) => a,
         Err(_) => return Vec::new(),
     };

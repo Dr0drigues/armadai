@@ -199,7 +199,7 @@ fn load_agents() -> Vec<Agent> {
         let (paths, _) = project::resolve_all_agents(&config, &root);
         let mut agents = Vec::new();
         for path in &paths {
-            if let Ok(agent) = crate::parser::parse_agent_file(path) {
+            if let Ok(agent) = crate::core::parser::parse_agent_file(path) {
                 agents.push(agent);
             }
         }
