@@ -26,8 +26,8 @@ use crate::core::model_resolution::fallback_model_for_tier;
 use crate::core::model_resolution::{ModelTier, resolve_model_for_tier};
 use crate::core::orchestration::blackboard::{BlackboardConfig, EntryKind, entry_kind_name};
 use crate::core::orchestration::llm_agents::{BOARD_ACTION_INSTRUCTIONS, parse_board_action};
+use crate::core::provider::{ChatMessage, CompletionRequest, Provider};
 use crate::core::routing::{BudgetState, RoutingRules, route};
-use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// Agents eligible to contribute on the board's current round, ordered by
 /// the run's roster (`state.agents`) rather than `agents`' own (`BTreeMap`,
@@ -1388,7 +1388,7 @@ mod tests {
     mod effect_runner {
         use super::*;
         use crate::core::agent::AgentMetadata;
-        use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+        use crate::core::provider::{CompletionResponse, ProviderMetadata, TokenStream};
         use std::path::PathBuf;
         use std::sync::Mutex;
 
@@ -1877,7 +1877,7 @@ mod tests {
         use crate::core::orchestration::es::engine::replay;
         use crate::core::orchestration::es::log::InMemoryLog;
         use crate::core::orchestration::es::state::RunStatus;
-        use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+        use crate::core::provider::{CompletionResponse, ProviderMetadata, TokenStream};
         use std::collections::VecDeque;
         use std::path::PathBuf;
         use std::sync::atomic::{AtomicUsize, Ordering};

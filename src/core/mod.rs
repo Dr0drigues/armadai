@@ -14,6 +14,7 @@ pub mod parser;
 pub mod project;
 pub mod project_registry;
 pub mod prompt;
+pub mod provider;
 pub mod registries;
 pub mod routing;
 pub mod skill;

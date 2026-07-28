@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::providers::traits::*;
+use crate::core::provider::*;
 
 pub struct OpenAiProvider {
     pub api_key: String,

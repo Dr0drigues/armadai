@@ -6,7 +6,6 @@ pub mod json_runner;
 #[cfg(feature = "providers-api")]
 pub mod proxy;
 pub mod rate_limiter;
-pub mod traits;
 
 // Re-exported for `factory.rs` wiring (rate-limit Lot 1, Task 3).
 pub use rate_limiter::{Rate, RateLimitedProvider, RateLimiter, shared_provider_limiter};

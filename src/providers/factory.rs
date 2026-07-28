@@ -1,6 +1,6 @@
 use crate::core::agent::Agent;
 
-use super::traits::Provider;
+use crate::core::provider::Provider;
 
 /// Known tool definitions for unified provider names.
 /// Each entry maps a user-friendly name to its CLI command and API backend.
@@ -314,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn wrap_rate_limited_agent_limiter_throttles_without_provider_key() {
         use crate::core::agent::AgentMetadata;
-        use crate::providers::traits::{
+        use crate::core::provider::{
             ChatMessage, CompletionRequest, CompletionResponse, ProviderMetadata, TokenStream,
         };
         use std::sync::Arc;

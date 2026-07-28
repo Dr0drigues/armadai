@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::event::ExecutionEvent;
-use crate::providers::traits::ChatMessage;
+use crate::core::provider::ChatMessage;
 
 /// Terminal/in-flight status of an orchestration run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

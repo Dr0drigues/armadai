@@ -1,4 +1,4 @@
-use crate::providers::traits::{
+use crate::core::provider::{
     CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
 };
 use std::collections::HashMap;
@@ -253,7 +253,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_millis(100));
     }
 
-    use crate::providers::traits::{
+    use crate::core::provider::{
         ChatMessage, CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
     };
     use std::sync::Arc;

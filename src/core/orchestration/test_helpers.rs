@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::providers::traits::{
+use crate::core::provider::{
     CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
 };
 

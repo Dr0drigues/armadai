@@ -33,8 +33,8 @@ use crate::core::orchestration::llm_agents::{
     RING_ACTION_INSTRUCTIONS, parse_ring_action, parse_vote_confidence,
 };
 use crate::core::orchestration::ring::{ContributionAction, RingConfig};
+use crate::core::provider::{ChatMessage, CompletionRequest, Provider};
 use crate::core::routing::{BudgetState, RoutingRules, route};
-use crate::providers::traits::{ChatMessage, CompletionRequest, Provider};
 
 /// Maximum number of prior ring contributions re-emitted in a circulation
 /// prompt. Without a cap the ring re-sends the entire transcript on every
@@ -1765,7 +1765,7 @@ mod tests {
     mod effect_runner {
         use super::*;
         use crate::core::agent::AgentMetadata;
-        use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+        use crate::core::provider::{CompletionResponse, ProviderMetadata, TokenStream};
         use std::path::PathBuf;
         use std::sync::Mutex;
 
@@ -2186,7 +2186,7 @@ mod tests {
         use crate::core::orchestration::es::engine::replay;
         use crate::core::orchestration::es::log::InMemoryLog;
         use crate::core::orchestration::es::state::RunStatus;
-        use crate::providers::traits::{CompletionResponse, ProviderMetadata, TokenStream};
+        use crate::core::provider::{CompletionResponse, ProviderMetadata, TokenStream};
         use std::collections::VecDeque;
         use std::path::PathBuf;
         use std::sync::atomic::{AtomicUsize, Ordering};

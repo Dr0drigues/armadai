@@ -29,6 +29,13 @@ pub struct CompletionResponse {
     pub cost: f64,
 }
 
+// Fields are constructed by every `Provider::metadata()` impl but only read
+// in tests today (`cli/run.rs`). Previously silent because `mod providers;`
+// in `main.rs` carries a blanket `#[allow(dead_code)]`; `core` has no such
+// blanket allow, so the move surfaces this pre-existing dead code. Scoped
+// here rather than widening `core`'s allow — same effective behavior as
+// before the move (OH7 #252 Task 1d, pure refactor, no allow scope change).
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProviderMetadata {
     pub name: String,
