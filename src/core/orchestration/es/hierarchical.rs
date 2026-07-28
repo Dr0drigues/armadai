@@ -3389,6 +3389,30 @@ mod tests {
         }
     }
 
+    /// A provider whose every call fails — to exercise the collect-and-record
+    /// path (`run_invoke` `Err` → `AgentFailed`, run continues).
+    struct FailingProvider;
+
+    #[async_trait]
+    impl Provider for FailingProvider {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> anyhow::Result<CompletionResponse> {
+            anyhow::bail!("simulated provider failure")
+        }
+        async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("simulated provider failure")
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "scripted".to_string(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
     /// Base flat-team config: coordinator with a single team of `peers` (no
     /// nested lead) — the same topology as `decide`'s `base_config`.
     fn es_flat_config(coordinator: &str, peers: &[&str]) -> OrchestrationConfig {
@@ -3830,6 +3854,97 @@ mod tests {
         assert!(
             !final_content(&log, "run-multi").trim().is_empty(),
             "expected non-empty final content"
+        );
+    }
+
+    // Scenario: coordinator delegates to two siblings concurrently; one child's
+    // provider fails. Collect-and-record: the run still completes on the
+    // surviving child, and the failure is recorded (AgentFailed) rather than
+    // aborting the run.
+    #[tokio::test]
+    async fn es_parallel_fanout_survives_one_failed_child() {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "dev-lead".to_string(),
+            es_test_agent("dev-lead", "concrete-model"),
+        );
+        agents.insert(
+            "core-specialist".to_string(),
+            es_test_agent("core-specialist", "concrete-model"),
+        );
+        agents.insert(
+            "qa-specialist".to_string(),
+            es_test_agent("qa-specialist", "concrete-model"),
+        );
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert(
+            "dev-lead".to_string(),
+            Arc::new(ScriptedProvider::new(&[
+                "@core-specialist: implémente X\n@qa-specialist: teste X",
+                "Synthèse : livré malgré un échec.",
+            ])),
+        );
+        // core-specialist fails; qa-specialist succeeds.
+        providers.insert("core-specialist".to_string(), Arc::new(FailingProvider));
+        providers.insert(
+            "qa-specialist".to_string(),
+            Arc::new(ScriptedProvider::new(&["X est testé, RAS."])),
+        );
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-partial-fail",
+            "dev-lead",
+            "build X",
+            es_flat_config("dev-lead", &["core-specialist", "qa-specialist"]),
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        // Run completed despite the failure (collect-and-record, not abort).
+        assert_eq!(st.status, RunStatus::Completed);
+
+        let events = log.events("run-partial-fail").unwrap();
+
+        // The failed child is recorded as AgentFailed, in Vec order (core
+        // before qa), and qa was still invoked and observed.
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ExecutionEvent::AgentFailed { agent, .. } if agent == "core-specialist"
+            )),
+            "expected AgentFailed for core-specialist"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ExecutionEvent::AgentObserved { agent, .. } if agent == "qa-specialist"
+            )),
+            "expected qa-specialist to still be observed"
+        );
+
+        // Deterministic recorded order: both AgentInvoked in batch order.
+        let invoked: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                ExecutionEvent::AgentInvoked { agent, .. }
+                    if agent == "core-specialist" || agent == "qa-specialist" =>
+                {
+                    Some(agent.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(invoked, vec!["core-specialist", "qa-specialist"]);
+
+        // Final content is the coordinator's synthesis (non-empty).
+        assert!(
+            !final_content(&log, "run-partial-fail").trim().is_empty(),
+            "expected non-empty final content after synthesizing partial results"
         );
     }
 
