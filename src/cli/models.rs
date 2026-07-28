@@ -1,8 +1,8 @@
 use clap::Subcommand;
 
-use crate::core::model_updater;
-use crate::core::project;
-use crate::core::project_registry;
+use armadai_core::model_updater;
+use armadai_core::project;
+use armadai_core::project_registry;
 
 #[derive(Subcommand)]
 pub enum ModelsAction {

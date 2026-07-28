@@ -1,10 +1,10 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-use crate::core::parser;
-use crate::core::project;
 use crate::linker::model_resolution::{self, TargetKind};
 use crate::linker::{self, LinkAgent};
+use armadai_core::parser;
+use armadai_core::project;
 
 pub async fn execute(
     target: Option<crate::linker::LinkTarget>,
@@ -23,10 +23,10 @@ pub async fn execute(
         )
     })?;
 
-    if let Err(e) = crate::core::project_registry::register_project(&root) {
+    if let Err(e) = armadai_core::project_registry::register_project(&root) {
         tracing::warn!("Failed to register project in registry: {:?}", e);
     }
-    crate::core::model_updater::auto_check_and_prompt(&root, std::io::stdin().is_terminal());
+    armadai_core::model_updater::auto_check_and_prompt(&root, std::io::stdin().is_terminal());
 
     if config.agents.is_empty() {
         anyhow::bail!("No agents declared in project config.");
@@ -35,7 +35,7 @@ pub async fn execute(
     // 1b. Validate orchestration config if enabled
     if let Some(ref orch) = config.orchestration
         && orch.enabled
-        && let Err(errors) = crate::core::orchestration::validate_config(orch)
+        && let Err(errors) = armadai_core::orchestration::validate_config(orch)
     {
         let e = crate::cli::style::err();
         anstream::eprintln!("{e}Orchestration validation failed:{e:#}\n");
@@ -72,7 +72,7 @@ pub async fn execute(
 
     // 2b. Resolve deprecated model aliases before remapping
     for agent in &mut link_agents {
-        crate::core::model_aliases::resolve_model_deprecations(
+        armadai_core::model_aliases::resolve_model_deprecations(
             &mut agent.model,
             &mut agent.model_fallback,
         );

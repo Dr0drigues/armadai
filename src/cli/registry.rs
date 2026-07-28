@@ -1,11 +1,11 @@
 use clap::{Subcommand, ValueEnum};
 
-use crate::core::config::registries_config_path;
-use crate::core::project::find_project_config;
-use crate::core::registries::{
+use crate::registry::{cache, convert, search, sync};
+use armadai_core::config::registries_config_path;
+use armadai_core::project::find_project_config;
+use armadai_core::registries::{
     RegistriesConfig, RegistryKind, RegistrySource, load_user_registries,
 };
-use crate::registry::{cache, convert, search, sync};
 
 #[derive(Subcommand)]
 pub enum RegistryAction {
@@ -569,7 +569,7 @@ mod tests {
     fn cli_source_kind_starters_maps_to_registry_kind() {
         assert_eq!(
             RegistryKind::from(SourceKind::Starters),
-            crate::core::registries::RegistryKind::Starters
+            armadai_core::registries::RegistryKind::Starters
         );
     }
 
@@ -610,7 +610,7 @@ mod tests {
     async fn sources_add_and_load() {
         use tempfile::tempdir;
 
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
 
         let temp = tempdir().unwrap();
@@ -637,7 +637,7 @@ mod tests {
     async fn sources_remove_existing() {
         use tempfile::tempdir;
 
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
 
         let temp = tempdir().unwrap();
@@ -664,7 +664,7 @@ mod tests {
     async fn sources_add_is_idempotent() {
         use tempfile::tempdir;
 
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
 
         let temp = tempdir().unwrap();

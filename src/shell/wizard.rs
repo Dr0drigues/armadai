@@ -6,8 +6,8 @@ use anyhow::Result;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::core::project;
-use crate::core::starter::{find_pack_dir, list_available_packs};
+use armadai_core::project;
+use armadai_core::starter::{find_pack_dir, list_available_packs};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -256,8 +256,8 @@ fn read_choice(min: usize, max: usize) -> Result<usize> {
 // ---------------------------------------------------------------------------
 
 fn run_init_with_pack(pack_name: &str) -> Result<()> {
-    use crate::core::config;
-    use crate::core::starter::StarterPack;
+    use armadai_core::config;
+    use armadai_core::starter::StarterPack;
 
     // Init global config
     config::ensure_config_dirs()?;
@@ -323,7 +323,7 @@ fn run_link(target: &str) -> Result<()> {
 
     let mut link_agents: Vec<crate::linker::LinkAgent> = Vec::new();
     for path in &paths {
-        match crate::core::parser::parse_agent_file(path) {
+        match armadai_core::parser::parse_agent_file(path) {
             Ok(agent) => link_agents.push(crate::linker::LinkAgent::from(&agent)),
             Err(e) => eprintln!("  warn: failed to parse {}: {}", path.display(), e),
         }
@@ -335,7 +335,7 @@ fn run_link(target: &str) -> Result<()> {
 
     // Resolve deprecated models
     for agent in &mut link_agents {
-        crate::core::model_aliases::resolve_model_deprecations(
+        armadai_core::model_aliases::resolve_model_deprecations(
             &mut agent.model,
             &mut agent.model_fallback,
         );

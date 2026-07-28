@@ -7,7 +7,7 @@
 //! which append to the log AND drive the live provider calls. Replay only
 //! ever reads: `EventLog::events(run_id)` back, then projects each
 //! `ExecutionEvent` onto zero-or-more `RunEvent`s via
-//! [`crate::core::orchestration::es::bridge::map_execution_to_run_events`] —
+//! [`armadai_core::orchestration::es::bridge::map_execution_to_run_events`] —
 //! the SAME function `SinkProjectingLog` (the live path's bridge, see
 //! `bridge.rs`) uses for every ES run. Reusing it here (rather than forking a
 //! second `ExecutionEvent -> RunEvent` mapping) is what guarantees replay
@@ -20,7 +20,7 @@
 //! maps `RunStarted`/`Completed` to `[]` (see its doc comment), since building
 //! either CLI-shaped event needs context the per-event projection doesn't
 //! have. `replay_from_log` therefore synthesizes both itself —
-//! [`crate::core::orchestration::es::bridge::synthetic_run_start`] for the
+//! [`armadai_core::orchestration::es::bridge::synthetic_run_start`] for the
 //! head, [`crate::cli::run_es_record::final_content`] (the SAME helper
 //! `resume_run` in `run.rs` calls, and the fix for a re-review fidelity gap:
 //! this module used to call `to_orchestration_result` unconditionally here,
@@ -72,9 +72,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::core::events::EventSink;
+use armadai_core::events::EventSink;
 #[cfg(feature = "storage")]
-use crate::core::events::RunEvent;
+use armadai_core::events::RunEvent;
 
 /// Replay a finished run: open the real, config-resolved event log
 /// (`crate::db::init_db()` + `SqliteLog`) and re-emit the same
@@ -121,17 +121,17 @@ pub async fn replay_run(
 /// unknown id, so this is the only place that turns "nothing recorded"
 /// into a user-facing error.
 #[cfg(feature = "storage")]
-pub(crate) fn replay_from_log<L: crate::core::orchestration::es::log::EventLog>(
+pub(crate) fn replay_from_log<L: armadai_core::orchestration::es::log::EventLog>(
     log: &L,
     run_id: &str,
     sink: &Arc<dyn EventSink>,
     human_output: bool,
 ) -> anyhow::Result<()> {
     use crate::cli::run_es_record::final_content;
-    use crate::core::orchestration::es::bridge::{
+    use armadai_core::orchestration::es::bridge::{
         map_execution_to_run_events, synthetic_run_start, to_orchestration_result,
     };
-    use crate::core::orchestration::es::state::fold;
+    use armadai_core::orchestration::es::state::fold;
 
     let events = log.events(run_id)?;
 

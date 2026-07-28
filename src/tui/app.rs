@@ -1,8 +1,8 @@
-use crate::core::agent::Agent;
-use crate::core::prompt::Prompt;
-use crate::core::skill::Skill;
-use crate::core::starter::StarterPack;
 use crate::model_registry::ModelEntry;
+use armadai_core::agent::Agent;
+use armadai_core::prompt::Prompt;
+use armadai_core::skill::Skill;
+use armadai_core::starter::StarterPack;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -406,8 +406,8 @@ impl App {
     }
 
     pub fn load_agents(&mut self) {
-        use crate::core::config::is_force_global;
-        use crate::core::project;
+        use armadai_core::config::is_force_global;
+        use armadai_core::project;
 
         // Project-aware agent loading
         if !is_force_global()
@@ -417,7 +417,7 @@ impl App {
             let (paths, _) = project::resolve_all_agents(&config, &root);
             let mut agents = Vec::new();
             for path in &paths {
-                if let Ok(agent) = crate::core::parser::parse_agent_file(path) {
+                if let Ok(agent) = armadai_core::parser::parse_agent_file(path) {
                     agents.push(agent);
                 }
             }
@@ -425,7 +425,7 @@ impl App {
             return;
         }
 
-        let agents_dir = crate::core::config::AppPaths::resolve().agents_dir;
+        let agents_dir = armadai_core::config::AppPaths::resolve().agents_dir;
         match Agent::load_all_with_skipped(&agents_dir) {
             Ok((agents, skipped)) => {
                 self.agents = agents;
@@ -443,14 +443,14 @@ impl App {
     }
 
     pub fn load_prompts(&mut self) {
-        use crate::core::config::{is_force_global, user_prompts_dir};
-        use crate::core::prompt::{Prompt, load_all_prompts};
+        use armadai_core::config::{is_force_global, user_prompts_dir};
+        use armadai_core::prompt::{Prompt, load_all_prompts};
 
         if !is_force_global()
-            && let Some((root, config)) = crate::core::project::find_project_config()
+            && let Some((root, config)) = armadai_core::project::find_project_config()
             && !config.prompts.is_empty()
         {
-            let (paths, _) = crate::core::project::resolve_all_prompts(&config, &root);
+            let (paths, _) = armadai_core::project::resolve_all_prompts(&config, &root);
             self.prompts = paths.iter().filter_map(|p| Prompt::load(p).ok()).collect();
             return;
         }
@@ -459,14 +459,14 @@ impl App {
     }
 
     pub fn load_skills(&mut self) {
-        use crate::core::config::{is_force_global, user_skills_dir};
-        use crate::core::skill::load_all_skills;
+        use armadai_core::config::{is_force_global, user_skills_dir};
+        use armadai_core::skill::load_all_skills;
 
         if !is_force_global()
-            && let Some((root, config)) = crate::core::project::find_project_config()
+            && let Some((root, config)) = armadai_core::project::find_project_config()
             && !config.skills.is_empty()
         {
-            let (paths, _) = crate::core::project::resolve_all_skills(&config, &root);
+            let (paths, _) = armadai_core::project::resolve_all_skills(&config, &root);
             let mut skills = Vec::new();
             for path in &paths {
                 skills.extend(load_all_skills(path));
@@ -479,7 +479,7 @@ impl App {
     }
 
     pub fn load_starters(&mut self) {
-        use crate::core::starter::load_all_packs;
+        use armadai_core::starter::load_all_packs;
         self.starters = load_all_packs();
     }
 

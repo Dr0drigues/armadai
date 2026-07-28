@@ -1,0 +1,25 @@
+[package]
+name = "armadai-core"
+version = "1.0.0-rc.5"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ArmadAI — reusable orchestration core: domain types, Provider/EventLog traits, parser, event-sourced engine."
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+tokio = { version = "1", features = ["time", "macros", "rt", "rt-multi-thread", "sync"] }
+tokio-stream = { version = "0.1", features = ["io-util"] }
+pulldown-cmark = "0.13"
+include_dir = "0.7"
+tracing = "0.1"
+dialoguer = "0.12"
+
+[dev-dependencies]
+tempfile = "3"

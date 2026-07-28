@@ -1,5 +1,5 @@
-use crate::core::config;
-use crate::core::starter::{StarterPack, find_pack_dir, list_available_packs};
+use armadai_core::config;
+use armadai_core::starter::{StarterPack, find_pack_dir, list_available_packs};
 
 pub async fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Result<()> {
     if let Some(ref pack_name) = pack
@@ -51,7 +51,7 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     write_if_missing_or_force(&providers_path, config::DEFAULT_PROVIDERS_YAML, force)?;
 
     // Install built-in skills
-    let skills_installed = crate::core::skill::install_embedded_skills(force)?;
+    let skills_installed = armadai_core::skill::install_embedded_skills(force)?;
 
     anstream::println!("\n{o}ArmadAI initialized at{o:#} {m}{}{m:#}", dir.display());
     anstream::println!("{m}  config:    {}{m:#}", config_path.display());
@@ -226,8 +226,8 @@ fn init_project() -> anyhow::Result<()> {
     );
 
     // Check for deprecated models in newly created project
-    if let Some((root, _)) = crate::core::project::find_project_config() {
-        crate::core::model_updater::auto_check_and_prompt(&root, true);
+    if let Some((root, _)) = armadai_core::project::find_project_config() {
+        armadai_core::model_updater::auto_check_and_prompt(&root, true);
     }
 
     Ok(())
@@ -344,8 +344,8 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
     anstream::println!("{m}  Run `armadai link` to generate target config files.{m:#}");
 
     // Check for deprecated models in newly created project
-    if let Some((root, _)) = crate::core::project::find_project_config() {
-        crate::core::model_updater::auto_check_and_prompt(&root, true);
+    if let Some((root, _)) = armadai_core::project::find_project_config() {
+        armadai_core::model_updater::auto_check_and_prompt(&root, true);
     }
 
     Ok(())
@@ -452,7 +452,7 @@ mod tests {
         // Backward compat: with no starter registry sources configured (the
         // default — no `registries.yaml`), a miss on an unknown pack name
         // must return None without attempting any sync/network call.
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         let config_dir = tempfile::tempdir().unwrap();
         // SAFETY: serialised via ENV_MUTEX; restored at end of test.

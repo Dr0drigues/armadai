@@ -4,10 +4,10 @@
 //! `armadai_storage::schema`). It lives bin-side (not in `core`) because it
 //! depends on `rusqlite` and `armadai_storage::Database` — `core` only owns
 //! the storage-agnostic `EventLog` trait and the always-on `InMemoryLog`
-//! (see `crate::core::orchestration::es::log`).
+//! (see `armadai_core::orchestration::es::log`).
 
-use crate::core::orchestration::es::event::ExecutionEvent;
-use crate::core::orchestration::es::log::EventLog;
+use armadai_core::orchestration::es::event::ExecutionEvent;
+use armadai_core::orchestration::es::log::EventLog;
 
 /// Extract the internal serde tag (`t`, e.g. `"run_started"`) from an
 /// `ExecutionEvent`'s serialized form, used as the `kind` column value.
@@ -73,7 +73,7 @@ impl EventLog for SqliteLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::orchestration::es::event::ExecutionEvent as E;
+    use armadai_core::orchestration::es::event::ExecutionEvent as E;
 
     fn sample() -> Vec<E> {
         vec![
@@ -144,7 +144,7 @@ mod tests {
     /// verify each `run_id` gets back exactly its own events, in insertion
     /// order, with none of the other's leaking in. This is the scenario
     /// that would break under a `seq`/`(run_id, seq)` collision. (Mirrors
-    /// `crate::core::orchestration::es::log::tests::assert_multi_run_id_seq_isolation`
+    /// `armadai_core::orchestration::es::log::tests::assert_multi_run_id_seq_isolation`
     /// for `InMemoryLog` — duplicated here since `SqliteLog` now lives in a
     /// different crate/module and that helper is private to core's tests.)
     #[test]

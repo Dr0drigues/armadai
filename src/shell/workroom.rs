@@ -13,9 +13,9 @@ use ratatui::{
 use std::time::Instant;
 
 use super::SPINNER_FRAMES as SPINNER;
-use crate::core::events::RunEvent;
-use crate::core::orchestration::OrchestrationPattern;
 use crate::theme;
+use armadai_core::events::RunEvent;
+use armadai_core::orchestration::OrchestrationPattern;
 
 /// Agent activity state
 #[derive(Debug, Clone, PartialEq)]
@@ -1653,7 +1653,7 @@ orchestration:
         assert!(holder_styled);
     }
 
-    use crate::core::events::RunEvent;
+    use armadai_core::events::RunEvent;
     use std::time::Instant;
 
     fn rs(agents: &[&str]) -> RunEvent {

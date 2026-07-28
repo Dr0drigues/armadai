@@ -87,9 +87,9 @@ pub async fn execute(action: ProjectionsAction) -> anyhow::Result<()> {
 #[cfg(all(test, feature = "storage"))]
 mod tests {
     use super::*;
-    use crate::core::orchestration::es::event::ExecutionEvent;
-    use crate::core::orchestration::es::log::EventLog;
     use crate::es_log::SqliteLog;
+    use armadai_core::orchestration::es::event::ExecutionEvent;
+    use armadai_core::orchestration::es::log::EventLog;
     use armadai_storage::{open_in_memory, queries};
 
     /// Helper: construct a minimal blackboard event log suitable for

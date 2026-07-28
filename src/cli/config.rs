@@ -2,7 +2,7 @@ use std::path::Path;
 
 use clap::Subcommand;
 
-use crate::core::config as app_config;
+use armadai_core::config as app_config;
 
 #[derive(Subcommand)]
 pub enum ConfigAction {
@@ -338,7 +338,7 @@ async fn secrets_rotate() -> anyhow::Result<()> {
 
 /// List all starter directories with their source type.
 async fn starters_dir_list() -> anyhow::Result<()> {
-    use crate::core::starter::{all_starters_dirs, builtin_starters_dir};
+    use armadai_core::starter::{all_starters_dirs, builtin_starters_dir};
 
     let builtin = builtin_starters_dir();
     let user = app_config::user_starters_dir();

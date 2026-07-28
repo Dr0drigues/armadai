@@ -32,6 +32,7 @@ providers-api = ["dep:reqwest"]
 
 [dependencies]
 # Workspace crates
+armadai-core = { path = "crates/armadai-core" }
 armadai-secrets = { path = "crates/armadai-secrets" }
 armadai-storage = { path = "crates/armadai-storage", optional = true }
 

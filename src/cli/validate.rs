@@ -3,7 +3,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use crate::core::pack_validation::{Severity, validate_pack, validate_project_config};
+use armadai_core::pack_validation::{Severity, validate_pack, validate_project_config};
 
 pub async fn execute(path: Option<PathBuf>) -> anyhow::Result<()> {
     // Resolve path (default: current directory)

@@ -540,7 +540,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             stack,
             global,
         } => {
-            crate::core::config::set_force_global(global);
+            armadai_core::config::set_force_global(global);
             list::execute(tags, stack).await
         }
         Command::Inspect { agent } => inspect::execute(agent).await,
@@ -561,12 +561,12 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Shell { ascii } => crate::shell::app::run_shell(ascii).await,
         #[cfg(feature = "tui")]
         Command::Tui { global, ascii } => {
-            crate::core::config::set_force_global(global);
+            armadai_core::config::set_force_global(global);
             crate::tui::run(ascii).await
         }
         #[cfg(feature = "web")]
         Command::Web { port, global } => {
-            crate::core::config::set_force_global(global);
+            armadai_core::config::set_force_global(global);
             crate::web::serve(port).await
         }
         Command::Models(action) => models::execute(action).await,

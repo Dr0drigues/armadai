@@ -104,7 +104,7 @@ pub async fn run_shell(ascii: bool) -> Result<()> {
     let wizard_result = super::wizard::ensure_project_ready()?;
 
     // Load shell config from project config (if available)
-    let shell_config = crate::core::project::find_project_config()
+    let shell_config = armadai_core::project::find_project_config()
         .and_then(|(_, cfg)| cfg.shell)
         .unwrap_or_default();
 
@@ -1099,11 +1099,11 @@ async fn execute_tandem(
 
 /// Resolve an agent file path by name from the current project config.
 fn resolve_project_agent(name: &str) -> Option<std::path::PathBuf> {
-    let (root, config) = crate::core::project::find_project_config()?;
+    let (root, config) = armadai_core::project::find_project_config()?;
     for agent_ref in &config.agents {
         let agent_name = match agent_ref {
-            crate::core::project::AgentRef::Named { name: n } => n.clone(),
-            crate::core::project::AgentRef::Path { path } => path
+            armadai_core::project::AgentRef::Named { name: n } => n.clone(),
+            armadai_core::project::AgentRef::Path { path } => path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string())
@@ -1111,7 +1111,7 @@ fn resolve_project_agent(name: &str) -> Option<std::path::PathBuf> {
             _ => continue,
         };
         if agent_name == name {
-            return crate::core::project::resolve_agent(agent_ref, &root).ok();
+            return armadai_core::project::resolve_agent(agent_ref, &root).ok();
         }
     }
     None
@@ -1165,7 +1165,7 @@ async fn execute_pipeline_steps(
         {
             // Agent mode: load the agent from project config
             match resolve_project_agent(agent_name) {
-                Some(path) => match crate::core::parser::parse_agent_file(&path) {
+                Some(path) => match armadai_core::parser::parse_agent_file(&path) {
                     Ok(agent) => {
                         let cmd = agent.metadata.provider.clone();
                         let args = super::detect::args_for_provider(&cmd);

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::core::config::skills_registry_dir;
+use armadai_core::config::skills_registry_dir;
 
 /// Default skill sources (well-known GitHub repos containing skills).
 pub fn default_sources() -> Vec<String> {
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn resolved_sources_defaults_only_without_custom_config() {
-        use crate::core::registries::{RegistriesConfig, RegistryKind, resolved_sources};
+        use armadai_core::registries::{RegistriesConfig, RegistryKind, resolved_sources};
 
         let defaults = default_sources();
         let default_refs: Vec<&str> = defaults.iter().map(String::as_str).collect();
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn resolved_sources_includes_default_and_custom_skill_source() {
-        use crate::core::registries::{
+        use armadai_core::registries::{
             RegistriesConfig, RegistryKind, RegistrySource, resolved_sources,
         };
 

@@ -2,16 +2,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::core::agent::{Agent, AgentMode};
-use crate::core::config::AppPaths;
-use crate::core::events::{EventSink, RunEvent};
-use crate::core::orchestration::es::bridge::{SinkProjectingLog, to_orchestration_result};
-use crate::core::orchestration::es::event::ExecutionEvent;
-use crate::core::orchestration::es::log::{EventLog, InMemoryLog};
-use crate::core::orchestration::es::state::ExecutionState;
-use crate::core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
-use crate::core::provider::{ChatMessage, CompletionRequest};
 use crate::providers::factory::create_provider;
+use armadai_core::agent::{Agent, AgentMode};
+use armadai_core::config::AppPaths;
+use armadai_core::events::{EventSink, RunEvent};
+use armadai_core::orchestration::es::bridge::{SinkProjectingLog, to_orchestration_result};
+use armadai_core::orchestration::es::event::ExecutionEvent;
+use armadai_core::orchestration::es::log::{EventLog, InMemoryLog};
+use armadai_core::orchestration::es::state::ExecutionState;
+use armadai_core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
+use armadai_core::provider::{ChatMessage, CompletionRequest};
 
 const GUIDED_MODE_INSTRUCTION: &str = "\
 \n\n---\n\n\
@@ -92,8 +92,8 @@ pub async fn execute(
         // config's `pattern:` key, which is often absent for a one-off
         // explicit run and would otherwise default to Hierarchical.
         let explicit_pattern = orchestrate.as_deref().and_then(|o| match o {
-            "blackboard" => Some(crate::core::orchestration::OrchestrationPattern::Blackboard),
-            "ring" => Some(crate::core::orchestration::OrchestrationPattern::Ring),
+            "blackboard" => Some(armadai_core::orchestration::OrchestrationPattern::Blackboard),
+            "ring" => Some(armadai_core::orchestration::OrchestrationPattern::Ring),
             _ => None,
         });
         let printed = crate::shell::run_view::run_orchestration_tui(
@@ -132,7 +132,7 @@ pub async fn execute(
     #[cfg(not(feature = "tui"))]
     let _ = use_tui;
 
-    let sink = crate::core::events::make_sink(json);
+    let sink = armadai_core::events::make_sink(json);
 
     let result = run_inner(
         agent_name,
@@ -189,7 +189,7 @@ async fn execute_replay(
     headless: bool,
 ) -> anyhow::Result<()> {
     let headless = headless || json;
-    let sink = crate::core::events::make_sink(json);
+    let sink = armadai_core::events::make_sink(json);
     // No TUI concern here (unlike the agent path in `execute`): replay has no
     // `orchestrate`/config-driven auto-detect to check and no `agent_name` to
     // route through the live Workroom, so `human_output` collapses to the
@@ -252,9 +252,9 @@ async fn execute_resume(
 
     #[cfg(feature = "storage")]
     {
-        use crate::core::orchestration::es::engine::replay;
-        use crate::core::orchestration::es::state::RunStatus;
         use crate::es_log::SqliteLog;
+        use armadai_core::orchestration::es::engine::replay;
+        use armadai_core::orchestration::es::state::RunStatus;
 
         let headless = headless || json;
 
@@ -282,8 +282,8 @@ async fn execute_resume(
         #[cfg(feature = "tui")]
         if use_tui {
             let explicit_pattern = match peek.pattern.as_str() {
-                "blackboard" => Some(crate::core::orchestration::OrchestrationPattern::Blackboard),
-                "ring" => Some(crate::core::orchestration::OrchestrationPattern::Ring),
+                "blackboard" => Some(armadai_core::orchestration::OrchestrationPattern::Blackboard),
+                "ring" => Some(armadai_core::orchestration::OrchestrationPattern::Ring),
                 _ => None,
             };
             let run_id_owned = run_id.to_string();
@@ -309,7 +309,7 @@ async fn execute_resume(
         #[cfg(not(feature = "tui"))]
         let _ = use_tui;
 
-        let sink = crate::core::events::make_sink(json);
+        let sink = armadai_core::events::make_sink(json);
 
         // `human_output = true` here (unconditional, like the live
         // orchestrated path's non-TUI branch): `resume_run` gates its own
@@ -361,9 +361,9 @@ async fn resume_run(
     max_content: Option<usize>,
     human_output: bool,
 ) -> anyhow::Result<()> {
-    use crate::core::orchestration::es::bridge::synthetic_run_start;
-    use crate::core::orchestration::es::state::{RunStatus, fold};
     use crate::es_log::SqliteLog;
+    use armadai_core::orchestration::es::bridge::synthetic_run_start;
+    use armadai_core::orchestration::es::state::{RunStatus, fold};
 
     let db = crate::db::init_db()?;
     let log = SqliteLog::new(db.clone());
@@ -437,7 +437,7 @@ async fn resume_run(
     let resolution = resolve_agents_dir(true);
     let routing_rules = match &resolution {
         AgentResolution::Project { config, .. } => config.routing.clone().unwrap_or_default(),
-        _ => crate::core::routing::RoutingRules::default(),
+        _ => armadai_core::routing::RoutingRules::default(),
     };
     let cost_limit = orchestration_cost_limit(&resolution);
 
@@ -461,19 +461,19 @@ async fn resume_run(
         AgentResolution::Project { config, .. } => {
             config.defaults.orchestration.clone().unwrap_or_default()
         }
-        _ => crate::core::project::OrchestrationDefaults::default(),
+        _ => armadai_core::project::OrchestrationDefaults::default(),
     };
 
     let mut agents_map: std::collections::BTreeMap<String, Agent> =
         std::collections::BTreeMap::new();
     let mut providers_map: std::collections::BTreeMap<
         String,
-        Arc<dyn crate::core::provider::Provider>,
+        Arc<dyn armadai_core::provider::Provider>,
     > = std::collections::BTreeMap::new();
     for name in &state.agents {
         let agent_path = resolve_agent_path(&resolution, name)?;
-        let mut agent = crate::core::parser::parse_agent_file(&agent_path)?;
-        crate::core::model_aliases::resolve_model_deprecations(
+        let mut agent = armadai_core::parser::parse_agent_file(&agent_path)?;
+        armadai_core::model_aliases::resolve_model_deprecations(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
         );
@@ -494,7 +494,7 @@ async fn resume_run(
 
     let final_state = match pattern.as_str() {
         "direct" => {
-            use crate::core::orchestration::es::direct::resume_direct_es;
+            use armadai_core::orchestration::es::direct::resume_direct_es;
             resume_direct_es(
                 run_id,
                 agents_map,
@@ -505,7 +505,7 @@ async fn resume_run(
             .await?
         }
         "blackboard" => {
-            use crate::core::orchestration::es::blackboard::resume_blackboard_es;
+            use armadai_core::orchestration::es::blackboard::resume_blackboard_es;
             resume_blackboard_es(
                 run_id,
                 agents_map,
@@ -517,7 +517,7 @@ async fn resume_run(
             .await?
         }
         "ring" => {
-            use crate::core::orchestration::es::ring::resume_ring_es;
+            use armadai_core::orchestration::es::ring::resume_ring_es;
             resume_ring_es(
                 run_id,
                 agents_map,
@@ -529,7 +529,7 @@ async fn resume_run(
             .await?
         }
         "hierarchical" => {
-            use crate::core::orchestration::es::hierarchical::resume_hierarchical_es;
+            use armadai_core::orchestration::es::hierarchical::resume_hierarchical_es;
             resume_hierarchical_es(
                 run_id,
                 agents_map,
@@ -723,7 +723,7 @@ async fn run_inner(
     };
     let routing_rules = match &resolution {
         AgentResolution::Project { config, .. } => config.routing.clone().unwrap_or_default(),
-        _ => crate::core::routing::RoutingRules::default(),
+        _ => armadai_core::routing::RoutingRules::default(),
     };
     // Which project (if any) these runs are attributed to in storage: the
     // resolved project root, or the CWD as a best-effort fallback when no
@@ -899,7 +899,7 @@ async fn run_single_agent(
     sink: &Arc<dyn EventSink>,
     quiet: bool,
     max_content: Option<usize>,
-    routing_rules: &crate::core::routing::RoutingRules,
+    routing_rules: &armadai_core::routing::RoutingRules,
     project: Option<&str>,
 ) -> anyhow::Result<(String, RunMetrics)> {
     // `project` is only read by `record_run` under `#[cfg(feature = "storage")]`
@@ -908,11 +908,11 @@ async fn run_single_agent(
     #[cfg(not(feature = "storage"))]
     let _ = project;
     // 1. Load agent
-    let mut agent = crate::core::parser::parse_agent_file(agent_path)?;
+    let mut agent = armadai_core::parser::parse_agent_file(agent_path)?;
 
     // 1b. Resolve deprecated model aliases
     let model_before = agent.metadata.model.clone();
-    crate::core::model_aliases::resolve_model_deprecations(
+    armadai_core::model_aliases::resolve_model_deprecations(
         &mut agent.metadata.model,
         &mut agent.metadata.model_fallback,
     );
@@ -954,13 +954,13 @@ async fn run_single_agent(
 
     let model = if raw_model == "latest:auto" {
         let (tier, reason) =
-            crate::core::routing::route(input, &agent.metadata.tags, None, routing_rules);
+            armadai_core::routing::route(input, &agent.metadata.tags, None, routing_rules);
         sink.emit(&RunEvent::Route {
             agent: agent_name.to_string(),
             tier: format!("{tier:?}"),
             reason: format!("{reason:?}"),
         });
-        crate::core::model_resolution::resolve_model_for_tier(&agent.metadata.provider, tier)
+        armadai_core::model_resolution::resolve_model_for_tier(&agent.metadata.provider, tier)
     } else {
         raw_model
     };
@@ -1153,7 +1153,7 @@ fn quiet_max_content_sink(
 }
 
 /// Drive a single, already-loaded/prepared `agent` through the event-sourced
-/// `direct` engine ([`crate::core::orchestration::es::direct::run_direct_es`]),
+/// `direct` engine ([`armadai_core::orchestration::es::direct::run_direct_es`]),
 /// on a fresh [`InMemoryLog`] wrapped in [`SinkProjectingLog`] so
 /// `AgentStart`/`AgentEnd`/`Route` observability keeps flowing to `sink`
 /// exactly as the legacy path did — modulo `quiet`/`max_content`, applied via
@@ -1181,14 +1181,14 @@ async fn dispatch_direct_es(
     run_id: &str,
     agent_key: &str,
     agent: Agent,
-    provider: Arc<dyn crate::core::provider::Provider>,
+    provider: Arc<dyn armadai_core::provider::Provider>,
     input: &str,
-    routing_rules: &crate::core::routing::RoutingRules,
+    routing_rules: &armadai_core::routing::RoutingRules,
     sink: &Arc<dyn EventSink>,
     quiet: bool,
     max_content: Option<usize>,
 ) -> anyhow::Result<DirectDispatch> {
-    use crate::core::orchestration::es::direct::run_direct_es;
+    use armadai_core::orchestration::es::direct::run_direct_es;
     use std::collections::BTreeMap;
 
     // Agent metadata for the bridge's `AgentInvoked → AgentStart` projection:
@@ -1282,17 +1282,17 @@ async fn run_single_agent_es(
     sink: &Arc<dyn EventSink>,
     quiet: bool,
     max_content: Option<usize>,
-    routing_rules: &crate::core::routing::RoutingRules,
+    routing_rules: &armadai_core::routing::RoutingRules,
     project: Option<&str>,
 ) -> anyhow::Result<(String, u32, u32, f64)> {
     #[cfg(not(feature = "storage"))]
     let _ = project;
 
     // 1. Load agent (mirrors `run_single_agent` steps 1-1c).
-    let mut agent = crate::core::parser::parse_agent_file(agent_path)?;
+    let mut agent = armadai_core::parser::parse_agent_file(agent_path)?;
 
     let model_before = agent.metadata.model.clone();
-    crate::core::model_aliases::resolve_model_deprecations(
+    armadai_core::model_aliases::resolve_model_deprecations(
         &mut agent.metadata.model,
         &mut agent.metadata.model_fallback,
     );
@@ -1309,7 +1309,7 @@ async fn run_single_agent_es(
 
     // 2. Create provider (step 2).
     let provider_name = agent.metadata.provider.clone();
-    let provider: Arc<dyn crate::core::provider::Provider> = Arc::from(create_provider(&agent)?);
+    let provider: Arc<dyn armadai_core::provider::Provider> = Arc::from(create_provider(&agent)?);
 
     // 4. Guided-mode system-prompt augmentation (step 4).
     let effective_mode = agent
@@ -1457,11 +1457,11 @@ fn resolve_agents_dir(headless: bool) -> AgentResolution {
             root.display(),
             config.agents.len()
         );
-        if let Err(e) = crate::core::project_registry::register_project(&root) {
+        if let Err(e) = armadai_core::project_registry::register_project(&root) {
             tracing::warn!("Failed to register project in registry: {:?}", e);
         }
         let interactive = !headless && !atty_is_pipe();
-        crate::core::model_updater::auto_check_and_prompt(&root, interactive);
+        armadai_core::model_updater::auto_check_and_prompt(&root, interactive);
         return AgentResolution::Project {
             root,
             config: Box::new(config),
@@ -1490,16 +1490,16 @@ fn resolve_agents_dir(headless: bool) -> AgentResolution {
 #[allow(clippy::type_complexity)] // (keys, agents, providers, selection) mirrors the loaded-roster shape
 fn apply_agent_selection(
     keys: &[String],
-    agents: Vec<crate::core::agent::Agent>,
-    providers: Vec<std::sync::Arc<dyn crate::core::provider::Provider>>,
+    agents: Vec<armadai_core::agent::Agent>,
+    providers: Vec<std::sync::Arc<dyn armadai_core::provider::Provider>>,
     route: Option<&str>,
     tags: &[String],
     routes: &std::collections::BTreeMap<String, Vec<String>>,
 ) -> anyhow::Result<(
     Vec<String>,
-    Vec<crate::core::agent::Agent>,
-    Vec<std::sync::Arc<dyn crate::core::provider::Provider>>,
-    crate::core::orchestration::agent_selection::AgentSelection,
+    Vec<armadai_core::agent::Agent>,
+    Vec<std::sync::Arc<dyn armadai_core::provider::Provider>>,
+    armadai_core::orchestration::agent_selection::AgentSelection,
 )> {
     use std::collections::HashMap;
 
@@ -1517,7 +1517,7 @@ fn apply_agent_selection(
         agent_tags.insert(key.clone(), t);
     }
 
-    let selection = crate::core::orchestration::agent_selection::select_agents(
+    let selection = armadai_core::orchestration::agent_selection::select_agents(
         &roster,
         route,
         tags,
@@ -1530,8 +1530,8 @@ fn apply_agent_selection(
     let mut by_name: HashMap<
         String,
         (
-            crate::core::agent::Agent,
-            std::sync::Arc<dyn crate::core::provider::Provider>,
+            armadai_core::agent::Agent,
+            std::sync::Arc<dyn armadai_core::provider::Provider>,
         ),
     > = HashMap::new();
     for ((key, a), p) in keys.iter().cloned().zip(agents).zip(providers) {
@@ -1575,7 +1575,7 @@ async fn run_orchestrated(
     agent_names: &[String],
     input: &str,
     pattern: &str,
-    sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
+    sink: &std::sync::Arc<dyn armadai_core::events::EventSink>,
     json: bool,
     quiet: bool,
     max_content: Option<usize>,
@@ -1586,7 +1586,7 @@ async fn run_orchestrated(
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
-    use crate::core::provider::Provider;
+    use armadai_core::provider::Provider;
 
     let mut agents = Vec::new();
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
@@ -1600,15 +1600,15 @@ async fn run_orchestrated(
         AgentResolution::Project { config, .. } => {
             config.defaults.orchestration.clone().unwrap_or_default()
         }
-        _ => crate::core::project::OrchestrationDefaults::default(),
+        _ => armadai_core::project::OrchestrationDefaults::default(),
     };
 
     for name in agent_names {
         let agent_path = resolve_agent_path(resolution, name)?;
-        let mut agent = crate::core::parser::parse_agent_file(&agent_path)?;
+        let mut agent = armadai_core::parser::parse_agent_file(&agent_path)?;
 
         let model_before = agent.metadata.model.clone();
-        crate::core::model_aliases::resolve_model_deprecations(
+        armadai_core::model_aliases::resolve_model_deprecations(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
         );
@@ -1663,8 +1663,8 @@ async fn run_orchestrated(
 /// which should not appear at a terminal print site) as a warning — factual,
 /// not alarming, since a halt is often a budget/round limit rather than an
 /// error.
-fn status_style(status: &crate::core::orchestration::es::state::RunStatus) -> anstyle::Style {
-    use crate::core::orchestration::es::state::RunStatus;
+fn status_style(status: &armadai_core::orchestration::es::state::RunStatus) -> anstyle::Style {
+    use armadai_core::orchestration::es::state::RunStatus;
     match status {
         RunStatus::Completed => crate::cli::style::ok(),
         RunStatus::Halted | RunStatus::Running => crate::cli::style::warn(),
@@ -1675,12 +1675,12 @@ fn status_style(status: &crate::core::orchestration::es::state::RunStatus) -> an
 async fn run_orchestrated_inner(
     resolution: &AgentResolution,
     agent_names: &[String],
-    mut agents: Vec<crate::core::agent::Agent>,
-    mut providers: Vec<std::sync::Arc<dyn crate::core::provider::Provider>>,
+    mut agents: Vec<armadai_core::agent::Agent>,
+    mut providers: Vec<std::sync::Arc<dyn armadai_core::provider::Provider>>,
     deprecations: Vec<(Option<String>, Option<String>)>,
     input: &str,
     pattern: &str,
-    sink: &std::sync::Arc<dyn crate::core::events::EventSink>,
+    sink: &std::sync::Arc<dyn armadai_core::events::EventSink>,
     json: bool,
     quiet: bool,
     max_content: Option<usize>,
@@ -1702,10 +1702,10 @@ async fn run_orchestrated_inner(
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
-    use crate::core::orchestration::blackboard::BlackboardConfig;
-    use crate::core::orchestration::ring::RingConfig;
-    use crate::core::project::OrchestrationDefaults;
-    use crate::core::provider::Provider;
+    use armadai_core::orchestration::blackboard::BlackboardConfig;
+    use armadai_core::orchestration::ring::RingConfig;
+    use armadai_core::project::OrchestrationDefaults;
+    use armadai_core::provider::Provider;
 
     // Read project-level orchestration overrides (if any).
     let orch_defaults = match resolution {
@@ -1721,7 +1721,7 @@ async fn run_orchestrated_inner(
     // derived below from each config's `token_budget` once it is known.
     let routing_rules = match resolution {
         AgentResolution::Project { config, .. } => config.routing.clone().unwrap_or_default(),
-        _ => crate::core::routing::RoutingRules::default(),
+        _ => armadai_core::routing::RoutingRules::default(),
     };
 
     // Generated once, up front, so the emitted `RunStart` (surfaced to the
@@ -1999,7 +1999,7 @@ async fn run_orchestrated_inner(
         "hierarchical" => {
             use std::collections::BTreeMap;
 
-            use crate::core::orchestration::OrchestrationConfig;
+            use armadai_core::orchestration::OrchestrationConfig;
 
             // Build orchestration config from project or defaults
             let orch_config = match resolution {
@@ -2010,7 +2010,7 @@ async fn run_orchestrated_inner(
             };
 
             // Validate the config
-            if let Err(errors) = crate::core::orchestration::validate_config(&orch_config) {
+            if let Err(errors) = armadai_core::orchestration::validate_config(&orch_config) {
                 let msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
                 anyhow::bail!("Orchestration config errors:\n  - {}", msgs.join("\n  - "));
             }
@@ -2027,7 +2027,7 @@ async fn run_orchestrated_inner(
             // by the H1 title (`Dev Lead`) would break the coordinator lookup
             // and every `@agent` delegation. `agents`/`providers` are in the
             // same order as `agent_names` (built by the load loop above).
-            let mut agent_map: BTreeMap<String, crate::core::agent::Agent> = BTreeMap::new();
+            let mut agent_map: BTreeMap<String, armadai_core::agent::Agent> = BTreeMap::new();
             let mut provider_map: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
 
             for (name, (agent, provider)) in
@@ -2123,7 +2123,7 @@ async fn run_orchestrated_inner(
 /// This is a **new guard** for the standalone patterns (OH1 Lot 5): the
 /// legacy standalone `run_blackboard`/`run_ring` call sites in this file
 /// never threaded a cost limit into `Board::new`/`RingToken::new` (unlike the
-/// nested-team path in `core::orchestration::hierarchical`, which does pass
+/// nested-team path in `armadai_core::orchestration::hierarchical`, which does pass
 /// `OrchestrationConfig::cost_limit` down to `Board::with_cost_limit`) — a
 /// project declaring `orchestration.cost_limit` had it silently ignored for
 /// a plain `--orchestrate blackboard|ring` run. `run_blackboard_es`/
@@ -2175,15 +2175,15 @@ async fn dispatch_blackboard_es(
     run_id: &str,
     input: &str,
     agents: std::collections::BTreeMap<String, Agent>,
-    providers: std::collections::BTreeMap<String, Arc<dyn crate::core::provider::Provider>>,
-    config: crate::core::orchestration::blackboard::BlackboardConfig,
-    routing_rules: crate::core::routing::RoutingRules,
+    providers: std::collections::BTreeMap<String, Arc<dyn armadai_core::provider::Provider>>,
+    config: armadai_core::orchestration::blackboard::BlackboardConfig,
+    routing_rules: armadai_core::routing::RoutingRules,
     cost_limit: Option<f64>,
     sink: &Arc<dyn EventSink>,
     quiet: bool,
     max_content: Option<usize>,
 ) -> anyhow::Result<(ExecutionState, String)> {
-    use crate::core::orchestration::es::blackboard::run_blackboard_es;
+    use armadai_core::orchestration::es::blackboard::run_blackboard_es;
 
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
 
@@ -2235,15 +2235,15 @@ async fn dispatch_ring_es(
     input: &str,
     agents: std::collections::BTreeMap<String, Agent>,
     agent_order: Vec<String>,
-    providers: std::collections::BTreeMap<String, Arc<dyn crate::core::provider::Provider>>,
-    config: crate::core::orchestration::ring::RingConfig,
-    routing_rules: crate::core::routing::RoutingRules,
+    providers: std::collections::BTreeMap<String, Arc<dyn armadai_core::provider::Provider>>,
+    config: armadai_core::orchestration::ring::RingConfig,
+    routing_rules: armadai_core::routing::RoutingRules,
     cost_limit: Option<f64>,
     sink: &Arc<dyn EventSink>,
     quiet: bool,
     max_content: Option<usize>,
 ) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>, String)> {
-    use crate::core::orchestration::es::ring::run_ring_es;
+    use armadai_core::orchestration::es::ring::run_ring_es;
 
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
 
@@ -2299,15 +2299,15 @@ async fn dispatch_hierarchical_es(
     run_id: &str,
     coordinator: &str,
     input: &str,
-    config: crate::core::orchestration::OrchestrationConfig,
+    config: armadai_core::orchestration::OrchestrationConfig,
     agents: std::collections::BTreeMap<String, Agent>,
-    providers: std::collections::BTreeMap<String, Arc<dyn crate::core::provider::Provider>>,
-    routing_rules: crate::core::routing::RoutingRules,
+    providers: std::collections::BTreeMap<String, Arc<dyn armadai_core::provider::Provider>>,
+    routing_rules: armadai_core::routing::RoutingRules,
     sink: &Arc<dyn EventSink>,
     quiet: bool,
     max_content: Option<usize>,
 ) -> anyhow::Result<(ExecutionState, Vec<ExecutionEvent>, String)> {
-    use crate::core::orchestration::es::hierarchical::run_hierarchical_es;
+    use armadai_core::orchestration::es::hierarchical::run_hierarchical_es;
 
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
 
@@ -2435,9 +2435,9 @@ fn is_orchestrated_pattern(pattern: &str) -> bool {
 
 /// Apply project-level orchestration overrides to a BlackboardConfig.
 fn apply_blackboard_overrides(
-    mut config: crate::core::orchestration::blackboard::BlackboardConfig,
-    overrides: &crate::core::project::OrchestrationDefaults,
-) -> crate::core::orchestration::blackboard::BlackboardConfig {
+    mut config: armadai_core::orchestration::blackboard::BlackboardConfig,
+    overrides: &armadai_core::project::OrchestrationDefaults,
+) -> armadai_core::orchestration::blackboard::BlackboardConfig {
     if let Some(v) = overrides.max_rounds {
         config.max_rounds = v;
     }
@@ -2461,9 +2461,9 @@ fn apply_blackboard_overrides(
 
 /// Apply project-level orchestration overrides to a RingConfig.
 fn apply_ring_overrides(
-    mut config: crate::core::orchestration::ring::RingConfig,
-    overrides: &crate::core::project::OrchestrationDefaults,
-) -> crate::core::orchestration::ring::RingConfig {
+    mut config: armadai_core::orchestration::ring::RingConfig,
+    overrides: &armadai_core::project::OrchestrationDefaults,
+) -> armadai_core::orchestration::ring::RingConfig {
     if let Some(v) = overrides.max_laps {
         config.max_laps = v;
     }
@@ -2491,8 +2491,8 @@ fn apply_ring_overrides(
 pub(crate) fn record_hierarchical_into(
     db: &armadai_storage::Database,
     run_id: &str,
-    result: &crate::core::orchestration::hierarchical::OrchestrationResult,
-    config: &crate::core::orchestration::OrchestrationConfig,
+    result: &armadai_core::orchestration::hierarchical::OrchestrationResult,
+    config: &armadai_core::orchestration::OrchestrationConfig,
     input: &str,
     project: Option<&str>,
 ) -> anyhow::Result<String> {
@@ -2566,7 +2566,7 @@ fn is_model_not_found(err: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::agent::AgentMetadata;
+    use armadai_core::agent::AgentMetadata;
 
     #[test]
     fn test_is_model_not_found_google_404() {
@@ -2762,8 +2762,8 @@ mod selection_tests {
     use async_trait::async_trait;
     use std::path::PathBuf;
 
-    use crate::core::agent::{Agent, AgentMetadata};
-    use crate::core::provider::{
+    use armadai_core::agent::{Agent, AgentMetadata};
+    use armadai_core::provider::{
         CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
     };
 
@@ -2957,8 +2957,8 @@ mod selection_tests {
 #[cfg(all(test, feature = "storage"))]
 mod storage_tests {
     use super::*;
-    use crate::core::orchestration::OrchestrationConfig;
-    use crate::core::orchestration::hierarchical::{DelegationEvent, OrchestrationResult};
+    use armadai_core::orchestration::OrchestrationConfig;
+    use armadai_core::orchestration::hierarchical::{DelegationEvent, OrchestrationResult};
     use armadai_storage::{open_in_memory, queries};
 
     #[test]
@@ -3069,15 +3069,15 @@ mod es_switch_tests {
 
     use async_trait::async_trait;
 
-    use crate::core::agent::AgentMetadata;
-    use crate::core::orchestration::blackboard::BlackboardConfig;
-    use crate::core::orchestration::es::state::RunStatus;
-    use crate::core::orchestration::ring::RingConfig;
-    use crate::core::orchestration::{OrchestrationConfig, OrchestrationPattern, TeamConfig};
-    use crate::core::provider::{
+    use armadai_core::agent::AgentMetadata;
+    use armadai_core::orchestration::blackboard::BlackboardConfig;
+    use armadai_core::orchestration::es::state::RunStatus;
+    use armadai_core::orchestration::ring::RingConfig;
+    use armadai_core::orchestration::{OrchestrationConfig, OrchestrationPattern, TeamConfig};
+    use armadai_core::provider::{
         CompletionRequest, CompletionResponse, Provider, ProviderMetadata, TokenStream,
     };
-    use crate::core::routing::RoutingRules;
+    use armadai_core::routing::RoutingRules;
 
     // ── Shared test infra ────────────────────────────────────────────
 
@@ -3220,7 +3220,7 @@ mod es_switch_tests {
 
     impl TempStorageGuard {
         fn new() -> Self {
-            let lock = crate::core::config::ENV_MUTEX.lock().unwrap();
+            let lock = armadai_core::config::ENV_MUTEX.lock().unwrap();
             let dir = tempfile::tempdir().unwrap();
             let db_path = dir.path().join("test.sqlite");
             let config_yaml = format!(
@@ -3658,8 +3658,8 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn blackboard_es_run_persists_event_log() {
-        use crate::core::orchestration::es::blackboard::run_blackboard_es;
         use crate::es_log::SqliteLog;
+        use armadai_core::orchestration::es::blackboard::run_blackboard_es;
         use armadai_storage::open_in_memory;
 
         // (a): Setup — same roster as `blackboard_es_state_is_recorded_via_
@@ -3715,8 +3715,8 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn ring_es_run_persists_event_log() {
-        use crate::core::orchestration::es::ring::run_ring_es;
         use crate::es_log::SqliteLog;
+        use armadai_core::orchestration::es::ring::run_ring_es;
         use armadai_storage::open_in_memory;
 
         let db = open_in_memory().unwrap();
@@ -3766,8 +3766,8 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn hierarchical_es_run_persists_event_log() {
-        use crate::core::orchestration::es::hierarchical::run_hierarchical_es;
         use crate::es_log::SqliteLog;
+        use armadai_core::orchestration::es::hierarchical::run_hierarchical_es;
         use armadai_storage::open_in_memory;
 
         let db = open_in_memory().unwrap();
@@ -3815,8 +3815,8 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn blackboard_es_run_projects_tables_from_log() {
-        use crate::core::orchestration::es::blackboard::run_blackboard_es;
         use crate::es_log::SqliteLog;
+        use armadai_core::orchestration::es::blackboard::run_blackboard_es;
         use armadai_storage::{open_in_memory, queries};
 
         let db = open_in_memory().unwrap();
@@ -4255,8 +4255,8 @@ mod es_switch_tests {
     ) {
         use std::collections::BTreeMap;
 
-        use crate::core::orchestration::es::direct::run_direct_es;
         use crate::es_log::SqliteLog;
+        use armadai_core::orchestration::es::direct::run_direct_es;
 
         let mut agent_meta = BTreeMap::new();
         agent_meta.insert(
@@ -4557,10 +4557,10 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn resume_emits_run_start_bookend_before_the_mid_stream_events() {
-        use crate::core::orchestration::es::bridge::synthetic_run_start;
-        use crate::core::orchestration::es::direct::resume_direct_es;
-        use crate::core::orchestration::es::state::fold;
         use crate::es_log::SqliteLog;
+        use armadai_core::orchestration::es::bridge::synthetic_run_start;
+        use armadai_core::orchestration::es::direct::resume_direct_es;
+        use armadai_core::orchestration::es::state::fold;
         use armadai_storage::open_in_memory;
 
         let db = open_in_memory().unwrap();

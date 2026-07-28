@@ -18,10 +18,10 @@ use ratatui::{
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::core::events::{EventSink, RunEvent};
-use crate::core::orchestration::OrchestrationPattern;
 use crate::shell::workroom::Workroom;
 use crate::theme;
+use armadai_core::events::{EventSink, RunEvent};
+use armadai_core::orchestration::OrchestrationPattern;
 
 /// An `EventSink` that forwards a clone of every `RunEvent` into a channel,
 /// so a TUI render loop can drain and project them onto a `Workroom`.
@@ -370,8 +370,8 @@ async fn run_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::events::{EventSink, RunEvent};
     use crate::shell::workroom::Workroom;
+    use armadai_core::events::{EventSink, RunEvent};
     use std::time::Instant;
 
     // ── key_action: the #274 quit/abort decision table ──

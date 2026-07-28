@@ -1,32 +1,22 @@
 //! Remote starter registries (B2 Lot B): fetch starter packs from git (Lot 1)
 //! or archive (Lot 2) sources into a cache, discovered by the existing
 //! `StarterPack` convention (+ an optional `armadai-starters.yaml` manifest).
+//!
+//! Cache-dir resolution and pack discovery (`starters_cache_dir`,
+//! `discover_packs`) live in `armadai_core::starter` — pure filesystem/YAML
+//! logic with no coupling to fetching, re-exported here for the fetchers
+//! below (which own the git/archive sync path, gated behind `providers-api`).
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
-use crate::core::registries::{RegistrySource, SourceKind, cache_key};
-
-/// Root cache dir for synced starter registries.
-pub fn starters_cache_dir() -> PathBuf {
-    crate::core::config::registry_cache_dir().join("starters")
-}
+use armadai_core::registries::{RegistrySource, SourceKind, cache_key};
+#[cfg(test)]
+use armadai_core::starter::discover_packs;
+pub use armadai_core::starter::starters_cache_dir;
 
 /// Cache dir for one source URL.
 pub fn source_cache_dir(url: &str) -> PathBuf {
     starters_cache_dir().join(cache_key(url))
-}
-
-/// Optional registry manifest that enriches/restricts discovery.
-#[derive(Debug, Deserialize, Default)]
-struct StartersManifest {
-    #[serde(default)]
-    packs: Vec<ManifestPack>,
-}
-#[derive(Debug, Deserialize)]
-struct ManifestPack {
-    path: String,
 }
 
 pub trait StarterFetcher {
@@ -280,57 +270,6 @@ pub fn sync_starters(sources: &[RegistrySource]) -> Vec<PathBuf> {
         }
     }
     dirs
-}
-
-/// Discover pack directories under a fetched registry dir.
-///
-/// Hybrid: an `armadai-starters.yaml` at the root RESTRICTS to its listed
-/// `path:`s; otherwise every directory containing a `pack.yaml` is a pack.
-pub fn discover_packs(registry_dir: &Path) -> Vec<PathBuf> {
-    let manifest_path = registry_dir.join("armadai-starters.yaml");
-    if manifest_path.is_file()
-        && let Ok(content) = std::fs::read_to_string(&manifest_path)
-        && let Ok(manifest) = serde_yaml_ng::from_str::<StartersManifest>(&content)
-        && !manifest.packs.is_empty()
-    {
-        return manifest
-            .packs
-            .iter()
-            .filter(|p| {
-                let path = std::path::Path::new(&p.path);
-                !path.components().any(|c| {
-                    matches!(
-                        c,
-                        std::path::Component::ParentDir | std::path::Component::RootDir
-                    )
-                })
-            })
-            .map(|p| registry_dir.join(&p.path))
-            .filter(|d| d.join("pack.yaml").is_file())
-            .collect();
-    }
-    let mut out = Vec::new();
-    scan_for_packs(registry_dir, 0, &mut out);
-    out
-}
-
-fn scan_for_packs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > 4 {
-        return;
-    }
-    if dir.join("pack.yaml").is_file() {
-        out.push(dir.to_path_buf());
-        return; // a pack dir isn't itself scanned deeper
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_dir() && !p.file_name().is_some_and(|n| n == ".git") {
-            scan_for_packs(&p, depth + 1, out);
-        }
-    }
 }
 
 #[cfg(test)]

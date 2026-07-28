@@ -2,8 +2,8 @@ use std::path::Path;
 
 use dialoguer::{Confirm, Input, Select};
 
-use crate::core::config::AppPaths;
 use crate::providers::factory::api_backend_for_tool;
+use armadai_core::config::AppPaths;
 
 pub async fn execute(
     name: Option<String>,
@@ -401,7 +401,7 @@ fn prompt_from_registry_entries(
 
 /// Load model list for a given API backend from providers config.
 fn load_provider_models(backend: &str) -> Vec<String> {
-    let cfg = crate::core::config::load_providers_config();
+    let cfg = armadai_core::config::load_providers_config();
     cfg.providers
         .get(backend)
         .map(|p| p.models.clone())
@@ -541,7 +541,7 @@ pub fn parse_comma_list(input: &str) -> Vec<String> {
 /// When no templates are found (e.g. templates dir doesn't exist), accepts
 /// any value so that clap doesn't reject the default "basic".
 pub fn template_value_parser() -> clap::builder::ValueParser {
-    let paths = crate::core::config::AppPaths::resolve();
+    let paths = armadai_core::config::AppPaths::resolve();
     let names = collect_template_names(&paths.templates_dir);
     if names.is_empty() {
         // No templates found — accept any value, validation happens at runtime
@@ -669,7 +669,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test-agent.md");
         std::fs::write(&path, &md).unwrap();
-        let agent = crate::core::parser::parse_agent_file(&path).unwrap();
+        let agent = armadai_core::parser::parse_agent_file(&path).unwrap();
         assert_eq!(agent.name, "Test Agent");
         assert_eq!(agent.metadata.provider, "claude");
     }

@@ -1,6 +1,5 @@
 mod audit;
 mod cli;
-mod core;
 #[cfg(feature = "storage")]
 mod db;
 #[cfg(feature = "storage")]
@@ -39,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
         logging::install(reload_handle);
     }
 
-    core::config::check_migration_hint();
+    armadai_core::config::check_migration_hint();
 
     let args = cli::Cli::parse();
     cli::handle(args).await
