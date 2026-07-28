@@ -89,7 +89,7 @@ mod tests {
     use super::*;
     use crate::core::orchestration::es::event::ExecutionEvent;
     use crate::core::orchestration::es::log::EventLog;
-    use crate::storage::es_log::SqliteLog;
+    use crate::es_log::SqliteLog;
     use crate::storage::{init_embedded, queries};
 
     /// Helper: construct a minimal blackboard event log suitable for

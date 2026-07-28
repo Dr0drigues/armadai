@@ -335,7 +335,7 @@ pub fn record_ring_es_into(
 pub fn project_run(db: &crate::storage::Database, run_id: &str) -> anyhow::Result<()> {
     use crate::core::orchestration::es::log::EventLog;
     use crate::core::orchestration::es::state::fold;
-    use crate::storage::es_log::SqliteLog;
+    use crate::es_log::SqliteLog;
 
     // 1. Read the event log for this run.
     let log = SqliteLog::new(db.clone());
@@ -805,7 +805,7 @@ mod storage_tests {
         let db = init_embedded().unwrap();
 
         // Persist a minimal blackboard log via SqliteLog.
-        let mut log = crate::storage::es_log::SqliteLog::new(db.clone());
+        let mut log = crate::es_log::SqliteLog::new(db.clone());
         for e in sample_blackboard_events("run-x") {
             use crate::core::orchestration::es::log::EventLog;
             log.append("run-x", &e).unwrap();
