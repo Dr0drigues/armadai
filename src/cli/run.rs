@@ -473,7 +473,7 @@ async fn resume_run(
     for name in &state.agents {
         let agent_path = resolve_agent_path(&resolution, name)?;
         let mut agent = crate::parser::parse_agent_file(&agent_path)?;
-        crate::linker::model_aliases::resolve_model_deprecations(
+        crate::core::model_aliases::resolve_model_deprecations(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
         );
@@ -912,7 +912,7 @@ async fn run_single_agent(
 
     // 1b. Resolve deprecated model aliases
     let model_before = agent.metadata.model.clone();
-    crate::linker::model_aliases::resolve_model_deprecations(
+    crate::core::model_aliases::resolve_model_deprecations(
         &mut agent.metadata.model,
         &mut agent.metadata.model_fallback,
     );
@@ -960,7 +960,7 @@ async fn run_single_agent(
             tier: format!("{tier:?}"),
             reason: format!("{reason:?}"),
         });
-        crate::linker::model_resolution::resolve_model_for_tier(&agent.metadata.provider, tier)
+        crate::core::model_resolution::resolve_model_for_tier(&agent.metadata.provider, tier)
     } else {
         raw_model
     };
@@ -1292,7 +1292,7 @@ async fn run_single_agent_es(
     let mut agent = crate::parser::parse_agent_file(agent_path)?;
 
     let model_before = agent.metadata.model.clone();
-    crate::linker::model_aliases::resolve_model_deprecations(
+    crate::core::model_aliases::resolve_model_deprecations(
         &mut agent.metadata.model,
         &mut agent.metadata.model_fallback,
     );
@@ -1607,7 +1607,7 @@ async fn run_orchestrated(
         let mut agent = crate::parser::parse_agent_file(&agent_path)?;
 
         let model_before = agent.metadata.model.clone();
-        crate::linker::model_aliases::resolve_model_deprecations(
+        crate::core::model_aliases::resolve_model_deprecations(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
         );

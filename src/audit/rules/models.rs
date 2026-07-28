@@ -4,7 +4,7 @@ use super::{AuditContext, Finding, Severity};
 /// Deliberately fires on salvaged values too: a deprecated model is a
 /// distinct root cause worth reporting even on a parse-broken file.
 pub(super) fn a03_deprecated_model(ctx: &AuditContext) -> Vec<Finding> {
-    a03_with_resolver(ctx, &crate::linker::model_aliases::resolve_alias)
+    a03_with_resolver(ctx, &crate::core::model_aliases::resolve_alias)
 }
 
 pub(super) fn a03_with_resolver(
@@ -57,7 +57,7 @@ pub(super) fn a04_with_catalog<F: Fn(&str) -> bool>(
             let model = a.metadata.model.as_deref()?;
             // Portable tiers and deprecated aliases are handled elsewhere.
             if model.starts_with("latest:")
-                || crate::linker::model_aliases::resolve_alias(model).is_some()
+                || crate::core::model_aliases::resolve_alias(model).is_some()
                 || known(model)
             {
                 return None;

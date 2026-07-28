@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::core::model_aliases::resolve_alias;
 use crate::core::project::{self, ProjectConfig};
-use crate::linker::model_aliases::resolve_alias;
 
 // ---------------------------------------------------------------------------
 // Data model

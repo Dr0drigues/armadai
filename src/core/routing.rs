@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::linker::model_resolution::ModelTier;
+use crate::core::model_resolution::ModelTier;
 
 fn tier_from_str(s: &str) -> Option<ModelTier> {
     match s.to_lowercase().as_str() {
@@ -176,7 +176,7 @@ pub fn route(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::linker::model_resolution::ModelTier::*;
+    use crate::core::model_resolution::ModelTier::*;
 
     fn rules() -> RoutingRules {
         RoutingRules::default()
