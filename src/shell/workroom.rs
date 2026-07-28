@@ -92,6 +92,10 @@ pub struct Workroom {
     /// previously surfaced nowhere at all (the alternate screen hides
     /// anything printed to stdout while it's active).
     run_id: Option<String>,
+    /// Set from `RunEvent::Error` — the run ended in failure (error/timeout).
+    /// Drives the completion footer to show a failure state instead of a
+    /// misleading "✓ run complete" (#271).
+    run_error: Option<String>,
 }
 
 impl Workroom {
@@ -107,6 +111,7 @@ impl Workroom {
             pattern: OrchestrationPattern::Hierarchical,
             completed: false,
             run_id: None,
+            run_error: None,
         }
     }
 
@@ -525,6 +530,12 @@ impl Workroom {
             RunEvent::Route { agent, tier, .. } => self.set_action(agent, format!("→ {tier}")),
             RunEvent::Result { .. } => self.on_complete(),
             RunEvent::Error { msg, .. } => {
+                // Record the run-level failure so the completion footer shows
+                // "✗ run failed" instead of a misleading "✓ run complete"
+                // (#271). Keep the first error if several arrive.
+                if self.run_error.is_none() {
+                    self.run_error = Some(msg.clone());
+                }
                 if let Some(cur) = self.current_agent.clone() {
                     self.set_action(&cur, format!("error: {msg}"));
                 }
@@ -869,11 +880,19 @@ impl Workroom {
             )));
         }
         if self.completed {
-            let check = theme::glyphs().check;
-            lines.push(Line::from(Span::styled(
-                format!("{check} run complete · press q or Esc to exit"),
-                theme::muted(),
-            )));
+            if let Some(err) = &self.run_error {
+                let cross = theme::glyphs().cross;
+                lines.push(Line::from(Span::styled(
+                    format!("{cross} run failed: {err} · press q or Esc to exit"),
+                    theme::error(),
+                )));
+            } else {
+                let check = theme::glyphs().check;
+                lines.push(Line::from(Span::styled(
+                    format!("{check} run complete · press q or Esc to exit"),
+                    theme::muted(),
+                )));
+            }
             // Last chance to copy the run_id before the alternate screen
             // clears on exit (OH1 Lot 6): shown in full, on its own line, so
             // it survives even at narrow widths without truncation logic.
@@ -1404,6 +1423,45 @@ orchestration:
         // Glyph comes from theme::glyphs() (unicode ✓ or its ASCII fallback
         // depending on init(ascii)), never a hardcoded character.
         assert!(span.content.starts_with(theme::glyphs().check));
+    }
+
+    #[test]
+    fn error_run_shows_failure_footer_not_complete() {
+        // #271: a run that ends on a RunEvent::Error must show "run failed",
+        // never a misleading "run complete", once the live TUI marks the run
+        // finished.
+        let mut wr = Workroom::new();
+        wr.on_run_event_at(
+            &RunEvent::Error {
+                code: "cli_timeout".to_string(),
+                msg: "CLI command timed out after 300s".to_string(),
+            },
+            Instant::now(),
+        );
+        wr.set_completed(true);
+        let mut lines = Vec::new();
+        wr.push_footer(&mut lines);
+
+        // No "run complete" line.
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.spans.iter().any(|s| s.content.contains("run complete"))),
+            "must not show a completion hint when the run failed"
+        );
+        // A "run failed: <msg>" line, styled as an error, with the cross glyph.
+        let fail_span = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("run failed"))
+            .expect("failure hint line present");
+        assert!(
+            fail_span
+                .content
+                .contains("CLI command timed out after 300s")
+        );
+        assert_eq!(fail_span.style, theme::error());
+        assert!(fail_span.content.starts_with(theme::glyphs().cross));
     }
 
     #[test]

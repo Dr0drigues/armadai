@@ -200,6 +200,7 @@ pub struct Glyphs {
     pub pointer: &'static str,
     pub arrow_back: &'static str,
     pub check: &'static str,
+    pub cross: &'static str,
 }
 
 impl Glyphs {
@@ -217,6 +218,7 @@ impl Glyphs {
         pointer: "▸",
         arrow_back: "←",
         check: "✓",
+        cross: "✗",
     };
 
     #[allow(dead_code)]
@@ -233,6 +235,7 @@ impl Glyphs {
         pointer: ">",
         arrow_back: "<-",
         check: "v",
+        cross: "x",
     };
 }
 
