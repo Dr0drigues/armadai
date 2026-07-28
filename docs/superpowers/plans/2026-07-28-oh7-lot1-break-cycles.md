@@ -34,8 +34,20 @@ five tasks:
 
 **Rationale:** `linker::model_resolution` + `linker::model_aliases` are model-tier
 routing/aliasing logic (a core/routing concern), mislocated in `linker`. Moving
-them to `core` breaks the `core → linker` edge. `linker` (and other consumers)
-will import them from `core`.
+them to `core` breaks the `core → linker` edge.
+
+**⚠️ Refinement applied during implementation (2026-07-28):** `model_resolution`
+is NOT a clean wholesale move — it mixes two concerns and several of its
+functions operate on `LinkAgent` (defined in `linker::mod.rs`), which would
+create the *reverse* `core → linker::LinkAgent` edge. It was therefore
+**split**: only the tier primitives `core` actually consumes (`ModelTier`,
+`classify_model_tier`, `resolve_model_for_tier`, `fallback_model_for_tier`)
+moved to `core::model_resolution`; the `LinkAgent`-operating functions
+(`remap_models_for_llm_editor`, `remap_models_for_orchestrator`,
+`resolve_latest_placeholders`, `TargetKind`/`classify_target`,
+`preview_model_resolution`, `warn_unknown_model`, …) **stay in
+`linker::model_resolution`** and import the primitives from `core`.
+`model_aliases` (pure) moved wholesale to `core::model_aliases`.
 
 **Files:**
 - Move: `src/linker/model_resolution.rs` → `src/core/model_resolution.rs`

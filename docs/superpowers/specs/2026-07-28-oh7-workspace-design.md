@@ -23,7 +23,7 @@ tolérés dans un crate unique mais **interdits entre crates** :
 | Couplage | Nature | Résolution |
 |---|---|---|
 | `core ↔ parser` | parsing d'agent (domaine) | parser **rejoint** `armadai-core` (cycle intra-crate OK) |
-| `core → linker` | `linker::model_resolution` + `model_aliases` = routing/modèle (mal placé) | **remonte** dans `armadai-core` ; linker en dépendra |
+| `core → linker` | `linker::model_resolution` + `model_aliases` = routing/modèle (mal placé) | **SPLIT** (découvert à l'implémentation 1a) : `model_resolution` mélange deux concerns — les **primitives de tier** (`ModelTier`, `resolve_model_for_tier`, `fallback_model_for_tier`, `classify_model_tier`) **remontent dans core** ; les fonctions opérant sur `LinkAgent` (`remap_*`, `resolve_latest_placeholders`, `TargetKind`, previews) **restent dans linker** (elles importent les primitives depuis core). `model_aliases` (pur) remonte entièrement dans core. Résultat : plus aucune arête core→linker, y compris via `LinkAgent`. |
 | `core → providers` | `core` utilise le trait `Provider` ; `providers` utilise les types de `core` | **inversion de dépendance** : trait `Provider` remonte dans core ; providers l'implémente |
 | `providers → shell` | `providers` utilise `shell::json_runner` (parsing stream-json) | `json_runner` **descend** dans `armadai-providers` ; shell en dépendra |
 | `core → storage` (feature) | `SqliteLog` couple `core` à rusqlite | `SqliteLog` **sort** de core vers le bin, impl de `core::EventLog` (trait qui reste dans core) |
