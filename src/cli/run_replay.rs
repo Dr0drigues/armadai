@@ -31,7 +31,7 @@
 //!
 //! Split in two on purpose:
 //! - [`replay_run`] is the CLI-facing entry point: opens the real
-//!   `SqliteLog` via `crate::storage::init_db()` (the actual, global,
+//!   `SqliteLog` via `crate::db::init_db()` (the actual, global,
 //!   config-resolved DB — same one every other storage-gated run path
 //!   opens) and hands off to...
 //! - [`replay_from_log`], generic over any [`EventLog`], which does the
@@ -77,7 +77,7 @@ use crate::core::events::EventSink;
 use crate::core::events::RunEvent;
 
 /// Replay a finished run: open the real, config-resolved event log
-/// (`crate::storage::init_db()` + `SqliteLog`) and re-emit the same
+/// (`crate::db::init_db()` + `SqliteLog`) and re-emit the same
 /// `RunEvent` sequence a live run produced for it, executing no effects.
 /// Returns an error if `run_id` has no persisted events (unknown id) or if
 /// the `storage` feature isn't compiled in (the event log only persists
@@ -90,7 +90,7 @@ pub async fn replay_run(
 ) -> anyhow::Result<()> {
     use crate::es_log::SqliteLog;
 
-    let db = crate::storage::init_db()?;
+    let db = crate::db::init_db()?;
     let log = SqliteLog::new(db);
     replay_from_log(&log, run_id, sink, human_output)
 }

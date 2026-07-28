@@ -58,7 +58,7 @@ pub async fn execute(action: ProjectionsAction) -> anyhow::Result<()> {
         ProjectionsAction::Rebuild { run, all: _all } => {
             #[cfg(feature = "storage")]
             {
-                let db = crate::storage::init_db()?;
+                let db = crate::db::init_db()?;
 
                 if let Some(id) = run {
                     rebuild_run(&db, &id)?;
