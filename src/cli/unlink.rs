@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use crate::core::parser;
-use crate::core::project;
 use crate::linker::{self, LinkAgent};
+use armadai_core::parser;
+use armadai_core::project;
 
 pub async fn execute(
     target: Option<crate::linker::LinkTarget>,

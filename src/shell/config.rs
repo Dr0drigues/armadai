@@ -1,69 +1,13 @@
 //! Shell configuration — parsed from the `shell:` section of armadai.yaml.
+//!
+//! The data model (`ShellConfig` and friends) lives in
+//! `armadai_core::project` (it's part of the `armadai.yaml` schema); this
+//! module re-exports it and adds the model-resolution helpers below, which
+//! reach into `crate::linker` and so cannot live in core.
 
-use serde::Deserialize;
-
-use crate::core::model_resolution::{ModelTier, fallback_model_for_tier, resolve_model_for_tier};
 use crate::linker::model_resolution::parse_latest_placeholder;
-
-/// Shell configuration section from armadai.yaml.
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct ShellConfig {
-    pub default_provider: Option<String>,
-    pub default_model: Option<String>,
-    pub timeout: Option<u64>,
-    pub max_history: Option<usize>,
-    pub auto_save: Option<bool>,
-    pub tandem: Vec<ShellProviderEntry>,
-    pub pipeline: Option<ShellPipelineConfig>,
-}
-
-/// A single entry in tandem or pipeline stages.
-///
-/// Two usage modes:
-/// - **Provider mode**: `provider:` + optional `model:` — invokes the CLI directly
-///   with a system prompt defined at the step level
-/// - **Agent mode**: `agent:` — loads a project agent (from `agents:` list), uses its
-///   system prompt, metadata provider/model, and adds the step's `prompt:` as extra context
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ShellProviderEntry {
-    #[serde(default)]
-    pub provider: String,
-    pub model: Option<String>,
-    /// Agent name (from the project's `agents:` list) — when set, loads the agent's
-    /// system prompt and metadata. Takes precedence over `provider`/`model` for config
-    /// (the agent's metadata defines the actual provider used).
-    pub agent: Option<String>,
-}
-
-/// Pipeline configuration with named, ordered steps.
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct ShellPipelineConfig {
-    pub steps: Vec<PipelineStep>,
-}
-
-/// A single pipeline step with a name, role prompt, and providers.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PipelineStep {
-    pub name: String,
-    pub prompt: Option<String>,
-    pub providers: Vec<ShellProviderEntry>,
-}
-
-impl ShellConfig {
-    pub fn effective_timeout(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.timeout.unwrap_or(120))
-    }
-
-    pub fn effective_max_history(&self) -> usize {
-        self.max_history.unwrap_or(5)
-    }
-
-    pub fn effective_auto_save(&self) -> bool {
-        self.auto_save.unwrap_or(true)
-    }
-}
+use armadai_core::model_resolution::{ModelTier, fallback_model_for_tier, resolve_model_for_tier};
+pub use armadai_core::project::{PipelineStep, ShellConfig, ShellProviderEntry};
 
 // ── Model resolution for shell providers ────────────────────────
 
@@ -136,8 +80,8 @@ mod tests {
         // (`fallback_model_for_tier`), while still exercising the real
         // low/fast → Fast tier and high/max → Max tier collapsing invariant
         // this test is meant to guard. Mirrors
-        // `core::model_resolution::test_preview_resolution_with_latest`.
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        // `armadai_core::model_resolution::test_preview_resolution_with_latest`.
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         let tmp = tempfile::tempdir().expect("tempdir");
         // SAFETY: env mutation is serialised via ENV_MUTEX for the duration

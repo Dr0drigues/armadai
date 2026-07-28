@@ -1,7 +1,7 @@
-use crate::core::agent::Agent;
-use crate::core::config::AppPaths;
-use crate::core::parser;
-use crate::core::project;
+use armadai_core::agent::Agent;
+use armadai_core::config::AppPaths;
+use armadai_core::parser;
+use armadai_core::project;
 
 pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow::Result<()> {
     let mut agents = load_agents()?;
@@ -96,7 +96,7 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
 /// Otherwise, load all agents from the default directory.
 /// When `--global` is active, always load from the global library.
 fn load_agents() -> anyhow::Result<Vec<Agent>> {
-    if !crate::core::config::is_force_global()
+    if !armadai_core::config::is_force_global()
         && let Some((root, config)) = project::find_project_config()
         && !config.agents.is_empty()
     {

@@ -3,7 +3,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
-use crate::core::provider::*;
+use armadai_core::provider::*;
 
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 

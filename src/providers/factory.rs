@@ -1,6 +1,6 @@
-use crate::core::agent::Agent;
+use armadai_core::agent::Agent;
 
-use crate::core::provider::Provider;
+use armadai_core::provider::Provider;
 
 /// Known tool definitions for unified provider names.
 /// Each entry maps a user-friendly name to its CLI command and API backend.
@@ -137,7 +137,7 @@ fn wrap_rate_limited(agent: &Agent, inner: Box<dyn Provider>) -> Box<dyn Provide
     use super::{Rate, RateLimitedProvider, RateLimiter, shared_provider_limiter};
 
     let provider_limiter = rate_limit_key(agent.metadata.provider.as_str()).and_then(|key| {
-        let rate = crate::core::config::load_user_config()
+        let rate = armadai_core::config::load_user_config()
             .rate_limits
             .get(&key)
             .map(|&per_min| Rate::from_per_minute(per_min as f64));
@@ -256,7 +256,7 @@ fn get_api_key(env_var: &str, provider_name: &str) -> anyhow::Result<String> {
         return Ok(key);
     }
 
-    let config_dir = crate::core::config::AppPaths::resolve().config_dir;
+    let config_dir = armadai_core::config::AppPaths::resolve().config_dir;
     if let Ok(secrets) = armadai_secrets::load_secrets(&config_dir)
         && let Some(creds) = secrets.providers.get(provider_name)
     {
@@ -313,8 +313,8 @@ mod tests {
     /// under parallel `cargo test`).
     #[tokio::test]
     async fn wrap_rate_limited_agent_limiter_throttles_without_provider_key() {
-        use crate::core::agent::AgentMetadata;
-        use crate::core::provider::{
+        use armadai_core::agent::AgentMetadata;
+        use armadai_core::provider::{
             ChatMessage, CompletionRequest, CompletionResponse, ProviderMetadata, TokenStream,
         };
         use std::sync::Arc;

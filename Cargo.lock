@@ -98,6 +98,7 @@ dependencies = [
  "anstream",
  "anstyle",
  "anyhow",
+ "armadai-core",
  "armadai-secrets",
  "armadai-storage",
  "assert_cmd",
@@ -130,6 +131,26 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width",
  "uuid",
+]
+
+[[package]]
+name = "armadai-core"
+version = "1.0.0-rc.5"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "dialoguer",
+ "futures-util",
+ "include_dir",
+ "pulldown-cmark",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 //! Bin-side database bootstrap (OH7 Lot 2b).
 //!
 //! Owns the config-driven path resolution that used to live in the storage
-//! module's `init_db`. Depends on `crate::core::config`; delegates the actual
+//! module's `init_db`. Depends on `armadai_core::config`; delegates the actual
 //! open+schema to the storage wrapper (`armadai_storage::open`), which is
 //! core-free. Kept bin-side so `armadai-storage` stays a pure rusqlite leaf.
 
@@ -29,18 +29,18 @@ fn resolve_storage_path(configured: &str) -> PathBuf {
              in config.yaml to silence this."
         );
     });
-    crate::core::config::data_dir().join(p)
+    armadai_core::config::data_dir().join(p)
 }
 
 /// Initialize a persistent SQLite database at the configured path.
 pub fn init_db() -> anyhow::Result<Database> {
-    let config = crate::core::config::load_user_config();
+    let config = armadai_core::config::load_user_config();
     let path = resolve_storage_path(&config.storage.path);
 
     // Safety net (#267): no test may open the real user database.
     #[cfg(test)]
     {
-        let real = crate::core::config::data_dir();
+        let real = armadai_core::config::data_dir();
         assert!(
             !path.starts_with(&real),
             "init_db() would open the real user database at {} during a test — \
@@ -70,7 +70,7 @@ mod tests {
     fn relative_storage_path_anchored_under_data_dir() {
         let resolved = resolve_storage_path("data/armadai.sqlite");
         assert!(resolved.is_absolute());
-        assert!(resolved.starts_with(crate::core::config::data_dir()));
+        assert!(resolved.starts_with(armadai_core::config::data_dir()));
         assert!(resolved.ends_with("data/armadai.sqlite"));
     }
 }

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use tokio::process::Command;
 
-use crate::core::provider::*;
+use armadai_core::provider::*;
 
 /// Generic CLI provider that spawns any configured command.
 pub struct CliProvider {
@@ -184,7 +184,7 @@ mod tests {
     /// `ENV_MUTEX`, so there is no deadlock risk.
     #[allow(clippy::await_holding_lock)]
     async fn with_env_lock<T>(fut: impl std::future::Future<Output = T>) -> T {
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         fut.await
     }
 

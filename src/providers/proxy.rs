@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::core::provider::*;
+use armadai_core::provider::*;
 
 /// Proxy provider that routes through LiteLLM or OpenRouter (OpenAI-compatible API).
 pub struct ProxyProvider {

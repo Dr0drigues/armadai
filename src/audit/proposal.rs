@@ -3,9 +3,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use super::reverse::{ImportedAgent, ImportedConfig};
-use crate::core::model_aliases::resolve_alias;
-use crate::core::model_resolution::classify_model_tier;
 use crate::linker::model_resolution::{is_latest_placeholder, tier_placeholder};
+use armadai_core::model_aliases::resolve_alias;
+use armadai_core::model_resolution::classify_model_tier;
 
 /// Map a native model to a portable ArmadAI tier when possible.
 pub(crate) fn portable_model(model: Option<&str>) -> String {
@@ -241,7 +241,7 @@ fn raw_span(text: &str, start: usize, len: usize) -> String {
 /// `SharedFragment`. `slugs` must be parallel to `agents` and contain each
 /// member's final agent slug: the fragment's `apply_to` must reference
 /// slugs (matched against the generated agent's H1/name), not raw display
-/// names, or runtime prompt matching (`core::prompt`) and pack.yaml
+/// names, or runtime prompt matching (`armadai_core::prompt`) and pack.yaml
 /// validation (R5, matched against pack.yaml's agent slug list) would
 /// disagree on what an agent is called.
 ///
@@ -483,7 +483,7 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
         // same value). Both the fragment `apply_to` lists and the agent-write
         // loop reuse this exact pairing: the generated agent's H1/name is set to
         // its slug (not its raw display name), because runtime prompt matching
-        // (`core::prompt`) matches `apply_to` against the H1 name while pack.yaml
+        // (`armadai_core::prompt`) matches `apply_to` against the H1 name while pack.yaml
         // validation (R5) matches it against the pack's slug list — the two can
         // only agree if H1 == slug.
         let mut used_agent_slugs = std::collections::HashSet::new();
@@ -619,9 +619,9 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
         std::fs::write(out_dir.join("pack.yaml"), pack)?;
 
         // Invariant: the generator never ships an invalid pack.
-        let mut errors: Vec<String> = crate::core::pack_validation::validate_pack(&out_dir)
+        let mut errors: Vec<String> = armadai_core::pack_validation::validate_pack(&out_dir)
             .into_iter()
-            .filter(|i| matches!(i.severity, crate::core::pack_validation::Severity::Error))
+            .filter(|i| matches!(i.severity, armadai_core::pack_validation::Severity::Error))
             .map(|i| format!("{}: {}", i.location, i.message))
             .collect();
 
@@ -635,7 +635,7 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
         // text remains.
         for (a, slug) in owned.iter().zip(agent_slugs.iter()) {
             let file = out_dir.join("agents").join(format!("{slug}.md"));
-            match crate::core::parser::parse_agent_file(&file) {
+            match armadai_core::parser::parse_agent_file(&file) {
                 Ok(parsed) => {
                     if parsed.system_prompt.trim().is_empty() && !a.system_prompt.trim().is_empty()
                     {
@@ -742,7 +742,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("x.md");
         std::fs::write(&f, &md).unwrap();
-        let parsed = crate::core::parser::parse_agent_file(&f).unwrap();
+        let parsed = armadai_core::parser::parse_agent_file(&f).unwrap();
         assert!(parsed.system_prompt.contains("TAIL_MUST_SURVIVE"));
     }
 
@@ -758,7 +758,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("doc.md");
         std::fs::write(&file, &md).unwrap();
-        let parsed = crate::core::parser::parse_agent_file(&file).unwrap();
+        let parsed = armadai_core::parser::parse_agent_file(&file).unwrap();
         assert_eq!(parsed.metadata.provider, "claude");
         assert!(parsed.system_prompt.contains("Does things."));
         assert!(parsed.system_prompt.contains("**Overview**"));
@@ -944,7 +944,7 @@ mod tests {
         // The generated agents parse with the real ArmadAI parser.
         for name in ["gate-a", "gate-b"] {
             let parsed =
-                crate::core::parser::parse_agent_file(&out.join(format!("agents/{name}.md")))
+                armadai_core::parser::parse_agent_file(&out.join(format!("agents/{name}.md")))
                     .unwrap();
             assert_eq!(parsed.metadata.provider, "claude");
         }
@@ -1012,7 +1012,7 @@ mod tests {
 
         let out = dir.path().join(".armadai-proposal");
         let parsed =
-            crate::core::parser::parse_agent_file(&out.join("agents/multiline-desc.md")).unwrap();
+            armadai_core::parser::parse_agent_file(&out.join("agents/multiline-desc.md")).unwrap();
         assert_eq!(parsed.metadata.provider, "claude");
     }
 
@@ -1027,7 +1027,7 @@ mod tests {
 
         let out = dir.path().join(".armadai-proposal");
         let parsed =
-            crate::core::parser::parse_agent_file(&out.join("agents/setext-agent.md")).unwrap();
+            armadai_core::parser::parse_agent_file(&out.join("agents/setext-agent.md")).unwrap();
         assert!(parsed.system_prompt.contains("SENTINEL_TAIL"));
     }
 
@@ -1048,7 +1048,7 @@ mod tests {
 
         let out = dir.path().join(".armadai-proposal");
         let parsed =
-            crate::core::parser::parse_agent_file(&out.join("agents/heading-agent.md")).unwrap();
+            armadai_core::parser::parse_agent_file(&out.join("agents/heading-agent.md")).unwrap();
         assert!(parsed.system_prompt.contains("END_OF_PROMPT_TAIL"));
     }
 
@@ -1075,7 +1075,7 @@ mod tests {
         // Both generated agents parse and the shared block was stripped.
         for slug in ["gate-alpha", "gate-beta"] {
             let parsed =
-                crate::core::parser::parse_agent_file(&out.join(format!("agents/{slug}.md")))
+                armadai_core::parser::parse_agent_file(&out.join(format!("agents/{slug}.md")))
                     .unwrap();
             assert_eq!(parsed.metadata.provider, "claude");
         }

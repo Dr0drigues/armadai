@@ -1,7 +1,7 @@
-use crate::core::agent::Agent;
-use crate::core::config::AppPaths;
-use crate::core::parser::parse_agent_file;
-use crate::core::project::{self, AgentRef};
+use armadai_core::agent::Agent;
+use armadai_core::config::AppPaths;
+use armadai_core::parser::parse_agent_file;
+use armadai_core::project::{self, AgentRef};
 
 pub async fn execute(agent_name: String) -> anyhow::Result<()> {
     let path = resolve_agent_file(&agent_name)?;

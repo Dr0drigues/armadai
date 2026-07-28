@@ -1,11 +1,11 @@
-use crate::core::agent::Agent;
-use crate::core::prompt::Prompt;
-use crate::core::skill::Skill;
-use crate::core::starter::StarterPack;
 use crate::model_registry::ModelEntry;
 #[cfg(feature = "storage")]
 use crate::tui::app::OrchestrationEntry;
 use crate::tui::app::{CostEntry, RunEntry, SortMode};
+use armadai_core::agent::Agent;
+use armadai_core::prompt::Prompt;
+use armadai_core::skill::Skill;
+use armadai_core::starter::StarterPack;
 
 /// Filter items by search query (case-insensitive substring match on name + metadata).
 pub fn filter_agents(agents: &[Agent], query: &str) -> Vec<usize> {

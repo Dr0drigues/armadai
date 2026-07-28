@@ -13,7 +13,7 @@ pub use opencode::OpencodeLinker;
 
 use std::path::PathBuf;
 
-use crate::core::agent::Agent;
+use armadai_core::agent::Agent;
 
 /// Supported link targets for autocompletion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]

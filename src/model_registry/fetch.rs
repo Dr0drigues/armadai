@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::core::config::config_dir;
+use armadai_core::config::config_dir;
 
 use super::ModelEntry;
 
@@ -54,16 +54,16 @@ pub async fn load_models_online(provider: &str) -> Option<Vec<ModelEntry>> {
 /// (`~/.config/armadai/registries.yaml`) and project-level (`armadai.yaml` /
 /// `.armadai/config.yaml`) custom sources.
 ///
-/// Project config is looked up via `core::project::find_project_config`,
+/// Project config is looked up via `armadai_core::project::find_project_config`,
 /// which walks up from the current working directory. Without a
 /// `registries:` section anywhere, this returns exactly `[MODELS_DEV_URL]`.
 #[cfg(feature = "providers-api")]
 fn resolved_model_sources() -> Vec<String> {
-    let user = crate::core::registries::load_user_registries();
-    let project = crate::core::project::find_project_config().map(|(_, cfg)| cfg);
+    let user = armadai_core::registries::load_user_registries();
+    let project = armadai_core::project::find_project_config().map(|(_, cfg)| cfg);
     let project_registries = project.as_ref().and_then(|cfg| cfg.registries.as_ref());
-    crate::core::registries::resolved_sources(
-        crate::core::registries::RegistryKind::Models,
+    armadai_core::registries::resolved_sources(
+        armadai_core::registries::RegistryKind::Models,
         &[MODELS_DEV_URL],
         &user,
         project_registries,
@@ -81,13 +81,13 @@ fn source_cache_dir() -> PathBuf {
 
 /// Derive a filesystem-safe cache file path for a given source URL.
 ///
-/// Delegates to `core::registries::cache_key`, the sanitization scheme
+/// Delegates to `armadai_core::registries::cache_key`, the sanitization scheme
 /// shared with `registry::sync::source_key` (previously each had its own,
 /// independently-maintained and collision-prone sanitization — see B2 Task 2
 /// review).
 #[cfg(feature = "providers-api")]
 fn source_cache_path(url: &str) -> PathBuf {
-    let key = crate::core::registries::cache_key(url);
+    let key = armadai_core::registries::cache_key(url);
     source_cache_dir().join(format!("{key}.json"))
 }
 
@@ -446,7 +446,7 @@ mod tests {
     #[test]
     #[cfg(feature = "providers-api")]
     fn resolved_sources_defaults_only_without_custom_config() {
-        use crate::core::registries::{RegistriesConfig, RegistryKind, resolved_sources};
+        use armadai_core::registries::{RegistriesConfig, RegistryKind, resolved_sources};
 
         let user = RegistriesConfig::default();
         let result = resolved_sources(RegistryKind::Models, &[MODELS_DEV_URL], &user, None);
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     #[cfg(feature = "providers-api")]
     fn resolved_sources_includes_default_and_custom_model_source() {
-        use crate::core::registries::{
+        use armadai_core::registries::{
             RegistriesConfig, RegistryKind, RegistrySource, resolved_sources,
         };
 
@@ -481,7 +481,7 @@ mod tests {
     #[test]
     #[cfg(feature = "providers-api")]
     fn source_cache_path_is_stable_and_distinct_per_source() {
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let a = source_cache_path("https://models.dev/api.json");
         let b = source_cache_path("https://example.com/custom-models.json");
         assert_ne!(a, b);
@@ -495,7 +495,7 @@ mod tests {
         // Exercises the real `resolved_model_sources()` glue (not just the
         // pure `resolved_sources` helper) with a `RegistriesConfig` loaded
         // from disk, per the B2 Task 2 review follow-up.
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         // SAFETY: serialised via ENV_MUTEX; restored at end of test.

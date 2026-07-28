@@ -1,8 +1,8 @@
 use clap::Subcommand;
 
-use crate::core::config::{AppPaths, user_prompts_dir};
-use crate::core::project;
-use crate::core::prompt::{Prompt, load_all_prompts};
+use armadai_core::config::{AppPaths, user_prompts_dir};
+use armadai_core::project;
+use armadai_core::prompt::{Prompt, load_all_prompts};
 
 #[derive(Subcommand)]
 pub enum PromptsAction {

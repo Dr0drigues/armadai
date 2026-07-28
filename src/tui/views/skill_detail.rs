@@ -6,10 +6,10 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::core::skill::read_text_file;
 use crate::theme;
 use crate::tui::app::App;
 use crate::tui::wrap::wrapped_line_count;
+use armadai_core::skill::read_text_file;
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let skill = match app.selected_skill() {

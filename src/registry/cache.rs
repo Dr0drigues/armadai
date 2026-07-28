@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::sync::{source_dir, source_key, sources_dir};
-use crate::core::config::registry_cache_dir;
+use armadai_core::config::registry_cache_dir;
 
 // ---------------------------------------------------------------------------
 // Index data model
@@ -350,7 +350,7 @@ mod tests {
     }
 
     fn with_config_dir<F: FnOnce(&std::path::Path)>(f: F) {
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         // SAFETY: serialised via ENV_MUTEX; restored at end of scope.

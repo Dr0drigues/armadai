@@ -74,7 +74,7 @@ impl SessionMessage {
 
 /// Get the sessions directory (`~/.config/armadai/sessions/`).
 pub fn sessions_dir() -> PathBuf {
-    use crate::core::config::config_dir;
+    use armadai_core::config::config_dir;
     let dir = config_dir().join("sessions");
     std::fs::create_dir_all(&dir).ok();
     dir

@@ -1,5 +1,5 @@
 use super::LinkAgent;
-use crate::core::model_resolution::{ModelTier, fallback_model_for_tier, resolve_model_for_tier};
+use armadai_core::model_resolution::{ModelTier, fallback_model_for_tier, resolve_model_for_tier};
 
 /// Classification of link targets.
 pub enum TargetKind {
@@ -460,7 +460,7 @@ mod tests {
         // machine + parallel test runs — see resolve_model_for_tier's
         // doc-comment). With no cache reachable, resolution always takes the
         // hardcoded-fallback path, making the assertion deterministic.
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         let tmp = tempfile::tempdir().expect("tempdir");
         // SAFETY: env mutation is serialised via ENV_MUTEX for the duration

@@ -2,7 +2,7 @@
 //! (OH1 Lot 4).
 //!
 //! These functions read the pure `ExecutionState` projection (see
-//! `core::orchestration::es::state`) instead of the live
+//! `armadai_core::orchestration::es::state`) instead of the live
 //! `blackboard::Board` / `ring::RingToken` engine types that the legacy
 //! `record_orchestration_blackboard_into` / `record_orchestration_ring_into`
 //! (in `run.rs`) consume. They reuse the same low-level `insert_*` storage
@@ -44,13 +44,13 @@
 // under `--features tui` (no `storage`, no `test`) they'd otherwise be
 // flagged as unused imports.
 #[allow(unused_imports)]
-use crate::core::orchestration::blackboard::BlackboardConfig;
-use crate::core::orchestration::es::event::ExecutionEvent;
-use crate::core::orchestration::es::state::ExecutionState;
+use armadai_core::orchestration::blackboard::BlackboardConfig;
+use armadai_core::orchestration::es::event::ExecutionEvent;
+use armadai_core::orchestration::es::state::ExecutionState;
 #[allow(unused_imports)]
-use crate::core::orchestration::es::state::RunStatus;
+use armadai_core::orchestration::es::state::RunStatus;
 #[allow(unused_imports)]
-use crate::core::orchestration::ring::RingConfig;
+use armadai_core::orchestration::ring::RingConfig;
 
 /// Concatenated `[agent] content` display for every blackboard entry, in
 /// insertion order. Reproduces the legacy blackboard outcome text (see
@@ -69,7 +69,7 @@ pub fn blackboard_display(state: &ExecutionState) -> String {
 /// Readable summary of a ring run from the ES projection: the resolved
 /// outcome (last `OutcomeResolved { outcome }` in `events`, falling back to
 /// the last `Completed { content }` — the same fallback order as
-/// [`super::super::core::orchestration::es::bridge::to_orchestration_result`]),
+/// [`armadai_core::orchestration::es::bridge::to_orchestration_result`]),
 /// plus a per-agent vote tally when any votes were cast.
 ///
 /// Reproduces the *spirit* of the legacy `TokenStatus::Done { outcome }`
@@ -137,7 +137,9 @@ pub(crate) fn final_content(state: &ExecutionState, events: &[ExecutionEvent]) -
     match state.pattern.as_str() {
         "blackboard" => blackboard_display(state),
         "ring" => ring_display(state, events),
-        _ => crate::core::orchestration::es::bridge::to_orchestration_result(state, events).content,
+        _ => {
+            armadai_core::orchestration::es::bridge::to_orchestration_result(state, events).content
+        }
     }
 }
 
@@ -333,9 +335,9 @@ pub fn record_ring_es_into(
 /// is malformed (e.g. no `RunStarted`) or storage fails.
 #[cfg(feature = "storage")]
 pub fn project_run(db: &armadai_storage::Database, run_id: &str) -> anyhow::Result<()> {
-    use crate::core::orchestration::es::log::EventLog;
-    use crate::core::orchestration::es::state::fold;
     use crate::es_log::SqliteLog;
+    use armadai_core::orchestration::es::log::EventLog;
+    use armadai_core::orchestration::es::state::fold;
 
     // 1. Read the event log for this run.
     let log = SqliteLog::new(db.clone());
@@ -401,8 +403,8 @@ pub fn project_run(db: &armadai_storage::Database, run_id: &str) -> anyhow::Resu
             )?;
         }
         "hierarchical" => {
-            use crate::core::orchestration::OrchestrationConfig;
-            use crate::core::orchestration::es::bridge::to_orchestration_result;
+            use armadai_core::orchestration::OrchestrationConfig;
+            use armadai_core::orchestration::es::bridge::to_orchestration_result;
 
             let result = to_orchestration_result(&state, &events);
             let config: OrchestrationConfig = state
@@ -438,7 +440,7 @@ pub fn project_run(db: &armadai_storage::Database, run_id: &str) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::orchestration::es::state::{BoardEntryRec, ContribRec, VoteRec};
+    use armadai_core::orchestration::es::state::{BoardEntryRec, ContribRec, VoteRec};
 
     fn sample_blackboard_state() -> ExecutionState {
         let mut state = ExecutionState {
@@ -558,7 +560,7 @@ mod tests {
 #[cfg(all(test, feature = "storage"))]
 mod storage_tests {
     use super::*;
-    use crate::core::orchestration::es::state::{BoardEntryRec, ContribRec, VoteRec};
+    use armadai_core::orchestration::es::state::{BoardEntryRec, ContribRec, VoteRec};
     use armadai_storage::{open_in_memory, queries};
 
     fn sample_blackboard_state() -> ExecutionState {
@@ -807,7 +809,7 @@ mod storage_tests {
         // Persist a minimal blackboard log via SqliteLog.
         let mut log = crate::es_log::SqliteLog::new(db.clone());
         for e in sample_blackboard_events("run-x") {
-            use crate::core::orchestration::es::log::EventLog;
+            use armadai_core::orchestration::es::log::EventLog;
             log.append("run-x", &e).unwrap();
         }
 

@@ -1,9 +1,9 @@
 use clap::Subcommand;
 
-use crate::core::config::user_skills_dir;
-use crate::core::project;
-use crate::core::skill::{Skill, load_all_skills};
 use crate::skills_registry::{cache, search, sync};
+use armadai_core::config::user_skills_dir;
+use armadai_core::project;
+use armadai_core::skill::{Skill, load_all_skills};
 
 #[derive(Subcommand)]
 pub enum SkillsAction {

@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::sync::{default_sources, parse_source, repo_dir, repos_dir};
-use crate::core::config::skills_registry_dir;
-use crate::core::parser::frontmatter::extract_frontmatter;
-use crate::core::skill::SkillFrontmatter;
+use armadai_core::config::skills_registry_dir;
+use armadai_core::parser::frontmatter::extract_frontmatter;
+use armadai_core::skill::SkillFrontmatter;
 
 // ---------------------------------------------------------------------------
 // Index data model
@@ -165,7 +165,7 @@ fn extract_skill_entry(
 /// user-level (`~/.config/armadai/registries.yaml`) and project-level
 /// (`armadai.yaml` / `.armadai/config.yaml`) custom skill sources.
 ///
-/// Project config is looked up via `core::project::find_project_config`,
+/// Project config is looked up via `armadai_core::project::find_project_config`,
 /// which walks up from the current working directory — this matches how
 /// the `armadai skills` CLI commands are invoked. Without a `registries:`
 /// section anywhere, this returns exactly `default_sources()`, unchanged.
@@ -173,12 +173,12 @@ pub fn effective_sources() -> Vec<String> {
     let defaults = default_sources();
     let default_refs: Vec<&str> = defaults.iter().map(String::as_str).collect();
 
-    let user = crate::core::registries::load_user_registries();
-    let project = crate::core::project::find_project_config().map(|(_, cfg)| cfg);
+    let user = armadai_core::registries::load_user_registries();
+    let project = armadai_core::project::find_project_config().map(|(_, cfg)| cfg);
     let project_registries = project.as_ref().and_then(|cfg| cfg.registries.as_ref());
 
-    crate::core::registries::resolved_sources(
-        crate::core::registries::RegistryKind::Skills,
+    armadai_core::registries::resolved_sources(
+        armadai_core::registries::RegistryKind::Skills,
         &default_refs,
         &user,
         project_registries,

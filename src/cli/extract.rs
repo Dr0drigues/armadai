@@ -14,12 +14,12 @@ use std::path::{Path, PathBuf};
 use clap::Args;
 use dialoguer::{Confirm, FuzzySelect, Input, MultiSelect, theme::ColorfulTheme};
 
-use crate::core::agent::Agent;
-use crate::core::config;
-use crate::core::dependency_resolver::resolve_dependencies;
-use crate::core::prompt::{Prompt, load_all_prompts};
-use crate::core::skill::{Skill, load_all_skills};
-use crate::core::starter::{StarterPack, find_pack_dir, load_all_packs};
+use armadai_core::agent::Agent;
+use armadai_core::config;
+use armadai_core::dependency_resolver::resolve_dependencies;
+use armadai_core::prompt::{Prompt, load_all_prompts};
+use armadai_core::skill::{Skill, load_all_skills};
+use armadai_core::starter::{StarterPack, find_pack_dir, load_all_packs};
 
 // ---------------------------------------------------------------------------
 // CLI args

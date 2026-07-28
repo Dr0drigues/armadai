@@ -4,7 +4,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use serde::Serialize;
 
-use crate::core::agent::Agent;
+use armadai_core::agent::Agent;
 
 /// Helper to convert a serializable value to JSON, returning an error response on failure.
 fn to_json<T: Serialize>(value: T) -> Json<serde_json::Value> {
@@ -188,8 +188,8 @@ pub struct ErrorResponse {
 }
 
 fn load_agents() -> Vec<Agent> {
-    use crate::core::config::is_force_global;
-    use crate::core::project;
+    use armadai_core::config::is_force_global;
+    use armadai_core::project;
 
     // If in a project context (and not forced global), resolve from project config
     if !is_force_global()
@@ -199,14 +199,14 @@ fn load_agents() -> Vec<Agent> {
         let (paths, _) = project::resolve_all_agents(&config, &root);
         let mut agents = Vec::new();
         for path in &paths {
-            if let Ok(agent) = crate::core::parser::parse_agent_file(path) {
+            if let Ok(agent) = armadai_core::parser::parse_agent_file(path) {
                 agents.push(agent);
             }
         }
         return agents;
     }
 
-    let agents_dir = crate::core::config::AppPaths::resolve().agents_dir;
+    let agents_dir = armadai_core::config::AppPaths::resolve().agents_dir;
     Agent::load_all(&agents_dir).unwrap_or_default()
 }
 
@@ -358,14 +358,14 @@ pub async fn get_costs() -> Json<Vec<CostSummary>> {
 }
 
 pub async fn list_prompts() -> Json<Vec<PromptSummary>> {
-    use crate::core::config::{is_force_global, user_prompts_dir};
-    use crate::core::prompt::{Prompt, load_all_prompts};
+    use armadai_core::config::{is_force_global, user_prompts_dir};
+    use armadai_core::prompt::{Prompt, load_all_prompts};
 
     let prompts: Vec<Prompt> = if !is_force_global()
-        && let Some((root, config)) = crate::core::project::find_project_config()
+        && let Some((root, config)) = armadai_core::project::find_project_config()
         && !config.prompts.is_empty()
     {
-        let (paths, _) = crate::core::project::resolve_all_prompts(&config, &root);
+        let (paths, _) = armadai_core::project::resolve_all_prompts(&config, &root);
         paths.iter().filter_map(|p| Prompt::load(p).ok()).collect()
     } else {
         load_all_prompts(&user_prompts_dir())
@@ -383,14 +383,14 @@ pub async fn list_prompts() -> Json<Vec<PromptSummary>> {
 }
 
 pub async fn list_skills() -> Json<Vec<SkillSummary>> {
-    use crate::core::config::{is_force_global, user_skills_dir};
-    use crate::core::skill::load_all_skills;
+    use armadai_core::config::{is_force_global, user_skills_dir};
+    use armadai_core::skill::load_all_skills;
 
     let skills = if !is_force_global()
-        && let Some((root, config)) = crate::core::project::find_project_config()
+        && let Some((root, config)) = armadai_core::project::find_project_config()
         && !config.skills.is_empty()
     {
-        let (paths, _) = crate::core::project::resolve_all_skills(&config, &root);
+        let (paths, _) = armadai_core::project::resolve_all_skills(&config, &root);
         let mut result = Vec::new();
         for path in &paths {
             result.extend(load_all_skills(path));
@@ -413,8 +413,8 @@ pub async fn list_skills() -> Json<Vec<SkillSummary>> {
 }
 
 pub async fn get_prompt(Path(name): Path<String>) -> Json<serde_json::Value> {
-    use crate::core::config::user_prompts_dir;
-    use crate::core::prompt::load_all_prompts;
+    use armadai_core::config::user_prompts_dir;
+    use armadai_core::prompt::load_all_prompts;
 
     let prompts = load_all_prompts(&user_prompts_dir());
     match prompts
@@ -438,8 +438,8 @@ pub async fn get_prompt(Path(name): Path<String>) -> Json<serde_json::Value> {
 }
 
 pub async fn get_skill(Path(name): Path<String>) -> Json<serde_json::Value> {
-    use crate::core::config::user_skills_dir;
-    use crate::core::skill::{load_all_skills, read_text_file};
+    use armadai_core::config::user_skills_dir;
+    use armadai_core::skill::{load_all_skills, read_text_file};
 
     let to_skill_file = |p: &std::path::Path| -> SkillFile {
         let name = p
@@ -476,7 +476,7 @@ pub async fn get_skill(Path(name): Path<String>) -> Json<serde_json::Value> {
 }
 
 pub async fn list_starters() -> Json<Vec<StarterSummary>> {
-    use crate::core::starter::load_all_packs;
+    use armadai_core::starter::load_all_packs;
 
     let packs = load_all_packs();
     let summaries = packs
@@ -493,7 +493,7 @@ pub async fn list_starters() -> Json<Vec<StarterSummary>> {
 }
 
 pub async fn get_starter(Path(name): Path<String>) -> Json<serde_json::Value> {
-    use crate::core::starter::{StarterPack, find_pack_dir};
+    use armadai_core::starter::{StarterPack, find_pack_dir};
 
     let pack_dir = match find_pack_dir(&name) {
         Some(dir) => dir,
@@ -593,7 +593,7 @@ pub async fn refresh_models() -> Json<serde_json::Value> {
 }
 
 pub async fn get_starter_config(Path(name): Path<String>) -> impl IntoResponse {
-    use crate::core::starter::{StarterPack, find_pack_dir};
+    use armadai_core::starter::{StarterPack, find_pack_dir};
 
     let pack_dir = match find_pack_dir(&name) {
         Some(dir) => dir,
@@ -850,7 +850,7 @@ pub async fn get_orchestration_trace_detail(
 }
 
 pub async fn get_orchestration_topology() -> Json<serde_json::Value> {
-    use crate::core::project::find_project_config;
+    use armadai_core::project::find_project_config;
 
     let disabled = OrchestrationTopology {
         enabled: false,
@@ -904,7 +904,7 @@ pub async fn get_orchestration_topology() -> Json<serde_json::Value> {
 #[cfg(all(test, feature = "storage"))]
 mod tests {
     use super::*;
-    use crate::core::config::ENV_MUTEX;
+    use armadai_core::config::ENV_MUTEX;
     use armadai_storage::queries::{
         BoardEntryRecord, DelegationEventRecord, OrchestrationRunRecord, RingVoteRecord, RunRecord,
         insert_board_entry, insert_delegation_event, insert_orchestration_run, insert_ring_vote,

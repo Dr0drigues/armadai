@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::core::config::registry_cache_dir;
-use crate::core::project::find_project_config;
-use crate::core::registries::{RegistryKind, load_user_registries, resolved_sources};
+use armadai_core::config::registry_cache_dir;
+use armadai_core::project::find_project_config;
+use armadai_core::registries::{RegistryKind, load_user_registries, resolved_sources};
 
 /// Built-in default community registry (awesome-copilot).
 pub const DEFAULT_REGISTRY_URL: &str = "https://github.com/github/awesome-copilot.git";
@@ -12,7 +12,7 @@ pub const DEFAULT_REGISTRY_URL: &str = "https://github.com/github/awesome-copilo
 /// built-in default, plus any user-level (`~/.config/armadai/registries.yaml`)
 /// and project-level (`armadai.yaml` / `.armadai/config.yaml`) custom sources.
 ///
-/// Project config is looked up via `core::project::find_project_config`,
+/// Project config is looked up via `armadai_core::project::find_project_config`,
 /// which walks up from the current working directory — this matches how the
 /// `armadai registry` CLI commands are invoked. When no project config is
 /// found (or it has no `registries:` section), only defaults + user sources
@@ -38,7 +38,7 @@ pub fn sources_dir() -> PathBuf {
 /// Derive a filesystem-safe, collision-resistant key for a registry source
 /// URL.
 ///
-/// Delegates to `core::registries::cache_key`, the single sanitization
+/// Delegates to `armadai_core::registries::cache_key`, the single sanitization
 /// scheme shared with `model_registry::fetch::source_cache_path` (previously
 /// each had its own ad hoc, collision-prone sanitization — see B2 Task 2
 /// review). The key always carries a hash suffix derived from the full URL,
@@ -46,7 +46,7 @@ pub fn sources_dir() -> PathBuf {
 /// prefix that would otherwise be a bare `.`/`..`, which is unsafe as a path
 /// segment) still get distinct, safe directory names.
 pub fn source_key(url: &str) -> String {
-    crate::core::registries::cache_key(url)
+    armadai_core::registries::cache_key(url)
 }
 
 /// Directory for a source already identified by its [`source_key`]. Used to
@@ -192,7 +192,7 @@ pub fn is_stale(days: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::registries::{RegistriesConfig, RegistrySource};
+    use armadai_core::registries::{RegistriesConfig, RegistrySource};
 
     #[test]
     fn source_key_github_url_is_readable_and_stable() {
@@ -223,7 +223,7 @@ mod tests {
     fn source_key_distinguishes_urls_with_same_readable_prefix() {
         // Two distinct URLs (different owners) whose naive sanitization
         // could plausibly collide must still yield distinct keys — this is
-        // what the hash suffix in `core::registries::cache_key` guarantees.
+        // what the hash suffix in `armadai_core::registries::cache_key` guarantees.
         let a = source_key("https://github.com/acme/registry");
         let b = source_key("https://github.com/acme/registry-fork");
         assert_ne!(a, b);
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn is_stale_true_when_never_synced() {
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         // SAFETY: serialised via ENV_MUTEX; restored at end of test.
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn is_stale_false_right_after_mark_synced() {
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         // SAFETY: serialised via ENV_MUTEX; restored at end of test.
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn is_stale_true_when_marker_older_than_ttl() {
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         // SAFETY: serialised via ENV_MUTEX; restored at end of test.
@@ -310,7 +310,7 @@ mod tests {
         // Exercises the real `effective_sources()` glue (not just the pure
         // `resolved_sources` helper) with a `RegistriesConfig` loaded from
         // disk, per the B2 Task 2 review follow-up.
-        let _guard = crate::core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         // SAFETY: serialised via ENV_MUTEX; restored at end of test.
