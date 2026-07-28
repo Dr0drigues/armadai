@@ -3205,10 +3205,56 @@ mod es_switch_tests {
         (capture, dyn_sink)
     }
 
+    /// Redirect `storage` at a throwaway temp DB for the scope of a test, so
+    /// the ES dispatch's persistence (`SqliteLog` via `crate::storage::init_db`)
+    /// never writes into the user's real event log (#267). Points
+    /// `ARMADAI_CONFIG_DIR` at a temp `config.yaml` whose `storage.path` is a
+    /// scratch sqlite file; serialised via `ENV_MUTEX` and restored on drop.
+    /// Mirrors the guard in `src/web/api.rs` tests.
+    struct TempStorageGuard {
+        _dir: tempfile::TempDir,
+        orig: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TempStorageGuard {
+        fn new() -> Self {
+            let lock = crate::core::config::ENV_MUTEX.lock().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("test.sqlite");
+            let config_yaml = format!(
+                "storage:\n  mode: embedded\n  path: \"{}\"\n",
+                db_path.display()
+            );
+            std::fs::write(dir.path().join("config.yaml"), config_yaml).unwrap();
+            let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+            // SAFETY: modifies the global environment; serialised via ENV_MUTEX.
+            unsafe {
+                std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
+            }
+            Self {
+                _dir: dir,
+                orig,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for TempStorageGuard {
+        fn drop(&mut self) {
+            match self.orig.take() {
+                // SAFETY: restoring original env state at end of test scope.
+                Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
+                None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
+            }
+        }
+    }
+
     // ── T5a: direct ──────────────────────────────────────────────────
 
     #[tokio::test]
     async fn direct_es_completes_with_content_tokens_and_observability() {
+        let _storage = TempStorageGuard::new();
         let (capture, sink) = capture_sink();
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
 
@@ -3253,6 +3299,7 @@ mod es_switch_tests {
     /// contract, which only dropped `agent_end` and kept `agent_start`.
     #[tokio::test]
     async fn direct_es_quiet_suppresses_all_intermediate_events() {
+        let _storage = TempStorageGuard::new();
         let (capture, sink) = capture_sink();
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
 
@@ -3285,6 +3332,7 @@ mod es_switch_tests {
     /// event and stdout `println!`) stays full-length.
     #[tokio::test]
     async fn direct_es_max_content_truncates_agent_end_content_only() {
+        let _storage = TempStorageGuard::new();
         let (capture, sink) = capture_sink();
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the full answer"]));
 
@@ -3319,6 +3367,7 @@ mod es_switch_tests {
     /// bridge, which emitted `prov: "", model: ""`.
     #[tokio::test]
     async fn direct_es_agent_start_carries_real_prov_model_and_real_end_content() {
+        let _storage = TempStorageGuard::new();
         let (capture, sink) = capture_sink();
         let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider::new(&["the answer"]));
 
@@ -3394,6 +3443,7 @@ mod es_switch_tests {
 
     #[tokio::test]
     async fn hierarchical_es_delegates_synthesizes_and_emits_observability() {
+        let _storage = TempStorageGuard::new();
         let (capture, sink) = capture_sink();
         let (agents, providers) = hierarchical_roster();
 
@@ -3436,6 +3486,7 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn hierarchical_es_result_is_recorded_via_record_hierarchical_into() {
+        let _storage = TempStorageGuard::new();
         use crate::storage::{init_embedded, queries};
 
         let (_capture, sink) = capture_sink();
@@ -3509,6 +3560,7 @@ mod es_switch_tests {
 
     #[tokio::test]
     async fn blackboard_es_converges_and_emits_board_observability() {
+        let _storage = TempStorageGuard::new();
         let (capture, sink) = capture_sink();
         let (agents, providers) = blackboard_roster();
 
@@ -3556,6 +3608,7 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn blackboard_es_state_is_recorded_via_record_blackboard_es_into() {
+        let _storage = TempStorageGuard::new();
         use crate::storage::{init_embedded, queries};
 
         let (_capture, sink) = capture_sink();
@@ -3849,6 +3902,7 @@ mod es_switch_tests {
 
     #[tokio::test]
     async fn ring_es_resolves_and_emits_vote_observability() {
+        let _storage = TempStorageGuard::new();
         let (capture, sink) = capture_sink();
         let (agents, providers) = ring_roster();
         let config = RingConfig {
@@ -3902,6 +3956,7 @@ mod es_switch_tests {
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn ring_es_state_is_recorded_via_record_ring_es_into() {
+        let _storage = TempStorageGuard::new();
         use crate::storage::{init_embedded, queries};
 
         let (_capture, sink) = capture_sink();
