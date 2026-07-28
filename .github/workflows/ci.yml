@@ -60,6 +60,20 @@ jobs:
       - run: cargo clippy --all-targets --no-default-features --features tui -- -D warnings
       - run: cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
       - run: cargo clippy --all-targets --no-default-features --features tui,web,storage -- -D warnings
+      # Workspace member crates lint their own test targets too (the bin
+      # clippy above compiles them as path deps but does not lint their
+      # `#[cfg(test)]` targets). armadai-providers needs `api` to cover its
+      # HTTP providers + model_registry online fetch.
+      - run: cargo clippy -p armadai-core --all-targets -- -D warnings
+      - run: cargo clippy -p armadai-secrets --all-targets -- -D warnings
+      - run: cargo clippy -p armadai-storage --all-targets -- -D warnings
+      # Lint armadai-providers in BOTH feature states: the `--features api`
+      # run below does not compile the `#[cfg(not(feature = "api"))]` fallbacks
+      # (stub `create_api_provider`, cache-only `load_models`), and the bin
+      # clippy compiles the crate as a path dep with `--cap-lints=allow`, so
+      # those branches would otherwise escape all linting.
+      - run: cargo clippy -p armadai-providers --all-targets -- -D warnings
+      - run: cargo clippy -p armadai-providers --all-targets --features api -- -D warnings
 
   test:
     name: Test
@@ -79,6 +93,15 @@ jobs:
       # tests/e2e/harness.rs `e2e_suite`), so its report ends up under
       # target/e2e-report/ for the next step to upload.
       - run: cargo test --no-default-features --features tui,storage
+      # Extracted workspace member crates are NOT covered by the root-package
+      # `cargo test` above (they live in crates/*, outside the bin package).
+      # Run their suites explicitly so armadai-core (domain + ES engine),
+      # armadai-providers (incl. the `api`-gated HTTP providers), armadai-storage
+      # and armadai-secrets stay exercised in CI after the OH7 extraction.
+      - run: cargo test -p armadai-core
+      - run: cargo test -p armadai-secrets
+      - run: cargo test -p armadai-storage
+      - run: cargo test -p armadai-providers --features api
       - name: Upload e2e report
         if: always()
         uses: actions/upload-artifact@v4
@@ -102,6 +125,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       # Build with storage (SQLite bundled) to verify full compilation.
       - run: cargo build --release --no-default-features --features tui,storage
+      # Portability guard (OH7): the reusable core must compile standalone,
+      # featureless, with no heavy deps (no reqwest/rusqlite/ratatui/axum) —
+      # this is what OH2/the Claude Code plugin will depend on. A dep leaking
+      # into core (e.g. via unintended feature unification) fails here.
+      - run: cargo build -p armadai-core
 
   commits:
     name: Conventional Commits
