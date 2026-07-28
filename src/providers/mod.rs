@@ -2,6 +2,7 @@
 pub mod api;
 pub mod cli;
 pub mod factory;
+pub mod json_runner;
 #[cfg(feature = "providers-api")]
 pub mod proxy;
 pub mod rate_limiter;

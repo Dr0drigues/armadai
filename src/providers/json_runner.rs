@@ -608,24 +608,27 @@ fn parse_jsonl_response(provider: &str, raw: &str) -> CliResponse {
     }
 }
 
-/// Text fallback for CLIs without JSON support.
-fn text_fallback(raw: &str) -> CliResponse {
-    let parsed = super::parser::parse_response(raw);
-    CliResponse {
-        content: parsed.content,
-        tokens_in: None,
-        tokens_out: None,
-        cost_usd: None,
-        duration_ms: None,
-        model: None,
-        session_id: None,
-        from_json: false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Test-only helper standing in for the (unreachable-in-production) plain-text
+    // fallback path: no CLI-JSON parsing applies, so the raw text passes through
+    // as-is. Production code never routes through this — providers without JSON
+    // support are already handled verbatim by `collect_text_from_jsonl`, and any
+    // ARMADAI-marker stripping happens downstream in `shell::parser`, not here.
+    fn plain_text_response(raw: &str) -> CliResponse {
+        CliResponse {
+            content: raw.to_string(),
+            tokens_in: None,
+            tokens_out: None,
+            cost_usd: None,
+            duration_ms: None,
+            model: None,
+            session_id: None,
+            from_json: false,
+        }
+    }
 
     // Test-only helpers to exercise the underlying parsers
     fn parse_json_response(provider: &str, raw: &str) -> CliResponse {
@@ -636,12 +639,12 @@ mod tests {
                 "codex" => parse_jsonl_response("codex", raw),
                 "copilot" => parse_jsonl_response("copilot", raw),
                 "opencode" => parse_jsonl_response("opencode", raw),
-                _ => text_fallback(raw),
+                _ => plain_text_response(raw),
             }
         } else if provider == "codex" || provider == "copilot" || provider == "opencode" {
             parse_jsonl_response(provider, raw)
         } else {
-            text_fallback(raw)
+            plain_text_response(raw)
         }
     }
 
