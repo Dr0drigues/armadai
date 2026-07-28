@@ -323,7 +323,7 @@ fn run_link(target: &str) -> Result<()> {
 
     let mut link_agents: Vec<crate::linker::LinkAgent> = Vec::new();
     for path in &paths {
-        match crate::parser::parse_agent_file(path) {
+        match crate::core::parser::parse_agent_file(path) {
             Ok(agent) => link_agents.push(crate::linker::LinkAgent::from(&agent)),
             Err(e) => eprintln!("  warn: failed to parse {}: {}", path.display(), e),
         }

@@ -169,7 +169,7 @@ pub fn validate_pack(pack_root: &Path) -> Vec<ValidationIssue> {
         {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "md") {
-                match crate::parser::parse_agent_file(&path) {
+                match crate::core::parser::parse_agent_file(&path) {
                     Ok(agent) => {
                         if let Some(triggers) = &agent.metadata.triggers {
                             let loc = format!(
@@ -325,7 +325,7 @@ pub fn validate_project_config(project_root: &Path) -> Vec<ValidationIssue> {
     // R6: Validate agent Triggers sections
     for agent_ref in &config.agents {
         if let Ok(agent_path) = super::project::resolve_agent(agent_ref, project_root) {
-            match crate::parser::parse_agent_file(&agent_path) {
+            match crate::core::parser::parse_agent_file(&agent_path) {
                 Ok(agent) => {
                     if let Some(triggers) = &agent.metadata.triggers {
                         let loc = format!(

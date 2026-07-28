@@ -472,7 +472,7 @@ async fn resume_run(
     > = std::collections::BTreeMap::new();
     for name in &state.agents {
         let agent_path = resolve_agent_path(&resolution, name)?;
-        let mut agent = crate::parser::parse_agent_file(&agent_path)?;
+        let mut agent = crate::core::parser::parse_agent_file(&agent_path)?;
         crate::core::model_aliases::resolve_model_deprecations(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
@@ -908,7 +908,7 @@ async fn run_single_agent(
     #[cfg(not(feature = "storage"))]
     let _ = project;
     // 1. Load agent
-    let mut agent = crate::parser::parse_agent_file(agent_path)?;
+    let mut agent = crate::core::parser::parse_agent_file(agent_path)?;
 
     // 1b. Resolve deprecated model aliases
     let model_before = agent.metadata.model.clone();
@@ -1289,7 +1289,7 @@ async fn run_single_agent_es(
     let _ = project;
 
     // 1. Load agent (mirrors `run_single_agent` steps 1-1c).
-    let mut agent = crate::parser::parse_agent_file(agent_path)?;
+    let mut agent = crate::core::parser::parse_agent_file(agent_path)?;
 
     let model_before = agent.metadata.model.clone();
     crate::core::model_aliases::resolve_model_deprecations(
@@ -1604,7 +1604,7 @@ async fn run_orchestrated(
 
     for name in agent_names {
         let agent_path = resolve_agent_path(resolution, name)?;
-        let mut agent = crate::parser::parse_agent_file(&agent_path)?;
+        let mut agent = crate::core::parser::parse_agent_file(&agent_path)?;
 
         let model_before = agent.metadata.model.clone();
         crate::core::model_aliases::resolve_model_deprecations(

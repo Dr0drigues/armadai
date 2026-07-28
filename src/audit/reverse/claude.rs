@@ -7,7 +7,7 @@ use super::{
     ImportedAgent, ImportedConfig, ImportedInstructions, ImportedSkill, ParseIssue,
     PartialMetadata, ReverseLinker,
 };
-use crate::parser::frontmatter::extract_frontmatter;
+use crate::core::parser::frontmatter::extract_frontmatter;
 
 /// Reads native Claude Code configuration surfaces.
 pub struct ClaudeReverseLinker;

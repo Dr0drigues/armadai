@@ -635,7 +635,7 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
         // text remains.
         for (a, slug) in owned.iter().zip(agent_slugs.iter()) {
             let file = out_dir.join("agents").join(format!("{slug}.md"));
-            match crate::parser::parse_agent_file(&file) {
+            match crate::core::parser::parse_agent_file(&file) {
                 Ok(parsed) => {
                     if parsed.system_prompt.trim().is_empty() && !a.system_prompt.trim().is_empty()
                     {
@@ -742,7 +742,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("x.md");
         std::fs::write(&f, &md).unwrap();
-        let parsed = crate::parser::parse_agent_file(&f).unwrap();
+        let parsed = crate::core::parser::parse_agent_file(&f).unwrap();
         assert!(parsed.system_prompt.contains("TAIL_MUST_SURVIVE"));
     }
 
@@ -758,7 +758,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("doc.md");
         std::fs::write(&file, &md).unwrap();
-        let parsed = crate::parser::parse_agent_file(&file).unwrap();
+        let parsed = crate::core::parser::parse_agent_file(&file).unwrap();
         assert_eq!(parsed.metadata.provider, "claude");
         assert!(parsed.system_prompt.contains("Does things."));
         assert!(parsed.system_prompt.contains("**Overview**"));
@@ -944,7 +944,8 @@ mod tests {
         // The generated agents parse with the real ArmadAI parser.
         for name in ["gate-a", "gate-b"] {
             let parsed =
-                crate::parser::parse_agent_file(&out.join(format!("agents/{name}.md"))).unwrap();
+                crate::core::parser::parse_agent_file(&out.join(format!("agents/{name}.md")))
+                    .unwrap();
             assert_eq!(parsed.metadata.provider, "claude");
         }
         // Shared block was factored out of the agents.
@@ -1011,7 +1012,7 @@ mod tests {
 
         let out = dir.path().join(".armadai-proposal");
         let parsed =
-            crate::parser::parse_agent_file(&out.join("agents/multiline-desc.md")).unwrap();
+            crate::core::parser::parse_agent_file(&out.join("agents/multiline-desc.md")).unwrap();
         assert_eq!(parsed.metadata.provider, "claude");
     }
 
@@ -1025,7 +1026,8 @@ mod tests {
         assert_eq!(summary.agents, 1);
 
         let out = dir.path().join(".armadai-proposal");
-        let parsed = crate::parser::parse_agent_file(&out.join("agents/setext-agent.md")).unwrap();
+        let parsed =
+            crate::core::parser::parse_agent_file(&out.join("agents/setext-agent.md")).unwrap();
         assert!(parsed.system_prompt.contains("SENTINEL_TAIL"));
     }
 
@@ -1045,7 +1047,8 @@ mod tests {
         assert_eq!(summary.agents, 2);
 
         let out = dir.path().join(".armadai-proposal");
-        let parsed = crate::parser::parse_agent_file(&out.join("agents/heading-agent.md")).unwrap();
+        let parsed =
+            crate::core::parser::parse_agent_file(&out.join("agents/heading-agent.md")).unwrap();
         assert!(parsed.system_prompt.contains("END_OF_PROMPT_TAIL"));
     }
 
@@ -1072,7 +1075,8 @@ mod tests {
         // Both generated agents parse and the shared block was stripped.
         for slug in ["gate-alpha", "gate-beta"] {
             let parsed =
-                crate::parser::parse_agent_file(&out.join(format!("agents/{slug}.md"))).unwrap();
+                crate::core::parser::parse_agent_file(&out.join(format!("agents/{slug}.md")))
+                    .unwrap();
             assert_eq!(parsed.metadata.provider, "claude");
         }
     }

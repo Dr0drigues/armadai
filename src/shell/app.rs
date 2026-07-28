@@ -1165,7 +1165,7 @@ async fn execute_pipeline_steps(
         {
             // Agent mode: load the agent from project config
             match resolve_project_agent(agent_name) {
-                Some(path) => match crate::parser::parse_agent_file(&path) {
+                Some(path) => match crate::core::parser::parse_agent_file(&path) {
                     Ok(agent) => {
                         let cmd = agent.metadata.provider.clone();
                         let args = super::detect::args_for_provider(&cmd);

@@ -130,7 +130,7 @@ impl Agent {
             if path.is_dir() {
                 Self::load_from_dir(&path, agents, skipped)?;
             } else if path.extension().is_some_and(|ext| ext == "md") {
-                match crate::parser::parse_agent_file(&path) {
+                match crate::core::parser::parse_agent_file(&path) {
                     Ok(agent) => agents.push(agent),
                     Err(e) => {
                         skipped.push(format!(

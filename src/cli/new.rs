@@ -669,7 +669,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test-agent.md");
         std::fs::write(&path, &md).unwrap();
-        let agent = crate::parser::parse_agent_file(&path).unwrap();
+        let agent = crate::core::parser::parse_agent_file(&path).unwrap();
         assert_eq!(agent.name, "Test Agent");
         assert_eq!(agent.metadata.provider, "claude");
     }

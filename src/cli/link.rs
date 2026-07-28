@@ -1,10 +1,10 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
+use crate::core::parser;
 use crate::core::project;
 use crate::linker::model_resolution::{self, TargetKind};
 use crate::linker::{self, LinkAgent};
-use crate::parser;
 
 pub async fn execute(
     target: Option<crate::linker::LinkTarget>,
