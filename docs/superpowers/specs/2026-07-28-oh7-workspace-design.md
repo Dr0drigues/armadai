@@ -155,6 +155,29 @@ vers `crates/armadai-core/`. Ajouter un `lib.rs` avec la façade `pub use`
 (Section « API publique »). Le bin et `armadai-providers` dépendent de core.
 Gros déplacement mais **mécanique** (core est déjà cycle-free).
 
+**Deux subtilités confirmées au cadrage (2026-07-28)** :
+
+1. **Repointage bidirectionnel des chemins** : dans le **bin** (≈50 fichiers),
+   `crate::core::X` → `armadai_core::X`. **À l'intérieur** du crate core, tous
+   les auto-références `crate::core::X` deviennent `crate::X` (vérifié : 100 %
+   des `use crate::` de core sont des `crate::core::`). Ordre : d'abord
+   `crate::core::`→`crate::` sur les fichiers déplacés, puis
+   `crate::core::`→`armadai_core::` sur le bin.
+2. **Assets embarqués dans core** (contredit l'hypothèse initiale « aucun asset
+   dans core ») : `core::skill` et `core::starter` font
+   `include_dir!("$CARGO_MANIFEST_DIR/skills")` et `.../starters`. Une fois core
+   sous `crates/armadai-core/`, `$CARGO_MANIFEST_DIR` = ce répertoire →
+   **Option A retenue** : `git mv skills/ starters/` **dans**
+   `crates/armadai-core/` (core auto-suffisant = but même d'OH7 pour OH2/plugin ;
+   l'alternative `../../skills` en dur casserait la portabilité du crate). La
+   résolution runtime (`env!("CARGO_MANIFEST_DIR")/starters`) suit le
+   déplacement ; les chemins CWD/projet (`./starters`, `.armadai/starters`) sont
+   inchangés. `web/ui/dist` (`include_dir!` dans `src/web`) reste bin-side.
+
+`core` est featureless natif (0 `#[cfg(feature)]`, 0 dep lourde). Deps du crate :
+`anyhow, thiserror, serde, serde_json, serde_yaml_ng, async-trait, futures-util,
+tokio, tokio-stream, pulldown-cmark, include_dir` (réconciliées au compilateur).
+
 ### Lot 4 — Extraire `armadai-providers`
 
 Déplacer `providers/*` (+ `json_runner` relocalisé + `factory` + `rate_limiter`
