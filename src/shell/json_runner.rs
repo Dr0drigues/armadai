@@ -178,7 +178,13 @@ fn parse_claude_stream_event(event_type: &str, json: &Value) -> StreamEvent {
                     .collect::<Vec<_>>()
                     .join("");
                 if !text.is_empty() {
-                    return StreamEvent::Delta(text);
+                    // Claude Code emits one COMPLETE assistant message per
+                    // `assistant` event (the full `message.content` array), not
+                    // token deltas — so this is a whole message. Returning
+                    // `Message` (not `Delta`) lets the accumulator separate
+                    // consecutive messages with a paragraph boundary instead of
+                    // gluing them (#293).
+                    return StreamEvent::Message(text);
                 }
             }
             StreamEvent::Ignored
@@ -662,6 +668,18 @@ mod tests {
         // Valid JSON for claude but no delta/message/result text events
         let jsonl = r#"{"type":"system","subtype":"init","session_id":"x","tools":[]}"#;
         assert_eq!(collect_text_from_jsonl("claude", jsonl), "");
+    }
+
+    #[test]
+    fn test_parse_claude_assistant_event_is_a_complete_message() {
+        // Claude Code emits one COMPLETE assistant message per `assistant`
+        // event, so it must parse as `Message` (which the accumulator
+        // paragraph-separates) — not `Delta` (concatenated verbatim). #293.
+        let line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"## Synthèse\"}]}}";
+        match parse_stream_event("claude", line) {
+            StreamEvent::Message(t) => assert_eq!(t, "## Synthèse"),
+            other => panic!("expected Message, got {other:?}"),
+        }
     }
 
     #[test]

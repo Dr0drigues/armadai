@@ -630,7 +630,7 @@ async fn event_loop(
                         }
                         StreamEvent::Message(text) => {
                             app.workroom.apply_stream_text(&text);
-                            app.append_to_streaming(&text);
+                            app.append_message_block(&text);
                             got_data = true;
                         }
                         StreamEvent::Result(resp) => {
@@ -661,8 +661,11 @@ async fn event_loop(
                     if is_json_mode {
                         use super::json_runner::{StreamEvent, parse_stream_event};
                         match parse_stream_event(&cmd, &line) {
-                            StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                            StreamEvent::Delta(text) => {
                                 app.append_to_streaming(&text);
+                            }
+                            StreamEvent::Message(text) => {
+                                app.append_message_block(&text);
                             }
                             StreamEvent::Result(resp) => {
                                 result_event = Some(resp);
@@ -947,7 +950,7 @@ async fn execute_tandem(
                         }
                         StreamEvent::Message(text) => {
                             app.workroom.apply_stream_text(&text);
-                            app.append_to_tandem_stream(&stream.stream_id, &text);
+                            app.append_to_tandem_stream_block(&stream.stream_id, &text);
                             got_data = true;
                         }
                         StreamEvent::Result(resp) => {
@@ -1009,8 +1012,11 @@ async fn execute_tandem(
             if is_json_mode {
                 use super::json_runner::{StreamEvent, parse_stream_event};
                 match parse_stream_event(&stream.cmd, &line) {
-                    StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                    StreamEvent::Delta(text) => {
                         app.append_to_tandem_stream(&stream.stream_id, &text);
+                    }
+                    StreamEvent::Message(text) => {
+                        app.append_to_tandem_stream_block(&stream.stream_id, &text);
                     }
                     StreamEvent::Result(resp) => {
                         stream.result_event = Some(resp);
@@ -1333,7 +1339,7 @@ async fn execute_pipeline_steps(
                         }
                         StreamEvent::Message(text) => {
                             app.workroom.apply_stream_text(&text);
-                            app.append_to_streaming(&text);
+                            app.append_message_block(&text);
                             got_data = true;
                         }
                         StreamEvent::Result(resp) => {
@@ -1366,8 +1372,11 @@ async fn execute_pipeline_steps(
                         if is_json_mode {
                             use super::json_runner::{StreamEvent, parse_stream_event};
                             match parse_stream_event(&resolved.cmd, &line) {
-                                StreamEvent::Delta(text) | StreamEvent::Message(text) => {
+                                StreamEvent::Delta(text) => {
                                     app.append_to_streaming(&text);
+                                }
+                                StreamEvent::Message(text) => {
+                                    app.append_message_block(&text);
                                 }
                                 StreamEvent::Result(resp) => {
                                     step_result_event = Some(resp);
