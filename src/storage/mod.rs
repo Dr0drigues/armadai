@@ -1,3 +1,5 @@
+#[cfg(feature = "storage")]
+pub mod es_log;
 pub mod queries;
 pub mod schema;
 

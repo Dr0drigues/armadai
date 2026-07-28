@@ -28,9 +28,6 @@ pub use engine::{
 };
 #[allow(unused_imports)]
 pub use event::ExecutionEvent;
-#[cfg(feature = "storage")]
-#[allow(unused_imports)]
-pub use log::SqliteLog;
 #[allow(unused_imports)]
 pub use log::{EventLog, InMemoryLog};
 #[allow(unused_imports)]

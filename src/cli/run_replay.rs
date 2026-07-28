@@ -88,7 +88,7 @@ pub async fn replay_run(
     sink: &Arc<dyn EventSink>,
     human_output: bool,
 ) -> anyhow::Result<()> {
-    use crate::core::orchestration::es::log::SqliteLog;
+    use crate::storage::es_log::SqliteLog;
 
     let db = crate::storage::init_db()?;
     let log = SqliteLog::new(db);
