@@ -7,7 +7,7 @@ repository.workspace = true
 description = "ArmadAI — SOPS + age encrypted provider secrets loader."
 
 [dependencies]
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-serde_yaml_ng = "0.10"
-tracing = "0.1"
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tracing = { workspace = true }

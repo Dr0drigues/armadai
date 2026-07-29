@@ -29,15 +29,15 @@ armadai-secrets = { path = "../armadai-secrets" }
 armadai-storage = { path = "../armadai-storage", optional = true }
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["io-util"] }
-async-trait = "0.1"
-futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+tokio = { workspace = true, features = ["full"] }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
-dialoguer = { version = "0.12", features = ["fuzzy-select"] }
+dialoguer = { workspace = true, features = ["fuzzy-select"] }
 
 # TUI (optional — enable with `tui` feature)
 ratatui = { version = "0.30", optional = true }
@@ -45,37 +45,37 @@ crossterm = { version = "0.29", optional = true }
 unicode-width = { version = "0.2", optional = true }
 
 # HTTP client (optional — enable with `providers-api` feature)
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"], optional = true }
+reqwest = { workspace = true, optional = true }
 
 # HTTP server (optional — enable with `web` feature)
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.7", features = ["cors"], optional = true }
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml_ng = "0.10"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
 
 # Database (optional — enable with `storage` feature)
-rusqlite = { version = "0.40", features = ["bundled"], optional = true }
+rusqlite = { workspace = true, optional = true }
 
 # Markdown parsing
-pulldown-cmark = "0.13"
+pulldown-cmark = { workspace = true }
 
 # Logging
-tracing = "0.1"
+tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
-anyhow = "1"
-thiserror = "2"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 # Embedded assets
-include_dir = "0.7"
+include_dir = { workspace = true }
 
 # Utils
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 # PTY support (for interactive shell mode)
 portable-pty = { version = "0.8", optional = true }
@@ -88,4 +88,4 @@ anstream = "1.0.0"
 armadai-core = { path = "../armadai-core", features = ["test-support"] }
 assert_cmd = "2.2.2"
 schemars = "1.2.1"
-tempfile = "3"
+tempfile = { workspace = true }

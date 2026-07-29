@@ -12,15 +12,15 @@ api = ["dep:reqwest", "dep:armadai-secrets"]
 [dependencies]
 armadai-core = { path = "../armadai-core" }
 armadai-secrets = { path = "../armadai-secrets", optional = true }
-anyhow = "1"
-async-trait = "0.1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
-tokio = { version = "1", features = ["process", "io-util", "time", "macros", "rt", "rt-multi-thread", "sync"] }
-tokio-stream = { version = "0.1", features = ["io-util"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"], optional = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util", "time", "macros", "rt", "rt-multi-thread", "sync"] }
+tokio-stream = { workspace = true }
+reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 armadai-core = { path = "../armadai-core", features = ["test-support"] }
-tempfile = "3"
+tempfile = { workspace = true }
