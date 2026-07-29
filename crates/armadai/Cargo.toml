@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "ArmadAI — AI agent orchestrator. Define, manage and run specialized agents from Markdown files."
+# This package ships two bins (armadai + fake-claude); default `cargo run` to the main one.
+default-run = "armadai"
 
 [[bin]]
 name = "armadai"
