@@ -1,0 +1,13 @@
+{
+  "name": "armadai",
+  "description": "ArmadAI plugins for Claude Code — surface Claude Code sessions in the ArmadAI Workroom.",
+  "owner": { "name": "ArmadAI" },
+  "plugins": [
+    {
+      "name": "armadai-workroom",
+      "source": "./armadai-workroom",
+      "description": "Registers Claude Code sessions so `armadai watch` can visualize them in the ArmadAI Workroom.",
+      "version": "0.1.0"
+    }
+  ]
+}
