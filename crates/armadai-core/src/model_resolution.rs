@@ -106,7 +106,7 @@ fn load_cached_model_ids(provider: &str) -> Option<Vec<String>> {
         providers: std::collections::HashMap<String, Vec<CachedEntry>>,
     }
 
-    let path = crate::config::config_dir().join("models-cache.json");
+    let path = crate::config::config_dir().join(crate::config::MODELS_CACHE_FILE);
     let content = std::fs::read_to_string(path).ok()?;
     let cached: CachedRegistry = serde_json::from_str(&content).ok()?;
     let entries = cached.providers.get(provider)?;

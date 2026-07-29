@@ -85,6 +85,7 @@ anstyle = "1.0.14"
 anstream = "1.0.0"
 
 [dev-dependencies]
+armadai-core = { path = "../armadai-core", features = ["test-support"] }
 assert_cmd = "2.2.2"
 schemars = "1.2.1"
 tempfile = "3"

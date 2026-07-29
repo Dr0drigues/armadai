@@ -44,6 +44,11 @@ pub fn config_dir() -> PathBuf {
     config_base.join("armadai")
 }
 
+/// Filename of the shared models.dev catalogue cache under the config dir.
+/// Written by `armadai-providers`' model_registry; read (for IDs) by
+/// `core::model_resolution`. Single source of truth for the two readers.
+pub const MODELS_CACHE_FILE: &str = "models-cache.json";
+
 /// Return the ArmadAI data root directory (for persistent storage, e.g. SQLite).
 ///
 /// Resolution order:
@@ -446,16 +451,12 @@ providers:
 
 /// Global mutex to serialise tests that mutate `ARMADAI_CONFIG_DIR`.
 ///
-/// Any test in any module — in this crate or in downstream crates (the
-/// `armadai` bin's tests reach into this via `armadai_core::config::ENV_MUTEX`)
-/// — that calls `std::env::set_var("ARMADAI_CONFIG_DIR", …)` must hold this
-/// lock for the duration of the test to avoid data races when the test suite
-/// runs with multiple threads (the default).
-///
-/// Not `#[cfg(test)]`-gated: a downstream crate's test build compiles this
-/// crate as an ordinary (non-test) dependency, so a test-only item here
-/// would be invisible to it. The cost of always compiling one static
-/// `Mutex<()>` is negligible.
+/// Test-only. Exposed behind the `test-support` feature (and `cfg(test)` for
+/// this crate's own tests) so downstream crates can serialise their env-var
+/// tests against the same lock — a downstream test build enables
+/// `armadai-core/test-support` via its `[dev-dependencies]`. It is NOT part of
+/// the production public API (absent unless a test build pulls it in).
+#[cfg(any(test, feature = "test-support"))]
 pub static ENV_MUTEX: std::sync::LazyLock<std::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
