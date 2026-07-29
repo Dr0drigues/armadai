@@ -497,6 +497,7 @@ impl Workroom {
                 self.visible = true;
             }
             RunEvent::AgentStart { agent, .. } => {
+                self.ensure_agent(agent);
                 self.mark_working(agent, now);
                 // The ES ring/blackboard engines emit agent_start/agent_end/vote
                 // but never `Delegate`, so `current_agent` (which drives the
@@ -506,6 +507,7 @@ impl Workroom {
                 self.current_agent = Some(agent.clone());
             }
             RunEvent::AgentEnd { agent, content, .. } => {
+                self.ensure_agent(agent);
                 self.mark_done(agent, now);
                 let first = content.lines().next().unwrap_or("").trim();
                 if !first.is_empty() {
@@ -513,6 +515,7 @@ impl Workroom {
                 }
             }
             RunEvent::Delegate { from, to } => {
+                self.ensure_agent(to);
                 self.transition(from, AgentState::Delegating, now);
                 self.current_agent = Some(to.clone());
             }
@@ -541,6 +544,25 @@ impl Workroom {
                 }
             }
             RunEvent::Warning { .. } => {}
+        }
+    }
+
+    /// Ensure an agent node exists (role Agent for dynamically-appearing agents,
+    /// e.g. subagents delegated during an `armadai watch` run where no config
+    /// pre-seeded the roster). No-op if the agent already exists (its role is
+    /// preserved — the config path is unaffected).
+    fn ensure_agent(&mut self, name: &str) {
+        if !self.agents.iter().any(|a| a.name == name) {
+            self.agents.push(TrackedAgent {
+                name: name.to_string(),
+                state: AgentState::Idle,
+                role: AgentRole::Agent,
+                started_at: None,
+                finished_at: None,
+                spinner_frame: 0,
+                last_action: None,
+                transitions: Vec::new(),
+            });
         }
     }
 
@@ -1056,6 +1078,67 @@ mod tests {
         let mut wr = Workroom::new();
         wr.init_from_config(config);
         wr
+    }
+
+    #[test]
+    fn dynamically_delegated_agents_become_nodes() {
+        use armadai_core::events::RunEvent;
+        let t = std::time::Instant::now();
+        let mut wr = Workroom::new();
+        // watch-style: RunStart seeds only the root.
+        wr.on_run_event_at(
+            &RunEvent::RunStart {
+                run_id: "r".into(),
+                v: 1,
+                agents: vec!["claude".into()],
+                prov: "claude".into(),
+                model: "m".into(),
+                in_chars: 0,
+            },
+            t,
+        );
+        assert_eq!(wr.agents.len(), 1);
+        // A delegation to an unknown agent must create its node.
+        wr.on_run_event_at(
+            &RunEvent::Delegate {
+                from: "claude".into(),
+                to: "core-specialist".into(),
+            },
+            t,
+        );
+        wr.on_run_event_at(
+            &RunEvent::AgentStart {
+                agent: "core-specialist".into(),
+                prov: "claude".into(),
+                model: "m".into(),
+            },
+            t,
+        );
+        assert!(
+            wr.agents.iter().any(|a| a.name == "core-specialist"),
+            "delegated subagent should appear as a node"
+        );
+        // AgentStart for another unknown agent also creates it.
+        wr.on_run_event_at(
+            &RunEvent::AgentStart {
+                agent: "qa-specialist".into(),
+                prov: "claude".into(),
+                model: "m".into(),
+            },
+            t,
+        );
+        assert_eq!(
+            wr.agents.len(),
+            3,
+            "claude + core-specialist + qa-specialist"
+        );
+        // New nodes are role Agent (indented under a coordinator in the tree).
+        let core = wr
+            .agents
+            .iter()
+            .find(|a| a.name == "core-specialist")
+            .unwrap();
+        assert_eq!(core.role, AgentRole::Agent);
     }
 
     #[test]
