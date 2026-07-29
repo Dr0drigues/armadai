@@ -5,7 +5,7 @@ use armadai_core::config::config_dir;
 
 use super::ModelEntry;
 
-const CACHE_FILE: &str = "models-cache.json";
+const CACHE_FILE: &str = armadai_core::config::MODELS_CACHE_FILE;
 // Only the refetch decision (load_cache_from, online path) consults the TTL;
 // the cache-only display loaders ignore age. Gated to where it's used so
 // non-providers-api builds don't flag it dead.

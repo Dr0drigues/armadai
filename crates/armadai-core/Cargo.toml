@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 description = "ArmadAI — reusable orchestration core: domain types, Provider/EventLog traits, parser, event-sourced engine."
 
+[features]
+test-support = []
+
 [dependencies]
 anyhow = "1"
 thiserror = "2"

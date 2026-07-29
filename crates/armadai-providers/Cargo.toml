@@ -22,4 +22,5 @@ tokio-stream = { version = "0.1", features = ["io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"], optional = true }
 
 [dev-dependencies]
+armadai-core = { path = "../armadai-core", features = ["test-support"] }
 tempfile = "3"
