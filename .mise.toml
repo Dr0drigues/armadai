@@ -1,0 +1,49 @@
+# mise — pinned toolchain + minimal dev tasks for the ArmadAI workspace.
+# https://mise.jdx.dev  ·  run `mise install` to get the tools, `mise tasks` to list.
+# Versions are intentionally conservative; bump them here as the project moves.
+
+[tools]
+rust = "1.97.1"   # workspace toolchain (edition 2024 needs >= 1.85)
+node = "24"       # builds the Svelte web UI (crates/armadai/web/ui)
+python = "3.12"   # commitizen, for the Conventional Commits check
+
+[tasks.fmt]
+description = "Format all crates"
+run = "cargo fmt --all"
+
+[tasks.fmt-check]
+description = "Check formatting (CI parity)"
+run = "cargo fmt --all -- --check"
+
+[tasks.clippy]
+description = "Clippy over the feature-combo matrix (workspace-wide, -D warnings)"
+run = [
+  "cargo clippy --all-targets --no-default-features --features tui -- -D warnings",
+  "cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings",
+  "cargo clippy --all-targets --no-default-features --features tui,web,storage -- -D warnings",
+]
+
+[tasks.test]
+description = "Test the workspace across the gated feature modes"
+run = [
+  "cargo test --no-default-features --features tui",
+  "cargo test --no-default-features --features tui,storage",
+  "cargo test --no-default-features --features tui,providers-api",
+]
+
+[tasks.build]
+description = "Release build (full binary: tui + storage)"
+run = "cargo build --release --no-default-features --features tui,storage"
+
+[tasks.core-build]
+description = "Portability guard: armadai-core builds standalone, featureless, no heavy deps"
+run = "cargo build -p armadai-core"
+
+[tasks.web]
+description = "Build the Svelte web UI into crates/armadai/web/ui/dist"
+dir = "crates/armadai/web/ui"
+run = ["npm ci", "npm run build"]
+
+[tasks.ci]
+description = "Full local gate — mirrors the CI pipeline"
+depends = ["fmt-check", "clippy", "test", "build", "core-build"]
