@@ -10,19 +10,19 @@ description = "ArmadAI — reusable orchestration core: domain types, Provider/E
 test-support = []
 
 [dependencies]
-anyhow = "1"
-thiserror = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml_ng = "0.10"
-async-trait = "0.1"
-futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
-tokio = { version = "1", features = ["time", "macros", "rt", "rt-multi-thread", "sync"] }
-tokio-stream = { version = "0.1", features = ["io-util"] }
-pulldown-cmark = "0.13"
-include_dir = "0.7"
-tracing = "0.1"
-dialoguer = "0.12"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["time", "macros", "rt", "rt-multi-thread", "sync"] }
+tokio-stream = { workspace = true }
+pulldown-cmark = { workspace = true }
+include_dir = { workspace = true }
+tracing = { workspace = true }
+dialoguer = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
