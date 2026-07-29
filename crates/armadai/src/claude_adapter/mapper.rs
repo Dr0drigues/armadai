@@ -59,6 +59,9 @@ impl Mapper {
                 model,
                 blocks,
                 usage,
+                // Turn-completion signal; consumed by the follow-mode driver,
+                // not the mapper.
+                stop_reason: _,
             } => {
                 if !self.started {
                     self.started = true;
@@ -165,6 +168,7 @@ mod tests {
                 input_tokens: tin,
                 output_tokens: tout,
             },
+            stop_reason: None,
         }
     }
 

@@ -13,42 +13,58 @@ use session_index::SessionRef;
 /// Poll interval between reads of the tailed transcript in follow mode.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
 
-/// Consecutive idle polls (no new complete line read) in follow mode before
-/// we finalize the session. `mapper.push` never itself returns a terminal
-/// `Result` — only `mapper.finish()` does — so live/follow mode has no
-/// "natural" end signal from the transcript alone. Anthropic transcripts
-/// don't expose a reliable turn-level "session is over" marker at this
-/// layer, so we use the heuristic from the P1 design: treat "absence de
-/// croissance prolongée" (no growth for a while) as the end of the session.
-/// stop_reason-based finalization (a real terminal signal) is deferred to
-/// P2.
-const IDLE_FINALIZE_POLLS: u32 = 25; // ~5s of no growth at POLL_INTERVAL=200ms
+/// Abandonment safety net, NOT the normal completion path. In follow mode we
+/// finalize a turn on its terminal `stop_reason` (see [`is_terminal_stop`]);
+/// while the last assistant message is still `tool_use` (or has no
+/// stop_reason yet) we keep polling no matter how long the tool/subagent
+/// takes — Bash/WebFetch/subagents routinely run for minutes with no
+/// transcript growth, and an idle-timer finalize there would fake a `Result`
+/// and stop following mid-run. This large fallback only guards against a
+/// truly-abandoned, never-completed session so `drive_session` can't hang
+/// forever; it should essentially never fire on a healthy transcript.
+const IDLE_ABANDON_POLLS: u32 = 900; // ~3 min of no growth at POLL_INTERVAL=200ms
+
+/// A turn is genuinely complete only when the last top-level assistant
+/// message carries a TERMINAL `stop_reason`. `"tool_use"` means Claude is
+/// waiting on tool/subagent results (keep following); `None` means "still
+/// going" (absent/null stop_reason). Anything else terminal → the turn ended.
+fn is_terminal_stop(sr: &Option<String>) -> bool {
+    matches!(
+        sr.as_deref(),
+        Some("end_turn") | Some("stop_sequence") | Some("max_tokens")
+    )
+}
 
 /// Read `session`'s transcript and emit reconstructed `RunEvent`s to `sink`.
 /// `follow=false` → replay to EOF then `finish()`. `follow=true` → after EOF,
-/// keep polling appended bytes, finalizing (`finish()`) once
-/// [`IDLE_FINALIZE_POLLS`] consecutive polls read no new complete line.
+/// keep polling appended bytes, finalizing (`finish()`) once the last
+/// assistant message reports a terminal `stop_reason` (see
+/// [`is_terminal_stop`]); [`IDLE_ABANDON_POLLS`] is only an abandonment
+/// safety net for a session that never completes.
 pub async fn drive_session(
     session: SessionRef,
     sink: Arc<dyn EventSink>,
     follow: bool,
 ) -> anyhow::Result<()> {
-    drive_session_tuned(session, sink, follow, POLL_INTERVAL, IDLE_FINALIZE_POLLS).await
+    drive_session_tuned(session, sink, follow, POLL_INTERVAL, IDLE_ABANDON_POLLS).await
 }
 
-/// Same as [`drive_session`] but with the poll interval and idle-finalize
-/// threshold as parameters, so tests can drive the follow-mode finalization
-/// path without waiting on real-world timings.
+/// Same as [`drive_session`] but with the poll interval and the abandonment
+/// fallback threshold as parameters, so tests can drive both the
+/// terminal-`stop_reason` finalization path and the keep-polling path without
+/// waiting on real-world timings.
 async fn drive_session_tuned(
     session: SessionRef,
     sink: Arc<dyn EventSink>,
     follow: bool,
     poll_interval: std::time::Duration,
-    idle_finalize_polls: u32,
+    idle_abandon_polls: u32,
 ) -> anyhow::Result<()> {
     let mut mapper = Mapper::new(&session.session_id);
     let mut offset: u64 = 0;
     let mut idle_polls: u32 = 0;
+    // Terminal signal from the LAST top-level assistant message seen so far.
+    let mut last_stop_reason: Option<String> = None;
     loop {
         let file = match std::fs::File::open(&session.transcript_path) {
             Ok(f) => f,
@@ -80,6 +96,12 @@ async fn drive_session_tuned(
             consumed += n as u64;
             lines_read += 1;
             if let Some(entry) = transcript::parse_line(&line) {
+                // Capture the turn-completion signal from the latest assistant
+                // message before handing the entry to the mapper (which moves
+                // it and does not need stop_reason).
+                if let transcript::RelevantEntry::Assistant { stop_reason, .. } = &entry {
+                    last_stop_reason = stop_reason.clone();
+                }
                 for ev in mapper.push(entry) {
                     sink.emit(&ev);
                 }
@@ -93,10 +115,23 @@ async fn drive_session_tuned(
             return Ok(());
         }
         if lines_read > 0 {
+            // The transcript grew this poll — reset the abandonment counter.
             idle_polls = 0;
         } else {
+            // EOF: no new complete line this poll. Finalize on a genuine
+            // terminal signal; keep polling while `tool_use`/`None` means the
+            // turn is still in progress (a slow Bash/WebFetch/subagent).
+            if is_terminal_stop(&last_stop_reason) {
+                for ev in mapper.finish() {
+                    sink.emit(&ev);
+                }
+                return Ok(());
+            }
             idle_polls += 1;
-            if idle_polls >= idle_finalize_polls {
+            if idle_polls >= idle_abandon_polls {
+                // Abandonment safety net (see IDLE_ABANDON_POLLS): the session
+                // never reached a terminal stop_reason — finalize anyway so we
+                // don't poll a dead transcript forever.
                 for ev in mapper.finish() {
                     sink.emit(&ev);
                 }
@@ -189,20 +224,22 @@ mod tests {
         );
     }
 
-    /// I1: in follow mode, `mapper.push` never itself yields a terminal
-    /// `Result` (only `finish()` does), so the session must be finalized by
-    /// the idle-poll heuristic — otherwise `drive_session` would poll
-    /// forever against a transcript that will never grow again. Drive a
-    /// small, already-complete transcript with `follow=true` and a tiny
-    /// interval/threshold: it must still emit a `Result` and RETURN.
+    /// In follow mode, `mapper.push` never itself yields a terminal `Result`
+    /// (only `finish()` does). Finalization happens on the transcript's
+    /// terminal signal: the last assistant message's `stop_reason` is
+    /// `"end_turn"`. Drive an already-complete transcript with `follow=true`,
+    /// a tiny poll interval, and a DELIBERATELY HUGE abandonment threshold —
+    /// so the fact that it still finalizes promptly proves it went through the
+    /// terminal-`stop_reason` path (the first idle poll), NOT the idle
+    /// fallback. A timeout guards against a regression that would hang.
     #[tokio::test]
-    async fn drive_session_follow_mode_finalizes_after_idle_polls() {
+    async fn drive_session_follow_mode_finalizes_on_terminal_stop_reason() {
         let dir = tempfile::tempdir().unwrap();
         let tp = dir.path().join("t.jsonl");
         std::fs::write(
             &tp,
             concat!(
-                r#"{"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"done talking"}],"usage":{"input_tokens":3,"output_tokens":2}}}"#,
+                r#"{"type":"assistant","message":{"model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"done talking"}],"usage":{"input_tokens":3,"output_tokens":2}}}"#,
                 "\n",
             ),
         )
@@ -215,21 +252,80 @@ mod tests {
         };
         let store = Arc::new(Mutex::new(Vec::new()));
         let sink: Arc<dyn armadai_core::events::EventSink> = Arc::new(CapSink(store.clone()));
-        // Tiny interval + threshold so the test stays fast: at most a couple
-        // of milliseconds of idle polling before finalization kicks in.
-        drive_session_tuned(
-            session,
-            sink,
-            /* follow = */ true,
-            std::time::Duration::from_millis(1),
-            /* idle_finalize_polls = */ 2,
+        // Huge abandon threshold: if finalization depended on the idle
+        // fallback the test would run ~minutes and the timeout would trip.
+        // The terminal `stop_reason` must fire on the first idle poll instead.
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            drive_session_tuned(
+                session,
+                sink,
+                /* follow = */ true,
+                std::time::Duration::from_millis(1),
+                /* idle_abandon_polls = */ 1_000_000,
+            ),
         )
-        .await
-        .unwrap();
+        .await;
+        assert!(
+            res.is_ok(),
+            "must finalize via terminal stop_reason, not hang on the idle fallback"
+        );
+        res.unwrap().unwrap();
         let evs = store.lock().unwrap();
         assert!(
             matches!(evs.last().unwrap(), RunEvent::Result { content, .. } if content == "done talking"),
-            "follow mode must finalize (emit Result) once idle, not hang: {evs:?}"
+            "terminal stop_reason must finalize (emit Result): {evs:?}"
+        );
+    }
+
+    /// The whole point of the P2 fix: while the last assistant message's
+    /// `stop_reason` is `"tool_use"` (Claude is waiting on a tool/subagent
+    /// that may run for minutes with no transcript growth), follow mode must
+    /// NOT finalize on idle — it must keep polling. We prove it by setting the
+    /// abandon threshold absurdly high and asserting the call is STILL running
+    /// (times out) with NO `Result` emitted after a short bounded window.
+    #[tokio::test]
+    async fn drive_session_follow_mode_keeps_polling_while_tool_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let tp = dir.path().join("t.jsonl");
+        std::fs::write(
+            &tp,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"m","stop_reason":"tool_use","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"sleep 600"}}],"usage":{"input_tokens":3,"output_tokens":2}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let session = session_index::SessionRef {
+            session_id: "s-tooluse".into(),
+            transcript_path: tp,
+            cwd: "/c".into(),
+            started_at: "t".into(),
+        };
+        let store = Arc::new(Mutex::new(Vec::new()));
+        let sink: Arc<dyn armadai_core::events::EventSink> = Arc::new(CapSink(store.clone()));
+        // High abandon threshold so ONLY a (wrongly implemented) terminal
+        // finalize could end it. The call must still be polling after the
+        // window → timeout Err.
+        let res = tokio::time::timeout(
+            std::time::Duration::from_millis(150),
+            drive_session_tuned(
+                session,
+                sink,
+                /* follow = */ true,
+                std::time::Duration::from_millis(1),
+                /* idle_abandon_polls = */ 1_000_000,
+            ),
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "follow mode must keep polling while stop_reason is tool_use, not finalize"
+        );
+        let evs = store.lock().unwrap();
+        assert!(
+            !evs.iter().any(|e| matches!(e, RunEvent::Result { .. })),
+            "no Result may be emitted while the turn is still tool_use: {evs:?}"
         );
     }
 

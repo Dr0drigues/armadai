@@ -31,6 +31,10 @@ pub enum RelevantEntry {
         model: String,
         blocks: Vec<Block>,
         usage: Usage,
+        /// The assistant message's `stop_reason` (`"end_turn"`, `"tool_use"`,
+        /// `"stop_sequence"`, `"max_tokens"`, …). `None` if absent or JSON
+        /// null — which the follow-mode driver treats as "still going".
+        stop_reason: Option<String>,
     },
     /// Anthropic batches ALL `tool_result` blocks for a turn into a single
     /// `user` message (e.g. parallel `Agent` spawns resolving together), so
@@ -61,6 +65,12 @@ fn parse_assistant(msg: &Value) -> Option<RelevantEntry> {
         .unwrap_or("")
         .to_string();
     let usage = msg.get("usage").map(parse_usage).unwrap_or_default();
+    // `None` when absent or JSON null (`as_str` yields `None` for null) — the
+    // driver reads that as "turn still in progress".
+    let stop_reason = msg
+        .get("stop_reason")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let mut blocks = Vec::new();
     for b in msg
         .get("content")
@@ -99,6 +109,7 @@ fn parse_assistant(msg: &Value) -> Option<RelevantEntry> {
         model,
         blocks,
         usage,
+        stop_reason,
     })
 }
 
@@ -169,11 +180,36 @@ mod tests {
                 model,
                 blocks,
                 usage,
+                stop_reason,
             } => {
                 assert_eq!(model, "claude-x");
                 assert_eq!(usage.input_tokens, 10);
                 assert_eq!(usage.output_tokens, 5);
                 assert!(matches!(blocks.as_slice(), [Block::Text(t)] if t == "hello"));
+                // Absent in this line → None.
+                assert_eq!(stop_reason, None);
+            }
+            _ => panic!("expected Assistant"),
+        }
+    }
+
+    #[test]
+    fn parses_assistant_stop_reason_when_present() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"bye"}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
+        match parse_line(line).unwrap() {
+            RelevantEntry::Assistant { stop_reason, .. } => {
+                assert_eq!(stop_reason.as_deref(), Some("end_turn"));
+            }
+            _ => panic!("expected Assistant"),
+        }
+    }
+
+    #[test]
+    fn parses_assistant_null_stop_reason_as_none() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":null,"content":[{"type":"text","text":"mid"}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
+        match parse_line(line).unwrap() {
+            RelevantEntry::Assistant { stop_reason, .. } => {
+                assert_eq!(stop_reason, None, "JSON null stop_reason must map to None");
             }
             _ => panic!("expected Assistant"),
         }
