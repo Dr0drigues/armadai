@@ -477,6 +477,10 @@ pub enum Command {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Internal: called by the Claude Code plugin's SessionStart hook. Reads
+    /// the hook JSON from stdin and registers the session. Hidden from help.
+    #[command(hide = true, name = "__claude-register-session")]
+    ClaudeRegisterSession,
 }
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
@@ -608,5 +612,6 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Command::ClaudeRegisterSession => crate::claude_adapter::register_from_stdin(),
     }
 }
