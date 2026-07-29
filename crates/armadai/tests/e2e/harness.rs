@@ -293,10 +293,13 @@ pub fn discover_cases(dir: &str) -> Vec<CaseFile> {
 }
 
 /// Directory the e2e suite writes its `e2e-report.{json,html}` artifacts to
-/// (created if missing). Kept under `target/` so it's ignored by git and already
-/// present for CI's `actions/upload-artifact` step to pick up.
+/// (created if missing). Kept under the workspace-level `target/` so it's
+/// ignored by git and already present for CI's `actions/upload-artifact` step
+/// to pick up. `CARGO_MANIFEST_DIR` is this crate's dir (`crates/armadai/`),
+/// two levels below the workspace root where the shared `target/` actually
+/// lives — go up to reach it rather than creating a stray per-crate one.
 pub fn report_dir() -> std::path::PathBuf {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/e2e-report");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/e2e-report");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }

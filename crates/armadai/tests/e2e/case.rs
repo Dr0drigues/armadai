@@ -245,7 +245,9 @@ expect: { exit_code: 0 }
     fn emit_schema() {
         let schema = case_json_schema();
         assert!(schema.contains("\"CaseFile\""));
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/e2e-case.schema.json");
+        // `docs/` lives at the workspace root, two levels above this crate
+        // (`crates/armadai/`), not under `CARGO_MANIFEST_DIR` itself.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/e2e-case.schema.json");
         std::fs::write(path, schema).unwrap();
     }
 }

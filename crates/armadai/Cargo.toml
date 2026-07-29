@@ -1,0 +1,90 @@
+[package]
+name = "armadai"
+version = "1.0.0-rc.5"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ArmadAI — AI agent orchestrator. Define, manage and run specialized agents from Markdown files."
+
+[[bin]]
+name = "armadai"
+path = "src/main.rs"
+
+[[bin]]
+name = "fake-claude"
+path = "src/bin/fake-claude.rs"
+
+[features]
+default = ["tui", "web", "storage", "providers-api"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:portable-pty", "dep:strip-ansi-escapes", "dep:unicode-width"]
+web = ["dep:axum", "dep:tower-http"]
+storage = ["dep:armadai-storage", "dep:rusqlite"]
+providers-api = ["dep:reqwest", "armadai-providers/api"]
+
+[dependencies]
+# Workspace crates
+armadai-core = { path = "../armadai-core" }
+armadai-providers = { path = "../armadai-providers" }
+armadai-secrets = { path = "../armadai-secrets" }
+armadai-storage = { path = "../armadai-storage", optional = true }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["io-util"] }
+async-trait = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
+
+# TUI (optional — enable with `tui` feature)
+ratatui = { version = "0.30", optional = true }
+crossterm = { version = "0.29", optional = true }
+unicode-width = { version = "0.2", optional = true }
+
+# HTTP client (optional — enable with `providers-api` feature)
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"], optional = true }
+
+# HTTP server (optional — enable with `web` feature)
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.7", features = ["cors"], optional = true }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+
+# Database (optional — enable with `storage` feature)
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
+
+# Markdown parsing
+pulldown-cmark = "0.13"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Embedded assets
+include_dir = "0.7"
+
+# Utils
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# PTY support (for interactive shell mode)
+portable-pty = { version = "0.8", optional = true }
+strip-ansi-escapes = { version = "0.2", optional = true }
+regex = "1"
+anstyle = "1.0.14"
+anstream = "1.0.0"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+schemars = "1.2.1"
+tempfile = "3"
