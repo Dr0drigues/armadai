@@ -169,11 +169,25 @@ fn register_from_reader(mut r: impl Read) -> anyhow::Result<()> {
     if session_id.is_empty() || transcript_path.is_empty() {
         return Ok(()); // nothing usable; do not error
     }
+    // The SessionStart hook payload has no `timestamp`. The hook fires at
+    // session start, so stamp `started_at` with the current time when the
+    // payload omits (or leaves empty) a timestamp — otherwise it stays "".
+    let started_at = {
+        let ts = v
+            .get("timestamp")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if ts.is_empty() {
+            chrono::Utc::now().to_rfc3339()
+        } else {
+            ts.to_string()
+        }
+    };
     let entry = SessionRef {
         session_id,
         transcript_path: transcript_path.into(),
         cwd: get("cwd"),
-        started_at: get("timestamp"),
+        started_at,
     };
     if let Err(e) = session_index::append(&entry) {
         tracing::warn!("failed to register Claude Code session: {e}");
@@ -346,5 +360,38 @@ mod tests {
         }
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].session_id, "z");
+    }
+
+    /// Fix B: the SessionStart hook payload carries NO `timestamp`, so
+    /// `started_at` used to stay "". It must instead be stamped with the
+    /// current time (RFC3339) at registration.
+    #[test]
+    fn register_from_reader_stamps_started_at_when_payload_has_no_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = dir.path().join("idx.jsonl");
+        // SAFETY: single-threaded test; serialise env via ENV_MUTEX.
+        let _g = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("ARMADAI_SESSION_INDEX", &idx);
+        }
+        // No `timestamp` field at all.
+        let payload = r#"{"session_id":"nots","transcript_path":"/t/nots.jsonl","cwd":"/c"}"#;
+        register_from_reader(payload.as_bytes()).unwrap();
+        let v = session_index::load().unwrap();
+        unsafe {
+            std::env::remove_var("ARMADAI_SESSION_INDEX");
+        }
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].session_id, "nots");
+        assert!(
+            !v[0].started_at.is_empty(),
+            "started_at must be stamped when the payload has no timestamp"
+        );
+        // Must be a parseable RFC3339 timestamp.
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&v[0].started_at).is_ok(),
+            "started_at must be valid RFC3339, got {:?}",
+            v[0].started_at
+        );
     }
 }

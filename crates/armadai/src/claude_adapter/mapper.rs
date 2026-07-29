@@ -31,7 +31,7 @@ pub struct Mapper {
     tin: u32,
     tout: u32,
     last_text: String,
-    spawns: HashMap<String, String>, // tool_use_id -> subagent_type
+    spawns: HashMap<String, String>, // tool_use_id -> agent label (description, else subagent_type)
     agents_seen: std::collections::HashSet<String>,
     finished: bool,
 }
@@ -90,15 +90,26 @@ impl Mapper {
                         Block::AgentSpawn {
                             tool_use_id,
                             subagent_type,
+                            description,
                         } => {
-                            self.spawns.insert(tool_use_id, subagent_type.clone());
-                            self.agents_seen.insert(subagent_type.clone());
+                            // Parallel same-`subagent_type` subagents (e.g. three
+                            // "Explore") share a type but carry distinct
+                            // `description`s. Label by description so they stay
+                            // distinct Workroom nodes and are counted correctly;
+                            // fall back to `subagent_type` when absent.
+                            let label = if description.trim().is_empty() {
+                                subagent_type
+                            } else {
+                                description.trim().to_string()
+                            };
+                            self.spawns.insert(tool_use_id, label.clone());
+                            self.agents_seen.insert(label.clone());
                             out.push(RunEvent::Delegate {
                                 from: ROOT.to_string(),
-                                to: subagent_type.clone(),
+                                to: label.clone(),
                             });
                             out.push(RunEvent::AgentStart {
-                                agent: subagent_type,
+                                agent: label,
                                 prov: PROV.to_string(),
                                 model: self.model.clone(),
                             });
@@ -205,10 +216,12 @@ mod tests {
     fn subagent_spawn_and_result_emit_delegate_start_end() {
         let mut m = Mapper::new("s2");
         let mut evs = m.push(assistant(vec![Block::Text("start".into())], 5, 1));
+        // A non-empty `description` becomes the agent LABEL (not `subagent_type`).
         evs.extend(m.push(assistant(
             vec![Block::AgentSpawn {
                 tool_use_id: "tu1".into(),
                 subagent_type: "core".into(),
+                description: "Refonte du parser".into(),
             }],
             2,
             1,
@@ -219,17 +232,22 @@ mod tests {
         }])));
         evs.extend(m.push(assistant(vec![Block::Text("final".into())], 1, 1)));
         evs.extend(m.finish());
+        // Delegate/AgentStart/AgentEnd all carry the description, not "core".
         assert!(evs.iter().any(
-            |e| matches!(e, RunEvent::Delegate { from, to } if from == "claude" && to == "core")
+            |e| matches!(e, RunEvent::Delegate { from, to } if from == "claude" && to == "Refonte du parser")
+        ));
+        assert!(evs.iter().any(
+            |e| matches!(e, RunEvent::AgentStart { agent, .. } if agent == "Refonte du parser")
+        ));
+        assert!(evs.iter().any(
+            |e| matches!(e, RunEvent::AgentEnd { agent, content, .. } if agent == "Refonte du parser" && content == "sub done")
         ));
         assert!(
-            evs.iter()
-                .any(|e| matches!(e, RunEvent::AgentStart { agent, .. } if agent == "core"))
+            !evs.iter()
+                .any(|e| matches!(e, RunEvent::AgentStart { agent, .. } if agent == "core")),
+            "subagent_type must not be used as label when a description is present"
         );
-        assert!(evs.iter().any(
-            |e| matches!(e, RunEvent::AgentEnd { agent, content, .. } if agent == "core" && content == "sub done")
-        ));
-        // agents count in Result = claude + core = 2
+        // agents count in Result = claude + "Refonte du parser" = 2
         match evs.last().unwrap() {
             RunEvent::Result {
                 agents,
@@ -261,6 +279,7 @@ mod tests {
             vec![Block::AgentSpawn {
                 tool_use_id: "tu1".into(),
                 subagent_type: "core".into(),
+                description: String::new(),
             }],
             1,
             1,
@@ -321,10 +340,12 @@ mod tests {
                 Block::AgentSpawn {
                     tool_use_id: "tu1".into(),
                     subagent_type: "core".into(),
+                    description: String::new(),
                 },
                 Block::AgentSpawn {
                     tool_use_id: "tu2".into(),
                     subagent_type: "cli".into(),
+                    description: String::new(),
                 },
             ],
             1,
@@ -353,5 +374,79 @@ mod tests {
             ),
             "second spawn's AgentEnd must NOT be dropped"
         );
+    }
+
+    /// Real Claude Code case: several parallel subagents share ONE
+    /// `subagent_type` ("Explore") but carry DISTINCT `description`s. Labeling
+    /// by `subagent_type` would collapse them into a single Workroom node and
+    /// undercount `Result.agents`. Labeling by `description` keeps them
+    /// distinct: two spawns → two AgentStart/AgentEnd + `Result.agents == 3`
+    /// (claude + A + B).
+    #[test]
+    fn same_subagent_type_distinct_descriptions_do_not_collapse() {
+        let mut m = Mapper::new("s7");
+        let _ = m.push(assistant(vec![Block::Text("start".into())], 1, 1));
+        let evs_spawn = m.push(assistant(
+            vec![
+                Block::AgentSpawn {
+                    tool_use_id: "tu1".into(),
+                    subagent_type: "Explore".into(),
+                    description: "A".into(),
+                },
+                Block::AgentSpawn {
+                    tool_use_id: "tu2".into(),
+                    subagent_type: "Explore".into(),
+                    description: "B".into(),
+                },
+            ],
+            1,
+            1,
+        ));
+        // Two distinct AgentStart, one per description.
+        assert!(
+            evs_spawn
+                .iter()
+                .any(|e| matches!(e, RunEvent::AgentStart { agent, .. } if agent == "A")),
+            "spawn A must start a node labeled by its description"
+        );
+        assert!(
+            evs_spawn
+                .iter()
+                .any(|e| matches!(e, RunEvent::AgentStart { agent, .. } if agent == "B")),
+            "spawn B must start a distinct node — not collapse into A"
+        );
+        assert_eq!(
+            evs_spawn
+                .iter()
+                .filter(|e| matches!(e, RunEvent::AgentStart { .. }))
+                .count(),
+            2,
+            "two distinct subagent nodes, not one collapsed"
+        );
+
+        let evs_end = m.push(RelevantEntry::ToolResults(vec![
+            ToolResult {
+                tool_use_id: "tu1".into(),
+                text: "A done".into(),
+            },
+            ToolResult {
+                tool_use_id: "tu2".into(),
+                text: "B done".into(),
+            },
+        ]));
+        assert!(evs_end.iter().any(
+            |e| matches!(e, RunEvent::AgentEnd { agent, content, .. } if agent == "A" && content == "A done")
+        ));
+        assert!(evs_end.iter().any(
+            |e| matches!(e, RunEvent::AgentEnd { agent, content, .. } if agent == "B" && content == "B done")
+        ));
+
+        let evs_fin = m.finish();
+        match evs_fin.last().unwrap() {
+            RunEvent::Result { agents, .. } => {
+                assert_eq!(*agents, 3, "claude + A + B — no collapse");
+            }
+            other => panic!("expected Result, got {other:?}"),
+        }
     }
 }
