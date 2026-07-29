@@ -1,5 +1,12 @@
 use crate::claude_adapter::{drive_session, session_index};
 
+/// Minimal synthetic project config so the Workroom seeds the transcript's
+/// root agent ("claude") as the Coordinator — the delegated subagents (added
+/// dynamically as role Agent, see Workroom::ensure_agent) then indent beneath
+/// it in the hierarchical tree. A watched Claude Code session has no
+/// armadai.yaml, so we synthesize the minimum init_from_config needs.
+const WATCH_ROOT_CONFIG: &str = "coordinator: claude\n";
+
 /// `armadai watch` — attach the Workroom to a Claude Code session (from the
 /// index the plugin populates) and stream reconstructed RunEvents.
 ///
@@ -34,7 +41,7 @@ pub async fn execute(_last: bool, session: Option<String>, json: bool) -> anyhow
     // Live Workroom TUI, fed by the transcript adapter. `follow=true` tails.
     let (_run_id, _content) = crate::shell::run_view::run_orchestration_tui(
         move |sink| async move { drive_session(picked, sink, true).await },
-        None,
+        Some(WATCH_ROOT_CONFIG.to_string()),
         None,
     )
     .await?;
@@ -44,6 +51,19 @@ pub async fn execute(_last: bool, session: Option<String>, json: bool) -> anyhow
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_agent_is_seeded_as_coordinator() {
+        use crate::shell::workroom::{AgentRole, Workroom};
+        let mut wr = Workroom::new();
+        wr.init_from_config(WATCH_ROOT_CONFIG);
+        let claude = wr
+            .agents_for_test()
+            .iter()
+            .find(|a| a.name == "claude")
+            .expect("synthetic config seeds the root agent");
+        assert_eq!(claude.role, AgentRole::Coordinator);
+    }
 
     /// Holds `ENV_MUTEX` for the duration of `ARMADAI_SESSION_INDEX`
     /// mutation, serialising it against other env-mutating tests across the
