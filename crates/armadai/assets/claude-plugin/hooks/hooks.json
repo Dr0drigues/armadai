@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "armadai __claude-register-session", "async": true }
+        ]
+      }
+    ]
+  }
+}

@@ -22,6 +22,8 @@ mod unlink;
 mod up;
 mod update;
 mod validate;
+#[cfg(feature = "tui")]
+mod watch;
 
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 
@@ -477,6 +479,23 @@ pub enum Command {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Internal: called by the Claude Code plugin's SessionStart hook. Reads
+    /// the hook JSON from stdin and registers the session. Hidden from help.
+    #[command(hide = true, name = "__claude-register-session")]
+    ClaudeRegisterSession,
+    /// Watch a Claude Code session live in the Workroom (via the armadai plugin).
+    #[cfg(feature = "tui")]
+    Watch {
+        /// Attach to the most recently registered session.
+        #[arg(long)]
+        last: bool,
+        /// Attach to a specific session id.
+        #[arg(long)]
+        session: Option<String>,
+        /// Emit reconstructed RunEvents as JSONL to stdout instead of the TUI.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
@@ -608,5 +627,12 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Command::ClaudeRegisterSession => crate::claude_adapter::register_from_stdin(),
+        #[cfg(feature = "tui")]
+        Command::Watch {
+            last,
+            session,
+            json,
+        } => watch::execute(last, session, json).await,
     }
 }

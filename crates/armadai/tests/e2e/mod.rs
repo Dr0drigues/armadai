@@ -3,5 +3,6 @@
 
 pub mod case;
 pub mod harness;
+mod hook_stdout;
 pub mod report;
 pub mod runner;
