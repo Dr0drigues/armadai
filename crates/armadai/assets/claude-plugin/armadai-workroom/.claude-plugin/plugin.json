@@ -1,0 +1,6 @@
+{
+  "name": "armadai-workroom",
+  "description": "Registers Claude Code sessions (SessionStart hook) so `armadai watch` can visualize them live in the ArmadAI Workroom.",
+  "version": "0.1.0",
+  "author": { "name": "ArmadAI" }
+}
