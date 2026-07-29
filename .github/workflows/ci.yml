@@ -53,27 +53,21 @@ jobs:
         with:
           shared-key: ci-cargo
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      # Clippy in every feature combination the code is gated for, so a lint
-      # that only trips under one combo (e.g. a needless_borrow visible only
-      # under web+storage, or providers-api-gated HTTP code) is caught in CI,
-      # not just locally. See CLAUDE.md and the OH1 event-sourcing spec §9.
+      # The repo root is a VIRTUAL workspace (no root package), so a bare
+      # `cargo clippy` lints EVERY member crate (armadai + core/providers/
+      # storage/secrets), test targets included via `--all-targets` — the
+      # explicit `-p` steps this replaces are no longer needed.
+      #
+      # We run every feature combination the code is gated for so a lint that
+      # only trips under one combo is caught in CI, not just locally. The
+      # feature flags belong to the bin and propagate to the member crates,
+      # so these three combos also cover armadai-providers in BOTH states:
+      # `tui` builds it without `api` (the `#[cfg(not(feature = "api"))]`
+      # fallbacks), `tui,providers-api` builds it with `api` (HTTP providers +
+      # online model_registry). See CLAUDE.md and the OH1 event-sourcing spec §9.
       - run: cargo clippy --all-targets --no-default-features --features tui -- -D warnings
       - run: cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
       - run: cargo clippy --all-targets --no-default-features --features tui,web,storage -- -D warnings
-      # Workspace member crates lint their own test targets too (the bin
-      # clippy above compiles them as path deps but does not lint their
-      # `#[cfg(test)]` targets). armadai-providers needs `api` to cover its
-      # HTTP providers + model_registry online fetch.
-      - run: cargo clippy -p armadai-core --all-targets -- -D warnings
-      - run: cargo clippy -p armadai-secrets --all-targets -- -D warnings
-      - run: cargo clippy -p armadai-storage --all-targets -- -D warnings
-      # Lint armadai-providers in BOTH feature states: the `--features api`
-      # run below does not compile the `#[cfg(not(feature = "api"))]` fallbacks
-      # (stub `create_api_provider`, cache-only `load_models`), and the bin
-      # clippy compiles the crate as a path dep with `--cap-lints=allow`, so
-      # those branches would otherwise escape all linting.
-      - run: cargo clippy -p armadai-providers --all-targets -- -D warnings
-      - run: cargo clippy -p armadai-providers --all-targets --features api -- -D warnings
 
   test:
     name: Test
@@ -85,23 +79,24 @@ jobs:
         with:
           shared-key: ci-cargo
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      # The repo root is a VIRTUAL workspace, so each `cargo test` below runs
+      # the WHOLE workspace (bin + core/providers/storage/secrets); the bin's
+      # feature flags propagate to the member crates. The three modes together
+      # exercise every crate in every gated state — no explicit `-p` steps needed.
+      #
+      # tui: baseline (bin + all members; armadai-providers without `api`).
       - run: cargo test --no-default-features --features tui
-      # storage (SQLite) is not covered by the default `tui` feature set —
-      # run its tests explicitly so src/storage/ and the storage-gated
-      # code paths (e.g. SqliteLog) are actually exercised in CI. This is
+      # tui,storage: adds the bin's SQLite-gated code (SqliteLog wiring, the
+      # storage-backed CLI paths) — the armadai-storage crate's own tests
+      # already run under bare `tui`. This is
       # also the mode the `e2e` integration test target runs in (see
-      # tests/e2e/harness.rs `e2e_suite`), so its report ends up under
-      # target/e2e-report/ for the next step to upload.
+      # crates/armadai/tests/e2e/harness.rs `e2e_suite`), so its report lands
+      # under target/e2e-report/ for the next step to upload.
       - run: cargo test --no-default-features --features tui,storage
-      # Extracted workspace member crates are NOT covered by the root-package
-      # `cargo test` above (they live in crates/*, outside the bin package).
-      # Run their suites explicitly so armadai-core (domain + ES engine),
-      # armadai-providers (incl. the `api`-gated HTTP providers), armadai-storage
-      # and armadai-secrets stay exercised in CI after the OH7 extraction.
-      - run: cargo test -p armadai-core
-      - run: cargo test -p armadai-secrets
-      - run: cargo test -p armadai-storage
-      - run: cargo test -p armadai-providers --features api
+      # tui,providers-api: exercises the bin's providers-api-gated code
+      # (linker/cli/tui/web) AND armadai-providers WITH `api` (HTTP providers +
+      # online model_registry) — both untested by the two modes above.
+      - run: cargo test --no-default-features --features tui,providers-api
       - name: Upload e2e report
         if: always()
         uses: actions/upload-artifact@v4
