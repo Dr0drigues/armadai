@@ -17,6 +17,13 @@ pub struct Usage {
     pub output_tokens: u32,
 }
 
+/// One `tool_result` content block from a `user` message.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolResult {
+    pub tool_use_id: String,
+    pub text: String,
+}
+
 /// A transcript entry the mapper acts on. Everything else is dropped.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RelevantEntry {
@@ -25,10 +32,10 @@ pub enum RelevantEntry {
         blocks: Vec<Block>,
         usage: Usage,
     },
-    ToolResult {
-        tool_use_id: String,
-        text: String,
-    },
+    /// Anthropic batches ALL `tool_result` blocks for a turn into a single
+    /// `user` message (e.g. parallel `Agent` spawns resolving together), so
+    /// this carries every block found in that message, not just the first.
+    ToolResults(Vec<ToolResult>),
 }
 
 /// Defensive parse of one transcript JSONL line. Returns `None` for malformed
@@ -103,22 +110,30 @@ fn parse_usage(u: &Value) -> Usage {
 }
 
 fn parse_user_tool_result(msg: &Value) -> Option<RelevantEntry> {
+    let mut results = Vec::new();
     for b in msg
         .get("content")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
     {
-        if b.get("type").and_then(Value::as_str) == Some("tool_result") {
-            let id = b.get("tool_use_id").and_then(Value::as_str)?.to_string();
-            let text = tool_result_text(b.get("content"));
-            return Some(RelevantEntry::ToolResult {
-                tool_use_id: id,
-                text,
-            });
+        if b.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
         }
+        let Some(id) = b.get("tool_use_id").and_then(Value::as_str) else {
+            continue; // defensive: malformed block, skip it, keep the rest
+        };
+        let text = tool_result_text(b.get("content"));
+        results.push(ToolResult {
+            tool_use_id: id.to_string(),
+            text,
+        });
     }
-    None
+    if results.is_empty() {
+        None
+    } else {
+        Some(RelevantEntry::ToolResults(results))
+    }
 }
 
 /// A tool_result `content` may be a string or an array of `{type:text,text}`.
@@ -181,11 +196,33 @@ mod tests {
     fn parses_tool_result_from_user() {
         let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":[{"type":"text","text":"done"}]}]}}"#;
         match parse_line(line).unwrap() {
-            RelevantEntry::ToolResult { tool_use_id, text } => {
-                assert_eq!(tool_use_id, "tu1");
-                assert_eq!(text, "done");
+            RelevantEntry::ToolResults(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].tool_use_id, "tu1");
+                assert_eq!(results[0].text, "done");
             }
-            _ => panic!("expected ToolResult"),
+            _ => panic!("expected ToolResults"),
+        }
+    }
+
+    /// I3: a single `user` message batches ALL `tool_result` blocks for a
+    /// turn (e.g. two parallel `Agent` spawns resolving together) — every
+    /// block must survive parsing, not just the first.
+    #[test]
+    fn parses_all_tool_result_blocks_in_one_user_message() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"tu1","content":[{"type":"text","text":"first done"}]},
+            {"type":"tool_result","tool_use_id":"tu2","content":[{"type":"text","text":"second done"}]}
+        ]}}"#;
+        match parse_line(line).unwrap() {
+            RelevantEntry::ToolResults(results) => {
+                assert_eq!(results.len(), 2, "both tool_result blocks must be kept");
+                assert_eq!(results[0].tool_use_id, "tu1");
+                assert_eq!(results[0].text, "first done");
+                assert_eq!(results[1].tool_use_id, "tu2");
+                assert_eq!(results[1].text, "second done");
+            }
+            _ => panic!("expected ToolResults"),
         }
     }
 

@@ -10,17 +10,45 @@ use armadai_core::events::{EventSink, RunEvent};
 use mapper::Mapper;
 use session_index::SessionRef;
 
+/// Poll interval between reads of the tailed transcript in follow mode.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Consecutive idle polls (no new complete line read) in follow mode before
+/// we finalize the session. `mapper.push` never itself returns a terminal
+/// `Result` — only `mapper.finish()` does — so live/follow mode has no
+/// "natural" end signal from the transcript alone. Anthropic transcripts
+/// don't expose a reliable turn-level "session is over" marker at this
+/// layer, so we use the heuristic from the P1 design: treat "absence de
+/// croissance prolongée" (no growth for a while) as the end of the session.
+/// stop_reason-based finalization (a real terminal signal) is deferred to
+/// P2.
+const IDLE_FINALIZE_POLLS: u32 = 25; // ~5s of no growth at POLL_INTERVAL=200ms
+
 /// Read `session`'s transcript and emit reconstructed `RunEvent`s to `sink`.
 /// `follow=false` → replay to EOF then `finish()`. `follow=true` → after EOF,
-/// keep polling appended bytes until a terminal `Result` is produced.
+/// keep polling appended bytes, finalizing (`finish()`) once
+/// [`IDLE_FINALIZE_POLLS`] consecutive polls read no new complete line.
 pub async fn drive_session(
     session: SessionRef,
     sink: Arc<dyn EventSink>,
     follow: bool,
 ) -> anyhow::Result<()> {
+    drive_session_tuned(session, sink, follow, POLL_INTERVAL, IDLE_FINALIZE_POLLS).await
+}
+
+/// Same as [`drive_session`] but with the poll interval and idle-finalize
+/// threshold as parameters, so tests can drive the follow-mode finalization
+/// path without waiting on real-world timings.
+async fn drive_session_tuned(
+    session: SessionRef,
+    sink: Arc<dyn EventSink>,
+    follow: bool,
+    poll_interval: std::time::Duration,
+    idle_finalize_polls: u32,
+) -> anyhow::Result<()> {
     let mut mapper = Mapper::new(&session.session_id);
     let mut offset: u64 = 0;
-    let mut done = false;
+    let mut idle_polls: u32 = 0;
     loop {
         let file = match std::fs::File::open(&session.transcript_path) {
             Ok(f) => f,
@@ -36,6 +64,7 @@ pub async fn drive_session(
         let mut reader = std::io::BufReader::new(file);
         reader.seek(std::io::SeekFrom::Start(offset))?;
         let mut consumed = 0u64;
+        let mut lines_read = 0u32;
         let mut line = String::new();
         loop {
             line.clear();
@@ -49,26 +78,32 @@ pub async fn drive_session(
                 break;
             }
             consumed += n as u64;
+            lines_read += 1;
             if let Some(entry) = transcript::parse_line(&line) {
                 for ev in mapper.push(entry) {
-                    if matches!(ev, RunEvent::Result { .. }) {
-                        done = true;
-                    }
                     sink.emit(&ev);
                 }
             }
         }
         offset += consumed;
-        if done {
-            return Ok(());
-        }
         if !follow {
             for ev in mapper.finish() {
                 sink.emit(&ev);
             }
             return Ok(());
         }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if lines_read > 0 {
+            idle_polls = 0;
+        } else {
+            idle_polls += 1;
+            if idle_polls >= idle_finalize_polls {
+                for ev in mapper.finish() {
+                    sink.emit(&ev);
+                }
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(poll_interval).await;
     }
 }
 
@@ -151,6 +186,50 @@ mod tests {
         assert!(matches!(&evs[0], RunEvent::RunStart { run_id, .. } if run_id == "s"));
         assert!(
             matches!(evs.last().unwrap(), RunEvent::Result { content, .. } if content == "hello")
+        );
+    }
+
+    /// I1: in follow mode, `mapper.push` never itself yields a terminal
+    /// `Result` (only `finish()` does), so the session must be finalized by
+    /// the idle-poll heuristic — otherwise `drive_session` would poll
+    /// forever against a transcript that will never grow again. Drive a
+    /// small, already-complete transcript with `follow=true` and a tiny
+    /// interval/threshold: it must still emit a `Result` and RETURN.
+    #[tokio::test]
+    async fn drive_session_follow_mode_finalizes_after_idle_polls() {
+        let dir = tempfile::tempdir().unwrap();
+        let tp = dir.path().join("t.jsonl");
+        std::fs::write(
+            &tp,
+            concat!(
+                r#"{"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"done talking"}],"usage":{"input_tokens":3,"output_tokens":2}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let session = session_index::SessionRef {
+            session_id: "s-follow".into(),
+            transcript_path: tp,
+            cwd: "/c".into(),
+            started_at: "t".into(),
+        };
+        let store = Arc::new(Mutex::new(Vec::new()));
+        let sink: Arc<dyn armadai_core::events::EventSink> = Arc::new(CapSink(store.clone()));
+        // Tiny interval + threshold so the test stays fast: at most a couple
+        // of milliseconds of idle polling before finalization kicks in.
+        drive_session_tuned(
+            session,
+            sink,
+            /* follow = */ true,
+            std::time::Duration::from_millis(1),
+            /* idle_finalize_polls = */ 2,
+        )
+        .await
+        .unwrap();
+        let evs = store.lock().unwrap();
+        assert!(
+            matches!(evs.last().unwrap(), RunEvent::Result { content, .. } if content == "done talking"),
+            "follow mode must finalize (emit Result) once idle, not hang: {evs:?}"
         );
     }
 

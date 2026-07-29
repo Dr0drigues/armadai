@@ -2,11 +2,26 @@ use std::collections::HashMap;
 
 use armadai_core::events::RunEvent;
 
-use crate::claude_adapter::transcript::{Block, RelevantEntry};
+use crate::claude_adapter::transcript::{Block, RelevantEntry, ToolResult};
 
 const ROOT: &str = "claude";
 const PROV: &str = "claude";
 const MAX_CONTENT: usize = 2000;
+
+/// Truncate `s` to at most `max_bytes` bytes, backing off to the nearest
+/// preceding UTF-8 char boundary. `String::truncate` panics when the byte
+/// offset lands inside a multibyte sequence (accents, emoji, CJK) — this
+/// never does, at the cost of a possibly-shorter-than-`max_bytes` result.
+fn truncate_chars(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
 
 /// Reconstructs agent-level `RunEvent`s from a stream of `RelevantEntry`.
 pub struct Mapper {
@@ -88,17 +103,22 @@ impl Mapper {
                     }
                 }
             }
-            RelevantEntry::ToolResult { tool_use_id, text } => {
-                if let Some(agent) = self.spawns.remove(&tool_use_id) {
-                    let mut content = text;
-                    content.truncate(MAX_CONTENT);
-                    out.push(RunEvent::AgentEnd {
-                        agent,
-                        tin: 0,
-                        tout: 0,
-                        cost: 0.0,
-                        content,
-                    });
+            RelevantEntry::ToolResults(results) => {
+                // Anthropic batches ALL tool_results for a turn into one
+                // `user` message (multiple `tool_result` blocks) — e.g.
+                // parallel `Agent` spawns each resolve in the same message.
+                // Process every block so no `AgentEnd` is dropped.
+                for ToolResult { tool_use_id, text } in results {
+                    if let Some(agent) = self.spawns.remove(&tool_use_id) {
+                        let content = truncate_chars(&text, MAX_CONTENT);
+                        out.push(RunEvent::AgentEnd {
+                            agent,
+                            tin: 0,
+                            tout: 0,
+                            cost: 0.0,
+                            content,
+                        });
+                    }
                 }
             }
         }
@@ -111,8 +131,7 @@ impl Mapper {
             return Vec::new();
         }
         self.finished = true;
-        let mut content = self.last_text.clone();
-        content.truncate(MAX_CONTENT);
+        let content = truncate_chars(&self.last_text, MAX_CONTENT);
         vec![
             RunEvent::AgentEnd {
                 agent: ROOT.to_string(),
@@ -190,10 +209,10 @@ mod tests {
             2,
             1,
         )));
-        evs.extend(m.push(RelevantEntry::ToolResult {
+        evs.extend(m.push(RelevantEntry::ToolResults(vec![ToolResult {
             tool_use_id: "tu1".into(),
             text: "sub done".into(),
-        }));
+        }])));
         evs.extend(m.push(assistant(vec![Block::Text("final".into())], 1, 1)));
         evs.extend(m.finish());
         assert!(evs.iter().any(
@@ -222,14 +241,113 @@ mod tests {
         }
     }
 
+    /// C1: `String::truncate` panics if the byte offset lands inside a
+    /// multibyte char. Build a 2001-byte string where byte offset 2000 (=
+    /// `MAX_CONTENT`) is inside the trailing 'é' (2-byte UTF-8) — must not
+    /// panic, and the returned content must be a valid char-boundary prefix.
+    #[test]
+    fn tool_result_truncates_multibyte_content_at_char_boundary_without_panicking() {
+        let mut s = "a".repeat(1999);
+        s.push('é');
+        assert_eq!(s.len(), 2001, "byte 2000 must fall inside the trailing 'é'");
+        assert!(!s.is_char_boundary(2000));
+
+        let mut m = Mapper::new("s5");
+        let _ = m.push(assistant(
+            vec![Block::AgentSpawn {
+                tool_use_id: "tu1".into(),
+                subagent_type: "core".into(),
+            }],
+            1,
+            1,
+        ));
+        // Must not panic.
+        let evs = m.push(RelevantEntry::ToolResults(vec![ToolResult {
+            tool_use_id: "tu1".into(),
+            text: s.clone(),
+        }]));
+        match &evs[0] {
+            RunEvent::AgentEnd { content, .. } => {
+                assert!(content.len() <= MAX_CONTENT);
+                assert!(s.starts_with(content.as_str()), "must be a valid prefix");
+            }
+            other => panic!("expected AgentEnd, got {other:?}"),
+        }
+    }
+
+    /// C1: same hazard via `finish()`'s `last_text` truncation.
+    #[test]
+    fn finish_truncates_multibyte_last_text_at_char_boundary_without_panicking() {
+        let mut s = "a".repeat(1999);
+        s.push('é');
+        assert!(!s.is_char_boundary(2000));
+
+        let mut m = Mapper::new("s6");
+        let _ = m.push(assistant(vec![Block::Text(s.clone())], 1, 1));
+        let evs = m.finish(); // must not panic
+        match evs.last().unwrap() {
+            RunEvent::Result { content, .. } => {
+                assert!(content.len() <= MAX_CONTENT);
+                assert!(s.starts_with(content.as_str()), "must be a valid prefix");
+            }
+            other => panic!("expected Result, got {other:?}"),
+        }
+    }
+
     #[test]
     fn unknown_tool_result_id_is_ignored() {
         let mut m = Mapper::new("s3");
         let _ = m.push(assistant(vec![Block::Text("x".into())], 1, 1));
-        let evs = m.push(RelevantEntry::ToolResult {
+        let evs = m.push(RelevantEntry::ToolResults(vec![ToolResult {
             tool_use_id: "nope".into(),
             text: "y".into(),
-        });
+        }]));
         assert!(evs.is_empty(), "no AgentEnd for an unknown tool_use_id");
+    }
+
+    /// I3: Anthropic batches ALL `tool_result` blocks for a turn into ONE
+    /// `user` message. Two parallel `Agent` spawns resolving in the same
+    /// message must BOTH get an `AgentEnd` — not just the first.
+    #[test]
+    fn batched_tool_results_all_produce_agent_end() {
+        let mut m = Mapper::new("s4");
+        let _ = m.push(assistant(vec![Block::Text("start".into())], 1, 1));
+        let _ = m.push(assistant(
+            vec![
+                Block::AgentSpawn {
+                    tool_use_id: "tu1".into(),
+                    subagent_type: "core".into(),
+                },
+                Block::AgentSpawn {
+                    tool_use_id: "tu2".into(),
+                    subagent_type: "cli".into(),
+                },
+            ],
+            1,
+            1,
+        ));
+        // Both tool_results arrive batched in a single user message/turn.
+        let evs = m.push(RelevantEntry::ToolResults(vec![
+            ToolResult {
+                tool_use_id: "tu1".into(),
+                text: "core done".into(),
+            },
+            ToolResult {
+                tool_use_id: "tu2".into(),
+                text: "cli done".into(),
+            },
+        ]));
+        assert!(
+            evs.iter().any(
+                |e| matches!(e, RunEvent::AgentEnd { agent, content, .. } if agent == "core" && content == "core done")
+            ),
+            "first spawn's AgentEnd must be emitted"
+        );
+        assert!(
+            evs.iter().any(
+                |e| matches!(e, RunEvent::AgentEnd { agent, content, .. } if agent == "cli" && content == "cli done")
+            ),
+            "second spawn's AgentEnd must NOT be dropped"
+        );
     }
 }

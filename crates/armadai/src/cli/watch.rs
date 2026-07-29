@@ -2,7 +2,13 @@ use crate::claude_adapter::{drive_session, session_index};
 
 /// `armadai watch` — attach the Workroom to a Claude Code session (from the
 /// index the plugin populates) and stream reconstructed RunEvents.
-pub async fn execute(last: bool, session: Option<String>, json: bool) -> anyhow::Result<()> {
+///
+/// `_last` (`--last`) is accepted for CLI compatibility/documentation but no
+/// longer changes resolution: an explicit `--session <id>` always wins (it
+/// used to be silently overridden by `--last`, see M1) and, when no
+/// `--session` is given, the most-recent session is picked regardless —
+/// which was already the default with no flags at all.
+pub async fn execute(_last: bool, session: Option<String>, json: bool) -> anyhow::Result<()> {
     let sessions = session_index::load()?;
     if sessions.is_empty() {
         anyhow::bail!(
@@ -10,10 +16,14 @@ pub async fn execute(last: bool, session: Option<String>, json: bool) -> anyhow:
              (see crates/armadai/assets/claude-plugin) and start a Claude Code session"
         );
     }
-    // Default (no --last, no --session): pick the most recent.
-    let picked =
-        session_index::resolve(&sessions, last || session.is_none(), session.as_deref())
-            .ok_or_else(|| anyhow::anyhow!("no matching session (use --last or --session <id>)"))?;
+    // Explicit `--session <id>` always wins over `--last`. Only fall back to
+    // "most recent" when no session id was given at all.
+    let picked = if session.is_some() {
+        session_index::resolve(&sessions, false, session.as_deref())
+    } else {
+        session_index::resolve(&sessions, true, None)
+    }
+    .ok_or_else(|| anyhow::anyhow!("no matching session (use --last or --session <id>)"))?;
 
     if json {
         // Headless: replay to JSONL on stdout (no TUI).
@@ -101,5 +111,69 @@ mod tests {
         let _env = SessionIndexEnvGuard::set(&idx);
         let r = execute(false, Some("does-not-exist".into()), true).await;
         assert!(r.is_err());
+    }
+
+    /// M3: `errors_when_no_session_found` above uses an EMPTY index, so it only
+    /// exercises the early `sessions.is_empty()` bail — `session_index::resolve`'s
+    /// no-match-id branch is never actually hit. Use a NON-EMPTY index with a
+    /// `--session` id that doesn't match any registered session.
+    #[tokio::test]
+    async fn errors_when_session_id_not_in_nonempty_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = dir.path().join("idx.jsonl");
+        let _env = SessionIndexEnvGuard::set(&idx);
+        crate::claude_adapter::session_index::append(
+            &crate::claude_adapter::session_index::SessionRef {
+                session_id: "a".into(),
+                transcript_path: dir.path().join("a.jsonl"),
+                cwd: "/c".into(),
+                started_at: "t".into(),
+            },
+        )
+        .unwrap();
+        let r = execute(false, Some("zzz".into()), true).await;
+        assert!(
+            r.is_err(),
+            "a non-empty index with an unmatched --session id must still error"
+        );
+    }
+
+    /// M1: `--last --session X` used to silently ignore `X` and fall back to the
+    /// most-recently-registered session (`resolve`'s `last` branch short-circuits
+    /// before ever checking `session_id`). An explicit `--session` must win, to the
+    /// point of erroring when it doesn't match — even with `--last` also set.
+    #[tokio::test]
+    async fn explicit_session_wins_over_last_and_errors_when_it_does_not_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = dir.path().join("idx.jsonl");
+        let _env = SessionIndexEnvGuard::set(&idx);
+        // Register two sessions; "b" is the most recent (what --last would pick).
+        crate::claude_adapter::session_index::append(
+            &crate::claude_adapter::session_index::SessionRef {
+                session_id: "a".into(),
+                transcript_path: dir.path().join("a.jsonl"),
+                cwd: "/c".into(),
+                started_at: "t1".into(),
+            },
+        )
+        .unwrap();
+        crate::claude_adapter::session_index::append(
+            &crate::claude_adapter::session_index::SessionRef {
+                session_id: "b".into(),
+                transcript_path: dir.path().join("b.jsonl"),
+                cwd: "/c".into(),
+                started_at: "t2".into(),
+            },
+        )
+        .unwrap();
+        // Before the fix: last=true short-circuits resolve() and silently returns
+        // "b", so this would be Ok. After the fix: the explicit (unmatched)
+        // --session must win and this must error.
+        let r = execute(true, Some("does-not-exist".into()), true).await;
+        assert!(
+            r.is_err(),
+            "--session must take precedence over --last, even to the point of \
+             erroring when it doesn't match"
+        );
     }
 }
