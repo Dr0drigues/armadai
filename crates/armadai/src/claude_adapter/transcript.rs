@@ -7,6 +7,7 @@ pub enum Block {
     AgentSpawn {
         tool_use_id: String,
         subagent_type: String,
+        description: String,
     },
     Other,
 }
@@ -96,9 +97,16 @@ fn parse_assistant(msg: &Value) -> Option<RelevantEntry> {
                     .and_then(Value::as_str)
                     .unwrap_or("agent")
                     .to_string();
+                let description = b
+                    .get("input")
+                    .and_then(|i| i.get("description"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 blocks.push(Block::AgentSpawn {
                     tool_use_id: id,
                     subagent_type: sub,
+                    description,
                 });
             }
             Some("tool_use") => blocks.push(Block::Other),
@@ -217,12 +225,29 @@ mod tests {
 
     #[test]
     fn parses_agent_spawn_tool_use() {
-        let line = r#"{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","id":"tu1","name":"Agent","input":{"subagent_type":"core-specialist","prompt":"x"}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
+        let line = r#"{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","id":"tu1","name":"Agent","input":{"subagent_type":"core-specialist","description":"Architecture du workspace","prompt":"x"}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
         match parse_line(line).unwrap() {
             RelevantEntry::Assistant { blocks, .. } => {
                 assert!(matches!(blocks.as_slice(),
-                    [Block::AgentSpawn { tool_use_id, subagent_type }]
-                    if tool_use_id == "tu1" && subagent_type == "core-specialist"));
+                    [Block::AgentSpawn { tool_use_id, subagent_type, description }]
+                    if tool_use_id == "tu1"
+                        && subagent_type == "core-specialist"
+                        && description == "Architecture du workspace"));
+            }
+            _ => panic!("expected Assistant"),
+        }
+    }
+
+    /// A `tool_use{name:"Agent"}` without an `input.description` must parse
+    /// with an empty `description` (mapper falls back to `subagent_type`).
+    #[test]
+    fn parses_agent_spawn_without_description_defaults_empty() {
+        let line = r#"{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","id":"tu9","name":"Agent","input":{"subagent_type":"Explore","prompt":"x"}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
+        match parse_line(line).unwrap() {
+            RelevantEntry::Assistant { blocks, .. } => {
+                assert!(matches!(blocks.as_slice(),
+                    [Block::AgentSpawn { subagent_type, description, .. }]
+                    if subagent_type == "Explore" && description.is_empty()));
             }
             _ => panic!("expected Assistant"),
         }
