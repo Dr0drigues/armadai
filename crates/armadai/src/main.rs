@@ -1,4 +1,6 @@
 mod audit;
+#[allow(dead_code)]
+mod claude_adapter;
 mod cli;
 #[cfg(feature = "storage")]
 mod db;
