@@ -399,6 +399,34 @@ fn armadai_adapter_is_conformant() {
     assert!(report.is_conformant(), "\n{}", report.render());
 }
 
+/// Runs the full 9-case suite through `gaveldrop::runner::run_all_with`, the same entry point
+/// `armadai`'s own e2e binary would use in production, with the `Armadai` adapter prepended to
+/// gaveldrop's built-in registry. This is the decisive migration gate: it proves the 9 cases
+/// reach the SAME verdicts the old hand-rolled harness produced (deleted in T3), now evaluated
+/// entirely by gaveldrop's `verdict::evaluate` instead of bespoke assertion code.
+#[test]
+fn e2e_suite_passes_through_gaveldrop() {
+    use gaveldrop::adapters::{self, Adapter};
+    use gaveldrop::report::terminal::Terminal;
+
+    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+    let config = gaveldrop::config::Config::load(&root.join("gaveldrop.yaml")).unwrap();
+    let fake = Path::new(env!("CARGO_BIN_EXE_fake-claude"));
+
+    let mut chain: Vec<Box<dyn Adapter>> = vec![Box::new(Armadai)];
+    chain.extend(adapters::registry());
+
+    let mut sink = Terminal::plain(std::io::stdout());
+    let report =
+        gaveldrop::runner::run_all_with(&config, root, fake, &mut sink, None, None, &chain)
+            .unwrap();
+    assert!(
+        report.is_success(),
+        "{} case(s) failed",
+        report.summary().failed
+    );
+}
+
 #[cfg(test)]
 mod adapter_tests {
     use super::*;
