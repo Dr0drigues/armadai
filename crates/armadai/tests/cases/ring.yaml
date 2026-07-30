@@ -1,0 +1,71 @@
+name: ring
+weight: 5
+setup:
+  pattern: ring
+  # Deliberately NOT alphabetical: t-charlie < t-alpha < t-bravo alphabetically
+  # would sort to [t-alpha, t-bravo, t-charlie]. Using this chain order lets
+  # the `events` assertion below catch the BTreeMap-alphabetical bug (Bug A):
+  # before the fix, `run_ring_es` derived `agent_order`/`RunStarted.agents`
+  # from `agents.keys()` (alphabetical), so circulation would start with
+  # t-alpha instead of t-charlie.
+  agents: [t-charlie, t-alpha, t-bravo]
+  flags: ["--json"]
+  input: "propose a caching strategy"
+  scenario:
+    rules:
+      # Circulation phase: the ring runs `config.max_laps` laps regardless of
+      # call count (3 agents x N laps), so match on the propose-phase prompt
+      # text (`RING_ACTION_INSTRUCTIONS` in llm_agents.rs) rather than `call:`,
+      # to stay correct across however many laps the default config runs.
+      - match: { agent: t-charlie, prompt_contains: "ACTION: <type>" }
+        respond: "ACTION: PROPOSE\nCONTENT: t-charlie proposes a write-through cache"
+      - match: { agent: t-alpha, prompt_contains: "ACTION: <type>" }
+        respond: "ACTION: PROPOSE\nCONTENT: t-alpha proposes a read-through cache"
+      - match: { agent: t-bravo, prompt_contains: "ACTION: <type>" }
+        respond: "ACTION: PROPOSE\nCONTENT: t-bravo proposes a write-behind cache"
+      # Voting phase: matched on the vote prompt's distinct text (see
+      # `LlmRingAgent::vote` in llm_agents.rs) instead of a call index.
+      - match: { agent: t-charlie, prompt_contains: "Synthesize the contributions" }
+        respond: "CONFIDENCE: 0.8\nWrite-through is the safer default."
+      - match: { agent: t-alpha, prompt_contains: "Synthesize the contributions" }
+        respond: "CONFIDENCE: 0.75\nRead-through works if writes are rare."
+      - match: { agent: t-bravo, prompt_contains: "Synthesize the contributions" }
+        respond: "CONFIDENCE: 0.6\nWrite-behind risks data loss."
+      - match: {}
+        respond: "unexpected — catch-all should never be hit in this case"
+expect:
+  exit_code: 0
+  events:
+    # `events` is a subsequence match (see `runner::check_events_order_and_fields`):
+    # each entry must be found in order, but is *not* required to be the first/only
+    # occurrence — with the default `max_laps: 3`, circulation repeats the same
+    # per-agent order every lap, so asserting chain order via `agent_start` alone
+    # would let a wrong (e.g. alphabetical) order "wrap around" laps and still
+    # satisfy the subsequence (t-charlie from lap0 + t-alpha/t-bravo from lap1 can
+    # match even when every single lap actually ran alphabetically). Voting has no
+    # such repeat — each agent casts exactly one vote — so asserting order via
+    # `vote` unambiguously proves circulation used the CHAIN order (t-charlie,
+    # t-alpha, t-bravo), not the alphabetical BTreeMap order (t-alpha, t-bravo,
+    # t-charlie) Bug A produced (`RingDecider`'s vote-completeness scan walks the
+    # same `agent_order` circulation does).
+    #
+    # Circulation subsequence (asserted 2026-07-24): the first lap's
+    # agent_start -> agent_end pairs, in chain order (t-charlie, t-alpha,
+    # t-bravo), confirmed by running this case against the real binary. This
+    # is a *within-lap* check only (see the comment above on why a
+    # multi-lap `agent_start`-only chain wouldn't unambiguously prove chain
+    # order) — the `vote` sequence right after remains the proof that
+    # circulation itself used chain order, not the alphabetical one.
+    - { t: run_start }
+    - { t: agent_start, agent: t-charlie }
+    - { t: agent_end, agent: t-charlie }
+    - { t: agent_start, agent: t-alpha }
+    - { t: agent_end, agent: t-alpha }
+    - { t: agent_start, agent: t-bravo }
+    - { t: agent_end, agent: t-bravo }
+    - { t: vote, agent: t-charlie }
+    - { t: vote, agent: t-alpha }
+    - { t: vote, agent: t-bravo }
+    - { t: result }
+  event_counts: { agent_start: 12, agent_end: 12, vote: 3, result: 1 }
+  invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result, no_orphan_events]

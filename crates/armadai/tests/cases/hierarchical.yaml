@@ -1,0 +1,51 @@
+name: hierarchical
+weight: 8
+setup:
+  pattern: hierarchical
+  agents: [t-coord, t-a, t-b]
+  flags: ["--json"]
+  input: "audit the auth module"
+  scenario:
+    rules:
+      # 1st coordinator call: decompose into parallel delegations. Both `@t-x:`
+      # lines are classified `Superior -> Subordinate` (Delegate) because t-coord
+      # is `orchestration.coordinator` (see `classify_relationship` in
+      # src/core/orchestration/mod.rs) — dispatched in parallel by
+      # `invoke_agent`/`hierarchical.rs`.
+      - match: { agent: t-coord, call: 1 }
+        respond: "@t-a: investigate the token flow\n@t-b: review the session store"
+      # 2nd coordinator call: the engine re-injects both subordinates' results and
+      # asks for synthesis. No `@agent:` line here => `parse_delegations` returns a
+      # single `FinalAnswer`, so this is the run's terminal content.
+      - match: { agent: t-coord, call: 2 }
+        respond: "Synthesis: token flow and session store both check out."
+      - match: { agent: t-a }
+        respond: "t-a: token flow looks sound"
+      - match: { agent: t-b }
+        respond: "t-b: session store looks sound"
+      - match: {}
+        respond: "unexpected — catch-all should never be hit in this case"
+expect:
+  exit_code: 0
+  events:
+    # Parallel fan-out subsequence (updated OH1 // Lot 2, #250): a ≥2-child
+    # dispatch now emits both `delegate`s (in line order) up front, then a
+    # single `InvokeParallel` batch — the engine socle records every
+    # `agent_start` in batch order before any `agent_end`, then every
+    # `agent_end` in batch order (not completion order), so t-a and t-b's
+    # starts are adjacent, and so are their ends, both before t-coord's
+    # second (synthesis) call. See `dispatch_actions` in
+    # `src/core/orchestration/es/hierarchical.rs`.
+    - { t: run_start }
+    - { t: agent_start, agent: t-coord }
+    - { t: delegate, from: t-coord, to: t-a }
+    - { t: delegate, from: t-coord, to: t-b }
+    - { t: agent_start, agent: t-a }
+    - { t: agent_start, agent: t-b }
+    - { t: agent_end, agent: t-a }
+    - { t: agent_end, agent: t-b }
+    - { t: result, content: "Synthesis: token flow and session store both check out." }
+  # contrat per-tour ES (un start/end par invocation) — décision 2026-07-22
+  # coordinator delegate call + 2 subordinates (parallel) + coordinator synthesis call = 4 invocations
+  event_counts: { agent_start: 4, agent_end: 4, delegate: 2, result: 1 }
+  invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result, no_orphan_events]
