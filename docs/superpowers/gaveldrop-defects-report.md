@@ -328,8 +328,9 @@ as a build artifact, produced by the deleted `tests/e2e/report.rs` (429 lines, h
 renderer with inline design tokens, deleted in T3). **As of this report, `.github/workflows/ci.yml`
 has not been updated** — the `Upload e2e report` step still references a path nothing writes to
 anymore (T3's own report flags this explicitly and defers it: "T7 does not address this either per
-its brief; flagging for whoever picks up CI wiring." No T7 task exists in this migration's task
-list — CI wiring was never picked up). Concretely: the artifact-upload step will run against an
+its brief; flagging for whoever picks up CI wiring." T7 — CI wiring — does exist in this
+migration's task list; it was deferred and is the task being completed now, which is when this
+artifact gets fixed). Concretely, until then: the artifact-upload step will run against an
 empty/missing path (`if-no-files-found: warn`, so it won't fail the build, but the artifact will
 silently stop existing).
 
