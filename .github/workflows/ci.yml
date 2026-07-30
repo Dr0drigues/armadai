@@ -86,25 +86,26 @@ jobs:
       #
       # tui: baseline (bin + all members; armadai-providers without `api`).
       - run: cargo test --no-default-features --features tui
-      # tui,storage: adds the bin's SQLite-gated code (SqliteLog wiring, the
+      # tui,storage,e2e-fake: adds the bin's SQLite-gated code (SqliteLog wiring, the
       # storage-backed CLI paths) — the armadai-storage crate's own tests
-      # already run under bare `tui`. This is
-      # also the mode the `e2e` integration test target runs in (see
-      # crates/armadai/tests/e2e/harness.rs `e2e_suite`), so its report lands
-      # under target/e2e-report/ for the next step to upload.
-      - run: cargo test --no-default-features --features tui,storage
+      # already run under bare `tui`. `e2e-fake` additionally builds the
+      # `fake-claude` bin and the `gaveldrop` test target (crates/armadai/
+      # tests/gaveldrop.rs), which runs the 9-case e2e suite through the
+      # external `gaveldrop` YAML test engine (a git dependency, pinned by
+      # `rev` — see crates/armadai/Cargo.toml) and writes an HTML report to
+      # target/gaveldrop-report/ for the next step to upload. Kept off the
+      # `tui`-only mode above to keep that mode minimal.
+      - run: cargo test --no-default-features --features tui,storage,e2e-fake
       # tui,providers-api: exercises the bin's providers-api-gated code
       # (linker/cli/tui/web) AND armadai-providers WITH `api` (HTTP providers +
       # online model_registry) — both untested by the two modes above.
       - run: cargo test --no-default-features --features tui,providers-api
-      - name: Upload e2e report
+      - name: Upload gaveldrop report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-report
-          path: |
-            target/e2e-report/e2e-report.html
-            target/e2e-report/e2e-report.json
+          name: gaveldrop-report
+          path: target/gaveldrop-report/gaveldrop-report.html
           if-no-files-found: warn
           retention-days: 14
 

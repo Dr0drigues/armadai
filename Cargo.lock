@@ -948,6 +948,7 @@ dependencies = [
 [[package]]
 name = "gaveldrop"
 version = "0.1.0"
+source = "git+https://github.com/Dr0drigues/gaveldrop.git?rev=6d896b8#6d896b83b3bbe772700b75c5ecd1e1f94ed6fb2c"
 dependencies = [
  "anstream",
  "anstyle",
@@ -965,6 +966,7 @@ dependencies = [
 [[package]]
 name = "gaveldrop-conformance"
 version = "0.1.0"
+source = "git+https://github.com/Dr0drigues/gaveldrop.git?rev=6d896b8#6d896b83b3bbe772700b75c5ecd1e1f94ed6fb2c"
 dependencies = [
  "gaveldrop",
 ]
@@ -972,6 +974,7 @@ dependencies = [
 [[package]]
 name = "gaveldrop-fake"
 version = "0.1.0"
+source = "git+https://github.com/Dr0drigues/gaveldrop.git?rev=6d896b8#6d896b83b3bbe772700b75c5ecd1e1f94ed6fb2c"
 dependencies = [
  "schemars",
  "serde",

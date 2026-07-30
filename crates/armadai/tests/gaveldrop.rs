@@ -406,7 +406,9 @@ fn armadai_adapter_is_conformant() {
 /// entirely by gaveldrop's `verdict::evaluate` instead of bespoke assertion code.
 #[test]
 fn e2e_suite_passes_through_gaveldrop() {
+    use gaveldrop::Tee;
     use gaveldrop::adapters::{self, Adapter};
+    use gaveldrop::report::html::Html;
     use gaveldrop::report::terminal::Terminal;
 
     let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
@@ -416,7 +418,19 @@ fn e2e_suite_passes_through_gaveldrop() {
     let mut chain: Vec<Box<dyn Adapter>> = vec![Box::new(Armadai)];
     chain.extend(adapters::registry());
 
-    let mut sink = Terminal::plain(std::io::stdout());
+    // Also write an HTML report alongside the plain terminal output — this is the artifact
+    // CI uploads (see `.github/workflows/ci.yml`'s "Upload gaveldrop report" step). The old
+    // `tests/e2e/report.rs` harness (deleted in T3) wrote its own HTML; gaveldrop ships an
+    // equivalent sink (`report::html::Html`), so we just tee into it rather than re-inventing one.
+    let report_dir = root.join("target/gaveldrop-report");
+    std::fs::create_dir_all(&report_dir).expect("creating target/gaveldrop-report");
+    let html_file = std::fs::File::create(report_dir.join("gaveldrop-report.html"))
+        .expect("creating target/gaveldrop-report/gaveldrop-report.html");
+
+    let mut sink = Tee::new();
+    sink.add(Box::new(Terminal::plain(std::io::stdout())));
+    sink.add(Box::new(Html::new(html_file)));
+
     let report =
         gaveldrop::runner::run_all_with(&config, root, fake, &mut sink, None, None, &chain)
             .unwrap();

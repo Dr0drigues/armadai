@@ -97,7 +97,7 @@ anstream = "1.0.0"
 armadai-core = { path = "../armadai-core", features = ["test-support"] }
 armadai-fake = { path = "../armadai-fake", features = ["engine"] }
 assert_cmd = "2.2.2"
-gaveldrop = { path = "../../../gaveldrop/crates/gaveldrop" }
-gaveldrop-fake = { path = "../../../gaveldrop/crates/gaveldrop-fake" }
-gaveldrop-conformance = { path = "../../../gaveldrop/crates/gaveldrop-conformance" }
+gaveldrop = { git = "https://github.com/Dr0drigues/gaveldrop.git", rev = "6d896b8" }
+gaveldrop-fake = { git = "https://github.com/Dr0drigues/gaveldrop.git", rev = "6d896b8" }
+gaveldrop-conformance = { git = "https://github.com/Dr0drigues/gaveldrop.git", rev = "6d896b8" }
 tempfile = { workspace = true }
