@@ -17,6 +17,7 @@
 //! reads `GAVELDROP_JOURNAL`, both set by `Isolation` and inherited by the `claude`
 //! subprocess.
 
+#[cfg(feature = "engine")]
 use gaveldrop_fake::{Call, Counter, Invocation, Journal};
 use serde::{Deserialize, Serialize};
 
@@ -159,6 +160,7 @@ pub fn emit_claude_jsonl(rule: &Rule) -> String {
 }
 
 /// Binary entry point: journal the call, select a rule, emit stream-json, exit.
+#[cfg(feature = "engine")]
 pub fn run() {
     let inv = Invocation::from_env(false);
     let prompt = std::env::args().next_back().unwrap_or_default();
@@ -360,6 +362,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "engine")]
     fn counter_increments_and_persists_per_key() {
         let dir = tempfile::tempdir().unwrap();
         let counter = Counter::new(dir.path());
