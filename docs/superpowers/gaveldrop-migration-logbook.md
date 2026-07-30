@@ -8,13 +8,14 @@ Cross-refs: full write-up of G1 is committed in armadai at `docs/superpowers/gav
 
 ---
 
-## Status snapshot (2026-07-29)
+## Status snapshot (2026-07-29 — UNBLOCKED, gaveldrop @ 9ed05ec)
 
-- ✅ Both codebases mapped (adapter surface, fake-claude, 9 cases, invariants, isolation API).
-- ✅ Dep-path compat confirmed: gaveldrop toolchain `1.97`, armadai on rustc 1.97.1; `gaveldrop-fake` deps (serde/serde_json/serde_yaml_ng/thiserror + tiny_http/schemars) don't clash.
-- 🔴 **Blocked on G1**: the suite cannot run its cases through a custom adapter (see G1). Deliverables #4 (9 cases green) and #5 (delete 1655-line harness) wait on it.
-- 🟠 **F2 / F3**: two more frictions that shape the armadai adapter; each is either a gaveldrop change or a documented divergence — decide per item below.
-- 🟡 Armadai side buildable now (adapter, own Rule/Match, fake-claude on gaveldrop-fake, gaveldrop.yaml, cases) — not started pending F2/F3 resolution.
+- ✅ Both codebases mapped. Dep-path compat confirmed (toolchain 1.97; deps don't clash).
+- ✅ **G1 FIXED** (gaveldrop PR 70/71): `gaveldrop::runner::run_all_with(&config, root, &fake_binary, &mut sink, shard, only, &adapters)` now takes the adapter chain. Call it from a Rust test with `chain = vec![Box::new(Armadai)]; chain.extend(adapters::registry())`. Report API: `report.is_success()`, `report.summary().failed`, sink = `gaveldrop::report::terminal::Terminal::plain(stdout)`. (Name is `run_all_with`, not `run_all_with_adapters`.) The `gaveldrop` **binary** can't reach a compiled-in adapter → the suite runs from a **Rust test** (documented in gaveldrop `docs/conformance.md`). armadai's e2e is already a `cargo test` target, so this fits its CI — **no CI concern from the Rust-test model**.
+- ✅ **F2 FIXED** (gaveldrop #71): worse than reported — it was an *inversion* (`match:{agent}` → `match:{}` = catch-all → that rule answered everything, later rules unreachable, `validate` approved, case loaded green). gaveldrop now **refuses** an unknown key under `fake:` (loud, named position + where the consumer's vocabulary goes). `Scenario/Rule/Match/Response` publish `KEYS` — read them, don't hardcode. **Conclusion unchanged: armadai's scenario goes under `setup:` (opaque, adapter-interpreted).** Divergence from the briefing's top-level `fake:` example → record in the final report.
+- ✅ **F3 DOCUMENTED** (gaveldrop `docs/conformance.md`) with the load-bearing condition I left implicit: **the conformance-probe branch and the real branch MUST end in the same `run_in_iso` helper** — else the kit greenlights code no case runs (a vacant kit). One helper, both branches. If the adapter can't route through one helper → new finding.
+- ✅ **F4 DECIDED** (deliberate no): `field_non_empty` stays one-field; declare **two** invariants `prov_non_empty` + `model_non_empty` (better diagnostic). **Semantic split, not a rename** — the report must say the old single `prov_model_non_empty` became two (a reader comparing verdict/invariant counts will notice).
+- 🟢 **All blockers cleared → armadai-side build proceeding.** Open items to verify *during* the build: compare gaveldrop's `expect.events` subsequence semantics vs armadai's `check_events_order_and_fields` (a difference = finding); the CI artefact change (`e2e-report.json` → gaveldrop's own reports + `gate:` thresholds, per `docs/ci.md` — treat as part of the migration; a threshold that can't be expressed under `gate:` = finding).
 
 ---
 
