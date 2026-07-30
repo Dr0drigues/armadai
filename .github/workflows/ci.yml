@@ -68,6 +68,13 @@ jobs:
       - run: cargo clippy --all-targets --no-default-features --features tui -- -D warnings
       - run: cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
       - run: cargo clippy --all-targets --no-default-features --features tui,web,storage -- -D warnings
+      # tui,storage,e2e-fake: the only mode that compiles the e2e test surface
+      # (crates/armadai/tests/gaveldrop.rs, the fake-claude bin, and
+      # armadai-fake's `engine` feature) — everything else above skips it, so
+      # without this mode CI's test job would build that code but clippy never
+      # would. Fetches gaveldrop from its (public) git dependency, same as the
+      # test job's tui,storage,e2e-fake mode.
+      - run: cargo clippy --all-targets --no-default-features --features tui,storage,e2e-fake -- -D warnings
 
   test:
     name: Test
