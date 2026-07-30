@@ -357,6 +357,48 @@ fn all_cases_load() {
     assert_eq!(n, 9, "expected 9 migrated cases");
 }
 
+/// Builds a [`Case`] that [`Armadai`] claims but the built-in `Process` adapter does not.
+///
+/// `pattern` makes [`Armadai::claims`] return `true`; the script itself lives in
+/// `extra["probe_script"]` rather than `setup.run`, so `Process` — which only claims cases
+/// carrying a `run:` command line — never also claims it. Passed to
+/// [`gaveldrop_conformance::run_with`] as the `Invocation` factory: the kit's checks describe a
+/// behaviour ("exit 7", "write to this file"), and this is how that behaviour becomes something
+/// `Armadai::invoke`'s conformance-probe branch (see its module doc) will actually run.
+fn as_armadai_probe(script: &str) -> Case {
+    let mut extra = std::collections::BTreeMap::new();
+    extra.insert("pattern".to_string(), serde_json::json!("conformance"));
+    extra.insert("probe_script".to_string(), serde_json::json!(script));
+    Case {
+        name: "conformance".to_string(),
+        weight: 1,
+        allow_fail: false,
+        setup: gaveldrop::case::Setup {
+            run: None,
+            exec: None,
+            env: std::collections::BTreeMap::new(),
+            extra,
+        },
+        fake: None,
+        expect: gaveldrop::case::Expect::default(),
+        steps: Vec::new(),
+    }
+}
+
+/// Certifies that [`Armadai`] honours gaveldrop's isolation contract.
+///
+/// Runs the same battery the kit runs against its own built-in `Process`/`Shell` adapters
+/// (`gaveldrop-conformance/tests/shell.rs`), through [`as_armadai_probe`] since `Armadai` claims
+/// cases by `pattern` rather than by `run:`. `fake-claude` — the conformance fake, per
+/// `armadai-fake`'s doc comment on `SCENARIO_ENV` — journals a catch-all and exits 127 when
+/// `ARMADAI_FAKE_SCENARIO` is unset, which is exactly what the kit's catch-all check needs.
+#[test]
+fn armadai_adapter_is_conformant() {
+    let fake = Path::new(env!("CARGO_BIN_EXE_fake-claude"));
+    let report = gaveldrop_conformance::run_with(&Armadai, fake, &as_armadai_probe);
+    assert!(report.is_conformant(), "\n{}", report.render());
+}
+
 #[cfg(test)]
 mod adapter_tests {
     use super::*;
