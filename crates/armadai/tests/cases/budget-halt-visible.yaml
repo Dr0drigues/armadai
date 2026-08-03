@@ -45,6 +45,15 @@ expect:
     - {
         t: result,
         content: "[t-a] t-a partial finding before halt\n[t-b] t-b partial finding before halt",
+        # Numeric accounting payload — closes the blind spot found by mutation testing
+        # (a run that zeroed tokens or doubled cost shipped silently). Integers only, per
+        # the float-equality caveat: tin = t-a's 6 + t-b's 6 before the halt, tout/cost 0,
+        # agents = the two board participants. Non-zero costs are deliberately NOT asserted
+        # (tokens×rate is float-nondeterministic).
+        tin: 12,
+        tout: 0,
+        cost: 0.0,
+        agents: 2,
       }
   # 1 round x 2 agents = 2 invocations; halts on budget before round 1 starts.
   event_counts:

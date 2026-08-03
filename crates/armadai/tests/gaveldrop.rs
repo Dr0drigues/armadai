@@ -440,8 +440,7 @@ fn e2e_suite_passes_through_gaveldrop() {
     sink.add(Box::new(Html::new(html_file)));
 
     let report =
-        gaveldrop::runner::run_all_with(&config, root, fake, &mut sink, None, None, &chain)
-            .unwrap();
+        gaveldrop::runner::run_all_with(&config, root, fake, &mut sink, None, &[], &chain).unwrap();
     // Guard against a vacuous pass: `is_success()` is `summary().failed == 0`, which is
     // trivially true if the `cases:` glob or `root` path silently stopped matching anything.
     assert_eq!(
