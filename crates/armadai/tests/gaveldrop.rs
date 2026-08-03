@@ -56,10 +56,17 @@ fn run_in_iso(
         cmd.env(key, value);
     }
 
-    let output = cmd.output().map_err(|source| AdapterError::Spawn {
-        program: program.clone(),
-        source,
+    // Route through gaveldrop's shared `invoke` helper (not `cmd.output()`) so the case's timeout
+    // (v0.1.5, arriving via `iso.limit()`) actually kills a subject that hangs — e.g. an
+    // `armadai run` whose provider never answers. `cmd.output()` would ignore the limit and hang
+    // the case/suite/CI exactly as before the fix (the half of that finding that is ours).
+    let completed = gaveldrop::adapters::invoke(&mut cmd, None, iso.limit()).map_err(|source| {
+        AdapterError::Spawn {
+            program: program.clone(),
+            source,
+        }
     })?;
+    let output = completed.output;
 
     Ok(Observations {
         exit: output.status.code().unwrap_or(-1),
@@ -68,6 +75,7 @@ fn run_in_iso(
         calls: gaveldrop_fake::Journal::read(&iso.journal_path())?,
         events: Vec::new(),
         files: iso.changes(),
+        timed_out_after_ms: completed.timed_out_after_ms,
         ..Observations::default()
     })
 }
@@ -375,21 +383,18 @@ fn as_armadai_probe(script: &str) -> Case {
     let mut extra = std::collections::BTreeMap::new();
     extra.insert("pattern".to_string(), serde_json::json!("conformance"));
     extra.insert("probe_script".to_string(), serde_json::json!(script));
+    // `..Default::default()` rather than an exhaustive literal: gaveldrop's `Case` and `Setup`
+    // are not `#[non_exhaustive]` and gain fields between versions (`Setup.env/hide/stdin`, then
+    // `Case.timeout` by v0.1.5, which is what forced this). Defaulting every field but our own
+    // keeps the factory insensitive to future additions — the idiom the project recommends.
     Case {
         name: "conformance".to_string(),
         weight: 1,
-        allow_fail: false,
-        // `..Default::default()` rather than an exhaustive literal: gaveldrop's `Setup`
-        // is not `#[non_exhaustive]` and gains fields between versions (`env`, then
-        // `hide`/`stdin` by v0.1.2). Defaulting every field but our own `extra` keeps the
-        // probe factory insensitive to future additions.
         setup: gaveldrop::case::Setup {
             extra,
             ..Default::default()
         },
-        fake: None,
-        expect: gaveldrop::case::Expect::default(),
-        steps: Vec::new(),
+        ..Default::default()
     }
 }
 
