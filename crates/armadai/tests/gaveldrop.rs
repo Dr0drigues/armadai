@@ -310,6 +310,12 @@ fn build_command(case: &Case) -> Vec<String> {
 struct Armadai;
 
 impl Adapter for Armadai {
+    // Labels this adapter in gaveldrop's `--verbose` per-case output (the trait's default is
+    // the generic "a consumer-provided adapter").
+    fn name(&self) -> &str {
+        "armadai"
+    }
+
     fn claims(&self, case: &Case) -> bool {
         case.setup.extra.contains_key("pattern")
     }
@@ -373,11 +379,13 @@ fn as_armadai_probe(script: &str) -> Case {
         name: "conformance".to_string(),
         weight: 1,
         allow_fail: false,
+        // `..Default::default()` rather than an exhaustive literal: gaveldrop's `Setup`
+        // is not `#[non_exhaustive]` and gains fields between versions (`env`, then
+        // `hide`/`stdin` by v0.1.2). Defaulting every field but our own `extra` keeps the
+        // probe factory insensitive to future additions.
         setup: gaveldrop::case::Setup {
-            run: None,
-            exec: None,
-            env: std::collections::BTreeMap::new(),
             extra,
+            ..Default::default()
         },
         fake: None,
         expect: gaveldrop::case::Expect::default(),
