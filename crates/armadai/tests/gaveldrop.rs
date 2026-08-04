@@ -322,9 +322,11 @@ fn build_command(case: &Case) -> Vec<String> {
 /// primary `armadai run` from `setup`. `capture: { run_id: run_start.run_id }` names the `run_id`
 /// field of the first `run_start` event so a later step can substitute `$run_id`.
 ///
-/// gaveldrop's runner only extracts events from the *whole-run* stdout, never per step (see
-/// `runner.rs`'s single `read_events`), so this extracts each step's events itself. That is a real
-/// friction for any custom event-based adapter that declares steps — reported to gaveldrop.
+/// gaveldrop's runner fills each step's `events` from its stdout for the step's *assertions*
+/// (v0.1.12, #142 — it resolved the friction this adapter first hit, so we no longer extract them
+/// here). `capture:` stays adapter-side, though: a value a later step substitutes as `$name` must be
+/// read from this step's response *during* the exchange, before the next command is built — see
+/// `capture_from_stdout`.
 fn run_steps(case: &Case, iso: &Isolation) -> Result<Observations, AdapterError> {
     let scenario_path = write_project(case, iso)?;
     let mut captured: std::collections::BTreeMap<String, String> =
@@ -346,15 +348,14 @@ fn run_steps(case: &Case, iso: &Isolation) -> Result<Observations, AdapterError>
             None => build_command(case),
         };
 
-        let mut seen = run_in_iso(
+        let seen = run_in_iso(
             iso,
             &argv,
             &[(armadai_fake::SCENARIO_ENV, scenario_path.clone())],
         )?;
-        seen.events = extract_t_events(&seen.stdout);
 
         for (name, path) in &step.capture {
-            match capture_from_events(&seen.events, path) {
+            match capture_from_stdout(&seen.stdout, path) {
                 Some(value) => {
                     captured.insert(name.clone(), value);
                 }
@@ -387,33 +388,18 @@ fn substitute(input: &str, captured: &std::collections::BTreeMap<String, String>
     out
 }
 
-/// Parses armadai's `--json` event lines (`{"t": ...}`) into gaveldrop `Event`s. Replicates
-/// `gaveldrop::verdict::events::extract` for the `t` type field, so a step's events can be filled
-/// without the project's `EventsConfig` (which `Adapter::invoke` is not handed).
-fn extract_t_events(stdout: &str) -> Vec<gaveldrop::verdict::events::Event> {
+/// Reads a captured value out of a step's `--json` stdout by an `<event_type>.<field>` path —
+/// armadai's own `capture:` vocabulary: the first `{"t": <event_type>, …}` line, then its `<field>`
+/// as a string. Adapter-side on purpose (like the web adapter's JSON-path capture): gaveldrop's
+/// runner fills a step's `events` for its *assertions*, but a value a later step substitutes has to
+/// be read from this step's response during the exchange — which is before the runner does that.
+fn capture_from_stdout(stdout: &str, path: &str) -> Option<String> {
+    let (kind, field) = path.split_once('.')?;
     stdout
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
-        .filter_map(|value| {
-            let object = value.as_object()?;
-            let kind = object.get("t")?.as_str()?.to_string();
-            Some(gaveldrop::verdict::events::Event {
-                kind,
-                fields: object.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            })
-        })
-        .collect()
-}
-
-/// Reads a value out of a step's events by an `<event_type>.<field>` path: the first event whose
-/// `t` equals `<event_type>`, then its `<field>` as a string.
-fn capture_from_events(events: &[gaveldrop::verdict::events::Event], path: &str) -> Option<String> {
-    let (kind, field) = path.split_once('.')?;
-    events
-        .iter()
-        .find(|e| e.kind == kind)
-        .and_then(|e| e.fields.get(field))
-        .and_then(|v| v.as_str().map(String::from))
+        .find(|value| value.get("t").and_then(Value::as_str) == Some(kind))
+        .and_then(|value| value.get(field).and_then(Value::as_str).map(String::from))
 }
 
 /// Invokes armadai (or, for a conformance probe, a bare shell script) against a
