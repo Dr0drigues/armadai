@@ -1035,6 +1035,7 @@ pub async fn run_ring_es(
     cost_limit: Option<f64>,
     log: &mut impl EventLog,
 ) -> anyhow::Result<ExecutionState> {
+    let roster = super::bridge::roster_from_agents(&agents);
     let initial = vec![
         ExecutionEvent::RunStarted {
             run_id: run_id.to_string(),
@@ -1042,7 +1043,7 @@ pub async fn run_ring_es(
             agents: agent_order.clone(),
             input: input.to_string(),
             project: None,
-            roster: Default::default(),
+            roster,
         },
         ExecutionEvent::ConfigSnapshot {
             config_json: serde_json::to_string(&config).unwrap_or_default(),

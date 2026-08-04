@@ -264,13 +264,31 @@ pub async fn run_direct_es(
     routing_rules: RoutingRules,
     log: &mut impl EventLog,
 ) -> anyhow::Result<ExecutionState> {
+    // Direct's roster is the single invoked agent — scope `roster_from_agents`
+    // to just that key (rather than the whole `agents` map, which today only
+    // ever holds that one entry anyway, see `dispatch_direct_es`) so
+    // `RunStarted.roster` stays correct even if a future caller passes a
+    // larger map in.
+    let roster: BTreeMap<String, (String, String)> = agents
+        .get(agent)
+        .map(|a| {
+            (
+                agent.to_string(),
+                (
+                    a.metadata.provider.clone(),
+                    a.metadata.model.clone().unwrap_or_default(),
+                ),
+            )
+        })
+        .into_iter()
+        .collect();
     let initial = vec![ExecutionEvent::RunStarted {
         run_id: run_id.to_string(),
         pattern: "direct".to_string(),
         agents: vec![agent.to_string()],
         input: input.to_string(),
         project: None,
-        roster: Default::default(),
+        roster,
     }];
 
     let decider = DirectDecider::new(agent, input, agents.clone(), routing_rules);

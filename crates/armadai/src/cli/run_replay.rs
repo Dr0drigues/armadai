@@ -41,32 +41,40 @@
 //!   database — see `run.rs`'s
 //!   `replay_reproduces_the_live_run_event_sequence` test.
 //!
-//! ## Known fidelity gap: `AgentStart.prov`/`model`
+//! ## Former fidelity gap: `AgentStart.prov`/`model` (CLOSED)
 //!
 //! `map_execution_to_run_events` fills `AgentStart.prov`/`model` from an
 //! `agent_meta` side table (roster key -> `(provider, configured model)`)
 //! that the LIVE path builds from the run's `Agent` definitions *before*
 //! invoking anything (see `dispatch_direct_es`/`agent_meta_from_roster` in
-//! `run.rs`). `ExecutionEvent` never records an agent's provider name at
-//! all, and the model configured for an agent's *first* invocation (which is
-//! what `AgentStart` shows, not the resolved tier) isn't reconstructable
-//! from the log alone either — only `AgentObserved.model` is logged, and
-//! only after the call already happened. Replay therefore calls
-//! `map_execution_to_run_events` with an **empty** `agent_meta`, which is
-//! the function's documented "no roster available" fallback (see
-//! `bridge.rs`'s `agent_invoked_maps_to_agent_start_with_empty_prov_model_when_meta_absent`
-//! test): every replayed `AgentStart` carries `prov: ""`, `model: ""`,
-//! whatever the live run's actually were. Every other field of every other
-//! event (content/tokens/cost/agent names, `AgentEnd`/`Route`/`Board`/`Vote`/
+//! `run.rs`). This used to be a replay-only gap: `ExecutionEvent` recorded no
+//! agent provider anywhere, and the model configured for an agent's *first*
+//! invocation (what `AgentStart` shows, not the resolved tier) wasn't
+//! reconstructable from the rest of the log either — only `AgentObserved.model`
+//! is logged, and only after the call already happened — so replay called
+//! `map_execution_to_run_events` with an unconditionally **empty**
+//! `agent_meta`, and every replayed `AgentStart` carried `prov: ""`,
+//! `model: ""` regardless of what the live run's actually were.
+//!
+//! Fixed by persisting the roster directly in the log: every production
+//! `RunStarted` emission (`run_direct_es`/`run_blackboard_es`/`run_ring_es`/
+//! `run_hierarchical_es`, via
+//! [`armadai_core::orchestration::es::bridge::roster_from_agents`]) now
+//! carries `roster: BTreeMap<agent, (provider, configured model)>` on the
+//! event itself. `replay_from_log` recovers it by scanning `events` for the
+//! first `RunStarted` and cloning its `roster` — the exact same shape
+//! `agent_meta` already expected, so no other bridge code needed to change.
+//! `RunStarted.roster` is `#[serde(default)]`, so a log written by an older
+//! version of ArmadAI (no `roster` field persisted at all) still
+//! deserializes; it just falls back to an empty roster, i.e. the ORIGINAL
+//! fallback behavior above (empty `prov`/`model`) rather than an error — see
+//! `bridge.rs`'s
+//! `agent_invoked_maps_to_agent_start_with_empty_prov_model_when_meta_absent`
+//! test, which still documents that fallback for a log/roster with no
+//! metadata. Every other field of every other event
+//! (content/tokens/cost/agent names, `AgentEnd`/`Route`/`Board`/`Vote`/
 //! `Delegate`/`Warning`/...) round-trips through the log exactly, since it's
 //! carried verbatim by the `ExecutionEvent` that produced it.
-//!
-//! Tracked on `fix/replay-prov-model-roster`: `RunStarted` (OH1 socle) now
-//! has a `roster` field (`#[serde(default)]`, see `event.rs`) and
-//! `armadai-core::orchestration::es::bridge::roster_from_agents` builds it —
-//! but no production `RunStarted` emission populates it yet, and this
-//! module doesn't consume it yet either, so the gap above still applies
-//! until both land.
 //!
 //! `human_output` gates the two pieces of direct terminal output this
 //! module performs (a muted `replay <run_id>` banner and, on success, the
@@ -138,6 +146,7 @@ pub(crate) fn replay_from_log<L: armadai_core::orchestration::es::log::EventLog>
     use armadai_core::orchestration::es::bridge::{
         map_execution_to_run_events, synthetic_run_start, to_orchestration_result,
     };
+    use armadai_core::orchestration::es::event::ExecutionEvent;
     use armadai_core::orchestration::es::state::fold;
 
     let events = log.events(run_id)?;
@@ -168,10 +177,22 @@ pub(crate) fn replay_from_log<L: armadai_core::orchestration::es::log::EventLog>
         &events,
     ));
 
-    // No roster is available on this read-only path (see module docs): every
-    // `AgentInvoked` replays through the empty-`agent_meta` fallback, so its
-    // `AgentStart` carries empty `prov`/`model` rather than the live run's.
-    let agent_meta: BTreeMap<String, (String, String)> = BTreeMap::new();
+    // The roster persisted in `RunStarted.roster` (see module docs) is what
+    // lets replay reconstruct `agent_meta` without re-executing anything: the
+    // FIRST `RunStarted` in the log carries it (there is exactly one per run,
+    // except for a nested C9 sub-run's own ephemeral child log, which this
+    // top-level replay never reads). Falls back to an empty map for event
+    // logs written before `roster` existed (`#[serde(default)]` on the
+    // field) — the same "no roster available" fallback `map_execution_to_run_events`
+    // has always documented, so replaying an old log degrades gracefully to
+    // empty `prov`/`model` rather than erroring.
+    let agent_meta: BTreeMap<String, (String, String)> = events
+        .iter()
+        .find_map(|e| match e {
+            ExecutionEvent::RunStarted { roster, .. } => Some(roster.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
     for event in &events {
         for re in map_execution_to_run_events(event, &agent_meta) {
             sink.emit(&re);

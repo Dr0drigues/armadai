@@ -1412,6 +1412,7 @@ pub async fn run_hierarchical_es(
     log: &mut impl EventLog,
 ) -> anyhow::Result<ExecutionState> {
     let agent_names: Vec<String> = agents.keys().cloned().collect();
+    let roster = super::bridge::roster_from_agents(&agents);
     let initial = vec![
         ExecutionEvent::RunStarted {
             run_id: run_id.to_string(),
@@ -1419,7 +1420,7 @@ pub async fn run_hierarchical_es(
             agents: agent_names,
             input: input.to_string(),
             project: None,
-            roster: Default::default(),
+            roster,
         },
         ExecutionEvent::ConfigSnapshot {
             config_json: serde_json::to_string(&config).unwrap_or_default(),
