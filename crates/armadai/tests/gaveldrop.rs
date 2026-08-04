@@ -313,6 +313,109 @@ fn build_command(case: &Case) -> Vec<String> {
     argv
 }
 
+/// Performs a case's declared `steps:` as separate armadai exchanges, all in the SAME isolation —
+/// so step 1's persisted event-sourced log is exactly what step 2's `armadai run --replay` reads
+/// back. Fills `Observations.steps`, one entry per exchange, plus `missed_captures`.
+///
+/// A step's `request` is armadai's own vocabulary (opaque to gaveldrop, like `setup.extra`): a
+/// `replay: <run_id>` performs `armadai run --replay <id>`, an empty request performs the case's
+/// primary `armadai run` from `setup`. `capture: { run_id: run_start.run_id }` names the `run_id`
+/// field of the first `run_start` event so a later step can substitute `$run_id`.
+///
+/// gaveldrop's runner only extracts events from the *whole-run* stdout, never per step (see
+/// `runner.rs`'s single `read_events`), so this extracts each step's events itself. That is a real
+/// friction for any custom event-based adapter that declares steps — reported to gaveldrop.
+fn run_steps(case: &Case, iso: &Isolation) -> Result<Observations, AdapterError> {
+    let scenario_path = write_project(case, iso)?;
+    let mut captured: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let mut missed: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut performed: Vec<Observations> = Vec::new();
+    let mut whole_stdout = String::new();
+    let mut last_exit = 0;
+
+    for step in &case.steps {
+        let argv = match step.request.get("replay").and_then(Value::as_str) {
+            Some(raw) => vec![
+                env!("CARGO_BIN_EXE_armadai").to_string(),
+                "run".to_string(),
+                "--replay".to_string(),
+                substitute(raw, &captured),
+                "--json".to_string(),
+            ],
+            None => build_command(case),
+        };
+
+        let mut seen = run_in_iso(
+            iso,
+            &argv,
+            &[(armadai_fake::SCENARIO_ENV, scenario_path.clone())],
+        )?;
+        seen.events = extract_t_events(&seen.stdout);
+
+        for (name, path) in &step.capture {
+            match capture_from_events(&seen.events, path) {
+                Some(value) => {
+                    captured.insert(name.clone(), value);
+                }
+                None => {
+                    missed.insert(name.clone(), path.clone());
+                }
+            }
+        }
+
+        last_exit = seen.exit;
+        whole_stdout.push_str(&seen.stdout);
+        performed.push(seen);
+    }
+
+    Ok(Observations {
+        exit: last_exit,
+        stdout: whole_stdout,
+        steps: performed,
+        missed_captures: missed,
+        ..Observations::default()
+    })
+}
+
+/// Replaces whole `$name` tokens with earlier steps' captured values.
+fn substitute(input: &str, captured: &std::collections::BTreeMap<String, String>) -> String {
+    let mut out = input.to_string();
+    for (name, value) in captured {
+        out = out.replace(&format!("${name}"), value);
+    }
+    out
+}
+
+/// Parses armadai's `--json` event lines (`{"t": ...}`) into gaveldrop `Event`s. Replicates
+/// `gaveldrop::verdict::events::extract` for the `t` type field, so a step's events can be filled
+/// without the project's `EventsConfig` (which `Adapter::invoke` is not handed).
+fn extract_t_events(stdout: &str) -> Vec<gaveldrop::verdict::events::Event> {
+    stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .filter_map(|value| {
+            let object = value.as_object()?;
+            let kind = object.get("t")?.as_str()?.to_string();
+            Some(gaveldrop::verdict::events::Event {
+                kind,
+                fields: object.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            })
+        })
+        .collect()
+}
+
+/// Reads a value out of a step's events by an `<event_type>.<field>` path: the first event whose
+/// `t` equals `<event_type>`, then its `<field>` as a string.
+fn capture_from_events(events: &[gaveldrop::verdict::events::Event], path: &str) -> Option<String> {
+    let (kind, field) = path.split_once('.')?;
+    events
+        .iter()
+        .find(|e| e.kind == kind)
+        .and_then(|e| e.fields.get(field))
+        .and_then(|v| v.as_str().map(String::from))
+}
+
 /// Invokes armadai (or, for a conformance probe, a bare shell script) against a
 /// `gaveldrop`-prepared isolation.
 struct Armadai;
@@ -338,6 +441,13 @@ impl Adapter for Armadai {
                 &["sh".to_string(), "-c".to_string(), script.to_string()],
                 &[],
             );
+        }
+
+        // Stepped branch: a case that declares `steps:` performs each as its own armadai
+        // exchange, sharing this one isolation (so step 1's persisted event log is what step 2's
+        // `--replay` reads back). See `run_steps`.
+        if !case.steps.is_empty() {
+            return run_steps(case, iso);
         }
 
         // Real branch: write the project + scenario, point fake-claude at it, build the
@@ -368,7 +478,10 @@ fn all_cases_load() {
             n += 1;
         }
     }
-    assert_eq!(n, 9, "expected 9 migrated cases");
+    assert_eq!(
+        n, 10,
+        "expected 9 migrated cases + the direct-replay steps case"
+    );
 }
 
 /// Builds a [`Case`] that [`Armadai`] claims but the built-in `Process` adapter does not.
@@ -450,8 +563,8 @@ fn e2e_suite_passes_through_gaveldrop() {
     // trivially true if the `cases:` glob or `root` path silently stopped matching anything.
     assert_eq!(
         report.summary().total,
-        9,
-        "expected 9 cases to run, got {}",
+        10,
+        "expected 10 cases to run, got {}",
         report.summary().total
     );
     assert!(

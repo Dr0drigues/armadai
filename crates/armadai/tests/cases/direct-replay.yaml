@@ -1,0 +1,49 @@
+name: direct-replay
+weight: 5
+# A two-exchange case (gaveldrop `steps:`, PR #140): step 1 runs a fleet and records its
+# event-sourced log; step 2 replays that same run by the `run_id` captured from step 1, and must
+# re-emit the same events. Both exchanges share this case's single isolation, so step 2's
+# `armadai run --replay` reads the log step 1 persisted. Exercises the plugin's exchange-nodes on
+# a custom event-based adapter, and covers the replay flow the flat cases never touch.
+setup:
+  pattern: direct
+  agents: [t-writer]
+  flags: ["--json"]
+  input: "hi"
+  scenario:
+    rules:
+      - match: { agent: t-writer }
+        respond: "done"
+      - match: {}
+        respond: "unexpected — catch-all should never be hit in this case"
+# Required even when empty: every assertion here is per step (the run as a whole produced nothing
+# these two exchanges don't each describe).
+expect: {}
+steps:
+  - name: the fleet runs and records its log
+    # Empty request -> the case's primary `armadai run` (built from setup). Capture the run_id the
+    # run_start event carries, for step 2 to replay by.
+    capture: { run_id: run_start.run_id }
+    expect:
+      exit_code: 0
+      events:
+        - { t: run_start }
+        - { t: agent_start, agent: t-writer }
+        - { t: result, content: "done" }
+      event_counts: { agent_start: 1, agent_end: 1 }
+      invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result]
+  - name: replaying that run re-emits the same events
+    request: { replay: "$run_id" }
+    expect:
+      exit_code: 0
+      events:
+        - { t: run_start }
+        - { t: agent_start, agent: t-writer }
+        - { t: result, content: "done" }
+      event_counts: { agent_start: 1, agent_end: 1 }
+      # NB: prov_non_empty/model_non_empty are deliberately NOT asserted on the replay. armadai's
+      # `--replay` re-emits the recorded structure but does not reconstruct each agent_start's
+      # provider/model (the known "RunStarted no prov/model roster" gap, OH1 Lot 6). This step
+      # documents that: the replayed event stream matches in shape, order and counts, minus the
+      # per-agent prov/model the log never persisted. Surfaced by giving armadai a two-exchange case.
+      invariants: [agent_start_end_symmetric, single_result]
