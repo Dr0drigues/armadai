@@ -15,6 +15,11 @@ path = "src/main.rs"
 [[bin]]
 name = "fake-claude"
 path = "src/bin/fake-claude.rs"
+required-features = ["e2e-fake"]
+
+[[test]]
+name = "gaveldrop"
+required-features = ["e2e-fake"]
 
 [features]
 default = ["tui", "web", "storage", "providers-api"]
@@ -22,6 +27,7 @@ tui = ["dep:ratatui", "dep:crossterm", "dep:portable-pty", "dep:strip-ansi-escap
 web = ["dep:axum", "dep:tower-http"]
 storage = ["dep:armadai-storage", "dep:rusqlite"]
 providers-api = ["dep:reqwest", "armadai-providers/api"]
+e2e-fake = ["dep:armadai-fake"]
 
 [dependencies]
 # Workspace crates
@@ -29,6 +35,7 @@ armadai-core = { path = "../armadai-core" }
 armadai-providers = { path = "../armadai-providers" }
 armadai-secrets = { path = "../armadai-secrets" }
 armadai-storage = { path = "../armadai-storage", optional = true }
+armadai-fake = { path = "../armadai-fake", optional = true, features = ["engine"] }
 
 # Async runtime
 tokio = { workspace = true, features = ["full"] }
@@ -88,6 +95,9 @@ anstream = "1.0.0"
 
 [dev-dependencies]
 armadai-core = { path = "../armadai-core", features = ["test-support"] }
+armadai-fake = { path = "../armadai-fake", features = ["engine"] }
 assert_cmd = "2.2.2"
-schemars = "1.2.1"
+gaveldrop = { git = "https://github.com/Dr0drigues/gaveldrop.git", tag = "v0.1.12" }
+gaveldrop-fake = { git = "https://github.com/Dr0drigues/gaveldrop.git", tag = "v0.1.12" }
+gaveldrop-conformance = { git = "https://github.com/Dr0drigues/gaveldrop.git", tag = "v0.1.12" }
 tempfile = { workspace = true }

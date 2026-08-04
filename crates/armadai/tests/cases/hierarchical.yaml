@@ -5,26 +5,26 @@ setup:
   agents: [t-coord, t-a, t-b]
   flags: ["--json"]
   input: "audit the auth module"
-fake:
-  rules:
-    # 1st coordinator call: decompose into parallel delegations. Both `@t-x:`
-    # lines are classified `Superior -> Subordinate` (Delegate) because t-coord
-    # is `orchestration.coordinator` (see `classify_relationship` in
-    # src/core/orchestration/mod.rs) — dispatched in parallel by
-    # `invoke_agent`/`hierarchical.rs`.
-    - match: { agent: t-coord, call: 1 }
-      respond: "@t-a: investigate the token flow\n@t-b: review the session store"
-    # 2nd coordinator call: the engine re-injects both subordinates' results and
-    # asks for synthesis. No `@agent:` line here => `parse_delegations` returns a
-    # single `FinalAnswer`, so this is the run's terminal content.
-    - match: { agent: t-coord, call: 2 }
-      respond: "Synthesis: token flow and session store both check out."
-    - match: { agent: t-a }
-      respond: "t-a: token flow looks sound"
-    - match: { agent: t-b }
-      respond: "t-b: session store looks sound"
-    - match: {}
-      respond: "unexpected — catch-all should never be hit in this case"
+  scenario:
+    rules:
+      # 1st coordinator call: decompose into parallel delegations. Both `@t-x:`
+      # lines are classified `Superior -> Subordinate` (Delegate) because t-coord
+      # is `orchestration.coordinator` (see `classify_relationship` in
+      # src/core/orchestration/mod.rs) — dispatched in parallel by
+      # `invoke_agent`/`hierarchical.rs`.
+      - match: { agent: t-coord, call: 1 }
+        respond: "@t-a: investigate the token flow\n@t-b: review the session store"
+      # 2nd coordinator call: the engine re-injects both subordinates' results and
+      # asks for synthesis. No `@agent:` line here => `parse_delegations` returns a
+      # single `FinalAnswer`, so this is the run's terminal content.
+      - match: { agent: t-coord, call: 2 }
+        respond: "Synthesis: token flow and session store both check out."
+      - match: { agent: t-a }
+        respond: "t-a: token flow looks sound"
+      - match: { agent: t-b }
+        respond: "t-b: session store looks sound"
+      - match: {}
+        respond: "unexpected — catch-all should never be hit in this case"
 expect:
   exit_code: 0
   events:
@@ -48,4 +48,4 @@ expect:
   # contrat per-tour ES (un start/end par invocation) — décision 2026-07-22
   # coordinator delegate call + 2 subordinates (parallel) + coordinator synthesis call = 4 invocations
   event_counts: { agent_start: 4, agent_end: 4, delegate: 2, result: 1 }
-  invariants: [agent_start_end_symmetric, prov_model_non_empty, single_result, no_orphan_events]
+  invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result, no_orphan_events]

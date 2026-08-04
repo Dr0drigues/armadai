@@ -1697,7 +1697,7 @@ async fn run_orchestrated_inner(
     // below (captured by `WorkroomSink`, printed after terminal restore).
     // Deliberately NOT `quiet` — `quiet` also suppresses the `RunEvent`s
     // themselves (agent_start/agent_end/board), which the Workroom needs to
-    // animate; see `tests/e2e/cases/quiet-orchestrated.yaml`.
+    // animate; see `tests/cases/quiet-orchestrated.yaml`.
     human_output: bool,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;

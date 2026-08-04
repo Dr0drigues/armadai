@@ -1,0 +1,27 @@
+[package]
+name = "armadai-fake"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ArmadAI — scenario-driven fake-claude engine, built on gaveldrop-fake."
+publish = false
+
+[features]
+# Gates the `run()` engine (and its `gaveldrop-fake` dependency) separately from the
+# always-available scenario types (`Scenario`/`Rule`/`Match`/`select_response`/
+# `emit_claude_jsonl`). Kept off by default so that a bare `cargo build` at the
+# workspace root (which builds this crate as an ordinary member, independent of any
+# consumer's own feature flags) never pulls in the external `gaveldrop-fake` path
+# dependency — only a consumer that explicitly requests `features = ["engine"]`
+# (see `crates/armadai/Cargo.toml`) does.
+engine = ["dep:gaveldrop-fake"]
+
+[dependencies]
+gaveldrop-fake = { git = "https://github.com/Dr0drigues/gaveldrop.git", tag = "v0.1.12", optional = true }
+serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

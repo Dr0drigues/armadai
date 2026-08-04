@@ -11,28 +11,28 @@ setup:
   agents: [t-charlie, t-alpha, t-bravo]
   flags: ["--json"]
   input: "propose a caching strategy"
-fake:
-  rules:
-    # Circulation phase: the ring runs `config.max_laps` laps regardless of
-    # call count (3 agents x N laps), so match on the propose-phase prompt
-    # text (`RING_ACTION_INSTRUCTIONS` in llm_agents.rs) rather than `call:`,
-    # to stay correct across however many laps the default config runs.
-    - match: { agent: t-charlie, prompt_contains: "ACTION: <type>" }
-      respond: "ACTION: PROPOSE\nCONTENT: t-charlie proposes a write-through cache"
-    - match: { agent: t-alpha, prompt_contains: "ACTION: <type>" }
-      respond: "ACTION: PROPOSE\nCONTENT: t-alpha proposes a read-through cache"
-    - match: { agent: t-bravo, prompt_contains: "ACTION: <type>" }
-      respond: "ACTION: PROPOSE\nCONTENT: t-bravo proposes a write-behind cache"
-    # Voting phase: matched on the vote prompt's distinct text (see
-    # `LlmRingAgent::vote` in llm_agents.rs) instead of a call index.
-    - match: { agent: t-charlie, prompt_contains: "Synthesize the contributions" }
-      respond: "CONFIDENCE: 0.8\nWrite-through is the safer default."
-    - match: { agent: t-alpha, prompt_contains: "Synthesize the contributions" }
-      respond: "CONFIDENCE: 0.75\nRead-through works if writes are rare."
-    - match: { agent: t-bravo, prompt_contains: "Synthesize the contributions" }
-      respond: "CONFIDENCE: 0.6\nWrite-behind risks data loss."
-    - match: {}
-      respond: "unexpected — catch-all should never be hit in this case"
+  scenario:
+    rules:
+      # Circulation phase: the ring runs `config.max_laps` laps regardless of
+      # call count (3 agents x N laps), so match on the propose-phase prompt
+      # text (`RING_ACTION_INSTRUCTIONS` in llm_agents.rs) rather than `call:`,
+      # to stay correct across however many laps the default config runs.
+      - match: { agent: t-charlie, prompt_contains: "ACTION: <type>" }
+        respond: "ACTION: PROPOSE\nCONTENT: t-charlie proposes a write-through cache"
+      - match: { agent: t-alpha, prompt_contains: "ACTION: <type>" }
+        respond: "ACTION: PROPOSE\nCONTENT: t-alpha proposes a read-through cache"
+      - match: { agent: t-bravo, prompt_contains: "ACTION: <type>" }
+        respond: "ACTION: PROPOSE\nCONTENT: t-bravo proposes a write-behind cache"
+      # Voting phase: matched on the vote prompt's distinct text (see
+      # `LlmRingAgent::vote` in llm_agents.rs) instead of a call index.
+      - match: { agent: t-charlie, prompt_contains: "Synthesize the contributions" }
+        respond: "CONFIDENCE: 0.8\nWrite-through is the safer default."
+      - match: { agent: t-alpha, prompt_contains: "Synthesize the contributions" }
+        respond: "CONFIDENCE: 0.75\nRead-through works if writes are rare."
+      - match: { agent: t-bravo, prompt_contains: "Synthesize the contributions" }
+        respond: "CONFIDENCE: 0.6\nWrite-behind risks data loss."
+      - match: {}
+        respond: "unexpected — catch-all should never be hit in this case"
 expect:
   exit_code: 0
   events:
@@ -68,4 +68,4 @@ expect:
     - { t: vote, agent: t-bravo }
     - { t: result }
   event_counts: { agent_start: 12, agent_end: 12, vote: 3, result: 1 }
-  invariants: [agent_start_end_symmetric, prov_model_non_empty, single_result, no_orphan_events]
+  invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result, no_orphan_events]

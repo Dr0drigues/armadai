@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Dr0drigues/gaveldrop/main/docs/case.schema.json
+cases: crates/armadai/tests/cases/**/*.yaml
+
+fake:
+  bins: [claude]
+
+clear_env: [ARMADAI_CONFIG_DIR]
+
+events:
+  type_field: t
+
+invariants:
+  agent_start_end_symmetric: { shape: paired, start: agent_start, end: agent_end, key: agent }
+  single_result:             { shape: exactly_one, type: result }
+  # F4 split: the old single `prov_model_non_empty` becomes TWO field_non_empty
+  # invariants — field_non_empty keeps exactly one field, a better diagnostic.
+  prov_non_empty:            { shape: field_non_empty, type: agent_start, field: prov }
+  model_non_empty:           { shape: field_non_empty, type: agent_start, field: model }
+  no_orphan_events:          { shape: no_orphan, key: agent, root: agent_start }

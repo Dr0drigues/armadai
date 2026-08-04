@@ -1,0 +1,39 @@
+name: quiet-orchestrated
+weight: 8
+setup:
+  pattern: blackboard
+  agents: [t-a, t-b]
+  # OH1 Lot 4 reconciliation Task 5: `--quiet` was only honored on the direct
+  # ES path (`dispatch_direct_es`) — the 3 orchestrated dispatches
+  # (`dispatch_blackboard_es`/`dispatch_ring_es`/`dispatch_hierarchical_es`)
+  # ignored it entirely. This case proves `--quiet` is now honored here too.
+  flags: ["--json", "--quiet"]
+  input: "assess the caching layer"
+  scenario:
+    rules:
+      # Same 2-round convergence shape as cases/blackboard.yaml (round 1
+      # FINDING, round 2 CONFIRMATION reaches consensus_threshold): scripted
+      # normally — `--quiet` only affects what the CLI *emits*, not how the
+      # engine runs, so the fake responses are unchanged from the non-quiet case.
+      - match: { agent: t-a, call: 1 }
+        respond: "ACTION: FINDING\nCONFIDENCE: 0.9\nCONTENT: caching layer looks sound"
+      - match: { agent: t-b, call: 1 }
+        respond: "ACTION: FINDING\nCONFIDENCE: 0.85\nCONTENT: cache TTLs look reasonable"
+      - match: { agent: t-a, call: 2 }
+        respond: "ACTION: CONFIRMATION\nTARGET: 0\nCONFIDENCE: 0.95\nCONTENT: agreed, no issues found"
+      - match: { agent: t-b, call: 2 }
+        respond: "ACTION: CONFIRMATION\nTARGET: 0\nCONFIDENCE: 0.9\nCONTENT: agreed, confirming the finding"
+      - match: {}
+        respond: "unexpected — catch-all should never be hit in this case"
+expect:
+  exit_code: 0
+  # Per the CLI help text (`src/cli/mod.rs`, `Command::Run::quiet`): "with
+  # --json, emit only the final `result` event". `agent_start`/`agent_end`/
+  # `board` are the intermediate events this pattern would otherwise emit
+  # (see cases/blackboard.yaml, which runs the identical scenario without
+  # `--quiet` and asserts `agent_start: 4, agent_end: 4, board: 4`) — under
+  # `--quiet` every one of them must be absent, leaving only `result`.
+  events:
+    - { t: result }
+  event_counts: { agent_start: 0, agent_end: 0, board: 0, result: 1 }
+  invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result, no_orphan_events]

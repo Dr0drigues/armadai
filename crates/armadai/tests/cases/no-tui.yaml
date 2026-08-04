@@ -14,14 +14,14 @@ setup:
   # this case was written).
   flags: ["--json", "--no-tui"]
   input: "say hi"
-fake:
-  rules:
-    - match: { prompt_contains: "ACTION: <type>" }
-      respond: "ACTION: PROPOSE\nCONTENT: hi"
-    - match: { prompt_contains: "Synthesize the contributions" }
-      respond: "CONFIDENCE: 0.9\nhi is fine."
-    - match: {}
-      respond: "unexpected — catch-all should never be hit in this case"
+  scenario:
+    rules:
+      - match: { prompt_contains: "ACTION: <type>" }
+        respond: "ACTION: PROPOSE\nCONTENT: hi"
+      - match: { prompt_contains: "Synthesize the contributions" }
+        respond: "CONFIDENCE: 0.9\nhi is fine."
+      - match: {}
+        respond: "unexpected — catch-all should never be hit in this case"
 expect:
   exit_code: 0
   events:
@@ -34,4 +34,4 @@ expect:
     - { t: vote, agent: t-b }
     - { t: result }
   event_counts: { agent_start: 8, agent_end: 8, vote: 2, result: 1 }
-  invariants: [agent_start_end_symmetric, prov_model_non_empty, single_result, no_orphan_events]
+  invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result, no_orphan_events]

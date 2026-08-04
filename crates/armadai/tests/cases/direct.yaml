@@ -1,0 +1,21 @@
+name: direct
+weight: 5
+setup:
+  pattern: direct
+  agents: [t-writer]
+  flags: ["--json"]
+  input: "hi"
+  scenario:
+    rules:
+      - match: { agent: t-writer }
+        respond: "done"
+      - match: {}
+        respond: "unexpected — catch-all should never be hit in this case"
+expect:
+  exit_code: 0
+  events:
+    - { t: run_start }
+    - { t: agent_start, agent: t-writer }
+    - { t: result }
+  event_counts: { agent_start: 1, agent_end: 1, result: 1 }
+  invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result, no_orphan_events]
