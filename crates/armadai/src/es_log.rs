@@ -83,6 +83,7 @@ mod tests {
                 agents: vec!["a".into()],
                 input: "x".into(),
                 project: None,
+                roster: Default::default(),
             },
             E::AgentObserved {
                 agent: "a".into(),

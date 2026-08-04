@@ -774,6 +774,7 @@ mod storage_tests {
                 agents: vec!["a".to_string(), "b".to_string()],
                 input: "do research".to_string(),
                 project: None,
+                roster: Default::default(),
             },
             ExecutionEvent::ConfigSnapshot {
                 config_json:
