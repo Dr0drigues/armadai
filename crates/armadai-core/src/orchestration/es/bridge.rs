@@ -21,8 +21,36 @@ use std::collections::BTreeMap;
 use super::event::ExecutionEvent;
 use super::log::EventLog;
 use super::state::ExecutionState;
+use crate::agent::Agent;
 use crate::events::{EventSink, RunEvent};
 use crate::orchestration::hierarchical::{DelegationEvent, OrchestrationResult};
+
+/// Build the `RunStarted.roster`/`agent_meta` table (roster key -> `(provider,
+/// configured model)`) from a loaded agent roster. Mirrors
+/// `cli::run::agent_meta_from_roster` (the live path's equivalent, built from
+/// the same `Agent` structs) — kept as a core-side helper so every ES engine's
+/// `run_*_es` assembly function (`direct`/`blackboard`/`ring`/`hierarchical`)
+/// can populate `RunStarted.roster` at emission time without the `armadai-core`
+/// crate depending on the `armadai` crate's CLI module.
+///
+/// Every entry uses the agent's *configured* model (`agent.metadata.model`),
+/// not the effectively-resolved `latest:auto` tier — same convention
+/// `agent_meta_from_roster`/`AgentStart` already follow (see this module's
+/// `map_execution_to_run_events` doc).
+pub fn roster_from_agents(agents: &BTreeMap<String, Agent>) -> BTreeMap<String, (String, String)> {
+    agents
+        .iter()
+        .map(|(key, agent)| {
+            (
+                key.clone(),
+                (
+                    agent.metadata.provider.clone(),
+                    agent.metadata.model.clone().unwrap_or_default(),
+                ),
+            )
+        })
+        .collect()
+}
 
 /// Per-event projection: `ExecutionEvent` → zero or more `RunEvent`s, given a
 /// side table of agent metadata (`agent_meta`, roster key → `(prov, model)`).
@@ -776,6 +804,7 @@ mod tests {
                 agents: vec![],
                 input: "x".into(),
                 project: None,
+                roster: Default::default(),
             },
             ExecutionEvent::Halted {
                 reason: "budget".into(),
@@ -874,6 +903,7 @@ mod tests {
                 agents: vec!["lead".into(), "core".into()],
                 input: "task".into(),
                 project: None,
+                roster: Default::default(),
             },
             ExecutionEvent::AgentInvoked {
                 agent: "lead".into(),
@@ -957,6 +987,7 @@ mod tests {
             agents: vec!["a".into()],
             input: "x".into(),
             project: None,
+            roster: Default::default(),
         }];
         let state = fold(&events);
         let result = to_orchestration_result(&state, &events);
@@ -1006,5 +1037,75 @@ mod tests {
         let state = fold(&events);
         let result = to_orchestration_result(&state, &events);
         assert_eq!(result.content, "final answer");
+    }
+
+    // ── (d) roster_from_agents ──────────────────────────────────────
+
+    fn test_agent(provider: &str, model: Option<&str>) -> Agent {
+        Agent {
+            name: "a".to_string(),
+            source: std::path::PathBuf::from("a.md"),
+            metadata: crate::agent::AgentMetadata {
+                provider: provider.to_string(),
+                model: model.map(str::to_string),
+                command: None,
+                args: None,
+                temperature: 0.7,
+                max_tokens: None,
+                timeout: None,
+                tags: vec![],
+                stacks: vec![],
+                scope: vec![],
+                model_fallback: vec![],
+                cost_limit: None,
+                rate_limit: None,
+                context_window: None,
+                mode: None,
+                orchestration: None,
+                triggers: None,
+                ring_config: None,
+            },
+            system_prompt: "prompt".to_string(),
+            instructions: None,
+            output_format: None,
+            pipeline: None,
+            context: None,
+        }
+    }
+
+    #[test]
+    fn roster_from_agents_maps_provider_and_configured_model() {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "core".to_string(),
+            test_agent("anthropic", Some("claude-x")),
+        );
+        agents.insert("qa".to_string(), test_agent("google", Some("gemini-y")));
+
+        let roster = roster_from_agents(&agents);
+
+        assert_eq!(
+            roster.get("core"),
+            Some(&("anthropic".to_string(), "claude-x".to_string()))
+        );
+        assert_eq!(
+            roster.get("qa"),
+            Some(&("google".to_string(), "gemini-y".to_string()))
+        );
+    }
+
+    #[test]
+    fn roster_from_agents_defaults_missing_model_to_empty_string() {
+        // Mirrors `agent_meta_from_roster`'s own `unwrap_or_default()` for an
+        // agent with no configured `model` (e.g. a CLI-provider agent).
+        let mut agents = BTreeMap::new();
+        agents.insert("cli-agent".to_string(), test_agent("claude-cli", None));
+
+        let roster = roster_from_agents(&agents);
+
+        assert_eq!(
+            roster.get("cli-agent"),
+            Some(&("claude-cli".to_string(), String::new()))
+        );
     }
 }

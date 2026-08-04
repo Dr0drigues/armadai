@@ -466,6 +466,7 @@ mod tests {
             agents: vec!["a".into(), "b".into(), "c".into()],
             input: "go".into(),
             project: None,
+            roster: Default::default(),
         }];
         run_event_sourced("r", init, &decider, &eff, &mut log)
             .await
@@ -547,6 +548,7 @@ mod tests {
             agents: batch.iter().map(|s| s.agent.clone()).collect(),
             input: "go".into(),
             project: None,
+            roster: Default::default(),
         }];
         run_event_sourced("r", init, &decider, &eff, &mut log)
             .await
@@ -608,6 +610,7 @@ mod tests {
             agents: vec!["a".into(), "b".into(), "c".into()],
             input: "go".into(),
             project: None,
+            roster: Default::default(),
         }];
         let state = run_event_sourced("r", init, &decider, &FailBEff, &mut log)
             .await
@@ -689,6 +692,7 @@ mod tests {
             agents: vec!["a".into()],
             input: "go".into(),
             project: None,
+            roster: Default::default(),
         }];
         let st = run_event_sourced("r", init, &D, &Eff, &mut log)
             .await
@@ -776,6 +780,7 @@ mod tests {
                 agents: vec!["a".into(), "b".into()],
                 input: "go".into(),
                 project: None,
+                roster: Default::default(),
             },
         )
         .unwrap();
@@ -833,6 +838,7 @@ mod tests {
                 agents: vec!["a".into()],
                 input: "go".into(),
                 project: None,
+                roster: Default::default(),
             },
         )
         .unwrap();
@@ -864,6 +870,7 @@ mod tests {
                 agents: vec!["a".into()],
                 input: "go".into(),
                 project: None,
+                roster: Default::default(),
             },
         )
         .unwrap();
