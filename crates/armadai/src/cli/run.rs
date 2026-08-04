@@ -4286,20 +4286,6 @@ mod es_switch_tests {
         .unwrap();
     }
 
-    /// Strip the fields `replay_run` cannot reconstruct from the persisted
-    /// event log alone (see `run_replay.rs`'s module doc: `AgentStart`'s
-    /// `prov`/`model` need the pre-run roster, which the log never carries)
-    /// before comparing a live vs. replayed `RunEvent` sequence. Every other
-    /// field of every other event must still match exactly.
-    #[cfg(feature = "storage")]
-    fn normalize_for_replay_comparison(mut v: serde_json::Value) -> serde_json::Value {
-        if v["t"] == "agent_start" {
-            v["prov"] = serde_json::Value::String(String::new());
-            v["model"] = serde_json::Value::String(String::new());
-        }
-        v
-    }
-
     #[cfg(feature = "storage")]
     #[tokio::test]
     async fn replay_reproduces_the_live_run_event_sequence() {
@@ -4321,7 +4307,6 @@ mod es_switch_tests {
             .unwrap()
             .iter()
             .cloned()
-            .map(normalize_for_replay_comparison)
             .collect();
         let replayed: Vec<_> = replay_capture
             .events
@@ -4329,7 +4314,6 @@ mod es_switch_tests {
             .unwrap()
             .iter()
             .cloned()
-            .map(normalize_for_replay_comparison)
             .collect();
 
         assert!(!live.is_empty(), "sanity: the live run must emit events");
@@ -4360,8 +4344,8 @@ mod es_switch_tests {
         let replayed_mid_stream: Vec<_> = replayed[1..replayed.len() - 1].to_vec();
         assert_eq!(
             live, replayed_mid_stream,
-            "replay must reproduce the same mid-stream RunEvent sequence (modulo the \
-             non-reconstructable AgentStart.prov/model gap, already stripped above)"
+            "replay must reproduce the same mid-stream RunEvent sequence exactly — including \
+             AgentStart.prov/model, now that the roster round-trips through RunStarted"
         );
     }
 
