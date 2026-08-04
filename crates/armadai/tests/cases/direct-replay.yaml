@@ -41,9 +41,8 @@ steps:
         - { t: agent_start, agent: t-writer }
         - { t: result, content: "done" }
       event_counts: { agent_start: 1, agent_end: 1 }
-      # NB: prov_non_empty/model_non_empty are deliberately NOT asserted on the replay. armadai's
-      # `--replay` re-emits the recorded structure but does not reconstruct each agent_start's
-      # provider/model (the known "RunStarted no prov/model roster" gap, OH1 Lot 6). This step
-      # documents that: the replayed event stream matches in shape, order and counts, minus the
-      # per-agent prov/model the log never persisted. Surfaced by giving armadai a two-exchange case.
-      invariants: [agent_start_end_symmetric, single_result]
+      # The replay asserts prov/model just like step 1: `armadai run --replay` reconstructs each
+      # agent_start's provider/model from the roster persisted in RunStarted (fix #322, closing the
+      # "RunStarted no prov/model roster" gap this very case first surfaced, OH1 Lot 6). This step is
+      # now the black-box regression proving replay stays faithful down to the per-agent prov/model.
+      invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result]
