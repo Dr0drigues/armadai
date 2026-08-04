@@ -4418,6 +4418,50 @@ mod es_switch_tests {
         assert_eq!(tail["agents"], serde_json::json!(1));
     }
 
+    /// Bugfix regression lock (`fix/replay-prov-model-roster`): a replayed
+    /// `AgentStart` must carry the run's REAL provider/model, not the
+    /// "no roster available" empty-string fallback. `run_direct_against_sqlite_log`
+    /// drives the real production `run_direct_es` — which now persists
+    /// `RunStarted.roster` (built via `roster_from_agents` from the `agents`
+    /// map it holds, here `test_agent("solo")`'s `anthropic`/`concrete-model`)
+    /// — against a real `SqliteLog`, exactly like every other test in this
+    /// section. `replay_from_log` must recover that roster from the log's
+    /// `RunStarted` event (rather than the unconditional empty `agent_meta`
+    /// it used before the fix) so the replayed `agent_start` in the JSON
+    /// stream shows the same values a live run's did.
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn replay_reconstructs_agent_start_prov_model_from_persisted_roster() {
+        use armadai_storage::open_in_memory;
+
+        let db = open_in_memory().unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        let (_live_capture, live_sink) = capture_sink();
+        run_direct_against_sqlite_log(db.clone(), &run_id, &live_sink).await;
+
+        let replay_log = crate::es_log::SqliteLog::new(db);
+        let (replay_capture, replay_sink) = capture_sink();
+        crate::cli::run_replay::replay_from_log(&replay_log, &run_id, &replay_sink, false).unwrap();
+
+        let events = replay_capture.events.lock().unwrap();
+        let agent_start = events
+            .iter()
+            .find(|e| e["t"] == "agent_start")
+            .expect("replayed stream must contain an agent_start event");
+
+        assert_eq!(
+            agent_start["prov"], "anthropic",
+            "replayed AgentStart must carry the run's real provider (from the \
+             persisted RunStarted.roster), got: {agent_start:?}"
+        );
+        assert_eq!(
+            agent_start["model"], "concrete-model",
+            "replayed AgentStart must carry the run's real configured model \
+             (from the persisted RunStarted.roster), got: {agent_start:?}"
+        );
+    }
+
     /// Re-review fix, regression lock: `--replay` of a `ring` run with
     /// non-empty `state.ring.votes` must include the `[votes] …` tally in
     /// the terminal `Result.content`, exactly like the live path and
@@ -4449,6 +4493,7 @@ mod es_switch_tests {
                 agents: vec!["a".to_string(), "b".to_string()],
                 input: "review the design".to_string(),
                 project: None,
+                roster: Default::default(),
             },
             ExecutionEvent::LapStarted { lap: 1 },
             ExecutionEvent::ContributionAdded {
@@ -4579,6 +4624,7 @@ mod es_switch_tests {
                 agents: vec!["solo".to_string()],
                 input: "do the thing".to_string(),
                 project: None,
+                roster: Default::default(),
             },
         )
         .unwrap();

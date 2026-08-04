@@ -61,6 +61,13 @@
 //! `Delegate`/`Warning`/...) round-trips through the log exactly, since it's
 //! carried verbatim by the `ExecutionEvent` that produced it.
 //!
+//! Tracked on `fix/replay-prov-model-roster`: `RunStarted` (OH1 socle) now
+//! has a `roster` field (`#[serde(default)]`, see `event.rs`) and
+//! `armadai-core::orchestration::es::bridge::roster_from_agents` builds it —
+//! but no production `RunStarted` emission populates it yet, and this
+//! module doesn't consume it yet either, so the gap above still applies
+//! until both land.
+//!
 //! `human_output` gates the two pieces of direct terminal output this
 //! module performs (a muted `replay <run_id>` banner and, on success, the
 //! run's final answer) — mirroring the `!json && !quiet` gate `run.rs`'s

@@ -1419,6 +1419,7 @@ pub async fn run_hierarchical_es(
             agents: agent_names,
             input: input.to_string(),
             project: None,
+            roster: Default::default(),
         },
         ExecutionEvent::ConfigSnapshot {
             config_json: serde_json::to_string(&config).unwrap_or_default(),
@@ -1620,6 +1621,7 @@ mod tests {
                 agents: agents.iter().map(|a| a.to_string()).collect(),
                 input: "build X".into(),
                 project: None,
+                roster: Default::default(),
             }
         }
 
@@ -2989,6 +2991,7 @@ mod tests {
                 agents: agents.iter().map(|a| a.to_string()).collect(),
                 input: input.into(),
                 project: None,
+                roster: Default::default(),
             }
         }
 
@@ -3561,6 +3564,7 @@ mod tests {
                 agents: agent_names,
                 input: "build X".to_string(),
                 project: None,
+                roster: Default::default(),
             },
         )
         .unwrap();
@@ -3768,6 +3772,7 @@ mod tests {
                 agents: vec!["dev-lead".to_string()],
                 input: "build X".to_string(),
                 project: None,
+                roster: Default::default(),
             },
         )
         .unwrap();

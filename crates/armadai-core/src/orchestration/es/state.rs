@@ -134,6 +134,11 @@ pub fn apply(state: &mut ExecutionState, event: &ExecutionEvent) {
             agents,
             input: _,
             project: _,
+            // Read only by the bridge (`map_execution_to_run_events`'s
+            // `agent_meta`) and by replay (`run_replay.rs`), not by this
+            // pure state projection — `ExecutionState` has no roster-meta
+            // field of its own to fold it into.
+            roster: _,
         } => {
             state.run_id = run_id.clone();
             state.pattern = pattern.clone();
@@ -336,6 +341,7 @@ mod tests {
                 agents: vec!["dev-lead".into(), "core".into()],
                 input: "task".into(),
                 project: None,
+                roster: Default::default(),
             },
             E::AgentInvoked {
                 agent: "dev-lead".into(),
@@ -403,6 +409,7 @@ mod tests {
                 agents: vec!["a".into()],
                 input: "x".into(),
                 project: None,
+                roster: Default::default(),
             },
             E::AgentObserved {
                 agent: "a".into(),
@@ -434,6 +441,7 @@ mod tests {
                 agents: vec!["a".into(), "b".into()],
                 input: "x".into(),
                 project: None,
+                roster: Default::default(),
             },
             E::RoundStarted { round: 1 },
             E::BoardEntryAdded {
@@ -463,6 +471,7 @@ mod tests {
                 agents: vec!["a".into()],
                 input: "x".into(),
                 project: None,
+                roster: Default::default(),
             },
             E::ModelRouted {
                 agent: "a".into(),
@@ -483,6 +492,7 @@ mod tests {
                 agents: vec!["a".into(), "b".into()],
                 input: "x".into(),
                 project: None,
+                roster: Default::default(),
             },
             E::AskedPeer {
                 from: "a".into(),
@@ -510,6 +520,7 @@ mod tests {
                 agents: vec!["a".into()],
                 input: "x".into(),
                 project: None,
+                roster: Default::default(),
             },
             E::ConfigSnapshot {
                 config_json: "{\"max_rounds\":5}".into(),

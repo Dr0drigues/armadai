@@ -765,6 +765,7 @@ pub async fn run_blackboard_es(
             agents: agent_order.clone(),
             input: input.to_string(),
             project: None,
+            roster: Default::default(),
         },
         ExecutionEvent::ConfigSnapshot {
             config_json: serde_json::to_string(&config).unwrap_or_default(),
@@ -891,6 +892,7 @@ mod tests {
             agents: agents.iter().map(|a| a.to_string()).collect(),
             input: "task".into(),
             project: None,
+            roster: Default::default(),
         }
     }
 
@@ -1544,6 +1546,7 @@ mod tests {
                 agents: agents.iter().map(|a| a.to_string()).collect(),
                 input: "task".into(),
                 project: None,
+                roster: Default::default(),
             }
         }
 
@@ -2097,6 +2100,7 @@ mod tests {
                     agents: agent_order,
                     input: "task".to_string(),
                     project: None,
+                    roster: Default::default(),
                 },
             )
             .unwrap();
@@ -2139,6 +2143,7 @@ mod tests {
                     agents: vec!["a".to_string()],
                     input: "task".to_string(),
                     project: None,
+                    roster: Default::default(),
                 },
             )
             .unwrap();

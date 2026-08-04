@@ -24,6 +24,24 @@ pub enum ExecutionEvent {
         agents: Vec<String>,
         input: String,
         project: Option<String>,
+        /// The run's roster metadata: agent name -> `(provider, configured
+        /// model)`, mirroring the live path's `agent_meta`/`agent_meta_from_roster`
+        /// (`cli::run.rs`) — see [`super::bridge::roster_from_agents`], which
+        /// every production `RunStarted` emission site builds this from.
+        /// Persisted here (rather than only threaded through in-memory at
+        /// emission time) because `ExecutionEvent` otherwise never records an
+        /// agent's provider anywhere, and the model configured for an
+        /// agent's first invocation isn't reconstructable from the rest of
+        /// the log either — so a read-only consumer (`armadai run --replay`)
+        /// would have no way to enrich `AgentInvoked -> AgentStart` with the
+        /// run's real provider/model without it. `#[serde(default)]` is
+        /// required: event logs written before this field existed have no
+        /// `roster` key at all, and must still deserialize — they fall back
+        /// to an empty roster, i.e. the documented "no roster available"
+        /// behavior (`AgentStart` carries empty `prov`/`model`), not a hard
+        /// error.
+        #[serde(default)]
+        roster: std::collections::BTreeMap<String, (String, String)>,
     },
     /// A snapshot of the run's orchestration config (serialized as JSON).
     /// Emitted immediately after `RunStarted` by the blackboard, ring, and
@@ -137,4 +155,72 @@ pub enum ExecutionEvent {
 /// so the hierarchical `is_final_answer` reads it as a plain final answer.
 pub fn delegation_failed_content(error: &str) -> String {
     format!("[Delegation failed: {error}]")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Backward-compatibility regression lock (bugfix `fix/replay-prov-model-roster`):
+    /// an event log written by a version of ArmadAI that predates the
+    /// `roster` field has no `roster` key in its persisted `RunStarted` JSON
+    /// at all. `#[serde(default)]` must make that still deserialize
+    /// successfully — falling back to an empty roster (today's documented
+    /// "no roster available" fallback, see `bridge.rs`'s
+    /// `agent_invoked_maps_to_agent_start_with_empty_prov_model_when_meta_absent`)
+    /// rather than a hard deserialization error that would make an old log
+    /// unreadable by `armadai run --replay`/`--resume`.
+    #[test]
+    fn run_started_without_roster_field_deserializes_to_empty_default() {
+        let json = r#"{
+            "t": "run_started",
+            "run_id": "r",
+            "pattern": "direct",
+            "agents": ["solo"],
+            "input": "do the thing",
+            "project": null
+        }"#;
+
+        let event: ExecutionEvent = serde_json::from_str(json).expect(
+            "a RunStarted event with no persisted `roster` key must still deserialize \
+             (old event logs predate this field)",
+        );
+
+        match event {
+            ExecutionEvent::RunStarted { roster, .. } => {
+                assert!(
+                    roster.is_empty(),
+                    "roster must default to empty when absent from the JSON, got: {roster:?}"
+                );
+            }
+            other => panic!("expected RunStarted, got {other:?}"),
+        }
+    }
+
+    /// Round-trip proof that a populated `roster` survives serialize ->
+    /// deserialize unchanged, complementing the "absent field" case above.
+    #[test]
+    fn run_started_roster_round_trips_through_json() {
+        let mut roster = std::collections::BTreeMap::new();
+        roster.insert(
+            "solo".to_string(),
+            ("anthropic".to_string(), "concrete-model".to_string()),
+        );
+        let event = ExecutionEvent::RunStarted {
+            run_id: "r".into(),
+            pattern: "direct".into(),
+            agents: vec!["solo".into()],
+            input: "do the thing".into(),
+            project: None,
+            roster: roster.clone(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        let round_tripped: ExecutionEvent = serde_json::from_str(&json).unwrap();
+
+        match round_tripped {
+            ExecutionEvent::RunStarted { roster: got, .. } => assert_eq!(got, roster),
+            other => panic!("expected RunStarted, got {other:?}"),
+        }
+    }
 }

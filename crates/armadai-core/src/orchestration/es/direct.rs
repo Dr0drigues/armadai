@@ -270,6 +270,7 @@ pub async fn run_direct_es(
         agents: vec![agent.to_string()],
         input: input.to_string(),
         project: None,
+        roster: Default::default(),
     }];
 
     let decider = DirectDecider::new(agent, input, agents.clone(), routing_rules);
@@ -507,6 +508,7 @@ mod tests {
                 agents: vec!["solo".to_string()],
                 input: "do the thing".to_string(),
                 project: None,
+                roster: Default::default(),
             },
         )
         .unwrap();
@@ -556,6 +558,7 @@ mod tests {
                 agents: vec!["solo".to_string()],
                 input: "do the thing".to_string(),
                 project: None,
+                roster: Default::default(),
             },
         )
         .unwrap();
@@ -616,6 +619,7 @@ mod tests {
                 agents: vec!["solo".to_string()],
                 input: "do the thing".to_string(),
                 project: None,
+                roster: Default::default(),
             },
         )
         .unwrap();
@@ -758,6 +762,7 @@ mod tests {
             agents: vec!["solo".into()],
             input: "go".into(),
             project: None,
+            roster: Default::default(),
         }]);
         let actions = decider.decide(&state);
         assert_eq!(actions.len(), 1);
@@ -773,6 +778,7 @@ mod tests {
                 agents: vec!["solo".into()],
                 input: "go".into(),
                 project: None,
+                roster: Default::default(),
             },
             ExecutionEvent::AgentInvoked {
                 agent: "solo".into(),
@@ -804,6 +810,7 @@ mod tests {
             agents: vec!["solo".into()],
             input: "go".into(),
             project: None,
+            roster: Default::default(),
         }]);
         let actions = decider.decide(&state);
         assert_eq!(actions.len(), 2);
