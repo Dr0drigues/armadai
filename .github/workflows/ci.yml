@@ -97,9 +97,9 @@ jobs:
       # storage-backed CLI paths) — the armadai-storage crate's own tests
       # already run under bare `tui`. `e2e-fake` additionally builds the
       # `fake-claude` bin and the `gaveldrop` test target (crates/armadai/
-      # tests/gaveldrop.rs), which runs the 9-case e2e suite through the
+      # tests/gaveldrop.rs), which runs the 10-case e2e suite through the
       # external `gaveldrop` YAML test engine (a git dependency, pinned by
-      # `rev` — see crates/armadai/Cargo.toml) and writes an HTML report to
+      # `tag` — see crates/armadai/Cargo.toml) and writes an HTML report to
       # target/gaveldrop-report/ for the next step to upload. Kept off the
       # `tui`-only mode above to keep that mode minimal.
       - run: cargo test --no-default-features --features tui,storage,e2e-fake

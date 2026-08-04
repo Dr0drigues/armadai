@@ -511,9 +511,9 @@ fn armadai_adapter_is_conformant() {
     assert!(report.is_conformant(), "\n{}", report.render());
 }
 
-/// Runs the full 9-case suite through `gaveldrop::runner::run_all_with`, the same entry point
+/// Runs the full 10-case suite through `gaveldrop::runner::run_all_with`, the same entry point
 /// `armadai`'s own e2e binary would use in production, with the `Armadai` adapter prepended to
-/// gaveldrop's built-in registry. This is the decisive migration gate: it proves the 9 cases
+/// gaveldrop's built-in registry. This is the decisive migration gate: it proves the 10 cases
 /// reach the SAME verdicts the old hand-rolled harness produced (deleted in T3), now evaluated
 /// entirely by gaveldrop's `verdict::evaluate` instead of bespoke assertion code.
 #[test]
