@@ -112,9 +112,9 @@ dependencies = [
  "crossterm",
  "dialoguer",
  "futures-util",
- "gaveldrop",
+ "gaveldrop 0.1.16",
  "gaveldrop-conformance",
- "gaveldrop-fake",
+ "gaveldrop-fake 0.1.12",
  "include_dir",
  "portable-pty",
  "pulldown-cmark",
@@ -161,7 +161,7 @@ dependencies = [
 name = "armadai-fake"
 version = "0.0.0"
 dependencies = [
- "gaveldrop-fake",
+ "gaveldrop-fake 0.1.12",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -786,7 +786,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -958,7 +958,25 @@ source = "git+https://github.com/Dr0drigues/gaveldrop.git?tag=v0.1.12#4962ae0fa4
 dependencies = [
  "anstream",
  "anstyle",
- "gaveldrop-fake",
+ "gaveldrop-fake 0.1.12",
+ "glob",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror 2.0.18",
+ "ureq",
+]
+
+[[package]]
+name = "gaveldrop"
+version = "0.1.16"
+source = "git+https://github.com/Dr0drigues/gaveldrop.git?tag=v1#0032413b5a40ede5ea534bc05d59bc52b4798950"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "gaveldrop-fake 0.1.16",
  "glob",
  "schemars",
  "serde",
@@ -974,13 +992,26 @@ name = "gaveldrop-conformance"
 version = "0.1.12"
 source = "git+https://github.com/Dr0drigues/gaveldrop.git?tag=v0.1.12#4962ae0fa4aa8ec863cb66b29c8bf9e839bbf2b3"
 dependencies = [
- "gaveldrop",
+ "gaveldrop 0.1.12",
 ]
 
 [[package]]
 name = "gaveldrop-fake"
 version = "0.1.12"
 source = "git+https://github.com/Dr0drigues/gaveldrop.git?tag=v0.1.12#4962ae0fa4aa8ec863cb66b29c8bf9e839bbf2b3"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "thiserror 2.0.18",
+ "tiny_http",
+]
+
+[[package]]
+name = "gaveldrop-fake"
+version = "0.1.16"
+source = "git+https://github.com/Dr0drigues/gaveldrop.git?tag=v1#0032413b5a40ede5ea534bc05d59bc52b4798950"
 dependencies = [
  "schemars",
  "serde",
@@ -2012,7 +2043,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2341,7 +2372,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2800,10 +2831,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
