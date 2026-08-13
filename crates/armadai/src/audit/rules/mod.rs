@@ -53,6 +53,11 @@ pub struct AuditSettings {
     /// Deep pass: max characters kept per prompt/instructions excerpt sent
     /// to the LLM auditor payload.
     pub deep_prompt_truncation: usize,
+    /// Whether to scan this project's Claude Code transcripts for observed
+    /// usage (the "Observed usage" section plus rules U01-U04). `true` by
+    /// default, so existing configs are unaffected. `--no-usage` on the CLI
+    /// always wins over this when both are set — see `cli::audit::execute`.
+    pub usage: bool,
 }
 
 impl Default for AuditSettings {
@@ -61,6 +66,7 @@ impl Default for AuditSettings {
             prompt_token_threshold: 4000,
             activation_similarity: 0.6,
             deep_prompt_truncation: 2000,
+            usage: true,
         }
     }
 }
@@ -80,6 +86,7 @@ impl AuditSettings {
             prompt_token_threshold: Option<usize>,
             activation_similarity: Option<f64>,
             deep_prompt_truncation: Option<usize>,
+            usage: Option<bool>,
         }
         let mut settings = Self::default();
         for candidate in ["armadai.yaml", ".armadai/config.yaml"] {
@@ -97,6 +104,9 @@ impl AuditSettings {
                 }
                 if let Some(t) = section.deep_prompt_truncation {
                     settings.deep_prompt_truncation = t;
+                }
+                if let Some(u) = section.usage {
+                    settings.usage = u;
                 }
             }
             break;
@@ -164,7 +174,7 @@ fn registry() -> Vec<RuleFn> {
         usage_rules::u01_declared_never_used,
         usage_rules::u02_used_but_undeclared,
         usage_rules::u03_coordinator_bypassed,
-        usage_rules::u04_session_coverage,
+        usage_rules::u04_skill_activity,
     ]
 }
 
@@ -242,13 +252,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("armadai.yaml"),
-            "audit:\n  prompt_token_threshold: 1234\n  activation_similarity: 0.75\n  deep_prompt_truncation: 500\n",
+            "audit:\n  prompt_token_threshold: 1234\n  activation_similarity: 0.75\n  deep_prompt_truncation: 500\n  usage: false\n",
         )
         .unwrap();
         let s = AuditSettings::from_project(dir.path());
         assert_eq!(s.prompt_token_threshold, 1234);
         assert!((s.activation_similarity - 0.75).abs() < f64::EPSILON);
         assert_eq!(s.deep_prompt_truncation, 500);
+        assert!(!s.usage, "usage: false in config must be honoured");
     }
 
     #[test]
@@ -258,6 +269,10 @@ mod tests {
         assert_eq!(s.prompt_token_threshold, 4000);
         assert!((s.activation_similarity - 0.6).abs() < f64::EPSILON);
         assert_eq!(s.deep_prompt_truncation, 2000);
+        assert!(
+            s.usage,
+            "usage must default to true so existing configs are unaffected"
+        );
     }
 
     #[test]

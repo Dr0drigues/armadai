@@ -101,14 +101,20 @@ pub(super) fn u02_used_but_undeclared(ctx: &AuditContext) -> Vec<Finding> {
                 .map(|i| i.source_path.clone())
                 .unwrap_or_else(|| PathBuf::from(".")),
             related: vec![],
+            // Not "declared nowhere": this check only sees `.claude/agents/`
+            // on this project, so a plugin-provided agent (invisible on that
+            // side by design, out of scope for this check) would also land
+            // here — the message must not claim more than the code knows.
             message: format!(
-                "sub-agent '{}' ran {} time(s) but is declared nowhere{}",
+                "sub-agent '{}' ran {} time(s) but is not declared in this project's \
+                 `.claude/agents/`{}",
                 name,
                 stats.invocations,
                 if builtin {
                     " (it is built into Claude Code)"
                 } else {
-                    ""
+                    " (if this isn't a typo, it may come from a plugin, which is out of scope \
+                     for this check)"
                 }
             ),
             suggestion: Some(
@@ -174,7 +180,32 @@ pub(super) fn u03_coordinator_bypassed(ctx: &AuditContext) -> Vec<Finding> {
     let Some(instructions) = ctx.config.instructions.as_ref() else {
         return Vec::new();
     };
-    let total: u32 = usage.agents.values().map(|a| a.invocations).sum();
+    // The spec's wording is "declared coordinator ≠ observed *root* of
+    // delegations", so the denominator must be the root's own delegations,
+    // not every delegation observed anywhere in the tree. Summing
+    // `usage.agents` (as this used to) counts nested fan-out too: for
+    // `root → dev-lead (1) → 10 specialists (10)`, that denominator is 11,
+    // making dev-lead look bypassed at 9% when it is precisely the
+    // coordinator fanning out. Restricting to `usage.edges[root]` fixes
+    // that; it is a no-op on today's data, where every delegation is
+    // attributed to the root, and correct once nested topologies appear.
+    // This is still not exact — an edge only says "root delegated to X at
+    // least once", not how many times, since `edges` is a `BTreeSet` with no
+    // per-edge counter. Getting the exact count would need one; that's a
+    // concern for a future lot, not this fix.
+    let root = if usage.root_agent.is_empty() {
+        ROOT_AGENT
+    } else {
+        usage.root_agent.as_str()
+    };
+    let total: u32 = usage
+        .edges
+        .get(root)
+        .into_iter()
+        .flatten()
+        .filter_map(|child| usage.agents.get(child))
+        .map(|a| a.invocations)
+        .sum();
     if total == 0 {
         return Vec::new();
     }
@@ -219,8 +250,16 @@ pub(super) fn u03_coordinator_bypassed(ctx: &AuditContext) -> Vec<Finding> {
     }]
 }
 
-/// U04 — session coverage of a declared skill, reported without judgement.
-pub(super) fn u04_session_coverage(ctx: &AuditContext) -> Vec<Finding> {
+/// U04 — activity of a declared skill (turns it governed across the scanned
+/// sessions), reported without judgement.
+///
+/// This is *not* a coverage ratio: `UsageFacts` holds no per-session
+/// breakdown of which sessions a skill was active in, only a total turn
+/// count and a total session count, so a "how many sessions did this skill
+/// touch out of how many" percentage is not something the aggregate can
+/// compute. What is reported here — turns governed, and how many sessions
+/// were scanned in total — is exactly what the data supports.
+pub(super) fn u04_skill_activity(ctx: &AuditContext) -> Vec<Finding> {
     let Some(usage) = observed(ctx) else {
         return Vec::new();
     };
@@ -231,7 +270,7 @@ pub(super) fn u04_session_coverage(ctx: &AuditContext) -> Vec<Finding> {
     for skill in &ctx.config.skills {
         let turns = usage.skills.get(&skill.name).copied().unwrap_or(0);
         if turns == 0 {
-            continue; // U01's territory, not a coverage report.
+            continue; // U01's territory, not an activity report.
         }
         findings.push(Finding {
             rule: "U04",
@@ -239,7 +278,7 @@ pub(super) fn u04_session_coverage(ctx: &AuditContext) -> Vec<Finding> {
             file: skill.source_path.clone(),
             related: vec![],
             message: format!(
-                "skill '{}' governed {} turn(s) across {} observed session(s)",
+                "skill '{}' governed {} turn(s) across {} scanned session(s)",
                 skill.name, turns, usage.sessions
             ),
             suggestion: None,
@@ -342,10 +381,49 @@ mod tests {
         let f = u02_used_but_undeclared(&ctx(&config, &settings, &usage));
         assert_eq!(f.len(), 1, "{f:?}");
         assert!(f[0].message.contains("general-purpose"));
+        assert!(
+            f[0].message
+                .contains("is not declared in this project's `.claude/agents/`"),
+            "the message must not claim the agent is declared *nowhere* — it may still be \
+             declared by a plugin, which this check cannot see: {}",
+            f[0].message
+        );
+        assert!(
+            f[0].message.contains("built into Claude Code"),
+            "a Claude Code built-in must keep its own annotation: {}",
+            f[0].message
+        );
         assert_eq!(f[0].severity, Severity::Info);
         assert!(
             f[0].suggestion.is_some(),
             "the fix (materialise it as an agent) must be spelled out"
+        );
+    }
+
+    /// A non-built-in undeclared agent (e.g. one provided by a plugin, like
+    /// the real `claude-code-guide` case that motivated this wording) must
+    /// get a hint that it may come from a plugin, not the built-in
+    /// annotation and not an unqualified "declared nowhere" claim.
+    #[test]
+    fn u02_hints_at_a_plugin_for_a_non_builtin_undeclared_agent() {
+        let config = config_with(vec![agent("qa", "p")]);
+        let settings = AuditSettings::default();
+        let mut usage = UsageFacts::default();
+        usage.record_delegation(ROOT_AGENT, "qa", "m");
+        usage.record_delegation(ROOT_AGENT, "claude-code-guide", "m");
+
+        let f = u02_used_but_undeclared(&ctx(&config, &settings, &usage));
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].message.contains("claude-code-guide"));
+        assert!(
+            f[0].message.contains("plugin"),
+            "a non-built-in agent must be hinted as possibly coming from a plugin: {}",
+            f[0].message
+        );
+        assert!(
+            !f[0].message.contains("built into Claude Code"),
+            "the built-in annotation must not appear for a non-built-in agent: {}",
+            f[0].message
         );
     }
 
@@ -437,6 +515,33 @@ mod tests {
         );
     }
 
+    /// Regression: the denominator must be the observed *root*'s own
+    /// delegations, not the global delegation total. For
+    /// `root → dev-lead (1) → 10 specialists (10)`, the old denominator (11)
+    /// made dev-lead look bypassed at 9% even though it is precisely the
+    /// coordinator fanning out — the fix restricts it to `edges[root]`,
+    /// under which dev-lead is the root's only delegation (own=1, total=1).
+    #[test]
+    fn u03_silent_for_a_coordinator_whose_fanout_is_nested_under_it() {
+        let mut config = config_with(vec![agent("dev-lead", "p")]);
+        config.instructions = Some(crate::audit::reverse::ImportedInstructions {
+            source_path: std::path::PathBuf::from("CLAUDE.md"),
+            content: "delegate to @dev-lead so that he can delegate".to_string(),
+        });
+        let settings = AuditSettings::default();
+        let mut usage = UsageFacts::default();
+        usage.record_delegation(ROOT_AGENT, "dev-lead", "m");
+        for i in 0..10 {
+            usage.record_delegation("dev-lead", &format!("specialist-{i}"), "m");
+        }
+
+        assert!(
+            u03_coordinator_bypassed(&ctx(&config, &settings, &usage)).is_empty(),
+            "dev-lead received all of the root's own delegations (1/1); the specialists it \
+             fanned out to must not inflate the denominator"
+        );
+    }
+
     #[test]
     fn u03_silent_when_multiple_agents_qualify_as_coordinator() {
         let mut config = config_with(vec![agent("alpha", "p"), agent("beta", "p")]);
@@ -463,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn u04_reports_session_coverage_of_a_declared_skill() {
+    fn u04_reports_activity_of_a_declared_skill_across_scanned_sessions() {
         let mut config = config_with(vec![]);
         config.skills.push(crate::audit::reverse::ImportedSkill {
             name: "armadai".to_string(),
@@ -481,12 +586,12 @@ mod tests {
         };
         usage.record_skill_turn("armadai");
 
-        let f = u04_session_coverage(&ctx(&config, &settings, &usage));
+        let f = u04_skill_activity(&ctx(&config, &settings, &usage));
         assert_eq!(f.len(), 1, "{f:?}");
         assert_eq!(f[0].severity, Severity::Info);
         assert!(
             f[0].message.contains("59"),
-            "coverage must state the denominator: {}",
+            "the message must state how many sessions were scanned: {}",
             f[0].message
         );
     }
