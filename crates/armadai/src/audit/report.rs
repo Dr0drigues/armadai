@@ -17,6 +17,14 @@ pub struct AuditReport {
     pub usage: Option<crate::audit::usage::UsageFacts>,
 }
 
+/// Sorted, truncated view data shared by `AuditReport::usage_markdown` and
+/// `AuditReport::print_usage` — see `AuditReport::usage_view`.
+struct UsageView<'a> {
+    usage: &'a crate::audit::usage::UsageFacts,
+    agents: Vec<(&'a String, &'a crate::audit::usage::facts::AgentUsage)>,
+    skills: Vec<(&'a String, &'a u32)>,
+}
+
 impl AuditReport {
     pub fn critical_count(&self) -> usize {
         self.count(Severity::Critical)
@@ -106,31 +114,47 @@ impl AuditReport {
         lines
     }
 
-    /// Markdown block describing what was observed. Empty when nothing was
-    /// (no transcripts found, or `usage` is `None`).
+    /// Sorted, top-10-truncated view of `self.usage`, shared by
+    /// `usage_markdown` and `print_usage` — `None` when nothing was observed
+    /// (no transcripts found, or `usage` is `None`). Extracted so the
+    /// sort/tie-break and truncation logic — the part most likely to drift
+    /// under a future change — exists exactly once; each renderer still does
+    /// its own, format-specific printing.
+    fn usage_view(&self) -> Option<UsageView<'_>> {
+        let usage = self.usage.as_ref().filter(|u| !u.is_empty())?;
+        let mut agents: Vec<_> = usage.agents.iter().collect();
+        agents.sort_by(|a, b| b.1.invocations.cmp(&a.1.invocations).then(a.0.cmp(b.0)));
+        agents.truncate(10);
+        let mut skills: Vec<_> = usage.skills.iter().collect();
+        skills.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        skills.truncate(10);
+        Some(UsageView {
+            usage,
+            agents,
+            skills,
+        })
+    }
+
+    /// Markdown block describing what was observed. Empty when nothing was.
     fn usage_markdown(&self) -> String {
-        let Some(usage) = self.usage.as_ref().filter(|u| !u.is_empty()) else {
+        let Some(view) = self.usage_view() else {
             return String::new();
         };
         let mut out = String::new();
         let _ = writeln!(out, "\n## Observed usage\n");
-        let _ = writeln!(out, "- Sessions scanned: {}", usage.sessions);
-        if let Some((from, to)) = &usage.window {
+        let _ = writeln!(out, "- Sessions scanned: {}", view.usage.sessions);
+        if let Some((from, to)) = &view.usage.window {
             let _ = writeln!(out, "- Window: {from} → {to}");
         }
-        let mut agents: Vec<_> = usage.agents.iter().collect();
-        agents.sort_by(|a, b| b.1.invocations.cmp(&a.1.invocations).then(a.0.cmp(b.0)));
-        if !agents.is_empty() {
+        if !view.agents.is_empty() {
             let _ = writeln!(out, "\n### Agents by invocation\n");
-            for (name, stats) in agents.iter().take(10) {
+            for (name, stats) in &view.agents {
                 let _ = writeln!(out, "- `{}` — {} invocation(s)", name, stats.invocations);
             }
         }
-        let mut skills: Vec<_> = usage.skills.iter().collect();
-        skills.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-        if !skills.is_empty() {
+        if !view.skills.is_empty() {
             let _ = writeln!(out, "\n### Skills by attributed turns\n");
-            for (name, turns) in skills.iter().take(10) {
+            for (name, turns) in &view.skills {
                 let _ = writeln!(out, "- `{name}` — {turns} turn(s)");
             }
         }
@@ -141,30 +165,26 @@ impl AuditReport {
     /// before the findings so the report states what was measured first.
     /// Silent when nothing was observed.
     fn print_usage(&self) {
-        let Some(usage) = self.usage.as_ref().filter(|u| !u.is_empty()) else {
+        let Some(view) = self.usage_view() else {
             return;
         };
         let h = crate::cli::style::header();
         let m = crate::cli::style::muted();
         anstream::println!();
         anstream::println!("  {h}Observed usage{h:#}");
-        anstream::println!("  {m}Sessions scanned:{m:#} {}", usage.sessions);
-        if let Some((from, to)) = &usage.window {
+        anstream::println!("  {m}Sessions scanned:{m:#} {}", view.usage.sessions);
+        if let Some((from, to)) = &view.usage.window {
             anstream::println!("  {m}Window:{m:#} {from} → {to}");
         }
-        let mut agents: Vec<_> = usage.agents.iter().collect();
-        agents.sort_by(|a, b| b.1.invocations.cmp(&a.1.invocations).then(a.0.cmp(b.0)));
-        if !agents.is_empty() {
+        if !view.agents.is_empty() {
             anstream::println!("  {m}Agents by invocation:{m:#}");
-            for (name, stats) in agents.iter().take(10) {
+            for (name, stats) in &view.agents {
                 anstream::println!("    {name} — {} invocation(s)", stats.invocations);
             }
         }
-        let mut skills: Vec<_> = usage.skills.iter().collect();
-        skills.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-        if !skills.is_empty() {
+        if !view.skills.is_empty() {
             anstream::println!("  {m}Skills by attributed turns:{m:#}");
-            for (name, turns) in skills.iter().take(10) {
+            for (name, turns) in &view.skills {
                 anstream::println!("    {name} — {turns} turn(s)");
             }
         }
