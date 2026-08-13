@@ -9,7 +9,10 @@ pub enum Block {
         subagent_type: String,
         description: String,
     },
-    Other,
+    /// Any other `tool_use`, keyed by its tool name (`Bash`, `Read`, `Skill`, …).
+    Tool {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -109,7 +112,14 @@ fn parse_assistant(msg: &Value) -> Option<RelevantEntry> {
                     description,
                 });
             }
-            Some("tool_use") => blocks.push(Block::Other),
+            Some("tool_use") => {
+                let name = b
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                blocks.push(Block::Tool { name });
+            }
             _ => {} // thinking, redacted_thinking, etc. — dropped
         }
     }
@@ -292,7 +302,24 @@ mod tests {
         let line = r#"{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
         match parse_line(line).unwrap() {
             RelevantEntry::Assistant { blocks, .. } => {
-                assert!(matches!(blocks.as_slice(), [Block::Other]))
+                assert!(matches!(blocks.as_slice(), [Block::Tool { .. }]))
+            }
+            _ => panic!("expected Assistant"),
+        }
+    }
+
+    #[test]
+    fn non_agent_tool_use_keeps_its_name() {
+        let line = r#"{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
+        match parse_line(line).expect("assistant entry") {
+            RelevantEntry::Assistant { blocks, .. } => {
+                assert_eq!(
+                    blocks.as_slice(),
+                    [Block::Tool {
+                        name: "Bash".to_string()
+                    }],
+                    "a non-Agent tool_use must carry its tool name"
+                );
             }
             _ => panic!("expected Assistant"),
         }
