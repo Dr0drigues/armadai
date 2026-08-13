@@ -142,7 +142,6 @@ impl UsageFacts {
         .saturating_sub(1)
     }
 
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.agents.is_empty() && self.skills.is_empty() && self.tools.is_empty()
     }

@@ -7,6 +7,7 @@ mod collisions;
 mod models;
 pub(crate) mod references;
 mod similarity;
+mod usage_rules;
 
 pub(crate) use similarity::{DUPLICATION_WINDOW, duplication_clusters};
 
@@ -135,9 +136,6 @@ pub struct AuditContext<'a> {
     pub settings: &'a AuditSettings,
     /// Observed usage, when transcripts were found. `None` means the static
     /// rules run alone — usage never becomes a prerequisite.
-    // Not read by any rule yet — a later task (U0x rules) reads it.
-    // Per-item allow, same convention as `audit/usage/discovery.rs`.
-    #[allow(dead_code)]
     pub usage: Option<&'a crate::audit::usage::UsageFacts>,
 }
 
@@ -163,6 +161,10 @@ fn registry() -> Vec<RuleFn> {
         collisions::c03_activation_overlap,
         collisions::c04_double_ownership,
         collisions::c05_inconsistent_tools,
+        usage_rules::u01_declared_never_used,
+        usage_rules::u02_used_but_undeclared,
+        usage_rules::u03_coordinator_bypassed,
+        usage_rules::u04_session_coverage,
     ]
 }
 
