@@ -1,12 +1,9 @@
-// Unwired until the scan (a later task in this plan) starts calling
-// `transcript_files` — hence the per-item `#[allow(dead_code)]` below,
-// mirroring the pattern already used in `cli/style.rs` for items awaiting a
-// follow-up lot. Each attribute should come off as its item gets wired in.
+//! Discovers Claude Code's transcript files for a given project root.
+//! Called from `scan` (`super::scan`), which is wired into `armadai audit`.
 use std::path::{Path, PathBuf};
 
 /// Root holding Claude Code's per-project transcript directories.
 /// `ARMADAI_CLAUDE_PROJECTS_DIR` overrides it (used by tests and the e2e suite).
-#[allow(dead_code)]
 pub fn projects_root() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("ARMADAI_CLAUDE_PROJECTS_DIR") {
         return Some(PathBuf::from(dir));
@@ -17,7 +14,6 @@ pub fn projects_root() -> Option<PathBuf> {
 
 /// Claude Code's directory-name encoding for a project path: separators become
 /// dashes (`/Users/x/proj` -> `-Users-x-proj`).
-#[allow(dead_code)]
 pub fn slug_for(root: &Path) -> String {
     root.to_string_lossy().replace(['/', '\\'], "-")
 }
@@ -66,7 +62,6 @@ pub fn transcript_files(root: &Path) -> Vec<PathBuf> {
 /// Code may have recorded either the resolved or the unresolved path, and
 /// because the audited root may no longer exist on disk (in which case only
 /// the as-given form is available at all).
-#[allow(dead_code)]
 fn root_forms(root: &Path) -> Vec<String> {
     let mut forms = vec![strip_trailing_sep(&root.to_string_lossy())];
     if let Ok(canonical) = root.canonicalize() {
@@ -80,12 +75,10 @@ fn root_forms(root: &Path) -> Vec<String> {
 
 /// Strips one trailing path separator, if present, so `"/a/b/"` and `"/a/b"`
 /// compare equal.
-#[allow(dead_code)]
 fn strip_trailing_sep(s: &str) -> String {
     s.trim_end_matches(['/', '\\']).to_string()
 }
 
-#[allow(dead_code)]
 fn jsonl_in(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -105,7 +98,6 @@ fn jsonl_in(dir: &Path) -> Vec<PathBuf> {
 /// of the resolved/unresolved form Claude Code happened to record.
 /// Only the head is read: `cwd` is repeated on every entry, so a few lines
 /// settle it without reading a multi-megabyte transcript.
-#[allow(dead_code)]
 fn declares_cwd(file: &Path, forms: &[String]) -> bool {
     use std::io::BufRead;
     let Ok(handle) = std::fs::File::open(file) else {

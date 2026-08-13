@@ -53,6 +53,7 @@ pub fn run_audit(
         skill_count: config.skills.len(),
         findings: rules::run_rules(&ctx),
         deep_raw: None,
+        usage: usage.cloned(),
     }
 }
 

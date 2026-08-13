@@ -140,7 +140,12 @@ pub async fn execute(
         anyhow::bail!("not a directory: {}", root.display());
     }
     let settings = AuditSettings::from_project(&root);
-    let mut audit = run_audit(&root, &settings, None);
+    // Scanned once here and bound for the rest of the command so a later
+    // task can also hand it to `generate_proposal` without re-scanning —
+    // transcripts can run into the hundreds of megabytes.
+    let observed = crate::audit::usage::scan(&root);
+    let usage = (!observed.is_empty()).then_some(observed);
+    let mut audit = run_audit(&root, &settings, usage.as_ref());
     if audit.detected.is_empty() {
         let o = crate::cli::style::ok();
         let m = crate::cli::style::muted();

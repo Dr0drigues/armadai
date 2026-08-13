@@ -15,10 +15,7 @@ use super::facts::{ROOT_AGENT, UsageFacts};
 /// is ever held in memory. Unreadable files and malformed lines are skipped —
 /// a partial transcript still yields usable facts.
 ///
-/// Unwired until a later task calls it from a CLI surface (`armadai audit`),
-/// hence the per-item `#[allow(dead_code)]` — same convention as
-/// `discovery.rs`/`facts.rs`.
-#[allow(dead_code)]
+/// Called from `armadai audit` (`cli/audit.rs`).
 pub fn scan(root: &Path) -> UsageFacts {
     let mut facts = UsageFacts {
         root_agent: ROOT_AGENT.to_string(),
@@ -49,12 +46,10 @@ pub fn scan(root: &Path) -> UsageFacts {
     facts
 }
 
-#[allow(dead_code)]
 fn str_field<'v>(v: &'v Value, key: &str) -> Option<&'v str> {
     v.get(key).and_then(Value::as_str)
 }
 
-#[allow(dead_code)]
 fn scan_entry(
     v: &Value,
     facts: &mut UsageFacts,
@@ -130,7 +125,6 @@ fn scan_entry(
 /// downstream. `tool_use_id` is kept alongside each spawn regardless, so a
 /// future correlation source (if one is ever found) can disambiguate without
 /// another refactor of this map's shape.
-#[allow(dead_code)]
 fn enclosing_agent(
     uuid: &str,
     parent_of: &HashMap<String, String>,

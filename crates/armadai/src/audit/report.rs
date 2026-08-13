@@ -13,6 +13,8 @@ pub struct AuditReport {
     /// Raw, unstructured deep-analysis text (set when the LLM's deep-audit
     /// response could not be parsed as structured D0x findings).
     pub deep_raw: Option<String>,
+    /// Observed usage, when transcripts were found for this project.
+    pub usage: Option<crate::audit::usage::UsageFacts>,
 }
 
 impl AuditReport {
@@ -104,6 +106,70 @@ impl AuditReport {
         lines
     }
 
+    /// Markdown block describing what was observed. Empty when nothing was
+    /// (no transcripts found, or `usage` is `None`).
+    fn usage_markdown(&self) -> String {
+        let Some(usage) = self.usage.as_ref().filter(|u| !u.is_empty()) else {
+            return String::new();
+        };
+        let mut out = String::new();
+        let _ = writeln!(out, "\n## Observed usage\n");
+        let _ = writeln!(out, "- Sessions scanned: {}", usage.sessions);
+        if let Some((from, to)) = &usage.window {
+            let _ = writeln!(out, "- Window: {from} → {to}");
+        }
+        let mut agents: Vec<_> = usage.agents.iter().collect();
+        agents.sort_by(|a, b| b.1.invocations.cmp(&a.1.invocations).then(a.0.cmp(b.0)));
+        if !agents.is_empty() {
+            let _ = writeln!(out, "\n### Agents by invocation\n");
+            for (name, stats) in agents.iter().take(10) {
+                let _ = writeln!(out, "- `{}` — {} invocation(s)", name, stats.invocations);
+            }
+        }
+        let mut skills: Vec<_> = usage.skills.iter().collect();
+        skills.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        if !skills.is_empty() {
+            let _ = writeln!(out, "\n### Skills by attributed turns\n");
+            for (name, turns) in skills.iter().take(10) {
+                let _ = writeln!(out, "- `{name}` — {turns} turn(s)");
+            }
+        }
+        out
+    }
+
+    /// Terminal rendering of the same content as `usage_markdown`, printed
+    /// before the findings so the report states what was measured first.
+    /// Silent when nothing was observed.
+    fn print_usage(&self) {
+        let Some(usage) = self.usage.as_ref().filter(|u| !u.is_empty()) else {
+            return;
+        };
+        let h = crate::cli::style::header();
+        let m = crate::cli::style::muted();
+        anstream::println!();
+        anstream::println!("  {h}Observed usage{h:#}");
+        anstream::println!("  {m}Sessions scanned:{m:#} {}", usage.sessions);
+        if let Some((from, to)) = &usage.window {
+            anstream::println!("  {m}Window:{m:#} {from} → {to}");
+        }
+        let mut agents: Vec<_> = usage.agents.iter().collect();
+        agents.sort_by(|a, b| b.1.invocations.cmp(&a.1.invocations).then(a.0.cmp(b.0)));
+        if !agents.is_empty() {
+            anstream::println!("  {m}Agents by invocation:{m:#}");
+            for (name, stats) in agents.iter().take(10) {
+                anstream::println!("    {name} — {} invocation(s)", stats.invocations);
+            }
+        }
+        let mut skills: Vec<_> = usage.skills.iter().collect();
+        skills.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        if !skills.is_empty() {
+            anstream::println!("  {m}Skills by attributed turns:{m:#}");
+            for (name, turns) in skills.iter().take(10) {
+                anstream::println!("    {name} — {turns} turn(s)");
+            }
+        }
+    }
+
     /// Plain aligned output on stdout, findings ordered by severity
     /// (findings are already sorted by run_rules). The CLI's final
     /// `anyhow::bail!` on critical findings is what signals errors on
@@ -119,6 +185,7 @@ impl AuditReport {
             self.agent_count,
             self.skill_count
         );
+        self.print_usage();
         for severity in [Severity::Critical, Severity::Warning, Severity::Info] {
             if severity > min_severity {
                 continue;
@@ -208,6 +275,7 @@ impl AuditReport {
             self.skill_count
         );
         let _ = writeln!(md, "**Summary: {}**\n", self.summary_line());
+        md.push_str(&self.usage_markdown());
         if !self.findings.is_empty() {
             let _ = writeln!(md, "Breakdown: {}\n", self.breakdown_line());
         }
@@ -606,6 +674,7 @@ mod tests {
             skill_count: 1,
             findings,
             deep_raw: None,
+            usage: None,
         }
     }
 
@@ -766,6 +835,31 @@ mod tests {
         let r = report_with(vec![finding("D01", Severity::Warning)]);
         let md = r.to_markdown();
         assert!(md.contains("| D01 |"));
+    }
+
+    #[test]
+    fn markdown_reports_the_observed_window_and_top_agents() {
+        let mut usage = crate::audit::usage::UsageFacts {
+            sessions: 2,
+            ..Default::default()
+        };
+        usage.observe_timestamp("2026-07-01T00:00:00Z");
+        usage.observe_timestamp("2026-08-13T00:00:00Z");
+        usage.record_delegation(crate::audit::usage::facts::ROOT_AGENT, "qa", "m");
+
+        let report = AuditReport {
+            root: std::path::PathBuf::from("/p"),
+            detected: vec!["claude".to_string()],
+            agent_count: 1,
+            skill_count: 0,
+            findings: vec![],
+            deep_raw: None,
+            usage: Some(usage),
+        };
+        let md = report.to_markdown();
+        assert!(md.contains("Observed usage"), "{md}");
+        assert!(md.contains("2026-07-01T00:00:00Z"), "window start: {md}");
+        assert!(md.contains("qa"), "top agents: {md}");
     }
 
     #[test]

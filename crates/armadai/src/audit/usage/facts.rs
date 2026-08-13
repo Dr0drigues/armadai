@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const ROOT_AGENT: &str = "claude";
 
 /// What one agent was observed doing.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentUsage {
     pub invocations: u32,
