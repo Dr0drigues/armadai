@@ -55,6 +55,13 @@ pub fn parse_line(line: &str) -> Option<RelevantEntry> {
         return None;
     }
     let v: Value = serde_json::from_str(line).ok()?;
+    parse_value(&v)
+}
+
+/// Same as [`parse_line`], for a `Value` the caller already parsed. The audit
+/// scan reads the entry envelope (timestamp, isSidechain, attribution…) from
+/// the same `Value`, so parsing the line twice would double its cost.
+pub fn parse_value(v: &Value) -> Option<RelevantEntry> {
     match v.get("type")?.as_str()? {
         "assistant" => parse_assistant(v.get("message")?),
         "user" => parse_user_tool_result(v.get("message")?),
@@ -323,5 +330,17 @@ mod tests {
             }
             _ => panic!("expected Assistant"),
         }
+    }
+
+    #[test]
+    fn parse_value_matches_parse_line_on_the_same_input() {
+        let line = r#"{"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":2,"output_tokens":3}}}"#;
+        let v: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            parse_value(&v),
+            parse_line(line),
+            "parse_value must be the same parser, minus the string decoding step"
+        );
+        assert!(parse_value(&v).is_some(), "and it must actually parse");
     }
 }
