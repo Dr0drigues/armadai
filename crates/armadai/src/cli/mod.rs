@@ -185,7 +185,10 @@ pub enum Command {
             Scans .claude/agents/, .claude/skills/ and CLAUDE.md (no ArmadAI setup \
             required), runs static rules (deprecated models, oversized prompts, \
             duplicated blocks, broken references, plaintext secrets...) and prints \
-            an actionable report. Exits non-zero if critical findings exist.")]
+            an actionable report. It also reads this project's Claude Code transcripts \
+            under ~/.claude/projects/ to measure observed usage (rules U01-U04) — that \
+            data never leaves this machine; pass --no-usage or set `audit.usage: false` \
+            in the project config to skip it. Exits non-zero if critical findings exist.")]
     Audit {
         /// Project directory to audit (defaults to current directory)
         path: Option<std::path::PathBuf>,
@@ -204,6 +207,9 @@ pub enum Command {
         /// Run an optional LLM pass (needs an installed CLI: claude, gemini): sends prompt excerpts (with detected secrets redacted) to the CLI
         #[arg(long)]
         deep: bool,
+        /// Skip scanning Claude Code transcripts for observed usage (overrides `audit.usage` in project config)
+        #[arg(long)]
+        no_usage: bool,
     },
     /// Extract agents, prompts, and skills with dependency resolution
     #[command(
@@ -571,7 +577,8 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             quiet,
             propose,
             deep,
-        } => audit::execute(path, report, min_severity, quiet, propose, deep).await,
+            no_usage,
+        } => audit::execute(path, report, min_severity, quiet, propose, deep, no_usage).await,
         Command::History { agent } => history::execute(agent).await,
         Command::Costs { agent, from } => costs::execute(agent, from).await,
         Command::Projections(action) => projections::execute(action).await,
