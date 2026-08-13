@@ -46,6 +46,10 @@ Internally, only absolute path forms are ever matched against — but that's tra
 
 Set `ARMADAI_CLAUDE_PROJECTS_DIR` to point at a different projects root. It exists for the test suite, and for auditing a corpus of transcripts stored elsewhere.
 
+### Opting out
+
+This pass reads this project's own transcript history under `~/.claude/projects/`; that data is only ever read from and aggregated on this machine, never sent anywhere (the *contents* of `--deep`-selected finding messages are the exception — see below). To skip it entirely: pass `--no-usage` on the command line, or set `audit.usage: false` in `armadai.yaml` / `.armadai/config.yaml`. The flag always wins when both are set. Either way, `usage` stays unset and the report looks exactly like it did before this feature existed.
+
 ### Scan
 
 The scan streams every transcript line by line rather than loading files into memory — a full scan of a project with a few hundred megabytes of transcripts across dozens of files completes in about a second or two, which is why there is no `--since` flag to restrict the window.
@@ -62,9 +66,9 @@ Each line is parsed once. The scan never fails on bad data: an unreadable file i
 | Rule | Severity | Detects |
 |---|---|---|
 | `U01` | Warning | A declared agent or skill that never ran across the observed sessions. |
-| `U02` | Info | A sub-agent that ran but is declared nowhere — including Claude Code's own built-ins (`general-purpose`, `Explore`, `Plan`), which never appear in `.claude/agents/`. ArmadAI has no implicit equivalent for them, which makes this the rule that matters most for migration: ignoring it loses the actual workers. |
+| `U02` | Info | A sub-agent that ran but is not declared in this project's `.claude/agents/` — including Claude Code's own built-ins (`general-purpose`, `Explore`, `Plan`). A non-built-in name may instead come from a plugin, which is outside what this check can see. ArmadAI has no implicit equivalent for the built-ins, which makes this the rule that matters most for migration: ignoring it loses the actual workers. |
 | `U03` | Warning | The root instructions name a coordinator that delegations bypass in practice (its observed share of delegations falls below half). |
-| `U04` | Info | Session coverage of a declared skill, reported without judgement. |
+| `U04` | Info | Activity of a declared skill: how many turns it governed across the scanned sessions, reported without judgement. |
 
 All four rules are silent when nothing was observed for a project: absence of measurement is never treated as evidence of absence of use.
 
@@ -72,7 +76,9 @@ All four rules are silent when nothing was observed for a project: absence of me
 
 ### Report output
 
-When transcripts are found, the terminal output and the Markdown report (`--report out.md`) gain an "Observed usage" section — sessions scanned, the observed time window, agents by invocation and skills by attributed turns — printed before any finding. This section is **not yet available in the HTML report** (`--report out.html`).
+When transcripts are found, the terminal output and both report formats (`--report out.md` and `--report out.html`) gain an "Observed usage" section — sessions scanned, the observed time window, agents by invocation and skills by attributed turns — printed before any finding. Each of the two invocation/turn lists is truncated to the top 10; an "(+N others)" line says when more were hidden.
+
+`--deep` additionally sends every finding's message — including any U01-U04 message produced by this pass — to the selected LLM CLI as part of its analysis payload.
 
 ### Assumed limits
 
