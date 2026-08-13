@@ -56,14 +56,27 @@ pub fn transcript_files(root: &Path) -> Vec<PathBuf> {
 }
 
 /// The acceptable string forms of `root` for matching against a slug
-/// directory name or a transcript's recorded `cwd`: the path as given, and
-/// its canonical form when one resolves — both with a trailing separator
-/// stripped. Two forms are kept, not just the canonical one, because Claude
-/// Code may have recorded either the resolved or the unresolved path, and
-/// because the audited root may no longer exist on disk (in which case only
-/// the as-given form is available at all).
+/// directory name or a transcript's recorded `cwd` — **only absolute forms**.
+/// Both resolution tiers compare against absolute paths: Claude Code's slugs
+/// encode an absolute path, and the `cwd` it records is always absolute too,
+/// so a relative form is guaranteed not to match either tier. Worse, keeping
+/// it used to actively misfire: for a relative root like `.`, `slug_for(".")`
+/// is `"."` unchanged, and `<projects_root>.join(".")` resolves to the
+/// projects root directory itself (a real directory) — the slug-lookup tier
+/// then matched *there*, returning an empty result before the canonical
+/// form — the only form that could ever legitimately match — was tried.
+///
+/// Two forms are still kept when both are absolute (the as-given one and its
+/// canonicalized form, each with a trailing separator stripped), because
+/// Claude Code may have recorded either the resolved or the unresolved path.
+/// When `root` is relative and does not canonicalize (e.g. it no longer
+/// exists on disk), this yields no forms at all: nothing here could ever
+/// match, so an empty result is the honest answer rather than a guess.
 fn root_forms(root: &Path) -> Vec<String> {
-    let mut forms = vec![strip_trailing_sep(&root.to_string_lossy())];
+    let mut forms = Vec::new();
+    if root.is_absolute() {
+        forms.push(strip_trailing_sep(&root.to_string_lossy()));
+    }
     if let Ok(canonical) = root.canonicalize() {
         let canonical = strip_trailing_sep(&canonical.to_string_lossy());
         if !forms.contains(&canonical) {
@@ -288,5 +301,46 @@ mod tests {
     fn projects_root_is_none_without_home_or_override() {
         let _g = NoHomeGuard::set();
         assert!(projects_root().is_none());
+    }
+
+    /// Regression for the `armadai audit .` bug: `slug_for(".")` is `"."`
+    /// unchanged, and `<projects_root>.join(".")` resolves to the projects
+    /// root directory itself (a real directory) — which used to make the
+    /// slug-lookup tier match there and return an empty result *before* the
+    /// canonical form, the only form that could ever legitimately match, was
+    /// tried. No global state is touched: this asserts the invariant on
+    /// `root_forms` directly rather than exercising `.` end to end (which
+    /// would require mutating the process cwd — rejected in Task 3's review).
+    #[test]
+    fn root_forms_drops_the_relative_as_given_form() {
+        let forms = root_forms(Path::new("."));
+        assert!(
+            forms.iter().all(|f| Path::new(f).is_absolute()),
+            "a relative root must never surface a relative form: {forms:?}"
+        );
+        assert!(
+            !forms.contains(&".".to_string()),
+            "the literal '.' must never appear: {forms:?}"
+        );
+    }
+
+    /// Companion to the above: dropping relative forms must not also drop
+    /// canonicalization for an absolute-but-non-canonical root. Mirrors
+    /// `absolute_non_canonical_root_matches_via_canonicalization`'s `..`
+    /// construction, but asserts on `root_forms` directly.
+    #[test]
+    fn root_forms_still_yields_the_canonical_form_for_an_absolute_non_canonical_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let canonical = strip_trailing_sep(&sub.canonicalize().unwrap().to_string_lossy());
+        let non_canonical = sub.join("..").join("sub"); // absolute, not canonical
+        assert!(non_canonical.is_absolute());
+
+        let forms = root_forms(&non_canonical);
+        assert!(
+            forms.contains(&canonical),
+            "dropping relative forms must not drop canonicalization itself: {forms:?}"
+        );
     }
 }
