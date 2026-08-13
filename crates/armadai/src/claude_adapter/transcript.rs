@@ -343,4 +343,33 @@ mod tests {
         );
         assert!(parse_value(&v).is_some(), "and it must actually parse");
     }
+
+    #[test]
+    fn parse_value_reads_the_message_of_an_envelope_the_scan_also_reads() {
+        let v: Value = serde_json::from_str(
+            r#"{"type":"assistant","isSidechain":true,"uuid":"u1","timestamp":"2026-08-13T10:00:00Z","sessionId":"s1","cwd":"/tmp","message":{"role":"assistant","model":"claude-opus","content":[{"type":"text","text":"response"}],"usage":{"input_tokens":10,"output_tokens":5}}}"#,
+        )
+        .unwrap();
+        // The envelope stays readable alongside the message — this is why the
+        // scan holds the Value instead of re-parsing the line.
+        assert_eq!(v["uuid"], "u1");
+        assert_eq!(v["isSidechain"], true);
+        assert_eq!(v["sessionId"], "s1");
+
+        // And parse_value extracts the message correctly.
+        match parse_value(&v) {
+            Some(RelevantEntry::Assistant {
+                model,
+                blocks,
+                usage,
+                ..
+            }) => {
+                assert_eq!(model, "claude-opus");
+                assert_eq!(usage.input_tokens, 10);
+                assert_eq!(usage.output_tokens, 5);
+                assert!(matches!(blocks.as_slice(), [Block::Text(t)] if t == "response"));
+            }
+            other => panic!("expected Assistant, got {:?}", other),
+        }
+    }
 }
