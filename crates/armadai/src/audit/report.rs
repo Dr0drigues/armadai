@@ -25,6 +25,19 @@ struct UsageView<'a> {
     skills: Vec<(&'a String, &'a u32)>,
 }
 
+impl UsageView<'_> {
+    /// How many declared agents were truncated off the top-10 list — 0 when
+    /// the list is already complete.
+    fn agents_hidden(&self) -> usize {
+        self.usage.agents.len().saturating_sub(self.agents.len())
+    }
+
+    /// Same as `agents_hidden`, for skills.
+    fn skills_hidden(&self) -> usize {
+        self.usage.skills.len().saturating_sub(self.skills.len())
+    }
+}
+
 impl AuditReport {
     pub fn critical_count(&self) -> usize {
         self.count(Severity::Critical)
@@ -151,11 +164,19 @@ impl AuditReport {
             for (name, stats) in &view.agents {
                 let _ = writeln!(out, "- `{}` — {} invocation(s)", name, stats.invocations);
             }
+            let hidden = view.agents_hidden();
+            if hidden > 0 {
+                let _ = writeln!(out, "- *(+{hidden} others)*");
+            }
         }
         if !view.skills.is_empty() {
             let _ = writeln!(out, "\n### Skills by attributed turns\n");
             for (name, turns) in &view.skills {
                 let _ = writeln!(out, "- `{name}` — {turns} turn(s)");
+            }
+            let hidden = view.skills_hidden();
+            if hidden > 0 {
+                let _ = writeln!(out, "- *(+{hidden} others)*");
             }
         }
         out
@@ -181,13 +202,77 @@ impl AuditReport {
             for (name, stats) in &view.agents {
                 anstream::println!("    {name} — {} invocation(s)", stats.invocations);
             }
+            let hidden = view.agents_hidden();
+            if hidden > 0 {
+                anstream::println!("    {m}(+{hidden} others){m:#}");
+            }
         }
         if !view.skills.is_empty() {
             anstream::println!("  {m}Skills by attributed turns:{m:#}");
             for (name, turns) in &view.skills {
                 anstream::println!("    {name} — {turns} turn(s)");
             }
+            let hidden = view.skills_hidden();
+            if hidden > 0 {
+                anstream::println!("    {m}(+{hidden} others){m:#}");
+            }
         }
+    }
+
+    /// HTML rendering of the same content as `usage_markdown`/`print_usage`,
+    /// escaping every value — window timestamps are the transcript's own
+    /// text, and agent/skill names come from `record_delegation`/
+    /// `record_skill_turn` (sanitized of control characters, but not of HTML
+    /// metacharacters). Empty when nothing was observed.
+    fn usage_html(&self) -> String {
+        let Some(view) = self.usage_view() else {
+            return String::new();
+        };
+        let mut out = String::new();
+        out.push_str("<section class=\"usage\">\n<h2>Observed usage</h2>\n<ul>\n");
+        let _ = writeln!(out, "<li>Sessions scanned: {}</li>", view.usage.sessions);
+        if let Some((from, to)) = &view.usage.window {
+            let _ = writeln!(
+                out,
+                "<li>Window: {} → {}</li>",
+                html_escape(from),
+                html_escape(to)
+            );
+        }
+        out.push_str("</ul>\n");
+        if !view.agents.is_empty() {
+            out.push_str("<h3>Agents by invocation</h3>\n<ul>\n");
+            for (name, stats) in &view.agents {
+                let _ = writeln!(
+                    out,
+                    "<li><code>{}</code> — {} invocation(s)</li>",
+                    html_escape(name),
+                    stats.invocations
+                );
+            }
+            let hidden = view.agents_hidden();
+            if hidden > 0 {
+                let _ = writeln!(out, "<li class=\"more\">(+{hidden} others)</li>");
+            }
+            out.push_str("</ul>\n");
+        }
+        if !view.skills.is_empty() {
+            out.push_str("<h3>Skills by attributed turns</h3>\n<ul>\n");
+            for (name, turns) in &view.skills {
+                let _ = writeln!(
+                    out,
+                    "<li><code>{}</code> — {turns} turn(s)</li>",
+                    html_escape(name)
+                );
+            }
+            let hidden = view.skills_hidden();
+            if hidden > 0 {
+                let _ = writeln!(out, "<li class=\"more\">(+{hidden} others)</li>");
+            }
+            out.push_str("</ul>\n");
+        }
+        out.push_str("</section>\n");
+        out
     }
 
     /// Plain aligned output on stdout, findings ordered by severity
@@ -418,6 +503,8 @@ impl AuditReport {
             summary = html_escape(&self.summary_line()),
         );
 
+        html.push_str(&self.usage_html());
+
         if !self.findings.is_empty() {
             let _ = writeln!(
                 html,
@@ -634,6 +721,9 @@ h2 { font-size: 1.05rem; margin-top: 1.5rem; }
 details ul { margin: 0.25rem 0 0 1rem; padding: 0; }
 .funnel { margin-top: 1.5rem; }
 .funnel h2 { font-size: 1.05rem; }
+.usage h2 { font-size: 1.05rem; }
+.usage h3 { font-size: 0.95rem; margin-top: 1rem; }
+.usage .more { color: var(--muted); }
 footer {
   margin-top: 2rem;
   color: var(--muted);
@@ -880,6 +970,68 @@ mod tests {
         assert!(md.contains("Observed usage"), "{md}");
         assert!(md.contains("2026-07-01T00:00:00Z"), "window start: {md}");
         assert!(md.contains("qa"), "top agents: {md}");
+    }
+
+    #[test]
+    fn html_reports_the_observed_usage_section_with_a_known_agent_name() {
+        let mut usage = crate::audit::usage::UsageFacts {
+            sessions: 2,
+            ..Default::default()
+        };
+        usage.observe_timestamp("2026-07-01T00:00:00Z");
+        usage.observe_timestamp("2026-08-13T00:00:00Z");
+        usage.record_delegation(crate::audit::usage::facts::ROOT_AGENT, "qa", "m");
+
+        let report = AuditReport {
+            root: std::path::PathBuf::from("/p"),
+            detected: vec!["claude".to_string()],
+            agent_count: 1,
+            skill_count: 0,
+            findings: vec![],
+            deep_raw: None,
+            usage: Some(usage),
+        };
+        let html = report.to_html();
+        assert!(html.contains("Observed usage"), "{html}");
+        assert!(html.contains("qa"), "top agents: {html}");
+        assert!(
+            html.contains("2026-07-01T00:00:00Z"),
+            "window start: {html}"
+        );
+    }
+
+    #[test]
+    fn usage_sections_indicate_truncation_beyond_the_top_ten() {
+        let mut usage = crate::audit::usage::UsageFacts {
+            sessions: 1,
+            ..Default::default()
+        };
+        for i in 0..12 {
+            usage.record_delegation(
+                crate::audit::usage::facts::ROOT_AGENT,
+                &format!("agent-{i:02}"),
+                "m",
+            );
+        }
+        let report = AuditReport {
+            root: std::path::PathBuf::from("/p"),
+            detected: vec!["claude".to_string()],
+            agent_count: 12,
+            skill_count: 0,
+            findings: vec![],
+            deep_raw: None,
+            usage: Some(usage),
+        };
+        let md = report.to_markdown();
+        assert!(
+            md.contains("+2 others"),
+            "12 agents truncated to 10 must say how many are hidden: {md}"
+        );
+        let html = report.to_html();
+        assert!(
+            html.contains("+2 others"),
+            "the HTML section must carry the same indication: {html}"
+        );
     }
 
     #[test]
