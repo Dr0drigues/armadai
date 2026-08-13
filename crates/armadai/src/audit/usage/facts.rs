@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The native CLI's main thread, i.e. the root of every observed delegation
 /// tree. Claude Code's own turns are not a declared agent, so the tree needs a
 /// stable name for them.
-#[allow(dead_code)]
 pub const ROOT_AGENT: &str = "claude";
 
 /// What one agent was observed doing.
@@ -17,7 +16,6 @@ pub struct AgentUsage {
 
 /// Deterministic aggregate of everything the scan observed. Serialisable by
 /// construction: no paths, no handles, only counted facts.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UsageFacts {
     pub sessions: u32,
@@ -36,7 +34,6 @@ pub struct UsageFacts {
 }
 
 impl UsageFacts {
-    #[allow(dead_code)]
     pub fn observe_timestamp(&mut self, ts: &str) {
         if ts.is_empty() {
             return;
@@ -58,7 +55,6 @@ impl UsageFacts {
         });
     }
 
-    #[allow(dead_code)]
     pub fn record_delegation(&mut self, parent: &str, child: &str, model: &str) {
         let entry = self.agents.entry(child.to_string()).or_default();
         entry.invocations += 1;
@@ -71,12 +67,10 @@ impl UsageFacts {
             .insert(child.to_string());
     }
 
-    #[allow(dead_code)]
     pub fn record_skill_turn(&mut self, skill: &str) {
         *self.skills.entry(skill.to_string()).or_default() += 1;
     }
 
-    #[allow(dead_code)]
     pub fn record_tool(&mut self, tool: &str) {
         if tool.is_empty() {
             return;

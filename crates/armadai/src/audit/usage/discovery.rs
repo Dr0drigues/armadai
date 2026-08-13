@@ -31,7 +31,6 @@ pub fn slug_for(root: &Path) -> String {
 /// are tried against every acceptable string form of `root` (see
 /// `root_forms`), so a non-canonical `root` (relative, trailing separator, or
 /// symlinked) still matches.
-#[allow(dead_code)]
 pub fn transcript_files(root: &Path) -> Vec<PathBuf> {
     let Some(projects) = projects_root() else {
         return Vec::new();
