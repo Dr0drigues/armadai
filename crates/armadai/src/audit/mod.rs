@@ -7,6 +7,7 @@ pub mod proposal;
 pub mod report;
 pub mod reverse;
 pub mod rules;
+pub mod usage;
 
 use std::path::Path;
 
