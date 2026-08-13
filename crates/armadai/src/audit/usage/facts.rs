@@ -95,26 +95,41 @@ impl UsageFacts {
             .map(|(name, _)| name.as_str())
     }
 
-    /// Longest delegation chain from the root. Visited-set guarded: a
-    /// malformed transcript must never hang the audit.
+    /// Longest delegation chain from the root, using memoisation to handle fan-in
+    /// (a node reachable via multiple paths).
+    ///
+    /// Depth convention: 0 = no delegation, 1 = root → agents, 2 = root → lead → agents.
+    ///
+    /// Guarantees:
+    /// - **exact** on any acyclic graph, including fan-in;
+    /// - **always terminates** (ancestor-only stack prevents infinite loops);
+    /// - **deterministic** (BTreeMap/BTreeSet iteration order makes traversal reproducible);
+    /// - on a cyclic edge set: the result is a documented lower bound (terminates, deterministic).
     #[allow(dead_code)]
     pub fn depth(&self) -> u32 {
-        fn walk(
+        fn longest(
             edges: &BTreeMap<String, BTreeSet<String>>,
             node: &str,
-            seen: &mut BTreeSet<String>,
+            stack: &mut BTreeSet<String>,
+            memo: &mut BTreeMap<String, u32>,
         ) -> u32 {
-            if !seen.insert(node.to_string()) {
-                return 0;
+            if stack.contains(node) {
+                return 0; // cycle: stop, never recurse
             }
-            let deepest = edges
+            if let Some(d) = memo.get(node) {
+                return *d; // DAG: reuse memoised value
+            }
+            stack.insert(node.to_string());
+            let d = 1 + edges
                 .get(node)
                 .into_iter()
                 .flatten()
-                .map(|child| walk(edges, child, seen))
+                .map(|child| longest(edges, child, stack, memo))
                 .max()
                 .unwrap_or(0);
-            deepest + 1
+            stack.remove(node); // ancestor-only: retract on exit
+            memo.insert(node.to_string(), d);
+            d
         }
         if self.edges.is_empty() {
             return 0;
@@ -124,7 +139,13 @@ impl UsageFacts {
         } else {
             self.root_agent.as_str()
         };
-        walk(&self.edges, root, &mut BTreeSet::new()).saturating_sub(1)
+        longest(
+            &self.edges,
+            root,
+            &mut BTreeSet::new(),
+            &mut BTreeMap::new(),
+        )
+        .saturating_sub(1)
     }
 
     #[allow(dead_code)]
@@ -190,6 +211,23 @@ mod tests {
         f.record_delegation("a", "b", "m");
         f.record_delegation("b", "a", "m");
         assert!(f.depth() >= 2, "cycle must not loop forever");
+    }
+
+    #[test]
+    fn depth_handles_fan_in_correctly() {
+        // Regression: a node reachable via multiple paths should not be
+        // short-circuited by one branch's prior visit. The longest path wins.
+        // root → {p, z}, p → c, z → y → x → c, c → w.
+        // Longest chain: root → z → y → x → c → w = 5 edges.
+        let mut f = UsageFacts::default();
+        f.record_delegation(ROOT_AGENT, "p", "m");
+        f.record_delegation(ROOT_AGENT, "z", "m");
+        f.record_delegation("p", "c", "m");
+        f.record_delegation("z", "y", "m");
+        f.record_delegation("y", "x", "m");
+        f.record_delegation("x", "c", "m");
+        f.record_delegation("c", "w", "m");
+        assert_eq!(f.depth(), 5, "longest path root→z→y→x→c→w is depth 5");
     }
 
     #[test]
