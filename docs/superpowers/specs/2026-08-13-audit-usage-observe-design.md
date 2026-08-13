@@ -275,9 +275,17 @@ Les tours internes des sous-agents ne sont pas observables sur le relevé de ré
   courtes), `facts` (agrégation, terciles, cas < 3 assets), déduction de pattern (arbres
   synthétiques : vide, plat, profond, parallèle), rendu du yaml (commentaires présents, clés par
   défaut absentes).
-- **E2E gaveldrop** : un cas pointant un dossier de transcripts fixture via
-  `ARMADAI_CLAUDE_PROJECTS_DIR`, même mécanique que l'`ARMADAI_SESSION_INDEX` déjà utilisé par
-  les tests de `watch`. Assertions sur les findings `U0x` et sur l'`armadai.yaml` généré.
+- **E2E boîte noire** : un test d'intégration `assert_cmd` lançant le binaire compilé sur un
+  dossier de transcripts fixture via `ARMADAI_CLAUDE_PROJECTS_DIR` (même mécanique que
+  l'`ARMADAI_SESSION_INDEX` des tests de `watch`), sur le modèle de
+  `crates/armadai/tests/hook_stdout.rs`. Assertions sur les findings `U0x` et sur l'`armadai.yaml`
+  généré.
+
+  **Pas** un cas gaveldrop : l'adaptateur `Armadai` de `tests/gaveldrop.rs` est spécialisé pour les
+  runs orchestrés — son `claims()` ne retient un cas que s'il porte un `pattern`, `build_command`
+  produit toujours `run`, et toutes ses assertions portent sur des events JSON, que `armadai audit`
+  n'émet pas. L'y faire entrer demanderait d'élargir l'adaptateur aux commandes arbitraires, un
+  chantier hors sujet ici.
 - **Features** : aucune nouvelle. Le module ne tire que `serde_json`, déjà présent, donc il reste
   non gated comme `audit/`. Clippy doit passer dans les 4 modes CI.
 
