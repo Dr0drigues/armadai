@@ -160,6 +160,7 @@ mod tests {
         let f = a06_duplicated_blocks(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert!(f[0].message.contains("one") && f[0].message.contains("two"));
@@ -177,6 +178,7 @@ mod tests {
         let f = a06_duplicated_blocks(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].related.len(), 3);
@@ -200,6 +202,7 @@ mod tests {
         let f = a06_duplicated_blocks(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 2);
     }
@@ -215,6 +218,7 @@ mod tests {
         let f = a07_redundant_agents(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A07");

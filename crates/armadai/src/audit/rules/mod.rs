@@ -133,6 +133,12 @@ impl UnionFind {
 pub struct AuditContext<'a> {
     pub config: &'a ImportedConfig,
     pub settings: &'a AuditSettings,
+    /// Observed usage, when transcripts were found. `None` means the static
+    /// rules run alone — usage never becomes a prerequisite.
+    // Not read by any rule yet — a later task (U0x rules) reads it.
+    // Per-item allow, same convention as `audit/usage/discovery.rs`.
+    #[allow(dead_code)]
+    pub usage: Option<&'a crate::audit::usage::UsageFacts>,
 }
 
 type RuleFn = fn(&AuditContext) -> Vec<Finding>;
@@ -224,6 +230,7 @@ mod tests {
         let ctx = AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         };
         assert!(run_rules(&ctx).is_empty());
     }

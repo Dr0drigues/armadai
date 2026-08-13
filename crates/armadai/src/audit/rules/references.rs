@@ -107,6 +107,7 @@ mod tests {
         let f = a10_broken_references(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert!(f[0].message.contains("ghost-agent"));
@@ -125,6 +126,7 @@ mod tests {
             a10_broken_references(&AuditContext {
                 config: &config,
                 settings: &settings,
+                usage: None,
             })
             .is_empty()
         );
@@ -139,6 +141,7 @@ mod tests {
         let f = a11_plaintext_secret(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A11");
@@ -157,6 +160,7 @@ mod tests {
         let f = a11_plaintext_secret(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert!(f.is_empty());
     }
@@ -170,6 +174,7 @@ mod tests {
         let f = a11_plaintext_secret(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A11");

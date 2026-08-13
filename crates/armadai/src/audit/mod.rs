@@ -35,11 +35,16 @@ pub fn import_surfaces(root: &Path) -> (Vec<String>, reverse::ImportedConfig) {
 }
 
 /// Detect, import and analyse every native surface under `root`.
-pub fn run_audit(root: &Path, settings: &rules::AuditSettings) -> AuditReport {
+pub fn run_audit(
+    root: &Path,
+    settings: &rules::AuditSettings,
+    usage: Option<&usage::UsageFacts>,
+) -> AuditReport {
     let (detected, config) = import_surfaces(root);
     let ctx = rules::AuditContext {
         config: &config,
         settings,
+        usage,
     };
     AuditReport {
         root: root.to_path_buf(),
@@ -68,5 +73,22 @@ mod tests {
         let (detected, config) = import_surfaces(dir.path());
         assert_eq!(detected, vec!["claude".to_string()]);
         assert_eq!(config.agents.len(), 1);
+    }
+
+    #[test]
+    fn run_audit_accepts_observed_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("a.md"),
+            "---\nname: a\ndescription: d\n---\nBody",
+        )
+        .unwrap();
+        let mut usage = usage::UsageFacts::default();
+        usage.record_delegation(usage::facts::ROOT_AGENT, "a", "claude-opus-5");
+
+        let report = run_audit(dir.path(), &rules::AuditSettings::default(), Some(&usage));
+        assert_eq!(report.agent_count, 1);
     }
 }

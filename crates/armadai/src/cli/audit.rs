@@ -140,7 +140,7 @@ pub async fn execute(
         anyhow::bail!("not a directory: {}", root.display());
     }
     let settings = AuditSettings::from_project(&root);
-    let mut audit = run_audit(&root, &settings);
+    let mut audit = run_audit(&root, &settings, None);
     if audit.detected.is_empty() {
         let o = crate::cli::style::ok();
         let m = crate::cli::style::muted();
@@ -341,7 +341,7 @@ mod tests {
         std::fs::create_dir_all(&agents).unwrap();
         std::fs::write(agents.join("a.md"), "---\nname: a\ndescription: d\n---\nP.").unwrap();
         let settings = AuditSettings::from_project(dir.path());
-        let mut audit = run_audit(dir.path(), &settings);
+        let mut audit = run_audit(dir.path(), &settings, None);
         let err = apply_deep_pass(&mut audit, dir.path(), &settings, None)
             .await
             .unwrap_err();

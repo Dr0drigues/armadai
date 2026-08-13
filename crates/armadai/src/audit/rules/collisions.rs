@@ -382,6 +382,7 @@ mod tests {
         let f = c01_name_collisions(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].severity, Severity::Critical);
@@ -410,6 +411,7 @@ mod tests {
         let f = c01_name_collisions(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].severity, Severity::Warning);
@@ -442,6 +444,7 @@ mod tests {
         let f = c03_activation_overlap(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].severity, Severity::Warning);
@@ -462,6 +465,7 @@ mod tests {
         let f = c03_activation_overlap(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
     }
@@ -484,6 +488,7 @@ mod tests {
         let f = c03_activation_overlap(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         // All three audit-* skills are in one cluster (all pairwise Jaccard >= 0.6).
         // deploy is distinct. So we expect 1 finding covering the 3 similar skills.
@@ -511,6 +516,7 @@ mod tests {
         let f = c03_activation_overlap(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         // No C03 finding: agent↔agent similarity is deferred to A07.
         assert_eq!(f.len(), 0);
@@ -541,6 +547,7 @@ mod tests {
         let f = c03_activation_overlap(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 2);
         let audit_finding = f
@@ -591,6 +598,7 @@ mod tests {
         let f = c02_scope_overlap(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert!(f[0].message.contains("wide") && f[0].message.contains("narrow"));
@@ -614,6 +622,7 @@ mod tests {
         let f = c05_inconsistent_tools(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].severity, Severity::Info);
@@ -647,6 +656,7 @@ mod tests {
         let f = c05_inconsistent_tools(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         // All three agents overlap via src/** and have conflicting tool policies.
         // They should be in one cluster, producing 1 finding for the 3 agents.
@@ -694,6 +704,7 @@ mod tests {
         let f = c05_inconsistent_tools(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 2);
         let src_finding = f
@@ -733,6 +744,7 @@ mod tests {
         let f = c04_double_ownership(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert!(f[0].message.contains("src/core/"));
@@ -765,6 +777,7 @@ Actual table:\n\
         let f = c04_double_ownership(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         // Only the real (non-fenced) table row counts. One agent owns src/core/,
         // so no collision finding should be generated.
@@ -791,6 +804,7 @@ Actual table:\n\
         let f = c04_double_ownership(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         // No collision: the URL is not treated as a path, and no path is claimed twice.
         assert_eq!(f.len(), 0);
