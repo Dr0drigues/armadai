@@ -32,6 +32,23 @@ pub struct UsageFacts {
     pub max_fanout: u32,
 }
 
+/// Strips control characters (including newlines) from `s`. `subagent_type`
+/// and `attributionSkill` are read straight out of a transcript entry the
+/// model produced, not out of a file a user reviewed, and every renderer
+/// prints them verbatim — the terminal via `anstream`, Markdown, HTML. A name
+/// carrying an ANSI/OSC escape sequence must never reach a terminal write,
+/// and a name carrying a raw newline or backtick-adjacent control byte must
+/// never reach a Markdown list item. Called at the `record_delegation` /
+/// `record_skill_turn` entry point so every renderer benefits without having
+/// to sanitize on its own.
+fn sanitize_identifier(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.chars().any(char::is_control) {
+        std::borrow::Cow::Owned(s.chars().filter(|c| !c.is_control()).collect())
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
 impl UsageFacts {
     pub fn observe_timestamp(&mut self, ts: &str) {
         if ts.is_empty() {
@@ -55,6 +72,8 @@ impl UsageFacts {
     }
 
     pub fn record_delegation(&mut self, parent: &str, child: &str, model: &str) {
+        let parent = sanitize_identifier(parent);
+        let child = sanitize_identifier(child);
         let entry = self.agents.entry(child.to_string()).or_default();
         entry.invocations += 1;
         if !model.is_empty() {
@@ -67,6 +86,10 @@ impl UsageFacts {
     }
 
     pub fn record_skill_turn(&mut self, skill: &str) {
+        let skill = sanitize_identifier(skill);
+        if skill.is_empty() {
+            return;
+        }
         *self.skills.entry(skill.to_string()).or_default() += 1;
     }
 
@@ -220,6 +243,55 @@ mod tests {
         f.record_delegation("x", "c", "m");
         f.record_delegation("c", "w", "m");
         assert_eq!(f.depth(), 5, "longest path root→z→y→x→c→w is depth 5");
+    }
+
+    /// Regression: `record_skill_turn` lacked the empty-string guard that
+    /// `record_tool` and the model field already have. An
+    /// `attributionSkill: ""` must not create a blank-named entry.
+    #[test]
+    fn record_skill_turn_ignores_the_empty_string() {
+        let mut f = UsageFacts::default();
+        f.record_skill_turn("");
+        assert!(
+            f.skills.is_empty(),
+            "an empty attributionSkill must not create a blank entry: {:?}",
+            f.skills
+        );
+    }
+
+    /// `subagent_type` comes from a transcript entry the model produced, not
+    /// from a file a user reviewed, and is printed verbatim by every
+    /// renderer. An ANSI escape sequence and an embedded newline must not
+    /// survive into storage.
+    #[test]
+    fn record_delegation_strips_control_characters_from_identifiers() {
+        let mut f = UsageFacts::default();
+        f.record_delegation(ROOT_AGENT, "qa\u{1b}[31m\ninjected", "m");
+        assert_eq!(
+            f.agents.keys().next().map(String::as_str),
+            Some("qa[31minjected"),
+            "the ESC (0x1b) and the newline must be stripped: {:?}",
+            f.agents
+        );
+        assert!(
+            f.edges[ROOT_AGENT].contains("qa[31minjected"),
+            "the sanitized name must be the one recorded in edges too: {:?}",
+            f.edges
+        );
+    }
+
+    /// Same guarantee for `attributionSkill`, exercised through
+    /// `record_skill_turn` with an OSC-style sequence (ESC ] ... BEL).
+    #[test]
+    fn record_skill_turn_strips_control_characters() {
+        let mut f = UsageFacts::default();
+        f.record_skill_turn("armadai\u{1b}]0;evil\u{7}");
+        assert_eq!(
+            f.skills.keys().next().map(String::as_str),
+            Some("armadai]0;evil"),
+            "the ESC (0x1b) and BEL (0x07) must be stripped: {:?}",
+            f.skills
+        );
     }
 
     #[test]

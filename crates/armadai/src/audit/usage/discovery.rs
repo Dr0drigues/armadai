@@ -47,7 +47,21 @@ pub fn transcript_files(root: &Path) -> Vec<PathBuf> {
             continue;
         }
         let files = jsonl_in(&entry.path());
-        if files.iter().any(|f| declares_cwd(f, &forms)) {
+        // `cwd` is a per-directory invariant: every transcript Claude Code
+        // writes into one project-session directory carries the same `cwd`,
+        // so a single readable file settles the whole directory — trying
+        // every file (as this used to) reads the head of every transcript in
+        // every non-matching directory just to reach the same verdict
+        // slower. Measured on this machine on the "no match" path alone:
+        // 227,505,065 bytes read across 2154 transcripts, ~0.5s. Only an
+        // *unreadable* file is skipped in favour of the next one (via
+        // `find_map`), so one stray locked/missing file can't mask real
+        // transcripts sitting right behind it in the same directory.
+        let matches = files
+            .iter()
+            .find_map(|f| declares_cwd(f, &forms))
+            .unwrap_or(false);
+        if matches {
             found.extend(files);
         }
     }
@@ -75,11 +89,20 @@ pub fn transcript_files(root: &Path) -> Vec<PathBuf> {
 fn root_forms(root: &Path) -> Vec<String> {
     let mut forms = Vec::new();
     if root.is_absolute() {
-        forms.push(strip_trailing_sep(&root.to_string_lossy()));
+        let s = strip_trailing_sep(&root.to_string_lossy());
+        // `/` is the one absolute path whose `strip_trailing_sep` collapses
+        // to `""` (its only character is the trailing separator being
+        // stripped). An empty form must never surface: `projects.join("")`
+        // is the projects root directory itself, which `is_dir()` happily
+        // confirms — the exact shape of the `.` bug fixed in `54bebc9`, this
+        // time for `/` instead of `.`.
+        if !s.is_empty() {
+            forms.push(s);
+        }
     }
     if let Ok(canonical) = root.canonicalize() {
         let canonical = strip_trailing_sep(&canonical.to_string_lossy());
-        if !forms.contains(&canonical) {
+        if !canonical.is_empty() && !forms.contains(&canonical) {
             forms.push(canonical);
         }
     }
@@ -105,32 +128,49 @@ fn jsonl_in(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// True if any of the file's first lines declares its `cwd` as one of
-/// `forms` (the acceptable string forms of the audited root — see
-/// `root_forms`); comparing against a single raw string would miss whichever
-/// of the resolved/unresolved form Claude Code happened to record.
-/// Only the head is read: `cwd` is repeated on every entry, so a few lines
-/// settle it without reading a multi-megabyte transcript.
-fn declares_cwd(file: &Path, forms: &[String]) -> bool {
+/// Whether `file`'s entries declare `cwd` as one of `forms` (the acceptable
+/// string forms of the audited root — see `root_forms`); comparing against a
+/// single raw string would miss whichever of the resolved/unresolved form
+/// Claude Code happened to record.
+///
+/// `cwd` is not guaranteed to appear within a fixed number of lines: some
+/// real transcripts open with dozens of metadata-only entries
+/// (`file-history-snapshot`, `queue-operation`, `ai-title`, `mode`,
+/// `permission-mode`, `attachment`…) before the first entry that actually
+/// carries the field — a fixed line-count bound risks giving up before ever
+/// seeing it. So this scans until it finds an entry that carries `cwd` and
+/// decides on that one: semantically correct, and in the common case (`cwd`
+/// on the very first line) cheaper than reading a fixed number of lines
+/// regardless of content. `MAX_LINES` is only an anti-pathology ceiling — a
+/// corrupt or genuinely `cwd`-less file must never be read forever.
+///
+/// Returns `None` when `file` cannot even be opened, so a caller trying
+/// several files in a directory (see `transcript_files`) can move on to the
+/// next candidate instead of concluding "no match" from a file that was
+/// never actually read.
+fn declares_cwd(file: &Path, forms: &[String]) -> Option<bool> {
     use std::io::BufRead;
-    let Ok(handle) = std::fs::File::open(file) else {
-        return false;
-    };
-    std::io::BufReader::new(handle)
+    const MAX_LINES: usize = 500;
+    let handle = std::fs::File::open(file).ok()?;
+    for line in std::io::BufReader::new(handle)
         .lines()
         .map_while(Result::ok)
-        .take(20)
-        .any(|line| {
-            serde_json::from_str::<serde_json::Value>(&line)
-                .ok()
-                .and_then(|v| {
-                    v.get("cwd").and_then(serde_json::Value::as_str).map(|c| {
-                        let c = strip_trailing_sep(c);
-                        forms.iter().any(|f| f == &c)
-                    })
-                })
-                .unwrap_or(false)
-        })
+        .take(MAX_LINES)
+    {
+        let Some(cwd) = serde_json::from_str::<serde_json::Value>(&line)
+            .ok()
+            .and_then(|v| {
+                v.get("cwd")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+        else {
+            continue;
+        };
+        let cwd = strip_trailing_sep(&cwd);
+        return Some(forms.iter().any(|f| f == &cwd));
+    }
+    Some(false)
 }
 
 #[cfg(test)]
@@ -244,6 +284,57 @@ mod tests {
         assert_eq!(found.len(), 1, "cwd fallback must find it: {found:?}");
     }
 
+    /// Regression: some real transcripts open with dozens of metadata-only
+    /// entries before the first entry that carries `cwd` at all — the fixed
+    /// 20-line bound this replaces would give up before ever seeing it,
+    /// silently losing the session. Measured on this machine: 2 of 207
+    /// transcripts have their first `cwd` past line 20.
+    #[test]
+    fn falls_back_tier_matches_when_the_first_cwd_line_is_past_the_old_twenty_line_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = ProjectsDirGuard::set(dir.path());
+        let odd = dir.path().join("some-unexpected-name");
+        std::fs::create_dir_all(&odd).unwrap();
+        let mut lines: Vec<String> = (0..30)
+            .map(|i| format!("{{\"type\":\"queue-operation\",\"n\":{i}}}"))
+            .collect();
+        lines.push("{\"type\":\"user\",\"cwd\":\"/Users/x/proj\"}".to_string());
+        std::fs::write(odd.join("s.jsonl"), lines.join("\n") + "\n").unwrap();
+
+        let found = transcript_files(Path::new("/Users/x/proj"));
+        assert_eq!(
+            found.len(),
+            1,
+            "a cwd appearing after 30 metadata lines (past the old 20-line bound) must still match: {found:?}"
+        );
+    }
+
+    /// The per-directory `cwd` invariant means only the first readable file
+    /// needs to be opened to settle a directory — but every `.jsonl` file in
+    /// a matching directory must still be returned.
+    #[test]
+    fn fallback_tier_returns_every_jsonl_file_once_the_first_confirms_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = ProjectsDirGuard::set(dir.path());
+        let odd = dir.path().join("some-unexpected-name");
+        std::fs::create_dir_all(&odd).unwrap();
+        // Sorted order matters: `a.jsonl` is read first and settles the
+        // directory; `b.jsonl` never needs to be opened to be included.
+        std::fs::write(
+            odd.join("a.jsonl"),
+            "{\"type\":\"user\",\"cwd\":\"/Users/x/proj\"}\n",
+        )
+        .unwrap();
+        std::fs::write(odd.join("b.jsonl"), "").unwrap();
+
+        let found = transcript_files(Path::new("/Users/x/proj"));
+        assert_eq!(
+            found.len(),
+            2,
+            "both files in the matching directory: {found:?}"
+        );
+    }
+
     #[test]
     fn missing_projects_dir_yields_no_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -341,6 +432,19 @@ mod tests {
         assert!(
             forms.contains(&canonical),
             "dropping relative forms must not drop canonicalization itself: {forms:?}"
+        );
+    }
+
+    /// Regression for the `/` shape of the `.` bug fixed in `54bebc9`:
+    /// `strip_trailing_sep("/")` is `""`, and `<projects_root>.join("")` is
+    /// the projects root directory itself — a real directory whose
+    /// `is_dir()` would wrongly succeed at the slug-lookup tier.
+    #[test]
+    fn root_forms_never_yields_an_empty_form_for_the_filesystem_root() {
+        let forms = root_forms(Path::new("/"));
+        assert!(
+            forms.iter().all(|f| !f.is_empty()),
+            "an empty form must never surface — projects.join(\"\") is the projects dir itself: {forms:?}"
         );
     }
 }

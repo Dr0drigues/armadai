@@ -33,10 +33,17 @@ pub fn scan(root: &Path) -> UsageFacts {
         // delegation can be attributed.
         let mut parent_of: HashMap<String, String> = HashMap::new();
         let mut agent_at: HashMap<String, Vec<(String, String)>> = HashMap::new();
-        for line in std::io::BufReader::new(handle)
-            .lines()
-            .map_while(Result::ok)
-        {
+        // Explicit loop rather than `.lines().map_while(Result::ok)`:
+        // `map_while` stops polling the iterator for good on the first
+        // `Err` (one bad line's I/O error or invalid UTF-8), which would
+        // silently drop every remaining line in the file. A `continue` here
+        // skips only the offending line, matching the scan's own contract
+        // ("a malformed line is skipped; a missing field degrades only its
+        // own metric").
+        for line in std::io::BufReader::new(handle).lines() {
+            let Ok(line) = line else {
+                continue;
+            };
             let Ok(v) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
@@ -63,7 +70,12 @@ fn scan_entry(
         facts.record_skill_turn(skill);
     }
     let uuid = str_field(v, "uuid").unwrap_or("").to_string();
-    if let Some(parent) = str_field(v, "parentUuid") {
+    // Guard mirrors `agent_at.insert` below: without it, two entries both
+    // missing `uuid` would collide under the same `""` key, letting one
+    // pollute the other's recorded parent.
+    if !uuid.is_empty()
+        && let Some(parent) = str_field(v, "parentUuid")
+    {
         parent_of.insert(uuid.clone(), parent.to_string());
     }
     let is_sidechain = v
@@ -245,6 +257,64 @@ mod tests {
         let f = scan(&project);
         assert_eq!(f.agents["qa"].invocations, 1, "the valid line still counts");
         assert_eq!(f.window, None, "no timestamp anywhere -> no window");
+    }
+
+    /// Regression: `map_while(Result::ok)` used to stop polling the
+    /// underlying iterator for good on the first `Err` (e.g. one line with
+    /// invalid UTF-8), silently dropping every remaining line in the file.
+    /// The valid entry written *after* the bad line must still be scanned.
+    #[test]
+    fn a_line_with_invalid_utf8_is_skipped_without_dropping_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = PathBuf::from("/Users/x/proj-invalid-utf8");
+        let slug = dir
+            .path()
+            .join(crate::audit::usage::discovery::slug_for(&project));
+        std::fs::create_dir_all(&slug).unwrap();
+        let mut bytes: Vec<u8> = vec![0xff, 0xfe, 0xfd, b'\n'];
+        bytes.extend_from_slice(
+            br#"{"type":"assistant","isSidechain":false,"uuid":"u1","message":{"model":"m","content":[{"type":"tool_use","id":"t1","name":"Agent","input":{"subagent_type":"qa","description":"a"}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+        );
+        bytes.push(b'\n');
+        std::fs::write(slug.join("s1.jsonl"), bytes).unwrap();
+        let _g = ProjectsDirGuard::set(dir.path());
+
+        let f = scan(&project);
+        assert_eq!(
+            f.agents.get("qa").map(|a| a.invocations),
+            Some(1),
+            "the valid line after an invalid-UTF-8 line must still be scanned: {f:?}"
+        );
+    }
+
+    /// Regression: `parent_of.insert` used to lack the empty-`uuid` guard
+    /// that `agent_at.insert` already had, so two entries both missing
+    /// `uuid` would collide on the same `""` key. Here a malformed entry
+    /// (missing `uuid`, declaring `parentUuid: "agentX"`) must not let a
+    /// later, well-formed entry whose *own* `parentUuid` is legitimately
+    /// empty resolve through it — that entry must degrade to `ROOT_AGENT`.
+    #[test]
+    fn entries_missing_uuid_do_not_pollute_the_empty_key_in_parent_of() {
+        let (dir, project) = fixture(&[
+            r#"{"type":"assistant","timestamp":"2026-08-01T00:00:00Z","isSidechain":false,"uuid":"agentX","message":{"model":"m","content":[{"type":"tool_use","id":"t1","name":"Agent","input":{"subagent_type":"innocent-lead","description":"a"}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+            r#"{"parentUuid":"agentX","timestamp":"2026-08-01T00:00:30Z"}"#,
+            r#"{"type":"assistant","timestamp":"2026-08-01T00:01:00Z","isSidechain":true,"uuid":"u3","parentUuid":"","message":{"model":"m","content":[{"type":"tool_use","id":"t1","name":"Agent","input":{"subagent_type":"victim","description":"b"}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+        ]);
+        let _g = ProjectsDirGuard::set(dir.path());
+
+        let f = scan(&project);
+        assert!(
+            f.edges[super::ROOT_AGENT].contains("victim"),
+            "an entry with a legitimately empty parentUuid must degrade to ROOT_AGENT: {:?}",
+            f.edges
+        );
+        assert!(
+            !f.edges
+                .get("innocent-lead")
+                .is_some_and(|c| c.contains("victim")),
+            "must not resolve through an unrelated entry that collided on the empty-uuid key: {:?}",
+            f.edges
+        );
     }
 
     #[test]
