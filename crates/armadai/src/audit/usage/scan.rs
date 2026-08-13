@@ -40,9 +40,24 @@ pub fn scan(root: &Path) -> UsageFacts {
         // skips only the offending line, matching the scan's own contract
         // ("a malformed line is skipped; a missing field degrades only its
         // own metric").
+        //
+        // Unlike `discovery::declares_cwd`'s bounded head-read, this walks
+        // the whole file, so it needs its own termination guarantee against
+        // an error that never resolves. `Lines`/`read_line` only ever
+        // reports `InvalidData` for an invalid-UTF-8 line, and — proven by
+        // the test below — always advances past the offending bytes when it
+        // does, so skipping it and continuing is safe. Any other error kind
+        // (a genuine device/read failure, say) is not guaranteed to advance
+        // the reader's position at all; retrying it via `continue` could
+        // then loop forever, which `map_while` never risked (it just gave
+        // up). Bailing out of this one file on any other kind keeps the
+        // same termination guarantee without reintroducing the
+        // all-or-nothing truncation this loop replaces `map_while` to avoid.
         for line in std::io::BufReader::new(handle).lines() {
-            let Ok(line) = line else {
-                continue;
+            let line = match line {
+                Ok(line) => line,
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+                Err(_) => break,
             };
             let Ok(v) = serde_json::from_str::<Value>(&line) else {
                 continue;

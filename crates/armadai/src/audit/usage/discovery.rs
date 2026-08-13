@@ -144,19 +144,32 @@ fn jsonl_in(dir: &Path) -> Vec<PathBuf> {
 /// regardless of content. `MAX_LINES` is only an anti-pathology ceiling — a
 /// corrupt or genuinely `cwd`-less file must never be read forever.
 ///
-/// Returns `None` when `file` cannot even be opened, so a caller trying
-/// several files in a directory (see `transcript_files`) can move on to the
-/// next candidate instead of concluding "no match" from a file that was
-/// never actually read.
+/// Three-state result, because `cwd` is a per-*directory* invariant (see
+/// `transcript_files`'s fallback tier) and only a file that actually carried
+/// the field is entitled to settle that directory one way or the other:
+/// - `Some(true)` — this file carries a `cwd` and it matches `forms`.
+/// - `Some(false)` — this file carries a `cwd` and it does **not** match.
+///   Still final: every file in the directory shares the same `cwd`.
+/// - `None` — inconclusive. Either `file` could not be opened, or no entry
+///   within `MAX_LINES` carried `cwd` at all (empty file, or metadata-only
+///   head). A caller trying several files in a directory (see
+///   `transcript_files`) must move on to the next candidate in this case —
+///   concluding "not a match" from a file that never actually carried the
+///   field would be wrong, not just untried.
 fn declares_cwd(file: &Path, forms: &[String]) -> Option<bool> {
     use std::io::BufRead;
     const MAX_LINES: usize = 500;
     let handle = std::fs::File::open(file).ok()?;
-    for line in std::io::BufReader::new(handle)
-        .lines()
-        .map_while(Result::ok)
-        .take(MAX_LINES)
-    {
+    // No `map_while(Result::ok)`: that stops at the first line that fails to
+    // read (e.g. invalid UTF-8) and never tries any line after it, which
+    // used to silence the rest of this bounded head for one bad line. Errors
+    // are skipped in place instead; `.take(MAX_LINES)` still bounds the loop
+    // to at most `MAX_LINES` polls of the underlying iterator regardless of
+    // how many of them error, so this can never run away.
+    for line in std::io::BufReader::new(handle).lines().take(MAX_LINES) {
+        let Ok(line) = line else {
+            continue;
+        };
         let Some(cwd) = serde_json::from_str::<serde_json::Value>(&line)
             .ok()
             .and_then(|v| {
@@ -170,7 +183,7 @@ fn declares_cwd(file: &Path, forms: &[String]) -> Option<bool> {
         let cwd = strip_trailing_sep(&cwd);
         return Some(forms.iter().any(|f| f == &cwd));
     }
-    Some(false)
+    None
 }
 
 #[cfg(test)]
@@ -332,6 +345,36 @@ mod tests {
             found.len(),
             2,
             "both files in the matching directory: {found:?}"
+        );
+    }
+
+    /// Regression: a readable file that carries **no** `cwd` at all (here,
+    /// empty) must be inconclusive, not a final "not a match" for the whole
+    /// directory — only a file that actually carries a `cwd` (whether it
+    /// matches or not) may settle it, since that is the per-directory
+    /// invariant Fix 2 relies on. `a.jsonl` (empty, no `cwd` anywhere)
+    /// deliberately sorts before `b.jsonl` (carries the matching `cwd`): this
+    /// is exactly the ordering that used to make `find_map` stop at `a.jsonl`
+    /// and conclude "no match" before `b.jsonl` was ever tried.
+    #[test]
+    fn fallback_tier_skips_a_file_with_no_cwd_at_all_to_reach_the_next_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = ProjectsDirGuard::set(dir.path());
+        let odd = dir.path().join("some-unexpected-name");
+        std::fs::create_dir_all(&odd).unwrap();
+        std::fs::write(odd.join("a.jsonl"), "").unwrap();
+        std::fs::write(
+            odd.join("b.jsonl"),
+            "{\"type\":\"user\",\"cwd\":\"/Users/x/proj\"}\n",
+        )
+        .unwrap();
+
+        let found = transcript_files(Path::new("/Users/x/proj"));
+        assert_eq!(
+            found.len(),
+            2,
+            "a cwd-less file must not settle the directory as a non-match; the sibling that \
+             actually carries the cwd must still be found: {found:?}"
         );
     }
 
