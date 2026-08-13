@@ -29,7 +29,7 @@ The rest of this page covers the newer half: **observed usage**, rules `U01`–`
 
 ## Observed usage
 
-Beyond what a project declares, `armadai audit` also measures what it actually *ran*, by scanning the project's Claude Code transcripts.
+Beyond what a project declares, `armadai audit` also measures what it actually *ran*, by scanning the project's Claude Code transcripts. A project with no transcripts at all is not an error: the audit still runs to completion, simply without an "Observed usage" section and without any `U0x` finding — the same report you'd get before this feature existed.
 
 ### Discovery
 
@@ -40,7 +40,9 @@ Resolution is two-tier:
 1. try the slug directly;
 2. if that directory doesn't exist, scan every directory under the projects root and keep the ones whose transcript entries declare the audited project as their `cwd`.
 
-The `cwd` field recorded in each transcript is authoritative; the slug is only an access shortcut, because its exact encoding of dots, underscores and spaces isn't publicly documented. Only absolute forms of the project path are used for matching (the path as given and its canonicalized form) — a relative path can never match either tier, and using one used to actively misfire.
+The `cwd` field recorded in each transcript is authoritative; the slug is only an access shortcut, because its exact encoding of dots, underscores and spaces isn't publicly documented.
+
+Internally, only absolute path forms are ever matched against — but that's transparent to you: a relative path you pass (e.g. `armadai audit .`) is canonicalized to an absolute form before matching, so it resolves exactly as expected. Relative forms are never matched *as given*, because that used to actively misfire: a bare `.` made the slug lookup collapse onto the projects root directory itself, before the canonical absolute form — the only one that could ever legitimately match — got a chance to try.
 
 Set `ARMADAI_CLAUDE_PROJECTS_DIR` to point at a different projects root. It exists for the test suite, and for auditing a corpus of transcripts stored elsewhere.
 
@@ -52,7 +54,7 @@ Each line is parsed once. The scan never fails on bad data: an unreadable file i
 
 ### Two metrics, not one
 
-- **Skills** are measured in **attributed turns** (the transcript's `attributionSkill` field) — how many turns a skill actually governed, not how many times it was invoked. The two numbers differ substantially in practice; turns governed is the honest measure of how much a skill actually shaped a session.
+- **Skills** are measured in **attributed turns** (the transcript's `attributionSkill` field) — how many turns a skill actually governed, not how many times it was invoked. A single invocation can end up governing many subsequent turns, so the two numbers can diverge sharply; turns governed is the more honest measure of how much a skill actually shaped a session.
 - **Agents** are measured in **invocations**. A sub-agent's own internal turns are not observable from these transcripts — Claude Code does not write sub-agent transcripts into a project's transcript files — so what gets counted is the delegation and its result, not what happened inside the sub-agent.
 
 ### Rules
