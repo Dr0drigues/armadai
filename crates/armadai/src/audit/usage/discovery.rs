@@ -199,29 +199,6 @@ mod tests {
         }
     }
 
-    /// Restores the process's original current directory on drop (including
-    /// on a failed assertion), so the relative-path test can't leave later
-    /// tests running from an unexpected `cwd`. Not env state, but mutates
-    /// the same kind of global, process-wide resource, so it is only ever
-    /// constructed while holding the `ENV_MUTEX`-backed guards above.
-    struct CwdGuard {
-        original: PathBuf,
-    }
-
-    impl CwdGuard {
-        fn enter(path: &Path) -> Self {
-            let original = std::env::current_dir().unwrap();
-            std::env::set_current_dir(path).unwrap();
-            Self { original }
-        }
-    }
-
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.original);
-        }
-    }
-
     #[test]
     fn slug_replaces_path_separators_with_dashes() {
         assert_eq!(
@@ -288,27 +265,31 @@ mod tests {
     }
 
     #[test]
-    fn relative_root_matches_via_canonicalization() {
+    fn absolute_non_canonical_root_matches_via_canonicalization() {
         let dir = tempfile::tempdir().unwrap();
         let _g = ProjectsDirGuard::set(dir.path());
         let project = tempfile::tempdir().unwrap();
-        // `tempfile::tempdir()` can itself return a non-canonical path (e.g.
-        // under a symlinked `/tmp` on macOS), so resolving it here exercises
-        // exactly the kind of mismatch this fix targets.
-        let canonical_project = project.path().canonicalize().unwrap();
-        let slug_dir = dir.path().join(slug_for(&canonical_project));
+        let sub = project.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        // Deliberately not `.canonicalize()`-driven on the query side: the
+        // slug directory is created for the resolved form, but the audited
+        // root passed to `transcript_files` below is a *different*, absolute
+        // string (containing a literal `..`) that only equals it once the
+        // filesystem resolves it. `canonicalize()` on an absolute path never
+        // consults the process's current directory, so this covers the same
+        // `root_forms` branch as a relative root would, with no global state.
+        let canonical_sub = sub.canonicalize().unwrap();
+        let slug_dir = dir.path().join(slug_for(&canonical_sub));
         std::fs::create_dir_all(&slug_dir).unwrap();
         std::fs::write(slug_dir.join("a.jsonl"), "").unwrap();
 
-        let parent = canonical_project.parent().unwrap().to_path_buf();
-        let leaf = PathBuf::from(canonical_project.file_name().unwrap());
-        let _cwd = CwdGuard::enter(&parent);
-        let found = transcript_files(&leaf);
+        let non_canonical = sub.join("..").join("sub");
+        let found = transcript_files(&non_canonical);
 
         assert_eq!(
             found.len(),
             1,
-            "a relative root that canonicalizes to the recorded absolute path must still match: {found:?}"
+            "an absolute root containing `..` must still resolve via canonicalize: {found:?}"
         );
     }
 
