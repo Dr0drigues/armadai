@@ -5,20 +5,36 @@ use std::path::PathBuf;
 
 use super::{AuditContext, Finding, Severity};
 use crate::audit::usage::UsageFacts;
+use crate::audit::usage::facts::ROOT_AGENT;
 
 /// Sub-agents Claude Code provides itself. They are legitimately used without
 /// ever appearing in `.claude/agents/`, which is exactly why U02 reports them:
 /// ArmadAI has no implicit equivalent, so a migration must materialise them.
+/// `ROOT_AGENT` ("claude") is kept here defensively even though U02 already
+/// skips it explicitly before this list is ever consulted — it is the native
+/// CLI's own thread, not a declarable asset.
 const BUILTIN_AGENTS: &[&str] = &["general-purpose", "Explore", "Plan", "claude"];
 
 /// Share of delegations below which a declared coordinator counts as bypassed.
 const COORDINATOR_SHARE: f64 = 0.5;
 
+/// The fix for a declared-but-unused asset — identical whether it is an
+/// agent or a skill.
+const UNUSED_ASSET_SUGGESTION: &str =
+    "remove it, or exclude it from the generated pack (--propose tags it `unused`)";
+
+/// Words meaning delegation/coordination, matched case-insensitively (the
+/// haystack is already lowercased) against the line carrying a coordinator
+/// mention. English and French, since a project's own instructions may be
+/// written in either.
+const DELEGATION_WORDS: &[&str] = &["delegate", "coordinat", "délégu", "coordonn"];
+
 fn observed<'a>(ctx: &AuditContext<'a>) -> Option<&'a UsageFacts> {
     ctx.usage.filter(|u| !u.is_empty())
 }
 
-/// U01 — a declared asset that never ran over the observed sessions.
+/// U01 — a declared asset (agent or skill) that never ran over the observed
+/// sessions.
 pub(super) fn u01_declared_never_used(ctx: &AuditContext) -> Vec<Finding> {
     let Some(usage) = observed(ctx) else {
         return Vec::new();
@@ -37,10 +53,23 @@ pub(super) fn u01_declared_never_used(ctx: &AuditContext) -> Vec<Finding> {
                 "agent '{}' is declared but was never invoked across {} observed session(s)",
                 agent.name, usage.sessions
             ),
-            suggestion: Some(
-                "remove it, or exclude it from the generated pack (--propose tags it `unused`)"
-                    .to_string(),
+            suggestion: Some(UNUSED_ASSET_SUGGESTION.to_string()),
+        });
+    }
+    for skill in &ctx.config.skills {
+        if usage.skills.contains_key(&skill.name) {
+            continue;
+        }
+        findings.push(Finding {
+            rule: "U01",
+            severity: Severity::Warning,
+            file: skill.source_path.clone(),
+            related: vec![],
+            message: format!(
+                "skill '{}' is declared but was never used across {} observed session(s)",
+                skill.name, usage.sessions
             ),
+            suggestion: Some(UNUSED_ASSET_SUGGESTION.to_string()),
         });
     }
     findings
@@ -54,6 +83,10 @@ pub(super) fn u02_used_but_undeclared(ctx: &AuditContext) -> Vec<Finding> {
     let declared: Vec<&str> = ctx.config.agents.iter().map(|a| a.name.as_str()).collect();
     let mut findings = Vec::new();
     for (name, stats) in &usage.agents {
+        if name == ROOT_AGENT {
+            // The native CLI's own thread, not a declarable agent asset.
+            continue;
+        }
         if declared.contains(&name.as_str()) {
             continue;
         }
@@ -88,7 +121,52 @@ pub(super) fn u02_used_but_undeclared(ctx: &AuditContext) -> Vec<Finding> {
     findings
 }
 
+/// True when the character right after a matched mention does not continue
+/// the same identifier — guards `@qa` from matching inside `@qa-specialist`.
+/// End of string counts as a boundary.
+fn is_word_boundary(next: Option<char>) -> bool {
+    match next {
+        None => true,
+        Some(c) => !c.is_alphanumeric() && c != '-' && c != '_',
+    }
+}
+
+/// Does `haystack` (already lowercased) name `name` as a coordinator?
+///
+/// A mention only counts when both hold:
+/// - it is word-bounded right after the match (so `@qa` cannot match inside
+///   `@qa-specialist`);
+/// - the same line also carries delegation language (so a passing "see also
+///   @agent" reference does not count). The `delegate to {name}` phrase
+///   already contains "delegate", so it satisfies this by construction — no
+///   separate check is needed for it.
+fn names_as_coordinator(haystack: &str, name: &str) -> bool {
+    for pattern in [format!("@{name}"), format!("delegate to {name}")] {
+        for (start, matched) in haystack.match_indices(pattern.as_str()) {
+            let end = start + matched.len();
+            if !is_word_boundary(haystack[end..].chars().next()) {
+                continue;
+            }
+            let line_start = haystack[..start].rfind('\n').map_or(0, |i| i + 1);
+            let line_end = haystack[end..]
+                .find('\n')
+                .map_or(haystack.len(), |i| end + i);
+            let line = &haystack[line_start..line_end];
+            if DELEGATION_WORDS.iter().any(|word| line.contains(word)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// U03 — the root instructions name a coordinator that delegations bypass.
+///
+/// Ambiguity is resolved by silence, not by guessing: if more than one
+/// declared agent qualifies as a named coordinator, the instructions do not
+/// actually tell us who coordinates, and picking one anyway would accuse the
+/// wrong agent of being bypassed. This rule names and accuses a specific
+/// agent, so a false positive here is materially worse than a miss.
 pub(super) fn u03_coordinator_bypassed(ctx: &AuditContext) -> Vec<Finding> {
     let Some(usage) = observed(ctx) else {
         return Vec::new();
@@ -101,43 +179,44 @@ pub(super) fn u03_coordinator_bypassed(ctx: &AuditContext) -> Vec<Finding> {
         return Vec::new();
     }
     let haystack = instructions.content.to_lowercase();
-    let mut findings = Vec::new();
-    for agent in &ctx.config.agents {
-        // Only agents the instructions actually single out as coordinating.
-        let named = haystack.contains(&format!("@{}", agent.name.to_lowercase()))
-            || haystack.contains(&format!("delegate to {}", agent.name.to_lowercase()));
-        if !named {
-            continue;
-        }
-        let own = usage
-            .agents
-            .get(&agent.name)
-            .map(|a| a.invocations)
-            .unwrap_or(0);
-        let share = f64::from(own) / f64::from(total);
-        if share >= COORDINATOR_SHARE {
-            continue;
-        }
-        findings.push(Finding {
-            rule: "U03",
-            severity: Severity::Warning,
-            file: instructions.source_path.clone(),
-            related: vec![agent.source_path.clone()],
-            message: format!(
-                "'{}' is named as coordinator but received {}/{} delegation(s) ({:.0}%)",
-                agent.name,
-                own,
-                total,
-                share * 100.0
-            ),
-            suggestion: Some(
-                "an explicit orchestrator cannot be bypassed like prose can — \
-                 --propose emits the observed root, with this one kept as a comment"
-                    .to_string(),
-            ),
-        });
+    let mut candidates = ctx
+        .config
+        .agents
+        .iter()
+        .filter(|agent| names_as_coordinator(&haystack, &agent.name.to_lowercase()));
+    let Some(agent) = candidates.next() else {
+        return Vec::new();
+    };
+    if candidates.next().is_some() {
+        return Vec::new();
     }
-    findings
+    let own = usage
+        .agents
+        .get(&agent.name)
+        .map(|a| a.invocations)
+        .unwrap_or(0);
+    let share = f64::from(own) / f64::from(total);
+    if share >= COORDINATOR_SHARE {
+        return Vec::new();
+    }
+    vec![Finding {
+        rule: "U03",
+        severity: Severity::Warning,
+        file: instructions.source_path.clone(),
+        related: vec![agent.source_path.clone()],
+        message: format!(
+            "'{}' is named as coordinator but received {}/{} delegation(s) ({:.0}%)",
+            agent.name,
+            own,
+            total,
+            share * 100.0
+        ),
+        suggestion: Some(
+            "an explicit orchestrator cannot be bypassed like prose can — \
+             --propose emits the observed root, with this one kept as a comment"
+                .to_string(),
+        ),
+    }]
 }
 
 /// U04 — session coverage of a declared skill, reported without judgement.
@@ -206,6 +285,29 @@ mod tests {
     }
 
     #[test]
+    fn u01_flags_a_declared_skill_that_never_ran() {
+        let mut config = config_with(vec![]);
+        config.skills.push(crate::audit::reverse::ImportedSkill {
+            name: "armadai".to_string(),
+            source_path: std::path::PathBuf::from(".claude/skills/armadai/SKILL.md"),
+            description: Some("project skill".to_string()),
+            has_skill_md: true,
+            has_frontmatter: true,
+            issues: vec![],
+            extra: Default::default(),
+        });
+        let settings = AuditSettings::default();
+        let mut usage = UsageFacts::default();
+        usage.record_delegation(ROOT_AGENT, "qa", "m");
+
+        let f = u01_declared_never_used(&ctx(&config, &settings, &usage));
+        assert_eq!(f.len(), 1, "only the unused skill: {f:?}");
+        assert!(f[0].message.contains("skill"));
+        assert!(f[0].message.contains("armadai"));
+        assert_eq!(f[0].severity, Severity::Warning);
+    }
+
+    #[test]
     fn u01_is_silent_without_usage() {
         let config = config_with(vec![agent("ghost", "p")]);
         let settings = AuditSettings::default();
@@ -248,6 +350,19 @@ mod tests {
     }
 
     #[test]
+    fn u02_skips_the_root_agent() {
+        let config = config_with(vec![agent("qa", "p")]);
+        let settings = AuditSettings::default();
+        let mut usage = UsageFacts::default();
+        usage.record_delegation(ROOT_AGENT, ROOT_AGENT, "m");
+        usage.record_delegation(ROOT_AGENT, "general-purpose", "m");
+
+        let f = u02_used_but_undeclared(&ctx(&config, &settings, &usage));
+        assert_eq!(f.len(), 1, "the root thread must not be reported: {f:?}");
+        assert!(f[0].message.contains("general-purpose"));
+    }
+
+    #[test]
     fn u03_flags_a_bypassed_declared_coordinator() {
         let mut config = config_with(vec![agent("dev-lead", "p"), agent("qa", "p")]);
         config.instructions = Some(crate::audit::reverse::ImportedInstructions {
@@ -282,6 +397,69 @@ mod tests {
         usage.record_delegation(ROOT_AGENT, "qa", "m");
 
         assert!(u03_coordinator_bypassed(&ctx(&config, &settings, &usage)).is_empty());
+    }
+
+    #[test]
+    fn u03_silent_on_a_bare_mention_without_delegation_language() {
+        let mut config = config_with(vec![agent("qa-specialist", "p")]);
+        config.instructions = Some(crate::audit::reverse::ImportedInstructions {
+            source_path: std::path::PathBuf::from("CLAUDE.md"),
+            content: "see also @qa-specialist for test conventions".to_string(),
+        });
+        let settings = AuditSettings::default();
+        let mut usage = UsageFacts::default();
+        for _ in 0..5 {
+            usage.record_delegation(ROOT_AGENT, "other", "m");
+        }
+
+        assert!(
+            u03_coordinator_bypassed(&ctx(&config, &settings, &usage)).is_empty(),
+            "a passing mention with no delegation language must not accuse anyone"
+        );
+    }
+
+    #[test]
+    fn u03_word_boundary_qa_does_not_match_qa_specialist() {
+        let mut config = config_with(vec![agent("qa", "p")]);
+        config.instructions = Some(crate::audit::reverse::ImportedInstructions {
+            source_path: std::path::PathBuf::from("CLAUDE.md"),
+            content: "coordinate via @qa-specialist for questions".to_string(),
+        });
+        let settings = AuditSettings::default();
+        let mut usage = UsageFacts::default();
+        for _ in 0..3 {
+            usage.record_delegation(ROOT_AGENT, "other", "m");
+        }
+
+        assert!(
+            u03_coordinator_bypassed(&ctx(&config, &settings, &usage)).is_empty(),
+            "'@qa' must not match inside '@qa-specialist'"
+        );
+    }
+
+    #[test]
+    fn u03_silent_when_multiple_agents_qualify_as_coordinator() {
+        let mut config = config_with(vec![agent("alpha", "p"), agent("beta", "p")]);
+        config.instructions = Some(crate::audit::reverse::ImportedInstructions {
+            source_path: std::path::PathBuf::from("CLAUDE.md"),
+            content: "delegate to @alpha or delegate to @beta as needed".to_string(),
+        });
+        let settings = AuditSettings::default();
+        let mut usage = UsageFacts::default();
+        for _ in 0..90 {
+            usage.record_delegation(ROOT_AGENT, "other", "m");
+        }
+        for _ in 0..5 {
+            usage.record_delegation(ROOT_AGENT, "alpha", "m");
+        }
+        for _ in 0..5 {
+            usage.record_delegation(ROOT_AGENT, "beta", "m");
+        }
+
+        assert!(
+            u03_coordinator_bypassed(&ctx(&config, &settings, &usage)).is_empty(),
+            "two qualifying candidates must yield silence, not a guess"
+        );
     }
 
     #[test]
