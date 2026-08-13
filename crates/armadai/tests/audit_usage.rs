@@ -53,17 +53,27 @@ mod tests {
         let output = cmd.output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
 
+        assert!(output.status.success(), "audit must not fail: {stdout}");
+        // Same-line co-occurrence, not just presence anywhere in stdout: A08
+        // ("agent inherits all tools") also mentions `ghost.md` unconditionally,
+        // so `contains("U01") && contains("ghost")` would still pass even if
+        // U01 never fired — see strength-check 1 in the task report, where the
+        // real captured output has "ghost" via A08 alone and no U0x at all.
         assert!(
-            stdout.contains("U01") && stdout.contains("ghost"),
-            "a declared-but-unused agent must be flagged:\n{stdout}"
+            stdout
+                .lines()
+                .any(|l| l.contains("U01") && l.contains("ghost")),
+            "a declared-but-unused agent must be flagged by U01 on its own line:\n{stdout}"
         );
         assert!(
-            stdout.contains("U02") && stdout.contains("general-purpose"),
-            "the built-in worker must be reported as undeclared:\n{stdout}"
+            stdout
+                .lines()
+                .any(|l| l.contains("U02") && l.contains("general-purpose")),
+            "the built-in worker must be reported as undeclared by U02 on its own line:\n{stdout}"
         );
         assert!(
-            stdout.contains("2026-08-01T00:00:00Z"),
-            "the observed window must be stated:\n{stdout}"
+            stdout.contains("2026-08-01T00:00:00Z") && stdout.contains("2026-08-02T00:00:00Z"),
+            "the observed window (both bounds) must be stated:\n{stdout}"
         );
     }
 
@@ -82,6 +92,16 @@ mod tests {
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         assert!(output.status.success(), "audit must not fail: {stdout}");
+        // Prove the audit actually ran (rather than printing nothing at all
+        // and exiting 0) before trusting the absence assertions below.
+        assert!(
+            stdout.contains("armadai audit -"),
+            "the audit must still produce real output:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("Observed usage"),
+            "with nothing observed, the section must not appear:\n{stdout}"
+        );
         assert!(
             !stdout.contains("U01") && !stdout.contains("U02"),
             "with nothing observed, no usage claim may be made:\n{stdout}"
