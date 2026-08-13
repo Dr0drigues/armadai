@@ -224,6 +224,43 @@ pub async fn execute(
 mod tests {
     use super::*;
 
+    /// Points `ARMADAI_CLAUDE_PROJECTS_DIR` at a fresh, empty tempdir so
+    /// `execute()`'s unconditional `usage::scan(&root)` call never reads the
+    /// real machine's `~/.claude/projects` — non-deterministic across
+    /// machines, and on a machine with a real transcript corpus, actively
+    /// wrong for tests that assert on a clean, controlled fixture. Mirrors
+    /// `discovery`'s own `ProjectsDirGuard`.
+    ///
+    /// The `MutexGuard` is a struct field, not a bare local binding, which is
+    /// what keeps clippy's `await_holding_lock` from firing when this guard
+    /// is held across the `.await` in an `execute(...)` test below — the same
+    /// shape as `TempStorageGuard` in `cli/run.rs` and the guards in
+    /// `cli/watch.rs`.
+    struct ProjectsDirGuard {
+        _dir: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ProjectsDirGuard {
+        fn empty() -> Self {
+            let lock = armadai_core::config::ENV_MUTEX.lock().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            // SAFETY: modifies the global environment; serialised via ENV_MUTEX.
+            unsafe { std::env::set_var("ARMADAI_CLAUDE_PROJECTS_DIR", dir.path()) }
+            Self {
+                _dir: dir,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ProjectsDirGuard {
+        fn drop(&mut self) {
+            // SAFETY: restoring env state at end of test scope.
+            unsafe { std::env::remove_var("ARMADAI_CLAUDE_PROJECTS_DIR") }
+        }
+    }
+
     #[test]
     fn min_severity_mapping() {
         use crate::audit::rules::Severity;
@@ -249,6 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_fails_on_critical_finding() {
+        let _env = ProjectsDirGuard::empty();
         let dir = tempfile::tempdir().unwrap();
         let agents = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
@@ -267,6 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_succeeds_on_clean_repo_and_writes_report() {
+        let _env = ProjectsDirGuard::empty();
         let dir = tempfile::tempdir().unwrap();
         let agents = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
@@ -292,6 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_writes_html_when_extension_is_html() {
+        let _env = ProjectsDirGuard::empty();
         let dir = tempfile::tempdir().unwrap();
         let agents = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
@@ -317,6 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_with_propose_writes_proposal() {
+        let _env = ProjectsDirGuard::empty();
         let dir = tempfile::tempdir().unwrap();
         let agents = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
