@@ -31,6 +31,8 @@ pub enum PromptStep {
 pub struct AgentDefaults {
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub timeout: Option<u64>,
@@ -50,6 +52,10 @@ pub struct AgentDecl {
     pub provider: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
     #[serde(default)]
     pub temperature: Option<f32>,
     #[serde(default)]
@@ -151,8 +157,8 @@ pub fn load(path: &Path) -> anyhow::Result<DeclaredAgents> {
 ///
 /// Shallow merge: a field absent from the declaration takes the default's
 /// value. Lists are **replaced, never merged** — less expressive, but an agent
-/// that declares a `scope` has exactly that scope, rather than silently
-/// inheriting a wider one.
+/// that declares `tags` has exactly those tags, rather than silently
+/// inheriting a wider set.
 ///
 /// Fails when no `provider` is declared at either level. The `.md` parser
 /// refuses that too (`parser/metadata.rs`), and the two formats must agree on
@@ -174,8 +180,8 @@ pub fn merge_metadata(decl: &AgentDecl, defaults: &AgentDefaults) -> anyhow::Res
     Ok(AgentMetadata {
         provider,
         model: decl.model.clone().or_else(|| defaults.model.clone()),
-        command: None,
-        args: None,
+        command: decl.command.clone().or_else(|| defaults.command.clone()),
+        args: decl.args.clone().or_else(|| defaults.args.clone()),
         temperature: decl
             .temperature
             .or(defaults.temperature)
@@ -372,6 +378,8 @@ agents:
             description: None,
             provider: None,
             model: None,
+            command: None,
+            args: None,
             temperature: None,
             max_tokens: None,
             timeout: None,
@@ -387,6 +395,8 @@ agents:
         AgentDefaults {
             provider: Some("claude".into()),
             model: Some("latest:pro".into()),
+            command: None,
+            args: None,
             temperature: Some(0.3),
             max_tokens: Some(8192),
             timeout: None,
@@ -464,5 +474,96 @@ agents:
                 .provider,
             "cli"
         );
+    }
+
+    /// `cli` is the provider armadai uses to drive claude/gemini/codex as
+    /// subprocesses, and it needs `command` (and usually `args`) to know what
+    /// to run. Without this, the declarative format could not express a whole
+    /// class of agent the `.md` format can.
+    #[test]
+    fn a_declared_cli_provider_carries_its_command_and_args_through() {
+        let mut d = decl("a");
+        d.provider = Some("cli".into());
+        d.command = Some("claude".into());
+        d.args = Some(vec!["--dangerously-skip-permissions".into()]);
+        let m = merge_metadata(&d, &AgentDefaults::default()).unwrap();
+        assert_eq!(m.command.as_deref(), Some("claude"));
+        assert_eq!(
+            m.args,
+            Some(vec!["--dangerously-skip-permissions".to_string()])
+        );
+    }
+
+    /// Same list-replacement rule as `tags`: a declared `args: []` means the
+    /// agent takes no arguments, not "inherit whatever the defaults set".
+    #[test]
+    fn declared_empty_args_means_empty_not_inherit() {
+        let mut d = decl("a");
+        d.provider = Some("cli".into());
+        d.args = Some(vec![]);
+        let defaults = AgentDefaults {
+            args: Some(vec!["--from-defaults".into()]),
+            ..AgentDefaults::default()
+        };
+        let m = merge_metadata(&d, &defaults).unwrap();
+        assert_eq!(m.args, Some(vec![]));
+    }
+
+    /// Every field gets a distinct, recognisable value so a field-swap bug
+    /// (e.g. assigning `timeout` from `max_tokens`, or `stacks` from `tags`)
+    /// fails this test even where the values are "the same shape" — two
+    /// numeric fields, or two string-list fields, that happen to share a
+    /// value would not expose such a bug, so none of them do here.
+    #[test]
+    fn merge_metadata_maps_every_field_without_swapping_any() {
+        let d = AgentDecl {
+            name: "kraken".into(),
+            description: Some("desc-from-decl".into()),
+            provider: Some("provider-from-decl".into()),
+            model: Some("model-from-decl".into()),
+            command: Some("command-from-decl".into()),
+            args: Some(vec!["arg-from-decl".into()]),
+            temperature: Some(0.11),
+            max_tokens: Some(1111),
+            timeout: Some(2222),
+            model_fallback: Some(vec!["fallback-from-decl".into()]),
+            tags: Some(vec!["tag-from-decl".into()]),
+            stacks: Some(vec!["stack-from-decl".into()]),
+            scope: Some(vec!["scope-from-decl".into()]),
+            prompt: vec![],
+        };
+        let defaults = AgentDefaults {
+            provider: Some("provider-from-defaults".into()),
+            model: Some("model-from-defaults".into()),
+            command: Some("command-from-defaults".into()),
+            args: Some(vec!["arg-from-defaults".into()]),
+            temperature: Some(0.99),
+            max_tokens: Some(9999),
+            timeout: Some(8888),
+            model_fallback: vec!["fallback-from-defaults".into()],
+            tags: vec!["tag-from-defaults".into()],
+            stacks: vec!["stack-from-defaults".into()],
+        };
+
+        let m = merge_metadata(&d, &defaults).unwrap();
+
+        assert_eq!(m.provider, "provider-from-decl");
+        assert_eq!(m.model.as_deref(), Some("model-from-decl"));
+        assert_eq!(m.command.as_deref(), Some("command-from-decl"));
+        assert_eq!(m.args, Some(vec!["arg-from-decl".to_string()]));
+        assert_eq!(m.temperature, 0.11);
+        assert_eq!(m.max_tokens, Some(1111));
+        assert_eq!(m.timeout, Some(2222));
+        assert_eq!(m.tags, vec!["tag-from-decl".to_string()]);
+        assert_eq!(m.stacks, vec!["stack-from-decl".to_string()]);
+        assert_eq!(m.scope, vec!["scope-from-decl".to_string()]);
+        assert_eq!(m.model_fallback, vec!["fallback-from-decl".to_string()]);
+        assert_eq!(m.cost_limit, None);
+        assert_eq!(m.rate_limit, None);
+        assert_eq!(m.context_window, None);
+        assert_eq!(m.mode, None);
+        assert_eq!(m.orchestration, None);
+        assert!(m.triggers.is_none());
+        assert!(m.ring_config.is_none());
     }
 }
