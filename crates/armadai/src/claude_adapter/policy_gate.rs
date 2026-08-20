@@ -34,15 +34,30 @@ pub fn gate_from_stdin() -> anyhow::Result<()> {
 
 /// The whole gate, as a pure string→string function so it can be tested
 /// without a subprocess. `None` means "no opinion" (allowed).
+/// The sub-agent Claude Code spawns when an `Agent` call omits
+/// `subagent_type`. Observed on 2026-08-20, NOT a documented contract: two
+/// such calls ran as `general-purpose` and slipped past the gate, because an
+/// absent field read as "no target" and the gate stayed silent. Treating the
+/// omission as this target is what stops omitting the field from being a way
+/// around the policy — and if a project declares this agent, such calls are
+/// allowed again, because the policy decides rather than the shape of the call.
+const IMPLICIT_SUBAGENT: &str = "general-purpose";
+
 pub fn decide(raw: &str) -> Option<String> {
     let v: Value = serde_json::from_str(raw).ok()?;
-    let target = v
-        .get("tool_input")
-        .and_then(|i| i.get("subagent_type"))
-        .and_then(Value::as_str)?;
-    if target.is_empty() {
+    // Only a delegation carries a topology decision. The hook's matcher
+    // should already guarantee this; checking here means a hook installed
+    // without a matcher cannot have every tool judged as a delegation.
+    let tool = v.get("tool_name").and_then(Value::as_str)?;
+    if tool != "Agent" && tool != "Task" {
         return None;
     }
+    let target = v
+        .get("tool_input")?
+        .get("subagent_type")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(IMPLICIT_SUBAGENT);
     // Claude Code sends an empty `agent_type` on the main thread; a sub-agent
     // sub-delegating carries its own name.
     let caller = v
@@ -102,6 +117,57 @@ mod tests {
         )
         .unwrap();
         dir
+    }
+
+    /// Regression: an `Agent` call may omit `subagent_type` entirely — Claude
+    /// Code then spawns its default agent. Observed on 2026-08-20: two such
+    /// calls slipped past the gate and ran as `general-purpose`, because
+    /// `as_str()` on a missing field yielded `None` and the gate returned "no
+    /// opinion". Omitting the target must not be a way around the policy.
+    #[test]
+    fn an_agent_call_without_subagent_type_is_still_policed() {
+        let dir = project_with_strict_policy();
+        let raw = serde_json::json!({
+            "cwd": dir.path().to_string_lossy(),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Agent",
+            "agent_type": "qa-specialist",
+            // No `subagent_type`: exactly the shape captured from the leak.
+            "tool_input": { "description": "run the tests", "prompt": "..." },
+        })
+        .to_string();
+        let out = decide(&raw).expect("an implicit target must still be judged");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+        let reason = v["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert!(
+            reason.contains("general-purpose"),
+            "the reason must name the implicit default so the model can react: {reason}"
+        );
+    }
+
+    /// The same call is allowed once the default agent is declared — the
+    /// policy decides, not the shape of the call.
+    #[test]
+    fn an_implicit_target_passes_when_it_is_declared() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/config.yaml"),
+            "orchestration:\n  policy: strict\n  coordinator: dev-lead\n  \
+             teams:\n    - agents: [qa-specialist]\n  free_agents: [general-purpose]\n",
+        )
+        .unwrap();
+        let raw = serde_json::json!({
+            "cwd": dir.path().to_string_lossy(),
+            "tool_name": "Agent",
+            "agent_type": "qa-specialist",
+            "tool_input": { "description": "d", "prompt": "p" },
+        })
+        .to_string();
+        assert!(decide(&raw).is_none(), "declared default must be allowed");
     }
 
     #[test]
