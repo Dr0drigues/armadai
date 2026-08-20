@@ -40,7 +40,13 @@ Three new files rather than one: substitution is reusable on its own, the YAML f
 
 ### Task 1: Extract variable substitution into `armadai-core`
 
-`cli/new.rs:55-78` substitutes `{{name}}`, `{{description}}`, `{{stack}}`, `{{model}}` with a chain of `replace` calls, then computes the leftover placeholders into a `remaining` vector **and does nothing with it**. Fragments need the same substitution, and the spec requires leftovers to be an error.
+`cli/new.rs:55-78` substitutes `{{name}}`, `{{description}}`, `{{stack}}`, `{{model}}` with a chain of `replace` calls, then hand-rolls a `{{`/`}}` scan into a `remaining` vector and **prints it as a warning** (`new.rs:70-95`). Fragments need the same substitution; the difference is what happens to a leftover.
+
+**Two callers, two policies — this is deliberate:**
+- **Fragments** (Task 4) need a **hard failure**: an agent whose prompt still contains `{{module}}` ships amputated instructions and hallucinates rather than complains.
+- **`armadai new`** must keep today's behaviour. **10 of the 12 templates in `crates/armadai/templates/` carry `{{description}}` or `{{stack}}`**, so failing hard would break `armadai new <name>` without `--description` for almost every template. That is a regression in the product's most-used command, not an improvement.
+
+So this task ships **two** functions over one implementation of the scan: `render` (strict) and `render_lenient` (substitutes what it can, returns the leftovers). `new.rs` switches to `render_lenient` and feeds its existing warning from the returned list, deleting its hand-rolled scan. Behaviour preserved, detection defined once.
 
 **Files:**
 - Create: `crates/armadai-core/src/template.rs`
@@ -50,6 +56,7 @@ Three new files rather than one: substitution is reusable on its own, the YAML f
 - Consumes: nothing.
 - Produces:
   - `pub fn render(template: &str, vars: &BTreeMap<String, String>) -> Result<String, TemplateError>`
+  - `pub fn render_lenient(template: &str, vars: &BTreeMap<String, String>) -> (String, Vec<String>)` — the rendered text, plus the placeholder names left unsubstituted
   - `pub fn unused_vars(template: &str, vars: &BTreeMap<String, String>) -> Vec<String>`
   - `pub enum TemplateError { Unsubstituted(Vec<String>) }` (implements `std::error::Error`)
 
@@ -102,6 +109,22 @@ mod tests {
         );
     }
 
+    /// `armadai new` must keep working on the 10 templates that carry
+    /// `{{description}}`: substitute what we have, hand back the rest.
+    #[test]
+    fn lenient_rendering_substitutes_what_it_can_and_returns_the_rest() {
+        let (out, left) = render_lenient("{{a}} and {{b}}", &vars(&[("a", "1")]));
+        assert_eq!(out, "1 and {{b}}");
+        assert_eq!(left, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn lenient_rendering_reports_nothing_left_when_all_are_supplied() {
+        let (out, left) = render_lenient("{{a}}", &vars(&[("a", "1")]));
+        assert_eq!(out, "1");
+        assert!(left.is_empty());
+    }
+
     #[test]
     fn an_unterminated_placeholder_is_left_alone() {
         // `{{` with no closing `}}` is not a placeholder, just text.
@@ -122,10 +145,15 @@ Above the test module in `crates/armadai-core/src/template.rs`:
 ```rust
 //! `{{var}}` substitution, shared by agent templates and prompt fragments.
 //!
-//! Extracted from `cli/new.rs`, which substituted inline and computed the
-//! leftover placeholders without acting on them. Leftovers are an error here:
-//! a prompt containing a literal `{{module}}` is text the model will try to
-//! interpret, and an agent built from it is quietly wrong.
+//! Extracted from `cli/new.rs`, which substituted inline and hand-rolled its
+//! own leftover scan.
+//!
+//! Two policies over one scan. `render` refuses a leftover: a prompt
+//! containing a literal `{{module}}` is text the model will try to interpret,
+//! and an agent built from it is quietly wrong. `render_lenient` substitutes
+//! what it can and hands the leftovers back, which is what `armadai new`
+//! needs — most templates carry `{{description}}`, and `new` warns rather
+//! than refusing.
 
 use std::collections::BTreeMap;
 
@@ -193,6 +221,26 @@ pub fn render(
     Ok(out)
 }
 
+/// Substitute what the variables cover, and report what is left.
+///
+/// For callers that must not fail on a leftover — `armadai new` warns about
+/// them instead, because most templates legitimately carry a `{{description}}`
+/// the user did not supply.
+pub fn render_lenient(
+    template: &str,
+    vars: &BTreeMap<String, String>,
+) -> (String, Vec<String>) {
+    let left: Vec<String> = placeholders(template)
+        .into_iter()
+        .filter(|n| !vars.contains_key(n))
+        .collect();
+    let mut out = template.to_string();
+    for (name, value) in vars {
+        out = out.replace(&format!("{{{{{name}}}}}"), value);
+    }
+    (out, left)
+}
+
 /// Values supplied that the template never uses — almost always a typo.
 pub fn unused_vars(template: &str, vars: &BTreeMap<String, String>) -> Vec<String> {
     let used = placeholders(template);
@@ -212,7 +260,15 @@ Expected: PASS (5 tests).
 
 - [ ] **Step 5: Make `cli/new.rs` consume it**
 
-Replace the `replace` chain at `crates/armadai/src/cli/new.rs:55-78` with a `vars` map plus one `render` call. Keep `new.rs`'s current behaviour: a missing `--description` or `--stack` means those placeholders stay unsupplied, so a template using them would now **error** instead of silently keeping `{{description}}`. That is the intended improvement; confirm the existing `new.rs` tests still pass, and if one relied on the silent behaviour, report it rather than weakening it.
+Replace the `replace` chain at `crates/armadai/src/cli/new.rs:55-68` with a `vars` map plus one `render_lenient` call, inserting only the variables actually supplied (`name` and `model` always; `description` and `stack` only when `Some`). Then delete the hand-rolled `{{`/`}}` scan at `new.rs:70-78` and feed the existing warning block from `render_lenient`'s second return value.
+
+`new.rs`'s warning currently prints whole placeholders (`{{description}}`) while `render_lenient` returns bare names (`description`). Keep the printed form identical to today's — wrap each name back into `{{…}}` at the print site. Changing user-visible output is out of scope for this task.
+
+Verify by hand and put the output in your report:
+```bash
+cargo run --bin armadai -- new scratch-check --template basic
+```
+Expected: the command **succeeds** and warns about the unsubstituted placeholders, exactly as before. Delete the generated file afterwards. A failure here means the strict path leaked into `new` — 10 of the 12 templates carry `{{description}}`.
 
 - [ ] **Step 6: Run the affected tests**
 
@@ -226,10 +282,13 @@ cargo fmt --all
 git add crates/armadai-core/src/template.rs crates/armadai-core/src/lib.rs crates/armadai/src/cli/new.rs
 git commit -m "refactor(core): extract {{var}} substitution into armadai-core
 
-cli/new.rs substituted inline and computed leftover placeholders without
-acting on them. Prompt fragments need the same substitution, and a leftover
-is now an error: a prompt containing a literal {{module}} is text the model
-will try to interpret."
+Two policies over one scan. render() refuses a leftover: a prompt containing a
+literal {{module}} is text the model will try to interpret, and the agent built
+from it is quietly wrong. render_lenient() hands leftovers back, which is what
+armadai new needs — 10 of the 12 templates carry {{description}}, so failing
+hard there would break the command for almost every template.
+
+cli/new.rs keeps its behaviour and drops its hand-rolled scan."
 ```
 
 ---
@@ -1309,6 +1368,204 @@ the .md rather than a second source of truth."
 
 ---
 
+### Task 7b: Wire declared agents into `link` and `list`
+
+Without this task the feature is unreachable: `link.rs:52` calls `resolve_all_agents`, which returns `Vec<PathBuf>`, then parses each file. A declared agent has no file, so `armadai link` would ignore `agents.yaml` entirely — and `link` is precisely the moment the duplication this format removes shows up.
+
+**Files:**
+- Modify: `crates/armadai-core/src/agent_source.rs` (add `load_all_agents`)
+- Modify: `crates/armadai/src/cli/link.rs:52-68`, `crates/armadai/src/cli/list.rs:103`
+
+**Interfaces:**
+- Consumes: Tasks 5-6 (`load_agent`, `declarations_path`, `check_no_shadowing`), plus the existing `project::resolve_all_agents(config, root) -> (Vec<PathBuf>, Vec<String>)` and `prompt::load_all_prompts`.
+- Produces: `pub fn load_all_agents(config: &ProjectConfig, root: &Path, fragments: &[Prompt]) -> (Vec<Agent>, Vec<String>)` — same `(values, non-fatal errors)` shape as `resolve_all_agents`, so callers keep their existing warning loop.
+
+**Decision, already made — do not re-litigate it:** every agent in `agents.yaml` is included automatically. Requiring them to be relisted in `armadai.yaml` would duplicate the declaration this format exists to remove. `AgentRef::Declared` stays useful for pointing at one deliberately (routes, teams), not as an opt-in gate.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `agent_source.rs`'s test module:
+
+```rust
+    /// A project with one `.md` agent and one declared agent must yield both.
+    #[test]
+    fn declared_and_file_agents_are_loaded_together() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  - name: declared-one\n    prompt: [base]\n",
+        )
+        .unwrap();
+        let md_dir = dir.path().join("agents");
+        std::fs::create_dir_all(&md_dir).unwrap();
+        std::fs::write(
+            md_dir.join("file-one.md"),
+            "# file-one\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nHi\n",
+        )
+        .unwrap();
+        let config = config_listing_agent_path(dir.path(), "agents/file-one.md");
+
+        let (agents, errors) = load_all_agents(&config, dir.path(), &fragments());
+        let mut names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["declared-one", "file-one"], "errors: {errors:?}");
+    }
+
+    /// A project with no declarations must behave exactly as before.
+    #[test]
+    fn a_project_without_declarations_loads_only_its_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let md_dir = dir.path().join("agents");
+        std::fs::create_dir_all(&md_dir).unwrap();
+        std::fs::write(
+            md_dir.join("only.md"),
+            "# only\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nHi\n",
+        )
+        .unwrap();
+        let config = config_listing_agent_path(dir.path(), "agents/only.md");
+
+        let (agents, _) = load_all_agents(&config, dir.path(), &[]);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "only");
+    }
+
+    /// One bad declaration must not silence the good agents — the existing
+    /// callers print warnings and carry on, and that contract must hold.
+    #[test]
+    fn a_broken_declaration_becomes_an_error_string_not_a_lost_fleet() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        // `ghost` is not a known fragment -> composition fails for this agent.
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  - name: broken\n    prompt: [ghost]\n  \
+             - name: fine\n    prompt: [base]\n",
+        )
+        .unwrap();
+        let config = config_listing_agent_path(dir.path(), "agents/none.md");
+
+        let (agents, errors) = load_all_agents(&config, dir.path(), &fragments());
+        assert!(
+            agents.iter().any(|a| a.name == "fine"),
+            "the healthy agent must survive: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("broken")),
+            "the broken one must be reported by name: {errors:?}"
+        );
+    }
+```
+
+`config_listing_agent_path` is a helper you write: build a `ProjectConfig` whose agent list holds one `AgentRef::Path`. Read `project.rs`'s own tests (`test_resolve_all_agents`, around `project.rs:822`) for how they construct a `ProjectConfig` and copy that, rather than inventing a second way.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cargo test -p armadai-core load_all_agents`
+Expected: FAIL — the function does not exist.
+
+- [ ] **Step 3: Write the implementation**
+
+```rust
+/// Every agent a project has: those resolved from files, plus those declared.
+///
+/// Same `(values, non-fatal errors)` shape as `resolve_all_agents`, so callers
+/// keep their existing warning loop. A broken declaration costs its own agent,
+/// never the whole fleet — a fleet that vanishes because one agent has a typo
+/// is worse than a fleet with a gap and a warning.
+pub fn load_all_agents(
+    config: &crate::project::ProjectConfig,
+    root: &Path,
+    fragments: &[Prompt],
+) -> (Vec<Agent>, Vec<String>) {
+    let (paths, mut errors) = crate::project::resolve_all_agents(config, root);
+    let mut agents = Vec::new();
+    for path in &paths {
+        match crate::parser::parse_agent_file(path) {
+            Ok(a) => agents.push(a),
+            Err(e) => errors.push(format!("failed to parse {}: {e}", path.display())),
+        }
+    }
+
+    let decls_path = declarations_path(root);
+    if decls_path.is_file() {
+        match crate::agent_decl::load(&decls_path) {
+            Ok(decls) => {
+                for decl in &decls.agents {
+                    let built = crate::agent_decl::merge_metadata(decl, &decls.defaults).and_then(
+                        |metadata| {
+                            Ok(Agent {
+                                name: decl.name.clone(),
+                                source: decls_path.clone(),
+                                metadata,
+                                system_prompt: crate::agent_decl::compose_prompt(
+                                    &decl.prompt,
+                                    decl,
+                                    fragments,
+                                )?,
+                                instructions: None,
+                                output_format: None,
+                                pipeline: None,
+                                context: None,
+                            })
+                        },
+                    );
+                    match built {
+                        Ok(a) => agents.push(a),
+                        Err(e) => errors.push(format!("{e}")),
+                    }
+                }
+            }
+            Err(e) => errors.push(format!("{e}")),
+        }
+    }
+
+    (agents, errors)
+}
+```
+
+Note the duplication with `load_agent`'s construction of `Agent`. Extract the shared part into one private `fn build(decl, defaults, fragments, source) -> anyhow::Result<Agent>` and have **both** call it — two places building an `Agent` from a declaration is exactly how the two drift apart later.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cargo test -p armadai-core`
+Expected: PASS.
+
+- [ ] **Step 5: Wire `link` and `list`**
+
+In `crates/armadai/src/cli/link.rs`, replace the `resolve_all_agents` + `parse_agent_file` loop (lines 52-68) with one `load_all_agents` call, mapping through `LinkAgent::from(&agent)`. Keep the existing warning loop and the `link_agents.is_empty()` bail exactly as they are. The fragments argument comes from the project's prompts — use whatever `link.rs` already loads if it loads them, and `prompt::load_all_prompts` otherwise.
+
+Do the same at `crates/armadai/src/cli/list.rs:103`.
+
+- [ ] **Step 6: Answer one question in your report**
+
+`unlink` (`cli/unlink.rs:28`) also calls `resolve_all_agents`. Read it and state in your report whether it needs declared agents to remove the files `link` generated for them. Do not change it in this task — report the verdict, with the line that decides it. If it does need them, that is a follow-up, and your report is what makes it visible.
+
+Six other callers keep using paths (`tui/app.rs:417`, `web/api.rs:199`, `shell/wizard.rs:319`, `unlink.rs:28`, `model_updater.rs:62`, plus `project.rs`'s own tests). Leave them: a declared agent will not appear in the TUI or Web lists yet, which is a documented limit, not a defect to fix here.
+
+- [ ] **Step 7: Verify on a real project**
+
+```bash
+cargo run --bin armadai -- link --target claude --dry-run
+```
+Run it in a throwaway project that declares one agent in `.armadai/agents.yaml` and lists none in `armadai.yaml`. Expected: the declared agent appears in the projection. Put the output in your report. This is the check that proves the feature is reachable at all.
+
+- [ ] **Step 8: Commit**
+
+```bash
+cargo fmt --all
+git add crates/armadai-core/src/agent_source.rs crates/armadai/src/cli/link.rs crates/armadai/src/cli/list.rs
+git commit -m "feat(cli): link and list see declared agents
+
+Without this the format is unreachable: link resolved agents to paths and
+parsed each file, so an agent declared in agents.yaml was invisible to the one
+command that matters most for it.
+
+A broken declaration costs its own agent and a warning, never the whole fleet."
+```
+
+---
+
 ### Task 8: Deprecated models in `agents.yaml`
 
 `model_updater` fixes deprecated models in place and is called automatically by `run`, `link` and `init`. Without this, `agents.yaml` becomes the one place in a project where a dead model goes unnoticed.
@@ -1651,6 +1908,7 @@ Green CI is not sufficient on this project. Request an independent review before
 | `provider` as strict in YAML as in `.md` | 3 — derived from `parser/metadata.rs`, not from the spec; noted here because it tightens the format |
 | `A05` measures composed prompts (no new limit) | — inherited: composed agents become `Agent`, so `A05` applies without code |
 | No intermediate `.md` | 5 (constructs `Agent` directly) |
+| A declared agent is actually reachable from `link` | 7b — added by the pre-flight scan; the plan as first written produced code no command called |
 | 77 `.md` agents keep working | 5, 7 |
 | Docs, including what it does not buy | 9 |
 
