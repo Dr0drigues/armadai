@@ -233,18 +233,22 @@ pub fn compose_prompt(
         })?;
 
         // The agent's own fields, then the step's variables — a step may
-        // override an implicit value deliberately.
+        // override an implicit value deliberately. `description` is inserted
+        // only when the agent declares one: silently substituting an empty
+        // string here would bypass the very failure this function exists to
+        // enforce, producing exactly the amputated prompt the hard-failure
+        // policy is meant to prevent. A step can still supply `description`
+        // itself via `extra`, even when the agent has none.
         let mut vars: BTreeMap<String, String> = BTreeMap::new();
         vars.insert("name".into(), decl.name.clone());
-        vars.insert(
-            "description".into(),
-            decl.description.clone().unwrap_or_default(),
-        );
+        if let Some(d) = &decl.description {
+            vars.insert("description".into(), d.clone());
+        }
         vars.extend(extra);
 
         let rendered = crate::template::render(&frag.body, &vars)
             .map_err(|e| anyhow::anyhow!("agent '{}', fragment '{name}': {e}", decl.name))?;
-        parts.push(rendered);
+        parts.push(rendered.trim_end().to_string());
     }
     Ok(parts.join("\n\n"))
 }
@@ -696,5 +700,56 @@ agents:
     #[test]
     fn an_empty_prompt_list_yields_an_empty_system_prompt() {
         assert_eq!(compose_prompt(&[], &decl("x"), &[]).unwrap(), "");
+    }
+
+    /// Fragment bodies read from disk routinely end in their own trailing
+    /// newline. Each rendered fragment is trimmed before joining, so the
+    /// `"\n\n"` separator is the only blank line between fragments — not
+    /// three or more. Pinned as the exact literal, not just "contains".
+    #[test]
+    fn trailing_newlines_in_fragment_bodies_do_not_pile_up_at_the_join() {
+        let frags = vec![
+            fragment("a", "first line\n"),
+            fragment("b", "second line\n"),
+        ];
+        let steps = vec![PromptStep::Plain("a".into()), PromptStep::Plain("b".into())];
+        let out = compose_prompt(&steps, &decl("x"), &frags).unwrap();
+        assert_eq!(out, "first line\n\nsecond line");
+    }
+
+    /// The hard-failure principle this module is built on exists precisely so
+    /// an agent with amputated instructions cannot ship silently. Letting
+    /// `description: None` become an empty string would bypass that
+    /// principle for the one field it is most likely to matter for.
+    #[test]
+    fn a_missing_description_fails_the_composition_naming_both_agent_and_field() {
+        let frags = vec![fragment("greet", "Role: {{description}}")];
+        let err = compose_prompt(
+            &[PromptStep::Plain("greet".into())],
+            &decl("core-specialist"),
+            &frags,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("core-specialist"),
+            "must name the agent: {err}"
+        );
+        assert!(err.contains("description"), "must name the field: {err}");
+    }
+
+    /// The escape hatch that keeps the above strictness usable: a step can
+    /// supply `description` itself even when the agent declares none.
+    #[test]
+    fn a_step_can_supply_description_when_the_agent_has_none() {
+        let frags = vec![fragment("greet", "Role: {{description}}")];
+        let steps = vec![PromptStep::Parameterised {
+            fragment: "greet".into(),
+            vars: [("description".to_string(), "from the step".to_string())]
+                .into_iter()
+                .collect(),
+        }];
+        let out = compose_prompt(&steps, &decl("core-specialist"), &frags).unwrap();
+        assert_eq!(out, "Role: from the step");
     }
 }
