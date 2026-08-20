@@ -179,6 +179,8 @@ Plus tard, `audit --propose` enrichi par l'usage (lots 2-3 de la feature observe
 - **Linker** : la fusion préserve un hook préexistant ; deux `link` successifs ne dupliquent pas l'entrée.
 - **Essai réel sur ce dépôt** (demandé par Dimitri) : activer `policy: strict` sur ArmadAI avec sa topologie réelle et une session de travail effective, pour établir si la contrainte est vivable. Instructif par construction — la mesure montre 286 délégations vers `general-purpose`, qui devra être déclaré ou abandonné.
 
+  **L'essai doit être mené en session interactive, pas en `claude -p`.** Le bench comportemental (8 sessions abouties, tâche multi-modules, tous outils) n'a produit **aucune** délégation en mode `-p` : l'agent y fait le travail lui-même. Le spike n'a obtenu une délégation qu'en la demandant explicitement. Un essai en `-p` ne solliciterait donc jamais le gate et donnerait une fausse impression de conformité.
+
 Pas de cas gaveldrop : cet adaptateur ne réclame que les runs orchestrés (son `claims()` exige un `pattern`, son `build_command` produit toujours `run`, ses assertions portent sur des events JSON).
 
 ## Limites assumées
