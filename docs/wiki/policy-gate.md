@@ -45,9 +45,15 @@ keys, two different jobs.
 ## Migrating a project
 
 Turning on `strict` before declaring what you actually use will refuse most of your delegations.
-`armadai audit` already tells you what to declare — rule `U02` reports every sub-agent that ran but
-is declared nowhere. So: run the audit, read `U02`, declare each agent in `teams` or `free_agents`,
-then switch `policy` to `strict`.
+`armadai audit` gives you the inventory: rule `U02` lists every sub-agent that ran but is not
+declared in this project's `.claude/agents/`. Read it, then declare each of those agents in
+`teams` or `free_agents`, and switch `policy` to `strict`.
+
+One thing that trips people up: `U02` and the gate look at **different declarations**. The audit
+reads `.claude/agents/`; the gate reads `orchestration.teams` and `orchestration.free_agents`.
+Declaring an agent for the gate therefore does **not** silence `U02` — the rule is an inventory of
+what runs, not a checklist that empties as you configure. Treat it as the starting list, not as
+progress.
 
 ## Installing the hook
 
@@ -68,6 +74,11 @@ installed, repository moved, `target/` cleaned — Claude Code receives no opini
 through. The failure direction is the safe one, but it is invisible: nothing distinguishes "no
 violation" from "no gate". If refusals stop appearing when you expect them, check that the command
 still resolves.
+
+**A worktree needs the main checkout.** `.armadai/` is gitignored, so it only exists in your main
+checkout. A session opened in a git worktree resolves its config by following the worktree's
+`gitdir:` back to that checkout — if you keep your config somewhere unusual, the gate goes quiet
+there.
 
 **The policy is local, not shared.** The hook can be committed, but the topology it enforces lives
 in `.armadai/config.yaml`, which this project does not version. Two developers can therefore run

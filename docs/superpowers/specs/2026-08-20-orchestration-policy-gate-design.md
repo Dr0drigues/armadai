@@ -127,7 +127,13 @@ Tous rendent `allow` :
 - `orchestration.policy` absent ou `off` ;
 - `coordinator` non renseigné (patterns `direct`, `blackboard`, `ring` — sans coordinateur, aucune topologie à violer) ;
 - `orchestration` absent de la config, ou config absente / illisible ;
-- payload illisible, `tool_input.subagent_type` absent.
+- payload illisible.
+
+> **⚠ CORRECTION 2026-08-20.** Cette liste incluait « `tool_input.subagent_type` absent ».
+> C'est précisément le contournement corrigé depuis : un appel qui omet la cible est jugé
+> comme visant l'agent par défaut de Claude Code, et `tool_input` absent est traité comme
+> `tool_input: null`. Laisser la ligne aurait suffi à réintroduire le trou à la prochaine
+> lecture du spec.
 
 **Un gate qui refuse parce qu'il n'a pas compris est un gate qu'on désinstalle le jour même.** Le refus vient d'une violation établie, jamais d'une incertitude.
 
@@ -194,6 +200,19 @@ Pas de cas gaveldrop : cet adaptateur ne réclame que les runs orchestrés (son 
 
 ## Limites assumées
 
+- **Une session dans un worktree git n'est pas policée.** `.armadai/` est gitignoré, et la
+  résolution de config s'arrête à la frontière `.git` — or ce projet travaille en worktrees
+  (`isolation: worktree`). Le gate replie donc sur le dépôt principal en lisant le `gitdir:` du
+  fichier `.git` d'un worktree. Sans ce repli, ouvrir une session dans un worktree désactivait le
+  gate intégralement et sans signal.
+- **Rien n'empêche un contournement hors de l'outil `Agent`.** Un sous-agent qui lance `claude -p`
+  ou `armadai run` via `Bash`, ou qui passe par un outil MCP de délégation, présente un `tool_name`
+  qui n'est ni `Agent` ni `Task` : le gate ne le voit pas. Hors périmètre de ce lot, mais c'est une
+  limite de conception, pas un oubli.
+- **`IMPLICIT_SUBAGENT` est un pari asymétrique.** Si Claude Code changeait son agent par défaut :
+  cet agent non déclaré → refus au nom erroné (bruyant, sans danger) ; **cet agent déclaré en
+  `free_agents` — ce que la migration recommande — → l'appel passe alors que l'agent réellement
+  lancé n'a jamais été jugé.** Silencieux, et du côté permissif.
 - **Un gate injoignable autorise tout, en silence.** Le hook référence l'exécutable par un chemin ;
   si celui-ci disparaît (nettoyage de `target/`, dépôt déplacé, binaire non installé), Claude Code
   n'obtient aucun avis et laisse passer. La défaillance va dans le bon sens — jamais de blocage

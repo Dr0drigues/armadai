@@ -550,6 +550,14 @@ fn strip_hidden_subcommands(script: &str, hidden: &[String]) -> String {
             if line.contains(&format!("-a \"{name}\"")) {
                 continue 'lines;
             }
+            // elvish: `cand <name> 'description'`
+            if trimmed.starts_with(&format!("cand {name} ")) {
+                continue 'lines;
+            }
+            // powershell: `[CompletionResult]::new('<name>', ...)`
+            if line.contains(&format!("[CompletionResult]::new('{name}'")) {
+                continue 'lines;
+            }
         }
         // bash: `opts="run new ... <name> ... help"`, and fish's
         // `not __fish_seen_subcommand_from ... <name> ...` guard lists.
@@ -735,39 +743,51 @@ mod tests {
     /// offered `__claude-policy-gate`, described as "Hidden from help".
     #[test]
     fn completion_scripts_do_not_offer_hidden_subcommands() {
-        // Checked per shell, on the exact shapes that *offer* a candidate.
-        // Deliberately NOT a blanket search for the name: zsh also emits
-        // `_describe -t commands 'armadai <name> commands'` labels for the
-        // per-command handling blocks, which are unreachable unless the user
-        // types the internal name in full and are harmless to keep.
-        for name in hidden_subcommand_names() {
-            let zsh = completion(clap_complete::Shell::Zsh);
-            assert!(
-                !zsh.contains(&format!("'{name}:")),
-                "zsh still offers {name} as a candidate"
+        use clap::ValueEnum;
+        // Every shell clap_complete supports, not a hand-picked three: the
+        // filter shipped covering bash/zsh/fish while elvish and powershell
+        // still offered the internal commands, and a hard-coded list could
+        // not see it.
+        for shell in clap_complete::Shell::value_variants() {
+            let mut raw = Vec::new();
+            clap_complete::generate(*shell, &mut Cli::command(), "armadai", &mut raw);
+            let raw = String::from_utf8_lossy(&raw).to_string();
+            let filtered = strip_hidden_subcommands(&raw, &hidden_subcommand_names());
+
+            // The filter must actually remove something. Without this, a
+            // clap_complete syntax change would make the filter a no-op AND
+            // the assertions below vacuously true — the name would stay in
+            // the script and nothing would notice.
+            // Not "fewer lines": for bash the filter edits the `opts=` line
+            // in place rather than dropping it. What must hold is that it
+            // changed something.
+            assert_ne!(
+                filtered, raw,
+                "{shell}: the filter changed nothing, so it has stopped working"
             );
-            for line in completion(clap_complete::Shell::Bash)
-                .lines()
-                .filter(|l| l.contains("opts=\""))
-            {
-                assert!(
-                    !line.split_whitespace().any(|w| w.trim_matches('"') == name),
-                    "bash word list still contains {name}: {line}"
-                );
-            }
-            let fish = completion(clap_complete::Shell::Fish);
-            assert!(
-                !fish.contains(&format!("-a \"{name}\"")),
-                "fish still offers {name} as a candidate"
-            );
-            for line in fish
-                .lines()
-                .filter(|l| l.contains("__fish_seen_subcommand_from"))
-            {
-                assert!(
-                    !line.split_whitespace().any(|w| w.trim_matches('"') == name),
-                    "fish guard list still contains {name}"
-                );
+
+            for name in hidden_subcommand_names() {
+                for offered in [
+                    format!("'{name}:"),                         // zsh
+                    format!("-a \"{name}\""),                    // fish
+                    format!("cand {name} "),                     // elvish
+                    format!("[CompletionResult]::new('{name}'"), // powershell
+                ] {
+                    assert!(
+                        !filtered.contains(&offered),
+                        "{shell} still offers {name} via {offered:?}"
+                    );
+                }
+                // bash/fish word lists.
+                for line in filtered
+                    .lines()
+                    .filter(|l| l.contains("opts=\"") || l.contains("__fish_seen_subcommand_from"))
+                {
+                    assert!(
+                        !line.split_whitespace().any(|w| w.trim_matches('"') == name),
+                        "{shell} word list still contains {name}"
+                    );
+                }
             }
         }
     }

@@ -78,16 +78,21 @@ pub fn check_delegation(
 
     let deny = |allowed: Vec<String>, from: &str| {
         let reason = if allowed.is_empty() {
+            // The refusal is about the CALLER, not the target: naming the
+            // target here would advise an action with no effect, since the
+            // target may already be declared. Measured: it sent the model
+            // into a retry loop.
             format!(
-                "the declared topology allows no delegation from {from}; \
-                 declare '{target}' in orchestration.teams or \
-                 orchestration.free_agents to permit it"
+                "{from} has no declared team, so it may not delegate; hand the \
+                 work back to the coordinator, or give {from} a team in \
+                 orchestration.teams"
             )
         } else {
             format!(
-                "the declared topology allows only [{}] from {from}; \
-                 hand the work to one of those, or declare '{target}' in \
-                 orchestration.teams or orchestration.free_agents",
+                "the declared topology allows only [{}] from {from}; hand the \
+                 work to one of those, or declare '{target}' in \
+                 orchestration.free_agents (or orchestration.teams, if it \
+                 belongs to the fleet)",
                 allowed.join(", ")
             )
         };
@@ -202,6 +207,26 @@ mod tests {
         let c = cfg(PolicyMode::Strict, flat());
         let v = check_delegation(Some("qa-specialist"), "core-specialist", &c).unwrap_err();
         assert!(v.allowed.is_empty());
+    }
+
+    /// The refusal must blame the caller, not the target, when the caller is
+    /// what disqualifies the call. Naming an already-declared target sent the
+    /// model into a retry loop.
+    #[test]
+    fn a_caller_without_a_team_is_told_so_rather_than_blaming_the_target() {
+        let c = cfg(PolicyMode::Strict, flat());
+        // `qa-specialist` IS declared in teams; the problem is the caller.
+        let v = check_delegation(Some("core-specialist"), "qa-specialist", &c).unwrap_err();
+        assert!(
+            v.reason.contains("core-specialist"),
+            "the reason must name the caller: {}",
+            v.reason
+        );
+        assert!(
+            !v.reason.contains("declare 'qa-specialist'"),
+            "must not advise declaring an already-declared target: {}",
+            v.reason
+        );
     }
 
     #[test]

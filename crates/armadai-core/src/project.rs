@@ -220,10 +220,17 @@ pub fn find_project_config_from(start: &Path) -> Option<(PathBuf, ProjectConfig)
     loop {
         // 1. Try .armadai/config.yaml first (preferred)
         let dotarmadai_config = dir.join(PROJECT_DIR).join(PROJECT_DIR_CONFIG);
-        if dotarmadai_config.is_file()
-            && let Ok(config) = ProjectConfig::load(&dotarmadai_config)
-        {
-            return Some((dir.clone(), config));
+        if dotarmadai_config.is_file() {
+            match ProjectConfig::load(&dotarmadai_config) {
+                Ok(config) => return Some((dir.clone(), config)),
+                // Silence here means a single typo makes the whole project
+                // config vanish — and with it anything that depends on it,
+                // including the delegation policy gate. Warn (on stderr, never
+                // stdout) and keep walking, as before.
+                Err(e) => {
+                    tracing::warn!("ignoring unparsable {}: {e}", dotarmadai_config.display())
+                }
+            }
         }
 
         // 2. Fallback to armadai.yaml / armadai.yml
