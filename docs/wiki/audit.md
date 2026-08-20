@@ -59,7 +59,16 @@ Each line is parsed once. The scan never fails on bad data: an unreadable file i
 ### Two metrics, not one
 
 - **Skills** are measured in **attributed turns** (the transcript's `attributionSkill` field) — how many turns a skill actually governed, not how many times it was invoked. A single invocation can end up governing many subsequent turns, so the two numbers can diverge sharply; turns governed is the more honest measure of how much a skill actually shaped a session.
-- **Agents** are measured in **invocations**. A sub-agent's own internal turns are not observable from these transcripts — Claude Code does not write sub-agent transcripts into a project's transcript files — so what gets counted is the delegation and its result, not what happened inside the sub-agent.
+- **Agents** are measured in both **invocations** and **turns**. An invocation is one
+  delegation; a turn is one assistant step the agent actually took. Claude Code records each
+  sub-agent under `<session-id>/subagents/agent-<id>.jsonl`, with a `.meta.json` alongside it
+  carrying `agentType`, `parentAgentId` and `spawnDepth`. The two numbers diverge sharply —
+  on this project one agent shows 286 invocations for over 16,000 turns — so reading
+  invocations as a measure of work done would badly mislead.
+- Because that metadata states the parent and the depth outright, the observed **delegation
+  depth** is reported as a fact rather than inferred from a chain of message identifiers.
+- Only sub-agents that actually ran leave a `.meta.json`. A delegation refused before it
+  started leaves none, so these counts are executions, not attempts.
 
 ### Rules
 

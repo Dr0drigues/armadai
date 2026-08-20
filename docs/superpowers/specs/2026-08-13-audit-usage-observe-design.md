@@ -164,11 +164,26 @@ natifs sur ce projet ».
 Les deux types d'assets ne se mesurent pas pareil, parce que la donnée disponible diffère :
 
 - **skills** : tours attribués (`attributionSkill`), la métrique fiable ;
-- **agents** : invocations (corrélation `tool_use` Agent → `tool_result`) et tokens du résultat.
-  Les tours **internes** d'un sous-agent ne sont pas comptables : sur le relevé de référence,
-  `isSidechain` est `false` partout, donc les transcripts de sous-agents ne sont pas dans ces
-  fichiers. On mesure l'invocation et son résultat, pas le détail interne. C'est suffisant pour
-  la topologie, et ça évite tout double comptage.
+- **agents** : invocations (corrélation `tool_use` Agent → `tool_result`) **et tours réels**.
+
+> **⚠ CORRECTION 2026-08-20.** Ce spec affirmait que « les tours internes d'un sous-agent ne sont
+> pas comptables : `isSidechain` est `false` partout, donc les transcripts de sous-agents ne sont
+> pas dans ces fichiers ». **C'est faux.** Claude Code écrit chaque sous-agent dans
+> `<projects>/<slug>/<session-id>/subagents/agent-<id>.jsonl`, avec un `.meta.json` portant
+> `agentType`, `parentAgentId` et `spawnDepth`. `isSidechain` valait `false` uniquement parce que
+> le scan ne lisait que le premier niveau du dossier (`jsonl_in`) ; dans les fichiers de
+> sous-agents il vaut `true`.
+>
+> Conséquences mesurées sur ce dépôt après extension du scan : les tours de skills passent de 411
+> à 575 pour `brainstorming`, de 296 à **1931** pour `subagent-driven-development` — le scan en
+> captait moins d'un quart, et l'ordre du classement s'inverse. Les tours par agent deviennent
+> lisibles (`general-purpose` : 286 invocations mais **16 379 tours**), et la profondeur est
+> **donnée** par `spawnDepth` (3 observé) au lieu d'être inférée.
+>
+> Corollaire pour le lot 3 : la déduction de topologie **a** des données réelles, contrairement à
+> ce que cette section laissait croire. Les metas n'existent que pour les sous-agents réellement
+> lancés — une délégation refusée par un hook n'en laisse pas — donc les compter compte des
+> exécutions.
 
 ## Lot 2 — Pack enrichi
 

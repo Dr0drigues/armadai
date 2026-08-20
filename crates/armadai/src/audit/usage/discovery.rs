@@ -115,6 +115,52 @@ fn strip_trailing_sep(s: &str) -> String {
     s.trim_end_matches(['/', '\\']).to_string()
 }
 
+/// A sub-agent's transcript, paired with the metadata Claude Code writes
+/// beside it.
+///
+/// Claude Code stores sub-agent work under
+/// `<projects>/<slug>/<session-id>/subagents/agent-<id>.{jsonl,meta.json}` —
+/// NOT in the session file, which only records the delegation call. The scan
+/// missed all of it until 2026-08-20. The meta is the interesting half: it
+/// carries `agentType`, `parentAgentId` and `spawnDepth`, so the delegation
+/// tree is stated outright rather than inferred.
+///
+/// Only agents that actually ran get a meta — a delegation refused by a
+/// policy hook leaves none. Counting metas therefore counts executions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentFiles {
+    /// The sub-agent's own transcript.
+    pub transcript: PathBuf,
+    /// Its sidecar metadata.
+    pub meta: PathBuf,
+}
+
+/// Every sub-agent transcript belonging to `root`, across all its sessions.
+///
+/// Deliberately narrow: only `subagents/` is walked. Sibling directories
+/// (`tool-results/`, `memory/`) hold an order of magnitude more files and
+/// nothing this audit measures.
+pub fn subagent_files(root: &Path) -> Vec<SubagentFiles> {
+    let mut found = Vec::new();
+    for session in transcript_files(root) {
+        // `<session>.jsonl` -> `<session>/subagents/`
+        let Some(dir) = session.parent().map(|p| {
+            p.join(session.file_stem().unwrap_or_default())
+                .join("subagents")
+        }) else {
+            continue;
+        };
+        for transcript in jsonl_in(&dir) {
+            let meta = transcript.with_extension("meta.json");
+            if meta.is_file() {
+                found.push(SubagentFiles { transcript, meta });
+            }
+        }
+    }
+    found.sort_by(|a, b| a.transcript.cmp(&b.transcript));
+    found
+}
+
 fn jsonl_in(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();

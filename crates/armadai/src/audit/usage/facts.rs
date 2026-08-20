@@ -1,21 +1,28 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::Serialize;
+
 /// The native CLI's main thread, i.e. the root of every observed delegation
 /// tree. Claude Code's own turns are not a declared agent, so the tree needs a
 /// stable name for them.
 pub const ROOT_AGENT: &str = "claude";
 
 /// What one agent was observed doing.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AgentUsage {
     pub invocations: u32,
+    /// Assistant turns the agent actually took, read from its own transcript
+    /// under `<session>/subagents/`. `invocations` counts how often it was
+    /// asked; this counts how much work it did — they differ by an order of
+    /// magnitude in practice.
+    pub turns: u32,
     /// Model name -> number of delegations seen on that model.
     pub models: BTreeMap<String, u32>,
 }
 
 /// Deterministic aggregate of everything the scan observed. Serialisable by
 /// construction: no paths, no handles, only counted facts.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct UsageFacts {
     pub sessions: u32,
     /// Oldest and newest timestamps encountered — a constat, not a filter.
@@ -30,6 +37,11 @@ pub struct UsageFacts {
     pub edges: BTreeMap<String, BTreeSet<String>>,
     /// Largest parallel fan-out seen in a single assistant message.
     pub max_fanout: u32,
+
+    /// Deepest `spawnDepth` stated by a sub-agent's metadata. Unlike
+    /// `depth()`, which infers a chain, this is read directly from what Claude
+    /// Code recorded — no inference, no ambiguity.
+    pub observed_depth: u32,
 }
 
 /// Strips control characters (including newlines) from `s`. `subagent_type`
@@ -83,6 +95,38 @@ impl UsageFacts {
             .entry(parent.to_string())
             .or_default()
             .insert(child.to_string());
+    }
+
+    /// Record a sub-agent that actually ran, from its sidecar metadata.
+    ///
+    /// `parent` is `None` at `spawnDepth == 1`, where Claude Code omits
+    /// `parentAgentId` because the parent is the main thread. The edge is
+    /// therefore stated by the data, not inferred from a uuid chain.
+    pub fn record_subagent(
+        &mut self,
+        agent_type: &str,
+        parent: Option<&str>,
+        depth: u32,
+        turns: u32,
+    ) {
+        let child = sanitize_identifier(agent_type).into_owned();
+        if child.is_empty() {
+            return;
+        }
+        let entry = self.agents.entry(child.clone()).or_default();
+        entry.turns += turns;
+        let parent = parent
+            .map(|p| sanitize_identifier(p).into_owned())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| {
+                if self.root_agent.is_empty() {
+                    ROOT_AGENT.to_string()
+                } else {
+                    self.root_agent.clone()
+                }
+            });
+        self.edges.entry(parent).or_default().insert(child);
+        self.observed_depth = self.observed_depth.max(depth);
     }
 
     pub fn record_skill_turn(&mut self, skill: &str) {

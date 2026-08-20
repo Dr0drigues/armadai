@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::claude_adapter::transcript::{Block, RelevantEntry, parse_value};
 
-use super::discovery::transcript_files;
+use super::discovery::{subagent_files, transcript_files};
 use super::facts::{ROOT_AGENT, UsageFacts};
 
 /// Aggregate every transcript belonging to `root`.
@@ -65,7 +65,86 @@ pub fn scan(root: &Path) -> UsageFacts {
             scan_entry(&v, &mut facts, &mut parent_of, &mut agent_at);
         }
     }
+    scan_subagents(root, &mut facts);
     facts
+}
+
+/// One sub-agent's sidecar metadata, as Claude Code writes it.
+struct SubagentMeta {
+    agent_type: String,
+    parent_agent_id: Option<String>,
+    spawn_depth: u32,
+}
+
+fn read_meta(path: &Path) -> Option<SubagentMeta> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    Some(SubagentMeta {
+        agent_type: str_field(&v, "agentType")?.to_string(),
+        parent_agent_id: str_field(&v, "parentAgentId").map(str::to_string),
+        spawn_depth: v.get("spawnDepth").and_then(Value::as_u64).unwrap_or(1) as u32,
+    })
+}
+
+/// `agent-<id>.meta.json` -> `<id>`, the identifier `parentAgentId` refers to.
+fn agent_id_of(meta_path: &Path) -> Option<String> {
+    let name = meta_path.file_name()?.to_str()?;
+    name.strip_prefix("agent-")?
+        .strip_suffix(".meta.json")
+        .map(str::to_string)
+}
+
+/// Absorb every sub-agent transcript: its own turns, the skills it invoked,
+/// the tools it used, and the delegation edge its metadata states outright.
+///
+/// This is the half of the corpus the scan missed until 2026-08-20. It does
+/// NOT touch `invocations`, which keeps its existing meaning — delegations
+/// emitted from the main thread — so no event is counted twice.
+fn scan_subagents(root: &Path, facts: &mut UsageFacts) {
+    let found = subagent_files(root);
+    // First pass: agent id -> agent type, so a `parentAgentId` resolves to a
+    // name. Claude Code references the parent by id, not by type.
+    let mut type_of: HashMap<String, String> = HashMap::new();
+    let mut metas = Vec::new();
+    for sa in &found {
+        if let (Some(id), Some(meta)) = (agent_id_of(&sa.meta), read_meta(&sa.meta)) {
+            type_of.insert(id, meta.agent_type.clone());
+            metas.push((sa.transcript.clone(), meta));
+        }
+    }
+    for (transcript, meta) in metas {
+        let mut turns = 0u32;
+        if let Ok(handle) = std::fs::File::open(&transcript) {
+            for line in std::io::BufReader::new(handle).lines() {
+                let Ok(line) = line else { continue };
+                let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if let Some(ts) = str_field(&v, "timestamp") {
+                    facts.observe_timestamp(ts);
+                }
+                if let Some(skill) = str_field(&v, "attributionSkill") {
+                    facts.record_skill_turn(skill);
+                }
+                if str_field(&v, "type") == Some("assistant") {
+                    turns += 1;
+                    if let Some(RelevantEntry::Assistant { blocks, .. }) = parse_value(&v) {
+                        for block in &blocks {
+                            if let Block::Tool { name } = block {
+                                facts.record_tool(name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let parent = meta
+            .parent_agent_id
+            .as_deref()
+            .and_then(|id| type_of.get(id))
+            .map(String::as_str);
+        facts.record_subagent(&meta.agent_type, parent, meta.spawn_depth, turns);
+    }
 }
 
 fn str_field<'v>(v: &'v Value, key: &str) -> Option<&'v str> {

@@ -38,6 +38,21 @@ impl UsageView<'_> {
     }
 }
 
+/// `12 invocation(s), 87 turn(s)` — or just the invocations when the agent's own
+/// transcript was never found. Invocations count how often an agent was asked
+/// for; turns count what it actually did. Measured 2026-08-20, they differ by
+/// an order of magnitude.
+fn agent_volume(stats: &crate::audit::usage::facts::AgentUsage) -> String {
+    if stats.turns > 0 {
+        format!(
+            "{} invocation(s), {} turn(s)",
+            stats.invocations, stats.turns
+        )
+    } else {
+        format!("{} invocation(s)", stats.invocations)
+    }
+}
+
 impl AuditReport {
     pub fn critical_count(&self) -> usize {
         self.count(Severity::Critical)
@@ -156,13 +171,20 @@ impl AuditReport {
         let mut out = String::new();
         let _ = writeln!(out, "\n## Observed usage\n");
         let _ = writeln!(out, "- Sessions scanned: {}", view.usage.sessions);
+        if view.usage.observed_depth > 0 {
+            let _ = writeln!(
+                out,
+                "- Observed delegation depth: {}",
+                view.usage.observed_depth
+            );
+        }
         if let Some((from, to)) = &view.usage.window {
             let _ = writeln!(out, "- Window: {from} → {to}");
         }
         if !view.agents.is_empty() {
             let _ = writeln!(out, "\n### Agents by invocation\n");
             for (name, stats) in &view.agents {
-                let _ = writeln!(out, "- `{}` — {} invocation(s)", name, stats.invocations);
+                let _ = writeln!(out, "- `{}` — {}", name, agent_volume(stats));
             }
             let hidden = view.agents_hidden();
             if hidden > 0 {
@@ -194,13 +216,19 @@ impl AuditReport {
         anstream::println!();
         anstream::println!("  {h}Observed usage{h:#}");
         anstream::println!("  {m}Sessions scanned:{m:#} {}", view.usage.sessions);
+        if view.usage.observed_depth > 0 {
+            anstream::println!(
+                "  {m}Observed delegation depth:{m:#} {}",
+                view.usage.observed_depth
+            );
+        }
         if let Some((from, to)) = &view.usage.window {
             anstream::println!("  {m}Window:{m:#} {from} → {to}");
         }
         if !view.agents.is_empty() {
             anstream::println!("  {m}Agents by invocation:{m:#}");
             for (name, stats) in &view.agents {
-                anstream::println!("    {name} — {} invocation(s)", stats.invocations);
+                anstream::println!("    {name} — {}", agent_volume(stats));
             }
             let hidden = view.agents_hidden();
             if hidden > 0 {
@@ -231,6 +259,13 @@ impl AuditReport {
         let mut out = String::new();
         out.push_str("<section class=\"usage\">\n<h2>Observed usage</h2>\n<ul>\n");
         let _ = writeln!(out, "<li>Sessions scanned: {}</li>", view.usage.sessions);
+        if view.usage.observed_depth > 0 {
+            let _ = writeln!(
+                out,
+                "<li>Observed delegation depth: {}</li>",
+                view.usage.observed_depth
+            );
+        }
         if let Some((from, to)) = &view.usage.window {
             let _ = writeln!(
                 out,
@@ -245,9 +280,9 @@ impl AuditReport {
             for (name, stats) in &view.agents {
                 let _ = writeln!(
                     out,
-                    "<li><code>{}</code> — {} invocation(s)</li>",
+                    "<li><code>{}</code> — {}</li>",
                     html_escape(name),
-                    stats.invocations
+                    html_escape(&agent_volume(stats))
                 );
             }
             let hidden = view.agents_hidden();
