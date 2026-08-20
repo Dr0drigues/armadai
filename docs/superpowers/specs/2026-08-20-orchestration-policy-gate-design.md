@@ -57,7 +57,7 @@ Vérifié **empiriquement** (worktree jetable, sonde journalisant le payload bru
 
 1. **Cible = moteur de politique complet**, construit par lots. Ce spec couvre le socle et la topologie.
 2. **Comportement en cas d'écart** : `deny` avec raison actionnable, désactivable par `orchestration.policy: off|strict`. Pas de mode `warn`.
-3. **Installation par les deux véhicules** : le linker (par projet, versionnable) et le plugin (global), servis par la même sous-commande.
+3. **Installation par les deux véhicules** : le linker (par projet) et le plugin (global), servis par la même sous-commande.
 4. **Inversion allowlist (Dimitri)** : ce qui n'est **pas déclaré** ne passe pas. Pas de liste d'exemptions en dur — une seule règle, aucune exception. Conséquence recherchée : la config devient exhaustive et honnête.
 5. **`free_agents`** : les agents d'assistance (`Explore`, `Plan`) se déclarent dans une liste distincte, appelable par tous, hors topologie.
 6. **Pas de redirection** (`updatedInput`) : le `prompt` d'une délégation est rédigé pour sa cible ; réécrire la cible sans le prompt produirait une délégation incohérente. Le refus obtient un meilleur résultat — le modèle réécrit lui-même l'appel complet.
@@ -150,7 +150,16 @@ orchestration:
 
 Une sous-commande cachée `armadai __claude-policy-gate` sert les deux véhicules.
 
-- **Linker** : `armadai link --target claude` écrit l'entrée `PreToolUse` (`matcher: "Agent|Task"`) dans `.claude/settings.json`. Versionnable, donc la policy suit le dépôt et vaut pour l'équipe.
+- **Linker** : `armadai link --target claude` écrit l'entrée `PreToolUse` (`matcher: "Agent|Task"`) dans `.claude/settings.json`.
+
+> **⚠ CORRECTION 2026-08-20.** Ce spec affirmait ici que `.claude/settings.json` étant versionnable,
+> « la policy suit le dépôt et vaut pour l'équipe ». **C'est faux.** Le *hook* suivrait le dépôt,
+> mais la *topologie* vit dans `.armadai/config.yaml`, qui **n'est pas versionné** sur ce projet.
+> Deux développeurs auraient donc le même gate appliquant des règles différentes — ou aucune règle.
+>
+> Deux issues, à trancher hors de ce spec : versionner `.armadai/config.yaml` (décision de
+> convention du projet), ou assumer que la policy est locale à chaque poste et retirer toute
+> promesse d'application collective. En l'état, **la policy est locale.**
 - **Plugin** : `crates/armadai/assets/claude-plugin/` gagne un `hooks/hooks.json` équivalent, avec `${CLAUDE_PLUGIN_ROOT}`, pour les projets jamais linkés.
 
 **Le linker doit fusionner, jamais écraser.** `.claude/settings.json` peut porter d'autres hooks ; les perdre en silence serait inacceptable. La fusion doit aussi être idempotente : plusieurs `armadai link` ne dupliquent pas l'entrée.
@@ -184,6 +193,14 @@ Plus tard, `audit --propose` enrichi par l'usage (lots 2-3 de la feature observe
 Pas de cas gaveldrop : cet adaptateur ne réclame que les runs orchestrés (son `claims()` exige un `pattern`, son `build_command` produit toujours `run`, ses assertions portent sur des events JSON).
 
 ## Limites assumées
+
+- **Un gate injoignable autorise tout, en silence.** Le hook référence l'exécutable par un chemin ;
+  si celui-ci disparaît (nettoyage de `target/`, dépôt déplacé, binaire non installé), Claude Code
+  n'obtient aucun avis et laisse passer. La défaillance va dans le bon sens — jamais de blocage
+  injustifié — mais elle est **invisible** : rien ne distingue « aucune violation » de « gate
+  absent ». Symptôme à connaître : plus aucun refus alors que la topologie devrait en produire.
+  L'installation par le linker devra préférer un `armadai` résolu par le `PATH` à un chemin absolu
+  vers `target/debug`, qui ne vaut que pour un poste de développement.
 
 - **La contrainte ne vaut que pour Claude Code.** Les autres CLI cibles du linker (codex, copilot, gemini, opencode) n'ont pas de notion de sous-agent ni de hook équivalent. Aucun mécanisme portable n'est proposé ici.
 - **Le gate ne juge pas la pertinence d'une délégation**, seulement sa légalité topologique. Envoyer une tâche TUI au `qa-specialist` reste autorisé si la topologie le permet — c'est le lot 4 (routes) qui traiterait cela.
