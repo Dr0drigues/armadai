@@ -208,6 +208,47 @@ pub fn merge_metadata(decl: &AgentDecl, defaults: &AgentDefaults) -> anyhow::Res
     })
 }
 
+/// Assemble an agent's system prompt from its declared fragments.
+///
+/// Fails on a missing fragment or an unsubstituted variable. That is the
+/// deliberate inverse of the policy gate, where uncertainty allows: degrading
+/// here would ship an agent whose instructions are amputated, and such an
+/// agent fills the gaps instead of complaining.
+pub fn compose_prompt(
+    steps: &[PromptStep],
+    decl: &AgentDecl,
+    fragments: &[crate::prompt::Prompt],
+) -> anyhow::Result<String> {
+    let mut parts = Vec::new();
+    for step in steps {
+        let (name, extra) = match step {
+            PromptStep::Plain(n) => (n.as_str(), BTreeMap::new()),
+            PromptStep::Parameterised { fragment, vars } => (fragment.as_str(), vars.clone()),
+        };
+        let frag = fragments.iter().find(|f| f.name == name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "agent '{}' references prompt fragment '{name}', which was not found",
+                decl.name
+            )
+        })?;
+
+        // The agent's own fields, then the step's variables — a step may
+        // override an implicit value deliberately.
+        let mut vars: BTreeMap<String, String> = BTreeMap::new();
+        vars.insert("name".into(), decl.name.clone());
+        vars.insert(
+            "description".into(),
+            decl.description.clone().unwrap_or_default(),
+        );
+        vars.extend(extra);
+
+        let rendered = crate::template::render(&frag.body, &vars)
+            .map_err(|e| anyhow::anyhow!("agent '{}', fragment '{name}': {e}", decl.name))?;
+        parts.push(rendered);
+    }
+    Ok(parts.join("\n\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,5 +606,95 @@ agents:
         assert_eq!(m.orchestration, None);
         assert!(m.triggers.is_none());
         assert!(m.ring_config.is_none());
+    }
+
+    use crate::prompt::Prompt;
+
+    fn fragment(name: &str, body: &str) -> Prompt {
+        Prompt {
+            name: name.into(),
+            description: None,
+            apply_to: vec![],
+            body: body.into(),
+            source: std::path::PathBuf::from(format!("{name}.md")),
+        }
+    }
+
+    #[test]
+    fn fragments_are_concatenated_in_declared_order() {
+        let frags = vec![fragment("a", "first"), fragment("b", "second")];
+        let steps = vec![PromptStep::Plain("b".into()), PromptStep::Plain("a".into())];
+        let out = compose_prompt(&steps, &decl("x"), &frags).unwrap();
+        assert_eq!(out, "second\n\nfirst");
+    }
+
+    #[test]
+    fn a_parameterised_fragment_gets_its_variables() {
+        let frags = vec![fragment("arch", "module is {{module}}")];
+        let steps = vec![PromptStep::Parameterised {
+            fragment: "arch".into(),
+            vars: [("module".to_string(), "core".to_string())]
+                .into_iter()
+                .collect(),
+        }];
+        let out = compose_prompt(&steps, &decl("x"), &frags).unwrap();
+        assert_eq!(out, "module is core");
+    }
+
+    /// The agent's own fields are available to every fragment, with the same
+    /// names `cli/new.rs` uses for templates.
+    #[test]
+    fn the_agents_name_and_description_are_implicit_variables() {
+        let frags = vec![fragment("greet", "I am {{name}}: {{description}}")];
+        let mut d = decl("core-specialist");
+        d.description = Some("the core".into());
+        let out = compose_prompt(&[PromptStep::Plain("greet".into())], &d, &frags).unwrap();
+        assert_eq!(out, "I am core-specialist: the core");
+    }
+
+    /// A step's own variables win over the implicit agent fields — a step may
+    /// deliberately override `name` or `description` for its fragment.
+    #[test]
+    fn a_steps_own_variable_overrides_the_implicit_agent_name() {
+        let frags = vec![fragment("greet", "I am {{name}}")];
+        let steps = vec![PromptStep::Parameterised {
+            fragment: "greet".into(),
+            vars: [("name".to_string(), "something-else".to_string())]
+                .into_iter()
+                .collect(),
+        }];
+        let out = compose_prompt(&steps, &decl("core-specialist"), &frags).unwrap();
+        assert_eq!(out, "I am something-else");
+    }
+
+    #[test]
+    fn a_missing_fragment_is_an_error_naming_it_and_the_agent() {
+        let err = compose_prompt(
+            &[PromptStep::Plain("nope".into())],
+            &decl("core-specialist"),
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("nope"), "must name the fragment: {err}");
+        assert!(
+            err.contains("core-specialist"),
+            "must name the agent, or you cannot find it in a 77-agent fleet: {err}"
+        );
+    }
+
+    /// An agent whose prompt still contains `{{module}}` is quietly wrong.
+    #[test]
+    fn an_unsubstituted_variable_fails_the_composition() {
+        let frags = vec![fragment("arch", "module is {{module}}")];
+        let err = compose_prompt(&[PromptStep::Plain("arch".into())], &decl("x"), &frags)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("module"), "must name the variable: {err}");
+    }
+
+    #[test]
+    fn an_empty_prompt_list_yields_an_empty_system_prompt() {
+        assert_eq!(compose_prompt(&[], &decl("x"), &[]).unwrap(), "");
     }
 }
