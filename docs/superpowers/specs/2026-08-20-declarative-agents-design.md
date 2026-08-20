@@ -204,6 +204,34 @@ Réserve : `A05` mesure aujourd'hui les agents importés depuis `.claude/`. Pour
 déclaré en YAML, l'audit devra le charger ; sinon la frugalité n'est mesurée que sur les
 projections, ce qui reste utile mais indirect.
 
+## Mise à jour des modèles dépréciés
+
+`model_updater` détecte les modèles dépréciés et les corrige en place, et il est appelé
+automatiquement par `run`, `link` et `init`. Un agent déclaré doit en bénéficier comme les autres,
+sinon le YAML devient le seul endroit du projet où un modèle mort passe inaperçu.
+
+**La réécriture est déjà format-agnostique.** `update_agent_file`
+(`armadai-core/src/model_updater.rs:78`) opère par substitution textuelle — `content.replacen(": old",
+": new", 1)` — et non par round-trip de parseur. Elle s'applique donc au YAML sans rien réécrire, et
+surtout **sans effacer les commentaires**, ce qu'un aller-retour `serde_yaml_ng` ferait
+inévitablement.
+
+Deux pièges propres au YAML, à traiter explicitement :
+
+**Occurrences multiples.** Dans un `.md` un agent déclare son `model` une fois ; dans `agents.yaml`
+la clé apparaît dans `defaults` et dans chaque agent qui s'en écarte. Le `replacen(…, 1)` actuel ne
+corrigerait que la première. La détection doit donc rendre un finding **par occurrence**, avec sa
+position, et la réécriture les traiter toutes.
+
+**Substitution accidentelle.** Un motif `: latest:pro` brut apparaîtrait aussi dans un commentaire ou
+dans une `description`. La substitution doit être **bornée aux lignes dont la clé est `model` ou qui
+sont un élément de `model_fallback`**, jamais appliquée au texte libre. C'est la différence entre
+corriger une configuration et corriger de la prose.
+
+**Tests dédiés** : un modèle déprécié dans `defaults` est corrigé ; un modèle déprécié dans deux
+agents distincts est corrigé aux deux endroits ; un modèle déprécié cité dans un commentaire ou une
+`description` n'est **pas** touché ; les commentaires et l'ordre des clés survivent à la réécriture.
+
 ## Tests
 
 Du plus mécanique au plus porteur :
@@ -221,8 +249,6 @@ Du plus mécanique au plus porteur :
 
 ## Limites assumées
 
-- **`model_updater` ne verra pas les modèles dépréciés d'un agent YAML.** Il réécrit les fichiers en
-  place ; un agent déclaré n'a pas de fichier. À étendre, hors de ce lot.
 - **La composition peut allonger les prompts** plutôt que les raccourcir (voir « ce que ce chantier
   ne fait pas gagner »). `A05` le mesure ; rien ne l'empêche.
 - **Aucun convertisseur `.md` → YAML.** Migrer un agent, c'est le déclarer et supprimer son `.md`, à
