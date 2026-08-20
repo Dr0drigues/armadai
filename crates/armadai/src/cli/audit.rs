@@ -103,7 +103,8 @@ async fn apply_deep_pass(
     let run = |prompt: &str| call_deep_auditor(&agent, prompt);
     let w = crate::cli::style::warn();
     anstream::eprintln!(
-        "{w}  Note: --deep sends (secret-redacted) prompt excerpts to the '{cli}' CLI.{w:#}"
+        "{w}  Note: --deep sends (secret-redacted) prompt excerpts, and any observed-usage \
+         finding message (U01-U04), to the '{cli}' CLI.{w:#}"
     );
     match run_deep(
         &config,
@@ -131,6 +132,7 @@ pub async fn execute(
     quiet: bool,
     propose: bool,
     deep: bool,
+    no_usage: bool,
 ) -> anyhow::Result<()> {
     let root = match path {
         Some(p) => p,
@@ -140,8 +142,13 @@ pub async fn execute(
         anyhow::bail!("not a directory: {}", root.display());
     }
     let settings = AuditSettings::from_project(&root);
-    let mut audit = run_audit(&root, &settings);
-    if audit.detected.is_empty() {
+    // Detect first: on the "nothing here" path, there is nothing to audit
+    // and nothing to propose, so the (potentially hundreds-of-megabytes)
+    // transcript scan below must never run for it. `config` is kept around
+    // so `--propose` can reuse it instead of importing the surfaces a
+    // second time.
+    let (detected, config) = import_surfaces(&root);
+    if detected.is_empty() {
         let o = crate::cli::style::ok();
         let m = crate::cli::style::muted();
         anstream::println!(
@@ -150,6 +157,15 @@ pub async fn execute(
         );
         return Ok(());
     }
+    // The flag always wins over the config key (`audit.usage`); the config
+    // key only takes effect when the flag is absent.
+    let usage_enabled = !no_usage && settings.usage;
+    // Scanned at most once here (only when something was detected and usage
+    // measurement is enabled) and bound for the rest of the command —
+    // transcripts can run into the hundreds of megabytes.
+    let usage = usage_enabled.then(|| crate::audit::usage::scan(&root));
+    let usage = usage.filter(|o| !o.is_empty());
+    let mut audit = run_audit(&root, &settings, usage.as_ref());
     if deep {
         apply_deep_pass(&mut audit, &root, &settings, available_cli()).await?;
     }
@@ -179,7 +195,6 @@ pub async fn execute(
         }
     }
     if propose {
-        let (_, config) = import_surfaces(&root);
         let summary = generate_proposal(&root, &config)?;
         anstream::println!();
         let o = crate::cli::style::ok();
@@ -219,6 +234,90 @@ pub async fn execute(
 mod tests {
     use super::*;
 
+    /// Points `ARMADAI_CLAUDE_PROJECTS_DIR` at a fresh, empty tempdir so
+    /// `execute()`'s unconditional `usage::scan(&root)` call never reads the
+    /// real machine's `~/.claude/projects` — non-deterministic across
+    /// machines, and on a machine with a real transcript corpus, actively
+    /// wrong for tests that assert on a clean, controlled fixture. Mirrors
+    /// `discovery`'s own `ProjectsDirGuard`.
+    ///
+    /// The `MutexGuard` is a struct field, not a bare local binding, which is
+    /// what keeps clippy's `await_holding_lock` from firing when this guard
+    /// is held across the `.await` in an `execute(...)` test below — the same
+    /// shape as `TempStorageGuard` in `cli/run.rs` and the guards in
+    /// `cli/watch.rs`.
+    struct ProjectsDirGuard {
+        _dir: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ProjectsDirGuard {
+        fn empty() -> Self {
+            let lock = armadai_core::config::ENV_MUTEX.lock().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            // SAFETY: modifies the global environment; serialised via ENV_MUTEX.
+            unsafe { std::env::set_var("ARMADAI_CLAUDE_PROJECTS_DIR", dir.path()) }
+            Self {
+                _dir: dir,
+                _lock: lock,
+            }
+        }
+
+        /// Same guard, pointed at a caller-supplied directory already
+        /// populated with transcripts (see `usage_scenario`) rather than a
+        /// fresh empty one.
+        fn at(dir: tempfile::TempDir) -> Self {
+            let lock = armadai_core::config::ENV_MUTEX.lock().unwrap();
+            // SAFETY: modifies the global environment; serialised via ENV_MUTEX.
+            unsafe { std::env::set_var("ARMADAI_CLAUDE_PROJECTS_DIR", dir.path()) }
+            Self {
+                _dir: dir,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ProjectsDirGuard {
+        fn drop(&mut self) {
+            // SAFETY: restoring env state at end of test scope.
+            unsafe { std::env::remove_var("ARMADAI_CLAUDE_PROJECTS_DIR") }
+        }
+    }
+
+    /// Builds a project declaring one agent that never ran, plus a
+    /// transcript in which Claude Code's built-in `general-purpose` did the
+    /// work — the minimal shape that makes both the "Observed usage" section
+    /// and a U0x finding (U01 on `ghost`, U02 on `general-purpose`) appear
+    /// by default, so the `--no-usage`/`audit.usage` tests below have
+    /// something real to suppress.
+    fn usage_scenario() -> (tempfile::TempDir, tempfile::TempDir) {
+        let project = tempfile::tempdir().unwrap();
+        let agents = project.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("ghost.md"),
+            "---\nname: ghost\ndescription: never invoked\n---\nBody",
+        )
+        .unwrap();
+        let projects = tempfile::tempdir().unwrap();
+        let session_dir = projects.path().join("session");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let cwd = project.path().to_string_lossy().to_string();
+        std::fs::write(
+            session_dir.join("s1.jsonl"),
+            format!(
+                "{{\"type\":\"assistant\",\"timestamp\":\"2026-08-01T00:00:00Z\",\
+                 \"isSidechain\":false,\"uuid\":\"u1\",\"cwd\":\"{cwd}\",\"message\":{{\
+                 \"model\":\"m\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"t1\",\
+                 \"name\":\"Agent\",\"input\":{{\"subagent_type\":\"general-purpose\",\
+                 \"description\":\"work\"}}}}],\"usage\":{{\"input_tokens\":1,\
+                 \"output_tokens\":1}}}}}}\n"
+            ),
+        )
+        .unwrap();
+        (project, projects)
+    }
+
     #[test]
     fn min_severity_mapping() {
         use crate::audit::rules::Severity;
@@ -237,6 +336,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         )
         .await;
         assert!(result.is_err());
@@ -244,6 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_fails_on_critical_finding() {
+        let _env = ProjectsDirGuard::empty();
         let dir = tempfile::tempdir().unwrap();
         let agents = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
@@ -255,6 +356,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         )
         .await;
         assert!(result.is_err()); // A01 critical -> non-zero exit
@@ -262,6 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_succeeds_on_clean_repo_and_writes_report() {
+        let _env = ProjectsDirGuard::empty();
         let dir = tempfile::tempdir().unwrap();
         let agents = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
@@ -278,6 +381,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         )
         .await;
         assert!(result.is_ok());
@@ -287,6 +391,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_writes_html_when_extension_is_html() {
+        let _env = ProjectsDirGuard::empty();
         let dir = tempfile::tempdir().unwrap();
         let agents = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
@@ -303,6 +408,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         )
         .await;
         assert!(result.is_ok());
@@ -312,6 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_with_propose_writes_proposal() {
+        let _env = ProjectsDirGuard::empty();
         let dir = tempfile::tempdir().unwrap();
         let agents = dir.path().join(".claude/agents");
         std::fs::create_dir_all(&agents).unwrap();
@@ -327,11 +434,115 @@ mod tests {
             false,
             true,
             false,
+            false,
         )
         .await;
         assert!(result.is_ok());
         assert!(dir.path().join(".armadai-proposal/pack.yaml").is_file());
         assert!(dir.path().join(".armadai-proposal/agents/ok.md").is_file());
+    }
+
+    /// Baseline: with real transcripts and no opt-out, the usage section and
+    /// its findings appear. Establishes that the fixture in `usage_scenario`
+    /// actually exercises what the suppression tests below claim to
+    /// suppress.
+    #[tokio::test]
+    async fn usage_section_and_findings_appear_by_default() {
+        let (project, projects) = usage_scenario();
+        let _env = ProjectsDirGuard::at(projects);
+        let report_path = project.path().join("audit.md");
+        let result = execute(
+            Some(project.path().to_path_buf()),
+            Some(report_path.clone()),
+            "info".to_string(),
+            false,
+            false,
+            false,
+            false, // no_usage
+        )
+        .await;
+        assert!(result.is_ok());
+        let md = std::fs::read_to_string(report_path).unwrap();
+        assert!(md.contains("Observed usage"), "{md}");
+        assert!(md.contains("U01") && md.contains("U02"), "{md}");
+    }
+
+    /// `--no-usage` must skip the scan entirely: no section, no U0x finding.
+    #[tokio::test]
+    async fn no_usage_flag_suppresses_the_section_and_findings() {
+        let (project, projects) = usage_scenario();
+        let _env = ProjectsDirGuard::at(projects);
+        let report_path = project.path().join("audit.md");
+        let result = execute(
+            Some(project.path().to_path_buf()),
+            Some(report_path.clone()),
+            "info".to_string(),
+            false,
+            false,
+            false,
+            true, // no_usage
+        )
+        .await;
+        assert!(result.is_ok());
+        let md = std::fs::read_to_string(report_path).unwrap();
+        assert!(!md.contains("Observed usage"), "{md}");
+        assert!(!md.contains("U01") && !md.contains("U02"), "{md}");
+    }
+
+    /// `audit.usage: false` in project config must have the same effect as
+    /// the flag, when the flag itself is absent.
+    #[tokio::test]
+    async fn usage_config_key_suppresses_when_the_flag_is_absent() {
+        let (project, projects) = usage_scenario();
+        let _env = ProjectsDirGuard::at(projects);
+        std::fs::write(
+            project.path().join("armadai.yaml"),
+            "audit:\n  usage: false\n",
+        )
+        .unwrap();
+        let report_path = project.path().join("audit.md");
+        let result = execute(
+            Some(project.path().to_path_buf()),
+            Some(report_path.clone()),
+            "info".to_string(),
+            false,
+            false,
+            false,
+            false, // no_usage: flag absent
+        )
+        .await;
+        assert!(result.is_ok());
+        let md = std::fs::read_to_string(report_path).unwrap();
+        assert!(!md.contains("Observed usage"), "{md}");
+        assert!(!md.contains("U01") && !md.contains("U02"), "{md}");
+    }
+
+    /// Precedence: `--no-usage` wins even when the config explicitly enables
+    /// usage measurement.
+    #[tokio::test]
+    async fn no_usage_flag_overrides_a_config_that_enables_usage() {
+        let (project, projects) = usage_scenario();
+        let _env = ProjectsDirGuard::at(projects);
+        std::fs::write(
+            project.path().join("armadai.yaml"),
+            "audit:\n  usage: true\n",
+        )
+        .unwrap();
+        let report_path = project.path().join("audit.md");
+        let result = execute(
+            Some(project.path().to_path_buf()),
+            Some(report_path.clone()),
+            "info".to_string(),
+            false,
+            false,
+            false,
+            true, // no_usage: the flag must win
+        )
+        .await;
+        assert!(result.is_ok());
+        let md = std::fs::read_to_string(report_path).unwrap();
+        assert!(!md.contains("Observed usage"), "{md}");
+        assert!(!md.contains("U01") && !md.contains("U02"), "{md}");
     }
 
     #[tokio::test]
@@ -341,7 +552,7 @@ mod tests {
         std::fs::create_dir_all(&agents).unwrap();
         std::fs::write(agents.join("a.md"), "---\nname: a\ndescription: d\n---\nP.").unwrap();
         let settings = AuditSettings::from_project(dir.path());
-        let mut audit = run_audit(dir.path(), &settings);
+        let mut audit = run_audit(dir.path(), &settings, None);
         let err = apply_deep_pass(&mut audit, dir.path(), &settings, None)
             .await
             .unwrap_err();

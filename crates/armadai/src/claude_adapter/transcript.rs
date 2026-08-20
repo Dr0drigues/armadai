@@ -9,7 +9,10 @@ pub enum Block {
         subagent_type: String,
         description: String,
     },
-    Other,
+    /// Any other `tool_use`, keyed by its tool name (`Bash`, `Read`, `Skill`, …).
+    Tool {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -52,6 +55,13 @@ pub fn parse_line(line: &str) -> Option<RelevantEntry> {
         return None;
     }
     let v: Value = serde_json::from_str(line).ok()?;
+    parse_value(&v)
+}
+
+/// Same as [`parse_line`], for a `Value` the caller already parsed. The audit
+/// scan reads the entry envelope (timestamp, isSidechain, attribution…) from
+/// the same `Value`, so parsing the line twice would double its cost.
+pub fn parse_value(v: &Value) -> Option<RelevantEntry> {
     match v.get("type")?.as_str()? {
         "assistant" => parse_assistant(v.get("message")?),
         "user" => parse_user_tool_result(v.get("message")?),
@@ -109,7 +119,14 @@ fn parse_assistant(msg: &Value) -> Option<RelevantEntry> {
                     description,
                 });
             }
-            Some("tool_use") => blocks.push(Block::Other),
+            Some("tool_use") => {
+                let name = b
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                blocks.push(Block::Tool { name });
+            }
             _ => {} // thinking, redacted_thinking, etc. — dropped
         }
     }
@@ -292,9 +309,67 @@ mod tests {
         let line = r#"{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
         match parse_line(line).unwrap() {
             RelevantEntry::Assistant { blocks, .. } => {
-                assert!(matches!(blocks.as_slice(), [Block::Other]))
+                assert!(matches!(blocks.as_slice(), [Block::Tool { .. }]))
             }
             _ => panic!("expected Assistant"),
+        }
+    }
+
+    #[test]
+    fn non_agent_tool_use_keeps_its_name() {
+        let line = r#"{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
+        match parse_line(line).expect("assistant entry") {
+            RelevantEntry::Assistant { blocks, .. } => {
+                assert_eq!(
+                    blocks.as_slice(),
+                    [Block::Tool {
+                        name: "Bash".to_string()
+                    }],
+                    "a non-Agent tool_use must carry its tool name"
+                );
+            }
+            _ => panic!("expected Assistant"),
+        }
+    }
+
+    #[test]
+    fn parse_value_matches_parse_line_on_the_same_input() {
+        let line = r#"{"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":2,"output_tokens":3}}}"#;
+        let v: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            parse_value(&v),
+            parse_line(line),
+            "parse_value must be the same parser, minus the string decoding step"
+        );
+        assert!(parse_value(&v).is_some(), "and it must actually parse");
+    }
+
+    #[test]
+    fn parse_value_reads_the_message_of_an_envelope_the_scan_also_reads() {
+        let v: Value = serde_json::from_str(
+            r#"{"type":"assistant","isSidechain":true,"uuid":"u1","timestamp":"2026-08-13T10:00:00Z","sessionId":"s1","cwd":"/tmp","message":{"role":"assistant","model":"claude-opus","content":[{"type":"text","text":"response"}],"usage":{"input_tokens":10,"output_tokens":5}}}"#,
+        )
+        .unwrap();
+        // The envelope stays readable alongside the message — this is why the
+        // scan holds the Value instead of re-parsing the line.
+        assert_eq!(v["uuid"], "u1");
+        assert_eq!(v["isSidechain"], true);
+        assert_eq!(v["sessionId"], "s1");
+
+        // And parse_value extracts the message correctly.
+        match parse_value(&v) {
+            Some(RelevantEntry::Assistant {
+                model,
+                blocks,
+                usage,
+                ..
+            }) => {
+                assert_eq!(model, "claude-opus");
+                assert_eq!(usage.input_tokens, 10);
+                assert_eq!(usage.output_tokens, 5);
+                assert!(matches!(blocks.as_slice(), [Block::Text(t)] if t == "response"));
+            }
+            other => panic!("expected Assistant, got {:?}", other),
         }
     }
 }

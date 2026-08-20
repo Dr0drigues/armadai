@@ -90,6 +90,7 @@ mod tests {
         let ctx = AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         };
         let resolver = |m: &str| (m == "gemini-3.0-pro").then(|| "latest:pro".to_string());
         let f = a03_with_resolver(&ctx, &resolver);
@@ -108,6 +109,7 @@ mod tests {
         let ctx = AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         };
         let known = |m: &str| m == "claude-sonnet-5";
         let f = a04_with_catalog(&ctx, Some(&known));
@@ -128,6 +130,7 @@ mod tests {
         let ctx = AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         };
         let known = |_: &str| false;
         assert!(a04_with_catalog(&ctx, Some(&known)).is_empty());
@@ -142,6 +145,7 @@ mod tests {
         let ctx = AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         };
         assert!(a04_with_catalog(&ctx, None::<&fn(&str) -> bool>).is_empty());
     }

@@ -86,7 +86,7 @@ impl Mapper {
                 for b in blocks {
                     match b {
                         Block::Text(t) if !t.trim().is_empty() => self.last_text = t,
-                        Block::Text(_) | Block::Other => {}
+                        Block::Text(_) | Block::Tool { .. } => {}
                         Block::AgentSpawn {
                             tool_use_id,
                             subagent_type,

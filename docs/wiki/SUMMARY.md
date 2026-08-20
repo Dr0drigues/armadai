@@ -13,3 +13,4 @@
 - [Registry](registry.md)
 - [Starter packs](starter-packs.md)
 - [Migration v0 → v1](migration-v0-to-v1.md)
+- [Audit](audit.md)

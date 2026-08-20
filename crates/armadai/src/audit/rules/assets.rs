@@ -262,6 +262,7 @@ mod tests {
         let f = a01_unparsable(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A01");
@@ -277,6 +278,7 @@ mod tests {
         let f = a02_missing_fields(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A02");
@@ -291,6 +293,7 @@ mod tests {
         let f = a05_oversized_prompt(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A05");
@@ -308,6 +311,7 @@ mod tests {
         let f = a08_permissive_tools(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].severity, Severity::Warning); // mixed fleet
@@ -326,6 +330,7 @@ mod tests {
         let f = a08_permissive_tools(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].severity, Severity::Info);
@@ -363,6 +368,7 @@ mod tests {
         let f = a09_malformed_skill(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A09");
@@ -388,6 +394,7 @@ mod tests {
         let f = a09_malformed_skill(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert!(f[0].message.contains("missing SKILL.md"));
@@ -417,6 +424,7 @@ mod tests {
         let f = a01_unparsable(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].severity, Severity::Critical);
@@ -458,6 +466,7 @@ mod tests {
         let f = a09_malformed_skill(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert!(f[0].message.contains("bare"));
@@ -478,6 +487,7 @@ mod tests {
         let ctx = AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         };
         assert!(a02_missing_fields(&ctx).is_empty());
         assert!(a08_permissive_tools(&ctx).is_empty());
@@ -505,6 +515,7 @@ mod tests {
         let f = a12_nonstandard_fields(&AuditContext {
             config: &config,
             settings: &settings,
+            usage: None,
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].severity, Severity::Info);
