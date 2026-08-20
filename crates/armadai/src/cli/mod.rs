@@ -489,6 +489,11 @@ pub enum Command {
     /// the hook JSON from stdin and registers the session. Hidden from help.
     #[command(hide = true, name = "__claude-register-session")]
     ClaudeRegisterSession,
+    /// Internal: called by the Claude Code `PreToolUse` hook on the Agent
+    /// tool. Reads the hook JSON from stdin and enforces the declared
+    /// delegation topology. Hidden from help.
+    #[command(hide = true, name = "__claude-policy-gate")]
+    ClaudePolicyGate,
     /// Watch a Claude Code session live in the Workroom (via the armadai plugin).
     #[cfg(feature = "tui")]
     Watch {
@@ -502,6 +507,72 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+}
+
+/// Names of the subcommands marked `hide = true`, taken from clap itself
+/// rather than from a naming convention.
+fn hidden_subcommand_names() -> Vec<String> {
+    Cli::command()
+        .get_subcommands()
+        .filter(|s| s.is_hide_set())
+        .map(|s| s.get_name().to_string())
+        .collect()
+}
+
+/// Remove hidden subcommands from a generated completion script.
+///
+/// `hide = true` keeps a subcommand out of `--help`, but clap_complete 4.6.8
+/// still emits it into the generated script, so `armadai <TAB>` offers
+/// internal commands like `__claude-policy-gate` — described, ironically, as
+/// "Hidden from help".
+///
+/// Only the *offered candidates* are stripped. The per-command handling blocks
+/// further down are left alone: they are unreachable unless someone types the
+/// full internal name, and removing them would break the surrounding
+/// case/switch syntax.
+///
+/// Matching is on exact names, never on a `__` prefix — fish's own helper
+/// functions are called `__fish_armadai_*`, and a prefix filter would gut the
+/// script.
+fn strip_hidden_subcommands(script: &str, hidden: &[String]) -> String {
+    if hidden.is_empty() {
+        return script.to_string();
+    }
+    let mut out = String::with_capacity(script.len());
+    'lines: for line in script.lines() {
+        let trimmed = line.trim_start();
+        for name in hidden {
+            // zsh: `'<name>:description' \`
+            if trimmed.starts_with(&format!("'{name}:")) {
+                continue 'lines;
+            }
+            // fish: `... -f -a "<name>" -d '...'`
+            if line.contains(&format!("-a \"{name}\"")) {
+                continue 'lines;
+            }
+            // elvish: `cand <name> 'description'`
+            if trimmed.starts_with(&format!("cand {name} ")) {
+                continue 'lines;
+            }
+            // powershell: `[CompletionResult]::new('<name>', ...)`
+            if line.contains(&format!("[CompletionResult]::new('{name}'")) {
+                continue 'lines;
+            }
+        }
+        // bash: `opts="run new ... <name> ... help"`, and fish's
+        // `not __fish_seen_subcommand_from ... <name> ...` guard lists.
+        let mut kept = line.to_string();
+        if kept.contains("opts=\"") || kept.contains("__fish_seen_subcommand_from") {
+            for name in hidden {
+                kept = kept
+                    .replace(&format!(" {name} "), " ")
+                    .replace(&format!(" {name}\""), "\"");
+            }
+        }
+        out.push_str(&kept);
+        out.push('\n');
+    }
+    out
 }
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
@@ -626,20 +697,121 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Up => up::start().await,
         Command::Down => up::stop().await,
         Command::Completion { shell } => {
-            clap_complete::generate(
-                shell,
-                &mut Cli::command(),
-                "armadai",
-                &mut std::io::stdout(),
+            let mut buf = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "armadai", &mut buf);
+            let script = String::from_utf8_lossy(&buf);
+            print!(
+                "{}",
+                strip_hidden_subcommands(&script, &hidden_subcommand_names())
             );
             Ok(())
         }
         Command::ClaudeRegisterSession => crate::claude_adapter::register_from_stdin(),
+        Command::ClaudePolicyGate => crate::claude_adapter::policy_gate::gate_from_stdin(),
         #[cfg(feature = "tui")]
         Command::Watch {
             last,
             session,
             json,
         } => watch::execute(last, session, json).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Generate a completion script the way the `completion` handler does.
+    fn completion(shell: clap_complete::Shell) -> String {
+        let mut buf = Vec::new();
+        clap_complete::generate(shell, &mut Cli::command(), "armadai", &mut buf);
+        strip_hidden_subcommands(&String::from_utf8_lossy(&buf), &hidden_subcommand_names())
+    }
+
+    #[test]
+    fn there_are_hidden_subcommands_to_strip() {
+        // If this ever empties, the filter below stops proving anything.
+        let hidden = hidden_subcommand_names();
+        assert!(
+            hidden.iter().any(|n| n == "__claude-policy-gate"),
+            "expected the policy gate among hidden subcommands: {hidden:?}"
+        );
+    }
+
+    /// `hide = true` keeps a subcommand out of `--help`, but clap_complete
+    /// 4.6.8 still emits it into the generated script — so `armadai <TAB>`
+    /// offered `__claude-policy-gate`, described as "Hidden from help".
+    #[test]
+    fn completion_scripts_do_not_offer_hidden_subcommands() {
+        use clap::ValueEnum;
+        // Every shell clap_complete supports, not a hand-picked three: the
+        // filter shipped covering bash/zsh/fish while elvish and powershell
+        // still offered the internal commands, and a hard-coded list could
+        // not see it.
+        for shell in clap_complete::Shell::value_variants() {
+            let mut raw = Vec::new();
+            clap_complete::generate(*shell, &mut Cli::command(), "armadai", &mut raw);
+            let raw = String::from_utf8_lossy(&raw).to_string();
+            let filtered = strip_hidden_subcommands(&raw, &hidden_subcommand_names());
+
+            // The filter must actually remove something. Without this, a
+            // clap_complete syntax change would make the filter a no-op AND
+            // the assertions below vacuously true — the name would stay in
+            // the script and nothing would notice.
+            // Not "fewer lines": for bash the filter edits the `opts=` line
+            // in place rather than dropping it. What must hold is that it
+            // changed something.
+            assert_ne!(
+                filtered, raw,
+                "{shell}: the filter changed nothing, so it has stopped working"
+            );
+
+            for name in hidden_subcommand_names() {
+                for offered in [
+                    format!("'{name}:"),                         // zsh
+                    format!("-a \"{name}\""),                    // fish
+                    format!("cand {name} "),                     // elvish
+                    format!("[CompletionResult]::new('{name}'"), // powershell
+                ] {
+                    assert!(
+                        !filtered.contains(&offered),
+                        "{shell} still offers {name} via {offered:?}"
+                    );
+                }
+                // bash/fish word lists.
+                for line in filtered
+                    .lines()
+                    .filter(|l| l.contains("opts=\"") || l.contains("__fish_seen_subcommand_from"))
+                {
+                    assert!(
+                        !line.split_whitespace().any(|w| w.trim_matches('"') == name),
+                        "{shell} word list still contains {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn completion_scripts_keep_the_real_commands() {
+        // The filter must not be a blunt instrument.
+        let zsh = completion(clap_complete::Shell::Zsh);
+        for cmd in ["audit", "run", "link", "watch", "completion"] {
+            assert!(
+                zsh.contains(&format!("'{cmd}:")),
+                "zsh completion lost the {cmd} command"
+            );
+        }
+    }
+
+    #[test]
+    fn fish_helper_functions_survive_the_filter() {
+        // fish names its own helpers `__fish_armadai_*`. Filtering on a `__`
+        // prefix rather than on exact subcommand names would gut the script.
+        let fish = completion(clap_complete::Shell::Fish);
+        assert!(
+            fish.matches("__fish_armadai").count() > 50,
+            "the fish helpers were stripped along with the hidden commands"
+        );
     }
 }

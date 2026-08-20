@@ -1,4 +1,5 @@
 pub mod mapper;
+pub mod policy_gate;
 pub mod session_index;
 pub mod transcript;
 
