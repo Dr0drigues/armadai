@@ -489,6 +489,11 @@ pub enum Command {
     /// the hook JSON from stdin and registers the session. Hidden from help.
     #[command(hide = true, name = "__claude-register-session")]
     ClaudeRegisterSession,
+    /// Internal: called by the Claude Code `PreToolUse` hook on the Agent
+    /// tool. Reads the hook JSON from stdin and enforces the declared
+    /// delegation topology. Hidden from help.
+    #[command(hide = true, name = "__claude-policy-gate")]
+    ClaudePolicyGate,
     /// Watch a Claude Code session live in the Workroom (via the armadai plugin).
     #[cfg(feature = "tui")]
     Watch {
@@ -635,6 +640,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::ClaudeRegisterSession => crate::claude_adapter::register_from_stdin(),
+        Command::ClaudePolicyGate => crate::claude_adapter::policy_gate::gate_from_stdin(),
         #[cfg(feature = "tui")]
         Command::Watch {
             last,

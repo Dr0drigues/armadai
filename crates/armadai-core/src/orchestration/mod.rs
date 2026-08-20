@@ -15,6 +15,7 @@ pub mod context_injection;
 pub mod es;
 pub mod hierarchical;
 pub mod llm_agents;
+pub mod policy;
 pub mod protocol;
 pub mod ring;
 #[cfg(test)]
@@ -169,6 +170,18 @@ pub struct OrchestrationConfig {
     /// `--route <name>`. Empty = no routes configured.
     #[serde(default)]
     pub routes: std::collections::BTreeMap<String, Vec<String>>,
+
+    /// How strictly the declared topology is enforced by the Claude Code
+    /// policy gate. Independent of `enabled`, which governs the
+    /// `run --orchestrate` engine. Defaults to `off`.
+    #[serde(default)]
+    pub policy: policy::PolicyMode,
+
+    /// Assistance agents reachable from anywhere, outside the topology
+    /// (e.g. `Explore`, `Plan`). Under `policy: strict`, anything not
+    /// declared here or in `teams` is refused.
+    #[serde(default)]
+    pub free_agents: Vec<String>,
 
     // ── Shared limits (all patterns) ───────────────────────────
     /// Max delegation depth (default: 5).
