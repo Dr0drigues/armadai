@@ -168,9 +168,12 @@ Les deux types d'assets ne se mesurent pas pareil, parce que la donnée disponib
 
 > **⚠ CORRECTION 2026-08-20.** Ce spec affirmait que « les tours internes d'un sous-agent ne sont
 > pas comptables : `isSidechain` est `false` partout, donc les transcripts de sous-agents ne sont
-> pas dans ces fichiers ». **C'est faux.** Claude Code écrit chaque sous-agent dans
-> `<projects>/<slug>/<session-id>/subagents/agent-<id>.jsonl`, avec un `.meta.json` portant
-> `agentType`, `parentAgentId` et `spawnDepth`. `isSidechain` valait `false` uniquement parce que
+> pas dans ces fichiers ». **C'est faux.** Claude Code écrit les sous-agents sous
+> `<projects>/<slug>/<session-id>/subagents/`, parfois **imbriqués un niveau plus bas**
+> (`subagents/workflows/wf_<id>/`), avec un `.meta.json` portant `agentType`, `parentAgentId` et
+> `spawnDepth`. ⚠ Cette disposition est un **détail interne non documenté**, observé sur une seule
+> version de Claude Code — pas un contrat. Le scan doit donc dégrader sans échouer sur toute forme
+> inattendue. `isSidechain` valait `false` uniquement parce que
 > le scan ne lisait que le premier niveau du dossier (`jsonl_in`) ; dans les fichiers de
 > sous-agents il vaut `true`.
 >
@@ -181,9 +184,19 @@ Les deux types d'assets ne se mesurent pas pareil, parce que la donnée disponib
 > **donnée** par `spawnDepth` (3 observé) au lieu d'être inférée.
 >
 > Corollaire pour le lot 3 : la déduction de topologie **a** des données réelles, contrairement à
-> ce que cette section laissait croire. Les metas n'existent que pour les sous-agents réellement
-> lancés — une délégation refusée par un hook n'en laisse pas — donc les compter compte des
-> exécutions.
+> ce que cette section laissait croire.
+>
+> Sur le comptage : un meta semble n'exister que pour un sous-agent réellement lancé — une
+> délégation refusée par un hook n'en laisse pas, observé le 2026-08-20. C'est une **inférence, pas
+> un fait établi** : la réciproque (un transcript sans meta signifierait que l'agent n'a pas tourné)
+> n'a jamais été observée, et les deux fichiers étant écrits séparément il n'y a aucune atomicité.
+> Un transcript contenant des entrées `assistant` est en soi la preuve d'une exécution, ce qui est
+> la raison pour laquelle le scan lit le transcript **avant** de consulter le meta.
+
+> **Tours = messages, pas entrées.** Claude Code écrit une entrée par bloc de contenu, donc un même
+> message d'assistant occupe plusieurs lignes. Compter les entrées surévaluait de **53 %** (32 053
+> entrées pour 14 958 messages distincts sur le corpus de référence). Les tours sont dédupliqués sur
+> `message.id`.
 
 ## Lot 2 — Pack enrichi
 

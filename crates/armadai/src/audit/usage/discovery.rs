@@ -137,12 +137,18 @@ pub struct SubagentFiles {
 
 /// Every sub-agent transcript belonging to `root`, across all its sessions.
 ///
-/// Deliberately narrow: only `subagents/` is walked. Sibling directories
-/// (`tool-results/`, `memory/`) hold an order of magnitude more files and
-/// nothing this audit measures.
-pub fn subagent_files(root: &Path) -> Vec<SubagentFiles> {
+/// Walks `subagents/` and **one level of subdirectories beneath it**: Claude
+/// Code also nests sub-agents under `subagents/workflows/wf_<id>/`. Measured
+/// on 2026-08-20: 92 of 640 sub-agent transcripts lived there, and an entire
+/// agent type (`workflow-subagent`) plus an entire skill (`deep-research`)
+/// were invisible while only the flat level was read.
+///
+/// Deliberately still narrow: sibling directories (`tool-results/`,
+/// `memory/`) are never walked — not because of their size, but because they
+/// hold nothing this audit measures.
+pub fn subagent_files_for(sessions: &[PathBuf]) -> Vec<SubagentFiles> {
     let mut found = Vec::new();
-    for session in transcript_files(root) {
+    for session in sessions {
         // `<session>.jsonl` -> `<session>/subagents/`
         let Some(dir) = session.parent().map(|p| {
             p.join(session.file_stem().unwrap_or_default())
@@ -150,10 +156,24 @@ pub fn subagent_files(root: &Path) -> Vec<SubagentFiles> {
         }) else {
             continue;
         };
-        for transcript in jsonl_in(&dir) {
-            let meta = transcript.with_extension("meta.json");
-            if meta.is_file() {
-                found.push(SubagentFiles { transcript, meta });
+        let mut dirs = vec![dir.clone()];
+        // One level down: `subagents/workflows/wf_<id>/`. Bounded on purpose —
+        // a blind recursion would eventually wander into whatever Claude Code
+        // nests next.
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten().filter(|e| e.path().is_dir()) {
+                dirs.push(entry.path());
+                if let Ok(inner) = std::fs::read_dir(entry.path()) {
+                    dirs.extend(inner.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+                }
+            }
+        }
+        for d in dirs {
+            for transcript in jsonl_in(&d) {
+                let meta = transcript.with_extension("meta.json");
+                if meta.is_file() {
+                    found.push(SubagentFiles { transcript, meta });
+                }
             }
         }
     }
@@ -452,12 +472,23 @@ mod tests {
         let project = Path::new("/Users/x/proj");
         project_with_subagents(dir.path(), project);
 
-        let found = subagent_files(project);
+        let found = subagent_files_for(&transcript_files(project));
         assert_eq!(found.len(), 2, "only meta-backed pairs count: {found:?}");
+        // Assert the pairing is right, not merely that the filters ran: each
+        // transcript must be paired with ITS OWN meta, not another agent's.
         for sa in &found {
-            assert!(sa.meta.is_file(), "meta must exist: {sa:?}");
-            assert!(sa.transcript.to_string_lossy().ends_with(".jsonl"));
+            let expected = sa.transcript.with_extension("meta.json");
+            assert_eq!(sa.meta, expected, "transcript paired with the wrong meta");
         }
+        let ids: Vec<String> = found
+            .iter()
+            .map(|sa| sa.transcript.file_name().unwrap().to_string_lossy().into())
+            .collect();
+        assert!(
+            ids.contains(&"agent-a1.jsonl".to_string())
+                && ids.contains(&"agent-a2.jsonl".to_string()),
+            "both meta-backed agents must be found: {ids:?}"
+        );
     }
 
     #[test]
@@ -468,7 +499,7 @@ mod tests {
         project_with_subagents(dir.path(), project);
         // `agent-orphan.jsonl` has no meta, so it never ran and must not count.
         assert!(
-            !subagent_files(project)
+            !subagent_files_for(&transcript_files(project))
                 .iter()
                 .any(|sa| sa.transcript.to_string_lossy().contains("orphan")),
             "a meta-less transcript means the agent did not run"
@@ -484,10 +515,74 @@ mod tests {
         // `tool-results/` holds an order of magnitude more files in practice
         // and nothing this audit measures.
         assert!(
-            !subagent_files(project)
+            !subagent_files_for(&transcript_files(project))
                 .iter()
                 .any(|sa| sa.transcript.to_string_lossy().contains("tool-results")),
             "only subagents/ is ours to read"
+        );
+    }
+
+    #[test]
+    fn nested_workflow_subagents_are_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = ProjectsDirGuard::set(dir.path());
+        let project = Path::new("/Users/x/proj");
+        let slug = project_with_subagents(dir.path(), project);
+        // Claude Code nests some sub-agents one level deeper. Measured
+        // 2026-08-20: 92 of 640 lived here, and an entire agent type
+        // (`workflow-subagent`) was invisible while only the flat level
+        // was read.
+        let wf = slug
+            .join("sess1")
+            .join("subagents")
+            .join("workflows")
+            .join("wf_1");
+        std::fs::create_dir_all(&wf).unwrap();
+        std::fs::write(wf.join("agent-w1.jsonl"), "{}\n").unwrap();
+        std::fs::write(wf.join("agent-w1.meta.json"), "{}").unwrap();
+        // `journal.jsonl` also lives there with no meta; the pairing gate
+        // must keep it out.
+        std::fs::write(wf.join("journal.jsonl"), "{}\n").unwrap();
+
+        let found = subagent_files_for(&transcript_files(project));
+        assert_eq!(found.len(), 3, "flat pair + nested pair: {found:?}");
+        assert!(
+            found
+                .iter()
+                .any(|sa| sa.transcript.ends_with("agent-w1.jsonl")),
+            "the nested sub-agent must be found: {found:?}"
+        );
+        assert!(
+            !found
+                .iter()
+                .any(|sa| sa.transcript.ends_with("journal.jsonl")),
+            "a meta-less file must stay out even when nested"
+        );
+    }
+
+    #[test]
+    fn the_walk_stops_after_one_nested_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = ProjectsDirGuard::set(dir.path());
+        let project = Path::new("/Users/x/proj");
+        let slug = project_with_subagents(dir.path(), project);
+        // Bounded on purpose: a blind recursion would wander into whatever
+        // Claude Code nests next.
+        let deep = slug
+            .join("sess1")
+            .join("subagents")
+            .join("workflows")
+            .join("wf_1")
+            .join("deeper");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("agent-d1.jsonl"), "{}\n").unwrap();
+        std::fs::write(deep.join("agent-d1.meta.json"), "{}").unwrap();
+
+        assert!(
+            !subagent_files_for(&transcript_files(project))
+                .iter()
+                .any(|sa| sa.transcript.ends_with("agent-d1.jsonl")),
+            "three levels down is beyond the bound"
         );
     }
 
@@ -499,7 +594,7 @@ mod tests {
         let slug = dir.path().join(slug_for(project));
         std::fs::create_dir_all(&slug).unwrap();
         std::fs::write(slug.join("sess.jsonl"), "{}\n").unwrap();
-        assert!(subagent_files(project).is_empty());
+        assert!(subagent_files_for(&transcript_files(project)).is_empty());
     }
 
     #[test]
