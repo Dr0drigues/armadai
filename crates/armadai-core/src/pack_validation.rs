@@ -246,6 +246,9 @@ pub fn validate_project_config(project_root: &Path) -> Vec<ValidationIssue> {
             super::project::AgentRef::Registry { registry } => {
                 agent_names.insert(registry.clone());
             }
+            super::project::AgentRef::Declared { declared } => {
+                agent_names.insert(declared.clone());
+            }
         }
     }
 

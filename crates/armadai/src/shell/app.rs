@@ -1108,6 +1108,12 @@ fn resolve_project_agent(name: &str) -> Option<std::path::PathBuf> {
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string())
                 .unwrap_or_default(),
+            // Matched by name like the other file-backed variants; the
+            // shell relay wants a file path, which a declared agent has
+            // none of, so `resolve_agent` below turns this into a clean
+            // `None` rather than a path. Wiring the shell to `load_agent`
+            // for declared agents is a later task's job.
+            armadai_core::project::AgentRef::Declared { declared } => declared.clone(),
             _ => continue,
         };
         if agent_name == name {

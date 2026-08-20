@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use super::agent::AgentMode;
+use super::agent_source;
 use super::config::{registry_cache_dir, user_agents_dir, user_prompts_dir, user_skills_dir};
 use super::orchestration::OrchestrationConfig;
 
@@ -150,9 +151,22 @@ impl ShellConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum AgentRef {
-    Named { name: String },
-    Registry { registry: String },
-    Path { path: PathBuf },
+    Named {
+        name: String,
+    },
+    Registry {
+        registry: String,
+    },
+    Path {
+        path: PathBuf,
+    },
+    /// An agent declared in `.armadai/agents.yaml` rather than written as a
+    /// file. See `agent_source::load_agent`, which is the only way to turn
+    /// this variant into an `Agent` — `resolve_agent` below refuses it,
+    /// because a declared agent has no file of its own.
+    Declared {
+        declared: String,
+    },
 }
 
 /// Reference to a prompt fragment.
@@ -342,6 +356,13 @@ pub fn resolve_agent(agent_ref: &AgentRef, project_root: &Path) -> anyhow::Resul
                     path.display()
                 );
             }
+        }
+        AgentRef::Declared { declared } => {
+            anyhow::bail!(
+                "agent '{declared}' is declared in {}, not a file — use \
+                 `agent_source::load_agent` instead of `resolve_agent`",
+                agent_source::declarations_path(project_root).display()
+            );
         }
     }
 }

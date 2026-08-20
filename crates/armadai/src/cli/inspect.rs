@@ -147,6 +147,10 @@ fn resolve_agent_file(agent_name: &str) -> anyhow::Result<std::path::PathBuf> {
             AgentRef::Named { name } => name == agent_name,
             AgentRef::Path { path } => path.file_stem().is_some_and(|s| s == agent_name),
             AgentRef::Registry { registry } => registry.ends_with(agent_name),
+            // Matched by name so a later step can report the ref by name;
+            // `resolve_agent` below refuses it because it has no file to
+            // return a path for.
+            AgentRef::Declared { declared } => declared == agent_name,
         }) {
             return project::resolve_agent(agent_ref, &root);
         }
