@@ -82,7 +82,10 @@ pub struct AgentMetadata {
     pub ring_config: Option<AgentRingConfig>,
 }
 
-fn default_temperature() -> f32 {
+/// The sampling temperature an agent gets when none is specified anywhere
+/// (Markdown frontmatter default, and the declarative format's fallback
+/// once neither the declaration nor its defaults set one).
+pub fn default_temperature() -> f32 {
     0.7
 }
 

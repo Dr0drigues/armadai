@@ -11,6 +11,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::agent::{AgentMetadata, default_temperature};
+
 /// One entry of an agent's `prompt:` list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptStep {
@@ -143,6 +145,61 @@ pub fn load(path: &Path) -> anyhow::Result<DeclaredAgents> {
         .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
     serde_yaml_ng::from_str(&raw)
         .map_err(|e| anyhow::anyhow!("cannot parse {}: {e}", path.display()))
+}
+
+/// Build an agent's metadata from its declaration and the shared defaults.
+///
+/// Shallow merge: a field absent from the declaration takes the default's
+/// value. Lists are **replaced, never merged** — less expressive, but an agent
+/// that declares a `scope` has exactly that scope, rather than silently
+/// inheriting a wider one.
+///
+/// Fails when no `provider` is declared at either level. The `.md` parser
+/// refuses that too (`parser/metadata.rs`), and the two formats must agree on
+/// what a valid agent is. Every remaining field is written out explicitly:
+/// `AgentMetadata` has no `Default`, and giving it one would mean `provider:
+/// ""` and `temperature: 0.0` — two wrong values free to propagate.
+pub fn merge_metadata(decl: &AgentDecl, defaults: &AgentDefaults) -> anyhow::Result<AgentMetadata> {
+    let provider = decl
+        .provider
+        .clone()
+        .or_else(|| defaults.provider.clone())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "agent '{}': no provider declared, and none in defaults",
+                decl.name
+            )
+        })?;
+
+    Ok(AgentMetadata {
+        provider,
+        model: decl.model.clone().or_else(|| defaults.model.clone()),
+        command: None,
+        args: None,
+        temperature: decl
+            .temperature
+            .or(defaults.temperature)
+            .unwrap_or_else(default_temperature),
+        max_tokens: decl.max_tokens.or(defaults.max_tokens),
+        timeout: decl.timeout.or(defaults.timeout),
+        tags: decl.tags.clone().unwrap_or_else(|| defaults.tags.clone()),
+        stacks: decl
+            .stacks
+            .clone()
+            .unwrap_or_else(|| defaults.stacks.clone()),
+        scope: decl.scope.clone().unwrap_or_default(),
+        model_fallback: decl
+            .model_fallback
+            .clone()
+            .unwrap_or_else(|| defaults.model_fallback.clone()),
+        cost_limit: None,
+        rate_limit: None,
+        context_window: None,
+        mode: None,
+        orchestration: None,
+        triggers: None,
+        ring_config: None,
+    })
 }
 
 #[cfg(test)]
@@ -306,6 +363,106 @@ agents:
                 && err.contains("a single-key map of a fragment name to its variables")
                 && err.contains("a sequence"),
             "the error must name the valid shapes and what was found: {err}"
+        );
+    }
+
+    fn decl(name: &str) -> AgentDecl {
+        AgentDecl {
+            name: name.into(),
+            description: None,
+            provider: None,
+            model: None,
+            temperature: None,
+            max_tokens: None,
+            timeout: None,
+            model_fallback: None,
+            tags: None,
+            stacks: None,
+            scope: None,
+            prompt: vec![],
+        }
+    }
+
+    fn defaults() -> AgentDefaults {
+        AgentDefaults {
+            provider: Some("claude".into()),
+            model: Some("latest:pro".into()),
+            temperature: Some(0.3),
+            max_tokens: Some(8192),
+            timeout: None,
+            model_fallback: vec!["latest:fast".into()],
+            tags: vec!["shared".into()],
+            stacks: vec![],
+        }
+    }
+
+    #[test]
+    fn an_agent_without_overrides_takes_every_default() {
+        let m = merge_metadata(&decl("a"), &defaults()).unwrap();
+        assert_eq!(m.provider, "claude");
+        assert_eq!(m.model.as_deref(), Some("latest:pro"));
+        assert_eq!(m.temperature, 0.3);
+        assert_eq!(m.max_tokens, Some(8192));
+        assert_eq!(m.tags, vec!["shared".to_string()]);
+    }
+
+    #[test]
+    fn a_scalar_override_wins() {
+        let mut d = decl("a");
+        d.temperature = Some(0.9);
+        assert_eq!(merge_metadata(&d, &defaults()).unwrap().temperature, 0.9);
+    }
+
+    /// Lists are replaced, never merged: an agent that declares its tags has
+    /// exactly those, and does not silently inherit a wider set.
+    #[test]
+    fn a_declared_list_replaces_the_default_rather_than_extending_it() {
+        let mut d = decl("a");
+        d.tags = Some(vec!["own".into()]);
+        let m = merge_metadata(&d, &defaults()).unwrap();
+        assert_eq!(m.tags, vec!["own".to_string()]);
+        assert!(!m.tags.contains(&"shared".to_string()));
+    }
+
+    #[test]
+    fn an_empty_declared_list_means_empty_not_inherit() {
+        let mut d = decl("a");
+        d.tags = Some(vec![]);
+        assert!(merge_metadata(&d, &defaults()).unwrap().tags.is_empty());
+    }
+
+    /// The `.md` parser refuses an agent with no provider
+    /// (`parser/metadata.rs:83`). YAML must refuse it too, or the two formats
+    /// disagree on what a valid agent is.
+    #[test]
+    fn a_provider_declared_nowhere_is_an_error() {
+        let err = merge_metadata(&decl("a"), &AgentDefaults::default())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("provider"), "must say what is missing: {err}");
+        assert!(err.contains("a"), "must name the agent: {err}");
+    }
+
+    #[test]
+    fn temperature_falls_back_to_the_parsers_own_default() {
+        let mut d = decl("a");
+        d.provider = Some("claude".into());
+        let m = merge_metadata(&d, &AgentDefaults::default()).unwrap();
+        // Call the shared function rather than writing 0.7 in a second place:
+        // this test must follow the default, not pin a copy of it.
+        assert_eq!(m.temperature, crate::agent::default_temperature());
+    }
+
+    /// An agent may supply the provider itself with no defaults block at all.
+    #[test]
+    fn an_agent_can_carry_the_provider_alone() {
+        let mut d = decl("a");
+        d.provider = Some("cli".into());
+        assert_eq!(
+            merge_metadata(&d, &AgentDefaults::default())
+                .unwrap()
+                .provider,
+            "cli"
         );
     }
 }
