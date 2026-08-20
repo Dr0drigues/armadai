@@ -106,10 +106,18 @@ pub(super) fn u02_used_but_undeclared(ctx: &AuditContext) -> Vec<Finding> {
             // side by design, out of scope for this check) would also land
             // here — the message must not claim more than the code knows.
             message: format!(
-                "sub-agent '{}' ran {} time(s) but is not declared in this project's \
+                "sub-agent '{}' ran {} but is not declared in this project's \
                  `.claude/agents/`{}",
                 name,
-                stats.invocations,
+                // `invocations` counts main-thread delegations only. An agent
+                // spawned solely from inside another sub-agent has none, so
+                // reporting "0 time(s)" about one that demonstrably ran would
+                // be false — fall back to the turns its transcript proves.
+                if stats.invocations == 0 && stats.turns > 0 {
+                    format!("{} turn(s) inside other agents", stats.turns)
+                } else {
+                    format!("{} time(s)", stats.invocations)
+                },
                 if builtin {
                     " (it is built into Claude Code)"
                 } else {

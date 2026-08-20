@@ -59,7 +59,24 @@ Each line is parsed once. The scan never fails on bad data: an unreadable file i
 ### Two metrics, not one
 
 - **Skills** are measured in **attributed turns** (the transcript's `attributionSkill` field) — how many turns a skill actually governed, not how many times it was invoked. A single invocation can end up governing many subsequent turns, so the two numbers can diverge sharply; turns governed is the more honest measure of how much a skill actually shaped a session.
-- **Agents** are measured in **invocations**. A sub-agent's own internal turns are not observable from these transcripts — Claude Code does not write sub-agent transcripts into a project's transcript files — so what gets counted is the delegation and its result, not what happened inside the sub-agent.
+  Turns taken inside sub-agents count too, and they dominate: on this project they raised one
+  skill's total from 296 to 1931.
+- **Agents** are measured in both **invocations** and **turns**. An invocation is one
+  delegation; a turn is one assistant step the agent actually took. Claude Code records
+  sub-agents under `<session-id>/subagents/`, sometimes nested one level further
+  (`subagents/workflows/wf_<id>/`), each with a `.meta.json` carrying `agentType`,
+  `parentAgentId` and `spawnDepth`. A turn is one assistant *message*, deduplicated on its
+  id — Claude Code writes one entry per content block, so counting entries would
+  over-report by about half. The two numbers diverge sharply —
+  on this project one agent shows 286 invocations for over 16,000 turns — so reading
+  invocations as a measure of work done would badly mislead.
+- Because that metadata states the parent and the depth outright, the observed **delegation
+  depth** is reported as a fact rather than inferred from a chain of message identifiers.
+- A sub-agent that actually ran appears to always leave a `.meta.json`, and a delegation
+  refused before it started leaves none — so these counts look like executions rather than
+  attempts. That is an observation, not a guarantee: the two files are written separately,
+  with no atomicity, and this on-disk layout is an undocumented internal detail of one
+  Claude Code version.
 
 ### Rules
 

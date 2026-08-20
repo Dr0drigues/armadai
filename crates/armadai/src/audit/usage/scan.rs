@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::io::BufRead;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use crate::claude_adapter::transcript::{Block, RelevantEntry, parse_value};
 
-use super::discovery::transcript_files;
+use super::discovery::{subagent_files_for, transcript_files};
 use super::facts::{ROOT_AGENT, UsageFacts};
 
 /// Aggregate every transcript belonging to `root`.
@@ -21,8 +21,9 @@ pub fn scan(root: &Path) -> UsageFacts {
         root_agent: ROOT_AGENT.to_string(),
         ..Default::default()
     };
-    for file in transcript_files(root) {
-        let Ok(handle) = std::fs::File::open(&file) else {
+    let sessions = transcript_files(root);
+    for file in &sessions {
+        let Ok(handle) = std::fs::File::open(file) else {
             continue;
         };
         facts.sessions += 1;
@@ -65,7 +66,137 @@ pub fn scan(root: &Path) -> UsageFacts {
             scan_entry(&v, &mut facts, &mut parent_of, &mut agent_at);
         }
     }
+    scan_subagents(&sessions, &mut facts);
     facts
+}
+
+/// One sub-agent's sidecar metadata, as Claude Code writes it.
+struct SubagentMeta {
+    agent_type: String,
+    parent_agent_id: Option<String>,
+    spawn_depth: u32,
+}
+
+fn read_meta(path: &Path) -> Option<SubagentMeta> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    Some(SubagentMeta {
+        agent_type: str_field(&v, "agentType")?.to_string(),
+        parent_agent_id: str_field(&v, "parentAgentId").map(str::to_string),
+        spawn_depth: v
+            .get("spawnDepth")
+            .and_then(Value::as_u64)
+            .and_then(|d| u32::try_from(d).ok())
+            .unwrap_or(1),
+    })
+}
+
+/// `agent-<id>.meta.json` -> `<id>`, the identifier `parentAgentId` refers to.
+fn agent_id_of(meta_path: &Path) -> Option<String> {
+    let name = meta_path.file_name()?.to_str()?;
+    name.strip_prefix("agent-")?
+        .strip_suffix(".meta.json")
+        .map(str::to_string)
+}
+
+/// Absorb every sub-agent transcript: its own turns, the skills it invoked,
+/// the tools it used, and the delegation edge its metadata states outright.
+///
+/// This is the half of the corpus the scan missed until 2026-08-20. It does
+/// NOT touch `invocations`, which keeps its existing meaning — delegations
+/// emitted from the main thread — so no event is counted twice.
+/// Read one sub-agent transcript: its skill turns, its tools, and how many
+/// assistant turns it actually took. Returns the turn count.
+///
+/// Turns are deduplicated on `message.id`: Claude Code writes one entry per
+/// content block, so a single assistant message spans several lines. Counting
+/// entries over-reported by 53% on the reference corpus (32 053 entries for
+/// 14 958 distinct messages). Blocks of one message are contiguous, so a
+/// single `last_id` suffices — no extra pass, no extra memory.
+///
+/// Deliberately independent of the metadata: skills and tools do not need it,
+/// so an unreadable or malformed meta must not cost us the transcript too.
+fn absorb_subagent_transcript(path: &Path, facts: &mut UsageFacts) -> u32 {
+    let Ok(handle) = std::fs::File::open(path) else {
+        return 0;
+    };
+    let mut turns = 0u32;
+    let mut last_id: Option<String> = None;
+    for line in std::io::BufReader::new(handle).lines() {
+        let Ok(line) = line else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if let Some(ts) = str_field(&v, "timestamp") {
+            facts.observe_timestamp(ts);
+        }
+        if let Some(skill) = str_field(&v, "attributionSkill") {
+            facts.record_skill_turn(skill);
+        }
+        if str_field(&v, "type") != Some("assistant") {
+            continue;
+        }
+        let id = v
+            .get("message")
+            .and_then(|m| m.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        // A message with no id cannot be deduplicated; count it once.
+        if id.is_none() || id != last_id {
+            turns += 1;
+        }
+        last_id = id;
+        if let Some(RelevantEntry::Assistant { blocks, .. }) = parse_value(&v) {
+            for block in &blocks {
+                if let Block::Tool { name } = block {
+                    facts.record_tool(name);
+                }
+            }
+        }
+    }
+    turns
+}
+
+/// Absorb every sub-agent transcript: the work itself, and the delegation edge
+/// its metadata states outright.
+///
+/// This is the half of the corpus the scan missed until 2026-08-20. It does
+/// NOT call `record_delegation`, so `invocations` keeps its existing meaning —
+/// delegations emitted from the main thread — and no event is counted twice.
+fn scan_subagents(sessions: &[PathBuf], facts: &mut UsageFacts) {
+    let found = subagent_files_for(sessions);
+    // First pass: agent id -> agent type, so a `parentAgentId` resolves to a
+    // name. Claude Code references the parent by id, not by type.
+    let mut type_of: HashMap<String, String> = HashMap::new();
+    for sa in &found {
+        if let (Some(id), Some(meta)) = (agent_id_of(&sa.meta), read_meta(&sa.meta)) {
+            type_of.insert(id, meta.agent_type);
+        }
+    }
+    for sa in &found {
+        // The transcript first, and unconditionally: a missing meta costs us
+        // the edge, never the skills and tools we already read.
+        let turns = absorb_subagent_transcript(&sa.transcript, facts);
+        let Some(meta) = read_meta(&sa.meta) else {
+            continue;
+        };
+        let parent = meta
+            .parent_agent_id
+            .as_deref()
+            .and_then(|id| type_of.get(id))
+            .map(String::as_str);
+        // An unresolvable parent below depth 1 must not fabricate a root edge:
+        // `spawnDepth` proves the parent is NOT the root, and a wrong edge is
+        // indistinguishable from a real one downstream.
+        let edge_is_trustworthy = parent.is_some() || meta.spawn_depth <= 1;
+        facts.record_subagent(
+            &meta.agent_type,
+            parent,
+            meta.spawn_depth,
+            turns,
+            edge_is_trustworthy,
+        );
+    }
 }
 
 fn str_field<'v>(v: &'v Value, key: &str) -> Option<&'v str> {
@@ -329,6 +460,94 @@ mod tests {
                 .is_some_and(|c| c.contains("victim")),
             "must not resolve through an unrelated entry that collided on the empty-uuid key: {:?}",
             f.edges
+        );
+    }
+
+    /// End to end over the layout Claude Code really writes: a session file
+    /// plus `subagents/agent-<id>.{jsonl,meta.json}`. This is the half of the
+    /// corpus the scan missed entirely until 2026-08-20.
+    #[test]
+    fn subagent_transcripts_contribute_turns_depth_and_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = PathBuf::from("/Users/x/proj");
+        let slug = dir
+            .path()
+            .join(crate::audit::usage::discovery::slug_for(&project));
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join("s1.jsonl"), "{}\n").unwrap();
+        let sub = slug.join("s1").join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // The coordinator: two assistant turns, one skill turn, one tool.
+        std::fs::write(
+            sub.join("agent-lead1.jsonl"),
+            concat!(
+                r#"{"type":"assistant","timestamp":"2026-08-01T00:00:00Z","attributionSkill":"armadai","message":{"model":"m","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","id":"t1","name":"Grep","input":{}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+                "\n",
+                // A sub-delegation inside a sub-agent's own transcript: the
+                // exact input that would double-count if scan_subagents ever
+                // grew a record_delegation call.
+                r#"{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","id":"t9","name":"Agent","input":{"subagent_type":"qa-specialist","description":"sub"}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            sub.join("agent-lead1.meta.json"),
+            r#"{"agentType":"dev-lead","description":"route","toolUseId":"tu1","spawnDepth":1}"#,
+        )
+        .unwrap();
+
+        // Its child: one turn, and a parent stated by id.
+        std::fs::write(
+            sub.join("agent-qa1.jsonl"),
+            concat!(
+                r#"{"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"b"}],"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            sub.join("agent-qa1.meta.json"),
+            r#"{"agentType":"qa-specialist","description":"test","toolUseId":"tu2","parentAgentId":"lead1","spawnDepth":2}"#,
+        )
+        .unwrap();
+
+        let _g = ProjectsDirGuard::set(dir.path());
+        let f = scan(&project);
+
+        assert_eq!(
+            f.agents["dev-lead"].turns, 3,
+            "turns come from its own file"
+        );
+        assert_eq!(
+            f.agents["qa-specialist"].invocations, 0,
+            "a sub-delegation inside a sub-agent must NOT become an invocation: \
+             invocations stay main-thread-only, and that is what keeps the two \
+             counters from double-counting one event"
+        );
+        assert_eq!(f.agents["qa-specialist"].turns, 1);
+        assert_eq!(
+            f.observed_depth, 2,
+            "depth is read from spawnDepth, not inferred"
+        );
+        assert!(
+            f.edges[super::super::facts::ROOT_AGENT].contains("dev-lead"),
+            "depth 1 has no parentAgentId, so it attaches to the root: {:?}",
+            f.edges
+        );
+        assert!(
+            f.edges["dev-lead"].contains("qa-specialist"),
+            "parentAgentId resolves to the parent's type: {:?}",
+            f.edges
+        );
+        assert_eq!(f.skills["armadai"], 1, "sub-agent skill turns count too");
+        assert_eq!(f.tools["Grep"], 1, "so do its tools");
+        assert_eq!(
+            f.sessions, 1,
+            "sub-agent files must not inflate the session count"
         );
     }
 

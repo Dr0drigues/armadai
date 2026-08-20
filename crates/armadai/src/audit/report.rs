@@ -38,6 +38,21 @@ impl UsageView<'_> {
     }
 }
 
+/// `12 invocation(s), 87 turn(s)` — or just the invocations when the agent's own
+/// transcript was never found. Invocations count how often an agent was asked
+/// for; turns count what it actually did. Measured 2026-08-20, they differ by
+/// an order of magnitude.
+fn agent_volume(stats: &crate::audit::usage::facts::AgentUsage) -> String {
+    match (stats.invocations, stats.turns) {
+        // Spawned only from inside another sub-agent: `invocations` counts
+        // main-thread delegations only, so reporting "0 invocation(s)" about
+        // an agent that demonstrably ran would be plainly false.
+        (0, t) if t > 0 => format!("{t} turn(s), spawned from within another agent"),
+        (i, 0) => format!("{i} invocation(s)"),
+        (i, t) => format!("{i} invocation(s), {t} turn(s)"),
+    }
+}
+
 impl AuditReport {
     pub fn critical_count(&self) -> usize {
         self.count(Severity::Critical)
@@ -136,7 +151,14 @@ impl AuditReport {
     fn usage_view(&self) -> Option<UsageView<'_>> {
         let usage = self.usage.as_ref().filter(|u| !u.is_empty())?;
         let mut agents: Vec<_> = usage.agents.iter().collect();
-        agents.sort_by(|a, b| b.1.invocations.cmp(&a.1.invocations).then(a.0.cmp(b.0)));
+        // Rank by observed work, not by how often an agent was asked for. An
+        // agent spawned only from inside other sub-agents has zero invocations
+        // yet may be among the busiest — sorting on invocations would truncate
+        // it away first, which is how `workflow-subagent` stayed hidden.
+        agents.sort_by(|a, b| {
+            let key = |u: &crate::audit::usage::facts::AgentUsage| (u.turns, u.invocations);
+            key(b.1).cmp(&key(a.1)).then(a.0.cmp(b.0))
+        });
         agents.truncate(10);
         let mut skills: Vec<_> = usage.skills.iter().collect();
         skills.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
@@ -156,13 +178,20 @@ impl AuditReport {
         let mut out = String::new();
         let _ = writeln!(out, "\n## Observed usage\n");
         let _ = writeln!(out, "- Sessions scanned: {}", view.usage.sessions);
+        if view.usage.observed_depth > 0 {
+            let _ = writeln!(
+                out,
+                "- Observed delegation depth: {}",
+                view.usage.observed_depth
+            );
+        }
         if let Some((from, to)) = &view.usage.window {
             let _ = writeln!(out, "- Window: {from} → {to}");
         }
         if !view.agents.is_empty() {
-            let _ = writeln!(out, "\n### Agents by invocation\n");
+            let _ = writeln!(out, "\n### Agents by observed volume\n");
             for (name, stats) in &view.agents {
-                let _ = writeln!(out, "- `{}` — {} invocation(s)", name, stats.invocations);
+                let _ = writeln!(out, "- `{}` — {}", name, agent_volume(stats));
             }
             let hidden = view.agents_hidden();
             if hidden > 0 {
@@ -194,13 +223,19 @@ impl AuditReport {
         anstream::println!();
         anstream::println!("  {h}Observed usage{h:#}");
         anstream::println!("  {m}Sessions scanned:{m:#} {}", view.usage.sessions);
+        if view.usage.observed_depth > 0 {
+            anstream::println!(
+                "  {m}Observed delegation depth:{m:#} {}",
+                view.usage.observed_depth
+            );
+        }
         if let Some((from, to)) = &view.usage.window {
             anstream::println!("  {m}Window:{m:#} {from} → {to}");
         }
         if !view.agents.is_empty() {
-            anstream::println!("  {m}Agents by invocation:{m:#}");
+            anstream::println!("  {m}Agents by observed volume:{m:#}");
             for (name, stats) in &view.agents {
-                anstream::println!("    {name} — {} invocation(s)", stats.invocations);
+                anstream::println!("    {name} — {}", agent_volume(stats));
             }
             let hidden = view.agents_hidden();
             if hidden > 0 {
@@ -231,6 +266,13 @@ impl AuditReport {
         let mut out = String::new();
         out.push_str("<section class=\"usage\">\n<h2>Observed usage</h2>\n<ul>\n");
         let _ = writeln!(out, "<li>Sessions scanned: {}</li>", view.usage.sessions);
+        if view.usage.observed_depth > 0 {
+            let _ = writeln!(
+                out,
+                "<li>Observed delegation depth: {}</li>",
+                view.usage.observed_depth
+            );
+        }
         if let Some((from, to)) = &view.usage.window {
             let _ = writeln!(
                 out,
@@ -241,13 +283,13 @@ impl AuditReport {
         }
         out.push_str("</ul>\n");
         if !view.agents.is_empty() {
-            out.push_str("<h3>Agents by invocation</h3>\n<ul>\n");
+            out.push_str("<h3>Agents by observed volume</h3>\n<ul>\n");
             for (name, stats) in &view.agents {
                 let _ = writeln!(
                     out,
-                    "<li><code>{}</code> — {} invocation(s)</li>",
+                    "<li><code>{}</code> — {}</li>",
                     html_escape(name),
-                    stats.invocations
+                    html_escape(&agent_volume(stats))
                 );
             }
             let hidden = view.agents_hidden();

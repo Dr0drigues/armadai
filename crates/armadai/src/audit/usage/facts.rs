@@ -1,21 +1,28 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::Serialize;
+
 /// The native CLI's main thread, i.e. the root of every observed delegation
 /// tree. Claude Code's own turns are not a declared agent, so the tree needs a
 /// stable name for them.
 pub const ROOT_AGENT: &str = "claude";
 
 /// What one agent was observed doing.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AgentUsage {
     pub invocations: u32,
+    /// Assistant turns the agent actually took, read from its own transcript
+    /// under `<session>/subagents/`. `invocations` counts how often it was
+    /// asked; this counts how much work it did — they differ by an order of
+    /// magnitude in practice.
+    pub turns: u32,
     /// Model name -> number of delegations seen on that model.
     pub models: BTreeMap<String, u32>,
 }
 
 /// Deterministic aggregate of everything the scan observed. Serialisable by
 /// construction: no paths, no handles, only counted facts.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct UsageFacts {
     pub sessions: u32,
     /// Oldest and newest timestamps encountered — a constat, not a filter.
@@ -30,6 +37,11 @@ pub struct UsageFacts {
     pub edges: BTreeMap<String, BTreeSet<String>>,
     /// Largest parallel fan-out seen in a single assistant message.
     pub max_fanout: u32,
+
+    /// Deepest `spawnDepth` stated by a sub-agent's metadata. Unlike
+    /// `depth()`, which infers a chain, this is read directly from what Claude
+    /// Code recorded — no inference, no ambiguity.
+    pub observed_depth: u32,
 }
 
 /// Strips control characters (including newlines) from `s`. `subagent_type`
@@ -83,6 +95,44 @@ impl UsageFacts {
             .entry(parent.to_string())
             .or_default()
             .insert(child.to_string());
+    }
+
+    /// Record a sub-agent that actually ran, from its sidecar metadata.
+    ///
+    /// `parent` is `None` at `spawnDepth == 1`, where Claude Code omits
+    /// `parentAgentId` because the parent is the main thread. The edge is
+    /// therefore stated by the data, not inferred from a uuid chain.
+    pub fn record_subagent(
+        &mut self,
+        agent_type: &str,
+        parent: Option<&str>,
+        depth: u32,
+        turns: u32,
+        edge_is_trustworthy: bool,
+    ) {
+        let child = sanitize_identifier(agent_type).into_owned();
+        if child.is_empty() {
+            return;
+        }
+        let entry = self.agents.entry(child.clone()).or_default();
+        entry.turns += turns;
+        self.observed_depth = self.observed_depth.max(depth);
+        // A wrong edge is indistinguishable from a real one downstream, so an
+        // untrustworthy parent yields no edge at all — the turns still count.
+        if !edge_is_trustworthy {
+            return;
+        }
+        let parent = parent
+            .map(|p| sanitize_identifier(p).into_owned())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| {
+                if self.root_agent.is_empty() {
+                    ROOT_AGENT.to_string()
+                } else {
+                    self.root_agent.clone()
+                }
+            });
+        self.edges.entry(parent).or_default().insert(child);
     }
 
     pub fn record_skill_turn(&mut self, skill: &str) {
@@ -292,6 +342,76 @@ mod tests {
             "the ESC (0x1b) and BEL (0x07) must be stripped: {:?}",
             f.skills
         );
+    }
+
+    #[test]
+    fn a_subagent_at_depth_one_attaches_to_the_root() {
+        let mut f = UsageFacts {
+            root_agent: ROOT_AGENT.to_string(),
+            ..Default::default()
+        };
+        // Claude Code omits parentAgentId at depth 1: the parent IS the root.
+        f.record_subagent("dev-lead", None, 1, 42, true);
+        assert_eq!(f.agents["dev-lead"].turns, 42);
+        assert!(f.edges[ROOT_AGENT].contains("dev-lead"));
+        assert_eq!(f.observed_depth, 1);
+    }
+
+    #[test]
+    fn a_nested_subagent_attaches_to_its_named_parent() {
+        let mut f = UsageFacts {
+            root_agent: ROOT_AGENT.to_string(),
+            ..Default::default()
+        };
+        f.record_subagent("dev-lead", None, 1, 10, true);
+        f.record_subagent("qa-specialist", Some("dev-lead"), 2, 30, true);
+        assert!(f.edges["dev-lead"].contains("qa-specialist"));
+        assert!(!f.edges[ROOT_AGENT].contains("qa-specialist"));
+        assert_eq!(f.observed_depth, 2, "depth is the max seen, not the last");
+    }
+
+    #[test]
+    fn turns_accumulate_across_several_runs_of_the_same_agent() {
+        let mut f = UsageFacts::default();
+        f.record_subagent("qa-specialist", None, 1, 5, true);
+        f.record_subagent("qa-specialist", None, 1, 7, true);
+        assert_eq!(f.agents["qa-specialist"].turns, 12);
+    }
+
+    #[test]
+    fn turns_are_independent_of_invocations() {
+        // A sub-agent's own transcript says how much work it did; the parent's
+        // transcript says how often it was asked. Neither implies the other.
+        let mut f = UsageFacts::default();
+        f.record_delegation(ROOT_AGENT, "qa-specialist", "m");
+        f.record_subagent("qa-specialist", None, 1, 99, true);
+        let u = &f.agents["qa-specialist"];
+        assert_eq!((u.invocations, u.turns), (1, 99));
+    }
+
+    #[test]
+    fn an_untrustworthy_parent_records_turns_but_no_edge() {
+        let mut f = UsageFacts {
+            root_agent: ROOT_AGENT.to_string(),
+            ..Default::default()
+        };
+        // spawnDepth 2 proves the parent is NOT the root, so an unresolvable
+        // parent must yield no edge rather than a fabricated one.
+        f.record_subagent("qa-specialist", None, 2, 12, false);
+        assert_eq!(f.agents["qa-specialist"].turns, 12, "turns still count");
+        assert_eq!(f.observed_depth, 2, "depth still counts");
+        assert!(
+            f.edges.is_empty(),
+            "a wrong edge is indistinguishable from a real one: {:?}",
+            f.edges
+        );
+    }
+
+    #[test]
+    fn a_subagent_with_a_blank_type_is_ignored() {
+        let mut f = UsageFacts::default();
+        f.record_subagent("", None, 1, 5, true);
+        assert!(f.agents.is_empty());
     }
 
     #[test]
