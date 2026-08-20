@@ -19,3 +19,4 @@ pub mod registries;
 pub mod routing;
 pub mod skill;
 pub mod starter;
+pub mod template;
