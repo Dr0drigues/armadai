@@ -23,14 +23,6 @@ pub enum PromptStep {
     },
 }
 
-/// Raw shape accepted by serde before validation.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum RawPromptStep {
-    Plain(String),
-    Parameterised(BTreeMap<String, BTreeMap<String, String>>),
-}
-
 /// Values every agent inherits unless it says otherwise.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -81,21 +73,35 @@ pub struct DeclaredAgents {
     pub agents: Vec<AgentDecl>,
 }
 
+/// `Vec<serde_yaml_ng::Value>` rather than a `#[serde(untagged)]` enum: an
+/// untagged enum's "did not match any variant" error is raised inside
+/// `Vec::deserialize` itself, before this function ever runs, so it cannot be
+/// improved from here. Discriminating by hand lets every rejection say what
+/// shape was found and what shapes are valid.
 fn de_prompt<'de, D>(d: D) -> Result<Vec<PromptStep>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     use serde::de::Error;
-    let raw: Vec<RawPromptStep> = Vec::deserialize(d)?;
+    let raw: Vec<serde_yaml_ng::Value> = Vec::deserialize(d)?;
     raw.into_iter()
         .map(|step| match step {
-            RawPromptStep::Plain(name) => Ok(PromptStep::Plain(name)),
-            RawPromptStep::Parameterised(map) => {
-                // One key means one fragment. Two keys leave no way to know
-                // which fragment the entry is about.
+            serde_yaml_ng::Value::String(name) => Ok(PromptStep::Plain(name)),
+            serde_yaml_ng::Value::Mapping(map) => {
+                // One key means one fragment. Zero or several keys leave no
+                // way to know which fragment the entry is about.
                 let mut it = map.into_iter();
                 match (it.next(), it.next()) {
-                    (Some((fragment, vars)), None) => {
+                    (Some((key, value)), None) => {
+                        let fragment = key.as_str().map(str::to_string).ok_or_else(|| {
+                            D::Error::custom("a prompt step's fragment name must be a string")
+                        })?;
+                        let vars: BTreeMap<String, String> =
+                            serde_yaml_ng::from_value(value).map_err(|e| {
+                                D::Error::custom(format!(
+                                    "a prompt step's variables for `{fragment}` must be a map of strings: {e}"
+                                ))
+                            })?;
                         Ok(PromptStep::Parameterised { fragment, vars })
                     }
                     _ => Err(D::Error::custom(
@@ -103,8 +109,29 @@ where
                     )),
                 }
             }
+            other => Err(D::Error::custom(format!(
+                "a prompt step must be a fragment name or a single-key map of a fragment name to its variables, got {}",
+                describe_yaml_shape(&other)
+            ))),
         })
         .collect()
+}
+
+/// A short, human-readable name for the kind of YAML value found, used to
+/// make a rejection actionable (e.g. "got a sequence" rather than a generic
+/// "invalid type" message).
+fn describe_yaml_shape(v: &serde_yaml_ng::Value) -> &'static str {
+    match v {
+        serde_yaml_ng::Value::Null => "null",
+        serde_yaml_ng::Value::Bool(_) => "a boolean",
+        serde_yaml_ng::Value::Number(_) => "a number",
+        serde_yaml_ng::Value::String(_) => "a string",
+        serde_yaml_ng::Value::Sequence(_) => "a sequence",
+        serde_yaml_ng::Value::Mapping(_) => "a mapping",
+        serde_yaml_ng::Value::Tagged(_) => "a tagged value",
+        #[allow(unreachable_patterns)]
+        _ => "an unrecognised value",
+    }
 }
 
 /// Read and validate an `agents.yaml`.
@@ -227,6 +254,58 @@ agents:
         assert!(
             err.contains("typo_field"),
             "the error must name the offending key: {err}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_under_defaults_is_rejected_and_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("agents.yaml");
+        std::fs::write(&p, "defaults:\n  typo_default: oops\n").unwrap();
+        let err = load(&p).unwrap_err().to_string();
+        assert!(
+            err.contains("unknown field `typo_default`"),
+            "the error must name the offending key: {err}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_at_the_top_level_is_rejected_and_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("agents.yaml");
+        std::fs::write(&p, "typo_top: 1\n").unwrap();
+        let err = load(&p).unwrap_err().to_string();
+        assert!(
+            err.contains("unknown field `typo_top`, expected `defaults` or `agents`"),
+            "the error must name the offending key: {err}"
+        );
+    }
+
+    #[test]
+    fn a_number_prompt_step_is_rejected_with_actionable_shapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("agents.yaml");
+        std::fs::write(&p, "agents:\n  - name: x\n    prompt:\n      - 42\n").unwrap();
+        let err = load(&p).unwrap_err().to_string();
+        assert!(
+            err.contains("a fragment name")
+                && err.contains("a single-key map of a fragment name to its variables")
+                && err.contains("a number"),
+            "the error must name the valid shapes and what was found: {err}"
+        );
+    }
+
+    #[test]
+    fn a_sequence_prompt_step_is_rejected_with_actionable_shapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("agents.yaml");
+        std::fs::write(&p, "agents:\n  - name: x\n    prompt:\n      - [a, b]\n").unwrap();
+        let err = load(&p).unwrap_err().to_string();
+        assert!(
+            err.contains("a fragment name")
+                && err.contains("a single-key map of a fragment name to its variables")
+                && err.contains("a sequence"),
+            "the error must name the valid shapes and what was found: {err}"
         );
     }
 }
