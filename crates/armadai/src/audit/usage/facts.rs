@@ -339,6 +339,58 @@ mod tests {
     }
 
     #[test]
+    fn a_subagent_at_depth_one_attaches_to_the_root() {
+        let mut f = UsageFacts {
+            root_agent: ROOT_AGENT.to_string(),
+            ..Default::default()
+        };
+        // Claude Code omits parentAgentId at depth 1: the parent IS the root.
+        f.record_subagent("dev-lead", None, 1, 42);
+        assert_eq!(f.agents["dev-lead"].turns, 42);
+        assert!(f.edges[ROOT_AGENT].contains("dev-lead"));
+        assert_eq!(f.observed_depth, 1);
+    }
+
+    #[test]
+    fn a_nested_subagent_attaches_to_its_named_parent() {
+        let mut f = UsageFacts {
+            root_agent: ROOT_AGENT.to_string(),
+            ..Default::default()
+        };
+        f.record_subagent("dev-lead", None, 1, 10);
+        f.record_subagent("qa-specialist", Some("dev-lead"), 2, 30);
+        assert!(f.edges["dev-lead"].contains("qa-specialist"));
+        assert!(!f.edges[ROOT_AGENT].contains("qa-specialist"));
+        assert_eq!(f.observed_depth, 2, "depth is the max seen, not the last");
+    }
+
+    #[test]
+    fn turns_accumulate_across_several_runs_of_the_same_agent() {
+        let mut f = UsageFacts::default();
+        f.record_subagent("qa-specialist", None, 1, 5);
+        f.record_subagent("qa-specialist", None, 1, 7);
+        assert_eq!(f.agents["qa-specialist"].turns, 12);
+    }
+
+    #[test]
+    fn turns_are_independent_of_invocations() {
+        // A sub-agent's own transcript says how much work it did; the parent's
+        // transcript says how often it was asked. Neither implies the other.
+        let mut f = UsageFacts::default();
+        f.record_delegation(ROOT_AGENT, "qa-specialist", "m");
+        f.record_subagent("qa-specialist", None, 1, 99);
+        let u = &f.agents["qa-specialist"];
+        assert_eq!((u.invocations, u.turns), (1, 99));
+    }
+
+    #[test]
+    fn a_subagent_with_a_blank_type_is_ignored() {
+        let mut f = UsageFacts::default();
+        f.record_subagent("", None, 1, 5);
+        assert!(f.agents.is_empty());
+    }
+
+    #[test]
     fn skill_turns_and_tools_accumulate() {
         let mut f = UsageFacts::default();
         f.record_skill_turn("armadai");

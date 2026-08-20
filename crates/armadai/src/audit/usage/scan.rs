@@ -411,6 +411,83 @@ mod tests {
         );
     }
 
+    /// End to end over the layout Claude Code really writes: a session file
+    /// plus `subagents/agent-<id>.{jsonl,meta.json}`. This is the half of the
+    /// corpus the scan missed entirely until 2026-08-20.
+    #[test]
+    fn subagent_transcripts_contribute_turns_depth_and_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = PathBuf::from("/Users/x/proj");
+        let slug = dir
+            .path()
+            .join(crate::audit::usage::discovery::slug_for(&project));
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join("s1.jsonl"), "{}\n").unwrap();
+        let sub = slug.join("s1").join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // The coordinator: two assistant turns, one skill turn, one tool.
+        std::fs::write(
+            sub.join("agent-lead1.jsonl"),
+            concat!(
+                r#"{"type":"assistant","timestamp":"2026-08-01T00:00:00Z","attributionSkill":"armadai","message":{"model":"m","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"model":"m","content":[{"type":"tool_use","id":"t1","name":"Grep","input":{}}],"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            sub.join("agent-lead1.meta.json"),
+            r#"{"agentType":"dev-lead","description":"route","toolUseId":"tu1","spawnDepth":1}"#,
+        )
+        .unwrap();
+
+        // Its child: one turn, and a parent stated by id.
+        std::fs::write(
+            sub.join("agent-qa1.jsonl"),
+            concat!(
+                r#"{"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"b"}],"usage":{"input_tokens":1,"output_tokens":1}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            sub.join("agent-qa1.meta.json"),
+            r#"{"agentType":"qa-specialist","description":"test","toolUseId":"tu2","parentAgentId":"lead1","spawnDepth":2}"#,
+        )
+        .unwrap();
+
+        let _g = ProjectsDirGuard::set(dir.path());
+        let f = scan(&project);
+
+        assert_eq!(
+            f.agents["dev-lead"].turns, 2,
+            "turns come from its own file"
+        );
+        assert_eq!(f.agents["qa-specialist"].turns, 1);
+        assert_eq!(
+            f.observed_depth, 2,
+            "depth is read from spawnDepth, not inferred"
+        );
+        assert!(
+            f.edges[super::super::facts::ROOT_AGENT].contains("dev-lead"),
+            "depth 1 has no parentAgentId, so it attaches to the root: {:?}",
+            f.edges
+        );
+        assert!(
+            f.edges["dev-lead"].contains("qa-specialist"),
+            "parentAgentId resolves to the parent's type: {:?}",
+            f.edges
+        );
+        assert_eq!(f.skills["armadai"], 1, "sub-agent skill turns count too");
+        assert_eq!(f.tools["Grep"], 1, "so do its tools");
+        assert_eq!(
+            f.sessions, 1,
+            "sub-agent files must not inflate the session count"
+        );
+    }
+
     #[test]
     fn no_transcripts_yields_empty_facts() {
         let dir = tempfile::tempdir().unwrap();

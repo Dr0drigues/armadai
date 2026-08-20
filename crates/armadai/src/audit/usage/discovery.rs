@@ -424,6 +424,84 @@ mod tests {
         );
     }
 
+    /// Builds a project dir holding one session plus its `subagents/`
+    /// sidecar layout, the shape Claude Code actually writes.
+    fn project_with_subagents(base: &Path, project: &Path) -> PathBuf {
+        let slug = base.join(slug_for(project));
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join("sess1.jsonl"), "{}\n").unwrap();
+        let sub = slug.join("sess1").join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        for id in ["a1", "a2"] {
+            std::fs::write(sub.join(format!("agent-{id}.jsonl")), "{}\n").unwrap();
+            std::fs::write(sub.join(format!("agent-{id}.meta.json")), "{}").unwrap();
+        }
+        // A transcript with no meta: the agent never actually ran.
+        std::fs::write(sub.join("agent-orphan.jsonl"), "{}\n").unwrap();
+        // A sibling directory holding far more files, none of them ours.
+        let noise = slug.join("sess1").join("tool-results");
+        std::fs::create_dir_all(&noise).unwrap();
+        std::fs::write(noise.join("r1.jsonl"), "{}\n").unwrap();
+        slug
+    }
+
+    #[test]
+    fn subagent_files_pairs_transcripts_with_their_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = ProjectsDirGuard::set(dir.path());
+        let project = Path::new("/Users/x/proj");
+        project_with_subagents(dir.path(), project);
+
+        let found = subagent_files(project);
+        assert_eq!(found.len(), 2, "only meta-backed pairs count: {found:?}");
+        for sa in &found {
+            assert!(sa.meta.is_file(), "meta must exist: {sa:?}");
+            assert!(sa.transcript.to_string_lossy().ends_with(".jsonl"));
+        }
+    }
+
+    #[test]
+    fn a_transcript_without_metadata_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = ProjectsDirGuard::set(dir.path());
+        let project = Path::new("/Users/x/proj");
+        project_with_subagents(dir.path(), project);
+        // `agent-orphan.jsonl` has no meta, so it never ran and must not count.
+        assert!(
+            !subagent_files(project)
+                .iter()
+                .any(|sa| sa.transcript.to_string_lossy().contains("orphan")),
+            "a meta-less transcript means the agent did not run"
+        );
+    }
+
+    #[test]
+    fn sibling_directories_are_not_walked() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = ProjectsDirGuard::set(dir.path());
+        let project = Path::new("/Users/x/proj");
+        project_with_subagents(dir.path(), project);
+        // `tool-results/` holds an order of magnitude more files in practice
+        // and nothing this audit measures.
+        assert!(
+            !subagent_files(project)
+                .iter()
+                .any(|sa| sa.transcript.to_string_lossy().contains("tool-results")),
+            "only subagents/ is ours to read"
+        );
+    }
+
+    #[test]
+    fn a_project_without_subagents_yields_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = ProjectsDirGuard::set(dir.path());
+        let project = Path::new("/Users/x/plain");
+        let slug = dir.path().join(slug_for(project));
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join("sess.jsonl"), "{}\n").unwrap();
+        assert!(subagent_files(project).is_empty());
+    }
+
     #[test]
     fn missing_projects_dir_yields_no_files() {
         let dir = tempfile::tempdir().unwrap();
