@@ -206,4 +206,169 @@ mod tests {
     fn test_create_linker_unknown() {
         assert!(create_linker("unknown").is_err());
     }
+
+    /// A declared agent and its hand-written `.md` twin must produce the same
+    /// native projection. If they diverge, the declaration format is a second
+    /// source of truth rather than an alternative spelling of the first —
+    /// exactly what it exists to avoid.
+    ///
+    /// Run against **every** target, not just claude: a divergence that only
+    /// shows in the codex projection is still a divergence.
+    ///
+    /// Both twins carry a model, a temperature, tags and a scope (beyond the
+    /// bare minimum) so the comparison actually exercises the metadata path
+    /// `LinkAgent::from(&Agent)` walks, not just the system prompt.
+    #[test]
+    fn a_declared_agent_and_its_md_twin_project_identically() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // The fragment both versions share.
+        let fragments = vec![armadai_core::prompt::Prompt {
+            name: "base".into(),
+            description: None,
+            apply_to: vec![],
+            body: "You own the core domain.".into(),
+            source: std::path::PathBuf::from("base.md"),
+        }];
+
+        // Declared version.
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\n  model: latest:pro\n  temperature: 0.3\n\
+             agents:\n  - name: core-specialist\n    description: Core domain\n    \
+             tags: [rust, domain]\n    scope: [src/core/**]\n    prompt: [base]\n",
+        )
+        .unwrap();
+        let declared = armadai_core::agent_source::load_agent(
+            &armadai_core::project::AgentRef::Declared {
+                declared: "core-specialist".into(),
+            },
+            dir.path(),
+            &fragments,
+        )
+        .unwrap();
+
+        // Hand-written twin, same values.
+        let md = dir.path().join("core-specialist.md");
+        std::fs::write(
+            &md,
+            "# core-specialist\n\n## Metadata\n\
+             - provider: claude\n- model: latest:pro\n- temperature: 0.3\n\
+             - tags: [rust, domain]\n- scope: [src/core/**]\n\n## System Prompt\n\nYou own the core domain.\n",
+        )
+        .unwrap();
+        let written = armadai_core::parser::parse_agent_file(&md).unwrap();
+
+        // Sanity check before comparing projections: if the two agents are not
+        // actually equivalent, an equal projection would prove nothing.
+        assert_eq!(declared.system_prompt, written.system_prompt);
+        assert_eq!(declared.metadata.model, written.metadata.model);
+        assert_eq!(declared.metadata.temperature, written.metadata.temperature);
+        assert_eq!(declared.metadata.tags, written.metadata.tags);
+        assert_eq!(declared.metadata.scope, written.metadata.scope);
+
+        for target in ["claude", "codex", "copilot", "gemini", "opencode"] {
+            let linker = create_linker(target).unwrap();
+            let a = linker.generate(&[LinkAgent::from(&declared)], None, &[]);
+            let b = linker.generate(&[LinkAgent::from(&written)], None, &[]);
+
+            // An empty projection on both sides would satisfy every assertion
+            // below without proving anything.
+            assert!(
+                !a.is_empty(),
+                "target {target} produced no output file — the comparison \
+                 below would be vacuous"
+            );
+            assert_eq!(a.len(), b.len(), "target {target}: file count differs");
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert_eq!(x.path, y.path, "target {target}: paths differ");
+                assert_eq!(
+                    x.content, y.content,
+                    "target {target}: projection diverged — the declaration is \
+                     not an alternative spelling but a second source of truth"
+                );
+            }
+        }
+    }
+
+    /// Same invariant as above, for a `provider: cli` agent carrying
+    /// `command`/`args` — fields added to the declaration format specifically
+    /// so this class of agent could be declared. Nothing had yet proven a
+    /// declared CLI agent projects like its `.md` twin; this is that proof.
+    #[test]
+    fn a_declared_cli_agent_and_its_md_twin_project_identically() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let fragments = vec![armadai_core::prompt::Prompt {
+            name: "base".into(),
+            description: None,
+            apply_to: vec![],
+            body: "You wrap a CLI tool for scripted tasks.".into(),
+            source: std::path::PathBuf::from("base.md"),
+        }];
+
+        // Declared version.
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "defaults:\n  provider: cli\n  temperature: 0.5\n\
+             agents:\n  - name: shell-runner\n    description: Wraps a CLI tool\n    \
+             command: echo\n    args: [hello, world]\n    model: local-llm\n    \
+             tags: [ops, shell]\n    scope: [scripts/**]\n    prompt: [base]\n",
+        )
+        .unwrap();
+        let declared = armadai_core::agent_source::load_agent(
+            &armadai_core::project::AgentRef::Declared {
+                declared: "shell-runner".into(),
+            },
+            dir.path(),
+            &fragments,
+        )
+        .unwrap();
+
+        // Hand-written twin, same values.
+        let md = dir.path().join("shell-runner.md");
+        std::fs::write(
+            &md,
+            "# shell-runner\n\n## Metadata\n\
+             - provider: cli\n- command: echo\n- args: [hello, world]\n\
+             - model: local-llm\n- temperature: 0.5\n- tags: [ops, shell]\n\
+             - scope: [scripts/**]\n\n## System Prompt\n\nYou wrap a CLI tool for scripted tasks.\n",
+        )
+        .unwrap();
+        let written = armadai_core::parser::parse_agent_file(&md).unwrap();
+
+        // Sanity check before comparing projections: if the two agents are not
+        // actually equivalent, an equal projection would prove nothing.
+        assert_eq!(declared.system_prompt, written.system_prompt);
+        assert_eq!(declared.metadata.provider, written.metadata.provider);
+        assert_eq!(declared.metadata.command, written.metadata.command);
+        assert_eq!(declared.metadata.args, written.metadata.args);
+        assert_eq!(declared.metadata.model, written.metadata.model);
+        assert_eq!(declared.metadata.temperature, written.metadata.temperature);
+        assert_eq!(declared.metadata.tags, written.metadata.tags);
+        assert_eq!(declared.metadata.scope, written.metadata.scope);
+
+        for target in ["claude", "codex", "copilot", "gemini", "opencode"] {
+            let linker = create_linker(target).unwrap();
+            let a = linker.generate(&[LinkAgent::from(&declared)], None, &[]);
+            let b = linker.generate(&[LinkAgent::from(&written)], None, &[]);
+
+            assert!(
+                !a.is_empty(),
+                "target {target} produced no output file — the comparison \
+                 below would be vacuous"
+            );
+            assert_eq!(a.len(), b.len(), "target {target}: file count differs");
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert_eq!(x.path, y.path, "target {target}: paths differ");
+                assert_eq!(
+                    x.content, y.content,
+                    "target {target}: projection diverged — the declaration is \
+                     not an alternative spelling but a second source of truth"
+                );
+            }
+        }
+    }
 }
