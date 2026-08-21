@@ -361,9 +361,15 @@ pub fn resolve_agent(agent_ref: &AgentRef, project_root: &Path) -> anyhow::Resul
             }
         }
         AgentRef::Declared { declared } => {
+            // User-facing text: this is reachable from `link`/`list`'s
+            // warning loop whenever `agents:` lists `- declared: x`
+            // explicitly (`resolve_all_agents` iterates every ref), so it
+            // must read as a fact about the project, never as an internal
+            // pointer to a different function — an earlier version named
+            // `agent_source::load_agent` here, which a user has no reason to
+            // know about and cannot act on.
             anyhow::bail!(
-                "agent '{declared}' is declared in {}, not a file — use \
-                 `agent_source::load_agent` instead of `resolve_agent`",
+                "agent '{declared}' is declared in {} rather than written as a file",
                 agent_source::declarations_path(project_root).display()
             );
         }

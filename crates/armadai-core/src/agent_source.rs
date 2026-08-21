@@ -43,55 +43,6 @@ pub fn load_agent(
     agent_decl::to_agent(decl, &decls.defaults, fragments, path.clone())
 }
 
-/// Refuse a name that exists both as a declaration and as a library file.
-///
-/// The obvious alternative is a precedence rule — local wins, as everywhere
-/// else. It is rejected on purpose: a silent precedence recreates the very
-/// duplicated truth this format exists to remove, and you would edit a `.md`
-/// with no effect and nothing to tell you. Failing forces a choice.
-///
-/// Two refinements over a naive `library.join(name + ".md")` existence
-/// check, both load-bearing:
-///
-/// - Names are compared as **slugs** (`agent::slugify`), not as raw
-///   strings. The linker projects every agent name through the same
-///   `slugify` to name its output file, so a declaration `Core-Specialist`
-///   and a file `core-specialist.md` — or a declaration `Agent (v2.0)` and
-///   a file `agent-v20.md` — land on the *same* filename at link time even
-///   though they are not byte-for-byte equal. Comparing raw names would
-///   pass both cases and let one silently overwrite the other later; only
-///   comparing slugs matches what actually happens on disk.
-/// - `libraries` takes **every** directory a file-backed agent can resolve
-///   from (see `project::resolve_agent`'s `Named` arm: `.armadai/agents/`,
-///   legacy `agents/`, and the user library), not just one. A caller that
-///   checks a single directory can believe the refusal is complete when it
-///   is not — and a later resolution step that tries file-backed agents
-///   first and declarations second, with no precedence rule, is only safe
-///   if a name shared with *any* of them has already failed here.
-///
-/// A library directory that does not exist is not an error — a project
-/// with no local `agents/` directory is normal. A directory that exists
-/// but cannot be read (permissions, not a directory after all) *is*
-/// propagated as an error: unlike "there is nothing there", "it would not
-/// tell me" is exactly the kind of silent gap this function exists to
-/// close.
-///
-/// Rule `C01` of the audit already reports name collisions; loading must
-/// refuse them.
-pub fn check_no_shadowing(project_root: &Path, libraries: &[PathBuf]) -> anyhow::Result<()> {
-    let decls_path = declarations_path(project_root);
-    if !decls_path.is_file() {
-        return Ok(());
-    }
-    let decls = agent_decl::load(&decls_path)?;
-    for decl in &decls.agents {
-        if let Some(collision) = shadowing_conflict(&decl.name, libraries)? {
-            anyhow::bail!(shadowing_message(&decl.name, &decls_path, &collision));
-        }
-    }
-    Ok(())
-}
-
 /// Does `name` (compared as a slug) collide with a `.md` file in any of
 /// `libraries`? Returns the colliding file's path if so, `None` otherwise.
 ///
@@ -161,30 +112,115 @@ pub fn project_fragments(project_root: &Path) -> Vec<Prompt> {
     out
 }
 
+/// One agent `load_all_agents` could not include, and why — the
+/// distinction a caller that WRITES config (`link`) needs and a caller that
+/// only DISPLAYS it (`list`) does not.
+///
+/// `link` must refuse to write a smaller fleet than the one declared, but
+/// only when this chantier's declarative format is the reason: a dropped
+/// declaration, or a shadowing collision. A failure that predates it
+/// entirely — an unparseable `.md`, an `AgentRef` that does not resolve to
+/// any file — keeps its exact old behaviour (warn, link what did load, exit
+/// 0), because that behaviour was never wrong; only the new format's own
+/// failures are. `list` prints every variant's `message()` alike and never
+/// refuses anything, being read-only.
+///
+/// Deliberately structured rather than a flat `String`, so a caller decides
+/// by matching a variant — never by inspecting message text, which is free
+/// to reword without silently changing what refuses a write.
+#[derive(Debug, Clone)]
+pub enum LoadWarning {
+    /// Unrelated to declarative agents: an unparseable `.md`, or a
+    /// `path:`/`named`/`registry:` ref that did not resolve to a file.
+    PreExisting(String),
+    /// A single named declared agent this chantier's format failed to
+    /// load — a broken declaration (metadata/composition error) or a name
+    /// that collided with a file-backed agent. Named so a caller narrowing
+    /// by `--agents` can tell whether the loss is even part of what it is
+    /// about to write.
+    Dropped { agent: String, message: String },
+    /// The whole `.armadai/agents.yaml` failed to load (unreadable, or a
+    /// YAML error) — an unknown number of declared agents, of unknown
+    /// names, are lost. Cannot be scoped to a `--agents` filter the way
+    /// `Dropped` can: any requested name might have been among them.
+    DeclarationsUnreadable(String),
+}
+
+impl LoadWarning {
+    /// The human-readable text every caller's warning loop prints, whatever
+    /// the variant — `link`/`list` never format these three differently.
+    pub fn message(&self) -> &str {
+        match self {
+            LoadWarning::PreExisting(m)
+            | LoadWarning::Dropped { message: m, .. }
+            | LoadWarning::DeclarationsUnreadable(m) => m,
+        }
+    }
+}
+
+/// Whether `warnings` contain a loss a write-side caller (`link`) must
+/// refuse over, given the agents actually being requested: `None` for the
+/// whole fleet, `Some(names)` for a `--agents` filter (compared
+/// case-insensitively, matching `link`'s own filter).
+///
+/// A `PreExisting` loss never blocks — see [`LoadWarning`]'s own doc for
+/// why. A `DeclarationsUnreadable` loss always blocks: it cannot be scoped
+/// by name. A `Dropped` loss blocks only when its agent is among the ones
+/// requested — `--agents good` must not refuse over a `bad` this chantier's
+/// format dropped when `bad` was never going to be written anyway.
+pub fn blocks_a_write(warnings: &[LoadWarning], requested: Option<&[String]>) -> bool {
+    warnings.iter().any(|w| match w {
+        LoadWarning::PreExisting(_) => false,
+        LoadWarning::DeclarationsUnreadable(_) => true,
+        LoadWarning::Dropped { agent, .. } => match requested {
+            None => true,
+            Some(names) => names
+                .iter()
+                .any(|n| n.to_lowercase() == agent.to_lowercase()),
+        },
+    })
+}
+
 /// Every agent a project has: those resolved from files, plus those declared.
 ///
-/// Same `(values, non-fatal errors)` shape as `resolve_all_agents`, so callers
-/// keep their existing warning loop. A broken declaration costs its own agent,
-/// never the whole fleet — a fleet that vanishes because one agent has a typo
-/// is worse than a fleet with a gap and a warning. **This is true of a
-/// shadowing collision too**: it costs only the colliding declaration (with a
-/// warning naming both sources, via `shadowing_message`), not every other
-/// declared agent — the first cut of this function bailed out of the whole
-/// declarations block on the first collision found, which meant one
-/// accidental collision (plausibly against a file the project doesn't even
-/// own, since the check spans the user's whole global library) silently
-/// dropped every other declared agent while callers kept exiting 0.
+/// Same `(values, warnings)` shape as `resolve_all_agents`, so callers keep
+/// their existing warning loop — just typed as [`LoadWarning`] instead of a
+/// flat `String`, so a write-side caller can tell a pre-existing failure
+/// from a loss this chantier's format is responsible for (see
+/// [`blocks_a_write`]). A broken declaration or a shadowing collision costs
+/// only its own agent, never the whole fleet — a fleet that vanishes
+/// because one agent has a typo, or because one collision happens to fall
+/// against a file the project doesn't even own (the check spans the user's
+/// whole global library), is worse than a fleet with a gap and a warning.
 pub fn load_all_agents(
     config: &crate::project::ProjectConfig,
     root: &Path,
     fragments: &[Prompt],
-) -> (Vec<Agent>, Vec<String>) {
-    let (paths, mut errors) = crate::project::resolve_all_agents(config, root);
+) -> (Vec<Agent>, Vec<LoadWarning>) {
     let mut agents = Vec::new();
-    for path in &paths {
-        match crate::parser::parse_agent_file(path) {
-            Ok(a) => agents.push(a),
-            Err(e) => errors.push(format!("failed to parse {}: {e}", path.display())),
+    let mut warnings = Vec::new();
+
+    // File-backed agents. `AgentRef::Declared` is skipped here rather than
+    // handed to `resolve_agent` (which always refuses that variant, by
+    // design, with a message naming `.armadai/agents.yaml`): the agent it
+    // names loads fine below, via the declarations block, regardless of
+    // whether `config.agents` names it at all — every declared agent is
+    // included automatically. Passing it through would report a real,
+    // loadable agent as an unresolvable file, every time.
+    for agent_ref in config
+        .agents
+        .iter()
+        .filter(|r| !matches!(r, AgentRef::Declared { .. }))
+    {
+        match resolve_agent(agent_ref, root) {
+            Ok(path) => match crate::parser::parse_agent_file(&path) {
+                Ok(a) => agents.push(a),
+                Err(e) => warnings.push(LoadWarning::PreExisting(format!(
+                    "failed to parse {}: {e}",
+                    path.display()
+                ))),
+            },
+            Err(e) => warnings.push(LoadWarning::PreExisting(format!("{e}"))),
         }
     }
 
@@ -196,27 +232,41 @@ pub fn load_all_agents(
                 for decl in &decls.agents {
                     match shadowing_conflict(&decl.name, &libraries) {
                         Ok(Some(collision)) => {
-                            errors.push(shadowing_message(&decl.name, &decls_path, &collision));
+                            warnings.push(LoadWarning::Dropped {
+                                agent: decl.name.clone(),
+                                message: shadowing_message(&decl.name, &decls_path, &collision),
+                            });
                             continue;
                         }
                         Ok(None) => {}
                         Err(e) => {
-                            errors.push(format!("{e}"));
+                            warnings.push(LoadWarning::Dropped {
+                                agent: decl.name.clone(),
+                                message: format!("{e}"),
+                            });
                             continue;
                         }
                     }
                     match agent_decl::to_agent(decl, &decls.defaults, fragments, decls_path.clone())
                     {
                         Ok(a) => agents.push(a),
-                        Err(e) => errors.push(format!("{e}")),
+                        Err(e) => warnings.push(LoadWarning::Dropped {
+                            agent: decl.name.clone(),
+                            message: format!("{e}"),
+                        }),
                     }
                 }
             }
-            Err(e) => errors.push(format!("{e}")),
+            // The whole file failed (unreadable, or a top-level YAML
+            // error): every agent it would have declared is lost, none of
+            // them nameable, so this cannot be scoped to a `--agents`
+            // filter the way one bad declaration can — see
+            // `blocks_a_write`.
+            Err(e) => warnings.push(LoadWarning::DeclarationsUnreadable(format!("{e}"))),
         }
     }
 
-    (agents, errors)
+    (agents, warnings)
 }
 
 /// Find one agent by name, whether it is declared or written as a file.
@@ -227,15 +277,23 @@ pub fn load_all_agents(
 /// lookup — then the project's declarations. There is deliberately no
 /// precedence rule for a name that resolves both ways: this function refuses
 /// it outright (see the `shadowing_conflict` check below), the same refusal
-/// `load_all_agents` applies per-declaration and `check_no_shadowing` applies
-/// fleet-wide — a name ambiguous enough to fail `link`/`list` must fail
-/// `run`/`inspect` too, not silently resolve to whichever side is tried
-/// first.
+/// `load_all_agents` applies per-declaration — a name ambiguous enough to
+/// fail `link`/`list` must fail `run`/`inspect` too, not silently resolve to
+/// whichever side is tried first.
 ///
 /// A `config.agents` entry of `AgentRef::Declared` matching `name` is never
 /// handed to `resolve_agent` (which always refuses that variant) — it is
 /// left unmatched here so resolution falls through to the declarations
 /// lookup below, which is what actually resolves it.
+///
+/// An unreadable `.armadai/agents.yaml` does not fail this function on its
+/// own: it cannot declare `name`, so it cannot collide with a file-backed
+/// `name` either. When the file-backed lookup ALSO succeeds, that `.md` is
+/// unambiguous and is served, with a warning (`tracing::warn!`) so the
+/// broken yaml is not silently invisible. Only when the file-backed lookup
+/// fails too does the yaml error become the reason to fail — a working
+/// declaration could have provided this name, so its parse error, not a
+/// generic "not found", is what the caller needs to see.
 pub fn load_agent_by_name(
     name: &str,
     config: &crate::project::ProjectConfig,
@@ -260,22 +318,45 @@ pub fn load_agent_by_name(
     };
 
     let decls_path = declarations_path(project_root);
-    let decls = if decls_path.is_file() {
-        Some(agent_decl::load(&decls_path)?)
+    let (decls, decls_err) = if decls_path.is_file() {
+        match agent_decl::load(&decls_path) {
+            Ok(d) => (Some(d), None),
+            Err(e) => (None, Some(e)),
+        }
     } else {
-        None
+        (None, None)
     };
+
+    if let Some(decls_err) = decls_err {
+        return match file_result {
+            Ok(path) => {
+                tracing::warn!(
+                    "ignoring unparsable {}: {decls_err} (serving the file-backed agent \
+                     '{name}' instead)",
+                    decls_path.display()
+                );
+                crate::parser::parse_agent_file(&path)
+            }
+            Err(file_err) => Err(anyhow::anyhow!(
+                "agent '{name}' not found as a file ({file_err}), and {} could not be read: \
+                 {decls_err}",
+                decls_path.display()
+            )),
+        };
+    }
+
     let declared = decls
         .as_ref()
         .and_then(|d| d.agents.iter().find(|a| a.name == name));
 
     // Collision check scoped to just this one name — no need to scan the
-    // whole fleet the way `check_no_shadowing` does for `load_all_agents`.
-    // Checked against `project::library_dirs` directly, not against whether
-    // `file_result` happened to succeed: an explicit `path:`/`registry:` ref
-    // pointing outside those library dirs is not the ambiguity
-    // `check_no_shadowing` polices, and using `file_result` here would let
-    // `run`/`inspect` accept a name `link`/`list` refuse (or the reverse).
+    // whole fleet the way `check_no_shadowing` does for a full project
+    // validation. Checked against `project::library_dirs` directly, not
+    // against whether `file_result` happened to succeed: an explicit
+    // `path:`/`registry:` ref pointing outside those library dirs is not
+    // the ambiguity this collision check polices, and using `file_result`
+    // here would let `run`/`inspect` accept a name `link`/`list` refuse (or
+    // the reverse).
     if declared.is_some()
         && let Some(collision) =
             shadowing_conflict(name, &crate::project::library_dirs(project_root))?
@@ -455,26 +536,17 @@ agents:
     }
 
     #[test]
-    fn a_name_both_declared_and_written_as_a_file_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        project(dir.path()); // declares `core-specialist`
+    fn shadowing_conflict_finds_a_file_matching_a_declared_name() {
         let lib = tempfile::tempdir().unwrap();
+        let file = lib.path().join("core-specialist.md");
         std::fs::write(
-            lib.path().join("core-specialist.md"),
+            &file,
             "# Core\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nHi",
         )
         .unwrap();
 
-        let err = check_no_shadowing(dir.path(), &[lib.path().to_path_buf()])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("core-specialist"), "must name it: {err}");
-        // The point is that neither wins — say so, or the reader will assume
-        // one does.
-        assert!(
-            err.contains("agents.yaml") && err.contains(".md"),
-            "must name both sources so the reader can pick one: {err}"
-        );
+        let found = shadowing_conflict("core-specialist", &[lib.path().to_path_buf()]).unwrap();
+        assert_eq!(found, Some(file));
     }
 
     /// A declaration and a library file that only match once both are
@@ -484,20 +556,13 @@ agents:
     /// two would silently collide at link time instead. Comparing slugs
     /// makes the outcome the same on every platform.
     #[test]
-    fn a_declared_name_collides_with_a_file_that_only_differs_in_case() {
-        let dir = tempfile::tempdir().unwrap();
-        project(dir.path()); // declares `core-specialist`
+    fn shadowing_conflict_matches_case_insensitively() {
         let lib = tempfile::tempdir().unwrap();
-        std::fs::write(lib.path().join("Core-Specialist.md"), "# Core").unwrap();
+        let file = lib.path().join("Core-Specialist.md");
+        std::fs::write(&file, "# Core").unwrap();
 
-        let err = check_no_shadowing(dir.path(), &[lib.path().to_path_buf()])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("core-specialist"), "must name it: {err}");
-        assert!(
-            err.contains("agents.yaml") && err.contains(".md"),
-            "must name both sources so the reader can pick one: {err}"
-        );
+        let found = shadowing_conflict("core-specialist", &[lib.path().to_path_buf()]).unwrap();
+        assert_eq!(found, Some(file));
     }
 
     /// A declaration and a library file that only collide once punctuation
@@ -505,43 +570,23 @@ agents:
     /// does when it names the output file. Neither a raw-name comparison
     /// nor a case-insensitive one would catch this.
     #[test]
-    fn a_declared_name_collides_with_a_file_only_after_slug_folding() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
-        std::fs::write(
-            dir.path().join(".armadai/agents.yaml"),
-            "defaults:\n  provider: claude\nagents:\n  \
-             - name: \"Agent (v2.0)\"\n    description: d\n    prompt: [base]\n",
-        )
-        .unwrap();
+    fn shadowing_conflict_matches_after_slug_folding() {
         let lib = tempfile::tempdir().unwrap();
-        std::fs::write(lib.path().join("agent-v20.md"), "# Agent").unwrap();
+        let file = lib.path().join("agent-v20.md");
+        std::fs::write(&file, "# Agent").unwrap();
 
-        let err = check_no_shadowing(dir.path(), &[lib.path().to_path_buf()])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("Agent (v2.0)"), "must name it: {err}");
-        assert!(
-            err.contains("agents.yaml") && err.contains(".md"),
-            "must name both sources so the reader can pick one: {err}"
-        );
+        let found = shadowing_conflict("Agent (v2.0)", &[lib.path().to_path_buf()]).unwrap();
+        assert_eq!(found, Some(file));
     }
 
     #[test]
-    fn distinct_names_are_fine() {
-        let dir = tempfile::tempdir().unwrap();
-        project(dir.path());
+    fn shadowing_conflict_is_none_for_distinct_names() {
         let lib = tempfile::tempdir().unwrap();
         std::fs::write(lib.path().join("other.md"), "# Other").unwrap();
-        assert!(check_no_shadowing(dir.path(), &[lib.path().to_path_buf()]).is_ok());
-    }
-
-    #[test]
-    fn a_project_without_declarations_never_shadows() {
-        let dir = tempfile::tempdir().unwrap();
-        let lib = tempfile::tempdir().unwrap();
-        std::fs::write(lib.path().join("a.md"), "# A").unwrap();
-        assert!(check_no_shadowing(dir.path(), &[lib.path().to_path_buf()]).is_ok());
+        assert_eq!(
+            shadowing_conflict("core-specialist", &[lib.path().to_path_buf()]).unwrap(),
+            None
+        );
     }
 
     /// A directory that simply does not exist (no local `agents/` in this
@@ -549,9 +594,11 @@ agents:
     #[test]
     fn a_missing_library_directory_is_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        project(dir.path());
         let missing = dir.path().join("does-not-exist");
-        assert!(check_no_shadowing(dir.path(), &[missing]).is_ok());
+        assert_eq!(
+            shadowing_conflict("core-specialist", &[missing]).unwrap(),
+            None
+        );
     }
 
     /// The whole point of taking every candidate directory instead of one:
@@ -561,28 +608,28 @@ agents:
     /// cannot tolerate.
     #[test]
     fn a_collision_in_the_second_of_several_library_directories_is_caught() {
-        let dir = tempfile::tempdir().unwrap();
-        project(dir.path()); // declares `core-specialist`
         let lib1 = tempfile::tempdir().unwrap();
         std::fs::write(lib1.path().join("other.md"), "# Other").unwrap();
         let lib2 = tempfile::tempdir().unwrap();
-        std::fs::write(lib2.path().join("core-specialist.md"), "# Core").unwrap();
+        let file = lib2.path().join("core-specialist.md");
+        std::fs::write(&file, "# Core").unwrap();
         let lib3 = tempfile::tempdir().unwrap();
         std::fs::write(lib3.path().join("another.md"), "# Another").unwrap();
 
-        let err = check_no_shadowing(
-            dir.path(),
+        let found = shadowing_conflict(
+            "core-specialist",
             &[
                 lib1.path().to_path_buf(),
                 lib2.path().to_path_buf(),
                 lib3.path().to_path_buf(),
             ],
         )
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("core-specialist"), "must name it: {err}");
+        .unwrap();
+        assert_eq!(found, Some(file));
     }
 
+    /// Symmetric check: a `- declared: x` entry must resolve to `Declared`,
+    /// not to one of the other three variants.
     /// Symmetric check: a `- declared: x` entry must resolve to `Declared`,
     /// not to one of the other three variants.
     #[test]
@@ -717,7 +764,7 @@ agents:
             "the healthy agent must survive: {errors:?}"
         );
         assert!(
-            errors.iter().any(|e| e.contains("broken")),
+            errors.iter().any(|e| e.message().contains("broken")),
             "the broken one must be reported by name: {errors:?}"
         );
     }
@@ -744,7 +791,9 @@ agents:
                 "a shadowed name must not be silently loaded from either side: {agents:?}"
             );
             assert!(
-                errors.iter().any(|e| e.contains("core-specialist")),
+                errors
+                    .iter()
+                    .any(|e| e.message().contains("core-specialist")),
                 "the collision must be reported: {errors:?}"
             );
         });
@@ -785,10 +834,111 @@ agents:
             assert!(
                 errors
                     .iter()
-                    .any(|e| e.contains("shadowed-one") && e.contains("agents.yaml")),
+                    .any(|e| e.message().contains("shadowed-one")
+                        && e.message().contains("agents.yaml")),
                 "the collision must be reported, naming both sources: {errors:?}"
             );
         });
+    }
+
+    /// Task 7b review, Regression 2: `armadai.yaml`'s `agents:` may list a
+    /// declared agent explicitly via `- declared: x` (for routes/teams to
+    /// point at deliberately) — that must never make the agent unloadable.
+    /// The first cut fed every `AgentRef`, `Declared` included, straight to
+    /// `resolve_all_agents`, which always refuses that variant by design;
+    /// the resulting "error" then permanently blocked `link` once Regression
+    /// 1 was fixed, even though the agent loads fine below via the
+    /// declarations block regardless of what `config.agents` names.
+    #[test]
+    fn a_declared_agentref_in_config_does_not_block_its_own_agent() {
+        with_isolated_global_library(|| {
+            let dir = tempfile::tempdir().unwrap();
+            project(dir.path()); // declares `core-specialist`, prompt: [base]
+            let config = crate::project::ProjectConfig {
+                agents: vec![AgentRef::Declared {
+                    declared: "core-specialist".into(),
+                }],
+                ..Default::default()
+            };
+
+            let (agents, warnings) = load_all_agents(&config, dir.path(), &fragments());
+            assert!(
+                agents.iter().any(|a| a.name == "core-specialist"),
+                "the declared agent must still load: warnings={warnings:?}"
+            );
+            assert!(
+                warnings.is_empty(),
+                "an explicit `declared:` ref naming a real declaration must not \
+                 produce any warning at all: {warnings:?}"
+            );
+        });
+    }
+
+    /// A whole-file YAML failure (as opposed to one bad declaration) cannot
+    /// be pinned on a single agent name, so it is classified
+    /// `DeclarationsUnreadable`, not `Dropped`.
+    #[test]
+    fn an_unparseable_agents_yaml_is_declarations_unreadable_not_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "agents:\n  - name: [unclosed\n",
+        )
+        .unwrap();
+        let config = crate::project::ProjectConfig::default();
+
+        let (agents, warnings) = load_all_agents(&config, dir.path(), &[]);
+        assert!(
+            agents.is_empty(),
+            "nothing could have been declared: {agents:?}"
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            matches!(warnings[0], LoadWarning::DeclarationsUnreadable(_)),
+            "must be DeclarationsUnreadable, not Dropped/PreExisting: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn blocks_a_write_ignores_a_pre_existing_failure() {
+        let warnings = vec![LoadWarning::PreExisting("some old .md broke".into())];
+        assert!(!blocks_a_write(&warnings, None));
+        assert!(!blocks_a_write(&warnings, Some(&["anything".to_string()])));
+    }
+
+    #[test]
+    fn blocks_a_write_is_unconditional_for_an_unreadable_declarations_file() {
+        let warnings = vec![LoadWarning::DeclarationsUnreadable("bad yaml".into())];
+        assert!(blocks_a_write(&warnings, None));
+        assert!(blocks_a_write(&warnings, Some(&["unrelated".to_string()])));
+    }
+
+    /// The Regression 1 fix itself: `--agents good` must not refuse a link
+    /// over a `bad` agent this chantier's format dropped, when `bad` was
+    /// never part of what is being written.
+    #[test]
+    fn blocks_a_write_scopes_a_dropped_agent_to_the_request() {
+        let warnings = vec![LoadWarning::Dropped {
+            agent: "bad".into(),
+            message: "bad is broken".into(),
+        }];
+        assert!(
+            blocks_a_write(&warnings, None),
+            "no filter means the whole fleet, including `bad`, was requested"
+        );
+        assert!(
+            !blocks_a_write(&warnings, Some(&["good".to_string()])),
+            "`bad` was never requested, so its drop must not block `good`"
+        );
+        assert!(
+            blocks_a_write(&warnings, Some(&["bad".to_string()])),
+            "`bad` WAS requested, so its own drop must block"
+        );
+        assert!(
+            blocks_a_write(&warnings, Some(&["BAD".to_string()])),
+            "the request match must be case-insensitive, like link's own --agents filter"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -916,5 +1066,80 @@ agents:
                 "must name both sources so the reader can pick one: {err}"
             );
         });
+    }
+
+    /// Task 7b review, Regression 3: `load_agent_by_name` used to load the
+    /// yaml with `?` before ever looking at whether the name resolved as a
+    /// file, so a malformed `.armadai/agents.yaml` broke every file-backed
+    /// agent in the project, not just declared ones. An unparseable yaml
+    /// cannot declare `name`, so it cannot collide with a file-backed
+    /// `name` either — the file is unambiguous and must still be served.
+    #[test]
+    fn a_malformed_agents_yaml_does_not_break_a_file_backed_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "agents:
+  - name: [unclosed
+",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("sentinel.md"),
+            "# Sentinel Prime
+
+## Metadata
+- provider: cli
+- command: sentinel-cmd
+
+## System Prompt
+
+Guard the perimeter.
+",
+        )
+        .unwrap();
+        let config = crate::project::ProjectConfig {
+            agents: vec![AgentRef::Path {
+                path: std::path::PathBuf::from("sentinel.md"),
+            }],
+            ..Default::default()
+        };
+
+        let agent = load_agent_by_name("sentinel", &config, dir.path(), &[]).unwrap();
+        assert_eq!(agent.name, "Sentinel Prime");
+        assert_eq!(agent.metadata.command.as_deref(), Some("sentinel-cmd"));
+    }
+
+    /// The other half of Regression 3's ruling: when the name does NOT
+    /// resolve as a file either, the malformed yaml IS the reason to fail —
+    /// a working declaration could have provided this name — so its own
+    /// parse error, not a generic "not found", must be what the caller
+    /// sees.
+    #[test]
+    fn a_malformed_agents_yaml_fails_hard_when_the_name_is_not_a_file_either() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "agents:
+  - name: [unclosed
+",
+        )
+        .unwrap();
+        let config = crate::project::ProjectConfig::default();
+
+        let err = load_agent_by_name("nowhere", &config, dir.path(), &[])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("nowhere"), "must name the agent: {err}");
+        assert!(
+            err.contains("could not be read") && err.contains("agents.yaml"),
+            "must name the yaml as the reason, not a generic not-found: {err}"
+        );
+        assert!(
+            err.contains("cannot parse"),
+            "must surface the actual yaml error, not swallow it: {err}"
+        );
     }
 }
