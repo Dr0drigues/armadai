@@ -319,10 +319,7 @@ pub async fn execute(
                         would_remove += 1;
                     } else {
                         anstream::println!(
-                            "{w}  {} (would keep — content differs from what link \
-                             would generate now; possibly edited since linking, or \
-                             linked with different options such as --model or an \
-                             interactive prompt answer){w:#}",
+                            "{w}  {} (would keep — content differs){w:#}",
                             path.display()
                         );
                         would_keep += 1;
@@ -380,12 +377,7 @@ pub async fn execute(
                     deleted_generated.push(path.to_path_buf());
                 } else {
                     let w = crate::cli::style::warn();
-                    anstream::println!(
-                        "{w}  kept {} (content differs from what link would generate \
-                         now; possibly edited since linking, or linked with different \
-                         options such as --model or an interactive prompt answer){w:#}",
-                        path.display()
-                    );
+                    anstream::println!("{w}  kept {} (content differs){w:#}", path.display());
                     kept += 1;
                 }
             }
