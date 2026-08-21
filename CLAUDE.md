@@ -61,7 +61,7 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`.
 - `core/` — Domain types: `Agent`, `AgentMetadata`, `PipelineConfig`, `events::RunEvent`/`EventSink`, `routing.rs` (model-tier auto-routing for `latest:auto`). Orchestration lives under `core/orchestration/` (`OrchestrationPattern { Direct, Blackboard, Ring, Hierarchical, Auto }`) with the event-sourced engine under `core/orchestration/es/`. There is no `Task`/`SharedContext`/`Coordinator`/`Pipeline` type.
 - `core/project.rs` — Project config (`armadai.yaml`) with agent/prompt/skill resolution.
 - `core/prompt.rs` — Composable prompt fragments with YAML frontmatter.
-- `core/agent_decl.rs` + `core/agent_source.rs` — declarative agents: `.armadai/agents.yaml` declares agents (defaults merge + prompt composed from fragments with `{{var}}` substitution); `load_agent()` returns an `Agent` where `resolve_agent()` returns a path. `core/template.rs` holds the substitution, shared with `cli/new.rs`.
+- `core/agent_decl.rs` + `core/agent_source.rs` — declarative agents: `.armadai/agents.yaml` declares agents (defaults merge + prompt composed from fragments with `{{var}}` substitution); `load_all_agents()`/`load_agent_by_name()` return `Agent`(s) where `resolve_agent()` returns a path. `core/template.rs` holds the substitution, shared with `cli/new.rs`.
 - `core/skill.rs` — Skills following the Agent Skills open standard (SKILL.md).
 - `core/model_updater.rs` — Deprecated model detection, in-place update, and auto-check with interactive prompt (`auto_check_and_prompt()`). Called automatically by `run`, `link`, and `init`.
 - `core/project_registry.rs` — JSON registry of known projects (auto-registered on `run`/`link`). Supports `prune` for stale entries.

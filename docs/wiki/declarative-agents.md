@@ -92,11 +92,14 @@ prompt:
 ```
 
 Each fragment body goes through the same `{{var}}` substitution `armadai new` uses
-(`core/template.rs`), then the rendered fragments are joined with a blank line, in the order
-declared. Every fragment body is trimmed first, so a fragment file's own trailing newline doesn't
-pile up into two or three blank lines at the join. Two variables are always available implicitly:
-`name` (the agent's own name) and `description` (the agent's own `description:`, when it declares
-one) — a step's own variables win if it supplies the same name.
+(`crates/armadai-core/src/template.rs`), then the rendered fragments are joined with a blank line,
+in the order declared. Every fragment body is trimmed first, so a fragment file's own trailing
+newline doesn't pile up into two or three blank lines at the join. Two variables are always
+available implicitly: `name` (the agent's own name) and `description` (the agent's own
+`description:`, when it declares one) — a step's own variables win if it supplies the same name.
+`{{ name }}` (inner whitespace, either side or both) is the same placeholder as `{{name}}` — the
+missing-value check and the substitution agree on that by construction, so a spaced placeholder is
+never left in the rendered prompt unsubstituted.
 
 ## Failure is the default, not degradation
 
@@ -189,18 +192,15 @@ file-backed ones — except where noted:
 | `armadai list` | Yes |
 | `armadai inspect` | Yes |
 | `armadai models check` / `armadai models update` | Yes — including the deprecated-model rewrite described above |
-| `armadai unlink` | **No** |
+| `armadai unlink` | Yes |
+| `armadai validate` | Yes — a declared agent named as an `orchestration.coordinator`/`teams[].lead`/`teams[].agents` entry resolves, even when never relisted in `armadai.yaml`'s `agents:` |
 | TUI dashboard | **No** |
 | Web API | **No** |
 | `armadai shell` | **No** |
 
-The `unlink` gap has a sharp edge worth calling out on its own: `link` can generate native config
-files for a declared agent, but `unlink` has no way to know that agent exists, so it will not clean
-those files up. Removing them is a manual step until `unlink` is updated to match.
-
-Do not assume any of the four "No" rows will discover a declared agent by some other path — they
-were simply not touched by this chantier, and hitting one of them is the way to find out the hard
-way if this table goes unread.
+Do not assume any of the three remaining "No" rows will discover a declared agent by some other
+path — they were simply not touched by this chantier, and hitting one of them is the way to find
+out the hard way if this table goes unread.
 
 ## Parity with the `.md` format — and its limits
 
