@@ -1,0 +1,16 @@
+name: no-agents-project-still-errors
+weight: 6
+setup:
+  pattern: direct
+  agents: [ghost]
+  no_project_agents: true
+  flags: ["--json"]
+  input: "hi"
+  scenario:
+    rules: []
+expect:
+  exit_code: 1
+  events:
+    - { t: error, code: agent_failed }
+  stdout:
+    contains: ["ghost", "not found"]

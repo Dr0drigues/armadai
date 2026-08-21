@@ -1,0 +1,22 @@
+name: declarations-only-project
+weight: 6
+setup:
+  pattern: direct
+  agents: [t-declared]
+  declared_agents: [t-declared]
+  flags: ["--json"]
+  input: "hi"
+  scenario:
+    rules:
+      - match: { agent: t-declared }
+        respond: "done"
+      - match: {}
+        respond: "unexpected — catch-all should never be hit in this case"
+expect:
+  exit_code: 0
+  events:
+    - { t: run_start }
+    - { t: agent_start, agent: t-declared }
+    - { t: result }
+  event_counts: { agent_start: 1, agent_end: 1, result: 1 }
+  invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result, no_orphan_events]
