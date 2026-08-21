@@ -32,8 +32,7 @@ pub async fn execute(
     // declaration this format exists to remove), so an otherwise-empty
     // `agents:` list is only a real error when there is no declarations
     // file either.
-    let has_declarations = armadai_core::agent_source::declarations_path(&root).is_file();
-    if config.agents.is_empty() && !has_declarations {
+    if !armadai_core::agent_source::project_declares_agents(&root, &config) {
         anyhow::bail!("No agents declared in project config.");
     }
 

@@ -160,4 +160,79 @@ mod tests {
             assert!(!stderr.trim().is_empty(), "list must still warn: {stderr}");
         }
     }
+
+    /// A project with only declared agents — no `agents:` entries at all,
+    /// relying entirely on `.armadai/agents.yaml` — the layout the format
+    /// exists to enable.
+    fn project_all_declared() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join(".armadai/prompts")).unwrap();
+        std::fs::write(root.join("armadai.yaml"), "link:\n  target: claude\n").unwrap();
+        std::fs::write(
+            root.join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  \
+             - name: zzz-declared-one\n    prompt: [base]\n  \
+             - name: zzz-declared-two\n    prompt: [base]\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".armadai/prompts/base.md"), "You are {{name}}.\n").unwrap();
+        dir
+    }
+
+    /// I2: `unlink.rs` was the fourth copy of the `config.agents.is_empty()`
+    /// gate that `link`/`list`/`run` all widened to also check
+    /// `.armadai/agents.yaml` — and it was the one copy that got missed.
+    /// Before the fix, `unlink --target claude` on this exact project
+    /// answered the false "No agents declared in project config." right
+    /// after `link` had written its files, and removed nothing.
+    #[test]
+    fn unlink_removes_what_link_generated_for_a_declarations_only_project() {
+        let dir = project_all_declared();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let mut link_cmd = Command::cargo_bin("armadai").unwrap();
+        link_cmd
+            .current_dir(&root)
+            .env("ARMADAI_CONFIG_DIR", &config)
+            .args(["link", "--target", "claude"]);
+        let link_output = link_cmd.output().unwrap();
+        assert!(
+            link_output.status.success(),
+            "link must succeed for an all-declared project: stdout={} stderr={}",
+            String::from_utf8_lossy(&link_output.stdout),
+            String::from_utf8_lossy(&link_output.stderr)
+        );
+
+        let generated = root.join(".claude/agents/zzz-declared-one.md");
+        assert!(
+            generated.is_file(),
+            "link must have written the declared agent's projection: {}",
+            generated.display()
+        );
+
+        let mut unlink_cmd = Command::cargo_bin("armadai").unwrap();
+        unlink_cmd
+            .current_dir(&root)
+            .env("ARMADAI_CONFIG_DIR", &config)
+            .args(["unlink", "--target", "claude"]);
+        let unlink_output = unlink_cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&unlink_output.stdout);
+        let stderr = String::from_utf8_lossy(&unlink_output.stderr);
+
+        assert!(
+            unlink_output.status.success(),
+            "unlink must not refuse an all-declared project: stdout={stdout} stderr={stderr}"
+        );
+        assert!(
+            !stderr.contains("No agents declared in project config"),
+            "must not report the false message link's own output already disproves: {stderr}"
+        );
+        assert!(
+            !generated.exists(),
+            "unlink must have removed what link generated: {}",
+            generated.display()
+        );
+    }
 }

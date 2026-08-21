@@ -104,8 +104,7 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
 fn load_agents() -> anyhow::Result<Vec<Agent>> {
     if !armadai_core::config::is_force_global()
         && let Some((root, config)) = project::find_project_config()
-        && (!config.agents.is_empty()
-            || armadai_core::agent_source::declarations_path(&root).is_file())
+        && armadai_core::agent_source::project_declares_agents(&root, &config)
     {
         let fragments = armadai_core::agent_source::project_fragments(&root);
         let (agents, warnings) =

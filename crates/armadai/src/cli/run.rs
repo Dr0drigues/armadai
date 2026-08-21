@@ -1506,8 +1506,7 @@ fn resolve_agents_dir(headless: bool) -> AgentResolution {
     // must still take the project branch instead of silently falling
     // through to the no-project default below.
     if let Some((root, config)) = project::find_project_config()
-        && (!config.agents.is_empty()
-            || armadai_core::agent_source::declarations_path(&root).is_file())
+        && armadai_core::agent_source::project_declares_agents(&root, &config)
     {
         tracing::info!(
             "Using project config from {} ({} agent(s))",

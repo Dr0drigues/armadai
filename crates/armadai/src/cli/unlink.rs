@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use crate::linker::{self, LinkAgent};
-use armadai_core::parser;
 use armadai_core::project;
 
 pub async fn execute(
@@ -20,27 +19,30 @@ pub async fn execute(
         )
     })?;
 
-    if config.agents.is_empty() {
+    // Every agent in `.armadai/agents.yaml` is included automatically (it
+    // does not need to be relisted in `agents:`), the same gate `link`,
+    // `list` and `run` all widened for this format: an otherwise-empty
+    // `agents:` list is only a real error when there is no declarations file
+    // either. Without this, `unlink` reports the false "No agents declared in
+    // project config." for exactly the project `link` just wrote three files
+    // for, and removes nothing.
+    if !armadai_core::agent_source::project_declares_agents(&root, &config) {
         anyhow::bail!("No agents declared in project config.");
     }
 
-    // 2. Resolve and parse agents
-    let (paths, errors) = project::resolve_all_agents(&config, &root);
-    for err in &errors {
-        let w = crate::cli::style::warn();
-        anstream::eprintln!("{w}  warn: {err}{w:#}");
+    // 2. Resolve and load agents — file-backed and declared alike.
+    let fragments = armadai_core::agent_source::project_fragments(&root);
+    let (agents, warnings) =
+        armadai_core::agent_source::load_all_agents(&config, &root, &fragments);
+    // `unlink` writes no config — it only removes files `link` would have
+    // written — so unlike `link` it never needs to refuse over a drop: warn
+    // and remove whatever can still be resolved, same policy as `list`.
+    for w in &warnings {
+        let s = crate::cli::style::warn();
+        anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
     }
 
-    let mut link_agents: Vec<LinkAgent> = Vec::new();
-    for path in &paths {
-        match parser::parse_agent_file(path) {
-            Ok(agent) => link_agents.push(LinkAgent::from(&agent)),
-            Err(e) => {
-                let w = crate::cli::style::warn();
-                anstream::eprintln!("{w}  warn: failed to parse {}: {e}{w:#}", path.display());
-            }
-        }
-    }
+    let mut link_agents: Vec<LinkAgent> = agents.iter().map(LinkAgent::from).collect();
 
     if link_agents.is_empty() {
         anyhow::bail!("No agents could be resolved. Check your project config.");
