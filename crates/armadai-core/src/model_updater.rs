@@ -415,14 +415,42 @@ pub fn auto_check_and_prompt(project_root: &Path, interactive: bool) -> bool {
 
     if confirm {
         let decls_path = crate::agent_source::declarations_path(project_root);
-        let mut total = 0;
+        // Grouped by file, and passed to `apply_findings` a whole file at a
+        // time — one call per finding would split a file's occurrences
+        // across several independent calls, letting an earlier one's
+        // success land on disk before a later one's failure is even
+        // discovered. That defeats exactly the atomicity
+        // `update_declarations` exists to provide: this project shipped
+        // that guarantee once already and lost it right here, one call
+        // site later, by looping per finding instead of per file.
+        let mut by_file: std::collections::HashMap<PathBuf, Vec<DeprecationFinding>> =
+            std::collections::HashMap::new();
         for f in &findings {
-            if let Ok(n) = apply_finding(f, &decls_path) {
-                total += n;
+            by_file
+                .entry(f.agent_path.clone())
+                .or_default()
+                .push(f.clone());
+        }
+
+        let mut total = 0;
+        let mut any_failed = false;
+        for (path, file_findings) in &by_file {
+            match apply_findings(file_findings, &decls_path) {
+                Ok(n) => total += n,
+                Err(e) => {
+                    any_failed = true;
+                    eprintln!("  error: {}: {e}", path.display());
+                }
             }
         }
         if total > 0 {
             eprintln!("  Updated {total} model(s).\n");
+        }
+        if any_failed {
+            eprintln!(
+                "hint: one or more file(s) could not be fully updated (see error(s) above); \
+                 run `armadai models update` for details.\n"
+            );
         }
         return true;
     }
@@ -431,27 +459,41 @@ pub fn auto_check_and_prompt(project_root: &Path, interactive: bool) -> bool {
     false
 }
 
-/// Rewrite one finding in place, choosing the rewriter that matches where it
-/// came from.
+/// Rewrite every finding for ONE file in a single call, choosing the
+/// rewriter that matches where they came from.
 ///
-/// A finding whose `agent_path` is the project's `agents.yaml` came from
+/// Takes all of a file's findings at once and passes them through
+/// together — never split across several calls. `update_declarations`'s
+/// all-or-nothing guarantee (nothing is written unless every finding can be
+/// accounted for) only protects a caller that preserves this batching: one
+/// call per finding would let an earlier finding's fix land on disk before
+/// a later finding's failure in the SAME file is discovered, which is
+/// precisely the half-applied result the guarantee exists to rule out.
+///
+/// `findings` must all share one `agent_path` — callers group by file
+/// before calling this (`check_project`'s own results are always grouped
+/// for display, so this matches how a caller already has them). A finding
+/// whose `agent_path` is the project's `agents.yaml` came from
 /// [`check_declarations`] and must go through [`update_declarations`] —
-/// [`update_agent_file`]'s single `replacen(.., 1)` would only fix the first
-/// occurrence, and its raw `: <model>` pattern is not bounded to
+/// [`update_agent_file`]'s single `replacen(.., 1)` would only fix the
+/// first occurrence, and its raw `: <model>` pattern is not bounded to
 /// `model:`/`model_fallback:` lines the way the declarative rewrite is.
 ///
 /// Public, and used by two callers: `auto_check_and_prompt`'s own
-/// confirmation branch below, and `armadai models update`
-/// (`crates/armadai/src/cli/models.rs`) — the other place that turns a
-/// [`DeprecationFinding`] into an actual file edit. Both need the exact same
-/// routing decision; extracted here once so neither can drift from it (and
-/// so the decision itself has a direct test, independent of the interactive
-/// prompt one of its callers sits behind).
-pub fn apply_finding(finding: &DeprecationFinding, decls_path: &Path) -> anyhow::Result<usize> {
-    if finding.agent_path == decls_path {
-        update_declarations(&finding.agent_path, std::slice::from_ref(finding))
+/// confirmation branch above, and `armadai models update`
+/// (`crates/armadai/src/cli/models.rs`) — the other place that turns
+/// [`DeprecationFinding`]s into an actual file edit. Both need the exact
+/// same routing decision and the exact same batching; extracted here once
+/// so neither can drift from it.
+pub fn apply_findings(findings: &[DeprecationFinding], decls_path: &Path) -> anyhow::Result<usize> {
+    let Some(first) = findings.first() else {
+        return Ok(0);
+    };
+    let path = &first.agent_path;
+    if path == decls_path {
+        update_declarations(path, findings)
     } else {
-        update_agent_file(&finding.agent_path, std::slice::from_ref(finding))
+        update_agent_file(path, findings)
     }
 }
 
@@ -907,13 +949,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // `apply_finding` — the routing decision `auto_check_and_prompt` makes
-    // on confirmation. Tested directly, since exercising the surrounding
-    // `dialoguer::Confirm` prompt would need a real terminal.
+    // `apply_findings` — the routing AND batching decision
+    // `auto_check_and_prompt` makes on confirmation. Tested directly, since
+    // exercising the surrounding `dialoguer::Confirm` prompt would need a
+    // real terminal.
     // -----------------------------------------------------------------
 
     #[test]
-    fn apply_finding_routes_a_declarations_finding_to_update_declarations() {
+    fn apply_findings_routes_a_declarations_finding_to_update_declarations() {
         let (old, new) = a_deprecated_model();
         let dir = tempfile::tempdir().unwrap();
         let p = write_yaml(
@@ -930,13 +973,13 @@ mod tests {
 
         // `decls_path` equal to the finding's own path is what marks it as
         // declarations-sourced.
-        let n = apply_finding(&finding, &p).unwrap();
+        let n = apply_findings(&[finding], &p).unwrap();
         assert_eq!(n, 1);
         assert!(std::fs::read_to_string(&p).unwrap().contains(&new));
     }
 
     #[test]
-    fn apply_finding_routes_a_file_finding_to_update_agent_file() {
+    fn apply_findings_routes_a_file_finding_to_update_agent_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.md");
         std::fs::write(&path, create_agent_md("Test", "gpt-4-turbo", &[])).unwrap();
@@ -951,12 +994,76 @@ mod tests {
         // so only the else-branch (`update_agent_file`) can produce a fix.
         let decls_path = dir.path().join("agents.yaml");
 
-        let n = apply_finding(&finding, &decls_path).unwrap();
+        let n = apply_findings(&[finding], &decls_path).unwrap();
         assert_eq!(n, 1);
         assert!(
             std::fs::read_to_string(&path)
                 .unwrap()
                 .contains("model: gpt-4o")
         );
+    }
+
+    #[test]
+    fn apply_findings_of_an_empty_slice_is_a_harmless_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let decls_path = dir.path().join("agents.yaml");
+        assert_eq!(apply_findings(&[], &decls_path).unwrap(), 0);
+    }
+
+    /// The regression this whole function exists to close: a file with
+    /// TWO findings, one reachable by the textual scan and one that is
+    /// not (a quoted key), must be treated as ONE atomic unit. A version
+    /// that calls the rewriter once per finding would let the first
+    /// finding's fix land on disk before the second finding's failure is
+    /// even discovered — this asserts all three properties a caller
+    /// needs to tell that apart from a real, honest failure: the file is
+    /// byte-identical to before, the reported count is 0, and the call
+    /// itself errors (so a caller — `models.rs` — has something to
+    /// propagate as a non-zero exit rather than a silent partial fix).
+    #[test]
+    fn apply_findings_is_atomic_across_a_files_own_findings() {
+        let (old, _new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            &format!(
+                "defaults:\n  provider: claude\n  model: {old}\nagents:\n  - name: a\n    \"model\": {old}\n"
+            ),
+        );
+        let findings = check_declarations(&p);
+        assert_eq!(findings.len(), 2, "one plain, one quoted: {findings:?}");
+        let before = std::fs::read_to_string(&p).unwrap();
+
+        let err = apply_findings(&findings, &p).unwrap_err().to_string();
+        assert!(
+            err.contains("detection and rewrite disagree"),
+            "must surface update_declarations's own disagreement error: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            before,
+            "the plain defaults.model fix must NOT land on disk just because the \
+             quoted-key finding in the SAME file failed — that is the exact bug \
+             this function exists to close"
+        );
+    }
+
+    /// The healthy twin of the atomicity test above: two or more findings
+    /// that CAN all be rewritten must all actually be, in one call —
+    /// batching must not lose any of them.
+    #[test]
+    fn apply_findings_fixes_every_finding_in_one_batched_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            "defaults:\n  provider: claude\n  model: gpt-4-turbo\nagents:\n  - name: a\n    model: gemini-1.5-flash\n",
+        );
+        let findings = check_declarations(&p);
+        assert_eq!(findings.len(), 2, "{findings:?}");
+
+        assert_eq!(apply_findings(&findings, &p).unwrap(), 2);
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(after.contains("gpt-4o") && !after.contains("gpt-4-turbo"));
+        assert!(after.contains("gemini-2.5-flash") && !after.contains("gemini-1.5-flash"));
     }
 }
