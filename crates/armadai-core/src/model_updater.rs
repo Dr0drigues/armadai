@@ -199,6 +199,65 @@ fn opens_block_scalar(value: &str) -> bool {
     digits <= 1 && signs <= 1 && digits + signs == rest.chars().count()
 }
 
+/// Does `c` belong to a model-identifier token (letters, digits, `-`, `_`,
+/// `.`)? Model names routinely contain hyphens and digits (`claude-3-5-
+/// sonnet-20241022`), so a plain word-boundary check (alphanumeric only)
+/// would not stop at the hyphen between a shorter name and a longer one that
+/// starts with it.
+fn is_model_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')
+}
+/// Replace every occurrence of `needle` in `haystack` that is a whole
+/// model-name token — not merely a substring — with `replacement`, and
+/// report how many were replaced.
+///
+/// A single forward pass: once an occurrence (matching or not) is behind the
+/// cursor, it is never revisited, so a `replacement` that happens to start
+/// with `needle` (e.g. `gpt-4` deprecated in favour of `gpt-4-turbo`) cannot
+/// loop — the newly written text is simply not rescanned. `needle ==
+/// replacement` is treated as already-a-no-op for the same reason (nothing
+/// to gain by "replacing" a value with itself, and it would otherwise never
+/// terminate).
+fn replace_model_name_all(haystack: &str, needle: &str, replacement: &str) -> (String, usize) {
+    if needle.is_empty() || needle == replacement {
+        return (haystack.to_string(), 0);
+    }
+    let mut out = String::with_capacity(haystack.len());
+    let mut rest = haystack;
+    let mut count = 0;
+    loop {
+        let Some(rel) = rest.find(needle) else {
+            out.push_str(rest);
+            break;
+        };
+        let before_ok = rest[..rel]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_model_name_char(c));
+        let end = rel + needle.len();
+        let after_ok = rest[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_model_name_char(c));
+        if before_ok && after_ok {
+            out.push_str(&rest[..rel]);
+            out.push_str(replacement);
+            count += 1;
+            rest = &rest[end..];
+        } else {
+            // Not a whole-token match (`needle` is a substring of a longer
+            // identifier) — copy past just this occurrence's first
+            // character and keep scanning; guarantees forward progress.
+            let mut chars = rest[rel..].chars();
+            let c = chars.next().expect("find() returned a valid offset");
+            out.push_str(&rest[..rel]);
+            out.push(c);
+            rest = &rest[rel + c.len_utf8()..];
+        }
+    }
+    (out, count)
+}
+
 /// Rewrite deprecated models in an `agents.yaml`.
 ///
 /// Textual substitution, like `update_agent_file` — a `serde_yaml_ng`
@@ -235,6 +294,13 @@ fn opens_block_scalar(value: &str) -> bool {
 /// `findings.len()` and returns an `Err` naming whatever finding(s) it
 /// could not locate otherwise — and, so a caller never has to reason about
 /// a half-applied fix, writes nothing at all when it errors.
+///
+/// Every replacement on a model-key line goes through
+/// [`replace_model_name_all`], anchored on the model name's own boundaries —
+/// not a raw `contains`/`replace` — so one deprecated name that happens to
+/// be a prefix of another (a future `claude-3-5-sonnet` next to
+/// `claude-3-5-sonnet-20241022`, or `gpt-4` next to `gpt-4-turbo`) cannot
+/// have the shorter finding's rewrite corrupt the line the longer one owns.
 pub fn update_declarations(path: &Path, findings: &[DeprecationFinding]) -> anyhow::Result<usize> {
     if findings.is_empty() {
         return Ok(0);
@@ -303,11 +369,12 @@ pub fn update_declarations(path: &Path, findings: &[DeprecationFinding]) -> anyh
         let mut kept = line.to_string();
         if is_model_key {
             for f in findings {
-                if kept.contains(&f.current) {
-                    kept = kept.replace(&f.current, &f.replacement);
-                    count += 1;
-                    if let Some(n) = remaining.get_mut(f.current.as_str()) {
-                        *n = n.saturating_sub(1);
+                let (rewritten, n) = replace_model_name_all(&kept, &f.current, &f.replacement);
+                if n > 0 {
+                    kept = rewritten;
+                    count += n;
+                    if let Some(rem) = remaining.get_mut(f.current.as_str()) {
+                        *rem = rem.saturating_sub(n);
                     }
                 }
             }
@@ -703,6 +770,56 @@ mod tests {
             "every occurrence must be fixed:\n{after}"
         );
         assert_eq!(after.matches(&new).count(), 3);
+    }
+
+    /// m6 / F11: `contains`/`replace` on the raw line is unanchored, so two
+    /// deprecated models where one name is a prefix of the other used to
+    /// corrupt each other — the shorter finding's rewrite would land inside
+    /// the longer line too, and the per-line count still balanced (1 match
+    /// each), so `update_declarations` reported success on a mangled value.
+    /// Findings are built by hand rather than through `check_declarations`,
+    /// since no pair in the real alias registry happens to share a prefix
+    /// today — this fixture manufactures the exact shape regardless.
+    #[test]
+    fn a_deprecated_model_that_is_a_prefix_of_another_does_not_corrupt_the_longer_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            "agents:\n  - name: a\n    model: dep\n  - name: b\n    model: dep-longer\n",
+        );
+        let findings = vec![
+            DeprecationFinding {
+                agent_path: p.clone(),
+                agent_name: "a".into(),
+                field: "model".into(),
+                current: "dep".into(),
+                replacement: "new".into(),
+            },
+            DeprecationFinding {
+                agent_path: p.clone(),
+                agent_name: "b".into(),
+                field: "model".into(),
+                current: "dep-longer".into(),
+                replacement: "new-longer".into(),
+            },
+        ];
+
+        assert_eq!(update_declarations(&p, &findings).unwrap(), 2);
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            after.contains("model: new\n"),
+            "the shorter deprecated name must be fixed on its own line:\n{after}"
+        );
+        assert!(
+            after.contains("model: new-longer\n"),
+            "the longer line must be fixed to its OWN replacement, not \
+             corrupted by the shorter finding's rewrite:\n{after}"
+        );
+        assert!(
+            !after.contains("new-dep-longer"),
+            "the shorter finding must not have rewritten inside the longer \
+             line's value: {after}"
+        );
     }
 
     /// A raw `: <model>` pattern would also match inside prose. Correcting a
