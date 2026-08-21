@@ -4,6 +4,7 @@
 
 - [Getting Started](getting-started.md)
 - [Agent format](agent-format.md)
+- [Declarative agents](declarative-agents.md)
 - [Orchestration](orchestration-guide.md)
   - [Reference](orchestration.md)
 - [Providers](providers.md)

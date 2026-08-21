@@ -1,6 +1,5 @@
 use armadai_core::agent::Agent;
 use armadai_core::config::AppPaths;
-use armadai_core::parser;
 use armadai_core::project;
 
 pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow::Result<()> {
@@ -92,28 +91,30 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
     Ok(())
 }
 
-/// Load agents: if a project config is found, resolve only declared agents.
-/// Otherwise, load all agents from the default directory.
-/// When `--global` is active, always load from the global library.
+/// Load agents: if a project config is found, resolve project agents
+/// (file-backed and declared alike). Otherwise, load all agents from the
+/// default directory. When `--global` is active, always load from the
+/// global library.
+///
+/// A project counts as having agents when `agents:` lists any, OR
+/// `.armadai/agents.yaml` declares any — every declared agent is included
+/// automatically, so a project that only uses that format (an empty/absent
+/// `agents:` list) must still take the project branch instead of falling
+/// through to the global library.
 fn load_agents() -> anyhow::Result<Vec<Agent>> {
     if !armadai_core::config::is_force_global()
         && let Some((root, config)) = project::find_project_config()
-        && !config.agents.is_empty()
+        && armadai_core::agent_source::project_declares_agents(&root, &config)
     {
-        let (paths, errors) = project::resolve_all_agents(&config, &root);
-        for err in &errors {
-            let w = crate::cli::style::warn();
-            anstream::eprintln!("{w}  warn: {err}{w:#}");
-        }
-        let mut agents = Vec::new();
-        for path in &paths {
-            match parser::parse_agent_file(path) {
-                Ok(agent) => agents.push(agent),
-                Err(e) => {
-                    let w = crate::cli::style::warn();
-                    anstream::eprintln!("{w}  warn: failed to parse {}: {e}{w:#}", path.display());
-                }
-            }
+        let fragments = armadai_core::agent_source::project_fragments(&root);
+        let (agents, warnings) =
+            armadai_core::agent_source::load_all_agents(&config, &root, &fragments);
+        // Read-only: unlike `link`, `list` never refuses over a drop
+        // (pre-existing or new to this chantier's format alike) -- it warns
+        // and shows whatever did load.
+        for w in &warnings {
+            let s = crate::cli::style::warn();
+            anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
         }
         return Ok(agents);
     }

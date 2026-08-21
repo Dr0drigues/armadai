@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use super::agent::AgentMode;
+use super::agent_source;
 use super::config::{registry_cache_dir, user_agents_dir, user_prompts_dir, user_skills_dir};
 use super::orchestration::OrchestrationConfig;
 
@@ -150,9 +151,25 @@ impl ShellConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum AgentRef {
-    Named { name: String },
-    Registry { registry: String },
-    Path { path: PathBuf },
+    Named {
+        name: String,
+    },
+    Registry {
+        registry: String,
+    },
+    Path {
+        path: PathBuf,
+    },
+    /// An agent declared in `.armadai/agents.yaml` rather than written as a
+    /// file. `resolve_agent` below refuses this variant, because a declared
+    /// agent has no file of its own — `agent_source::load_all_agents` (a
+    /// whole project's fleet) and `agent_source::load_agent_by_name` (one
+    /// agent by name) are what actually turn it into an `Agent`, by
+    /// resolving it through the project's declarations directly rather than
+    /// through this function.
+    Declared {
+        declared: String,
+    },
 }
 
 /// Reference to a prompt fragment.
@@ -277,6 +294,23 @@ fn check_dotarmadai_migration_hint(project_root: &Path, legacy_filename: &str) {
 // Agent resolution
 // ---------------------------------------------------------------------------
 
+/// Every directory a `.md` agent can be resolved from, in resolution order.
+///
+/// The single source of truth for that list: `resolve_agent`'s `Named` arm
+/// and `agent_source::shadowing_conflict` (the collision check
+/// `load_all_agents`/`load_agent_by_name` each call) both use this rather
+/// than keeping their own copy, so the two can never drift apart.
+pub fn library_dirs(project_root: &Path) -> Vec<PathBuf> {
+    vec![
+        // 1. .armadai/agents/ (preferred)
+        project_root.join(PROJECT_DIR).join("agents"),
+        // 2. Project-local agents/ (legacy)
+        project_root.join("agents"),
+        // 3. User library ~/.config/armadai/agents/
+        user_agents_dir(),
+    ]
+}
+
 /// Resolve a single `AgentRef` to an absolute path.
 pub fn resolve_agent(agent_ref: &AgentRef, project_root: &Path) -> anyhow::Result<PathBuf> {
     match agent_ref {
@@ -299,32 +333,19 @@ pub fn resolve_agent(agent_ref: &AgentRef, project_root: &Path) -> anyhow::Resul
                 format!("{name}.md")
             };
 
-            // 1. .armadai/agents/ (preferred)
-            let dotarmadai = project_root
-                .join(PROJECT_DIR)
-                .join("agents")
-                .join(&filename);
-            if dotarmadai.exists() {
-                return Ok(dotarmadai);
-            }
-
-            // 2. Project-local agents/ (legacy)
-            let local = project_root.join("agents").join(&filename);
-            if local.exists() {
-                return Ok(local);
-            }
-
-            // 3. User library ~/.config/armadai/agents/
-            let global = user_agents_dir().join(&filename);
-            if global.exists() {
-                return Ok(global);
+            let dirs = library_dirs(project_root);
+            for dir in &dirs {
+                let candidate = dir.join(&filename);
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
             }
 
             anyhow::bail!(
                 "Agent '{name}' not found in {}, {} or {}",
-                dotarmadai.display(),
-                local.display(),
-                global.display()
+                dirs[0].join(&filename).display(),
+                dirs[1].join(&filename).display(),
+                dirs[2].join(&filename).display(),
             );
         }
         AgentRef::Registry { registry } => {
@@ -342,6 +363,19 @@ pub fn resolve_agent(agent_ref: &AgentRef, project_root: &Path) -> anyhow::Resul
                     path.display()
                 );
             }
+        }
+        AgentRef::Declared { declared } => {
+            // User-facing text: this is reachable from `link`/`list`'s
+            // warning loop whenever `agents:` lists `- declared: x`
+            // explicitly (`resolve_all_agents` iterates every ref), so it
+            // must read as a fact about the project, never as an internal
+            // pointer to a different function — an earlier version named
+            // `agent_source::load_agent` here, which a user has no reason to
+            // know about and cannot act on.
+            anyhow::bail!(
+                "agent '{declared}' is declared in {} rather than written as a file",
+                agent_source::declarations_path(project_root).display()
+            );
         }
     }
 }
@@ -370,6 +404,22 @@ pub fn resolve_all_agents(
 // ---------------------------------------------------------------------------
 
 /// Resolve a single `PromptRef` to an absolute path.
+/// Every directory a `.md` prompt fragment can be resolved from, in
+/// resolution order — the prompt-side twin of `library_dirs`, so
+/// `resolve_prompt`'s `Named` arm and `agent_source::project_fragments`
+/// (which needs the same three tiers to gather fragments a declared agent
+/// can reference) share one list instead of each keeping its own copy.
+pub fn prompt_dirs(project_root: &Path) -> Vec<PathBuf> {
+    vec![
+        // 1. .armadai/prompts/ (preferred)
+        project_root.join(PROJECT_DIR).join("prompts"),
+        // 2. Project-local prompts/ (legacy)
+        project_root.join("prompts"),
+        // 3. User library ~/.config/armadai/prompts/
+        user_prompts_dir(),
+    ]
+}
+
 pub fn resolve_prompt(prompt_ref: &PromptRef, project_root: &Path) -> anyhow::Result<PathBuf> {
     match prompt_ref {
         PromptRef::Path { path } => {
@@ -391,32 +441,19 @@ pub fn resolve_prompt(prompt_ref: &PromptRef, project_root: &Path) -> anyhow::Re
                 format!("{name}.md")
             };
 
-            // 1. .armadai/prompts/ (preferred)
-            let dotarmadai = project_root
-                .join(PROJECT_DIR)
-                .join("prompts")
-                .join(&filename);
-            if dotarmadai.exists() {
-                return Ok(dotarmadai);
-            }
-
-            // 2. Project-local prompts/ (legacy)
-            let local = project_root.join("prompts").join(&filename);
-            if local.exists() {
-                return Ok(local);
-            }
-
-            // 3. User library ~/.config/armadai/prompts/
-            let global = user_prompts_dir().join(&filename);
-            if global.exists() {
-                return Ok(global);
+            let dirs = prompt_dirs(project_root);
+            for dir in &dirs {
+                let candidate = dir.join(&filename);
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
             }
 
             anyhow::bail!(
                 "Prompt '{name}' not found in {}, {} or {}",
-                dotarmadai.display(),
-                local.display(),
-                global.display()
+                dirs[0].join(&filename).display(),
+                dirs[1].join(&filename).display(),
+                dirs[2].join(&filename).display(),
             );
         }
     }

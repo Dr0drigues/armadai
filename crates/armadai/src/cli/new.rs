@@ -52,30 +52,21 @@ fn template_create(
     }
 
     // Read and replace placeholders
-    let mut content = std::fs::read_to_string(&template_path)?;
+    let content = std::fs::read_to_string(&template_path)?;
 
     let title = slug_to_title(name);
-    content = content.replace("{{name}}", &title);
-
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("name".to_string(), title.clone());
+    // Replace model placeholder with default
+    vars.insert("model".to_string(), "latest:pro".to_string());
     if let Some(desc) = description {
-        content = content.replace("{{description}}", desc);
+        vars.insert("description".to_string(), desc.to_string());
     }
     if let Some(s) = stack {
-        content = content.replace("{{stack}}", s);
+        vars.insert("stack".to_string(), s.to_string());
     }
 
-    // Replace model placeholder with default
-    content = content.replace("{{model}}", "latest:pro");
-
-    // Check for remaining placeholders
-    let remaining: Vec<&str> = content
-        .match_indices("{{")
-        .filter_map(|(start, _)| {
-            content[start..]
-                .find("}}")
-                .map(|end| &content[start..start + end + 2])
-        })
-        .collect();
+    let (content, remaining) = armadai_core::template::render_lenient(&content, &vars);
 
     // Ensure agents directory exists
     std::fs::create_dir_all(agents_dir)?;
@@ -91,16 +82,13 @@ fn template_create(
     anstream::println!("{m}  Name:{m:#} {a}{title}{a:#}");
 
     if !remaining.is_empty() {
-        let unique: Vec<&str> = {
-            let mut seen = std::collections::HashSet::new();
-            remaining.into_iter().filter(|p| seen.insert(*p)).collect()
-        };
         let w = crate::cli::style::warn();
         anstream::println!(
             "\n{w}  Note: the following placeholders need to be filled in manually:{w:#}"
         );
-        for p in &unique {
-            anstream::println!("{w}    - {p}{w:#}");
+        for placeholder_name in &remaining {
+            let placeholder = format!("{{{{{placeholder_name}}}}}");
+            anstream::println!("{w}    - {placeholder}{w:#}");
         }
     }
 
@@ -272,12 +260,21 @@ async fn interactive_create() -> anyhow::Result<()> {
         let template_path = templates_dir.join(format!("{tpl_name}.md"));
         let mut content = std::fs::read_to_string(&template_path)?;
         let title = slug_to_title(&name);
-        content = content.replace("{{name}}", &title);
-        content = content.replace("{{description}}", &system_prompt);
-        // Replace stacks placeholder
-        if !stacks.is_empty() {
-            content = content.replace("{{stack}}", &stacks[0]);
+        // Through the shared `template` module, not a hand-rolled
+        // `replace("{{name}}", ..)` — that exact shape is what let a
+        // `{{ name }}` (spaced) placeholder in a template ship
+        // unsubstituted (see `template.rs`'s `render`/`render_lenient`):
+        // building the literal `{{name}}` string to search for agrees with
+        // neither a template author's spacing nor with how
+        // `placeholders()`/`render` itself recognises a placeholder.
+        let mut vars = std::collections::BTreeMap::new();
+        vars.insert("name".to_string(), title);
+        vars.insert("description".to_string(), system_prompt.clone());
+        if let Some(first_stack) = stacks.first() {
+            vars.insert("stack".to_string(), first_stack.clone());
         }
+        let (rendered, _remaining) = armadai_core::template::render_lenient(&content, &vars);
+        content = rendered;
         // Overwrite metadata section with user choices
         overwrite_metadata(
             &content,

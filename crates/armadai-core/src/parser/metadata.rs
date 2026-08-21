@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use crate::agent::{AgentMetadata, AgentMode};
+use crate::agent::{AgentMetadata, AgentMode, default_temperature};
 use crate::orchestration::OrchestrationPattern;
 
 /// Parse the Metadata section content (YAML-like list format) into AgentMetadata.
@@ -9,7 +9,7 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
     let mut model = None;
     let mut command = None;
     let mut args = None;
-    let mut temperature = 0.7_f32;
+    let mut temperature = default_temperature();
     let mut max_tokens = None;
     let mut timeout = None;
     let mut tags = Vec::new();

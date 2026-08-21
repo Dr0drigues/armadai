@@ -2,6 +2,11 @@
 
 Agents are defined as Markdown files in the `agents/` directory. Each file represents one specialized agent.
 
+A project can also declare agents in `.armadai/agents.yaml` instead of writing this file by hand —
+see [Declarative agents](declarative-agents.md) for that format, including the one rule that
+surprises people (a name that collides with a `.md` file, anywhere in your agent libraries, is
+refused with no precedence either way) and an honest read on what it does and doesn't buy you.
+
 ## File Structure
 
 ```markdown

@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use crate::linker::model_resolution::{self, TargetKind};
 use crate::linker::{self, LinkAgent};
-use armadai_core::parser;
 use armadai_core::project;
 
 pub async fn execute(
@@ -28,7 +27,12 @@ pub async fn execute(
     }
     armadai_core::model_updater::auto_check_and_prompt(&root, std::io::stdin().is_terminal());
 
-    if config.agents.is_empty() {
+    // Every agent in `.armadai/agents.yaml` is included automatically (it
+    // does not need to be relisted in `agents:` — that would duplicate the
+    // declaration this format exists to remove), so an otherwise-empty
+    // `agents:` list is only a real error when there is no declarations
+    // file either.
+    if !armadai_core::agent_source::project_declares_agents(&root, &config) {
         anyhow::bail!("No agents declared in project config.");
     }
 
@@ -48,23 +52,16 @@ pub async fn execute(
         );
     }
 
-    // 2. Resolve and parse agents
-    let (paths, errors) = project::resolve_all_agents(&config, &root);
-    for err in &errors {
-        let w = crate::cli::style::warn();
-        anstream::eprintln!("{w}  warn: {err}{w:#}");
+    // 2. Resolve and load agents — file-backed and declared alike.
+    let fragments = armadai_core::agent_source::project_fragments(&root);
+    let (agents, warnings) =
+        armadai_core::agent_source::load_all_agents(&config, &root, &fragments);
+    for w in &warnings {
+        let s = crate::cli::style::warn();
+        anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
     }
 
-    let mut link_agents: Vec<LinkAgent> = Vec::new();
-    for path in &paths {
-        match parser::parse_agent_file(path) {
-            Ok(agent) => link_agents.push(LinkAgent::from(&agent)),
-            Err(e) => {
-                let w = crate::cli::style::warn();
-                anstream::eprintln!("{w}  warn: failed to parse {}: {e}{w:#}", path.display());
-            }
-        }
-    }
+    let mut link_agents: Vec<LinkAgent> = agents.iter().map(LinkAgent::from).collect();
 
     if link_agents.is_empty() {
         anyhow::bail!("No agents could be resolved. Check your project config.");
@@ -85,6 +82,26 @@ pub async fn execute(
         if link_agents.is_empty() {
             anyhow::bail!("No agents match the given filter: {}", filter.join(", "));
         }
+    }
+
+    // 3a. `link` writes config that other tools then trust — unlike `list`
+    // (read-only), it must never silently ship a fleet smaller than the one
+    // declared. But only when THIS chantier's format is the reason (a
+    // dropped declaration, or a shadowing collision): a pre-existing
+    // failure (an unparseable `.md`, an unresolvable ref) keeps its exact
+    // old behaviour — warn above, link what did load, exit 0 — since that
+    // behaviour predates this format and was never wrong.
+    //
+    // Checked AFTER `--agents` filtering, and scoped to it: a loss outside
+    // what was actually requested (`--agents good` when only `bad` was
+    // dropped) must not refuse a link that never intended to write `bad` in
+    // the first place. `--dry-run` reaches this exact same check with no
+    // special-casing either way, further down — a preview must refuse
+    // exactly when the real link would.
+    if armadai_core::agent_source::blocks_a_write(&warnings, agents_filter.as_deref()) {
+        anyhow::bail!(
+            "one or more agents could not be loaded (see warning(s) above) — refusing to link a smaller fleet than declared. Fix the issue(s), or rerun once resolved."
+        );
     }
 
     // 3b. Extract coordinator if configured (CLI flag takes priority over config)

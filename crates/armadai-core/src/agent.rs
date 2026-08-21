@@ -82,8 +82,38 @@ pub struct AgentMetadata {
     pub ring_config: Option<AgentRingConfig>,
 }
 
-fn default_temperature() -> f32 {
+/// The sampling temperature an agent gets when none is specified anywhere
+/// (Markdown frontmatter default, and the declarative format's fallback
+/// once neither the declaration nor its defaults set one).
+pub fn default_temperature() -> f32 {
     0.7
+}
+
+/// Convert an agent name to a kebab-case slug suitable for filenames.
+///
+/// Two names that differ only by case, or by which punctuation/whitespace
+/// they use as a separator, project to the same slug — which is exactly what
+/// the linker uses to name a file on disk. `agent_source::shadowing_conflict`
+/// compares slugs rather than raw names for the same reason: a declaration
+/// and a library file that fold to the same slug will overwrite each other
+/// at link time regardless of how differently they are spelled.
+pub fn slugify(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else if c == ' ' || c == '_' {
+                '-'
+            } else {
+                '\0'
+            }
+        })
+        .filter(|c| *c != '\0')
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

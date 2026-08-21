@@ -101,6 +101,32 @@ fn arr_field(case: &Case, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Reads a bool from `case.setup.extra`, `false` when the key is missing.
+fn bool_field(case: &Case, key: &str) -> bool {
+    case.setup
+        .extra
+        .get(key)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The `.armadai/prompts/` fragment every `declared_agents` entry composes its
+/// system prompt from — carries the SAME `FAKE_AGENT_ID: {{name}}` marker
+/// `agent_markdown` writes literally for a file-backed agent, so `fake-claude`
+/// identifies a declared agent's calls exactly the same way (see
+/// `armadai_fake::lib.rs`'s `AGENT_ID_MARKER`). `{{name}}` is substituted by
+/// `agent_decl::compose_prompt` from the declaration's own name — one fragment
+/// serves every declared agent in a case, whatever it's called.
+const DECLARED_FAKE_FRAGMENT: &str = "FAKE_AGENT_ID: {{name}}\n\n\
+You are `{{name}}`, a deterministic test agent used by the e2e harness. Respond \
+concisely to the task given.\n";
+
+/// A minimal, valid `.armadai/agents.yaml` entry for `agent`, composing from
+/// [`DECLARED_FAKE_FRAGMENT`] — the declared-agent twin of [`agent_markdown`].
+fn declared_agent_yaml(agent: &str) -> String {
+    format!("  - name: {agent}\n    prompt: [fake-base]\n")
+}
+
 /// `setup.nested_team` (C9): the sub-team a `hierarchical` case's lead runs instead of flat
 /// delegation. Ported from the old typed `NestedTeamSetup` (`tests/e2e/case.rs`, deleted in
 /// T3) — see `project_yaml`.
@@ -132,16 +158,46 @@ fn io_err(case: &Case, action: &str, source: std::io::Error) -> AdapterError {
 fn write_project(case: &Case, iso: &Isolation) -> Result<PathBuf, AdapterError> {
     let root = iso.root();
     let agents = arr_field(case, "agents");
+    let declared_agents = arr_field(case, "declared_agents");
+    let no_project_agents = bool_field(case, "no_project_agents");
 
     std::fs::create_dir_all(root.join("agents"))
         .map_err(|e| io_err(case, "creating agents/ dir", e))?;
     std::fs::write(root.join("armadai.yaml"), project_yaml(case))
         .map_err(|e| io_err(case, "writing armadai.yaml", e))?;
 
+    // `declared_agents`/`no_project_agents` (Finding 5, task 7b review): a
+    // name in either of these must resolve to NOTHING written as a `.md`
+    // file — the whole point is exercising the project-detection gate for a
+    // declarations-only project, or a project with no agents at all, rather
+    // than the ordinary file-backed path every other case exercises.
     for agent in &agents {
+        if no_project_agents || declared_agents.contains(agent) {
+            continue;
+        }
         let path = root.join("agents").join(format!("{agent}.md"));
         std::fs::write(&path, agent_markdown(agent))
             .map_err(|e| io_err(case, &format!("writing {}", path.display()), e))?;
+    }
+
+    if !declared_agents.is_empty() {
+        std::fs::create_dir_all(root.join(".armadai").join("prompts"))
+            .map_err(|e| io_err(case, "creating .armadai/prompts/ dir", e))?;
+        std::fs::write(
+            root.join(".armadai/prompts/fake-base.md"),
+            DECLARED_FAKE_FRAGMENT,
+        )
+        .map_err(|e| io_err(case, "writing .armadai/prompts/fake-base.md", e))?;
+
+        let decls_block: String = declared_agents
+            .iter()
+            .map(|a| declared_agent_yaml(a))
+            .collect();
+        std::fs::write(
+            root.join(".armadai/agents.yaml"),
+            format!("defaults:\n  provider: claude\n  model: fake-model\nagents:\n{decls_block}"),
+        )
+        .map_err(|e| io_err(case, "writing .armadai/agents.yaml", e))?;
     }
 
     let scenario_value = case
@@ -168,9 +224,12 @@ fn write_project(case: &Case, iso: &Isolation) -> Result<PathBuf, AdapterError> 
     Ok(scenario_path)
 }
 
-/// Renders `armadai.yaml` for `case`. The `agents:` list is always required (an empty list
+/// Renders `armadai.yaml` for `case`. The `agents:` list is normally required (an empty list
 /// makes `armadai` fall back to the global agent library instead of resolving this project's
-/// `agents/*.md` — see `resolve_agents_dir` in `src/cli/run.rs`).
+/// `agents/*.md` — see `resolve_agents_dir` in `src/cli/run.rs`) — UNLESS the project also has
+/// `.armadai/agents.yaml` declarations (task 7b), in which case an empty `agents:` list is the
+/// whole point of the case: `declared_agents`/`no_project_agents` (Finding 5) both force it
+/// empty here, deliberately, to exercise that gate.
 ///
 /// Only `hierarchical` gets a top-level `orchestration:` block: it's the only pattern selected
 /// via project config rather than a `--orchestrate` CLI flag (see `build_command`). When
@@ -182,9 +241,19 @@ fn write_project(case: &Case, iso: &Isolation) -> Result<PathBuf, AdapterError> 
 /// `Setup`.
 fn project_yaml(case: &Case) -> String {
     let agents = arr_field(case, "agents");
+    let declared_agents = arr_field(case, "declared_agents");
+    let no_project_agents = bool_field(case, "no_project_agents");
     let pattern = str_field(case, "pattern").unwrap_or_default();
 
-    let agents_block: String = agents.iter().map(|a| format!("  - name: {a}\n")).collect();
+    let agents_block: String = if no_project_agents {
+        String::new()
+    } else {
+        agents
+            .iter()
+            .filter(|a| !declared_agents.contains(a))
+            .map(|a| format!("  - name: {a}\n"))
+            .collect()
+    };
     let mut yaml = format!("agents:\n{agents_block}");
 
     if pattern == "hierarchical" {
@@ -465,8 +534,11 @@ fn all_cases_load() {
         }
     }
     assert_eq!(
-        n, 10,
-        "expected 9 migrated cases + the direct-replay steps case"
+        n, 13,
+        "expected 9 migrated cases + the direct-replay steps case + 2 task-7b-review \
+         project-detection-gate cases (declarations-only-project, \
+         no-agents-project-still-errors) + 1 task-7b-review-round-2 case proving \
+         --orchestrate loads declared agents (declared-agents-orchestrated)"
     );
 }
 
@@ -511,11 +583,15 @@ fn armadai_adapter_is_conformant() {
     assert!(report.is_conformant(), "\n{}", report.render());
 }
 
-/// Runs the full 10-case suite through `gaveldrop::runner::run_all_with`, the same entry point
+/// Runs the full 13-case suite through `gaveldrop::runner::run_all_with`, the same entry point
 /// `armadai`'s own e2e binary would use in production, with the `Armadai` adapter prepended to
-/// gaveldrop's built-in registry. This is the decisive migration gate: it proves the 10 cases
-/// reach the SAME verdicts the old hand-rolled harness produced (deleted in T3), now evaluated
-/// entirely by gaveldrop's `verdict::evaluate` instead of bespoke assertion code.
+/// gaveldrop's built-in registry. This is the decisive migration gate: it proves the original 10
+/// cases reach the SAME verdicts the old hand-rolled harness produced (deleted in T3), now
+/// evaluated entirely by gaveldrop's `verdict::evaluate` instead of bespoke assertion code — plus
+/// 2 more added for the task-7b review's Finding 5 (the `resolve_agents_dir`/`link`/`list`
+/// project-detection gate fix: a declarations-only project vs. a project with no agents at all),
+/// plus 1 more added for that review's follow-up round, proving Finding 7's `--orchestrate`
+/// roster-loader swap actually loads declared agents (`declared-agents-orchestrated`).
 #[test]
 fn e2e_suite_passes_through_gaveldrop() {
     use gaveldrop::Tee;
@@ -549,8 +625,8 @@ fn e2e_suite_passes_through_gaveldrop() {
     // trivially true if the `cases:` glob or `root` path silently stopped matching anything.
     assert_eq!(
         report.summary().total,
-        10,
-        "expected 10 cases to run, got {}",
+        13,
+        "expected 13 cases to run, got {}",
         report.summary().total
     );
     assert!(

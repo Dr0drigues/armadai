@@ -1,11 +1,10 @@
 use armadai_core::agent::Agent;
 use armadai_core::config::AppPaths;
 use armadai_core::parser::parse_agent_file;
-use armadai_core::project::{self, AgentRef};
+use armadai_core::project;
 
 pub async fn execute(agent_name: String) -> anyhow::Result<()> {
-    let path = resolve_agent_file(&agent_name)?;
-    let agent = parse_agent_file(&path)?;
+    let agent = load_named_agent(&agent_name)?;
 
     // Header
     let h = crate::cli::style::header();
@@ -139,33 +138,45 @@ pub async fn execute(agent_name: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve an agent by name: check project config first, then default paths.
-fn resolve_agent_file(agent_name: &str) -> anyhow::Result<std::path::PathBuf> {
+/// Resolve an agent by name: check the project first (file-backed or
+/// declared in `.armadai/agents.yaml`, via `agent_source::load_agent_by_name`),
+/// else the default global agents directory when no project was found at all.
+///
+/// Once a project IS found, its `load_agent_by_name` result — success or
+/// failure — is final: it is returned directly, never silently swallowed in
+/// favour of a fallback. An earlier version discarded any error from it via
+/// `if let Ok(agent) = ...`, which defeated the by-name amendment's own
+/// requirement in two ways measured on a real project: a name ambiguous
+/// between a declaration and a file was reported as the generic "not found
+/// in agents/" from the branch below instead of naming both `agents.yaml`
+/// and the colliding file, and a name matching an explicit, broken `path:`
+/// ref in the project config no longer propagated that specific failure
+/// either.
+fn load_named_agent(agent_name: &str) -> anyhow::Result<Agent> {
     if let Some((root, config)) = project::find_project_config() {
-        // Try to find the agent in the project config
-        if let Some(agent_ref) = config.agents.iter().find(|r| match r {
-            AgentRef::Named { name } => name == agent_name,
-            AgentRef::Path { path } => path.file_stem().is_some_and(|s| s == agent_name),
-            AgentRef::Registry { registry } => registry.ends_with(agent_name),
-        }) {
-            return project::resolve_agent(agent_ref, &root);
+        let fragments = armadai_core::agent_source::project_fragments(&root);
+        let (agent, warning) =
+            armadai_core::agent_source::load_agent_by_name(agent_name, &config, &root, &fragments)?;
+        // Core returns the warning rather than printing it (see
+        // `load_agent_by_name`'s own doc) precisely so it renders here, in
+        // the CLI's own voice, instead of a bare `tracing::warn!` line
+        // reaching the user's terminal directly from core.
+        if let Some(w) = warning {
+            let s = crate::cli::style::warn();
+            anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
         }
-
-        // Not in config, but try resolving as Named from project root
-        let fallback = AgentRef::Named {
-            name: agent_name.to_string(),
-        };
-        if let Ok(path) = project::resolve_agent(&fallback, &root) {
-            return Ok(path);
-        }
+        return Ok(agent);
     }
 
-    // Fallback to default paths
+    // No project config found at all — fall back to the default global
+    // agents directory (the only fallback tier that remains once a project
+    // IS found is `load_agent_by_name`'s own file-then-declarations order).
     let paths = AppPaths::resolve();
-    Agent::find_file(&paths.agents_dir, agent_name).ok_or_else(|| {
+    let path = Agent::find_file(&paths.agents_dir, agent_name).ok_or_else(|| {
         anyhow::anyhow!(
             "Agent '{agent_name}' not found in {}/ (looked for {agent_name}.md)",
             paths.agents_dir.display()
         )
-    })
+    })?;
+    parse_agent_file(&path)
 }

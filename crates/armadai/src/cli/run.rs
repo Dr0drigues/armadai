@@ -471,8 +471,7 @@ async fn resume_run(
         Arc<dyn armadai_core::provider::Provider>,
     > = std::collections::BTreeMap::new();
     for name in &state.agents {
-        let agent_path = resolve_agent_path(&resolution, name)?;
-        let mut agent = armadai_core::parser::parse_agent_file(&agent_path)?;
+        let mut agent = load_agent_for_run(&resolution, name)?;
         armadai_core::model_aliases::resolve_model_deprecations(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
@@ -762,10 +761,10 @@ async fn run_inner(
     // scopes this bascule to the single-agent case only.
     if chain.len() == 1 {
         let name = &chain[0];
-        let agent_path = resolve_agent_path(&resolution, name)?;
+        let agent = load_agent_for_run(&resolution, name)?;
         let (content, tin, tout, cost) = run_single_agent_es(
             &run_id,
-            &agent_path,
+            agent,
             name,
             &current_input,
             project_defaults,
@@ -870,6 +869,10 @@ fn resolve_agent_path(resolution: &AgentResolution, agent_name: &str) -> anyhow:
                 AgentRef::Named { name } => name == agent_name,
                 AgentRef::Path { path } => path.file_stem().is_some_and(|s| s == agent_name),
                 AgentRef::Registry { registry } => registry.ends_with(agent_name),
+                // Matched by name so a later step can report the ref by
+                // name; `resolve_agent` below refuses it because it has no
+                // file to return a path for.
+                AgentRef::Declared { declared } => declared == agent_name,
             }) {
                 return project::resolve_agent(agent_ref, root);
             }
@@ -884,6 +887,50 @@ fn resolve_agent_path(resolution: &AgentResolution, agent_name: &str) -> anyhow:
             .ok_or_else(|| {
                 anyhow::anyhow!("Agent '{agent_name}' not found in {}", agents_dir.display())
             }),
+    }
+}
+
+/// Load the primary agent for a run, whether it is written as a file or
+/// declared in `.armadai/agents.yaml` — the by-name counterpart to
+/// [`resolve_agent_path`], used where the loaded [`Agent`] itself is needed
+/// rather than a file path to hand to a lower-level step.
+///
+/// Called from the single-agent path (`chain.len() == 1`, the common
+/// `armadai run <name>` invocation), the `--orchestrate` roster loader
+/// (`run_orchestrated`), and `--resume`'s roster reload (`resume_run`) —
+/// each of those three already parsed the path into an `Agent` immediately
+/// after resolving it, so swapping in the by-name load was a same-shape
+/// change at each site (task 7b review, Finding 7).
+///
+/// `--pipe`'s legacy chain loop (`run_inner`'s multi-agent branch, which
+/// still calls [`resolve_agent_path`] directly into the older
+/// `run_single_agent`) is NOT wired here: `run_single_agent` loads by path
+/// internally rather than accepting an already-loaded `Agent`, so extending
+/// it needs the same signature change `run_single_agent_es` already got —
+/// real, separate follow-up work, reported rather than done here.
+fn load_agent_for_run(resolution: &AgentResolution, agent_name: &str) -> anyhow::Result<Agent> {
+    match resolution {
+        AgentResolution::Project { root, config } => {
+            let fragments = armadai_core::agent_source::project_fragments(root);
+            let (agent, warning) = armadai_core::agent_source::load_agent_by_name(
+                agent_name, config, root, &fragments,
+            )?;
+            // Core returns the warning rather than printing it (see
+            // `load_agent_by_name`'s own doc) precisely so it renders here,
+            // in the CLI's own voice, instead of a bare `tracing::warn!`
+            // line reaching the user's terminal directly from core.
+            if let Some(w) = warning {
+                let s = crate::cli::style::warn();
+                anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
+            }
+            Ok(agent)
+        }
+        AgentResolution::Default(agents_dir) => {
+            let path = Agent::find_file(agents_dir, agent_name).ok_or_else(|| {
+                anyhow::anyhow!("Agent '{agent_name}' not found in {}", agents_dir.display())
+            })?;
+            armadai_core::parser::parse_agent_file(&path)
+        }
     }
 }
 
@@ -1272,10 +1319,15 @@ async fn dispatch_direct_es(
 /// order on a "model not found" error). `quiet`/`max_content` *are* honored
 /// (via [`QuietMaxContentSink`] in [`dispatch_direct_es`]), matching
 /// `run_single_agent`'s step 6.
+///
+/// Takes an already-loaded `agent` rather than a path (unlike
+/// `run_single_agent`, which still loads from a path): the caller resolves
+/// it via [`load_agent_for_run`], which — unlike a bare path — also covers an
+/// agent declared in `.armadai/agents.yaml`.
 #[allow(clippy::too_many_arguments)]
 async fn run_single_agent_es(
     run_id: &str,
-    agent_path: &Path,
+    mut agent: Agent,
     agent_key: &str,
     input: &str,
     project_defaults: Option<&ProjectDefaults>,
@@ -1287,9 +1339,6 @@ async fn run_single_agent_es(
 ) -> anyhow::Result<(String, u32, u32, f64)> {
     #[cfg(not(feature = "storage"))]
     let _ = project;
-
-    // 1. Load agent (mirrors `run_single_agent` steps 1-1c).
-    let mut agent = armadai_core::parser::parse_agent_file(agent_path)?;
 
     let model_before = agent.metadata.model.clone();
     armadai_core::model_aliases::resolve_model_deprecations(
@@ -1448,9 +1497,16 @@ fn atty_is_pipe() -> bool {
 /// Resolve agent source: walk up for `armadai.yaml`, detect format,
 /// and return the appropriate resolution strategy.
 fn resolve_agents_dir(headless: bool) -> AgentResolution {
-    // 1. Walk-up search for project config (new or legacy format)
+    // 1. Walk-up search for project config (new or legacy format).
+    //
+    // A project counts as having agents when `agents:` lists any, OR
+    // `.armadai/agents.yaml` declares any: every declared agent is included
+    // automatically (it does not need to be relisted in `agents:`), so a
+    // project that only uses that format — an empty/absent `agents:` list —
+    // must still take the project branch instead of silently falling
+    // through to the no-project default below.
     if let Some((root, config)) = project::find_project_config()
-        && !config.agents.is_empty()
+        && armadai_core::agent_source::project_declares_agents(&root, &config)
     {
         tracing::info!(
             "Using project config from {} ({} agent(s))",
@@ -1604,8 +1660,7 @@ async fn run_orchestrated(
     };
 
     for name in agent_names {
-        let agent_path = resolve_agent_path(resolution, name)?;
-        let mut agent = armadai_core::parser::parse_agent_file(&agent_path)?;
+        let mut agent = load_agent_for_run(resolution, name)?;
 
         let model_before = agent.metadata.model.clone();
         armadai_core::model_aliases::resolve_model_deprecations(

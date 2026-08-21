@@ -1,4 +1,6 @@
 pub mod agent;
+pub mod agent_decl;
+pub mod agent_source;
 #[allow(dead_code)]
 pub mod config;
 pub mod dependency_resolver;
@@ -19,3 +21,4 @@ pub mod registries;
 pub mod routing;
 pub mod skill;
 pub mod starter;
+pub mod template;

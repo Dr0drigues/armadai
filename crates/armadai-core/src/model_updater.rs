@@ -7,7 +7,7 @@ use crate::project::{self, ProjectConfig};
 // Data model
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DeprecationFinding {
     pub agent_path: PathBuf,
     pub agent_name: String,
@@ -57,6 +57,12 @@ pub fn check_agent_file(path: &Path) -> Vec<DeprecationFinding> {
 }
 
 /// Check all agents in a project for deprecated models.
+///
+/// Covers both formats: `.md` files (via [`check_agent_file`]) and, when the
+/// project has one, `.armadai/agents.yaml` (via [`check_declarations`]).
+/// Without the latter, a declaration file would be the one place in a
+/// project where a dead model goes unnoticed while every `.md` around it
+/// gets fixed.
 pub fn check_project(project_root: &Path) -> anyhow::Result<Vec<DeprecationFinding>> {
     let config = load_project_config(project_root)?;
     let (paths, _errors) = project::resolve_all_agents(&config, project_root);
@@ -64,6 +70,11 @@ pub fn check_project(project_root: &Path) -> anyhow::Result<Vec<DeprecationFindi
     let mut all_findings = Vec::new();
     for path in &paths {
         all_findings.extend(check_agent_file(path));
+    }
+
+    let decls_path = crate::agent_source::declarations_path(project_root);
+    if decls_path.is_file() {
+        all_findings.extend(check_declarations(&decls_path));
     }
 
     Ok(all_findings)
@@ -109,6 +120,306 @@ pub fn update_agent_file(path: &Path, findings: &[DeprecationFinding]) -> anyhow
         std::fs::write(path, content)?;
     }
 
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------------
+// Declarative agents (`.armadai/agents.yaml`)
+// ---------------------------------------------------------------------------
+
+/// Deprecated models declared in an `agents.yaml`.
+///
+/// One finding **per occurrence**: unlike a `.md` agent, which declares
+/// `model` once, a declaration file carries it in `defaults` and in every
+/// agent that deviates. `field` distinguishes them (`defaults.model`,
+/// `<agent>.model`, `<agent>.model_fallback[i]`) so the rewrite can target
+/// each one.
+///
+/// Detection walks the parsed declaration, so it can only ever see real
+/// `model` / `model_fallback` values — never prose in a comment or a
+/// `description`.
+pub fn check_declarations(path: &Path) -> Vec<DeprecationFinding> {
+    let Ok(decls) = crate::agent_decl::load(path) else {
+        return Vec::new(); // unreadable: not this function's problem
+    };
+    let mut out = Vec::new();
+    let mut push = |field: String, agent_name: String, current: &str| {
+        if let Some(replacement) = resolve_alias(current) {
+            out.push(DeprecationFinding {
+                agent_path: path.to_path_buf(),
+                agent_name,
+                field,
+                current: current.to_string(),
+                replacement,
+            });
+        }
+    };
+    if let Some(m) = &decls.defaults.model {
+        push("defaults.model".into(), "defaults".into(), m);
+    }
+    for (i, fb) in decls.defaults.model_fallback.iter().enumerate() {
+        push(
+            format!("defaults.model_fallback[{i}]"),
+            "defaults".into(),
+            fb,
+        );
+    }
+    for a in &decls.agents {
+        if let Some(m) = &a.model {
+            push(format!("{}.model", a.name), a.name.clone(), m);
+        }
+        for (i, fb) in a.model_fallback.iter().flatten().enumerate() {
+            push(
+                format!("{}.model_fallback[{i}]", a.name),
+                a.name.clone(),
+                fb,
+            );
+        }
+    }
+    out
+}
+
+/// Whether `value` (a line's content right after its `key:`, already
+/// trimmed) opens a YAML block scalar — `|` or `>`, optionally followed by
+/// a chomping indicator (`+`/`-`) and/or an explicit indentation indicator
+/// (`1`-`9`), the two in either order (`c-b-block-header` in the YAML
+/// spec: `|-`, `|+`, `|2`, `|2-`, `|-2`, and the `>` folded-scalar
+/// equivalents). A trailing comment after the header is allowed and
+/// ignored.
+fn opens_block_scalar(value: &str) -> bool {
+    let value = value.split('#').next().unwrap_or(value).trim();
+    let Some(rest) = value.strip_prefix(['|', '>']) else {
+        return false;
+    };
+    if rest.len() > 2 {
+        return false;
+    }
+    let digits = rest.chars().filter(|c| c.is_ascii_digit()).count();
+    let signs = rest.chars().filter(|c| *c == '+' || *c == '-').count();
+    digits <= 1 && signs <= 1 && digits + signs == rest.chars().count()
+}
+
+/// Does `c` belong to a model-identifier token (letters, digits, `-`, `_`,
+/// `.`)? Model names routinely contain hyphens and digits (`claude-3-5-
+/// sonnet-20241022`), so a plain word-boundary check (alphanumeric only)
+/// would not stop at the hyphen between a shorter name and a longer one that
+/// starts with it.
+fn is_model_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')
+}
+/// Replace every occurrence of `needle` in `haystack` that is a whole
+/// model-name token — not merely a substring — with `replacement`, and
+/// report how many were replaced.
+///
+/// A single forward pass: once an occurrence (matching or not) is behind the
+/// cursor, it is never revisited, so a `replacement` that happens to start
+/// with `needle` (e.g. `gpt-4` deprecated in favour of `gpt-4-turbo`) cannot
+/// loop — the newly written text is simply not rescanned. `needle ==
+/// replacement` is treated as already-a-no-op for the same reason (nothing
+/// to gain by "replacing" a value with itself, and it would otherwise never
+/// terminate).
+fn replace_model_name_all(haystack: &str, needle: &str, replacement: &str) -> (String, usize) {
+    if needle.is_empty() || needle == replacement {
+        return (haystack.to_string(), 0);
+    }
+    let mut out = String::with_capacity(haystack.len());
+    let mut rest = haystack;
+    let mut count = 0;
+    loop {
+        let Some(rel) = rest.find(needle) else {
+            out.push_str(rest);
+            break;
+        };
+        let before_ok = rest[..rel]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_model_name_char(c));
+        let end = rel + needle.len();
+        let after_ok = rest[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_model_name_char(c));
+        if before_ok && after_ok {
+            out.push_str(&rest[..rel]);
+            out.push_str(replacement);
+            count += 1;
+            rest = &rest[end..];
+        } else {
+            // Not a whole-token match (`needle` is a substring of a longer
+            // identifier) — copy past just this occurrence's first
+            // character and keep scanning; guarantees forward progress.
+            let mut chars = rest[rel..].chars();
+            let c = chars.next().expect("find() returned a valid offset");
+            out.push_str(&rest[..rel]);
+            out.push(c);
+            rest = &rest[rel + c.len_utf8()..];
+        }
+    }
+    (out, count)
+}
+
+/// Rewrite deprecated models in an `agents.yaml`.
+///
+/// Textual substitution, like `update_agent_file` — a `serde_yaml_ng`
+/// round-trip would silently drop every comment and reorder keys.
+///
+/// Bounded to lines whose key is `model:`/`model_fallback:`, or which are
+/// list items belonging to one of those keys' own block list. A raw
+/// `: <model>` pattern would also match inside a comment or a
+/// `description`, and correcting a configuration must not rewrite prose.
+///
+/// A bare `- ` line is only a candidate while it is at or below the
+/// indentation of the nearest preceding `model:`/`model_fallback:` key that
+/// opened a block list (i.e. a line that is *only* that key, with the
+/// values on the following, indented lines) — any other line, whatever its
+/// own indentation, closes that scope. Without tracking the enclosing key,
+/// any `- ` line anywhere would be a candidate: a declared agent's `args:`
+/// block list happens to be able to hold a string that is itself a model
+/// name (e.g. `args: [--model, claude-3-sonnet-20240229]`, passed through
+/// to a `cli`-provider agent), and rewriting that would silently corrupt an
+/// argument, not fix a model.
+///
+/// The same enclosing-scope tracking covers block scalars (`description:
+/// |`, `>`, …): every line more indented than the key that opened one (or
+/// blank) belongs to that scalar's *value*, never to the mapping — `#` is
+/// literal there, not a comment, and a line that happens to start with
+/// `model:` is prose, not a key. Such lines are never rewrite candidates,
+/// whatever they start with.
+///
+/// Detection ([`check_declarations`]) is a structured YAML parse; this
+/// rewrite is textual, so the two can disagree on a form the parser
+/// accepts but this scan does not recognise (e.g. a quoted `"model":` key).
+/// Rather than let that surface as a silently-too-low count, this function
+/// insists the number of textual replacements it actually made equals
+/// `findings.len()` and returns an `Err` naming whatever finding(s) it
+/// could not locate otherwise — and, so a caller never has to reason about
+/// a half-applied fix, writes nothing at all when it errors.
+///
+/// Every replacement on a model-key line goes through
+/// [`replace_model_name_all`], anchored on the model name's own boundaries —
+/// not a raw `contains`/`replace` — so one deprecated name that happens to
+/// be a prefix of another (a future `claude-3-5-sonnet` next to
+/// `claude-3-5-sonnet-20241022`, or `gpt-4` next to `gpt-4-turbo`) cannot
+/// have the shorter finding's rewrite corrupt the line the longer one owns.
+pub fn update_declarations(path: &Path, findings: &[DeprecationFinding]) -> anyhow::Result<usize> {
+    if findings.is_empty() {
+        return Ok(0);
+    }
+    let content = std::fs::read_to_string(path)?;
+    let mut count = 0;
+    let mut out = String::with_capacity(content.len());
+    // Indentation of the nearest `model:`/`model_fallback:` key that opened
+    // a block list still in scope, if any.
+    let mut active_list_indent: Option<usize> = None;
+    // Indentation of the key that opened a block scalar (`|`/`>`) still in
+    // scope, if any. Tracked separately: a block scalar can open under ANY
+    // key (`description: |`), not just `model:`/`model_fallback:`.
+    let mut block_scalar_indent: Option<usize> = None;
+    // How many findings still need a textual match, grouped by the exact
+    // deprecated value — several findings (e.g. `defaults.model` and an
+    // agent's own `model`) legitimately share the same `current` string, so
+    // this is decremented, not looked up by finding identity.
+    let mut remaining: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for f in findings {
+        *remaining.entry(f.current.as_str()).or_insert(0) += 1;
+    }
+
+    for line in content.lines() {
+        let raw_indent = line.len() - line.trim_start().len();
+        let is_blank = line.trim().is_empty();
+
+        if let Some(bs_indent) = block_scalar_indent {
+            if is_blank || raw_indent > bs_indent {
+                // Still inside the scalar's value: copy through untouched,
+                // whatever this line looks like.
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+            block_scalar_indent = None; // dedented: the scalar just ended
+        }
+
+        let code = line.split('#').next().unwrap_or(line);
+        let trimmed = code.trim_start();
+        let indent = code.len() - trimmed.len();
+
+        let is_model_line = trimmed.starts_with("model:") || trimmed.starts_with("model_fallback:");
+        let is_active_list_item = trimmed.starts_with("- ")
+            && active_list_indent.is_some_and(|key_indent| indent >= key_indent);
+
+        if !trimmed.is_empty() && !is_active_list_item {
+            // Not a continuation of the active list: a bare `model:`/
+            // `model_fallback:` key (no inline value) opens a new one — its
+            // values are the following, more-indented `- ` lines — and any
+            // other line closes whatever scope was open.
+            active_list_indent =
+                (trimmed == "model:" || trimmed == "model_fallback:").then_some(indent);
+        }
+
+        // Does THIS key's own value open a block scalar? Checked for every
+        // key, not just model/model_fallback — `description: |` is the
+        // case this exists for.
+        if let Some(colon) = trimmed.find(':')
+            && opens_block_scalar(&trimmed[colon + 1..])
+        {
+            block_scalar_indent = Some(indent);
+        }
+
+        let is_model_key = is_model_line || is_active_list_item;
+        let mut kept = line.to_string();
+        if is_model_key {
+            for f in findings {
+                let (rewritten, n) = replace_model_name_all(&kept, &f.current, &f.replacement);
+                if n > 0 {
+                    kept = rewritten;
+                    count += n;
+                    if let Some(rem) = remaining.get_mut(f.current.as_str()) {
+                        *rem = rem.saturating_sub(n);
+                    }
+                }
+            }
+        }
+        out.push_str(&kept);
+        out.push('\n');
+    }
+
+    if count != findings.len() {
+        // Attribute the shortfall to specific findings, deterministically:
+        // for each value still outstanding, the trailing findings that
+        // share it (findings sharing a `current` are textually
+        // interchangeable, so which exact one is named does not matter —
+        // only that the named count matches the real shortfall).
+        let mut left = remaining;
+        let mut unapplied: Vec<&DeprecationFinding> = Vec::new();
+        for f in findings.iter().rev() {
+            if let Some(n) = left.get_mut(f.current.as_str())
+                && *n > 0
+            {
+                *n -= 1;
+                unapplied.push(f);
+            }
+        }
+        unapplied.reverse();
+        let named = if unapplied.is_empty() {
+            "unable to attribute the mismatch to a specific finding".to_string()
+        } else {
+            unapplied
+                .iter()
+                .map(|f| format!("{} [{}]", f.agent_name, f.field))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        anyhow::bail!(
+            "detection and rewrite disagree on {}: parsing found {} deprecated model(s), the \
+             textual rewrite could only locate {} — left everything unfixed rather than guess \
+             (an unsupported form, such as a quoted `\"model\":` key, is the likely cause): {named}",
+            path.display(),
+            findings.len(),
+            count,
+        );
+    }
+
+    std::fs::write(path, out)?;
     Ok(count)
 }
 
@@ -170,20 +481,87 @@ pub fn auto_check_and_prompt(project_root: &Path, interactive: bool) -> bool {
         .unwrap_or(false);
 
     if confirm {
-        let mut total = 0;
+        let decls_path = crate::agent_source::declarations_path(project_root);
+        // Grouped by file, and passed to `apply_findings` a whole file at a
+        // time — one call per finding would split a file's occurrences
+        // across several independent calls, letting an earlier one's
+        // success land on disk before a later one's failure is even
+        // discovered. That defeats exactly the atomicity
+        // `update_declarations` exists to provide: this project shipped
+        // that guarantee once already and lost it right here, one call
+        // site later, by looping per finding instead of per file.
+        let mut by_file: std::collections::HashMap<PathBuf, Vec<DeprecationFinding>> =
+            std::collections::HashMap::new();
         for f in &findings {
-            if let Ok(n) = update_agent_file(&f.agent_path, std::slice::from_ref(f)) {
-                total += n;
+            by_file
+                .entry(f.agent_path.clone())
+                .or_default()
+                .push(f.clone());
+        }
+
+        let mut total = 0;
+        let mut any_failed = false;
+        for (path, file_findings) in &by_file {
+            match apply_findings(file_findings, &decls_path) {
+                Ok(n) => total += n,
+                Err(e) => {
+                    any_failed = true;
+                    eprintln!("  error: {}: {e}", path.display());
+                }
             }
         }
         if total > 0 {
             eprintln!("  Updated {total} model(s).\n");
+        }
+        if any_failed {
+            eprintln!(
+                "hint: one or more file(s) could not be fully updated (see error(s) above); \
+                 run `armadai models update` for details.\n"
+            );
         }
         return true;
     }
 
     eprintln!("hint: run `armadai models update` when ready.\n");
     false
+}
+
+/// Rewrite every finding for ONE file in a single call, choosing the
+/// rewriter that matches where they came from.
+///
+/// Takes all of a file's findings at once and passes them through
+/// together — never split across several calls. `update_declarations`'s
+/// all-or-nothing guarantee (nothing is written unless every finding can be
+/// accounted for) only protects a caller that preserves this batching: one
+/// call per finding would let an earlier finding's fix land on disk before
+/// a later finding's failure in the SAME file is discovered, which is
+/// precisely the half-applied result the guarantee exists to rule out.
+///
+/// `findings` must all share one `agent_path` — callers group by file
+/// before calling this (`check_project`'s own results are always grouped
+/// for display, so this matches how a caller already has them). A finding
+/// whose `agent_path` is the project's `agents.yaml` came from
+/// [`check_declarations`] and must go through [`update_declarations`] —
+/// [`update_agent_file`]'s single `replacen(.., 1)` would only fix the
+/// first occurrence, and its raw `: <model>` pattern is not bounded to
+/// `model:`/`model_fallback:` lines the way the declarative rewrite is.
+///
+/// Public, and used by two callers: `auto_check_and_prompt`'s own
+/// confirmation branch above, and `armadai models update`
+/// (`crates/armadai/src/cli/models.rs`) — the other place that turns
+/// [`DeprecationFinding`]s into an actual file edit. Both need the exact
+/// same routing decision and the exact same batching; extracted here once
+/// so neither can drift from it.
+pub fn apply_findings(findings: &[DeprecationFinding], decls_path: &Path) -> anyhow::Result<usize> {
+    let Some(first) = findings.first() else {
+        return Ok(0);
+    };
+    let path = &first.agent_path;
+    if path == decls_path {
+        update_declarations(path, findings)
+    } else {
+        update_agent_file(path, findings)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -316,5 +694,504 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].current, "gpt-3.5-turbo");
         assert_eq!(findings[0].replacement, "gpt-4o-mini");
+    }
+
+    // -----------------------------------------------------------------
+    // Declarative agents (`.armadai/agents.yaml`)
+    // -----------------------------------------------------------------
+
+    /// Take a real deprecated model from the alias registry, so the test
+    /// does not encode a value that may stop being deprecated.
+    ///
+    /// The two Claude names are tried first, in case the registry ever
+    /// grows Anthropic entries, but `embedded_aliases()` (in
+    /// `model_aliases.rs`) carries none today — verified by reading it, and
+    /// by this helper actually panicking on an unpatched version of itself
+    /// that tried only those two. The fallback candidates ARE in that map
+    /// today, so this stays deterministic without depending on a machine's
+    /// optional `~/.config/armadai/model-aliases.json` override.
+    fn a_deprecated_model() -> (String, String) {
+        for candidate in [
+            "claude-3-sonnet-20240229",
+            "claude-3-opus-20240229",
+            "gpt-4-turbo",
+            "gpt-3.5-turbo",
+            "gemini-1.5-flash",
+            "gemini-3.0-pro",
+        ] {
+            if let Some(r) = resolve_alias(candidate) {
+                return (candidate.to_string(), r);
+            }
+        }
+        panic!("no known deprecated model in the alias registry — update this helper");
+    }
+
+    fn write_yaml(dir: &Path, body: &str) -> std::path::PathBuf {
+        let p = dir.join("agents.yaml");
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn a_deprecated_model_in_defaults_is_found_and_fixed() {
+        let (old, new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            &format!("defaults:\n  model: {old}\nagents:\n  - name: a\n"),
+        );
+        let findings = check_declarations(&p);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(update_declarations(&p, &findings).unwrap(), 1);
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(after.contains(&new) && !after.contains(&old));
+    }
+
+    /// A `.md` agent declares `model` once; `agents.yaml` carries it in
+    /// `defaults` and in every agent that deviates. `replacen(.., 1)` would
+    /// fix only the first.
+    #[test]
+    fn the_same_deprecated_model_is_fixed_at_every_occurrence() {
+        let (old, new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            &format!(
+                "defaults:\n  model: {old}\nagents:\n  \
+                 - name: a\n    model: {old}\n  - name: b\n    model: {old}\n"
+            ),
+        );
+        let findings = check_declarations(&p);
+        assert_eq!(findings.len(), 3, "one per occurrence: {findings:?}");
+        update_declarations(&p, &findings).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            !after.contains(&old),
+            "every occurrence must be fixed:\n{after}"
+        );
+        assert_eq!(after.matches(&new).count(), 3);
+    }
+
+    /// m6 / F11: `contains`/`replace` on the raw line is unanchored, so two
+    /// deprecated models where one name is a prefix of the other used to
+    /// corrupt each other — the shorter finding's rewrite would land inside
+    /// the longer line too, and the per-line count still balanced (1 match
+    /// each), so `update_declarations` reported success on a mangled value.
+    /// Findings are built by hand rather than through `check_declarations`,
+    /// since no pair in the real alias registry happens to share a prefix
+    /// today — this fixture manufactures the exact shape regardless.
+    #[test]
+    fn a_deprecated_model_that_is_a_prefix_of_another_does_not_corrupt_the_longer_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            "agents:\n  - name: a\n    model: dep\n  - name: b\n    model: dep-longer\n",
+        );
+        // Replacements chosen so an unanchored rewrite CANNOT recompose the
+        // right answer by accident: `dep` -> `new` and `dep-longer` ->
+        // `new-longer` would let an unanchored replace of `dep` inside
+        // `dep-longer` produce `new` + `-longer` = `new-longer`, the exact
+        // string the second finding was also going to write — the mutation
+        // would be invisible. `alpha`/`beta` share no structure with each
+        // other or with `dep`/`dep-longer`, so the ONLY way `model:
+        // dep-longer` ends up as `model: beta` is the longer finding
+        // matching its own whole token; an unanchored replace of `dep` ->
+        // `alpha` inside `dep-longer` produces `alpha-longer`, which is
+        // asserted against below.
+        let findings = vec![
+            DeprecationFinding {
+                agent_path: p.clone(),
+                agent_name: "a".into(),
+                field: "model".into(),
+                current: "dep".into(),
+                replacement: "alpha".into(),
+            },
+            DeprecationFinding {
+                agent_path: p.clone(),
+                agent_name: "b".into(),
+                field: "model".into(),
+                current: "dep-longer".into(),
+                replacement: "beta".into(),
+            },
+        ];
+
+        assert_eq!(update_declarations(&p, &findings).unwrap(), 2);
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            after.contains("model: alpha\n"),
+            "the shorter deprecated name must be fixed on its own line:\n{after}"
+        );
+        assert!(
+            after.contains("model: beta\n"),
+            "the longer line must be fixed to its OWN replacement, not \
+             corrupted by the shorter finding's rewrite:\n{after}"
+        );
+        assert!(
+            !after.contains("alpha-longer"),
+            "the shorter finding must not have rewritten inside the longer \
+             line's value: {after}"
+        );
+    }
+
+    /// A raw `: <model>` pattern would also match inside prose. Correcting a
+    /// configuration is one thing; rewriting a comment is another.
+    #[test]
+    fn a_deprecated_model_named_in_a_comment_or_description_is_left_alone() {
+        let (old, _new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            &format!(
+                "# we used to run {old} here\nagents:\n  - name: a\n    \
+                 description: migrated away from {old}\n"
+            ),
+        );
+        assert!(
+            check_declarations(&p).is_empty(),
+            "no `model:` key carries it, so there is nothing to fix"
+        );
+        let before = std::fs::read_to_string(&p).unwrap();
+        update_declarations(&p, &[]).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+    }
+
+    #[test]
+    fn comments_and_key_order_survive_the_rewrite() {
+        let (old, new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            &format!(
+                "# fleet defaults\ndefaults:\n  model: {old}\n  \
+                 temperature: 0.3   # deliberately warm\nagents:\n  - name: a\n"
+            ),
+        );
+        let findings = check_declarations(&p);
+        update_declarations(&p, &findings).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        // The rewrite must actually have happened — otherwise "comments and
+        // key order survive" would pass just as well for a no-op that never
+        // touched the file at all.
+        assert!(
+            after.contains(&new) && !after.contains(&old),
+            "the model must actually be rewritten:\n{after}"
+        );
+        assert!(after.contains("# fleet defaults"), "comment lost:\n{after}");
+        assert!(
+            after.contains("# deliberately warm"),
+            "inline comment lost:\n{after}"
+        );
+        assert!(
+            after.find("model:").unwrap() < after.find("temperature:").unwrap(),
+            "key order changed — a serde round-trip would do this:\n{after}"
+        );
+    }
+
+    #[test]
+    fn a_deprecated_model_in_model_fallback_is_fixed() {
+        let (old, new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            &format!("agents:\n  - name: a\n    model_fallback: [{old}]\n"),
+        );
+        let findings = check_declarations(&p);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        update_declarations(&p, &findings).unwrap();
+        assert!(std::fs::read_to_string(&p).unwrap().contains(&new));
+    }
+
+    /// `is_model_key` must not treat every `- ` line as a candidate. An
+    /// `args:` block list — added alongside `command` so a declared
+    /// `provider: cli` agent can be expressed — can perfectly well hold a
+    /// value that is itself a deprecated model name, e.g. `--model
+    /// <name>` passed straight through to the CLI. Rewriting that would
+    /// corrupt an argument instead of fixing a model, while the real
+    /// `model:` field on the same agent must still be fixed.
+    #[test]
+    fn a_list_item_under_an_unrelated_key_is_left_alone() {
+        let (old, new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            &format!(
+                "agents:\n  - name: a\n    provider: cli\n    model: {old}\n    \
+                 args:\n      - --model\n      - {old}\n"
+            ),
+        );
+        let findings = check_declarations(&p);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only the `model:` field is a finding: {findings:?}"
+        );
+        update_declarations(&p, &findings).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            after.contains(&format!("model: {new}")),
+            "the real model field must still be fixed:\n{after}"
+        );
+        assert!(
+            after.contains(&format!("- {old}")),
+            "the args list item must survive untouched:\n{after}"
+        );
+    }
+
+    /// `model_fallback` written as a block list (each value on its own,
+    /// indented `- ` line) rather than the inline `[a, b]` form used
+    /// elsewhere in this file — both are valid YAML, and both must be
+    /// fixed. Two distinct deprecated models (rather than
+    /// `a_deprecated_model`'s single pair) so a mutation that only fixes
+    /// the first occurrence cannot hide behind two identical strings.
+    #[test]
+    fn a_block_style_model_fallback_list_is_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            "agents:\n  - name: a\n    model_fallback:\n      - gpt-4-turbo\n      \
+             - gemini-1.5-flash\n",
+        );
+        let findings = check_declarations(&p);
+        assert_eq!(findings.len(), 2, "{findings:?}");
+        assert_eq!(update_declarations(&p, &findings).unwrap(), 2);
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(after.contains("gpt-4o") && !after.contains("gpt-4-turbo"));
+        assert!(after.contains("gemini-2.5-flash") && !after.contains("gemini-1.5-flash"));
+    }
+
+    /// A `description: |` block scalar whose indented continuation line
+    /// itself starts with `model:` must not be mistaken for a real `model:`
+    /// key — it is prose inside the scalar's value, not a mapping key. The
+    /// sibling agent's real `model:` field, outside the scalar, must still
+    /// be fixed.
+    #[test]
+    fn a_block_scalar_is_left_byte_identical_while_a_real_model_field_is_still_fixed() {
+        let (old, new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let body = format!(
+            "agents:\n  - name: a\n    description: |\n      notes:\n      model: {old}\n      \
+             more prose about {old}\n    model: {old}\n"
+        );
+        let p = write_yaml(dir.path(), &body);
+
+        let findings = check_declarations(&p);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only the real `model:` field is a finding: {findings:?}"
+        );
+        assert_eq!(update_declarations(&p, &findings).unwrap(), 1);
+
+        let after = std::fs::read_to_string(&p).unwrap();
+        let block_scalar_lines = "      notes:\n      model: {old}\n      more prose about {old}\n"
+            .replace("{old}", &old);
+        assert!(
+            after.contains(&block_scalar_lines),
+            "the block scalar's content must survive byte-identical:\n{after}"
+        );
+        assert!(
+            after.contains(&format!("\n    model: {new}\n")),
+            "the real, sibling model: field must still be fixed:\n{after}"
+        );
+    }
+
+    /// `is_model_key`'s textual scan does not recognise a quoted key
+    /// (`"model":`), while `check_declarations`'s structured parse does —
+    /// a genuine detection/rewrite disagreement. `update_declarations` must
+    /// refuse rather than silently under-report, and must leave the file
+    /// completely untouched (no partial rewrite the caller never asked
+    /// for).
+    #[test]
+    fn a_quoted_key_is_detected_but_not_textually_matched_and_the_disagreement_is_a_hard_error() {
+        let (old, _new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            &format!("defaults:\n  provider: claude\n  \"model\": {old}\nagents:\n  - name: a\n"),
+        );
+
+        let findings = check_declarations(&p);
+        assert_eq!(
+            findings.len(),
+            1,
+            "the structured parse must still find it: {findings:?}"
+        );
+
+        let before = std::fs::read_to_string(&p).unwrap();
+        let err = update_declarations(&p, &findings).unwrap_err().to_string();
+        assert!(
+            err.contains("detection and rewrite disagree"),
+            "must name what kind of failure this is: {err}"
+        );
+        assert!(
+            err.contains("defaults [defaults.model]"),
+            "must name the specific finding that could not be applied: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            before,
+            "a disagreement must leave the file completely untouched, not partially rewritten"
+        );
+    }
+
+    #[test]
+    fn check_declarations_of_an_unreadable_file_is_empty_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("does-not-exist.yaml");
+        assert!(check_declarations(&p).is_empty());
+    }
+
+    #[test]
+    fn update_declarations_with_no_findings_leaves_the_file_untouched() {
+        let (old, _new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(dir.path(), &format!("defaults:\n  model: {old}\n"));
+        let before = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(update_declarations(&p, &[]).unwrap(), 0);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+    }
+
+    /// `check_project` must also see `.armadai/agents.yaml` — the wiring
+    /// this task exists to add (see also `auto_check_and_prompt`, verified
+    /// by hand rather than here since it drives an interactive prompt).
+    /// Same project-fixture shape as `test_check_project_with_agents`, but
+    /// the deprecated model lives in the declaration file instead of a
+    /// `.md`.
+    #[test]
+    fn check_project_also_scans_the_declarations_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let armadai_dir = dir.path().join(".armadai");
+        std::fs::create_dir_all(&armadai_dir).unwrap();
+        std::fs::write(armadai_dir.join("config.yaml"), "agents: []\n").unwrap();
+        let (old, new) = a_deprecated_model();
+        std::fs::write(
+            armadai_dir.join("agents.yaml"),
+            format!("defaults:\n  provider: claude\n  model: {old}\nagents:\n  - name: a\n"),
+        )
+        .unwrap();
+
+        let findings = check_project(dir.path()).unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].current, old);
+        assert_eq!(findings[0].replacement, new);
+    }
+
+    // -----------------------------------------------------------------
+    // `apply_findings` — the routing AND batching decision
+    // `auto_check_and_prompt` makes on confirmation. Tested directly, since
+    // exercising the surrounding `dialoguer::Confirm` prompt would need a
+    // real terminal.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn apply_findings_routes_a_declarations_finding_to_update_declarations() {
+        let (old, new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            &format!("defaults:\n  model: {old}\nagents:\n  - name: a\n"),
+        );
+        let finding = DeprecationFinding {
+            agent_path: p.clone(),
+            agent_name: "defaults".into(),
+            field: "defaults.model".into(),
+            current: old,
+            replacement: new.clone(),
+        };
+
+        // `decls_path` equal to the finding's own path is what marks it as
+        // declarations-sourced.
+        let n = apply_findings(&[finding], &p).unwrap();
+        assert_eq!(n, 1);
+        assert!(std::fs::read_to_string(&p).unwrap().contains(&new));
+    }
+
+    #[test]
+    fn apply_findings_routes_a_file_finding_to_update_agent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.md");
+        std::fs::write(&path, create_agent_md("Test", "gpt-4-turbo", &[])).unwrap();
+        let finding = DeprecationFinding {
+            agent_path: path.clone(),
+            agent_name: "Test".into(),
+            field: "model".into(),
+            current: "gpt-4-turbo".into(),
+            replacement: "gpt-4o".into(),
+        };
+        // `decls_path` deliberately different from the finding's own path,
+        // so only the else-branch (`update_agent_file`) can produce a fix.
+        let decls_path = dir.path().join("agents.yaml");
+
+        let n = apply_findings(&[finding], &decls_path).unwrap();
+        assert_eq!(n, 1);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("model: gpt-4o")
+        );
+    }
+
+    #[test]
+    fn apply_findings_of_an_empty_slice_is_a_harmless_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let decls_path = dir.path().join("agents.yaml");
+        assert_eq!(apply_findings(&[], &decls_path).unwrap(), 0);
+    }
+
+    /// The regression this whole function exists to close: a file with
+    /// TWO findings, one reachable by the textual scan and one that is
+    /// not (a quoted key), must be treated as ONE atomic unit. A version
+    /// that calls the rewriter once per finding would let the first
+    /// finding's fix land on disk before the second finding's failure is
+    /// even discovered — this asserts all three properties a caller
+    /// needs to tell that apart from a real, honest failure: the file is
+    /// byte-identical to before, the reported count is 0, and the call
+    /// itself errors (so a caller — `models.rs` — has something to
+    /// propagate as a non-zero exit rather than a silent partial fix).
+    #[test]
+    fn apply_findings_is_atomic_across_a_files_own_findings() {
+        let (old, _new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            &format!(
+                "defaults:\n  provider: claude\n  model: {old}\nagents:\n  - name: a\n    \"model\": {old}\n"
+            ),
+        );
+        let findings = check_declarations(&p);
+        assert_eq!(findings.len(), 2, "one plain, one quoted: {findings:?}");
+        let before = std::fs::read_to_string(&p).unwrap();
+
+        let err = apply_findings(&findings, &p).unwrap_err().to_string();
+        assert!(
+            err.contains("detection and rewrite disagree"),
+            "must surface update_declarations's own disagreement error: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            before,
+            "the plain defaults.model fix must NOT land on disk just because the \
+             quoted-key finding in the SAME file failed — that is the exact bug \
+             this function exists to close"
+        );
+    }
+
+    /// The healthy twin of the atomicity test above: two or more findings
+    /// that CAN all be rewritten must all actually be, in one call —
+    /// batching must not lose any of them.
+    #[test]
+    fn apply_findings_fixes_every_finding_in_one_batched_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            "defaults:\n  provider: claude\n  model: gpt-4-turbo\nagents:\n  - name: a\n    model: gemini-1.5-flash\n",
+        );
+        let findings = check_declarations(&p);
+        assert_eq!(findings.len(), 2, "{findings:?}");
+
+        assert_eq!(apply_findings(&findings, &p).unwrap(), 2);
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(after.contains("gpt-4o") && !after.contains("gpt-4-turbo"));
+        assert!(after.contains("gemini-2.5-flash") && !after.contains("gemini-1.5-flash"));
     }
 }
