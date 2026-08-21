@@ -148,11 +148,22 @@ in disguise.
 
 The blast radius is scoped, though: a collision costs only the colliding declaration, never the
 rest of the fleet — every other declared agent, and the colliding `.md` file itself, still load
-fine elsewhere. `armadai list` and `armadai inspect` (read-only) print a warning and carry on with
-whatever did load. `armadai link` is different: because it writes files other tools then trust, it
-refuses to write **anything** when the collision falls inside what you asked it to link (the whole
-fleet by default, or the names passed to `--agents`) — a command that writes config must not
-silently ship a smaller fleet than the one you declared.
+fine elsewhere. But the three commands that can hit one don't all react the same way:
+
+- `armadai list` is read-only over the whole fleet: it prints a warning for the colliding name and
+  carries on, showing every other agent that did load.
+- `armadai run <name>` and `armadai inspect <name>` are about one specific agent, and refuse to
+  guess which side of a collision you meant: naming a colliding agent **hard-fails** (exit 1),
+  naming both `agents.yaml` and the colliding `.md` file. A command that is about to execute or
+  describe one agent must not silently pick a winner between a declaration and a file.
+- Because that check is scoped to just the one name you asked for, `armadai inspect
+  <some-other-name>` says **nothing** about an unrelated collision sitting elsewhere in the fleet —
+  it doesn't scan the whole project the way `list` does. Don't rely on `inspect` to surface
+  collisions in general; only `armadai list` (or `armadai link`) looks at the whole fleet at once.
+- `armadai link` is different again: because it writes files other tools then trust, it refuses to
+  write **anything** when the collision falls inside what you asked it to link (the whole fleet by
+  default, or the names passed to `--agents`) — a command that writes config must not silently ship
+  a smaller fleet than the one you declared.
 
 ## Long compositions still get audited
 
@@ -221,5 +232,6 @@ So: identical projection, for what both formats can actually say. Not identical 
 ## See also
 
 [Agent format](agent-format.md) documents the `.md` side — required sections, the full metadata
-table, provider types. Anything not covered here (Instructions, Output Format, Pipeline, Triggers,
-Ring Config) is `.md`-only for now; a declared agent has no way to set any of them.
+table, provider types. Anything not covered here (Instructions, Output Format, Pipeline, Context,
+Triggers, Ring Config) is `.md`-only for now; a declared agent has no way to set any of them —
+`to_agent()` always resolves `context` to `None`, exactly like the other five.
