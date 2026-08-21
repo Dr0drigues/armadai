@@ -1111,8 +1111,9 @@ enum AgentLookup {
     /// variants (`Named`, `Path`, `Registry`) always have.
     Path(std::path::PathBuf),
     /// Declared in `.armadai/agents.yaml`, not file-backed. The shell relay
-    /// only runs file-backed agents today — wiring it to `load_agent` for
-    /// declared agents is a later task's job.
+    /// only runs file-backed agents today — wiring it to
+    /// `agent_source::load_agent_by_name` for declared agents is a later
+    /// task's job.
     Declared,
     /// No ref in the project config matches this name at all.
     NotFound,

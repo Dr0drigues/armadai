@@ -379,6 +379,41 @@ mod tests {
         }
     }
 
+    /// Point the global agent library (`ARMADAI_CONFIG_DIR`) at an empty temp
+    /// dir for the duration of `f`.
+    ///
+    /// The three parity tests below load their declared side through
+    /// `load_agent_by_name`, the real production entry point — unlike the
+    /// now-deleted `load_agent`, that function's file-backed lookup walks
+    /// `library_dirs`, which always includes the REAL
+    /// `~/.config/armadai/agents/`. On a machine that has ever run `armadai
+    /// extract`/`init` from this very repo, that directory holds this
+    /// project's own team agents (`core-specialist.md` included) — without
+    /// this isolation, a parity test could silently resolve the wrong agent
+    /// from a dev box's real global library instead of the fixture below,
+    /// and pass or fail for a reason that has nothing to do with its own
+    /// fixture. Mirrors `agent_source.rs`'s own
+    /// `with_isolated_global_library`; serialised via `ENV_MUTEX` since it
+    /// mutates a process-global env var.
+    fn with_isolated_global_library<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        let empty = tempfile::tempdir().unwrap();
+        // SAFETY: serialised via ENV_MUTEX above.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", empty.path());
+        }
+        let result = f();
+        // SAFETY: restoring original env state, still under the guard.
+        unsafe {
+            match &orig {
+                Some(v) => std::env::set_var("ARMADAI_CONFIG_DIR", v),
+                None => std::env::remove_var("ARMADAI_CONFIG_DIR"),
+            }
+        }
+        result
+    }
+
     /// A declared agent and its hand-written `.md` twin must produce the same
     /// native projection. If they diverge, the declaration format is a second
     /// source of truth rather than an alternative spelling of the first —
@@ -389,50 +424,59 @@ mod tests {
     /// `LinkAgent::from(&Agent)` walks, not just the system prompt.
     #[test]
     fn a_declared_agent_and_its_md_twin_project_identically() {
-        let dir = tempfile::tempdir().unwrap();
+        with_isolated_global_library(|| {
+            let dir = tempfile::tempdir().unwrap();
 
-        // The fragment both versions share.
-        let fragments = vec![armadai_core::prompt::Prompt {
-            name: "base".into(),
-            description: None,
-            apply_to: vec![],
-            body: "You own the core domain.".into(),
-            source: std::path::PathBuf::from("base.md"),
-        }];
+            // The fragment both versions share.
+            let fragments = vec![armadai_core::prompt::Prompt {
+                name: "base".into(),
+                description: None,
+                apply_to: vec![],
+                body: "You own the core domain.".into(),
+                source: std::path::PathBuf::from("base.md"),
+            }];
 
-        // Declared version.
-        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
-        std::fs::write(
-            dir.path().join(".armadai/agents.yaml"),
-            "defaults:\n  provider: claude\n  model: latest:pro\n  temperature: 0.3\n\
-             agents:\n  - name: core-specialist\n    description: Core domain\n    \
-             tags: [rust, domain]\n    scope: [src/core/**]\n    max_tokens: 8192\n    \
-             timeout: 45\n    model_fallback: [latest:fast]\n    prompt: [base]\n",
-        )
-        .unwrap();
-        let declared = armadai_core::agent_source::load_agent(
-            &armadai_core::project::AgentRef::Declared {
-                declared: "core-specialist".into(),
-            },
-            dir.path(),
-            &fragments,
-        )
-        .unwrap();
+            // Declared version.
+            std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+            std::fs::write(
+                dir.path().join(".armadai/agents.yaml"),
+                "defaults:\n  provider: claude\n  model: latest:pro\n  temperature: 0.3\n\
+                 agents:\n  - name: core-specialist\n    description: Core domain\n    \
+                 tags: [rust, domain]\n    scope: [src/core/**]\n    max_tokens: 8192\n    \
+                 timeout: 45\n    model_fallback: [latest:fast]\n    prompt: [base]\n",
+            )
+            .unwrap();
+            // Loaded through `load_agent_by_name`, the actual production
+            // entry point for one declared agent — not the now-deleted
+            // `load_agent`, which had no production caller of its own.
+            let config = armadai_core::project::ProjectConfig::default();
+            let (declared, warning) = armadai_core::agent_source::load_agent_by_name(
+                "core-specialist",
+                &config,
+                dir.path(),
+                &fragments,
+            )
+            .unwrap();
+            assert!(
+                warning.is_none(),
+                "a clean project must not warn: {warning:?}"
+            );
 
-        // Hand-written twin, same values.
-        let md = dir.path().join("core-specialist.md");
-        std::fs::write(
-            &md,
-            "# core-specialist\n\n## Metadata\n\
-             - provider: claude\n- model: latest:pro\n- temperature: 0.3\n\
-             - tags: [rust, domain]\n- scope: [src/core/**]\n- max_tokens: 8192\n\
-             - timeout: 45\n- model_fallback: [latest:fast]\n\n## System Prompt\n\nYou own the core domain.\n",
-        )
-        .unwrap();
-        let written = armadai_core::parser::parse_agent_file(&md).unwrap();
+            // Hand-written twin, same values.
+            let md = dir.path().join("core-specialist.md");
+            std::fs::write(
+                &md,
+                "# core-specialist\n\n## Metadata\n\
+                 - provider: claude\n- model: latest:pro\n- temperature: 0.3\n\
+                 - tags: [rust, domain]\n- scope: [src/core/**]\n- max_tokens: 8192\n\
+                 - timeout: 45\n- model_fallback: [latest:fast]\n\n## System Prompt\n\nYou own the core domain.\n",
+            )
+            .unwrap();
+            let written = armadai_core::parser::parse_agent_file(&md).unwrap();
 
-        assert_agents_equivalent(&declared, &written);
-        assert_projections_equal_across_targets(&declared, &written);
+            assert_agents_equivalent(&declared, &written);
+            assert_projections_equal_across_targets(&declared, &written);
+        });
     }
 
     /// Same invariant as above, for a `provider: cli` agent carrying
@@ -448,49 +492,55 @@ mod tests {
     /// anyway for the fields it *does* cover (model, temperature, prompt).
     #[test]
     fn a_declared_cli_agent_and_its_md_twin_project_identically() {
-        let dir = tempfile::tempdir().unwrap();
+        with_isolated_global_library(|| {
+            let dir = tempfile::tempdir().unwrap();
 
-        let fragments = vec![armadai_core::prompt::Prompt {
-            name: "base".into(),
-            description: None,
-            apply_to: vec![],
-            body: "You wrap a CLI tool for scripted tasks.".into(),
-            source: std::path::PathBuf::from("base.md"),
-        }];
+            let fragments = vec![armadai_core::prompt::Prompt {
+                name: "base".into(),
+                description: None,
+                apply_to: vec![],
+                body: "You wrap a CLI tool for scripted tasks.".into(),
+                source: std::path::PathBuf::from("base.md"),
+            }];
 
-        // Declared version.
-        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
-        std::fs::write(
-            dir.path().join(".armadai/agents.yaml"),
-            "defaults:\n  provider: cli\n  temperature: 0.5\n\
-             agents:\n  - name: shell-runner\n    description: Wraps a CLI tool\n    \
-             command: echo\n    args: [hello, world]\n    model: local-llm\n    \
-             tags: [ops, shell]\n    stacks: [devops]\n    scope: [scripts/**]\n    prompt: [base]\n",
-        )
-        .unwrap();
-        let declared = armadai_core::agent_source::load_agent(
-            &armadai_core::project::AgentRef::Declared {
-                declared: "shell-runner".into(),
-            },
-            dir.path(),
-            &fragments,
-        )
-        .unwrap();
+            // Declared version.
+            std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+            std::fs::write(
+                dir.path().join(".armadai/agents.yaml"),
+                "defaults:\n  provider: cli\n  temperature: 0.5\n\
+                 agents:\n  - name: shell-runner\n    description: Wraps a CLI tool\n    \
+                 command: echo\n    args: [hello, world]\n    model: local-llm\n    \
+                 tags: [ops, shell]\n    stacks: [devops]\n    scope: [scripts/**]\n    prompt: [base]\n",
+            )
+            .unwrap();
+            let config = armadai_core::project::ProjectConfig::default();
+            let (declared, warning) = armadai_core::agent_source::load_agent_by_name(
+                "shell-runner",
+                &config,
+                dir.path(),
+                &fragments,
+            )
+            .unwrap();
+            assert!(
+                warning.is_none(),
+                "a clean project must not warn: {warning:?}"
+            );
 
-        // Hand-written twin, same values.
-        let md = dir.path().join("shell-runner.md");
-        std::fs::write(
-            &md,
-            "# shell-runner\n\n## Metadata\n\
-             - provider: cli\n- command: echo\n- args: [hello, world]\n\
-             - model: local-llm\n- temperature: 0.5\n- tags: [ops, shell]\n\
-             - stacks: [devops]\n- scope: [scripts/**]\n\n## System Prompt\n\nYou wrap a CLI tool for scripted tasks.\n",
-        )
-        .unwrap();
-        let written = armadai_core::parser::parse_agent_file(&md).unwrap();
+            // Hand-written twin, same values.
+            let md = dir.path().join("shell-runner.md");
+            std::fs::write(
+                &md,
+                "# shell-runner\n\n## Metadata\n\
+                 - provider: cli\n- command: echo\n- args: [hello, world]\n\
+                 - model: local-llm\n- temperature: 0.5\n- tags: [ops, shell]\n\
+                 - stacks: [devops]\n- scope: [scripts/**]\n\n## System Prompt\n\nYou wrap a CLI tool for scripted tasks.\n",
+            )
+            .unwrap();
+            let written = armadai_core::parser::parse_agent_file(&md).unwrap();
 
-        assert_agents_equivalent(&declared, &written);
-        assert_projections_equal_across_targets(&declared, &written);
+            assert_agents_equivalent(&declared, &written);
+            assert_projections_equal_across_targets(&declared, &written);
+        });
     }
 
     /// Same invariant again, for a declared agent composed from **two**
@@ -500,57 +550,63 @@ mod tests {
     /// as far as this file's coverage goes.
     #[test]
     fn a_declared_agent_composed_from_two_fragments_projects_like_its_md_twin() {
-        let dir = tempfile::tempdir().unwrap();
+        with_isolated_global_library(|| {
+            let dir = tempfile::tempdir().unwrap();
 
-        let fragments = vec![
-            armadai_core::prompt::Prompt {
-                name: "role".into(),
-                description: None,
-                apply_to: vec![],
-                body: "You own the core domain.".into(),
-                source: std::path::PathBuf::from("role.md"),
-            },
-            armadai_core::prompt::Prompt {
-                name: "constraints".into(),
-                description: None,
-                apply_to: vec![],
-                body: "Never touch generated code by hand.".into(),
-                source: std::path::PathBuf::from("constraints.md"),
-            },
-        ];
+            let fragments = vec![
+                armadai_core::prompt::Prompt {
+                    name: "role".into(),
+                    description: None,
+                    apply_to: vec![],
+                    body: "You own the core domain.".into(),
+                    source: std::path::PathBuf::from("role.md"),
+                },
+                armadai_core::prompt::Prompt {
+                    name: "constraints".into(),
+                    description: None,
+                    apply_to: vec![],
+                    body: "Never touch generated code by hand.".into(),
+                    source: std::path::PathBuf::from("constraints.md"),
+                },
+            ];
 
-        // Declared version: two prompt steps.
-        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
-        std::fs::write(
-            dir.path().join(".armadai/agents.yaml"),
-            "defaults:\n  provider: claude\n  model: latest:pro\n  temperature: 0.3\n\
-             agents:\n  - name: core-specialist\n    description: Core domain\n    \
-             tags: [rust, domain]\n    scope: [src/core/**]\n    prompt: [role, constraints]\n",
-        )
-        .unwrap();
-        let declared = armadai_core::agent_source::load_agent(
-            &armadai_core::project::AgentRef::Declared {
-                declared: "core-specialist".into(),
-            },
-            dir.path(),
-            &fragments,
-        )
-        .unwrap();
+            // Declared version: two prompt steps.
+            std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+            std::fs::write(
+                dir.path().join(".armadai/agents.yaml"),
+                "defaults:\n  provider: claude\n  model: latest:pro\n  temperature: 0.3\n\
+                 agents:\n  - name: core-specialist\n    description: Core domain\n    \
+                 tags: [rust, domain]\n    scope: [src/core/**]\n    prompt: [role, constraints]\n",
+            )
+            .unwrap();
+            let config = armadai_core::project::ProjectConfig::default();
+            let (declared, warning) = armadai_core::agent_source::load_agent_by_name(
+                "core-specialist",
+                &config,
+                dir.path(),
+                &fragments,
+            )
+            .unwrap();
+            assert!(
+                warning.is_none(),
+                "a clean project must not warn: {warning:?}"
+            );
 
-        // Hand-written twin: the same two bodies, joined by a blank line —
-        // the equivalent of what `compose_prompt` produces.
-        let md = dir.path().join("core-specialist.md");
-        std::fs::write(
-            &md,
-            "# core-specialist\n\n## Metadata\n\
-             - provider: claude\n- model: latest:pro\n- temperature: 0.3\n\
-             - tags: [rust, domain]\n- scope: [src/core/**]\n\n## System Prompt\n\n\
-             You own the core domain.\n\nNever touch generated code by hand.\n",
-        )
-        .unwrap();
-        let written = armadai_core::parser::parse_agent_file(&md).unwrap();
+            // Hand-written twin: the same two bodies, joined by a blank line —
+            // the equivalent of what `compose_prompt` produces.
+            let md = dir.path().join("core-specialist.md");
+            std::fs::write(
+                &md,
+                "# core-specialist\n\n## Metadata\n\
+                 - provider: claude\n- model: latest:pro\n- temperature: 0.3\n\
+                 - tags: [rust, domain]\n- scope: [src/core/**]\n\n## System Prompt\n\n\
+                 You own the core domain.\n\nNever touch generated code by hand.\n",
+            )
+            .unwrap();
+            let written = armadai_core::parser::parse_agent_file(&md).unwrap();
 
-        assert_agents_equivalent(&declared, &written);
-        assert_projections_equal_across_targets(&declared, &written);
+            assert_agents_equivalent(&declared, &written);
+            assert_projections_equal_across_targets(&declared, &written);
+        });
     }
 }
