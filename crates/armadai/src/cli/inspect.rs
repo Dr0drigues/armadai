@@ -1,11 +1,10 @@
 use armadai_core::agent::Agent;
 use armadai_core::config::AppPaths;
 use armadai_core::parser::parse_agent_file;
-use armadai_core::project::{self, AgentRef};
+use armadai_core::project;
 
 pub async fn execute(agent_name: String) -> anyhow::Result<()> {
-    let path = resolve_agent_file(&agent_name)?;
-    let agent = parse_agent_file(&path)?;
+    let agent = load_named_agent(&agent_name)?;
 
     // Header
     let h = crate::cli::style::header();
@@ -139,37 +138,28 @@ pub async fn execute(agent_name: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve an agent by name: check project config first, then default paths.
-fn resolve_agent_file(agent_name: &str) -> anyhow::Result<std::path::PathBuf> {
+/// Resolve an agent by name: check the project first (file-backed or
+/// declared in `.armadai/agents.yaml`, via `agent_source::load_agent_by_name`),
+/// then fall back to the default global agents directory — mirroring the
+/// same two-tier fallback the previous path-only version used, just with a
+/// richer project-side lookup that also covers declared agents.
+fn load_named_agent(agent_name: &str) -> anyhow::Result<Agent> {
     if let Some((root, config)) = project::find_project_config() {
-        // Try to find the agent in the project config
-        if let Some(agent_ref) = config.agents.iter().find(|r| match r {
-            AgentRef::Named { name } => name == agent_name,
-            AgentRef::Path { path } => path.file_stem().is_some_and(|s| s == agent_name),
-            AgentRef::Registry { registry } => registry.ends_with(agent_name),
-            // Matched by name so a later step can report the ref by name;
-            // `resolve_agent` below refuses it because it has no file to
-            // return a path for.
-            AgentRef::Declared { declared } => declared == agent_name,
-        }) {
-            return project::resolve_agent(agent_ref, &root);
-        }
-
-        // Not in config, but try resolving as Named from project root
-        let fallback = AgentRef::Named {
-            name: agent_name.to_string(),
-        };
-        if let Ok(path) = project::resolve_agent(&fallback, &root) {
-            return Ok(path);
+        let fragments = armadai_core::agent_source::project_fragments(&root);
+        if let Ok(agent) =
+            armadai_core::agent_source::load_agent_by_name(agent_name, &config, &root, &fragments)
+        {
+            return Ok(agent);
         }
     }
 
     // Fallback to default paths
     let paths = AppPaths::resolve();
-    Agent::find_file(&paths.agents_dir, agent_name).ok_or_else(|| {
+    let path = Agent::find_file(&paths.agents_dir, agent_name).ok_or_else(|| {
         anyhow::anyhow!(
             "Agent '{agent_name}' not found in {}/ (looked for {agent_name}.md)",
             paths.agents_dir.display()
         )
-    })
+    })?;
+    parse_agent_file(&path)
 }

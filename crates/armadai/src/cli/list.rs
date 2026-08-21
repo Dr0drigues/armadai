@@ -1,6 +1,5 @@
 use armadai_core::agent::Agent;
 use armadai_core::config::AppPaths;
-use armadai_core::parser;
 use armadai_core::project;
 
 pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow::Result<()> {
@@ -92,28 +91,28 @@ pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow
     Ok(())
 }
 
-/// Load agents: if a project config is found, resolve only declared agents.
-/// Otherwise, load all agents from the default directory.
-/// When `--global` is active, always load from the global library.
+/// Load agents: if a project config is found, resolve project agents
+/// (file-backed and declared alike). Otherwise, load all agents from the
+/// default directory. When `--global` is active, always load from the
+/// global library.
+///
+/// A project counts as having agents when `agents:` lists any, OR
+/// `.armadai/agents.yaml` declares any — every declared agent is included
+/// automatically, so a project that only uses that format (an empty/absent
+/// `agents:` list) must still take the project branch instead of falling
+/// through to the global library.
 fn load_agents() -> anyhow::Result<Vec<Agent>> {
     if !armadai_core::config::is_force_global()
         && let Some((root, config)) = project::find_project_config()
-        && !config.agents.is_empty()
+        && (!config.agents.is_empty()
+            || armadai_core::agent_source::declarations_path(&root).is_file())
     {
-        let (paths, errors) = project::resolve_all_agents(&config, &root);
+        let fragments = armadai_core::agent_source::project_fragments(&root);
+        let (agents, errors) =
+            armadai_core::agent_source::load_all_agents(&config, &root, &fragments);
         for err in &errors {
             let w = crate::cli::style::warn();
             anstream::eprintln!("{w}  warn: {err}{w:#}");
-        }
-        let mut agents = Vec::new();
-        for path in &paths {
-            match parser::parse_agent_file(path) {
-                Ok(agent) => agents.push(agent),
-                Err(e) => {
-                    let w = crate::cli::style::warn();
-                    anstream::eprintln!("{w}  warn: failed to parse {}: {e}{w:#}", path.display());
-                }
-            }
         }
         return Ok(agents);
     }

@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use crate::linker::model_resolution::{self, TargetKind};
 use crate::linker::{self, LinkAgent};
-use armadai_core::parser;
 use armadai_core::project;
 
 pub async fn execute(
@@ -28,7 +27,13 @@ pub async fn execute(
     }
     armadai_core::model_updater::auto_check_and_prompt(&root, std::io::stdin().is_terminal());
 
-    if config.agents.is_empty() {
+    // Every agent in `.armadai/agents.yaml` is included automatically (it
+    // does not need to be relisted in `agents:` — that would duplicate the
+    // declaration this format exists to remove), so an otherwise-empty
+    // `agents:` list is only a real error when there is no declarations
+    // file either.
+    let has_declarations = armadai_core::agent_source::declarations_path(&root).is_file();
+    if config.agents.is_empty() && !has_declarations {
         anyhow::bail!("No agents declared in project config.");
     }
 
@@ -48,23 +53,15 @@ pub async fn execute(
         );
     }
 
-    // 2. Resolve and parse agents
-    let (paths, errors) = project::resolve_all_agents(&config, &root);
+    // 2. Resolve and load agents — file-backed and declared alike.
+    let fragments = armadai_core::agent_source::project_fragments(&root);
+    let (agents, errors) = armadai_core::agent_source::load_all_agents(&config, &root, &fragments);
     for err in &errors {
         let w = crate::cli::style::warn();
         anstream::eprintln!("{w}  warn: {err}{w:#}");
     }
 
-    let mut link_agents: Vec<LinkAgent> = Vec::new();
-    for path in &paths {
-        match parser::parse_agent_file(path) {
-            Ok(agent) => link_agents.push(LinkAgent::from(&agent)),
-            Err(e) => {
-                let w = crate::cli::style::warn();
-                anstream::eprintln!("{w}  warn: failed to parse {}: {e}{w:#}", path.display());
-            }
-        }
-    }
+    let mut link_agents: Vec<LinkAgent> = agents.iter().map(LinkAgent::from).collect();
 
     if link_agents.is_empty() {
         anyhow::bail!("No agents could be resolved. Check your project config.");
