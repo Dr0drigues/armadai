@@ -85,32 +85,57 @@ pub fn check_no_shadowing(project_root: &Path, libraries: &[PathBuf]) -> anyhow:
     }
     let decls = agent_decl::load(&decls_path)?;
     for decl in &decls.agents {
-        let decl_slug = crate::agent::slugify(&decl.name);
-        for library in libraries {
-            if !library.is_dir() {
-                continue;
-            }
-            for entry in std::fs::read_dir(library)? {
-                let path = entry?.path();
-                if !path.extension().is_some_and(|ext| ext == "md") {
-                    continue;
-                }
-                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                if crate::agent::slugify(stem) == decl_slug {
-                    anyhow::bail!(
-                        "agent '{}' is declared in {} and also written as {} — \
-                         remove one; there is deliberately no precedence between them",
-                        decl.name,
-                        decls_path.display(),
-                        path.display()
-                    );
-                }
-            }
+        if let Some(collision) = shadowing_conflict(&decl.name, libraries)? {
+            anyhow::bail!(shadowing_message(&decl.name, &decls_path, &collision));
         }
     }
     Ok(())
+}
+
+/// Does `name` (compared as a slug) collide with a `.md` file in any of
+/// `libraries`? Returns the colliding file's path if so, `None` otherwise.
+///
+/// Factored out of `check_no_shadowing` so a single-name check —
+/// `load_agent_by_name` needs one for just the name it is resolving,
+/// `load_all_agents` needs one per declaration so a single collision costs
+/// only that declaration — and a whole-fleet check (`check_no_shadowing`
+/// itself, still used as a fast go/no-op reusable check) share one
+/// slug-comparison, one skip-missing-directory rule, and one skip-non-`.md`
+/// rule, rather than three copies that could drift.
+fn shadowing_conflict(name: &str, libraries: &[PathBuf]) -> anyhow::Result<Option<PathBuf>> {
+    let slug = crate::agent::slugify(name);
+    for library in libraries {
+        if !library.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(library)? {
+            let path = entry?.path();
+            if !path.extension().is_some_and(|ext| ext == "md") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if crate::agent::slugify(stem) == slug {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The message used whenever a declared name collides with a file-backed
+/// agent — shared by `check_no_shadowing`, `load_all_agents`, and
+/// `load_agent_by_name` so the wording (and the fact that neither side is
+/// given precedence) can't drift across the three collision-detection call
+/// sites.
+fn shadowing_message(decl_name: &str, decls_path: &Path, file_path: &Path) -> String {
+    format!(
+        "agent '{decl_name}' is declared in {} and also written as {} — \
+         remove one; there is deliberately no precedence between them",
+        decls_path.display(),
+        file_path.display()
+    )
 }
 
 /// Every prompt fragment a project's declarations can reference, gathered
@@ -126,13 +151,8 @@ pub fn check_no_shadowing(project_root: &Path, libraries: &[PathBuf]) -> anyhow:
 pub fn project_fragments(project_root: &Path) -> Vec<Prompt> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    let tiers = [
-        project_root.join(".armadai").join("prompts"),
-        project_root.join("prompts"),
-        crate::config::user_prompts_dir(),
-    ];
-    for dir in &tiers {
-        for p in crate::prompt::load_all_prompts(dir) {
+    for dir in crate::project::prompt_dirs(project_root) {
+        for p in crate::prompt::load_all_prompts(&dir) {
             if seen.insert(p.name.clone()) {
                 out.push(p);
             }
@@ -146,14 +166,14 @@ pub fn project_fragments(project_root: &Path) -> Vec<Prompt> {
 /// Same `(values, non-fatal errors)` shape as `resolve_all_agents`, so callers
 /// keep their existing warning loop. A broken declaration costs its own agent,
 /// never the whole fleet — a fleet that vanishes because one agent has a typo
-/// is worse than a fleet with a gap and a warning.
-///
-/// `check_no_shadowing` runs first, over `project::library_dirs` (the same
-/// list `resolve_agent` resolves file-backed agents from) — a name declared
-/// AND written as a file is refused outright rather than silently loaded
-/// twice or arbitrarily once. That refusal is what makes `load_agent_by_name`
-/// safe to try file-backed agents before declarations with no precedence
-/// rule: if both existed, loading already failed here.
+/// is worse than a fleet with a gap and a warning. **This is true of a
+/// shadowing collision too**: it costs only the colliding declaration (with a
+/// warning naming both sources, via `shadowing_message`), not every other
+/// declared agent — the first cut of this function bailed out of the whole
+/// declarations block on the first collision found, which meant one
+/// accidental collision (plausibly against a file the project doesn't even
+/// own, since the check spans the user's whole global library) silently
+/// dropped every other declared agent while callers kept exiting 0.
 pub fn load_all_agents(
     config: &crate::project::ProjectConfig,
     root: &Path,
@@ -170,13 +190,21 @@ pub fn load_all_agents(
 
     let decls_path = declarations_path(root);
     if decls_path.is_file() {
-        if let Err(e) = check_no_shadowing(root, &crate::project::library_dirs(root)) {
-            errors.push(format!("{e}"));
-            return (agents, errors);
-        }
+        let libraries = crate::project::library_dirs(root);
         match agent_decl::load(&decls_path) {
             Ok(decls) => {
                 for decl in &decls.agents {
+                    match shadowing_conflict(&decl.name, &libraries) {
+                        Ok(Some(collision)) => {
+                            errors.push(shadowing_message(&decl.name, &decls_path, &collision));
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            errors.push(format!("{e}"));
+                            continue;
+                        }
+                    }
                     match agent_decl::to_agent(decl, &decls.defaults, fragments, decls_path.clone())
                     {
                         Ok(a) => agents.push(a),
@@ -196,10 +224,13 @@ pub fn load_all_agents(
 /// Resolution order: file-backed first — a config `AgentRef` matching `name`
 /// (mirroring `AgentResolution::Project`'s own ref-matching in `cli::run` and
 /// `cli::inspect`, which this replaces), or failing that a bare `Named`
-/// lookup — then the project's declarations. Because `check_no_shadowing`
-/// (wired into `load_all_agents`) refuses a name that exists in both, this
-/// order never has to arbitrate a real collision: if both existed, loading
-/// already failed elsewhere. There is deliberately no precedence rule here.
+/// lookup — then the project's declarations. There is deliberately no
+/// precedence rule for a name that resolves both ways: this function refuses
+/// it outright (see the `shadowing_conflict` check below), the same refusal
+/// `load_all_agents` applies per-declaration and `check_no_shadowing` applies
+/// fleet-wide — a name ambiguous enough to fail `link`/`list` must fail
+/// `run`/`inspect` too, not silently resolve to whichever side is tried
+/// first.
 ///
 /// A `config.agents` entry of `AgentRef::Declared` matching `name` is never
 /// handed to `resolve_agent` (which always refuses that variant) — it is
@@ -228,24 +259,49 @@ pub fn load_agent_by_name(
         ),
     };
 
-    let file_err = match file_result {
-        Ok(path) => return crate::parser::parse_agent_file(&path),
-        Err(e) => e,
-    };
-
     let decls_path = declarations_path(project_root);
-    if decls_path.is_file() {
-        let decls = agent_decl::load(&decls_path)?;
-        if let Some(decl) = decls.agents.iter().find(|a| a.name == name) {
-            return agent_decl::to_agent(decl, &decls.defaults, fragments, decls_path);
-        }
+    let decls = if decls_path.is_file() {
+        Some(agent_decl::load(&decls_path)?)
+    } else {
+        None
+    };
+    let declared = decls
+        .as_ref()
+        .and_then(|d| d.agents.iter().find(|a| a.name == name));
+
+    // Collision check scoped to just this one name — no need to scan the
+    // whole fleet the way `check_no_shadowing` does for `load_all_agents`.
+    // Checked against `project::library_dirs` directly, not against whether
+    // `file_result` happened to succeed: an explicit `path:`/`registry:` ref
+    // pointing outside those library dirs is not the ambiguity
+    // `check_no_shadowing` polices, and using `file_result` here would let
+    // `run`/`inspect` accept a name `link`/`list` refuse (or the reverse).
+    if declared.is_some()
+        && let Some(collision) =
+            shadowing_conflict(name, &crate::project::library_dirs(project_root))?
+    {
+        anyhow::bail!(shadowing_message(name, &decls_path, &collision));
     }
 
-    anyhow::bail!(
-        "agent '{name}' not found: not resolvable as a file ({file_err}), \
-         and not declared in {}",
-        decls_path.display()
-    );
+    match file_result {
+        Ok(path) => crate::parser::parse_agent_file(&path),
+        Err(file_err) => match declared {
+            Some(decl) => agent_decl::to_agent(
+                decl,
+                &decls
+                    .as_ref()
+                    .expect("declared borrows from decls")
+                    .defaults,
+                fragments,
+                decls_path,
+            ),
+            None => anyhow::bail!(
+                "agent '{name}' not found: not resolvable as a file ({file_err}), \
+                 and not declared in {}",
+                decls_path.display()
+            ),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -545,6 +601,37 @@ agents:
     // load_all_agents
     // -----------------------------------------------------------------
 
+    /// Point the global agent library (`ARMADAI_CONFIG_DIR`) at an empty
+    /// temp dir for the duration of `f`.
+    ///
+    /// `load_all_agents`'s real `library_dirs(root)` always includes
+    /// `user_agents_dir()` — on a machine that has ever run `armadai
+    /// extract`/`init` from this very repo, that is a REAL directory
+    /// holding this project's own team agents (`core-specialist.md`
+    /// included). A test exercising `load_all_agents` without isolating
+    /// this can pass — or fail — for a reason that has nothing to do with
+    /// its own fixture, and would behave differently on a machine that has
+    /// never run those commands. Serialised via `ENV_MUTEX` since it
+    /// mutates a process-global env var.
+    fn with_isolated_global_library<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = crate::config::ENV_MUTEX.lock().unwrap();
+        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+        let empty = tempfile::tempdir().unwrap();
+        // SAFETY: serialised via ENV_MUTEX above.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", empty.path());
+        }
+        let result = f();
+        // SAFETY: restoring original env state, still under the guard.
+        unsafe {
+            match &orig {
+                Some(v) => std::env::set_var("ARMADAI_CONFIG_DIR", v),
+                None => std::env::remove_var("ARMADAI_CONFIG_DIR"),
+            }
+        }
+        result
+    }
+
     /// Build a `ProjectConfig` whose agent list holds one `AgentRef::Path`,
     /// following `project.rs`'s own `test_resolve_all_agents` construction
     /// rather than inventing a second way to build one.
@@ -563,30 +650,32 @@ agents:
     /// A project with one `.md` agent and one declared agent must yield both.
     #[test]
     fn declared_and_file_agents_are_loaded_together() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
-        std::fs::write(
-            dir.path().join(".armadai/agents.yaml"),
-            "defaults:\n  provider: claude\nagents:\n  - name: declared-one\n    prompt: [base]\n",
-        )
-        .unwrap();
-        let md_dir = dir.path().join("agents");
-        std::fs::create_dir_all(&md_dir).unwrap();
-        std::fs::write(
-            md_dir.join("file-one.md"),
-            "# file-one\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nHi\n",
-        )
-        .unwrap();
-        let config = config_listing_agent_path(dir.path(), "agents/file-one.md");
+        with_isolated_global_library(|| {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+            std::fs::write(
+                dir.path().join(".armadai/agents.yaml"),
+                "defaults:\n  provider: claude\nagents:\n  - name: declared-one\n    prompt: [base]\n",
+            )
+            .unwrap();
+            let md_dir = dir.path().join("agents");
+            std::fs::create_dir_all(&md_dir).unwrap();
+            std::fs::write(
+                md_dir.join("file-one.md"),
+                "# file-one\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nHi\n",
+            )
+            .unwrap();
+            let config = config_listing_agent_path(dir.path(), "agents/file-one.md");
 
-        let (agents, errors) = load_all_agents(&config, dir.path(), &fragments());
-        let mut names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
-        names.sort_unstable();
-        assert_eq!(
-            names,
-            vec!["declared-one", "file-one"],
-            "errors: {errors:?}"
-        );
+            let (agents, errors) = load_all_agents(&config, dir.path(), &fragments());
+            let mut names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+            names.sort_unstable();
+            assert_eq!(
+                names,
+                vec!["declared-one", "file-one"],
+                "errors: {errors:?}"
+            );
+        });
     }
 
     /// A project with no declarations must behave exactly as before.
@@ -635,24 +724,71 @@ agents:
 
     /// A declared agent and a same-named file must still refuse to load at
     /// all via `load_all_agents` — the shadowing check now actually runs.
+    /// The file that collides is local to the fixture (`agents/`), but the
+    /// check spans `library_dirs`, which also includes the real global
+    /// library — isolated here so THIS fixture is what makes the test pass,
+    /// not whatever happens to be installed on the machine running it.
     #[test]
     fn load_all_agents_refuses_a_shadowed_declaration() {
-        let dir = tempfile::tempdir().unwrap();
-        project(dir.path()); // declares `core-specialist`
-        let md_dir = dir.path().join("agents");
-        std::fs::create_dir_all(&md_dir).unwrap();
-        std::fs::write(md_dir.join("core-specialist.md"), "# Core").unwrap();
-        let config = crate::project::ProjectConfig::default();
+        with_isolated_global_library(|| {
+            let dir = tempfile::tempdir().unwrap();
+            project(dir.path()); // declares `core-specialist`
+            let md_dir = dir.path().join("agents");
+            std::fs::create_dir_all(&md_dir).unwrap();
+            std::fs::write(md_dir.join("core-specialist.md"), "# Core").unwrap();
+            let config = crate::project::ProjectConfig::default();
 
-        let (agents, errors) = load_all_agents(&config, dir.path(), &fragments());
-        assert!(
-            agents.iter().all(|a| a.name != "core-specialist"),
-            "a shadowed name must not be silently loaded from either side: {agents:?}"
-        );
-        assert!(
-            errors.iter().any(|e| e.contains("core-specialist")),
-            "the collision must be reported: {errors:?}"
-        );
+            let (agents, errors) = load_all_agents(&config, dir.path(), &fragments());
+            assert!(
+                agents.iter().all(|a| a.name != "core-specialist"),
+                "a shadowed name must not be silently loaded from either side: {agents:?}"
+            );
+            assert!(
+                errors.iter().any(|e| e.contains("core-specialist")),
+                "the collision must be reported: {errors:?}"
+            );
+        });
+    }
+
+    /// A collision must cost only the colliding declaration — every other
+    /// declared agent, including ones declared alongside it in the same
+    /// `agents.yaml`, must still load. This is the Finding-1 regression: the
+    /// first cut of `load_all_agents` bailed on the whole declarations block
+    /// at the first collision, dropping every declared agent, not just the
+    /// colliding one.
+    #[test]
+    fn a_shadowing_collision_costs_only_its_own_declaration_not_the_fleet() {
+        with_isolated_global_library(|| {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+            std::fs::write(
+                dir.path().join(".armadai/agents.yaml"),
+                "defaults:\n  provider: claude\nagents:\n  \
+                 - name: shadowed-one\n    prompt: [base]\n  \
+                 - name: healthy-one\n    prompt: [base]\n",
+            )
+            .unwrap();
+            let md_dir = dir.path().join("agents");
+            std::fs::create_dir_all(&md_dir).unwrap();
+            std::fs::write(md_dir.join("shadowed-one.md"), "# Shadowed").unwrap();
+            let config = crate::project::ProjectConfig::default();
+
+            let (agents, errors) = load_all_agents(&config, dir.path(), &fragments());
+            assert!(
+                agents.iter().any(|a| a.name == "healthy-one"),
+                "the un-shadowed declaration must survive: agents={agents:?} errors={errors:?}"
+            );
+            assert!(
+                agents.iter().all(|a| a.name != "shadowed-one"),
+                "the shadowed name must not load from either side: {agents:?}"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.contains("shadowed-one") && e.contains("agents.yaml")),
+                "the collision must be reported, naming both sources: {errors:?}"
+            );
+        });
     }
 
     // -----------------------------------------------------------------
@@ -752,5 +888,33 @@ agents:
             err.contains("not found") || err.contains("not resolvable"),
             "must say it looked for a file too: {err}"
         );
+    }
+
+    /// The reachability premise ("files first, then declarations, no
+    /// precedence rule") only holds if a name shared by both has already
+    /// been refused. Before Finding 2's fix, `load_agent_by_name` never
+    /// checked, so `run`/`inspect` silently picked the file-backed side of
+    /// a name that `link`/`list` (via `check_no_shadowing`) already refuse —
+    /// two commands disagreeing about whether the exact same project is
+    /// valid.
+    #[test]
+    fn load_agent_by_name_refuses_a_shadowed_name() {
+        with_isolated_global_library(|| {
+            let dir = tempfile::tempdir().unwrap();
+            project(dir.path()); // declares `core-specialist`
+            let md_dir = dir.path().join("agents");
+            std::fs::create_dir_all(&md_dir).unwrap();
+            std::fs::write(md_dir.join("core-specialist.md"), "# Core").unwrap();
+            let config = crate::project::ProjectConfig::default();
+
+            let err = load_agent_by_name("core-specialist", &config, dir.path(), &fragments())
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("core-specialist"), "must name it: {err}");
+            assert!(
+                err.contains("agents.yaml") && err.contains(".md"),
+                "must name both sources so the reader can pick one: {err}"
+            );
+        });
     }
 }

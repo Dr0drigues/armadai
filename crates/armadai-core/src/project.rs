@@ -394,6 +394,22 @@ pub fn resolve_all_agents(
 // ---------------------------------------------------------------------------
 
 /// Resolve a single `PromptRef` to an absolute path.
+/// Every directory a `.md` prompt fragment can be resolved from, in
+/// resolution order — the prompt-side twin of `library_dirs`, so
+/// `resolve_prompt`'s `Named` arm and `agent_source::project_fragments`
+/// (which needs the same three tiers to gather fragments a declared agent
+/// can reference) share one list instead of each keeping its own copy.
+pub fn prompt_dirs(project_root: &Path) -> Vec<PathBuf> {
+    vec![
+        // 1. .armadai/prompts/ (preferred)
+        project_root.join(PROJECT_DIR).join("prompts"),
+        // 2. Project-local prompts/ (legacy)
+        project_root.join("prompts"),
+        // 3. User library ~/.config/armadai/prompts/
+        user_prompts_dir(),
+    ]
+}
+
 pub fn resolve_prompt(prompt_ref: &PromptRef, project_root: &Path) -> anyhow::Result<PathBuf> {
     match prompt_ref {
         PromptRef::Path { path } => {
@@ -415,32 +431,19 @@ pub fn resolve_prompt(prompt_ref: &PromptRef, project_root: &Path) -> anyhow::Re
                 format!("{name}.md")
             };
 
-            // 1. .armadai/prompts/ (preferred)
-            let dotarmadai = project_root
-                .join(PROJECT_DIR)
-                .join("prompts")
-                .join(&filename);
-            if dotarmadai.exists() {
-                return Ok(dotarmadai);
-            }
-
-            // 2. Project-local prompts/ (legacy)
-            let local = project_root.join("prompts").join(&filename);
-            if local.exists() {
-                return Ok(local);
-            }
-
-            // 3. User library ~/.config/armadai/prompts/
-            let global = user_prompts_dir().join(&filename);
-            if global.exists() {
-                return Ok(global);
+            let dirs = prompt_dirs(project_root);
+            for dir in &dirs {
+                let candidate = dir.join(&filename);
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
             }
 
             anyhow::bail!(
                 "Prompt '{name}' not found in {}, {} or {}",
-                dotarmadai.display(),
-                local.display(),
-                global.display()
+                dirs[0].join(&filename).display(),
+                dirs[1].join(&filename).display(),
+                dirs[2].join(&filename).display(),
             );
         }
     }
