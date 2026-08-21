@@ -294,4 +294,77 @@ mod tests {
              even when it ends up empty"
         );
     }
+
+    /// A project using `.armadai/config.yaml` (the current format) with a
+    /// declared agent, a prompt fragment it composes from, and the
+    /// declarations file itself — three siblings under `.armadai/` besides
+    /// the config file, none of which `--with-config` should ever touch.
+    fn project_declared_with_extra_dotarmadai_files() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join(".armadai/prompts")).unwrap();
+        std::fs::write(
+            root.join(".armadai/config.yaml"),
+            "link:\n  target: claude\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  - name: solo\n    prompt: [base]\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".armadai/prompts/base.md"), "You are {{name}}.\n").unwrap();
+        dir
+    }
+
+    /// F5: `--with-config` is the one deletion path left intentionally
+    /// unguarded — there is nothing generated to diff the project's own
+    /// config file against, so the flag itself is the confirmation. That
+    /// makes it the one place a careless edit (e.g. widening `with_config`
+    /// into removing the whole `.armadai/` directory, or all three
+    /// candidate config paths instead of only the active one) would cause
+    /// real damage with no content guard to catch it. Pin the exact blast
+    /// radius: the active config file, and nothing else under `.armadai/`.
+    #[test]
+    fn unlink_with_config_removes_exactly_the_active_config_file() {
+        let dir = project_declared_with_extra_dotarmadai_files();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let config_file = root.join(".armadai/config.yaml");
+        let agents_decl = root.join(".armadai/agents.yaml");
+        let prompt_fragment = root.join(".armadai/prompts/base.md");
+        assert!(config_file.is_file(), "sanity: config file must exist");
+        assert!(agents_decl.is_file(), "sanity: declarations must exist");
+        assert!(
+            prompt_fragment.is_file(),
+            "sanity: prompt fragment must exist"
+        );
+
+        let (unlink_ok, _, unlink_stderr) = run_armadai(
+            &root,
+            &config,
+            &["unlink", "--target", "claude", "--with-config"],
+        );
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+
+        assert!(
+            !config_file.exists(),
+            "--with-config must remove the active project config file"
+        );
+        assert!(
+            agents_decl.exists(),
+            "--with-config must not remove sibling .armadai/ files — its blast \
+             radius must stay pinned to exactly the config file, since nothing \
+             guards it"
+        );
+        assert!(
+            prompt_fragment.exists(),
+            "--with-config must not remove sibling .armadai/ files"
+        );
+    }
 }

@@ -17,12 +17,17 @@ use armadai_core::project;
 /// really did write and that hasn't been touched since always matches and
 /// is reclaimed.
 ///
-/// Accepted limitation, stated here and echoed in the CLI output: a file
-/// that genuinely was generated and then *edited* no longer matches either,
-/// so it is kept too — it becomes a visible orphan instead of a silent
-/// deletion. An orphan can be spotted and removed by hand; content deleted
-/// by mistake cannot be un-deleted. The write manifest (the other half of
-/// #338) will make this exact and remove the limitation.
+/// Accepted limitation, stated here and echoed in the CLI output: content
+/// can differ from what `link` would generate right now for two reasons
+/// `unlink` has no way to distinguish — the file was edited since linking,
+/// or it was linked with different options (an explicit `--model`, or an
+/// interactive prompt answer). Either way the file is kept, becoming a
+/// visible orphan instead of a silent deletion. An orphan can be spotted
+/// and removed by hand; content deleted by mistake cannot be un-deleted.
+/// On `opencode` (an `Orchestrator` target below) in particular, `--model`
+/// or an interactive answer at link time makes the generated file
+/// permanently un-reclaimable by `unlink` until the write manifest (the
+/// other half of #338) lands and makes detection exact.
 ///
 /// `AlwaysDelete` covers the single opt-in case that isn't linker output at
 /// all: the project config file removed via `--with-config`. There is
@@ -136,8 +141,10 @@ pub async fn execute(
     // time — `unlink` takes neither, so it can only reproduce the
     // no-flag/non-interactive default (`latest:*` resolution per agent). A
     // link that used an explicit model there produces content `unlink`
-    // cannot recompute; the guard then correctly keeps those files instead
-    // of guessing, same as any other hand-edited file.
+    // cannot recompute; the guard then correctly keeps those files rather
+    // than guessing why they differ. On `opencode` specifically, this makes
+    // a `--model`-linked (or interactively-answered) file permanently
+    // un-reclaimable by `unlink` until the write manifest lands.
     let target_kind = model_resolution::classify_target(&target_name);
     match target_kind {
         TargetKind::LlmEditor { provider } => {
@@ -312,8 +319,10 @@ pub async fn execute(
                         would_remove += 1;
                     } else {
                         anstream::println!(
-                            "{w}  {} (would keep — content differs from what \
-                             link would generate){w:#}",
+                            "{w}  {} (would keep — content differs from what link \
+                             would generate now; possibly edited since linking, or \
+                             linked with different options such as --model or an \
+                             interactive prompt answer){w:#}",
                             path.display()
                         );
                         would_keep += 1;
@@ -330,8 +339,10 @@ pub async fn execute(
         );
         if would_keep > 0 {
             anstream::println!(
-                "{m}  Kept files look hand-written or edited since linking; unlink never \
-                 touches them. Remove them by hand if you no longer want them.{m:#}"
+                "{m}  Kept files differ from what link would generate now — possibly \
+                 edited since linking, or linked with different options (e.g. \
+                 --model, or an interactive prompt answer); unlink cannot tell \
+                 which. Remove them by hand if you no longer want them.{m:#}"
             );
         }
         return Ok(());
@@ -370,8 +381,9 @@ pub async fn execute(
                 } else {
                     let w = crate::cli::style::warn();
                     anstream::println!(
-                        "{w}  kept {} (content differs from what link would generate — \
-                         looks hand-written or edited){w:#}",
+                        "{w}  kept {} (content differs from what link would generate \
+                         now; possibly edited since linking, or linked with different \
+                         options such as --model or an interactive prompt answer){w:#}",
                         path.display()
                     );
                     kept += 1;
@@ -410,8 +422,10 @@ pub async fn execute(
     );
     if kept > 0 {
         anstream::println!(
-            "{m}  Kept files look hand-written or edited since linking; unlink never touches \
-             them. Remove them by hand if you no longer want them.{m:#}"
+            "{m}  Kept files differ from what link would generate now — possibly edited \
+             since linking, or linked with different options (e.g. --model, or an \
+             interactive prompt answer); unlink cannot tell which. Remove them by hand \
+             if you no longer want them.{m:#}"
         );
     }
 
@@ -430,12 +444,16 @@ fn content_matches(path: &Path, expected: &[u8]) -> bool {
 }
 
 /// Collect every file under a skill's *source* directory, keyed by its path
-/// relative to that directory, together with its raw bytes. This mirrors
+/// relative to that directory, together with its bytes. This mirrors
 /// exactly what `link` copies into `<output_dir>/skills/<name>/` (see
-/// `cli::link::collect_dir_files`), so the relative paths returned here —
-/// and only those — are eligible for `unlink` to reclaim. A file in the
-/// destination whose relative path isn't in this list was placed there by
-/// the user after linking and must never be touched.
+/// `cli::link::collect_dir_files`) — including its valid-UTF-8-only gate: a
+/// binary asset (e.g. `logo.png`) that `link` silently skips must be
+/// skipped here too, or it would surface as a destination candidate that
+/// was never actually written, inflating the "already absent" count with a
+/// path that was never a real deletion candidate. The relative paths
+/// returned here — and only those — are eligible for `unlink` to reclaim. A
+/// file in the destination whose relative path isn't in this list was
+/// placed there by the user after linking and must never be touched.
 fn collect_source_files(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut files = Vec::new();
     collect_source_files_recursive(dir, dir, &mut files);
@@ -457,10 +475,10 @@ fn collect_source_files_recursive(
         if path.is_dir() {
             collect_source_files_recursive(base, &path, files);
         } else if path.is_file()
-            && let Ok(content) = std::fs::read(&path)
+            && let Ok(content) = std::fs::read_to_string(&path)
         {
             let relative = path.strip_prefix(base).unwrap_or(&path).to_path_buf();
-            files.push((relative, content));
+            files.push((relative, content.into_bytes()));
         }
     }
 }
