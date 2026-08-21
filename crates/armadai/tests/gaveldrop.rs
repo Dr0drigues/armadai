@@ -534,10 +534,11 @@ fn all_cases_load() {
         }
     }
     assert_eq!(
-        n, 12,
+        n, 13,
         "expected 9 migrated cases + the direct-replay steps case + 2 task-7b-review \
          project-detection-gate cases (declarations-only-project, \
-         no-agents-project-still-errors)"
+         no-agents-project-still-errors) + 1 task-7b-review-round-2 case proving \
+         --orchestrate loads declared agents (declared-agents-orchestrated)"
     );
 }
 
@@ -582,13 +583,15 @@ fn armadai_adapter_is_conformant() {
     assert!(report.is_conformant(), "\n{}", report.render());
 }
 
-/// Runs the full 12-case suite through `gaveldrop::runner::run_all_with`, the same entry point
+/// Runs the full 13-case suite through `gaveldrop::runner::run_all_with`, the same entry point
 /// `armadai`'s own e2e binary would use in production, with the `Armadai` adapter prepended to
 /// gaveldrop's built-in registry. This is the decisive migration gate: it proves the original 10
 /// cases reach the SAME verdicts the old hand-rolled harness produced (deleted in T3), now
 /// evaluated entirely by gaveldrop's `verdict::evaluate` instead of bespoke assertion code — plus
 /// 2 more added for the task-7b review's Finding 5 (the `resolve_agents_dir`/`link`/`list`
-/// project-detection gate fix: a declarations-only project vs. a project with no agents at all).
+/// project-detection gate fix: a declarations-only project vs. a project with no agents at all),
+/// plus 1 more added for that review's follow-up round, proving Finding 7's `--orchestrate`
+/// roster-loader swap actually loads declared agents (`declared-agents-orchestrated`).
 #[test]
 fn e2e_suite_passes_through_gaveldrop() {
     use gaveldrop::Tee;
@@ -622,8 +625,8 @@ fn e2e_suite_passes_through_gaveldrop() {
     // trivially true if the `cases:` glob or `root` path silently stopped matching anything.
     assert_eq!(
         report.summary().total,
-        12,
-        "expected 12 cases to run, got {}",
+        13,
+        "expected 13 cases to run, got {}",
         report.summary().total
     );
     assert!(

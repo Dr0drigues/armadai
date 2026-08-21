@@ -1,0 +1,47 @@
+name: declared-agents-orchestrated
+weight: 6
+setup:
+  pattern: blackboard
+  agents: [t-a, t-b]
+  declared_agents: [t-a, t-b]
+  flags: ["--json"]
+  input: "assess the caching layer"
+  scenario:
+    rules:
+      - match: { agent: t-a, call: 1 }
+        respond: "ACTION: FINDING\nCONFIDENCE: 0.9\nCONTENT: caching layer looks sound"
+      - match: { agent: t-b, call: 1 }
+        respond: "ACTION: FINDING\nCONFIDENCE: 0.85\nCONTENT: cache TTLs look reasonable"
+      - match: { agent: t-a, call: 2 }
+        respond: "ACTION: CONFIRMATION\nTARGET: 0\nCONFIDENCE: 0.95\nCONTENT: agreed, no issues found"
+      - match: { agent: t-b, call: 2 }
+        respond: "ACTION: CONFIRMATION\nTARGET: 0\nCONFIDENCE: 0.9\nCONTENT: agreed, confirming the finding"
+      - match: {}
+        respond: "unexpected — catch-all should never be hit in this case"
+expect:
+  exit_code: 0
+  events:
+    # Proves task 7b review Finding 7's `run_orchestrated` roster-loader
+    # swap (`resolve_agent_path` -> `load_agent_for_run`): BOTH agents here
+    # are declared in `.armadai/agents.yaml`, not written as `.md` files —
+    # a project with none at all. Matching `agent_start`/`board` on each
+    # (rather than just `run_start`) also proves each declared agent's
+    # composed prompt reached the fake correctly (the catch-all fires on a
+    # mismatch, and its response would break the round-2 convergence this
+    # case relies on to reach `result` with exit 0).
+    - { t: run_start }
+    - { t: agent_start, agent: t-a }
+    - { t: board, agent: t-a, kind: finding }
+    - { t: agent_end, agent: t-a }
+    - { t: agent_start, agent: t-b }
+    - { t: board, agent: t-b, kind: finding }
+    - { t: agent_end, agent: t-b }
+    - { t: agent_start, agent: t-a }
+    - { t: board, agent: t-a, kind: confirmation }
+    - { t: agent_end, agent: t-a }
+    - { t: agent_start, agent: t-b }
+    - { t: board, agent: t-b, kind: confirmation }
+    - { t: agent_end, agent: t-b }
+    - { t: result }
+  event_counts: { agent_start: 4, agent_end: 4, board: 4, result: 1 }
+  invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result, no_orphan_events]

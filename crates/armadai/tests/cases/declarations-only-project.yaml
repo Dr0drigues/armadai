@@ -17,6 +17,12 @@ expect:
   events:
     - { t: run_start }
     - { t: agent_start, agent: t-declared }
-    - { t: result }
+    # Proves the declared agent's prompt was actually composed (the
+    # `fake-base` fragment's `{{name}}` substituted to `t-declared`), not
+    # just that SOME agent ran: the scenario's catch-all rule (which fires
+    # on any prompt fake-claude cannot match to `t-declared`) responds with
+    # a different, unmistakable string, so this would fail if composition
+    # silently broke and the catch-all fired instead.
+    - { t: result, content: "done" }
   event_counts: { agent_start: 1, agent_end: 1, result: 1 }
   invariants: [agent_start_end_symmetric, prov_non_empty, model_non_empty, single_result, no_orphan_events]

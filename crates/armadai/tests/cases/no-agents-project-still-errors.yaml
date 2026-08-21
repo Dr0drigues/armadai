@@ -13,4 +13,4 @@ expect:
   events:
     - { t: error, code: agent_failed }
   stdout:
-    contains: ["ghost", "not found"]
+    contains: ["not found in agents"]
