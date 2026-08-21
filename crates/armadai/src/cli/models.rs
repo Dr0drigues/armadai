@@ -113,6 +113,8 @@ fn check(all: bool, prune: bool) -> anyhow::Result<()> {
 }
 
 fn update(all: bool) -> anyhow::Result<()> {
+    let mut any_failed = false;
+
     if all {
         let registry = project_registry::load();
         if registry.projects.is_empty() {
@@ -137,7 +139,9 @@ fn update(all: bool) -> anyhow::Result<()> {
                 continue;
             }
 
-            total_updated += apply_and_report(&findings, &agent_source::declarations_path(root));
+            let (n, failed) = apply_and_report(&findings, &agent_source::declarations_path(root));
+            total_updated += n;
+            any_failed |= failed;
         }
 
         let o = crate::cli::style::ok();
@@ -154,10 +158,27 @@ fn update(all: bool) -> anyhow::Result<()> {
             return Ok(());
         }
 
-        let total = apply_and_report(&findings, &agent_source::declarations_path(&root));
+        let (total, failed) = apply_and_report(&findings, &agent_source::declarations_path(&root));
+        any_failed = failed;
 
         let o = crate::cli::style::ok();
         anstream::println!("{o}\n{total} model(s) updated.{o:#}");
+    }
+
+    // Every group/project is processed to the end regardless of an earlier
+    // one's failure — a problem isolated to one file must not stop this
+    // command from fixing every other file/project that is fine, the same
+    // reasoning already applied above to a `check_project` error. But the
+    // command as a whole must not exit 0 when something was left broken: a
+    // caller that only checks the exit code (a script, CI, `--all` from a
+    // cron job) needs to be able to tell "everything fixed" from "some
+    // file(s) still need a look", and the summary line above already
+    // reports the true (partial) count rather than lying about it.
+    if any_failed {
+        anyhow::bail!(
+            "one or more file(s) could not be fully updated (see error(s) above) — nothing in \
+             those files was rewritten"
+        );
     }
 
     Ok(())
@@ -166,57 +187,63 @@ fn update(all: bool) -> anyhow::Result<()> {
 /// Apply every finding, grouped by the file it came from, and print one
 /// status line per file — the shared body of both branches above.
 ///
+/// One [`model_updater::apply_findings`] call per file, carrying that
+/// file's ENTIRE finding set — never split into one call per finding. A
+/// prior version of this function did split per finding, which silently
+/// broke `update_declarations`'s own all-or-nothing guarantee one layer up:
+/// a `defaults.model` fix could land on disk from one call, immediately
+/// before a second call — for the SAME file, a finding the textual rewrite
+/// could not locate — errored, leaving a half-fixed file reported as "0
+/// model(s) updated" with a plain `eprintln` and no effect on the exit
+/// code. Batching restores the guarantee: either the whole file is fixed
+/// and counted, or nothing in it changes and the caller sees an `Err`.
+///
 /// `decls_path` (the project's `agents.yaml`, whether or not it exists) is
-/// what routes a finding to the right rewriter: [`model_updater::apply_finding`]
-/// sends anything whose `agent_path` matches it through
-/// `update_declarations`, and everything else through `update_agent_file`.
-/// Applying a whole file's findings through the wrong one is exactly the
-/// bug this exists to avoid — `update_agent_file`'s single
-/// `replacen(.., 1)` and unbounded `: <model>` pattern can rewrite a
+/// what routes a file's findings to the right rewriter:
+/// [`model_updater::apply_findings`] sends anything whose `agent_path`
+/// matches it through `update_declarations`, and everything else through
+/// `update_agent_file`. Applying a whole file's findings through the wrong
+/// one is exactly the bug this exists to avoid — `update_agent_file`'s
+/// single `replacen(.., 1)` and unbounded `: <model>` pattern can rewrite a
 /// comment in `agents.yaml` while leaving the real deprecated field
 /// untouched, all while reporting success.
+///
+/// Returns `(replacements actually made, whether any file failed)` — never
+/// invents a non-zero count for a file that errored.
 fn apply_and_report(
     findings: &[model_updater::DeprecationFinding],
     decls_path: &std::path::Path,
-) -> usize {
+) -> (usize, bool) {
     let mut by_file: std::collections::HashMap<
         std::path::PathBuf,
-        Vec<&model_updater::DeprecationFinding>,
+        Vec<model_updater::DeprecationFinding>,
     > = std::collections::HashMap::new();
     for f in findings {
-        by_file.entry(f.agent_path.clone()).or_default().push(f);
+        by_file
+            .entry(f.agent_path.clone())
+            .or_default()
+            .push(f.clone());
     }
 
     let mut total = 0;
+    let mut any_failed = false;
     for (path, file_findings) in &by_file {
-        let mut file_total = 0;
-        let mut file_err = None;
-        for f in file_findings {
-            match model_updater::apply_finding(f, decls_path) {
-                Ok(n) => file_total += n,
-                Err(e) => {
-                    file_err = Some(e);
-                    break;
+        match model_updater::apply_findings(file_findings, decls_path) {
+            Ok(n) => {
+                if n > 0 {
+                    let o = crate::cli::style::ok();
+                    anstream::println!("{o}  updated {}: {n} replacement(s){o:#}", path.display());
                 }
+                total += n;
             }
-        }
-        match file_err {
-            Some(e) => {
+            Err(e) => {
+                any_failed = true;
                 let er = crate::cli::style::err();
                 anstream::eprintln!("{er}  error: {}: {e}{er:#}", path.display());
             }
-            None if file_total > 0 => {
-                let o = crate::cli::style::ok();
-                anstream::println!(
-                    "{o}  updated {}: {file_total} replacement(s){o:#}",
-                    path.display()
-                );
-                total += file_total;
-            }
-            None => {}
         }
     }
-    total
+    (total, any_failed)
 }
 
 fn list() -> anyhow::Result<()> {

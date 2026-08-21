@@ -2,7 +2,7 @@
 //! and `--all` branches, `crates/armadai/src/cli/models.rs`) must route an
 //! `agents.yaml` finding through the declarative rewriter
 //! (`model_updater::update_declarations`, via `model_updater::
-//! apply_finding`), not the `.md` one (`update_agent_file`). The latter's
+//! apply_findings`), not the `.md` one (`update_agent_file`). The latter's
 //! single `replacen(.., 1)` and unbounded `: <model>` pattern can rewrite a
 //! comment that happens to contain the deprecated model string, while
 //! leaving the real `model:` field untouched — and still report success.
@@ -115,5 +115,58 @@ mod tests {
             "the --all summary must be truthful too: {stdout}"
         );
         assert_fixed_correctly(&root, &stdout, &stderr);
+    }
+
+    /// A project whose `agents.yaml` carries TWO findings for the same
+    /// file: a plain `defaults.model` (which the textual rewrite can fix)
+    /// and a quoted `"model":` key on an agent (which it cannot — a
+    /// structured-parse-vs-textual-scan disagreement). Regression for the
+    /// bug a prior fix round reintroduced one layer up: looping
+    /// `apply_findings` once per finding let the plain fix land on disk
+    /// before the quoted one's failure was discovered, reporting "0
+    /// model(s) updated." with exit 0 while the file sat half-rewritten.
+    fn project_with_one_fixable_and_one_unfixable_finding() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join(".armadai")).unwrap();
+        std::fs::write(root.join(".armadai/config.yaml"), "agents: []\n").unwrap();
+        std::fs::write(
+            root.join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\n  model: gpt-4-turbo\nagents:\n  - name: a\n    \"model\": gpt-4-turbo\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn models_update_leaves_the_file_untouched_and_exits_non_zero_on_a_partial_failure() {
+        let dir = project_with_one_fixable_and_one_unfixable_finding();
+        let root = dir.path().join("project");
+        let agents_yaml = root.join(".armadai/agents.yaml");
+        let before = std::fs::read_to_string(&agents_yaml).unwrap();
+
+        let mut cmd = Command::cargo_bin("armadai").unwrap();
+        cmd.current_dir(&root)
+            .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+            .arg("models")
+            .arg("update");
+        let output = cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            !output.status.success(),
+            "a file that could not be fully fixed must not exit 0: stdout={stdout}              stderr={stderr}"
+        );
+        assert!(
+            stdout.contains("0 model(s) updated"),
+            "the reported count must not claim a fix that did not happen: {stdout}"
+        );
+        assert!(!stderr.trim().is_empty(), "must report why: {stderr}");
+        assert_eq!(
+            std::fs::read_to_string(&agents_yaml).unwrap(),
+            before,
+            "the plain defaults.model fix must NOT land on disk just because the              quoted-key finding in the SAME file failed"
+        );
     }
 }
