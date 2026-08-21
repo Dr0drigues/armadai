@@ -151,6 +151,7 @@ Follow this protocol for all responses:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use armadai_core::agent::AgentMetadata;
 
     #[test]
     fn test_slugify_simple() {
@@ -207,13 +208,168 @@ mod tests {
         assert!(create_linker("unknown").is_err());
     }
 
+    /// Assert every field of two `Agent`s that this invariant is responsible
+    /// for is equal: every field of `AgentMetadata`, plus `system_prompt`,
+    /// `instructions`, `output_format`, `context`. Deliberately **not**
+    /// `Agent::source` — it differs by construction (one is a `.yaml`, one is
+    /// a `.md`) and no projection reads it, so a difference there is not a
+    /// divergence this invariant cares about.
+    ///
+    /// This exists because the five-target projection comparison
+    /// (`assert_projections_equal_across_targets`) is blind to a real class of
+    /// divergence: grepping all five linkers for `tags`/`scope`/`stacks` finds
+    /// zero hits, and `LinkAgent` does not carry `command`/`args` at all, so a
+    /// bug in how those fields are merged would never show up in any
+    /// projection. Both checks matter — this one for what the projection
+    /// cannot see, the projection one for what actually ships to the CLIs.
+    ///
+    /// Uses a destructuring pattern rather than a single `assert_eq!` on the
+    /// two `AgentMetadata` values because `AgentMetadata` does not derive
+    /// `PartialEq` (nor do two of its optional fields, `TriggerConfig` and
+    /// `AgentRingConfig`), and adding that derive to a shared domain type just
+    /// to shorten this test was judged not worth the production-code touch.
+    /// The destructuring gets the same guarantee a derive would have given —
+    /// and then some: a field added to `AgentMetadata` later is a **compile
+    /// error** here (the pattern stops being exhaustive) rather than a
+    /// silently-skipped comparison, which forces this test to be updated
+    /// instead of quietly missing the new field.
+    fn assert_agents_equivalent(declared: &Agent, written: &Agent) {
+        assert_eq!(declared.name, written.name, "agent name diverged");
+
+        let AgentMetadata {
+            provider: d_provider,
+            model: d_model,
+            command: d_command,
+            args: d_args,
+            temperature: d_temperature,
+            max_tokens: d_max_tokens,
+            timeout: d_timeout,
+            tags: d_tags,
+            stacks: d_stacks,
+            scope: d_scope,
+            model_fallback: d_model_fallback,
+            cost_limit: d_cost_limit,
+            rate_limit: d_rate_limit,
+            context_window: d_context_window,
+            mode: d_mode,
+            orchestration: d_orchestration,
+            triggers: d_triggers,
+            ring_config: d_ring_config,
+        } = declared.metadata.clone();
+        let AgentMetadata {
+            provider: w_provider,
+            model: w_model,
+            command: w_command,
+            args: w_args,
+            temperature: w_temperature,
+            max_tokens: w_max_tokens,
+            timeout: w_timeout,
+            tags: w_tags,
+            stacks: w_stacks,
+            scope: w_scope,
+            model_fallback: w_model_fallback,
+            cost_limit: w_cost_limit,
+            rate_limit: w_rate_limit,
+            context_window: w_context_window,
+            mode: w_mode,
+            orchestration: w_orchestration,
+            triggers: w_triggers,
+            ring_config: w_ring_config,
+        } = written.metadata.clone();
+
+        assert_eq!(d_provider, w_provider, "metadata.provider diverged");
+        assert_eq!(d_model, w_model, "metadata.model diverged");
+        assert_eq!(d_command, w_command, "metadata.command diverged");
+        assert_eq!(d_args, w_args, "metadata.args diverged");
+        assert_eq!(
+            d_temperature, w_temperature,
+            "metadata.temperature diverged"
+        );
+        assert_eq!(d_max_tokens, w_max_tokens, "metadata.max_tokens diverged");
+        assert_eq!(d_timeout, w_timeout, "metadata.timeout diverged");
+        assert_eq!(d_tags, w_tags, "metadata.tags diverged");
+        assert_eq!(d_stacks, w_stacks, "metadata.stacks diverged");
+        assert_eq!(d_scope, w_scope, "metadata.scope diverged");
+        assert_eq!(
+            d_model_fallback, w_model_fallback,
+            "metadata.model_fallback diverged"
+        );
+        assert_eq!(d_cost_limit, w_cost_limit, "metadata.cost_limit diverged");
+        assert_eq!(d_rate_limit, w_rate_limit, "metadata.rate_limit diverged");
+        assert_eq!(
+            d_context_window, w_context_window,
+            "metadata.context_window diverged"
+        );
+        assert_eq!(d_mode, w_mode, "metadata.mode diverged");
+        assert_eq!(
+            d_orchestration, w_orchestration,
+            "metadata.orchestration diverged"
+        );
+        // Neither format has a way to declare `triggers`/`ring_config` — both
+        // are always `None` here regardless of source — and their types lack
+        // `PartialEq`, so `Debug` equality is exact for what these fixtures
+        // can produce without adding a derive to production code for it.
+        assert_eq!(
+            format!("{d_triggers:?}"),
+            format!("{w_triggers:?}"),
+            "metadata.triggers diverged"
+        );
+        assert_eq!(
+            format!("{d_ring_config:?}"),
+            format!("{w_ring_config:?}"),
+            "metadata.ring_config diverged"
+        );
+
+        assert_eq!(
+            declared.system_prompt, written.system_prompt,
+            "system_prompt diverged"
+        );
+        assert_eq!(
+            declared.instructions, written.instructions,
+            "instructions diverged"
+        );
+        assert_eq!(
+            declared.output_format, written.output_format,
+            "output_format diverged"
+        );
+        assert_eq!(declared.context, written.context, "context diverged");
+    }
+
+    /// Assert the two agents project identically on every link target. This
+    /// is what actually catches a divergence in what ships to the CLIs —
+    /// complementary to, not a substitute for, `assert_agents_equivalent`.
+    ///
+    /// Run against **every** target, not just claude: a divergence that only
+    /// shows in the codex projection is still a divergence.
+    fn assert_projections_equal_across_targets(declared: &Agent, written: &Agent) {
+        for target in ["claude", "codex", "copilot", "gemini", "opencode"] {
+            let linker = create_linker(target).unwrap();
+            let a = linker.generate(&[LinkAgent::from(declared)], None, &[]);
+            let b = linker.generate(&[LinkAgent::from(written)], None, &[]);
+
+            // An empty projection on both sides would satisfy every assertion
+            // below without proving anything.
+            assert!(
+                !a.is_empty(),
+                "target {target} produced no output file — the comparison \
+                 below would be vacuous"
+            );
+            assert_eq!(a.len(), b.len(), "target {target}: file count differs");
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert_eq!(x.path, y.path, "target {target}: paths differ");
+                assert_eq!(
+                    x.content, y.content,
+                    "target {target}: projection diverged — the declaration is \
+                     not an alternative spelling but a second source of truth"
+                );
+            }
+        }
+    }
+
     /// A declared agent and its hand-written `.md` twin must produce the same
     /// native projection. If they diverge, the declaration format is a second
     /// source of truth rather than an alternative spelling of the first —
     /// exactly what it exists to avoid.
-    ///
-    /// Run against **every** target, not just claude: a divergence that only
-    /// shows in the codex projection is still a divergence.
     ///
     /// Both twins carry a model, a temperature, tags and a scope (beyond the
     /// bare minimum) so the comparison actually exercises the metadata path
@@ -260,42 +416,21 @@ mod tests {
         .unwrap();
         let written = armadai_core::parser::parse_agent_file(&md).unwrap();
 
-        // Sanity check before comparing projections: if the two agents are not
-        // actually equivalent, an equal projection would prove nothing.
-        assert_eq!(declared.system_prompt, written.system_prompt);
-        assert_eq!(declared.metadata.model, written.metadata.model);
-        assert_eq!(declared.metadata.temperature, written.metadata.temperature);
-        assert_eq!(declared.metadata.tags, written.metadata.tags);
-        assert_eq!(declared.metadata.scope, written.metadata.scope);
-
-        for target in ["claude", "codex", "copilot", "gemini", "opencode"] {
-            let linker = create_linker(target).unwrap();
-            let a = linker.generate(&[LinkAgent::from(&declared)], None, &[]);
-            let b = linker.generate(&[LinkAgent::from(&written)], None, &[]);
-
-            // An empty projection on both sides would satisfy every assertion
-            // below without proving anything.
-            assert!(
-                !a.is_empty(),
-                "target {target} produced no output file — the comparison \
-                 below would be vacuous"
-            );
-            assert_eq!(a.len(), b.len(), "target {target}: file count differs");
-            for (x, y) in a.iter().zip(b.iter()) {
-                assert_eq!(x.path, y.path, "target {target}: paths differ");
-                assert_eq!(
-                    x.content, y.content,
-                    "target {target}: projection diverged — the declaration is \
-                     not an alternative spelling but a second source of truth"
-                );
-            }
-        }
+        assert_agents_equivalent(&declared, &written);
+        assert_projections_equal_across_targets(&declared, &written);
     }
 
     /// Same invariant as above, for a `provider: cli` agent carrying
     /// `command`/`args` — fields added to the declaration format specifically
-    /// so this class of agent could be declared. Nothing had yet proven a
-    /// declared CLI agent projects like its `.md` twin; this is that proof.
+    /// so this class of agent could be declared.
+    ///
+    /// Neither field reaches any linker's output (no target emits `command`
+    /// or `args` into generated content), so the real coverage this case adds
+    /// is at the `Agent`/`AgentMetadata` level via `assert_agents_equivalent`
+    /// — it proves the declared-agent metadata merge is CLI-safe, not that a
+    /// declared CLI agent's `command`/`args` show up anywhere a linked config
+    /// file's content diverges. The five-target projection comparison is kept
+    /// anyway for the fields it *does* cover (model, temperature, prompt).
     #[test]
     fn a_declared_cli_agent_and_its_md_twin_project_identically() {
         let dir = tempfile::tempdir().unwrap();
@@ -339,36 +474,68 @@ mod tests {
         .unwrap();
         let written = armadai_core::parser::parse_agent_file(&md).unwrap();
 
-        // Sanity check before comparing projections: if the two agents are not
-        // actually equivalent, an equal projection would prove nothing.
-        assert_eq!(declared.system_prompt, written.system_prompt);
-        assert_eq!(declared.metadata.provider, written.metadata.provider);
-        assert_eq!(declared.metadata.command, written.metadata.command);
-        assert_eq!(declared.metadata.args, written.metadata.args);
-        assert_eq!(declared.metadata.model, written.metadata.model);
-        assert_eq!(declared.metadata.temperature, written.metadata.temperature);
-        assert_eq!(declared.metadata.tags, written.metadata.tags);
-        assert_eq!(declared.metadata.scope, written.metadata.scope);
+        assert_agents_equivalent(&declared, &written);
+        assert_projections_equal_across_targets(&declared, &written);
+    }
 
-        for target in ["claude", "codex", "copilot", "gemini", "opencode"] {
-            let linker = create_linker(target).unwrap();
-            let a = linker.generate(&[LinkAgent::from(&declared)], None, &[]);
-            let b = linker.generate(&[LinkAgent::from(&written)], None, &[]);
+    /// Same invariant again, for a declared agent composed from **two**
+    /// prompt fragments rather than one. `compose_prompt` joins fragment
+    /// bodies with a blank line — a single-fragment fixture (the two tests
+    /// above) never exercises that join at all, which would make it dead code
+    /// as far as this file's coverage goes.
+    #[test]
+    fn a_declared_agent_composed_from_two_fragments_projects_like_its_md_twin() {
+        let dir = tempfile::tempdir().unwrap();
 
-            assert!(
-                !a.is_empty(),
-                "target {target} produced no output file — the comparison \
-                 below would be vacuous"
-            );
-            assert_eq!(a.len(), b.len(), "target {target}: file count differs");
-            for (x, y) in a.iter().zip(b.iter()) {
-                assert_eq!(x.path, y.path, "target {target}: paths differ");
-                assert_eq!(
-                    x.content, y.content,
-                    "target {target}: projection diverged — the declaration is \
-                     not an alternative spelling but a second source of truth"
-                );
-            }
-        }
+        let fragments = vec![
+            armadai_core::prompt::Prompt {
+                name: "role".into(),
+                description: None,
+                apply_to: vec![],
+                body: "You own the core domain.".into(),
+                source: std::path::PathBuf::from("role.md"),
+            },
+            armadai_core::prompt::Prompt {
+                name: "constraints".into(),
+                description: None,
+                apply_to: vec![],
+                body: "Never touch generated code by hand.".into(),
+                source: std::path::PathBuf::from("constraints.md"),
+            },
+        ];
+
+        // Declared version: two prompt steps.
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\n  model: latest:pro\n  temperature: 0.3\n\
+             agents:\n  - name: core-specialist\n    description: Core domain\n    \
+             tags: [rust, domain]\n    scope: [src/core/**]\n    prompt: [role, constraints]\n",
+        )
+        .unwrap();
+        let declared = armadai_core::agent_source::load_agent(
+            &armadai_core::project::AgentRef::Declared {
+                declared: "core-specialist".into(),
+            },
+            dir.path(),
+            &fragments,
+        )
+        .unwrap();
+
+        // Hand-written twin: the same two bodies, joined by a blank line —
+        // the equivalent of what `compose_prompt` produces.
+        let md = dir.path().join("core-specialist.md");
+        std::fs::write(
+            &md,
+            "# core-specialist\n\n## Metadata\n\
+             - provider: claude\n- model: latest:pro\n- temperature: 0.3\n\
+             - tags: [rust, domain]\n- scope: [src/core/**]\n\n## System Prompt\n\n\
+             You own the core domain.\n\nNever touch generated code by hand.\n",
+        )
+        .unwrap();
+        let written = armadai_core::parser::parse_agent_file(&md).unwrap();
+
+        assert_agents_equivalent(&declared, &written);
+        assert_projections_equal_across_targets(&declared, &written);
     }
 }
