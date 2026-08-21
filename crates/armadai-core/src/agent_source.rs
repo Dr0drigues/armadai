@@ -18,29 +18,27 @@ pub fn declarations_path(project_root: &Path) -> std::path::PathBuf {
     project_root.join(".armadai").join("agents.yaml")
 }
 
-/// Load an agent, from a file or from the project's declarations.
-pub fn load_agent(
-    r: &AgentRef,
+/// Does this project count as declaring agents at all — via `armadai.yaml`'s
+/// `agents:` list, or via any declaration in `.armadai/agents.yaml`?
+///
+/// Every declared agent is included automatically (it does not need to be
+/// relisted in `agents:` — that would duplicate the declaration this format
+/// exists to remove), so a project relying purely on this format — an
+/// empty or absent `agents:` list — must still count as declaring agents,
+/// rather than being treated as having none.
+///
+/// The single boolean `link`, `list`, `run` and `unlink` each need for their
+/// own project-detection gate, kept in one place: `unlink` shipped as a
+/// fourth, un-widened copy of this exact check after the other three had
+/// already learned to widen it, which is how the false "no agents declared"
+/// message survived on the one command whose job is to undo `link`. A fifth
+/// call site forgetting to widen its own copy is the failure this function
+/// exists to make structurally impossible.
+pub fn project_declares_agents(
     project_root: &Path,
-    fragments: &[Prompt],
-) -> anyhow::Result<Agent> {
-    let AgentRef::Declared { declared } = r else {
-        // Unchanged path: resolve to a file, then parse it.
-        let path = resolve_agent(r, project_root)?;
-        return crate::parser::parse_agent_file(&path);
-    };
-
-    let path = declarations_path(project_root);
-    let decls = agent_decl::load(&path)?;
-    let decl = decls
-        .agents
-        .iter()
-        .find(|a| &a.name == declared)
-        .ok_or_else(|| {
-            anyhow::anyhow!("agent '{declared}' is not declared in {}", path.display())
-        })?;
-
-    agent_decl::to_agent(decl, &decls.defaults, fragments, path.clone())
+    config: &crate::project::ProjectConfig,
+) -> bool {
+    !config.agents.is_empty() || declarations_path(project_root).is_file()
 }
 
 /// Does `name` (compared as a slug) collide with a `.md` file in any of
@@ -265,6 +263,55 @@ pub fn load_all_agents(
         }
     }
 
+    // `shadowing_conflict` above only scans `library_dirs`, so two collision
+    // shapes reach here unchecked: a `path:`-ref `.md` living outside every
+    // library directory (the directory scan never visits it) that projects
+    // to the same slug as a declaration, and two declarations in the same
+    // `agents.yaml` sharing a `name:` (a bare `Vec`, with no uniqueness check
+    // of its own). Both would otherwise reach `link`, which writes one
+    // projection over the other silently — the exact overwrite Task 6 exists
+    // to prevent, reached by a different door. Same criterion as
+    // `shadowing_conflict`: the *slug*, because that is what names the file
+    // the linker writes, not the raw name — checked once the whole fleet
+    // above is assembled, since that is the earliest point both shapes exist
+    // to compare.
+    let mut by_slug: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, a) in agents.iter().enumerate() {
+        by_slug
+            .entry(crate::agent::slugify(&a.name))
+            .or_default()
+            .push(i);
+    }
+    let mut colliding: Vec<usize> = Vec::new();
+    for idxs in by_slug.values() {
+        if idxs.len() < 2 {
+            continue;
+        }
+        for &i in idxs {
+            let others: Vec<String> = idxs
+                .iter()
+                .filter(|&&j| j != i)
+                .map(|&j| format!("'{}'", agents[j].name))
+                .collect();
+            warnings.push(LoadWarning::Dropped {
+                agent: agents[i].name.clone(),
+                message: format!(
+                    "agent '{}' projects to the same slug as {} — remove or \
+                     rename one; there is deliberately no precedence between them",
+                    agents[i].name,
+                    others.join(", ")
+                ),
+            });
+        }
+        colliding.extend(idxs);
+    }
+    colliding.sort_unstable();
+    colliding.dedup();
+    for i in colliding.into_iter().rev() {
+        agents.remove(i);
+    }
+
     (agents, warnings)
 }
 
@@ -392,6 +439,35 @@ pub fn load_agent_by_name(
 mod tests {
     use super::*;
 
+    /// I2's shared gate: a project relying purely on `.armadai/agents.yaml`
+    /// (an empty/absent `agents:` list) must still count as declaring
+    /// agents — the exact case `unlink.rs` got wrong before this helper
+    /// existed.
+    #[test]
+    fn project_declares_agents_is_true_for_a_declarations_only_project() {
+        let dir = tempfile::tempdir().unwrap();
+        project(dir.path());
+        let config = crate::project::ProjectConfig::default();
+        assert!(project_declares_agents(dir.path(), &config));
+    }
+
+    #[test]
+    fn project_declares_agents_is_true_when_only_agents_lists_something() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::project::ProjectConfig {
+            agents: vec![AgentRef::Named { name: "x".into() }],
+            ..Default::default()
+        };
+        assert!(project_declares_agents(dir.path(), &config));
+    }
+
+    #[test]
+    fn project_declares_agents_is_false_for_neither() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::project::ProjectConfig::default();
+        assert!(!project_declares_agents(dir.path(), &config));
+    }
+
     /// A project with one declared agent and one fragment on disk.
     fn project(dir: &std::path::Path) {
         std::fs::create_dir_all(dir.join(".armadai")).unwrap();
@@ -414,52 +490,18 @@ mod tests {
         }]
     }
 
-    #[test]
-    fn a_declared_ref_yields_an_agent_without_touching_the_disk_for_it() {
-        let dir = tempfile::tempdir().unwrap();
-        project(dir.path());
-        let r = AgentRef::Declared {
-            declared: "core-specialist".into(),
-        };
-        let agent = load_agent(&r, dir.path(), &fragments()).unwrap();
-        assert_eq!(agent.name, "core-specialist");
-        assert_eq!(agent.system_prompt, "You are core-specialist.");
-        assert_eq!(agent.metadata.provider, "claude");
-        // `source` points at the declaration, which is where it came from.
-        assert!(agent.source.ends_with("agents.yaml"));
-    }
-
-    #[test]
-    fn a_declared_name_absent_from_the_yaml_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        project(dir.path());
-        let r = AgentRef::Declared {
-            declared: "ghost".into(),
-        };
-        let err = load_agent(&r, dir.path(), &fragments())
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("ghost"), "must name the missing agent: {err}");
-    }
-
-    #[test]
-    fn a_declared_ref_without_any_agents_yaml_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let r = AgentRef::Declared {
-            declared: "x".into(),
-        };
-        assert!(load_agent(&r, dir.path(), &[]).is_err());
-    }
-
     /// Three declared agents with distinguishable metadata and prompts,
-    /// looked up by the middle name. `load_agent`'s
-    /// `.find(|a| &a.name == declared)` is correct by inspection against a
-    /// single-agent fixture, but that can't tell "found the right one" apart
-    /// from "returned the only one there was" — this fixture can, because
-    /// alpha's and gamma's values would make the assertions below fail just
-    /// as loudly as a completely wrong agent would.
+    /// looked up by the middle name via `load_agent_by_name` — the actual
+    /// production entry point for resolving one declared agent (this
+    /// scenario used to go through the now-deleted `load_agent`, which had
+    /// no production caller of its own). A single-agent fixture is correct
+    /// by inspection against `.find(|a| a.name == name)`, but that can't
+    /// tell "found the right one" apart from "returned the only one there
+    /// was" — this fixture can, because alpha's and gamma's values would
+    /// make the assertions below fail just as loudly as a completely wrong
+    /// agent would.
     #[test]
-    fn a_declared_ref_finds_the_middle_agent_among_several() {
+    fn load_agent_by_name_finds_the_middle_agent_among_several() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
         std::fs::write(
@@ -509,12 +551,14 @@ agents:
                 source: std::path::PathBuf::from("gamma.md"),
             },
         ];
+        let config = crate::project::ProjectConfig::default();
 
-        let r = AgentRef::Declared {
-            declared: "beta".into(),
-        };
-        let agent = load_agent(&r, dir.path(), &fragments).unwrap();
+        let (agent, warning) = load_agent_by_name("beta", &config, dir.path(), &fragments).unwrap();
 
+        assert!(
+            warning.is_none(),
+            "a clean project must not warn: {warning:?}"
+        );
         assert_eq!(agent.name, "beta");
         // Neither alpha's nor gamma's provider/model/prompt — beta's own.
         assert_eq!(agent.metadata.provider, "openai");
@@ -844,6 +888,80 @@ agents:
         });
     }
 
+    /// I4a: `shadowing_conflict` only scans `library_dirs`, so a `path:`-ref
+    /// `.md` living outside every one of them (here `custom/`, neither
+    /// `.armadai/agents/` nor the project-local `agents/` nor the global
+    /// library) was invisible to it — a declaration and that file could
+    /// share a slug and both silently reach `link`, which would write one
+    /// projection over the other. The post-assembly slug dedup must catch
+    /// what the directory scan cannot.
+    #[test]
+    fn load_all_agents_refuses_a_declaration_colliding_with_a_path_ref_outside_library_dirs() {
+        with_isolated_global_library(|| {
+            let dir = tempfile::tempdir().unwrap();
+            project(dir.path()); // declares `core-specialist`, prompt: [base]
+            let custom_dir = dir.path().join("custom");
+            std::fs::create_dir_all(&custom_dir).unwrap();
+            std::fs::write(
+                custom_dir.join("core-specialist.md"),
+                "# Core Specialist\n\n## Metadata\n- provider: claude\n\n\
+                 ## System Prompt\n\nHi\n",
+            )
+            .unwrap();
+            let config = config_listing_agent_path(dir.path(), "custom/core-specialist.md");
+
+            let (agents, warnings) = load_all_agents(&config, dir.path(), &fragments());
+            assert!(
+                agents
+                    .iter()
+                    .all(|a| crate::agent::slugify(&a.name) != "core-specialist"),
+                "neither side of the collision must silently win: {agents:?}"
+            );
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.message().to_lowercase().contains("core-specialist")),
+                "the collision must be reported: {warnings:?}"
+            );
+        });
+    }
+
+    /// I4b: two declarations in the same `agents.yaml` sharing a `name:` —
+    /// a bare `Vec`, with no uniqueness check of its own before this fix.
+    /// Compared as slugs, not raw strings, matching Task 6's own criterion:
+    /// `core-specialist` and `Core Specialist` project to the same file name.
+    #[test]
+    fn load_all_agents_refuses_two_declarations_sharing_a_slug() {
+        with_isolated_global_library(|| {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+            std::fs::write(
+                dir.path().join(".armadai/agents.yaml"),
+                "defaults:\n  provider: claude\nagents:\n  \
+                 - name: core-specialist\n    prompt: [base]\n  \
+                 - name: Core Specialist\n    prompt: [base]\n",
+            )
+            .unwrap();
+            let config = crate::project::ProjectConfig::default();
+
+            let (agents, warnings) = load_all_agents(&config, dir.path(), &fragments());
+            assert!(
+                agents
+                    .iter()
+                    .all(|a| crate::agent::slugify(&a.name) != "core-specialist"),
+                "neither duplicate must silently win: {agents:?}"
+            );
+            assert_eq!(
+                warnings
+                    .iter()
+                    .filter(|w| matches!(w, LoadWarning::Dropped { .. }))
+                    .count(),
+                2,
+                "both sides of the collision must be reported: {warnings:?}"
+            );
+        });
+    }
+
     /// Task 7b review, Regression 2: `armadai.yaml`'s `agents:` may list a
     /// declared agent explicitly via `- declared: x` (for routes/teams to
     /// point at deliberately) — that must never make the agent unloadable.
@@ -981,6 +1099,8 @@ agents:
         assert_eq!(agent.name, "zzz-declared-only-agent");
         assert_eq!(agent.system_prompt, "You are zzz-declared-only-agent.");
         assert_eq!(agent.metadata.provider, "claude");
+        // `source` points at the declaration, which is where it came from.
+        assert!(agent.source.ends_with("agents.yaml"));
     }
 
     /// Regression guard on `run`/`inspect`'s most common path: a plain
