@@ -294,6 +294,19 @@ mod tests {
             d_model_fallback, w_model_fallback,
             "metadata.model_fallback diverged"
         );
+        // `cost_limit`, `rate_limit`, `context_window`, `mode`,
+        // `orchestration`, `triggers` and `ring_config` are fields the
+        // declarative format (`AgentDecl`/`AgentDefaults` in
+        // `agent_decl.rs`) has no way to express at all — `to_agent` always
+        // produces `None`/default for every one of them, regardless of what
+        // a `.md` twin's `## Metadata` might otherwise be able to set. Both
+        // sides of every fixture in this file are therefore `None` here by
+        // construction, and these seven assertions are vacuous: they can
+        // never fail while the format stays as it is. That is legitimate,
+        // not a gap in this test — but if the declarative format ever grows
+        // one of these seven, this comment is where the next reader learns
+        // that its fixture also needs a non-default value added, the same
+        // way `model_fallback` did after the mutation that found it unused.
         assert_eq!(d_cost_limit, w_cost_limit, "metadata.cost_limit diverged");
         assert_eq!(d_rate_limit, w_rate_limit, "metadata.rate_limit diverged");
         assert_eq!(
@@ -305,10 +318,10 @@ mod tests {
             d_orchestration, w_orchestration,
             "metadata.orchestration diverged"
         );
-        // Neither format has a way to declare `triggers`/`ring_config` — both
-        // are always `None` here regardless of source — and their types lack
-        // `PartialEq`, so `Debug` equality is exact for what these fixtures
-        // can produce without adding a derive to production code for it.
+        // `triggers`/`ring_config` additionally lack `PartialEq` on their
+        // types, so `Debug` equality is used instead — exact for what these
+        // fixtures can ever produce (always `None`), without adding a
+        // derive to production code for it.
         assert_eq!(
             format!("{d_triggers:?}"),
             format!("{w_triggers:?}"),
@@ -393,7 +406,8 @@ mod tests {
             dir.path().join(".armadai/agents.yaml"),
             "defaults:\n  provider: claude\n  model: latest:pro\n  temperature: 0.3\n\
              agents:\n  - name: core-specialist\n    description: Core domain\n    \
-             tags: [rust, domain]\n    scope: [src/core/**]\n    prompt: [base]\n",
+             tags: [rust, domain]\n    scope: [src/core/**]\n    max_tokens: 8192\n    \
+             timeout: 45\n    model_fallback: [latest:fast]\n    prompt: [base]\n",
         )
         .unwrap();
         let declared = armadai_core::agent_source::load_agent(
@@ -411,7 +425,8 @@ mod tests {
             &md,
             "# core-specialist\n\n## Metadata\n\
              - provider: claude\n- model: latest:pro\n- temperature: 0.3\n\
-             - tags: [rust, domain]\n- scope: [src/core/**]\n\n## System Prompt\n\nYou own the core domain.\n",
+             - tags: [rust, domain]\n- scope: [src/core/**]\n- max_tokens: 8192\n\
+             - timeout: 45\n- model_fallback: [latest:fast]\n\n## System Prompt\n\nYou own the core domain.\n",
         )
         .unwrap();
         let written = armadai_core::parser::parse_agent_file(&md).unwrap();
@@ -450,7 +465,7 @@ mod tests {
             "defaults:\n  provider: cli\n  temperature: 0.5\n\
              agents:\n  - name: shell-runner\n    description: Wraps a CLI tool\n    \
              command: echo\n    args: [hello, world]\n    model: local-llm\n    \
-             tags: [ops, shell]\n    scope: [scripts/**]\n    prompt: [base]\n",
+             tags: [ops, shell]\n    stacks: [devops]\n    scope: [scripts/**]\n    prompt: [base]\n",
         )
         .unwrap();
         let declared = armadai_core::agent_source::load_agent(
@@ -469,7 +484,7 @@ mod tests {
             "# shell-runner\n\n## Metadata\n\
              - provider: cli\n- command: echo\n- args: [hello, world]\n\
              - model: local-llm\n- temperature: 0.5\n- tags: [ops, shell]\n\
-             - scope: [scripts/**]\n\n## System Prompt\n\nYou wrap a CLI tool for scripted tasks.\n",
+             - stacks: [devops]\n- scope: [scripts/**]\n\n## System Prompt\n\nYou wrap a CLI tool for scripted tasks.\n",
         )
         .unwrap();
         let written = armadai_core::parser::parse_agent_file(&md).unwrap();
