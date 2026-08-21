@@ -140,20 +140,29 @@ pub async fn execute(agent_name: String) -> anyhow::Result<()> {
 
 /// Resolve an agent by name: check the project first (file-backed or
 /// declared in `.armadai/agents.yaml`, via `agent_source::load_agent_by_name`),
-/// then fall back to the default global agents directory — mirroring the
-/// same two-tier fallback the previous path-only version used, just with a
-/// richer project-side lookup that also covers declared agents.
+/// else the default global agents directory when no project was found at all.
+///
+/// Once a project IS found, its `load_agent_by_name` result — success or
+/// failure — is final: it is returned directly, never silently swallowed in
+/// favour of a fallback. An earlier version discarded any error from it via
+/// `if let Ok(agent) = ...`, which defeated the by-name amendment's own
+/// requirement in two ways measured on a real project: a name ambiguous
+/// between a declaration and a file was reported as the generic "not found
+/// in agents/" from the branch below instead of naming both `agents.yaml`
+/// and the colliding file, and a name matching an explicit, broken `path:`
+/// ref in the project config no longer propagated that specific failure
+/// either.
 fn load_named_agent(agent_name: &str) -> anyhow::Result<Agent> {
     if let Some((root, config)) = project::find_project_config() {
         let fragments = armadai_core::agent_source::project_fragments(&root);
-        if let Ok(agent) =
-            armadai_core::agent_source::load_agent_by_name(agent_name, &config, &root, &fragments)
-        {
-            return Ok(agent);
-        }
+        return armadai_core::agent_source::load_agent_by_name(
+            agent_name, &config, &root, &fragments,
+        );
     }
 
-    // Fallback to default paths
+    // No project config found at all — fall back to the default global
+    // agents directory (the only fallback tier that remains once a project
+    // IS found is `load_agent_by_name`'s own file-then-declarations order).
     let paths = AppPaths::resolve();
     let path = Agent::find_file(&paths.agents_dir, agent_name).ok_or_else(|| {
         anyhow::anyhow!(

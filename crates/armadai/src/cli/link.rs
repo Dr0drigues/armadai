@@ -61,6 +61,19 @@ pub async fn execute(
         anstream::eprintln!("{w}  warn: {err}{w:#}");
     }
 
+    // `link` writes config that other tools then trust — unlike `list`
+    // (read-only), it must never silently ship a fleet smaller than the one
+    // declared. Any drop (a parse failure, a broken declaration, a
+    // shadowing collision — "whatever the reason") is refused here, even
+    // though the warnings above already named each one, and even if enough
+    // agents survived to be individually non-empty below.
+    if !errors.is_empty() {
+        anyhow::bail!(
+            "{} agent(s) could not be loaded (see warning(s) above) — refusing to link a smaller fleet than declared. Fix the issue(s), or rerun once resolved.",
+            errors.len()
+        );
+    }
+
     let mut link_agents: Vec<LinkAgent> = agents.iter().map(LinkAgent::from).collect();
 
     if link_agents.is_empty() {

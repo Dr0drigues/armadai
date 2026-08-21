@@ -471,8 +471,7 @@ async fn resume_run(
         Arc<dyn armadai_core::provider::Provider>,
     > = std::collections::BTreeMap::new();
     for name in &state.agents {
-        let agent_path = resolve_agent_path(&resolution, name)?;
-        let mut agent = armadai_core::parser::parse_agent_file(&agent_path)?;
+        let mut agent = load_agent_for_run(&resolution, name)?;
         armadai_core::model_aliases::resolve_model_deprecations(
             &mut agent.metadata.model,
             &mut agent.metadata.model_fallback,
@@ -896,11 +895,19 @@ fn resolve_agent_path(resolution: &AgentResolution, agent_name: &str) -> anyhow:
 /// [`resolve_agent_path`], used where the loaded [`Agent`] itself is needed
 /// rather than a file path to hand to a lower-level step.
 ///
-/// Only the single-agent path (`chain.len() == 1`, the common `armadai run
-/// <name>` invocation) calls this. `--pipe`'s legacy chain loop and
-/// `--resume`'s roster reload still call [`resolve_agent_path`] directly and
-/// so still hard-fail on a declared agent — extending them is separate
-/// follow-up work, not this fix (see the task report).
+/// Called from the single-agent path (`chain.len() == 1`, the common
+/// `armadai run <name>` invocation), the `--orchestrate` roster loader
+/// (`run_orchestrated`), and `--resume`'s roster reload (`resume_run`) —
+/// each of those three already parsed the path into an `Agent` immediately
+/// after resolving it, so swapping in the by-name load was a same-shape
+/// change at each site (task 7b review, Finding 7).
+///
+/// `--pipe`'s legacy chain loop (`run_inner`'s multi-agent branch, which
+/// still calls [`resolve_agent_path`] directly into the older
+/// `run_single_agent`) is NOT wired here: `run_single_agent` loads by path
+/// internally rather than accepting an already-loaded `Agent`, so extending
+/// it needs the same signature change `run_single_agent_es` already got —
+/// real, separate follow-up work, reported rather than done here.
 fn load_agent_for_run(resolution: &AgentResolution, agent_name: &str) -> anyhow::Result<Agent> {
     match resolution {
         AgentResolution::Project { root, config } => {
@@ -1643,8 +1650,7 @@ async fn run_orchestrated(
     };
 
     for name in agent_names {
-        let agent_path = resolve_agent_path(resolution, name)?;
-        let mut agent = armadai_core::parser::parse_agent_file(&agent_path)?;
+        let mut agent = load_agent_for_run(resolution, name)?;
 
         let model_before = agent.metadata.model.clone();
         armadai_core::model_aliases::resolve_model_deprecations(
