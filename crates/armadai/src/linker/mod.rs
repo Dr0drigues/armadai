@@ -95,24 +95,13 @@ pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
 }
 
 /// Convert an agent name to a kebab-case slug suitable for filenames.
-pub fn slugify(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c.to_ascii_lowercase()
-            } else if c == ' ' || c == '_' {
-                '-'
-            } else {
-                '\0'
-            }
-        })
-        .filter(|c| *c != '\0')
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
-}
+///
+/// Moved to `armadai_core::agent` — normalising a name into a filename-safe
+/// slug is agent-domain-model territory, and `agent_source::check_no_shadowing`
+/// needs the exact same normalisation to catch a declaration/file collision
+/// that only matches after folding. Re-exported here so no call site in this
+/// crate has to change.
+pub use armadai_core::agent::slugify;
 
 impl From<&Agent> for LinkAgent {
     fn from(agent: &Agent) -> Self {
