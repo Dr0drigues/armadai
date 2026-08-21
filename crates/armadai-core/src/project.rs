@@ -161,9 +161,12 @@ pub enum AgentRef {
         path: PathBuf,
     },
     /// An agent declared in `.armadai/agents.yaml` rather than written as a
-    /// file. See `agent_source::load_agent`, which is the only way to turn
-    /// this variant into an `Agent` — `resolve_agent` below refuses it,
-    /// because a declared agent has no file of its own.
+    /// file. `resolve_agent` below refuses this variant, because a declared
+    /// agent has no file of its own — `agent_source::load_all_agents` (a
+    /// whole project's fleet) and `agent_source::load_agent_by_name` (one
+    /// agent by name) are what actually turn it into an `Agent`, by
+    /// resolving it through the project's declarations directly rather than
+    /// through this function.
     Declared {
         declared: String,
     },
