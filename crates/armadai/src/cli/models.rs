@@ -1,5 +1,6 @@
 use clap::Subcommand;
 
+use armadai_core::agent_source;
 use armadai_core::model_updater;
 use armadai_core::project;
 use armadai_core::project_registry;
@@ -136,43 +137,7 @@ fn update(all: bool) -> anyhow::Result<()> {
                 continue;
             }
 
-            // Group findings by file path
-            let mut by_file: std::collections::HashMap<
-                std::path::PathBuf,
-                Vec<&model_updater::DeprecationFinding>,
-            > = std::collections::HashMap::new();
-            for f in &findings {
-                by_file.entry(f.agent_path.clone()).or_default().push(f);
-            }
-
-            for (path, file_findings) in &by_file {
-                let owned: Vec<_> = file_findings
-                    .iter()
-                    .map(|f| model_updater::DeprecationFinding {
-                        agent_path: f.agent_path.clone(),
-                        agent_name: f.agent_name.clone(),
-                        field: f.field.clone(),
-                        current: f.current.clone(),
-                        replacement: f.replacement.clone(),
-                    })
-                    .collect();
-                match model_updater::update_agent_file(path, &owned) {
-                    Ok(n) => {
-                        if n > 0 {
-                            let o = crate::cli::style::ok();
-                            anstream::println!(
-                                "{o}  updated {}: {n} replacement(s){o:#}",
-                                path.display()
-                            );
-                            total_updated += n;
-                        }
-                    }
-                    Err(e) => {
-                        let er = crate::cli::style::err();
-                        anstream::eprintln!("{er}  error: {}: {e}{er:#}", path.display());
-                    }
-                }
-            }
+            total_updated += apply_and_report(&findings, &agent_source::declarations_path(root));
         }
 
         let o = crate::cli::style::ok();
@@ -189,50 +154,69 @@ fn update(all: bool) -> anyhow::Result<()> {
             return Ok(());
         }
 
-        // Group findings by file path
-        let mut by_file: std::collections::HashMap<
-            std::path::PathBuf,
-            Vec<&model_updater::DeprecationFinding>,
-        > = std::collections::HashMap::new();
-        for f in &findings {
-            by_file.entry(f.agent_path.clone()).or_default().push(f);
-        }
-
-        let mut total = 0;
-        for (path, file_findings) in &by_file {
-            let owned: Vec<_> = file_findings
-                .iter()
-                .map(|f| model_updater::DeprecationFinding {
-                    agent_path: f.agent_path.clone(),
-                    agent_name: f.agent_name.clone(),
-                    field: f.field.clone(),
-                    current: f.current.clone(),
-                    replacement: f.replacement.clone(),
-                })
-                .collect();
-            match model_updater::update_agent_file(path, &owned) {
-                Ok(n) => {
-                    if n > 0 {
-                        let o = crate::cli::style::ok();
-                        anstream::println!(
-                            "{o}  updated {}: {n} replacement(s){o:#}",
-                            path.display()
-                        );
-                        total += n;
-                    }
-                }
-                Err(e) => {
-                    let er = crate::cli::style::err();
-                    anstream::eprintln!("{er}  error: {}: {e}{er:#}", path.display());
-                }
-            }
-        }
+        let total = apply_and_report(&findings, &agent_source::declarations_path(&root));
 
         let o = crate::cli::style::ok();
         anstream::println!("{o}\n{total} model(s) updated.{o:#}");
     }
 
     Ok(())
+}
+
+/// Apply every finding, grouped by the file it came from, and print one
+/// status line per file — the shared body of both branches above.
+///
+/// `decls_path` (the project's `agents.yaml`, whether or not it exists) is
+/// what routes a finding to the right rewriter: [`model_updater::apply_finding`]
+/// sends anything whose `agent_path` matches it through
+/// `update_declarations`, and everything else through `update_agent_file`.
+/// Applying a whole file's findings through the wrong one is exactly the
+/// bug this exists to avoid — `update_agent_file`'s single
+/// `replacen(.., 1)` and unbounded `: <model>` pattern can rewrite a
+/// comment in `agents.yaml` while leaving the real deprecated field
+/// untouched, all while reporting success.
+fn apply_and_report(
+    findings: &[model_updater::DeprecationFinding],
+    decls_path: &std::path::Path,
+) -> usize {
+    let mut by_file: std::collections::HashMap<
+        std::path::PathBuf,
+        Vec<&model_updater::DeprecationFinding>,
+    > = std::collections::HashMap::new();
+    for f in findings {
+        by_file.entry(f.agent_path.clone()).or_default().push(f);
+    }
+
+    let mut total = 0;
+    for (path, file_findings) in &by_file {
+        let mut file_total = 0;
+        let mut file_err = None;
+        for f in file_findings {
+            match model_updater::apply_finding(f, decls_path) {
+                Ok(n) => file_total += n,
+                Err(e) => {
+                    file_err = Some(e);
+                    break;
+                }
+            }
+        }
+        match file_err {
+            Some(e) => {
+                let er = crate::cli::style::err();
+                anstream::eprintln!("{er}  error: {}: {e}{er:#}", path.display());
+            }
+            None if file_total > 0 => {
+                let o = crate::cli::style::ok();
+                anstream::println!(
+                    "{o}  updated {}: {file_total} replacement(s){o:#}",
+                    path.display()
+                );
+                total += file_total;
+            }
+            None => {}
+        }
+    }
+    total
 }
 
 fn list() -> anyhow::Result<()> {
