@@ -108,11 +108,14 @@ fn load_agents() -> anyhow::Result<Vec<Agent>> {
             || armadai_core::agent_source::declarations_path(&root).is_file())
     {
         let fragments = armadai_core::agent_source::project_fragments(&root);
-        let (agents, errors) =
+        let (agents, warnings) =
             armadai_core::agent_source::load_all_agents(&config, &root, &fragments);
-        for err in &errors {
-            let w = crate::cli::style::warn();
-            anstream::eprintln!("{w}  warn: {err}{w:#}");
+        // Read-only: unlike `link`, `list` never refuses over a drop
+        // (pre-existing or new to this chantier's format alike) -- it warns
+        // and shows whatever did load.
+        for w in &warnings {
+            let s = crate::cli::style::warn();
+            anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
         }
         return Ok(agents);
     }

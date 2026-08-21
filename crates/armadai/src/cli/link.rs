@@ -55,23 +55,11 @@ pub async fn execute(
 
     // 2. Resolve and load agents — file-backed and declared alike.
     let fragments = armadai_core::agent_source::project_fragments(&root);
-    let (agents, errors) = armadai_core::agent_source::load_all_agents(&config, &root, &fragments);
-    for err in &errors {
-        let w = crate::cli::style::warn();
-        anstream::eprintln!("{w}  warn: {err}{w:#}");
-    }
-
-    // `link` writes config that other tools then trust — unlike `list`
-    // (read-only), it must never silently ship a fleet smaller than the one
-    // declared. Any drop (a parse failure, a broken declaration, a
-    // shadowing collision — "whatever the reason") is refused here, even
-    // though the warnings above already named each one, and even if enough
-    // agents survived to be individually non-empty below.
-    if !errors.is_empty() {
-        anyhow::bail!(
-            "{} agent(s) could not be loaded (see warning(s) above) — refusing to link a smaller fleet than declared. Fix the issue(s), or rerun once resolved.",
-            errors.len()
-        );
+    let (agents, warnings) =
+        armadai_core::agent_source::load_all_agents(&config, &root, &fragments);
+    for w in &warnings {
+        let s = crate::cli::style::warn();
+        anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
     }
 
     let mut link_agents: Vec<LinkAgent> = agents.iter().map(LinkAgent::from).collect();
@@ -95,6 +83,26 @@ pub async fn execute(
         if link_agents.is_empty() {
             anyhow::bail!("No agents match the given filter: {}", filter.join(", "));
         }
+    }
+
+    // 3a. `link` writes config that other tools then trust — unlike `list`
+    // (read-only), it must never silently ship a fleet smaller than the one
+    // declared. But only when THIS chantier's format is the reason (a
+    // dropped declaration, or a shadowing collision): a pre-existing
+    // failure (an unparseable `.md`, an unresolvable ref) keeps its exact
+    // old behaviour — warn above, link what did load, exit 0 — since that
+    // behaviour predates this format and was never wrong.
+    //
+    // Checked AFTER `--agents` filtering, and scoped to it: a loss outside
+    // what was actually requested (`--agents good` when only `bad` was
+    // dropped) must not refuse a link that never intended to write `bad` in
+    // the first place. `--dry-run` reaches this exact same check with no
+    // special-casing either way, further down — a preview must refuse
+    // exactly when the real link would.
+    if armadai_core::agent_source::blocks_a_write(&warnings, agents_filter.as_deref()) {
+        anyhow::bail!(
+            "one or more agents could not be loaded (see warning(s) above) — refusing to link              a smaller fleet than declared. Fix the issue(s), or rerun once resolved."
+        );
     }
 
     // 3b. Extract coordinator if configured (CLI flag takes priority over config)
