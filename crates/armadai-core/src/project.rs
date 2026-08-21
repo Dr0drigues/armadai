@@ -291,6 +291,22 @@ fn check_dotarmadai_migration_hint(project_root: &Path, legacy_filename: &str) {
 // Agent resolution
 // ---------------------------------------------------------------------------
 
+/// Every directory a `.md` agent can be resolved from, in resolution order.
+///
+/// The single source of truth for that list: `resolve_agent`'s `Named` arm
+/// and `agent_source::check_no_shadowing` both call this rather than each
+/// keeping their own copy, so the two can never drift apart.
+pub fn library_dirs(project_root: &Path) -> Vec<PathBuf> {
+    vec![
+        // 1. .armadai/agents/ (preferred)
+        project_root.join(PROJECT_DIR).join("agents"),
+        // 2. Project-local agents/ (legacy)
+        project_root.join("agents"),
+        // 3. User library ~/.config/armadai/agents/
+        user_agents_dir(),
+    ]
+}
+
 /// Resolve a single `AgentRef` to an absolute path.
 pub fn resolve_agent(agent_ref: &AgentRef, project_root: &Path) -> anyhow::Result<PathBuf> {
     match agent_ref {
@@ -313,32 +329,19 @@ pub fn resolve_agent(agent_ref: &AgentRef, project_root: &Path) -> anyhow::Resul
                 format!("{name}.md")
             };
 
-            // 1. .armadai/agents/ (preferred)
-            let dotarmadai = project_root
-                .join(PROJECT_DIR)
-                .join("agents")
-                .join(&filename);
-            if dotarmadai.exists() {
-                return Ok(dotarmadai);
-            }
-
-            // 2. Project-local agents/ (legacy)
-            let local = project_root.join("agents").join(&filename);
-            if local.exists() {
-                return Ok(local);
-            }
-
-            // 3. User library ~/.config/armadai/agents/
-            let global = user_agents_dir().join(&filename);
-            if global.exists() {
-                return Ok(global);
+            let dirs = library_dirs(project_root);
+            for dir in &dirs {
+                let candidate = dir.join(&filename);
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
             }
 
             anyhow::bail!(
                 "Agent '{name}' not found in {}, {} or {}",
-                dotarmadai.display(),
-                local.display(),
-                global.display()
+                dirs[0].join(&filename).display(),
+                dirs[1].join(&filename).display(),
+                dirs[2].join(&filename).display(),
             );
         }
         AgentRef::Registry { registry } => {

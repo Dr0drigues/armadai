@@ -113,6 +113,141 @@ pub fn check_no_shadowing(project_root: &Path, libraries: &[PathBuf]) -> anyhow:
     Ok(())
 }
 
+/// Every prompt fragment a project's declarations can reference, gathered
+/// from the same three tiers `project::resolve_prompt` searches by name:
+/// `.armadai/prompts/` (preferred), the legacy `prompts/`, then the user's
+/// global library. A name defined in more than one tier keeps its most
+/// local definition — the same "closer wins" rule the rest of resolution
+/// uses.
+///
+/// Every caller that turns declared agents into something usable (`link`,
+/// `list`, `run`, `inspect`) needs this fragment set, so it lives here
+/// rather than being reimplemented at each call site.
+pub fn project_fragments(project_root: &Path) -> Vec<Prompt> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let tiers = [
+        project_root.join(".armadai").join("prompts"),
+        project_root.join("prompts"),
+        crate::config::user_prompts_dir(),
+    ];
+    for dir in &tiers {
+        for p in crate::prompt::load_all_prompts(dir) {
+            if seen.insert(p.name.clone()) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// Every agent a project has: those resolved from files, plus those declared.
+///
+/// Same `(values, non-fatal errors)` shape as `resolve_all_agents`, so callers
+/// keep their existing warning loop. A broken declaration costs its own agent,
+/// never the whole fleet — a fleet that vanishes because one agent has a typo
+/// is worse than a fleet with a gap and a warning.
+///
+/// `check_no_shadowing` runs first, over `project::library_dirs` (the same
+/// list `resolve_agent` resolves file-backed agents from) — a name declared
+/// AND written as a file is refused outright rather than silently loaded
+/// twice or arbitrarily once. That refusal is what makes `load_agent_by_name`
+/// safe to try file-backed agents before declarations with no precedence
+/// rule: if both existed, loading already failed here.
+pub fn load_all_agents(
+    config: &crate::project::ProjectConfig,
+    root: &Path,
+    fragments: &[Prompt],
+) -> (Vec<Agent>, Vec<String>) {
+    let (paths, mut errors) = crate::project::resolve_all_agents(config, root);
+    let mut agents = Vec::new();
+    for path in &paths {
+        match crate::parser::parse_agent_file(path) {
+            Ok(a) => agents.push(a),
+            Err(e) => errors.push(format!("failed to parse {}: {e}", path.display())),
+        }
+    }
+
+    let decls_path = declarations_path(root);
+    if decls_path.is_file() {
+        if let Err(e) = check_no_shadowing(root, &crate::project::library_dirs(root)) {
+            errors.push(format!("{e}"));
+            return (agents, errors);
+        }
+        match agent_decl::load(&decls_path) {
+            Ok(decls) => {
+                for decl in &decls.agents {
+                    match agent_decl::to_agent(decl, &decls.defaults, fragments, decls_path.clone())
+                    {
+                        Ok(a) => agents.push(a),
+                        Err(e) => errors.push(format!("{e}")),
+                    }
+                }
+            }
+            Err(e) => errors.push(format!("{e}")),
+        }
+    }
+
+    (agents, errors)
+}
+
+/// Find one agent by name, whether it is declared or written as a file.
+///
+/// Resolution order: file-backed first — a config `AgentRef` matching `name`
+/// (mirroring `AgentResolution::Project`'s own ref-matching in `cli::run` and
+/// `cli::inspect`, which this replaces), or failing that a bare `Named`
+/// lookup — then the project's declarations. Because `check_no_shadowing`
+/// (wired into `load_all_agents`) refuses a name that exists in both, this
+/// order never has to arbitrate a real collision: if both existed, loading
+/// already failed elsewhere. There is deliberately no precedence rule here.
+///
+/// A `config.agents` entry of `AgentRef::Declared` matching `name` is never
+/// handed to `resolve_agent` (which always refuses that variant) — it is
+/// left unmatched here so resolution falls through to the declarations
+/// lookup below, which is what actually resolves it.
+pub fn load_agent_by_name(
+    name: &str,
+    config: &crate::project::ProjectConfig,
+    project_root: &Path,
+    fragments: &[Prompt],
+) -> anyhow::Result<Agent> {
+    let matched_ref = config.agents.iter().find(|r| match r {
+        AgentRef::Named { name: n } => n == name,
+        AgentRef::Path { path } => path.file_stem().is_some_and(|s| s == name),
+        AgentRef::Registry { registry } => registry.ends_with(name),
+        AgentRef::Declared { .. } => false,
+    });
+
+    let file_result = match matched_ref {
+        Some(agent_ref) => resolve_agent(agent_ref, project_root),
+        None => resolve_agent(
+            &AgentRef::Named {
+                name: name.to_string(),
+            },
+            project_root,
+        ),
+    };
+
+    let file_err = match file_result {
+        Ok(path) => return crate::parser::parse_agent_file(&path),
+        Err(e) => e,
+    };
+
+    let decls_path = declarations_path(project_root);
+    if decls_path.is_file() {
+        let decls = agent_decl::load(&decls_path)?;
+        if let Some(decl) = decls.agents.iter().find(|a| a.name == name) {
+            return agent_decl::to_agent(decl, &decls.defaults, fragments, decls_path);
+        }
+    }
+
+    anyhow::bail!(
+        "agent '{name}' not found: not resolvable as a file ({file_err}), \
+         and not declared in {}",
+        decls_path.display()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +538,219 @@ agents:
             AgentRef::Declared {
                 declared: "core-specialist".to_string()
             }
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // load_all_agents
+    // -----------------------------------------------------------------
+
+    /// Build a `ProjectConfig` whose agent list holds one `AgentRef::Path`,
+    /// following `project.rs`'s own `test_resolve_all_agents` construction
+    /// rather than inventing a second way to build one.
+    fn config_listing_agent_path(
+        _project_root: &std::path::Path,
+        rel_path: &str,
+    ) -> crate::project::ProjectConfig {
+        crate::project::ProjectConfig {
+            agents: vec![AgentRef::Path {
+                path: std::path::PathBuf::from(rel_path),
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// A project with one `.md` agent and one declared agent must yield both.
+    #[test]
+    fn declared_and_file_agents_are_loaded_together() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  - name: declared-one\n    prompt: [base]\n",
+        )
+        .unwrap();
+        let md_dir = dir.path().join("agents");
+        std::fs::create_dir_all(&md_dir).unwrap();
+        std::fs::write(
+            md_dir.join("file-one.md"),
+            "# file-one\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nHi\n",
+        )
+        .unwrap();
+        let config = config_listing_agent_path(dir.path(), "agents/file-one.md");
+
+        let (agents, errors) = load_all_agents(&config, dir.path(), &fragments());
+        let mut names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec!["declared-one", "file-one"],
+            "errors: {errors:?}"
+        );
+    }
+
+    /// A project with no declarations must behave exactly as before.
+    #[test]
+    fn a_project_without_declarations_loads_only_its_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let md_dir = dir.path().join("agents");
+        std::fs::create_dir_all(&md_dir).unwrap();
+        std::fs::write(
+            md_dir.join("only.md"),
+            "# only\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nHi\n",
+        )
+        .unwrap();
+        let config = config_listing_agent_path(dir.path(), "agents/only.md");
+
+        let (agents, _) = load_all_agents(&config, dir.path(), &[]);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "only");
+    }
+
+    /// One bad declaration must not silence the good agents — the existing
+    /// callers print warnings and carry on, and that contract must hold.
+    #[test]
+    fn a_broken_declaration_becomes_an_error_string_not_a_lost_fleet() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        // `ghost` is not a known fragment -> composition fails for this agent.
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  - name: broken\n    prompt: [ghost]\n  \
+             - name: fine\n    prompt: [base]\n",
+        )
+        .unwrap();
+        let config = config_listing_agent_path(dir.path(), "agents/none.md");
+
+        let (agents, errors) = load_all_agents(&config, dir.path(), &fragments());
+        assert!(
+            agents.iter().any(|a| a.name == "fine"),
+            "the healthy agent must survive: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("broken")),
+            "the broken one must be reported by name: {errors:?}"
+        );
+    }
+
+    /// A declared agent and a same-named file must still refuse to load at
+    /// all via `load_all_agents` — the shadowing check now actually runs.
+    #[test]
+    fn load_all_agents_refuses_a_shadowed_declaration() {
+        let dir = tempfile::tempdir().unwrap();
+        project(dir.path()); // declares `core-specialist`
+        let md_dir = dir.path().join("agents");
+        std::fs::create_dir_all(&md_dir).unwrap();
+        std::fs::write(md_dir.join("core-specialist.md"), "# Core").unwrap();
+        let config = crate::project::ProjectConfig::default();
+
+        let (agents, errors) = load_all_agents(&config, dir.path(), &fragments());
+        assert!(
+            agents.iter().all(|a| a.name != "core-specialist"),
+            "a shadowed name must not be silently loaded from either side: {agents:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("core-specialist")),
+            "the collision must be reported: {errors:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // load_agent_by_name
+    // -----------------------------------------------------------------
+
+    /// A declared agent must be reachable by name with no `AgentRef` at all
+    /// listing it in `armadai.yaml` — the whole point of "every agent in
+    /// `agents.yaml` is included automatically".
+    ///
+    /// Deliberately does NOT reuse the shared `project()`/`core-specialist`
+    /// fixture: `load_agent_by_name` tries a file-backed lookup first, which
+    /// walks the REAL `~/.config/armadai/agents/` on this machine (this very
+    /// repo's own `core-specialist` team agent is routinely extracted there).
+    /// A name that could plausibly exist globally would make this test pass
+    /// for the wrong reason on a dev box while still passing in CI — so this
+    /// uses a name no real global library will ever hold.
+    #[test]
+    fn load_agent_by_name_finds_a_declared_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  \
+             - name: zzz-declared-only-agent\n    prompt: [base]\n",
+        )
+        .unwrap();
+        let config = crate::project::ProjectConfig::default();
+
+        let agent =
+            load_agent_by_name("zzz-declared-only-agent", &config, dir.path(), &fragments())
+                .unwrap();
+        assert_eq!(agent.name, "zzz-declared-only-agent");
+        assert_eq!(agent.system_prompt, "You are zzz-declared-only-agent.");
+        assert_eq!(agent.metadata.provider, "claude");
+    }
+
+    /// Regression guard on `run`/`inspect`'s most common path: a plain
+    /// `.md` agent, referenced by a `path:` entry, must resolve to the SAME
+    /// agent it always did. Every assertion below is a value this test would
+    /// catch going wrong (wrong file loaded, empty metadata, wrong prompt) —
+    /// a bare "it loaded" assertion could not tell that apart from a bug
+    /// that returns some other agent, or a half-populated one.
+    #[test]
+    fn load_agent_by_name_still_resolves_a_file_backed_agent_exactly_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("sentinel.md"),
+            "# Sentinel Prime\n\n\
+             ## Metadata\n\
+             - provider: cli\n\
+             - command: sentinel-cmd\n\
+             - model: sentinel-model-x\n\
+             - tags: alpha-tag\n\n\
+             ## System Prompt\n\n\
+             Guard the perimeter, sentinel-style.\n",
+        )
+        .unwrap();
+        let config = crate::project::ProjectConfig {
+            agents: vec![AgentRef::Path {
+                path: std::path::PathBuf::from("sentinel.md"),
+            }],
+            ..Default::default()
+        };
+
+        let agent = load_agent_by_name("sentinel", &config, dir.path(), &[]).unwrap();
+        assert_eq!(agent.name, "Sentinel Prime");
+        assert_eq!(agent.metadata.provider, "cli");
+        assert_eq!(agent.metadata.command.as_deref(), Some("sentinel-cmd"));
+        assert_eq!(agent.metadata.model.as_deref(), Some("sentinel-model-x"));
+        assert_eq!(agent.metadata.tags, vec!["alpha-tag".to_string()]);
+        assert_eq!(
+            agent.system_prompt.trim(),
+            "Guard the perimeter, sentinel-style."
+        );
+    }
+
+    /// An unknown name must error, naming both places that were searched: the
+    /// file-backed resolution (via the underlying `resolve_agent` error) and
+    /// `agents.yaml` — a mistyped declared agent's name must not be reported
+    /// as though only one of the two had been consulted.
+    #[test]
+    fn an_unknown_name_errors_naming_both_places_searched() {
+        let dir = tempfile::tempdir().unwrap();
+        project(dir.path()); // .armadai/agents.yaml exists, declares core-specialist
+        let config = crate::project::ProjectConfig::default();
+
+        let err = load_agent_by_name("ghost-agent", &config, dir.path(), &fragments())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ghost-agent"), "must name the agent: {err}");
+        assert!(
+            err.contains("agents.yaml"),
+            "must say it looked in the declarations: {err}"
+        );
+        assert!(
+            err.contains("not found") || err.contains("not resolvable"),
+            "must say it looked for a file too: {err}"
         );
     }
 }
