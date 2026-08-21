@@ -260,12 +260,21 @@ async fn interactive_create() -> anyhow::Result<()> {
         let template_path = templates_dir.join(format!("{tpl_name}.md"));
         let mut content = std::fs::read_to_string(&template_path)?;
         let title = slug_to_title(&name);
-        content = content.replace("{{name}}", &title);
-        content = content.replace("{{description}}", &system_prompt);
-        // Replace stacks placeholder
-        if !stacks.is_empty() {
-            content = content.replace("{{stack}}", &stacks[0]);
+        // Through the shared `template` module, not a hand-rolled
+        // `replace("{{name}}", ..)` — that exact shape is what let a
+        // `{{ name }}` (spaced) placeholder in a template ship
+        // unsubstituted (see `template.rs`'s `render`/`render_lenient`):
+        // building the literal `{{name}}` string to search for agrees with
+        // neither a template author's spacing nor with how
+        // `placeholders()`/`render` itself recognises a placeholder.
+        let mut vars = std::collections::BTreeMap::new();
+        vars.insert("name".to_string(), title);
+        vars.insert("description".to_string(), system_prompt.clone());
+        if let Some(first_stack) = stacks.first() {
+            vars.insert("stack".to_string(), first_stack.clone());
         }
+        let (rendered, _remaining) = armadai_core::template::render_lenient(&content, &vars);
+        content = rendered;
         // Overwrite metadata section with user choices
         overwrite_metadata(
             &content,
