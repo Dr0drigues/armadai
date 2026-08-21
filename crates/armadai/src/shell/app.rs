@@ -1097,9 +1097,46 @@ async fn execute_tandem(
     Ok(())
 }
 
-/// Resolve an agent file path by name from the current project config.
-fn resolve_project_agent(name: &str) -> Option<std::path::PathBuf> {
-    let (root, config) = armadai_core::project::find_project_config()?;
+/// Outcome of looking an agent name up against the project config.
+///
+/// Plain `Option<PathBuf>` used to stand in for this, but that collapses two
+/// different truths into one `None`: "no such agent" and "that agent exists,
+/// declared in `agents.yaml`, but has no file to run from the shell relay".
+/// Only the first one means "not found in project config" — saying that for
+/// the second sends the user hunting through `armadai.yaml` for something
+/// that is, in fact, correctly declared.
+#[derive(Debug, PartialEq)]
+enum AgentLookup {
+    /// Resolved to a file, exactly as the three pre-existing `AgentRef`
+    /// variants (`Named`, `Path`, `Registry`) always have.
+    Path(std::path::PathBuf),
+    /// Declared in `.armadai/agents.yaml`, not file-backed. The shell relay
+    /// only runs file-backed agents today — wiring it to `load_agent` for
+    /// declared agents is a later task's job.
+    Declared,
+    /// No ref in the project config matches this name at all.
+    NotFound,
+}
+
+/// Message shown when a step's `--agent` name resolves to a declared
+/// (non-file) agent. Kept as its own function so both the shell and its
+/// tests say the exact same thing.
+fn declared_agent_not_runnable_message(agent_name: &str) -> String {
+    format!(
+        "Agent '{agent_name}' is declared in .armadai/agents.yaml but has no \
+         file — declarative agents can't be run from the shell yet"
+    )
+}
+
+/// Look `name` up against a project config already resolved to `root`. Pure
+/// with respect to the filesystem beyond what `resolve_agent` itself touches
+/// — split out from `resolve_project_agent` so it can be tested without
+/// depending on (and mutating) the process's current directory.
+fn lookup_agent_in_config(
+    config: &armadai_core::project::ProjectConfig,
+    root: &std::path::Path,
+    name: &str,
+) -> AgentLookup {
     for agent_ref in &config.agents {
         let agent_name = match agent_ref {
             armadai_core::project::AgentRef::Named { name: n } => n.clone(),
@@ -1108,19 +1145,29 @@ fn resolve_project_agent(name: &str) -> Option<std::path::PathBuf> {
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string())
                 .unwrap_or_default(),
-            // Matched by name like the other file-backed variants; the
-            // shell relay wants a file path, which a declared agent has
-            // none of, so `resolve_agent` below turns this into a clean
-            // `None` rather than a path. Wiring the shell to `load_agent`
-            // for declared agents is a later task's job.
             armadai_core::project::AgentRef::Declared { declared } => declared.clone(),
             _ => continue,
         };
-        if agent_name == name {
-            return armadai_core::project::resolve_agent(agent_ref, &root).ok();
+        if agent_name != name {
+            continue;
         }
+        if matches!(agent_ref, armadai_core::project::AgentRef::Declared { .. }) {
+            return AgentLookup::Declared;
+        }
+        return match armadai_core::project::resolve_agent(agent_ref, root) {
+            Ok(path) => AgentLookup::Path(path),
+            Err(_) => AgentLookup::NotFound,
+        };
     }
-    None
+    AgentLookup::NotFound
+}
+
+/// Resolve an agent file path by name from the current project config.
+fn resolve_project_agent(name: &str) -> AgentLookup {
+    let Some((root, config)) = armadai_core::project::find_project_config() else {
+        return AgentLookup::NotFound;
+    };
+    lookup_agent_in_config(&config, &root, name)
 }
 
 /// Resolved step data: command, args, combined prompt, display label.
@@ -1171,7 +1218,7 @@ async fn execute_pipeline_steps(
         {
             // Agent mode: load the agent from project config
             match resolve_project_agent(agent_name) {
-                Some(path) => match armadai_core::parser::parse_agent_file(&path) {
+                AgentLookup::Path(path) => match armadai_core::parser::parse_agent_file(&path) {
                     Ok(agent) => {
                         let cmd = agent.metadata.provider.clone();
                         let args = super::detect::args_for_provider(&cmd);
@@ -1185,7 +1232,11 @@ async fn execute_pipeline_steps(
                         continue;
                     }
                 },
-                None => {
+                AgentLookup::Declared => {
+                    app.add_system_message(&declared_agent_not_runnable_message(agent_name));
+                    continue;
+                }
+                AgentLookup::NotFound => {
                     app.add_system_message(&format!(
                         "Agent '{agent_name}' not found in project config"
                     ));
@@ -1668,5 +1719,56 @@ mod tests {
         assert_eq!(tokens_in, Some(42));
         assert_eq!(tokens_out, 7);
         assert!((cost - 0.1).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------
+    // AgentLookup: distinguishing "no such agent" from "declared, not
+    // file-backed" so the shell's message stays true. `lookup_agent_in_config`
+    // takes the project config directly, so these don't touch the process's
+    // current directory the way `resolve_project_agent` itself does.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn a_declared_ref_is_looked_up_as_declared_not_as_a_missing_file() {
+        let config = armadai_core::project::ProjectConfig {
+            agents: vec![armadai_core::project::AgentRef::Declared {
+                declared: "core-specialist".to_string(),
+            }],
+            ..Default::default()
+        };
+        let root = std::path::Path::new("/does/not/matter");
+
+        assert_eq!(
+            lookup_agent_in_config(&config, root, "core-specialist"),
+            AgentLookup::Declared
+        );
+    }
+
+    #[test]
+    fn a_name_absent_from_the_config_is_not_found() {
+        let config = armadai_core::project::ProjectConfig {
+            agents: vec![armadai_core::project::AgentRef::Declared {
+                declared: "core-specialist".to_string(),
+            }],
+            ..Default::default()
+        };
+        let root = std::path::Path::new("/does/not/matter");
+
+        assert_eq!(
+            lookup_agent_in_config(&config, root, "ghost"),
+            AgentLookup::NotFound
+        );
+    }
+
+    #[test]
+    fn the_declared_agent_message_is_true_and_names_the_agent() {
+        // Pins the exact wording so a future edit can't silently regress it
+        // back to the false "not found in project config" message this
+        // fix replaced.
+        assert_eq!(
+            declared_agent_not_runnable_message("core-specialist"),
+            "Agent 'core-specialist' is declared in .armadai/agents.yaml but has no \
+             file — declarative agents can't be run from the shell yet"
+        );
     }
 }

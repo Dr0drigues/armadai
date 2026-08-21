@@ -11,7 +11,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::agent::{AgentMetadata, default_temperature};
+use crate::agent::{Agent, AgentMetadata, default_temperature};
 
 /// One entry of an agent's `prompt:` list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +251,33 @@ pub fn compose_prompt(
         parts.push(rendered.trim_end().to_string());
     }
     Ok(parts.join("\n\n"))
+}
+
+/// Build the `Agent` a single declaration resolves to: metadata merged over
+/// `defaults`, system prompt composed from `fragments`, `source` stamped as
+/// given by the caller.
+///
+/// The only place this runs today is `agent_source::load_agent`, for one
+/// declared agent at a time. A bulk loader (loading every agent in a file at
+/// once) is later work; putting the construction here rather than inline at
+/// the single-agent call site means that loader calls this too, instead of
+/// a second, inevitably drifting copy of the same `Agent { .. }` literal.
+pub(crate) fn to_agent(
+    decl: &AgentDecl,
+    defaults: &AgentDefaults,
+    fragments: &[crate::prompt::Prompt],
+    source: std::path::PathBuf,
+) -> anyhow::Result<Agent> {
+    Ok(Agent {
+        name: decl.name.clone(),
+        source,
+        metadata: merge_metadata(decl, defaults)?,
+        system_prompt: compose_prompt(&decl.prompt, decl, fragments)?,
+        instructions: None,
+        output_format: None,
+        pipeline: None,
+        context: None,
+    })
 }
 
 #[cfg(test)]

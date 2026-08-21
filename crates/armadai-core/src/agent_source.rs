@@ -40,16 +40,7 @@ pub fn load_agent(
             anyhow::anyhow!("agent '{declared}' is not declared in {}", path.display())
         })?;
 
-    Ok(Agent {
-        name: decl.name.clone(),
-        source: path.clone(),
-        metadata: agent_decl::merge_metadata(decl, &decls.defaults)?,
-        system_prompt: agent_decl::compose_prompt(&decl.prompt, decl, fragments)?,
-        instructions: None,
-        output_format: None,
-        pipeline: None,
-        context: None,
-    })
+    agent_decl::to_agent(decl, &decls.defaults, fragments, path.clone())
 }
 
 #[cfg(test)]
@@ -113,6 +104,77 @@ mod tests {
             declared: "x".into(),
         };
         assert!(load_agent(&r, dir.path(), &[]).is_err());
+    }
+
+    /// Three declared agents with distinguishable metadata and prompts,
+    /// looked up by the middle name. `load_agent`'s
+    /// `.find(|a| &a.name == declared)` is correct by inspection against a
+    /// single-agent fixture, but that can't tell "found the right one" apart
+    /// from "returned the only one there was" — this fixture can, because
+    /// alpha's and gamma's values would make the assertions below fail just
+    /// as loudly as a completely wrong agent would.
+    #[test]
+    fn a_declared_ref_finds_the_middle_agent_among_several() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            r#"
+defaults:
+  provider: claude
+
+agents:
+  - name: alpha
+    description: the first agent
+    provider: claude
+    prompt: [alpha-frag]
+  - name: beta
+    description: the middle agent
+    provider: openai
+    model: gpt-5
+    prompt: [beta-frag]
+  - name: gamma
+    description: the last agent
+    provider: gemini
+    prompt: [gamma-frag]
+"#,
+        )
+        .unwrap();
+
+        let fragments = vec![
+            crate::prompt::Prompt {
+                name: "alpha-frag".into(),
+                description: None,
+                apply_to: vec![],
+                body: "Alpha body.".into(),
+                source: std::path::PathBuf::from("alpha.md"),
+            },
+            crate::prompt::Prompt {
+                name: "beta-frag".into(),
+                description: None,
+                apply_to: vec![],
+                body: "Beta body.".into(),
+                source: std::path::PathBuf::from("beta.md"),
+            },
+            crate::prompt::Prompt {
+                name: "gamma-frag".into(),
+                description: None,
+                apply_to: vec![],
+                body: "Gamma body.".into(),
+                source: std::path::PathBuf::from("gamma.md"),
+            },
+        ];
+
+        let r = AgentRef::Declared {
+            declared: "beta".into(),
+        };
+        let agent = load_agent(&r, dir.path(), &fragments).unwrap();
+
+        assert_eq!(agent.name, "beta");
+        // Neither alpha's nor gamma's provider/model/prompt — beta's own.
+        assert_eq!(agent.metadata.provider, "openai");
+        assert_eq!(agent.metadata.model, Some("gpt-5".to_string()));
+        assert_eq!(agent.system_prompt, "Beta body.");
     }
 
     /// `AgentRef` is `#[serde(untagged)]`. Adding `Declared` must not shift
