@@ -7,7 +7,7 @@ use crate::project::{self, ProjectConfig};
 // Data model
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DeprecationFinding {
     pub agent_path: PathBuf,
     pub agent_name: String,
@@ -179,6 +179,26 @@ pub fn check_declarations(path: &Path) -> Vec<DeprecationFinding> {
     out
 }
 
+/// Whether `value` (a line's content right after its `key:`, already
+/// trimmed) opens a YAML block scalar — `|` or `>`, optionally followed by
+/// a chomping indicator (`+`/`-`) and/or an explicit indentation indicator
+/// (`1`-`9`), the two in either order (`c-b-block-header` in the YAML
+/// spec: `|-`, `|+`, `|2`, `|2-`, `|-2`, and the `>` folded-scalar
+/// equivalents). A trailing comment after the header is allowed and
+/// ignored.
+fn opens_block_scalar(value: &str) -> bool {
+    let value = value.split('#').next().unwrap_or(value).trim();
+    let Some(rest) = value.strip_prefix(['|', '>']) else {
+        return false;
+    };
+    if rest.len() > 2 {
+        return false;
+    }
+    let digits = rest.chars().filter(|c| c.is_ascii_digit()).count();
+    let signs = rest.chars().filter(|c| *c == '+' || *c == '-').count();
+    digits <= 1 && signs <= 1 && digits + signs == rest.chars().count()
+}
+
 /// Rewrite deprecated models in an `agents.yaml`.
 ///
 /// Textual substitution, like `update_agent_file` — a `serde_yaml_ng`
@@ -199,6 +219,22 @@ pub fn check_declarations(path: &Path) -> Vec<DeprecationFinding> {
 /// name (e.g. `args: [--model, claude-3-sonnet-20240229]`, passed through
 /// to a `cli`-provider agent), and rewriting that would silently corrupt an
 /// argument, not fix a model.
+///
+/// The same enclosing-scope tracking covers block scalars (`description:
+/// |`, `>`, …): every line more indented than the key that opened one (or
+/// blank) belongs to that scalar's *value*, never to the mapping — `#` is
+/// literal there, not a comment, and a line that happens to start with
+/// `model:` is prose, not a key. Such lines are never rewrite candidates,
+/// whatever they start with.
+///
+/// Detection ([`check_declarations`]) is a structured YAML parse; this
+/// rewrite is textual, so the two can disagree on a form the parser
+/// accepts but this scan does not recognise (e.g. a quoted `"model":` key).
+/// Rather than let that surface as a silently-too-low count, this function
+/// insists the number of textual replacements it actually made equals
+/// `findings.len()` and returns an `Err` naming whatever finding(s) it
+/// could not locate otherwise — and, so a caller never has to reason about
+/// a half-applied fix, writes nothing at all when it errors.
 pub fn update_declarations(path: &Path, findings: &[DeprecationFinding]) -> anyhow::Result<usize> {
     if findings.is_empty() {
         return Ok(0);
@@ -209,8 +245,34 @@ pub fn update_declarations(path: &Path, findings: &[DeprecationFinding]) -> anyh
     // Indentation of the nearest `model:`/`model_fallback:` key that opened
     // a block list still in scope, if any.
     let mut active_list_indent: Option<usize> = None;
+    // Indentation of the key that opened a block scalar (`|`/`>`) still in
+    // scope, if any. Tracked separately: a block scalar can open under ANY
+    // key (`description: |`), not just `model:`/`model_fallback:`.
+    let mut block_scalar_indent: Option<usize> = None;
+    // How many findings still need a textual match, grouped by the exact
+    // deprecated value — several findings (e.g. `defaults.model` and an
+    // agent's own `model`) legitimately share the same `current` string, so
+    // this is decremented, not looked up by finding identity.
+    let mut remaining: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for f in findings {
+        *remaining.entry(f.current.as_str()).or_insert(0) += 1;
+    }
 
     for line in content.lines() {
+        let raw_indent = line.len() - line.trim_start().len();
+        let is_blank = line.trim().is_empty();
+
+        if let Some(bs_indent) = block_scalar_indent {
+            if is_blank || raw_indent > bs_indent {
+                // Still inside the scalar's value: copy through untouched,
+                // whatever this line looks like.
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+            block_scalar_indent = None; // dedented: the scalar just ended
+        }
+
         let code = line.split('#').next().unwrap_or(line);
         let trimmed = code.trim_start();
         let indent = code.len() - trimmed.len();
@@ -228,6 +290,15 @@ pub fn update_declarations(path: &Path, findings: &[DeprecationFinding]) -> anyh
                 (trimmed == "model:" || trimmed == "model_fallback:").then_some(indent);
         }
 
+        // Does THIS key's own value open a block scalar? Checked for every
+        // key, not just model/model_fallback — `description: |` is the
+        // case this exists for.
+        if let Some(colon) = trimmed.find(':')
+            && opens_block_scalar(&trimmed[colon + 1..])
+        {
+            block_scalar_indent = Some(indent);
+        }
+
         let is_model_key = is_model_line || is_active_list_item;
         let mut kept = line.to_string();
         if is_model_key {
@@ -235,11 +306,50 @@ pub fn update_declarations(path: &Path, findings: &[DeprecationFinding]) -> anyh
                 if kept.contains(&f.current) {
                     kept = kept.replace(&f.current, &f.replacement);
                     count += 1;
+                    if let Some(n) = remaining.get_mut(f.current.as_str()) {
+                        *n = n.saturating_sub(1);
+                    }
                 }
             }
         }
         out.push_str(&kept);
         out.push('\n');
+    }
+
+    if count != findings.len() {
+        // Attribute the shortfall to specific findings, deterministically:
+        // for each value still outstanding, the trailing findings that
+        // share it (findings sharing a `current` are textually
+        // interchangeable, so which exact one is named does not matter —
+        // only that the named count matches the real shortfall).
+        let mut left = remaining;
+        let mut unapplied: Vec<&DeprecationFinding> = Vec::new();
+        for f in findings.iter().rev() {
+            if let Some(n) = left.get_mut(f.current.as_str())
+                && *n > 0
+            {
+                *n -= 1;
+                unapplied.push(f);
+            }
+        }
+        unapplied.reverse();
+        let named = if unapplied.is_empty() {
+            "unable to attribute the mismatch to a specific finding".to_string()
+        } else {
+            unapplied
+                .iter()
+                .map(|f| format!("{} [{}]", f.agent_name, f.field))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        anyhow::bail!(
+            "detection and rewrite disagree on {}: parsing found {} deprecated model(s), the \
+             textual rewrite could only locate {} — left everything unfixed rather than guess \
+             (an unsupported form, such as a quoted `\"model\":` key, is the likely cause): {named}",
+            path.display(),
+            findings.len(),
+            count,
+        );
     }
 
     std::fs::write(path, out)?;
@@ -329,9 +439,15 @@ pub fn auto_check_and_prompt(project_root: &Path, interactive: bool) -> bool {
 /// [`update_agent_file`]'s single `replacen(.., 1)` would only fix the first
 /// occurrence, and its raw `: <model>` pattern is not bounded to
 /// `model:`/`model_fallback:` lines the way the declarative rewrite is.
-/// Extracted as its own function so the routing decision has a direct test,
-/// independent of the interactive prompt above it.
-fn apply_finding(finding: &DeprecationFinding, decls_path: &Path) -> anyhow::Result<usize> {
+///
+/// Public, and used by two callers: `auto_check_and_prompt`'s own
+/// confirmation branch below, and `armadai models update`
+/// (`crates/armadai/src/cli/models.rs`) — the other place that turns a
+/// [`DeprecationFinding`] into an actual file edit. Both need the exact same
+/// routing decision; extracted here once so neither can drift from it (and
+/// so the decision itself has a direct test, independent of the interactive
+/// prompt one of its callers sits behind).
+pub fn apply_finding(finding: &DeprecationFinding, decls_path: &Path) -> anyhow::Result<usize> {
     if finding.agent_path == decls_path {
         update_declarations(&finding.agent_path, std::slice::from_ref(finding))
     } else {
@@ -671,6 +787,81 @@ mod tests {
         let after = std::fs::read_to_string(&p).unwrap();
         assert!(after.contains("gpt-4o") && !after.contains("gpt-4-turbo"));
         assert!(after.contains("gemini-2.5-flash") && !after.contains("gemini-1.5-flash"));
+    }
+
+    /// A `description: |` block scalar whose indented continuation line
+    /// itself starts with `model:` must not be mistaken for a real `model:`
+    /// key — it is prose inside the scalar's value, not a mapping key. The
+    /// sibling agent's real `model:` field, outside the scalar, must still
+    /// be fixed.
+    #[test]
+    fn a_block_scalar_is_left_byte_identical_while_a_real_model_field_is_still_fixed() {
+        let (old, new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let body = format!(
+            "agents:\n  - name: a\n    description: |\n      notes:\n      model: {old}\n      \
+             more prose about {old}\n    model: {old}\n"
+        );
+        let p = write_yaml(dir.path(), &body);
+
+        let findings = check_declarations(&p);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only the real `model:` field is a finding: {findings:?}"
+        );
+        assert_eq!(update_declarations(&p, &findings).unwrap(), 1);
+
+        let after = std::fs::read_to_string(&p).unwrap();
+        let block_scalar_lines = "      notes:\n      model: {old}\n      more prose about {old}\n"
+            .replace("{old}", &old);
+        assert!(
+            after.contains(&block_scalar_lines),
+            "the block scalar's content must survive byte-identical:\n{after}"
+        );
+        assert!(
+            after.contains(&format!("\n    model: {new}\n")),
+            "the real, sibling model: field must still be fixed:\n{after}"
+        );
+    }
+
+    /// `is_model_key`'s textual scan does not recognise a quoted key
+    /// (`"model":`), while `check_declarations`'s structured parse does —
+    /// a genuine detection/rewrite disagreement. `update_declarations` must
+    /// refuse rather than silently under-report, and must leave the file
+    /// completely untouched (no partial rewrite the caller never asked
+    /// for).
+    #[test]
+    fn a_quoted_key_is_detected_but_not_textually_matched_and_the_disagreement_is_a_hard_error() {
+        let (old, _new) = a_deprecated_model();
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_yaml(
+            dir.path(),
+            &format!("defaults:\n  provider: claude\n  \"model\": {old}\nagents:\n  - name: a\n"),
+        );
+
+        let findings = check_declarations(&p);
+        assert_eq!(
+            findings.len(),
+            1,
+            "the structured parse must still find it: {findings:?}"
+        );
+
+        let before = std::fs::read_to_string(&p).unwrap();
+        let err = update_declarations(&p, &findings).unwrap_err().to_string();
+        assert!(
+            err.contains("detection and rewrite disagree"),
+            "must name what kind of failure this is: {err}"
+        );
+        assert!(
+            err.contains("defaults [defaults.model]"),
+            "must name the specific finding that could not be applied: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            before,
+            "a disagreement must leave the file completely untouched, not partially rewritten"
+        );
     }
 
     #[test]
