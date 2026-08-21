@@ -155,9 +155,17 @@ pub async fn execute(agent_name: String) -> anyhow::Result<()> {
 fn load_named_agent(agent_name: &str) -> anyhow::Result<Agent> {
     if let Some((root, config)) = project::find_project_config() {
         let fragments = armadai_core::agent_source::project_fragments(&root);
-        return armadai_core::agent_source::load_agent_by_name(
-            agent_name, &config, &root, &fragments,
-        );
+        let (agent, warning) =
+            armadai_core::agent_source::load_agent_by_name(agent_name, &config, &root, &fragments)?;
+        // Core returns the warning rather than printing it (see
+        // `load_agent_by_name`'s own doc) precisely so it renders here, in
+        // the CLI's own voice, instead of a bare `tracing::warn!` line
+        // reaching the user's terminal directly from core.
+        if let Some(w) = warning {
+            let s = crate::cli::style::warn();
+            anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
+        }
+        return Ok(agent);
     }
 
     // No project config found at all — fall back to the default global

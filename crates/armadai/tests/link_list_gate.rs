@@ -119,9 +119,19 @@ mod tests {
             !output.status.success(),
             "a dropped declaration must refuse the link: stdout={stdout} stderr={stderr}"
         );
+        // Full message, not just a prefix: round 2's edit introduced 14
+        // literal stray spaces mid-string ("link              a smaller")
+        // via a rustfmt-collapsed backslash-continuation, and a
+        // prefix-only `contains("refusing to link")` check was blind to
+        // it -- the whole gate passed with the damaged string still
+        // reaching a user's terminal. Asserting the exact text is what
+        // makes a reflow accident fail the suite instead of shipping.
         assert!(
-            stderr.contains("refusing to link"),
-            "must say why it refused: {stderr}"
+            stderr.contains(
+                "one or more agents could not be loaded (see warning(s) above) — refusing to \
+                 link a smaller fleet than declared. Fix the issue(s), or rerun once resolved."
+            ),
+            "must say why it refused, verbatim: {stderr}"
         );
     }
 

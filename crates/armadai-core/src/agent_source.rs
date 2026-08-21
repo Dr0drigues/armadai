@@ -46,13 +46,13 @@ pub fn load_agent(
 /// Does `name` (compared as a slug) collide with a `.md` file in any of
 /// `libraries`? Returns the colliding file's path if so, `None` otherwise.
 ///
-/// Factored out of `check_no_shadowing` so a single-name check —
-/// `load_agent_by_name` needs one for just the name it is resolving,
-/// `load_all_agents` needs one per declaration so a single collision costs
-/// only that declaration — and a whole-fleet check (`check_no_shadowing`
-/// itself, still used as a fast go/no-op reusable check) share one
-/// slug-comparison, one skip-missing-directory rule, and one skip-non-`.md`
-/// rule, rather than three copies that could drift.
+/// The one collision-detection primitive both real callers need, each at a
+/// different granularity: `load_agent_by_name` calls it once for just the
+/// name it is resolving; `load_all_agents` calls it once per declaration, so
+/// a single collision costs only that declaration rather than the whole
+/// fleet. One slug-comparison, one skip-missing-directory rule, and one
+/// skip-non-`.md` rule shared between them, rather than two copies that
+/// could drift.
 fn shadowing_conflict(name: &str, libraries: &[PathBuf]) -> anyhow::Result<Option<PathBuf>> {
     let slug = crate::agent::slugify(name);
     for library in libraries {
@@ -76,10 +76,9 @@ fn shadowing_conflict(name: &str, libraries: &[PathBuf]) -> anyhow::Result<Optio
 }
 
 /// The message used whenever a declared name collides with a file-backed
-/// agent — shared by `check_no_shadowing`, `load_all_agents`, and
-/// `load_agent_by_name` so the wording (and the fact that neither side is
-/// given precedence) can't drift across the three collision-detection call
-/// sites.
+/// agent — shared by `load_all_agents` and `load_agent_by_name` so the
+/// wording (and the fact that neither side is given precedence) can't drift
+/// across the two collision-detection call sites.
 fn shadowing_message(decl_name: &str, decls_path: &Path, file_path: &Path) -> String {
     format!(
         "agent '{decl_name}' is declared in {} and also written as {} — \
@@ -289,9 +288,12 @@ pub fn load_all_agents(
 /// An unreadable `.armadai/agents.yaml` does not fail this function on its
 /// own: it cannot declare `name`, so it cannot collide with a file-backed
 /// `name` either. When the file-backed lookup ALSO succeeds, that `.md` is
-/// unambiguous and is served, with a warning (`tracing::warn!`) so the
-/// broken yaml is not silently invisible. Only when the file-backed lookup
-/// fails too does the yaml error become the reason to fail — a working
+/// unambiguous and is served, alongside a [`LoadWarning`] so the broken yaml
+/// is not silently invisible — returned rather than printed here, so the
+/// CLI (`cli::run`/`cli::inspect`) renders it in its own voice
+/// (`cli::style::warn`) instead of core reaching a user's terminal directly
+/// with a bare `tracing::warn!` line. Only when the file-backed lookup fails
+/// too does the yaml error become the reason to fail — a working
 /// declaration could have provided this name, so its parse error, not a
 /// generic "not found", is what the caller needs to see.
 pub fn load_agent_by_name(
@@ -299,7 +301,7 @@ pub fn load_agent_by_name(
     config: &crate::project::ProjectConfig,
     project_root: &Path,
     fragments: &[Prompt],
-) -> anyhow::Result<Agent> {
+) -> anyhow::Result<(Agent, Option<LoadWarning>)> {
     let matched_ref = config.agents.iter().find(|r| match r {
         AgentRef::Named { name: n } => n == name,
         AgentRef::Path { path } => path.file_stem().is_some_and(|s| s == name),
@@ -330,12 +332,12 @@ pub fn load_agent_by_name(
     if let Some(decls_err) = decls_err {
         return match file_result {
             Ok(path) => {
-                tracing::warn!(
+                let warning = LoadWarning::DeclarationsUnreadable(format!(
                     "ignoring unparsable {}: {decls_err} (serving the file-backed agent \
                      '{name}' instead)",
                     decls_path.display()
-                );
-                crate::parser::parse_agent_file(&path)
+                ));
+                crate::parser::parse_agent_file(&path).map(|a| (a, Some(warning)))
             }
             Err(file_err) => Err(anyhow::anyhow!(
                 "agent '{name}' not found as a file ({file_err}), and {} could not be read: \
@@ -350,8 +352,8 @@ pub fn load_agent_by_name(
         .and_then(|d| d.agents.iter().find(|a| a.name == name));
 
     // Collision check scoped to just this one name — no need to scan the
-    // whole fleet the way `check_no_shadowing` does for a full project
-    // validation. Checked against `project::library_dirs` directly, not
+    // whole fleet the way `load_all_agents` does, one declaration at a
+    // time. Checked against `project::library_dirs` directly, not
     // against whether `file_result` happened to succeed: an explicit
     // `path:`/`registry:` ref pointing outside those library dirs is not
     // the ambiguity this collision check polices, and using `file_result`
@@ -365,7 +367,7 @@ pub fn load_agent_by_name(
     }
 
     match file_result {
-        Ok(path) => crate::parser::parse_agent_file(&path),
+        Ok(path) => crate::parser::parse_agent_file(&path).map(|a| (a, None)),
         Err(file_err) => match declared {
             Some(decl) => agent_decl::to_agent(
                 decl,
@@ -375,7 +377,8 @@ pub fn load_agent_by_name(
                     .defaults,
                 fragments,
                 decls_path,
-            ),
+            )
+            .map(|a| (a, None)),
             None => anyhow::bail!(
                 "agent '{name}' not found: not resolvable as a file ({file_err}), \
                  and not declared in {}",
@@ -968,9 +971,13 @@ agents:
         .unwrap();
         let config = crate::project::ProjectConfig::default();
 
-        let agent =
+        let (agent, warning) =
             load_agent_by_name("zzz-declared-only-agent", &config, dir.path(), &fragments())
                 .unwrap();
+        assert!(
+            warning.is_none(),
+            "a clean project must not warn: {warning:?}"
+        );
         assert_eq!(agent.name, "zzz-declared-only-agent");
         assert_eq!(agent.system_prompt, "You are zzz-declared-only-agent.");
         assert_eq!(agent.metadata.provider, "claude");
@@ -1004,7 +1011,11 @@ agents:
             ..Default::default()
         };
 
-        let agent = load_agent_by_name("sentinel", &config, dir.path(), &[]).unwrap();
+        let (agent, warning) = load_agent_by_name("sentinel", &config, dir.path(), &[]).unwrap();
+        assert!(
+            warning.is_none(),
+            "a clean project must not warn: {warning:?}"
+        );
         assert_eq!(agent.name, "Sentinel Prime");
         assert_eq!(agent.metadata.provider, "cli");
         assert_eq!(agent.metadata.command.as_deref(), Some("sentinel-cmd"));
@@ -1044,9 +1055,9 @@ agents:
     /// precedence rule") only holds if a name shared by both has already
     /// been refused. Before Finding 2's fix, `load_agent_by_name` never
     /// checked, so `run`/`inspect` silently picked the file-backed side of
-    /// a name that `link`/`list` (via `check_no_shadowing`) already refuse —
-    /// two commands disagreeing about whether the exact same project is
-    /// valid.
+    /// a name that `link`/`list` (via `load_all_agents`'s own per-declaration
+    /// check) already refuse — two commands disagreeing about whether the
+    /// exact same project is valid.
     #[test]
     fn load_agent_by_name_refuses_a_shadowed_name() {
         with_isolated_global_library(|| {
@@ -1106,7 +1117,12 @@ Guard the perimeter.
             ..Default::default()
         };
 
-        let agent = load_agent_by_name("sentinel", &config, dir.path(), &[]).unwrap();
+        let (agent, warning) = load_agent_by_name("sentinel", &config, dir.path(), &[]).unwrap();
+        assert!(
+            matches!(warning, Some(LoadWarning::DeclarationsUnreadable(_))),
+            "the malformed yaml must surface as a warning, not be silently \
+             dropped: {warning:?}"
+        );
         assert_eq!(agent.name, "Sentinel Prime");
         assert_eq!(agent.metadata.command.as_deref(), Some("sentinel-cmd"));
     }

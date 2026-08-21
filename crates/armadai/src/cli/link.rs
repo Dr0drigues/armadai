@@ -101,7 +101,7 @@ pub async fn execute(
     // exactly when the real link would.
     if armadai_core::agent_source::blocks_a_write(&warnings, agents_filter.as_deref()) {
         anyhow::bail!(
-            "one or more agents could not be loaded (see warning(s) above) — refusing to link              a smaller fleet than declared. Fix the issue(s), or rerun once resolved."
+            "one or more agents could not be loaded (see warning(s) above) — refusing to link a smaller fleet than declared. Fix the issue(s), or rerun once resolved."
         );
     }
 

@@ -294,8 +294,9 @@ fn check_dotarmadai_migration_hint(project_root: &Path, legacy_filename: &str) {
 /// Every directory a `.md` agent can be resolved from, in resolution order.
 ///
 /// The single source of truth for that list: `resolve_agent`'s `Named` arm
-/// and `agent_source::check_no_shadowing` both call this rather than each
-/// keeping their own copy, so the two can never drift apart.
+/// and `agent_source::shadowing_conflict` (the collision check
+/// `load_all_agents`/`load_agent_by_name` each call) both use this rather
+/// than keeping their own copy, so the two can never drift apart.
 pub fn library_dirs(project_root: &Path) -> Vec<PathBuf> {
     vec![
         // 1. .armadai/agents/ (preferred)

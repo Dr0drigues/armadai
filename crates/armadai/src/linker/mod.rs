@@ -97,7 +97,7 @@ pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
 /// Convert an agent name to a kebab-case slug suitable for filenames.
 ///
 /// Moved to `armadai_core::agent` — normalising a name into a filename-safe
-/// slug is agent-domain-model territory, and `agent_source::check_no_shadowing`
+/// slug is agent-domain-model territory, and `agent_source::shadowing_conflict`
 /// needs the exact same normalisation to catch a declaration/file collision
 /// that only matches after folding. Re-exported here so no call site in this
 /// crate has to change.

@@ -93,7 +93,7 @@ pub fn default_temperature() -> f32 {
 ///
 /// Two names that differ only by case, or by which punctuation/whitespace
 /// they use as a separator, project to the same slug — which is exactly what
-/// the linker uses to name a file on disk. `agent_source::check_no_shadowing`
+/// the linker uses to name a file on disk. `agent_source::shadowing_conflict`
 /// compares slugs rather than raw names for the same reason: a declaration
 /// and a library file that fold to the same slug will overwrite each other
 /// at link time regardless of how differently they are spelled.

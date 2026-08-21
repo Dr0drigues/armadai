@@ -912,7 +912,18 @@ fn load_agent_for_run(resolution: &AgentResolution, agent_name: &str) -> anyhow:
     match resolution {
         AgentResolution::Project { root, config } => {
             let fragments = armadai_core::agent_source::project_fragments(root);
-            armadai_core::agent_source::load_agent_by_name(agent_name, config, root, &fragments)
+            let (agent, warning) = armadai_core::agent_source::load_agent_by_name(
+                agent_name, config, root, &fragments,
+            )?;
+            // Core returns the warning rather than printing it (see
+            // `load_agent_by_name`'s own doc) precisely so it renders here,
+            // in the CLI's own voice, instead of a bare `tracing::warn!`
+            // line reaching the user's terminal directly from core.
+            if let Some(w) = warning {
+                let s = crate::cli::style::warn();
+                anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
+            }
+            Ok(agent)
         }
         AgentResolution::Default(agents_dir) => {
             let path = Agent::find_file(agents_dir, agent_name).ok_or_else(|| {
