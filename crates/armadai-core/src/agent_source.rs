@@ -43,6 +43,36 @@ pub fn load_agent(
     agent_decl::to_agent(decl, &decls.defaults, fragments, path.clone())
 }
 
+/// Refuse a name that exists both as a declaration and as a library file.
+///
+/// The obvious alternative is a precedence rule — local wins, as everywhere
+/// else. It is rejected on purpose: a silent precedence recreates the very
+/// duplicated truth this format exists to remove, and you would edit a `.md`
+/// with no effect and nothing to tell you. Failing forces a choice.
+///
+/// Rule `C01` of the audit already reports name collisions; loading must
+/// refuse them.
+pub fn check_no_shadowing(project_root: &Path, library: &Path) -> anyhow::Result<()> {
+    let decls_path = declarations_path(project_root);
+    if !decls_path.is_file() {
+        return Ok(());
+    }
+    let decls = agent_decl::load(&decls_path)?;
+    for decl in &decls.agents {
+        let file = library.join(format!("{}.md", decl.name));
+        if file.is_file() {
+            anyhow::bail!(
+                "agent '{}' is declared in {} and also written as {} — \
+                 remove one; there is deliberately no precedence between them",
+                decl.name,
+                decls_path.display(),
+                file.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +221,46 @@ agents:
             "expected Named, got {:?}",
             refs[0]
         );
+    }
+
+    #[test]
+    fn a_name_both_declared_and_written_as_a_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        project(dir.path()); // declares `core-specialist`
+        let lib = tempfile::tempdir().unwrap();
+        std::fs::write(
+            lib.path().join("core-specialist.md"),
+            "# Core\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nHi",
+        )
+        .unwrap();
+
+        let err = check_no_shadowing(dir.path(), lib.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("core-specialist"), "must name it: {err}");
+        // The point is that neither wins — say so, or the reader will assume
+        // one does.
+        assert!(
+            err.contains("agents.yaml") && err.contains(".md"),
+            "must name both sources so the reader can pick one: {err}"
+        );
+    }
+
+    #[test]
+    fn distinct_names_are_fine() {
+        let dir = tempfile::tempdir().unwrap();
+        project(dir.path());
+        let lib = tempfile::tempdir().unwrap();
+        std::fs::write(lib.path().join("other.md"), "# Other").unwrap();
+        assert!(check_no_shadowing(dir.path(), lib.path()).is_ok());
+    }
+
+    #[test]
+    fn a_project_without_declarations_never_shadows() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = tempfile::tempdir().unwrap();
+        std::fs::write(lib.path().join("a.md"), "# A").unwrap();
+        assert!(check_no_shadowing(dir.path(), lib.path()).is_ok());
     }
 
     /// Symmetric check: a `- declared: x` entry must resolve to `Declared`,
