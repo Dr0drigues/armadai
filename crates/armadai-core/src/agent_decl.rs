@@ -36,6 +36,7 @@ pub struct AgentDefaults {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub timeout: Option<u64>,
+    #[serde(alias = "model_fallbacks")]
     pub model_fallback: Vec<String>,
     pub tags: Vec<String>,
     pub stacks: Vec<String>,
@@ -62,7 +63,7 @@ pub struct AgentDecl {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub timeout: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "model_fallbacks")]
     pub model_fallback: Option<Vec<String>>,
     #[serde(default)]
     pub tags: Option<Vec<String>>,
@@ -265,11 +266,12 @@ pub fn compose_prompt(
 /// `defaults`, system prompt composed from `fragments`, `source` stamped as
 /// given by the caller.
 ///
-/// The only place this runs today is `agent_source::load_agent`, for one
-/// declared agent at a time. A bulk loader (loading every agent in a file at
-/// once) is later work; putting the construction here rather than inline at
-/// the single-agent call site means that loader calls this too, instead of
-/// a second, inevitably drifting copy of the same `Agent { .. }` literal.
+/// Called once per declaration from both `agent_source::load_all_agents`
+/// (a whole project's fleet) and `agent_source::load_agent_by_name` (one
+/// agent by name) — putting the construction here, rather than inline at
+/// each call site, means both loaders call this one function instead of
+/// keeping two independently drifting copies of the same `Agent { .. }`
+/// literal.
 pub(crate) fn to_agent(
     decl: &AgentDecl,
     defaults: &AgentDefaults,
@@ -327,6 +329,35 @@ agents:
         assert_eq!(d.defaults.temperature, Some(0.3));
         assert_eq!(d.agents.len(), 2);
         assert_eq!(d.agents[0].name, "core-specialist");
+    }
+
+    /// The `.md` parser accepts both `model_fallback` and `model_fallbacks`
+    /// (`parser/metadata.rs`). Before this alias, the plural on the YAML side
+    /// hit `deny_unknown_fields` and made the *whole file* a
+    /// `DeclarationsUnreadable` — one typo'd key losing every declared agent.
+    #[test]
+    fn the_plural_model_fallbacks_spelling_loads_in_defaults_and_on_an_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("agents.yaml");
+        std::fs::write(
+            &p,
+            r#"
+defaults:
+  provider: claude
+  model_fallbacks: [latest:fast]
+
+agents:
+  - name: x
+    model_fallbacks: [claude-sonnet-4-5-20250929]
+"#,
+        )
+        .unwrap();
+        let d = load(&p).unwrap();
+        assert_eq!(d.defaults.model_fallback, vec!["latest:fast".to_string()]);
+        assert_eq!(
+            d.agents[0].model_fallback,
+            Some(vec!["claude-sonnet-4-5-20250929".to_string()])
+        );
     }
 
     #[test]
