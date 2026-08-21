@@ -252,6 +252,23 @@ pub fn validate_project_config(project_root: &Path) -> Vec<ValidationIssue> {
         }
     }
 
+    // Every agent in `.armadai/agents.yaml` is included automatically — it
+    // does not need to be relisted in `agents:` (the `Declared` arm above
+    // only fires for that redundant `- declared: x` spelling) — so an
+    // orchestration `coordinator`/`teams[].lead`/`teams[].agents` naming a
+    // declared-but-not-relisted agent must count as known here too, or this
+    // reports a project `list`, `link`, `inspect` and `run --orchestrate`
+    // all resolve fine as invalid. Guarded the same way
+    // `model_updater::check_project` guards its own declarations scan.
+    let decls_path = super::agent_source::declarations_path(project_root);
+    if decls_path.is_file()
+        && let Ok(decls) = super::agent_decl::load(&decls_path)
+    {
+        for decl in &decls.agents {
+            agent_names.insert(decl.name.clone());
+        }
+    }
+
     // R1 + R2: Validate orchestration config (teams + coordinator)
     if let Some(orch) = &config.orchestration {
         validate_orchestration_config(orch, &agent_names, &config_path, &mut issues);
@@ -676,6 +693,45 @@ orchestration:
         assert!(issues.iter().any(|i| i.severity == Severity::Error
             && i.message.contains("missing-coordinator")
             && i.message.contains("not found")));
+    }
+
+    /// I1: an agent declared only in `.armadai/agents.yaml` — never relisted
+    /// in `armadai.yaml`'s `agents:`, which is the whole point of the format
+    /// — must count as known to `orchestration.coordinator`/`teams[].lead`/
+    /// `teams[].agents`. Before this fix, `agent_names` was built from
+    /// `config.agents` alone, so this reported three false ERRORs for a
+    /// project `list`/`link`/`inspect`/`run --orchestrate` all resolve fine.
+    #[test]
+    fn test_validate_project_config_resolves_declared_only_orchestration_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("armadai.yaml"),
+            r#"
+orchestration:
+  enabled: true
+  coordinator: zzz-lead
+  teams:
+    - lead: zzz-worker
+      agents:
+        - zzz-worker2
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  \
+             - name: zzz-lead\n    prompt: []\n  \
+             - name: zzz-worker\n    prompt: []\n  \
+             - name: zzz-worker2\n    prompt: []\n",
+        )
+        .unwrap();
+
+        let issues = validate_project_config(dir.path());
+        assert!(
+            issues.iter().all(|i| i.severity != Severity::Error),
+            "every named agent is declared and must resolve: {issues:?}"
+        );
     }
 
     #[test]
