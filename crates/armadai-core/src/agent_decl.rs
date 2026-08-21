@@ -248,7 +248,15 @@ pub fn compose_prompt(
 
         let rendered = crate::template::render(&frag.body, &vars)
             .map_err(|e| anyhow::anyhow!("agent '{}', fragment '{name}': {e}", decl.name))?;
-        parts.push(rendered.trim_end().to_string());
+        // Trimmed on BOTH ends, not just the end: a fragment authored as a
+        // file with YAML frontmatter routinely has a blank line right after
+        // the frontmatter is stripped (this project's own starter fragments,
+        // e.g. `starters/armadai-authoring/prompts/armadai-conventions.md`,
+        // are written that way), so a leading blank line is exactly as
+        // common as a trailing one. Trimming only the end let that leading
+        // blank line survive into the `"\n\n"` join, piling up two or three
+        // blank lines between fragments instead of one.
+        parts.push(rendered.trim().to_string());
     }
     Ok(parts.join("\n\n"))
 }
@@ -738,6 +746,25 @@ agents:
         let frags = vec![
             fragment("a", "first line\n"),
             fragment("b", "second line\n"),
+        ];
+        let steps = vec![PromptStep::Plain("a".into()), PromptStep::Plain("b".into())];
+        let out = compose_prompt(&steps, &decl("x"), &frags).unwrap();
+        assert_eq!(out, "first line\n\nsecond line");
+    }
+
+    /// A fragment authored as a file with YAML frontmatter routinely has a
+    /// blank line right after the frontmatter is stripped — this project's
+    /// own starter fragments (`starters/armadai-authoring/prompts/
+    /// armadai-conventions.md`) are written that way. A leading blank line
+    /// is therefore exactly as common as a trailing one, and must not
+    /// survive into the join any more than the trailing case above does:
+    /// two fragments each padded with a blank line on both sides must still
+    /// join with exactly one blank line between them, not two or three.
+    #[test]
+    fn leading_and_trailing_blank_lines_in_fragment_bodies_do_not_pile_up_at_the_join() {
+        let frags = vec![
+            fragment("a", "\nfirst line\n\n"),
+            fragment("b", "\nsecond line\n\n"),
         ];
         let steps = vec![PromptStep::Plain("a".into()), PromptStep::Plain("b".into())];
         let out = compose_prompt(&steps, &decl("x"), &frags).unwrap();
