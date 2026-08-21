@@ -275,6 +275,22 @@ pub fn load_all_agents(
     // the linker writes, not the raw name — checked once the whole fleet
     // above is assembled, since that is the earliest point both shapes exist
     // to compare.
+    //
+    // A shared slug is not automatically a collision, though: two
+    // `AgentRef`s can legitimately both resolve to the SAME agent (e.g.
+    // `- name: file-agent` and `- path: .armadai/agents/file-agent.md`
+    // naming the identical file) — that is one agent reached twice, and
+    // refusing it took an innocent, unrelated declared agent down with it
+    // in the very project this format is supposed to keep working. `source`
+    // alone cannot tell the two shapes apart for a DECLARED agent, though:
+    // every declaration in one `agents.yaml` shares that file as its
+    // `source`, so two distinct, genuinely colliding declarations would
+    // still look "the same" by source alone. `(source, name)` together is
+    // the right identity: the twice-listed file case parses the same file
+    // both times, so `name` (read from its H1) matches too; two DIFFERENT
+    // declarations sharing a slug via distinct spellings (`core-specialist`
+    // vs `Core Specialist`) keep distinct `name`s even though `source` is
+    // the one shared yaml file, so they are still caught.
     let mut by_slug: std::collections::HashMap<String, Vec<usize>> =
         std::collections::HashMap::new();
     for (i, a) in agents.iter().enumerate() {
@@ -288,19 +304,35 @@ pub fn load_all_agents(
         if idxs.len() < 2 {
             continue;
         }
+        let identity = |i: usize| (agents[i].source.as_path(), agents[i].name.as_str());
+        let mut distinct: Vec<(&std::path::Path, &str)> = Vec::new();
         for &i in idxs {
-            let others: Vec<String> = idxs
+            let key = identity(i);
+            if !distinct.contains(&key) {
+                distinct.push(key);
+            }
+        }
+        if distinct.len() < 2 {
+            // Every entry in this slug bucket is the same agent, reached
+            // through more than one `AgentRef` — not a collision.
+            continue;
+        }
+        for &i in idxs {
+            let this = identity(i);
+            let others: Vec<String> = distinct
                 .iter()
-                .filter(|&&j| j != i)
-                .map(|&j| format!("'{}'", agents[j].name))
+                .filter(|&&other| other != this)
+                .map(|(source, name)| format!("'{name}' (from '{}')", source.display()))
                 .collect();
             warnings.push(LoadWarning::Dropped {
                 agent: agents[i].name.clone(),
                 message: format!(
-                    "agent '{}' projects to the same slug as {} — remove or \
-                     rename one; there is deliberately no precedence between them",
+                    "agent '{}' (from '{}') projects to the same slug as {} — \
+                     remove or rename one; there is deliberately no precedence \
+                     between them",
                     agents[i].name,
-                    others.join(", ")
+                    agents[i].source.display(),
+                    others.join(" and ")
                 ),
             });
         }
@@ -958,6 +990,56 @@ agents:
                     .count(),
                 2,
                 "both sides of the collision must be reported: {warnings:?}"
+            );
+        });
+    }
+
+    /// I4 regression (re-review): the SAME agent listed twice via two
+    /// different `AgentRef`s — `- name: file-agent` and `- path:
+    /// .armadai/agents/file-agent.md`, both resolving to the identical
+    /// file — must not be flagged as a collision. Comparing by slug alone
+    /// cannot tell "two spellings of one agent" apart from "two different
+    /// agents"; the fix is `(source, name)` identity, checked here alongside
+    /// an unrelated declared agent to prove the innocent agent does not get
+    /// dropped as collateral damage the way it did before this fix.
+    #[test]
+    fn load_all_agents_does_not_flag_the_same_agent_listed_twice() {
+        with_isolated_global_library(|| {
+            let dir = tempfile::tempdir().unwrap();
+            project(dir.path()); // declares `core-specialist`, unrelated
+            let md_dir = dir.path().join(".armadai/agents");
+            std::fs::create_dir_all(&md_dir).unwrap();
+            std::fs::write(
+                md_dir.join("file-agent.md"),
+                "# file-agent\n\n## Metadata\n- provider: claude\n\n\
+                 ## System Prompt\n\nHi\n",
+            )
+            .unwrap();
+            let config = crate::project::ProjectConfig {
+                agents: vec![
+                    AgentRef::Named {
+                        name: "file-agent".into(),
+                    },
+                    AgentRef::Path {
+                        path: std::path::PathBuf::from(".armadai/agents/file-agent.md"),
+                    },
+                ],
+                ..Default::default()
+            };
+
+            let (agents, warnings) = load_all_agents(&config, dir.path(), &fragments());
+            assert!(
+                warnings.is_empty(),
+                "listing the same agent twice must not warn: {warnings:?}"
+            );
+            assert!(
+                agents.iter().any(|a| a.name == "file-agent"),
+                "the twice-listed agent must still load: {agents:?}"
+            );
+            assert!(
+                agents.iter().any(|a| a.name == "core-specialist"),
+                "an unrelated declared agent must not be dropped as collateral \
+                 damage: {agents:?}"
             );
         });
     }
