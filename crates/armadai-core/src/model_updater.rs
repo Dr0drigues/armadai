@@ -787,36 +787,47 @@ mod tests {
             dir.path(),
             "agents:\n  - name: a\n    model: dep\n  - name: b\n    model: dep-longer\n",
         );
+        // Replacements chosen so an unanchored rewrite CANNOT recompose the
+        // right answer by accident: `dep` -> `new` and `dep-longer` ->
+        // `new-longer` would let an unanchored replace of `dep` inside
+        // `dep-longer` produce `new` + `-longer` = `new-longer`, the exact
+        // string the second finding was also going to write — the mutation
+        // would be invisible. `alpha`/`beta` share no structure with each
+        // other or with `dep`/`dep-longer`, so the ONLY way `model:
+        // dep-longer` ends up as `model: beta` is the longer finding
+        // matching its own whole token; an unanchored replace of `dep` ->
+        // `alpha` inside `dep-longer` produces `alpha-longer`, which is
+        // asserted against below.
         let findings = vec![
             DeprecationFinding {
                 agent_path: p.clone(),
                 agent_name: "a".into(),
                 field: "model".into(),
                 current: "dep".into(),
-                replacement: "new".into(),
+                replacement: "alpha".into(),
             },
             DeprecationFinding {
                 agent_path: p.clone(),
                 agent_name: "b".into(),
                 field: "model".into(),
                 current: "dep-longer".into(),
-                replacement: "new-longer".into(),
+                replacement: "beta".into(),
             },
         ];
 
         assert_eq!(update_declarations(&p, &findings).unwrap(), 2);
         let after = std::fs::read_to_string(&p).unwrap();
         assert!(
-            after.contains("model: new\n"),
+            after.contains("model: alpha\n"),
             "the shorter deprecated name must be fixed on its own line:\n{after}"
         );
         assert!(
-            after.contains("model: new-longer\n"),
+            after.contains("model: beta\n"),
             "the longer line must be fixed to its OWN replacement, not \
              corrupted by the shorter finding's rewrite:\n{after}"
         );
         assert!(
-            !after.contains("new-dep-longer"),
+            !after.contains("alpha-longer"),
             "the shorter finding must not have rewritten inside the longer \
              line's value: {after}"
         );
