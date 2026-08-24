@@ -1,0 +1,147 @@
+# Le manifeste de link — design
+
+**Statut** : spec, validée en discussion le 2026-08-24. Implémente la moitié restante de #338.
+
+**En une phrase** : `link` enregistre ce qu'il a produit et comment le défaire, au moment où il le produit, dans un registre que la réconciliation de la chaîne déclarative consommera ensuite sans être réécrit.
+
+---
+
+## 1. Le problème, mesuré
+
+`link` et `unlink` sont deux implémentations manuscrites de la même opération, écrites séparément. Rien ne les relie : `unlink` ne lit pas le résultat de `link`, il rejoue `linker.generate()` contre la config **courante** et supprime ce qui en sort.
+
+Quatre conséquences confirmées par exécution du binaire réel sur dépôts jetables (2026-08-21) :
+
+- **sur-suppression** — un `.claude/CLAUDE.md` écrit à la main est skippé par `link` puis supprimé par `unlink`, et `.claude/` disparaît avec lui ;
+- **orphelin définitif** — un agent retiré de la config laisse son fichier généré pour toujours ; même `link --force` ne le récupère pas, `generate()` ne produisant plus ce chemin ;
+- **récursion sur les skills** — des fichiers utilisateur déposés dans `.claude/skills/<nom>/` sont supprimés en silence ;
+- **agents déclarés** — comportement identique : le défaut est dans le suivi de fichiers, pas dans la provenance des agents.
+
+#342 a livré une **mitigation** : ne supprimer que si le contenu sur disque correspond à ce que le linker régénère. Elle arrête l'hémorragie mais garde une limite : un fichier généré **puis édité** devient un orphelin, et — cas mesuré — sur la cible `opencode`, `link --model` produit un contenu que `unlink` ne peut pas régénérer à l'identique, donc **tout usage interactif** laisse un fichier non nettoyé.
+
+Le manifeste supprime cette limite : il enregistre l'empreinte du contenu **réellement écrit**, au lieu de la deviner par régénération.
+
+## 2. Ce que le manifeste est
+
+Un **registre de provenance à un seul étage** : pour chaque chemin, ce qui l'a produit, et l'inverse de sa production.
+
+La forme est choisie pour accueillir les étages suivants de la chaîne déclarative sans réécriture. La chaîne cible, décidée en discussion :
+
+```
+Config → Gouvernance → Méta-agents → Règles → Agents → link → configs natives
+```
+
+`link` en est le **dernier maillon**, pas un mécanisme séparé. Chaque flèche aura besoin de savoir ce qu'elle a produit, pour la même raison. Le champ `produced_by` porte cette extension : aujourd'hui il désigne toujours un agent, demain une règle ou un méta-agent, et la structure ne change pas.
+
+**Ce n'est pas** un graphe de provenance complet. Le construire aujourd'hui serait de la sur-ingénierie pour un bug de perte de données, et la cascade n'existe pas encore. Le coût de l'extensibilité se limite à un champ nommé.
+
+## 3. Format
+
+Fichier : `.armadai/link-manifest.yaml`, un par projet.
+
+```yaml
+version: 1
+targets:
+  claude:
+    linked_at: "2026-08-24T09:12:03Z"
+    entries:
+      - path: .claude/agents/core-specialist.md
+        produced_by: { kind: agent, name: core-specialist }
+        outcome: created
+        digest: "sha256:9f2b…"
+      - path: .claude/CLAUDE.md
+        produced_by: { kind: coordinator, name: dev-lead }
+        outcome: skipped
+```
+
+**Champs**
+
+| Champ | Rôle |
+|---|---|
+| `path` | relatif à la racine du projet. Jamais absolu — un manifeste doit survivre à un déplacement du projet. |
+| `produced_by` | ce qui a produit ce fichier. `kind` vaut `agent`, `coordinator`, `skill` ou `prompt` aujourd'hui ; c'est le point d'extension de la chaîne. |
+| `outcome` | `created` (le fichier n'existait pas, `link` l'a écrit) ou `skipped` (il existait, `link` n'y a pas touché). |
+| `digest` | empreinte du contenu **écrit par link**. Présent si et seulement si `outcome: created`. |
+
+**L'inverse se déduit de `outcome`**, il n'est pas stocké :
+
+- `created` → l'inverse est *supprimer*, **à condition que le digest corresponde encore**. Sinon le fichier a été édité depuis : on conserve et on le dit.
+- `skipped` → l'inverse est *ne rien faire*. C'est le cas qui règle la sur-suppression : `link` n'a rien produit, `unlink` n'a rien à défaire.
+
+Le manifeste est **groupé par cible** parce que `link` et `unlink` opèrent par cible (`--target claude`), et qu'un projet peut être lié à plusieurs.
+
+## 4. Non versionné, avec un repli explicite
+
+Le manifeste décrit un **état local** — quels fichiers existent sur *cette* machine — au même titre qu'un artefact de build. Il n'est donc pas versionné, et `.armadai/` est déjà hors du dépôt dans ce projet.
+
+Conséquence assumée : sur un clone frais, ou après suppression de `.armadai/`, il n'y a pas de manifeste. `unlink` doit alors fonctionner quand même.
+
+**Repli** : sans entrée de manifeste pour une cible, `unlink` retombe sur la garde par contenu de #342 — régénérer et ne supprimer qu'en cas de correspondance — **et l'annonce**, pour que l'utilisateur sache qu'il est en mode dégradé et pourquoi certains fichiers peuvent être conservés.
+
+La mitigation de #342 devient ainsi le mode dégradé du manifeste, pas du code mort à supprimer. C'est ce qui rend les deux chantiers complémentaires plutôt que successifs.
+
+## 5. Comment `link` le produit
+
+L'inverse doit naître **au même endroit que l'effet**. C'est le point que le papier sur la composabilité spatiotemporelle nomme explicitement (§1.2.1, à propos du `deactivate` de VSCode) : séparer la destruction de la création viole la localité de préoccupation et rend le nettoyage invérifiable. ArmadAI faisait pire en re-devinant.
+
+Donc : au point d'écriture unique de `link` (`link.rs:310`), chaque décision produit son entrée — écrite → `created` + digest, existante et skippée → `skipped`. Le manifeste est écrit à la fin d'un `link` réussi, en remplacement complet des entrées de cette cible.
+
+`--dry-run` n'écrit pas de manifeste.
+
+## 6. Comment `unlink` le consomme
+
+`unlink --target X` lit les entrées de `X`, et pour chacune applique l'inverse. Rien d'autre : **il ne régénère plus**, donc il ne dépend plus de la config courante, et les orphelins disparaissent — un agent retiré de la config a toujours son entrée dans le manifeste.
+
+Ce qui règle les quatre cas mesurés :
+
+| Cas | Résolution |
+|---|---|
+| sur-suppression | `outcome: skipped` → inverse noop |
+| orphelin | l'entrée existe indépendamment de la config courante |
+| récursion skills | seules les entrées enregistrées sont candidates ; un fichier utilisateur n'en a pas |
+| `opencode --model` | le digest est celui du contenu écrit, pas d'une régénération |
+
+## 7. Ce que ça prépare, sans le construire
+
+La réconciliation *vue engagée / vue cible* du papier (§4.2, §5.2) consommera ce registre : comparer ce que le manifeste dit avoir produit à ce que la config demande maintenant, et n'appliquer que la différence — au lieu de tout régénérer comme `link` le fait aujourd'hui.
+
+Et une conséquence de structure, notée en discussion : sous un moteur de réconciliation unique, **`unlink` cesse d'être une commande distincte** — c'est « réconcilier vers un état où cette cible n'existe plus ». La divergence entre `link` et `unlink` devient alors impossible par construction, au lieu d'être corrigée à répétition. #341 (appariement du coordinateur divergent entre les deux) disparaît par le même effet.
+
+Rien de tout cela n'est dans le périmètre de cette spec.
+
+## 8. Décisions et leurs raisons
+
+**Le digest plutôt que le contenu.** Stocker le contenu écrit ferait du manifeste une copie complète de la projection. Une empreinte suffit à répondre à la seule question posée : « est-ce toujours ce que j'ai écrit ? »
+
+**⚠️ Choix ouvert — l'algorithme d'empreinte.** Vérifié : le workspace n'a **aucune crate de hachage** (`grep sha2|blake3|digest` sur les `Cargo.toml` : rien). Trois options, à trancher avant l'implémentation :
+
+- **`sha2`** — une dépendance de plus, mais légère, universelle, et le format `sha256:…` se lit sans explication. Le projet gate les dépendances *lourdes* derrière des features ; celle-ci ne l'est pas.
+- **Un FNV-1a 64 bits maison** — une dizaine de lignes, zéro dépendance, stable par construction. La résistance cryptographique est inutile ici : on détecte une édition accidentelle, on ne se défend pas contre un adversaire qui forgerait une collision pour faire supprimer un fichier.
+- **`std::hash::DefaultHasher`** — **à écarter**. Sa documentation ne garantit pas la stabilité de l'algorithme entre versions de Rust, donc un manifeste écrit aujourd'hui pourrait ne plus se vérifier après une montée de toolchain. Disqualifiant pour un fichier persistant.
+
+Le choix n'affecte que la valeur du champ `digest`, pas la structure. En cas de changement ultérieur, le préfixe (`sha256:`, `fnv1a64:`) permet de reconnaître un manifeste écrit par une version antérieure et de retomber sur le repli de la §4 plutôt que de comparer des empreintes incomparables — **le préfixe est donc obligatoire quel que soit l'algorithme retenu.**
+
+**`outcome` plutôt qu'un inverse stocké.** Deux valeurs suffisent à dériver l'action, et un champ énuméré se lit mieux qu'une commande sérialisée. Si un troisième cas apparaît (un fichier fusionné plutôt qu'écrit ou skippé), il s'ajoute comme valeur.
+
+**Groupé par cible.** Parce que les commandes le sont. Un manifeste plat obligerait à filtrer à chaque opération et rendrait ambigu le cas d'un chemin produit par deux cibles.
+
+**Remplacement complet des entrées d'une cible à chaque `link`.** Une fusion incrémentale demanderait de savoir ce qui a disparu — c'est le travail de la réconciliation, pas du manifeste. Tant que `link` régénère tout, le manifeste enregistre tout.
+
+## 9. Ce que cette spec ne fait pas
+
+- Aucun graphe de provenance multi-étages : `produced_by` est un champ, pas une arête.
+- Aucune réconciliation incrémentale : `link` continue de tout régénérer.
+- Aucune unification `link`/`unlink` sous un moteur commun.
+- Aucun changement du format des fichiers générés.
+- Le manifeste n'est pas versionné, donc il ne se partage pas entre machines ni entre membres d'une équipe.
+
+## 10. Auto-revue
+
+**Prémisses vérifiées dans le code**, pas supposées :
+- `link` a bien **un seul** point d'écriture (`link.rs:310`, `std::fs::write(path, content)?`), donc « l'inverse naît au même endroit que l'effet » est réalisable sans disperser la logique.
+- `.armadai/` est bien dans `.gitignore` (ligne 38), donc « non versionné » est cohérent avec l'existant plutôt qu'une nouvelle règle.
+- Aucune crate de hachage dans le workspace → voir le choix ouvert en §8.
+
+**Une ambiguïté volontairement non tranchée** : le comportement de `link` quand un manifeste existe mais qu'un fichier qu'il dit avoir créé a disparu du disque. Deux lectures défendables — le réécrire (l'état cible le demande) ou le signaler (quelqu'un l'a supprimé exprès). Sans la réconciliation, `link` régénère tout de toute façon, donc la question ne se pose pas encore ; elle se posera à ce moment-là et mérite d'être tranchée là, avec le reste.
+
+**Ce que cette spec ne résout pas et qu'on pourrait croire résolu** : elle ne rend pas `link` idempotent. Deux `link` successifs produisent le même résultat aujourd'hui parce que tout est régénéré, pas parce que le manifeste le garantit.
