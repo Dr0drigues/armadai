@@ -226,9 +226,9 @@ pub fn lexically_normalize(path: &Path) -> PathBuf {
 
 /// Resolve `field` (a target's `root`, an entry's `path`, or a
 /// `created_dirs` entry) against `project_root` — absolute as-is, relative
-/// joined onto `project_root` — then lexically normalised, so containment
-/// checks below compare like with like regardless of how the field was
-/// stored.
+/// joined onto `project_root` — then lexically normalised only, with no
+/// filesystem access at all. Kept as the fallback [`resolve_real`] uses
+/// when nothing along the path exists yet to canonicalise.
 fn resolve(project_root: &Path, field: &Path) -> PathBuf {
     let joined = if field.is_absolute() {
         field.to_path_buf()
@@ -238,21 +238,95 @@ fn resolve(project_root: &Path, field: &Path) -> PathBuf {
     lexically_normalize(&joined)
 }
 
+/// Resolve `field` into its real, symlink-free location as far as the
+/// filesystem allows *right now*: canonicalise the longest existing
+/// prefix, then re-append whatever suffix doesn't exist yet (lexically —
+/// there is nothing on disk to resolve for a path that isn't there).
+/// Falls back to pure lexical [`resolve`] only when nothing along the
+/// path exists at all, including `project_root` itself — a case where
+/// there is nothing to delete or list either way.
+///
+/// This exists because lexical normalisation alone is **not** a security
+/// boundary against a symlink, and a review measured exactly that: with
+/// `.claude/agents` symlinked to a directory outside the project, the
+/// entry `.claude/agents/keys.md` passes a purely lexical containment
+/// check against `.claude` — the text of the path never leaves the
+/// nominal tree — while the file it actually names lives somewhere else
+/// entirely. Resolving symlinks for the part of the path that exists is
+/// what closes that; it is why every trust decision in this module goes
+/// through this function and not [`resolve`] alone.
+pub fn resolve_real(project_root: &Path, field: &Path) -> PathBuf {
+    let joined = if field.is_absolute() {
+        field.to_path_buf()
+    } else {
+        project_root.join(field)
+    };
+
+    let mut existing = joined.clone();
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() {
+        match existing.file_name() {
+            Some(name) => suffix.push(name.to_os_string()),
+            None => break,
+        }
+        match existing.parent() {
+            Some(p) => existing = p.to_path_buf(),
+            None => break,
+        }
+    }
+
+    match std::fs::canonicalize(&existing) {
+        Ok(mut canon) => {
+            for part in suffix.into_iter().rev() {
+                canon.push(part);
+            }
+            canon
+        }
+        Err(_) => resolve(project_root, field),
+    }
+}
+
 /// Whether `candidate` (an entry's `path`, or a `created_dirs` path)
 /// resolves under `target_root` (that target's own recorded
-/// [`TargetManifest::root`]) once both are normalised per [`resolve`].
+/// [`TargetManifest::root`]) once both are resolved per [`resolve_real`]
+/// — filesystem-aware, so a symlinked intermediate directory is followed
+/// to where it actually points before the comparison, not just textually
+/// normalised.
 ///
 /// This is the actual security boundary every manifest-driven filesystem
 /// action must pass: `unlink` calls this before deleting a file or removing
 /// a recorded directory, so a forged entry (`path: ../outside/victim.txt`,
-/// or an absolute path unrelated to the target) is refused rather than
-/// acted on — while a legitimate entry under a `root` that itself points
-/// outside the project (`--output ../sibling/out`) still passes, because
-/// the boundary is the target's own declared root, not the project root.
+/// an absolute path unrelated to the target, or a path that only escapes
+/// via a symlink) is refused rather than acted on — while a legitimate
+/// entry under a `root` that itself points outside the project
+/// (`--output ../sibling/out`) still passes, because the boundary is the
+/// target's own declared root, not the project root. `unlink` additionally
+/// confirms that declared root against one it computes independently
+/// (see [`root_confirmed`]) before trusting it as a boundary at all — this
+/// function alone only proves containment *within whatever root it is
+/// given*.
 pub fn is_trusted(project_root: &Path, target_root: &Path, candidate: &Path) -> bool {
-    let root = resolve(project_root, target_root);
-    let resolved = resolve(project_root, candidate);
+    let root = resolve_real(project_root, target_root);
+    let resolved = resolve_real(project_root, candidate);
     resolved.starts_with(&root)
+}
+
+/// Whether a target's declared manifest `root` matches `computed_root` —
+/// the same output directory `link`/`unlink` would compute right now from
+/// the project's own config/`--output` — once both are resolved per
+/// [`resolve_real`].
+///
+/// [`is_trusted`] alone only proves an entry resolves under whatever
+/// `root` the manifest itself claims: a forged `root: /` (or any root wide
+/// enough to contain anything) would make every entry pass that check
+/// trivially, reproducing the exact defect the trust boundary exists to
+/// close. Confirming the declared root against one computed independently
+/// — never taken from the manifest — is what actually constrains it: a
+/// manifest whose `root` doesn't match the project it sits in is not a
+/// manifest for this project, and callers must refuse it wholesale (fall
+/// back to the #342 guard) rather than partially trust it.
+pub fn root_confirmed(project_root: &Path, computed_root: &Path, declared_root: &Path) -> bool {
+    resolve_real(project_root, computed_root) == resolve_real(project_root, declared_root)
 }
 
 /// Result of looking up one target's manifest data.
