@@ -360,6 +360,31 @@ agents:
         );
     }
 
+    /// The alias above must accept exactly the two spellings the `.md`
+    /// parser accepts (`model_fallback`, `model_fallbacks`) and nothing
+    /// else. A near-miss typo that merely drops a letter is not one of
+    /// those two spellings and must still trip `deny_unknown_fields`,
+    /// naming itself in the error — this catches both an accidental
+    /// removal of `deny_unknown_fields` on `AgentDefaults`/`AgentDecl` (the
+    /// typo would then silently vanish instead of erroring) and a typo in
+    /// the alias string itself (e.g. `alias = "model_falback"`, which would
+    /// make this exact near-miss match).
+    #[test]
+    fn a_near_miss_typo_of_model_fallback_is_still_rejected_and_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("agents.yaml");
+        std::fs::write(
+            &p,
+            "defaults:\n  model_falback: [latest:fast]\n\nagents:\n  - name: x\n",
+        )
+        .unwrap();
+        let err = load(&p).unwrap_err().to_string();
+        assert!(
+            err.contains("model_falback"),
+            "the alias must not swallow a near-miss typo: {err}"
+        );
+    }
+
     #[test]
     fn a_plain_prompt_step_is_a_bare_fragment_name() {
         let d = parsed();
