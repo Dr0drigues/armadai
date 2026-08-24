@@ -198,6 +198,12 @@ pub async fn execute(
                 .map(PathBuf::from)
         })
         .unwrap_or_else(|| PathBuf::from(linker.default_output_dir()));
+    // The target's own root — never itself recorded as a `created_dirs`
+    // entry below, so `unlink` never removes it even when everything
+    // inside it is reclaimed (issue #338 case 1's second half: `.claude/`
+    // itself must survive, and the same protection extends to a custom
+    // `--output` directory).
+    let target_root = root.join(&output_dir);
 
     // 7. Generate files
     let sources = &config.sources;
@@ -330,6 +336,11 @@ pub async fn execute(
     // point as the effect it describes (design §5) — never re-derived
     // afterwards by asking what *would* happen again.
     let mut manifest_entries: Vec<linker::manifest::ManifestEntry> = Vec::new();
+    // `create_dir_all` is itself an effect with no inverse of its own —
+    // record exactly which directories it actually created (a security
+    // review's fix 1b), so `unlink` can reverse precisely that instead of
+    // guessing an ancestor-sweep boundary from the deleted files' paths.
+    let mut created_dirs: Vec<PathBuf> = Vec::new();
 
     for (path, content, produced_by) in output_files.iter().chain(extra_files.iter()) {
         let relative_path = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
@@ -351,12 +362,32 @@ pub async fn execute(
         }
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            for created in linker::manifest::create_dir_all_recording(parent)? {
+                // Never record the target's own root, or anything above
+                // it — only its descendants are ever eligible for
+                // `unlink` to remove later.
+                if created.starts_with(&target_root) && created != target_root {
+                    created_dirs.push(
+                        created
+                            .strip_prefix(&root)
+                            .unwrap_or(&created)
+                            .to_path_buf(),
+                    );
+                }
+            }
         }
         std::fs::write(path, content)?;
         let m = crate::cli::style::muted();
         anstream::println!("{m}  wrote {}{m:#}", path.display());
         written += 1;
+        // `outcome: Created` regardless of whether `path` pre-existed —
+        // this is `Created` in the sense of "link wrote it", not "the
+        // path was new", which is the fact `unlink` actually needs: it
+        // must delete this on a matching digest either way. A pre-existing
+        // file reaches this branch only via `--force`, i.e. the same
+        // explicit user confirmation that let `link` overwrite it in the
+        // first place — `unlink` deleting it later on the same terms
+        // (content still matches) is consistent, not a new risk.
         manifest_entries.push(linker::manifest::ManifestEntry {
             path: relative_path,
             produced_by: produced_by.clone(),
@@ -365,7 +396,19 @@ pub async fn execute(
         });
     }
 
-    if let Err(e) = linker::manifest::write_target(&root, &target_name, manifest_entries) {
+    if let Err(e) = linker::manifest::write_target(
+        &root,
+        &target_name,
+        output_dir.clone(),
+        created_dirs,
+        manifest_entries,
+    ) {
+        // Deliberately non-fatal: `link` already wrote every file the user
+        // asked for, and refusing to report success over a manifest write
+        // failure (a permissions issue on `.armadai/`, a full disk, ...)
+        // would be a worse outcome than a degraded `unlink` next time. The
+        // warning is the signal; `unlink` falls back to the #342 guard and
+        // says so if this manifest never lands.
         tracing::warn!("Failed to write link manifest: {:?}", e);
     }
 

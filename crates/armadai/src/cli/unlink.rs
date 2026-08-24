@@ -82,9 +82,10 @@ pub async fn execute(
             )
         })?;
 
-    // 3. The target's output directory and its own root directory — needed
-    // by both paths below to bound `remove_empty_ancestors` (issue #338
-    // case 1's second half: `.claude/` itself must never be removed).
+    // 3. The target's output directory and its own root directory — only
+    // used by the fallback below (the manifest path uses the trust `root`
+    // recorded *in* the manifest instead — see `unlink_from_manifest` and
+    // fix 1a in the design spec's security amendment).
     let linker_impl = linker::create_linker(&target_name)?;
     let output_dir = output
         .clone()
@@ -108,11 +109,10 @@ pub async fn execute(
     // so — the user is in a degraded mode and should know why some files
     // might be kept that a manifest-driven unlink would have reclaimed.
     match linker::manifest::lookup_target(&root, &target_name) {
-        linker::manifest::Lookup::Found(entries) => unlink_from_manifest(
+        linker::manifest::Lookup::Found(target_manifest) => unlink_from_manifest(
             &root,
             &target_name,
-            &target_root,
-            entries,
+            target_manifest,
             dry_run,
             with_config,
             agents_filter.as_deref(),
@@ -191,50 +191,62 @@ fn with_config_candidate(root: &Path, with_config: bool) -> Option<PathBuf> {
 /// issue #338 case 3 (a user file dropped into a linked skill directory)
 /// simply has no entry and is never considered, with no recursive sweep to
 /// avoid it.
+///
+/// Security amendment (post-implementation review): every entry's `path`,
+/// and every recorded `created_dirs` path, is checked with
+/// [`linker::manifest::is_trusted`] against the target's own recorded
+/// `root` before being acted on. A manifest is user-writable data — it
+/// must be treated exactly as untrusted as any other file the tool didn't
+/// just write itself — so a forged or hand-corrupted entry naming a path
+/// outside the target's own tree (`../outside/victim.txt`, or an absolute
+/// path unrelated to the target) is refused and reported, never deleted.
 fn unlink_from_manifest(
     root: &Path,
     target_name: &str,
-    target_root: &Path,
-    entries: Vec<linker::manifest::ManifestEntry>,
+    target_manifest: linker::manifest::TargetManifest,
     dry_run: bool,
     with_config: bool,
     agents_filter: Option<&[String]>,
 ) -> anyhow::Result<()> {
-    // The bound for `remove_empty_ancestors` below should reflect where the
-    // manifest's own entries actually live, not the *current* output
-    // directory computation — those can disagree if `--output` is passed
-    // differently to `unlink` than it was to `link`. Every entry for a
-    // target shares the same top-level directory (`.claude/`, `.codex/`,
-    // ...) by construction, so the first entry's first path component is
-    // exactly that boundary; only an empty manifest falls back to the
-    // config-derived `target_root`, and even a wrong bound there only
-    // skips a cosmetic cleanup — it can never widen what gets deleted.
-    let cleanup_bound: PathBuf = entries
-        .first()
-        .and_then(|e| e.path.components().next())
-        .map(|c| root.join(c.as_os_str()))
-        .unwrap_or_else(|| target_root.to_path_buf());
+    let linker::manifest::TargetManifest {
+        root: target_root,
+        created_dirs,
+        entries,
+        ..
+    } = target_manifest;
 
     let filter_lower: Option<Vec<String>> =
         agents_filter.map(|f| f.iter().map(|s| s.to_lowercase()).collect());
 
-    // `--agents` only ever narrows which *agent*-produced entries are
-    // touched, exactly like the fallback path — coordinator/skill/prompt
-    // entries are never filtered by it.
+    // `--agents` narrows to the named agents' own files *and* the
+    // coordinator's — matching `produced_by`'s name for both kinds. This
+    // mirrors the fallback path's actual (if accidental) behaviour: it
+    // filters the roster *before* extracting the coordinator from it, so
+    // naming a subset of agents that excludes the coordinator's own name
+    // silently leaves no coordinator to regenerate a context file for
+    // either. Skill/prompt entries are never filtered by `--agents` here,
+    // matching the fallback too — its skill/prompt loops never consulted
+    // it at all.
     let relevant: Vec<&linker::manifest::ManifestEntry> = entries
         .iter()
         .filter(|e| match (&filter_lower, e.produced_by.kind) {
-            (Some(filter), linker::manifest::ProducedByKind::Agent) => {
-                filter.contains(&e.produced_by.name.to_lowercase())
-            }
+            (
+                Some(filter),
+                linker::manifest::ProducedByKind::Agent
+                | linker::manifest::ProducedByKind::Coordinator,
+            ) => filter.contains(&e.produced_by.name.to_lowercase()),
             _ => true,
         })
         .collect();
 
     if let Some(filter) = agents_filter
-        && !relevant
-            .iter()
-            .any(|e| e.produced_by.kind == linker::manifest::ProducedByKind::Agent)
+        && !relevant.iter().any(|e| {
+            matches!(
+                e.produced_by.kind,
+                linker::manifest::ProducedByKind::Agent
+                    | linker::manifest::ProducedByKind::Coordinator
+            )
+        })
     {
         anyhow::bail!("No agents match the given filter: {}", filter.join(", "));
     }
@@ -242,16 +254,35 @@ fn unlink_from_manifest(
     let config_candidate = with_config_candidate(root, with_config);
 
     if dry_run {
-        print_manifest_dry_run(root, target_name, &relevant, config_candidate.as_deref());
+        print_manifest_dry_run(
+            root,
+            target_name,
+            &target_root,
+            &relevant,
+            &created_dirs,
+            config_candidate.as_deref(),
+        );
         return Ok(());
     }
 
     let mut deleted = 0;
     let mut kept = 0;
     let mut absent = 0;
-    let mut deleted_generated: Vec<PathBuf> = Vec::new();
+    let mut untrusted = 0;
 
     for entry in &relevant {
+        if !linker::manifest::is_trusted(root, &target_root, &entry.path) {
+            let e = crate::cli::style::err();
+            anstream::eprintln!(
+                "{e}  refused: manifest entry '{}' for target '{}' resolves outside its \
+                 trusted root — ignoring it; the manifest may be corrupt or forged{e:#}",
+                entry.path.display(),
+                target_name
+            );
+            untrusted += 1;
+            continue;
+        }
+
         let path = root.join(&entry.path);
         if !path.exists() {
             absent += 1;
@@ -267,54 +298,78 @@ fn unlink_from_manifest(
                 kept += 1;
             }
             linker::manifest::Outcome::Created => {
-                let content_matches = entry
+                let check = entry
                     .digest
                     .as_deref()
-                    .zip(std::fs::read(&path).ok())
-                    .map(|(d, actual)| linker::manifest::digest_matches(d, &actual))
-                    .unwrap_or(false);
-                if content_matches {
-                    std::fs::remove_file(&path)?;
-                    let m = crate::cli::style::muted();
-                    anstream::println!("{m}  deleted {}{m:#}", path.display());
-                    deleted += 1;
-                    deleted_generated.push(path);
-                } else {
-                    let w = crate::cli::style::warn();
-                    anstream::println!(
-                        "{w}  kept {} (content differs from what link wrote){w:#}",
-                        path.display()
-                    );
-                    kept += 1;
+                    .map(|d| linker::manifest::check_digest(d, &path));
+                match check {
+                    Some(linker::manifest::DigestCheck::Matches) => {
+                        std::fs::remove_file(&path)?;
+                        let m = crate::cli::style::muted();
+                        anstream::println!("{m}  deleted {}{m:#}", path.display());
+                        deleted += 1;
+                    }
+                    Some(linker::manifest::DigestCheck::Differs) => {
+                        let w = crate::cli::style::warn();
+                        anstream::println!(
+                            "{w}  kept {} (content differs from what link wrote){w:#}",
+                            path.display()
+                        );
+                        kept += 1;
+                    }
+                    Some(linker::manifest::DigestCheck::Unverifiable) | None => {
+                        let w = crate::cli::style::warn();
+                        anstream::println!(
+                            "{w}  kept {} (cannot verify — file unreadable, or digest uses \
+                             an algorithm this build doesn't recognise){w:#}",
+                            path.display()
+                        );
+                        kept += 1;
+                    }
                 }
             }
         }
     }
 
-    let mut deleted_config: Vec<PathBuf> = Vec::new();
     if let Some(config_path) = config_candidate {
         if config_path.exists() {
             std::fs::remove_file(&config_path)?;
             let m = crate::cli::style::muted();
             anstream::println!("{m}  deleted {}{m:#}", config_path.display());
             deleted += 1;
-            deleted_config.push(config_path);
+            if let Some(parent) = config_path.parent() {
+                remove_empty_ancestors(parent, root);
+            }
         } else {
             absent += 1;
         }
     }
 
-    // Bounded exactly like the fallback path: linker-generated paths never
-    // remove past `cleanup_bound`, the config file never removes past the
-    // project root.
-    for path in &deleted_generated {
-        if let Some(parent) = path.parent() {
-            remove_empty_ancestors(parent, &cleanup_bound);
+    // Remove exactly the directories `link` itself created for this
+    // target (design fix 1b) — deepest first, so a child never blocks its
+    // own parent's removal, and each still checked against the trust root
+    // so a corrupted `created_dirs` list can't be used to remove something
+    // outside the target's own tree either.
+    let mut created_dirs = created_dirs;
+    created_dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    for dir in &created_dirs {
+        if !linker::manifest::is_trusted(root, &target_root, dir) {
+            let e = crate::cli::style::err();
+            anstream::eprintln!(
+                "{e}  refused: recorded directory '{}' for target '{}' resolves outside its \
+                 trusted root — ignoring it{e:#}",
+                dir.display(),
+                target_name
+            );
+            untrusted += 1;
+            continue;
         }
-    }
-    for path in &deleted_config {
-        if let Some(parent) = path.parent() {
-            remove_empty_ancestors(parent, root);
+        let dir_path = root.join(dir);
+        let is_empty = std::fs::read_dir(&dir_path)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(false);
+        if dir_path.is_dir() && is_empty {
+            let _ = std::fs::remove_dir(&dir_path);
         }
     }
 
@@ -330,9 +385,17 @@ fn unlink_from_manifest(
     );
     if kept > 0 {
         anstream::println!(
-            "{m}  Kept files are either hand-written (link recorded them as skipped) or \
-             have content that no longer matches what link wrote — edited since linking. \
+            "{m}  Kept files are either hand-written (link recorded them as skipped), have \
+             content that no longer matches what link wrote, or could not be verified. \
              Remove them by hand if you no longer want them.{m:#}"
+        );
+    }
+    if untrusted > 0 {
+        let e = crate::cli::style::err();
+        anstream::println!(
+            "{e}  {} manifest entry(ies) were refused for resolving outside the trusted \
+             root — see the warning(s) above; the manifest may be corrupt or forged.{e:#}",
+            untrusted
         );
     }
 
@@ -345,13 +408,16 @@ fn unlink_from_manifest(
 fn print_manifest_dry_run(
     root: &Path,
     target_name: &str,
+    target_root: &Path,
     entries: &[&linker::manifest::ManifestEntry],
+    created_dirs: &[PathBuf],
     config_candidate: Option<&Path>,
 ) {
     let h = crate::cli::style::header();
     let a = crate::cli::style::accent();
     let m = crate::cli::style::muted();
     let w = crate::cli::style::warn();
+    let e = crate::cli::style::err();
     anstream::println!(
         "{h}Dry run{h:#} — files that would be removed for {a}'{}'{a:#}:\n",
         target_name
@@ -360,8 +426,17 @@ fn print_manifest_dry_run(
     let mut would_remove = 0;
     let mut would_keep = 0;
     let mut absent = 0;
+    let mut untrusted = 0;
 
     for entry in entries {
+        if !linker::manifest::is_trusted(root, target_root, &entry.path) {
+            anstream::println!(
+                "{e}  {} (would refuse — outside the trusted root){e:#}",
+                entry.path.display()
+            );
+            untrusted += 1;
+            continue;
+        }
         let path = root.join(&entry.path);
         if !path.exists() {
             anstream::println!("{m}  {} (already absent){m:#}", path.display());
@@ -377,21 +452,29 @@ fn print_manifest_dry_run(
                 would_keep += 1;
             }
             linker::manifest::Outcome::Created => {
-                let content_matches = entry
+                let check = entry
                     .digest
                     .as_deref()
-                    .zip(std::fs::read(&path).ok())
-                    .map(|(d, actual)| linker::manifest::digest_matches(d, &actual))
-                    .unwrap_or(false);
-                if content_matches {
-                    anstream::println!("{m}  {}{m:#}", path.display());
-                    would_remove += 1;
-                } else {
-                    anstream::println!(
-                        "{w}  {} (would keep — content differs){w:#}",
-                        path.display()
-                    );
-                    would_keep += 1;
+                    .map(|d| linker::manifest::check_digest(d, &path));
+                match check {
+                    Some(linker::manifest::DigestCheck::Matches) => {
+                        anstream::println!("{m}  {}{m:#}", path.display());
+                        would_remove += 1;
+                    }
+                    Some(linker::manifest::DigestCheck::Differs) => {
+                        anstream::println!(
+                            "{w}  {} (would keep — content differs){w:#}",
+                            path.display()
+                        );
+                        would_keep += 1;
+                    }
+                    Some(linker::manifest::DigestCheck::Unverifiable) | None => {
+                        anstream::println!(
+                            "{w}  {} (would keep — cannot verify){w:#}",
+                            path.display()
+                        );
+                        would_keep += 1;
+                    }
                 }
             }
         }
@@ -407,17 +490,32 @@ fn print_manifest_dry_run(
         }
     }
 
+    let would_clean_dirs = created_dirs
+        .iter()
+        .filter(|d| linker::manifest::is_trusted(root, target_root, d))
+        .count();
+
     anstream::println!(
-        "\n{m}  {} would be removed, {} would be kept, {} already absent.{m:#}",
+        "\n{m}  {} would be removed, {} would be kept, {} already absent \
+         ({} director{} recorded for cleanup).{m:#}",
         would_remove,
         would_keep,
-        absent
+        absent,
+        would_clean_dirs,
+        if would_clean_dirs == 1 { "y" } else { "ies" }
     );
     if would_keep > 0 {
         anstream::println!(
-            "{m}  Kept files are either hand-written (recorded as skipped by link) or have \
-             content that no longer matches what link wrote. Remove them by hand if you no \
-             longer want them.{m:#}"
+            "{m}  Kept files are either hand-written (recorded as skipped by link), have \
+             content that no longer matches what link wrote, or could not be verified. \
+             Remove them by hand if you no longer want them.{m:#}"
+        );
+    }
+    if untrusted > 0 {
+        anstream::println!(
+            "{e}  {} manifest entry(ies) would be refused for resolving outside the \
+             trusted root; the manifest may be corrupt or forged.{e:#}",
+            untrusted
         );
     }
 }
