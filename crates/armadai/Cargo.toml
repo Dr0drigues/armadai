@@ -85,6 +85,7 @@ include_dir = { workspace = true }
 # Utils
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
+sha2 = { workspace = true }
 
 # PTY support (for interactive shell mode)
 portable-pty = { version = "0.9", optional = true }

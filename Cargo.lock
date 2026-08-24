@@ -125,6 +125,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2",
  "strip-ansi-escapes",
  "tempfile",
  "thiserror 2.0.20",
