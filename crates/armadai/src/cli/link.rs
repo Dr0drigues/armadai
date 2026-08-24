@@ -198,6 +198,12 @@ pub async fn execute(
                 .map(PathBuf::from)
         })
         .unwrap_or_else(|| PathBuf::from(linker.default_output_dir()));
+    // The target's own root — never itself recorded as a `created_dirs`
+    // entry below, so `unlink` never removes it even when everything
+    // inside it is reclaimed (issue #338 case 1's second half: `.claude/`
+    // itself must survive, and the same protection extends to a custom
+    // `--output` directory).
+    let target_root = root.join(&output_dir);
 
     // 7. Generate files
     let sources = &config.sources;
@@ -209,15 +215,37 @@ pub async fn execute(
         return Ok(());
     }
 
-    // 8. Resolve output paths relative to project root
-    let output_files: Vec<_> = files
+    // 8. Resolve output paths relative to project root, tagging each with
+    // what produced it for the link manifest (issue #338). Every `Linker`
+    // implementation emits exactly one file per agent, in the same order as
+    // `link_agents`, before any aggregate/context file — verified by
+    // reading each of claude/codex/copilot/gemini/opencode's own
+    // `generate()`. Anything past that prefix is the target's
+    // coordinator/context document (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`,
+    // `copilot-instructions.md`, `instructions.md`), attributed to the
+    // configured coordinator, or — for the handful of targets that emit a
+    // team-roster document even with no coordinator set (codex, gemini) —
+    // to the target itself, since no single agent owns it.
+    let agent_count = link_agents.len();
+    let output_files: Vec<(PathBuf, String, linker::manifest::ProducedBy)> = files
         .into_iter()
-        .map(|f| {
+        .enumerate()
+        .map(|(idx, f)| {
             // Replace the default output dir prefix with the custom output dir
             let default_dir = PathBuf::from(linker.default_output_dir());
             let relative = f.path.strip_prefix(&default_dir).unwrap_or(&f.path);
             let final_path = root.join(&output_dir).join(relative);
-            (final_path, f.content)
+            let produced_by = if idx < agent_count {
+                linker::manifest::ProducedBy::agent(link_agents[idx].name.clone())
+            } else {
+                linker::manifest::ProducedBy::coordinator(
+                    coordinator
+                        .as_ref()
+                        .map(|c| c.name.clone())
+                        .unwrap_or_else(|| target_name.clone()),
+                )
+            };
+            (final_path, f.content, produced_by)
         })
         .collect();
 
@@ -228,7 +256,7 @@ pub async fn execute(
         anstream::eprintln!("{w}  warn: {err}{w:#}");
     }
 
-    let mut extra_files: Vec<(PathBuf, String)> = Vec::new();
+    let mut extra_files: Vec<(PathBuf, String, linker::manifest::ProducedBy)> = Vec::new();
     let mut skill_count = 0;
     for skill_dir in &skill_dirs {
         if let Ok(entries) = collect_dir_files(skill_dir) {
@@ -242,7 +270,11 @@ pub async fn execute(
                     .join("skills")
                     .join(skill_name)
                     .join(&relative);
-                extra_files.push((final_path, content));
+                extra_files.push((
+                    final_path,
+                    content,
+                    linker::manifest::ProducedBy::skill(skill_name),
+                ));
             }
             skill_count += 1;
         }
@@ -262,8 +294,16 @@ pub async fn execute(
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown.md");
+            let prompt_name = prompt_path
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or(filename);
             let final_path = root.join(&output_dir).join("prompts").join(filename);
-            extra_files.push((final_path, content));
+            extra_files.push((
+                final_path,
+                content,
+                linker::manifest::ProducedBy::prompt(prompt_name),
+            ));
             prompt_count += 1;
         }
     }
@@ -277,10 +317,10 @@ pub async fn execute(
             "{h}Dry run{h:#} — files that would be generated for {a}'{}'{a:#}:\n",
             target_name
         );
-        for (path, _) in &output_files {
+        for (path, _, _) in &output_files {
             anstream::println!("{m}  {}{m:#}", path.display());
         }
-        for (path, _) in &extra_files {
+        for (path, _, _) in &extra_files {
             anstream::println!("{m}  {}{m:#}", path.display());
         }
         anstream::println!(
@@ -292,25 +332,112 @@ pub async fn execute(
 
     let mut written = 0;
     let mut skipped = 0;
+    let mut unchanged = 0;
+    // Each write decision produces its own manifest entry, at the same
+    // point as the effect it describes (design §5) — never re-derived
+    // afterwards by asking what *would* happen again.
+    let mut manifest_entries: Vec<linker::manifest::ManifestEntry> = Vec::new();
+    // `create_dir_all` is itself an effect with no inverse of its own —
+    // record exactly which directories it actually created (a security
+    // review's fix 1b), so `unlink` can reverse precisely that instead of
+    // guessing an ancestor-sweep boundary from the deleted files' paths.
+    let mut created_dirs: Vec<PathBuf> = Vec::new();
 
-    for (path, content) in output_files.iter().chain(extra_files.iter()) {
+    for (path, content, produced_by) in output_files.iter().chain(extra_files.iter()) {
+        let relative_path = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
+
         if path.exists() && !force {
+            // A pre-existing file whose bytes are *already* exactly what
+            // `link` would write is ours in every sense `unlink` cares
+            // about — recorded as `created`, with its digest, not
+            // `skipped` (design review R6). Without this, `link; link;
+            // unlink` removes nothing: the second `link` would silently
+            // downgrade every file's entry to `skipped`, and `unlink`
+            // would then report every one of them as "hand-written" and
+            // leave the whole target in place. A file whose content
+            // actually differs — genuinely hand-written, or edited since
+            // — still gets `Skipped`: `link` didn't touch it, so its
+            // inverse is still "do nothing".
+            let matches_expected = std::fs::read(path)
+                .map(|actual| actual == content.as_bytes())
+                .unwrap_or(false);
+            if matches_expected {
+                let m = crate::cli::style::muted();
+                anstream::println!("{m}  up-to-date {}{m:#}", path.display());
+                unchanged += 1;
+                manifest_entries.push(linker::manifest::ManifestEntry {
+                    path: relative_path,
+                    produced_by: produced_by.clone(),
+                    outcome: linker::manifest::Outcome::Created,
+                    digest: Some(linker::manifest::digest_of(content.as_bytes())),
+                });
+                continue;
+            }
+
             let w = crate::cli::style::warn();
             anstream::eprintln!(
                 "{w}  skip: {} already exists (use --force to overwrite){w:#}",
                 path.display()
             );
             skipped += 1;
+            manifest_entries.push(linker::manifest::ManifestEntry {
+                path: relative_path,
+                produced_by: produced_by.clone(),
+                outcome: linker::manifest::Outcome::Skipped,
+                digest: None,
+            });
             continue;
         }
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            for created in linker::manifest::create_dir_all_recording(parent)? {
+                // Never record the target's own root, or anything above
+                // it — only its descendants are ever eligible for
+                // `unlink` to remove later.
+                if created.starts_with(&target_root) && created != target_root {
+                    created_dirs.push(
+                        created
+                            .strip_prefix(&root)
+                            .unwrap_or(&created)
+                            .to_path_buf(),
+                    );
+                }
+            }
         }
         std::fs::write(path, content)?;
         let m = crate::cli::style::muted();
         anstream::println!("{m}  wrote {}{m:#}", path.display());
         written += 1;
+        // `outcome: Created` regardless of whether `path` pre-existed —
+        // this is `Created` in the sense of "link wrote it", not "the
+        // path was new", which is the fact `unlink` actually needs: it
+        // must delete this on a matching digest either way. A pre-existing
+        // file reaches this branch only via `--force`, i.e. the same
+        // explicit user confirmation that let `link` overwrite it in the
+        // first place — `unlink` deleting it later on the same terms
+        // (content still matches) is consistent, not a new risk.
+        manifest_entries.push(linker::manifest::ManifestEntry {
+            path: relative_path,
+            produced_by: produced_by.clone(),
+            outcome: linker::manifest::Outcome::Created,
+            digest: Some(linker::manifest::digest_of(content.as_bytes())),
+        });
+    }
+
+    if let Err(e) = linker::manifest::write_target(
+        &root,
+        &target_name,
+        output_dir.clone(),
+        created_dirs,
+        manifest_entries,
+    ) {
+        // Deliberately non-fatal: `link` already wrote every file the user
+        // asked for, and refusing to report success over a manifest write
+        // failure (a permissions issue on `.armadai/`, a full disk, ...)
+        // would be a worse outcome than a degraded `unlink` next time. The
+        // warning is the signal; `unlink` falls back to the #342 guard and
+        // says so if this manifest never lands.
+        tracing::warn!("Failed to write link manifest: {:?}", e);
     }
 
     let mut summary = format!("Linked {} agent(s)", link_agents.len());
@@ -324,11 +451,12 @@ pub async fn execute(
     let a = crate::cli::style::accent();
     let m = crate::cli::style::muted();
     anstream::println!(
-        "\n{o}{}{o:#} to {a}'{}'{a:#}: {m}{} written, {} skipped.{m:#}",
+        "\n{o}{}{o:#} to {a}'{}'{a:#}: {m}{} written, {} skipped, {} unchanged.{m:#}",
         summary,
         target_name,
         written,
-        skipped
+        skipped,
+        unchanged
     );
 
     Ok(())
