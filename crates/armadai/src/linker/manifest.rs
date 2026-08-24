@@ -85,10 +85,17 @@ pub enum ProducedByKind {
     Prompt,
 }
 
-/// Whether `link` wrote this path, or found it already there and left it
-/// alone. The inverse is derived from this and never stored (design §3): a
-/// `Skipped` entry's inverse is "do nothing" — `link` produced nothing at
-/// this path, so `unlink` has nothing of its own to undo there.
+/// `Created`: `link` wrote this path, **or** found it already present with
+/// exactly the bytes it would have written — a pre-existing file that
+/// happens to be byte-identical to `link`'s own output is `link`'s to
+/// reclaim, not a stranger's to leave alone (design §12 R6: without this,
+/// `link ; link ; unlink` would remove nothing at all). `Skipped`: the
+/// path existed with *different* content, and `link` left it untouched.
+///
+/// The inverse is derived from this and never stored (design §3):
+/// `Skipped`'s inverse is "do nothing" — `link` produced nothing at this
+/// path, so `unlink` has nothing of its own to undo there. `Created`'s
+/// inverse is "delete, but only if the digest still matches".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
@@ -240,11 +247,18 @@ fn resolve(project_root: &Path, field: &Path) -> PathBuf {
 
 /// Resolve `field` into its real, symlink-free location as far as the
 /// filesystem allows *right now*: canonicalise the longest existing
-/// prefix, then re-append whatever suffix doesn't exist yet (lexically —
-/// there is nothing on disk to resolve for a path that isn't there).
-/// Falls back to pure lexical [`resolve`] only when nothing along the
-/// path exists at all, including `project_root` itself — a case where
-/// there is nothing to delete or list either way.
+/// prefix, then re-append whatever suffix doesn't exist yet, lexically —
+/// there is nothing on disk to resolve for a path that isn't there, and
+/// that lexical append happens for *every* call whose `field` has any
+/// missing tail component, not just as a rare fallback. `project_root`
+/// existing or not has no bearing on it either way — it almost always
+/// exists.
+///
+/// The pure-lexical [`resolve`] fallback below is narrower than that: it
+/// only fires when canonicalising the longest existing prefix this
+/// function actually found still fails (a permission error, for
+/// instance) — never merely because some suffix of `field` doesn't exist
+/// yet.
 ///
 /// This exists because lexical normalisation alone is **not** a security
 /// boundary against a symlink, and a review measured exactly that: with

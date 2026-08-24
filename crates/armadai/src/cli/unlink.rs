@@ -82,10 +82,14 @@ pub async fn execute(
             )
         })?;
 
-    // 3. The target's output directory and its own root directory — only
-    // used by the fallback below (the manifest path uses the trust `root`
-    // recorded *in* the manifest instead — see `unlink_from_manifest` and
-    // fix 1a in the design spec's security amendment).
+    // 3. The target's output directory and its own root directory —
+    // used by the fallback below for path resolution, and by the
+    // manifest path to *confirm* the manifest's own declared `root`
+    // against this independently-computed one before trusting it at all
+    // (`root_confirmed`, design review R1). It is never itself the
+    // boundary the manifest path acts on afterwards — that is the
+    // manifest's own `root`, once confirmed — but it is exactly what
+    // that confirmation is checked against.
     let linker_impl = linker::create_linker(&target_name)?;
     let output_dir = output
         .clone()
