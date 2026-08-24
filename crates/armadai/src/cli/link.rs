@@ -332,6 +332,7 @@ pub async fn execute(
 
     let mut written = 0;
     let mut skipped = 0;
+    let mut unchanged = 0;
     // Each write decision produces its own manifest entry, at the same
     // point as the effect it describes (design §5) — never re-derived
     // afterwards by asking what *would* happen again.
@@ -346,6 +347,33 @@ pub async fn execute(
         let relative_path = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
 
         if path.exists() && !force {
+            // A pre-existing file whose bytes are *already* exactly what
+            // `link` would write is ours in every sense `unlink` cares
+            // about — recorded as `created`, with its digest, not
+            // `skipped` (design review R6). Without this, `link; link;
+            // unlink` removes nothing: the second `link` would silently
+            // downgrade every file's entry to `skipped`, and `unlink`
+            // would then report every one of them as "hand-written" and
+            // leave the whole target in place. A file whose content
+            // actually differs — genuinely hand-written, or edited since
+            // — still gets `Skipped`: `link` didn't touch it, so its
+            // inverse is still "do nothing".
+            let matches_expected = std::fs::read(path)
+                .map(|actual| actual == content.as_bytes())
+                .unwrap_or(false);
+            if matches_expected {
+                let m = crate::cli::style::muted();
+                anstream::println!("{m}  up-to-date {}{m:#}", path.display());
+                unchanged += 1;
+                manifest_entries.push(linker::manifest::ManifestEntry {
+                    path: relative_path,
+                    produced_by: produced_by.clone(),
+                    outcome: linker::manifest::Outcome::Created,
+                    digest: Some(linker::manifest::digest_of(content.as_bytes())),
+                });
+                continue;
+            }
+
             let w = crate::cli::style::warn();
             anstream::eprintln!(
                 "{w}  skip: {} already exists (use --force to overwrite){w:#}",
@@ -423,11 +451,12 @@ pub async fn execute(
     let a = crate::cli::style::accent();
     let m = crate::cli::style::muted();
     anstream::println!(
-        "\n{o}{}{o:#} to {a}'{}'{a:#}: {m}{} written, {} skipped.{m:#}",
+        "\n{o}{}{o:#} to {a}'{}'{a:#}: {m}{} written, {} skipped, {} unchanged.{m:#}",
         summary,
         target_name,
         written,
-        skipped
+        skipped,
+        unchanged
     );
 
     Ok(())
