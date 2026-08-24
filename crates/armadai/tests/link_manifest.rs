@@ -603,7 +603,14 @@ mod tests {
 
         let (unlink_ok, _, unlink_stderr) =
             run_armadai(&root, &config, &["unlink", "--target", "claude"]);
-        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+        // Design review R5: refusing a forged entry is a failure to
+        // complete the requested work, not a partial success — the
+        // trustworthy `.claude/agents/solo.md` entry still gets removed
+        // below, but the process must still exit non-zero overall.
+        assert!(
+            !unlink_ok,
+            "unlink must exit non-zero when it refused an untrusted entry:              stderr={unlink_stderr}"
+        );
 
         assert!(
             victim.exists(),
@@ -776,6 +783,309 @@ mod tests {
             claude_md.exists(),
             "the coordinator's file must survive a --agents filter that doesn't name the \
              coordinator, matching the fallback's own behaviour"
+        );
+    }
+
+    /// Design review R1 (critical): the trust boundary must not be read
+    /// from the thing it is meant to constrain. A forged `root: "/"`
+    /// claims to own the entire filesystem, which would make
+    /// `is_trusted` accept *any* absolute path — reproducing the
+    /// original path-traversal defect entirely on a build that already
+    /// has the per-entry guard. Only cross-checking the declared root
+    /// against one `unlink` computes independently, from the project's
+    /// own config, catches this.
+    ///
+    /// Mutation this catches: if `unlink` trusted `TargetManifest::root`
+    /// on its own (as it did before this fix) instead of confirming it
+    /// against the config-derived root, this test would delete a file
+    /// entirely outside the project.
+    #[test]
+    fn forged_root_wide_enough_to_contain_anything_is_refused() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let outside_dir = dir.path().join("outside-root-forge");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let victim = outside_dir.join("victim.txt");
+        let victim_content = b"do not delete me either\n";
+        std::fs::write(&victim, victim_content).unwrap();
+
+        let forged_digest = sha256_digest(victim_content);
+        let victim_str = victim.to_str().unwrap().replace('\\', "/");
+        let forged_manifest = [
+            "version: 1".to_string(),
+            "targets:".to_string(),
+            "  claude:".to_string(),
+            "    linked_at: \"2026-01-01T00:00:00Z\"".to_string(),
+            "    root: \"/\"".to_string(),
+            "    created_dirs: []".to_string(),
+            "    entries:".to_string(),
+            format!("      - path: \"{victim_str}\""),
+            "        produced_by: { kind: agent, name: solo }".to_string(),
+            "        outcome: created".to_string(),
+            format!("        digest: \"{forged_digest}\""),
+            String::new(),
+        ]
+        .join("\n");
+        std::fs::write(manifest_path(&root), forged_manifest).unwrap();
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(
+            unlink_ok,
+            "falling back to the #342 guard must still succeed: stderr={unlink_stderr}"
+        );
+
+        assert!(
+            victim.exists(),
+            "a forged root: / must never be trusted, even for an entry it would \
+             otherwise contain"
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), victim_content);
+        assert!(
+            unlink_stderr.contains("doesn't match this project's current output directory"),
+            "unlink must report the root mismatch: stderr={unlink_stderr}"
+        );
+        // Control: the fallback still reclaims the legitimately generated file.
+        assert!(!root.join(".claude/agents/solo.md").exists());
+    }
+
+    /// Design review R3 (closed by R1's construction for a wide forged
+    /// root, but not for a manifest whose `root` is otherwise legitimate
+    /// and simply names that same root inside `created_dirs` too): the
+    /// target's own root must never be removed, independent of trusting
+    /// the manifest at all — `is_trusted` alone would accept it (a path
+    /// always contains itself).
+    ///
+    /// Mutation this catches: if the explicit `dir_path ==
+    /// resolved_target_root` guard were removed and only `is_trusted`
+    /// gated `created_dirs` removal, this test's `.claude` would be gone.
+    #[test]
+    fn forged_created_dirs_naming_the_targets_own_root_is_refused() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let solo_file = root.join(".claude/agents/solo.md");
+        let solo_digest = sha256_digest(&std::fs::read(&solo_file).unwrap());
+
+        let forged_manifest = [
+            "version: 1",
+            "targets:",
+            "  claude:",
+            "    linked_at: \"2026-01-01T00:00:00Z\"",
+            "    root: .claude",
+            "    created_dirs:",
+            "      - .claude/agents",
+            "      - .claude",
+            "    entries:",
+            "      - path: .claude/agents/solo.md",
+            "        produced_by: { kind: agent, name: solo }",
+            "        outcome: created",
+            &format!("        digest: \"{solo_digest}\""),
+            "",
+        ]
+        .join("\n");
+        std::fs::write(manifest_path(&root), forged_manifest).unwrap();
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(
+            !unlink_ok,
+            "unlink must exit non-zero for the refused created_dirs entry: \
+             stderr={unlink_stderr}"
+        );
+
+        assert!(
+            !solo_file.exists(),
+            "the legitimate file entry must still be reclaimed"
+        );
+        assert!(
+            root.join(".claude").is_dir(),
+            "the target's own root must never be removed, even when a manifest's \
+             created_dirs names it directly"
+        );
+    }
+
+    /// Design review R2 (critical in effect): lexical normalisation alone
+    /// is not a security boundary against a symlink. `.claude/agents` is
+    /// replaced with a symlink to a directory entirely outside the
+    /// project; a manifest entry `.claude/agents/keys.md` reads as
+    /// contained under `.claude` textually, but the file it actually
+    /// names lives elsewhere.
+    ///
+    /// Mutation this catches: if `is_trusted` resolved paths with
+    /// `lexically_normalize` alone instead of `resolve_real` (which
+    /// canonicalises the existing prefix), this test would delete a file
+    /// outside the project through the symlink.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_intermediate_directory_does_not_bypass_the_trust_boundary() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let claude_agents = root.join(".claude/agents");
+        std::fs::remove_dir_all(&claude_agents).unwrap();
+        let outside_dir = dir.path().join("outside-agents");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let victim = outside_dir.join("keys.md");
+        let victim_content = b"super secret\n";
+        std::fs::write(&victim, victim_content).unwrap();
+        std::os::unix::fs::symlink(&outside_dir, &claude_agents).unwrap();
+
+        let forged_digest = sha256_digest(victim_content);
+        let forged_manifest = [
+            "version: 1",
+            "targets:",
+            "  claude:",
+            "    linked_at: \"2026-01-01T00:00:00Z\"",
+            "    root: .claude",
+            "    created_dirs: []",
+            "    entries:",
+            "      - path: .claude/agents/keys.md",
+            "        produced_by: { kind: agent, name: solo }",
+            "        outcome: created",
+            &format!("        digest: \"{forged_digest}\""),
+            "",
+        ]
+        .join("\n");
+        std::fs::write(manifest_path(&root), forged_manifest).unwrap();
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(
+            !unlink_ok,
+            "unlink must exit non-zero for the refused entry: stderr={unlink_stderr}"
+        );
+
+        assert!(
+            victim.exists(),
+            "a symlinked intermediate directory must not let an entry escape the \
+             trusted root"
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), victim_content);
+    }
+
+    /// Design review R6 (important): `link ; link ; unlink` must remove
+    /// everything the first `link` wrote. Relinking after no config
+    /// change — or after a change that doesn't affect a given file — is
+    /// an everyday action, not a reason for `unlink` to start treating
+    /// `link`'s own output as hand-written.
+    ///
+    /// Mutation this catches: if a pre-existing file whose content
+    /// already matches were still recorded `skipped` (the pre-fix
+    /// behaviour), `solo.md` would survive the final `unlink` here,
+    /// reported as "hand-written" about a file `link` wrote twice.
+    #[test]
+    fn link_then_link_then_unlink_removes_everything() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link1_ok, _, link1_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link1_ok, "first link must succeed: stderr={link1_stderr}");
+
+        let solo_file = root.join(".claude/agents/solo.md");
+        assert!(solo_file.is_file());
+
+        let (link2_ok, link2_stdout, link2_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link2_ok, "second link must succeed: stderr={link2_stderr}");
+        assert!(
+            link2_stdout.contains("up-to-date"),
+            "the second link must recognise its own unchanged output: stdout={link2_stdout}"
+        );
+
+        let manifest = read_manifest(&root);
+        assert!(
+            manifest.contains("outcome: created"),
+            "a file link wrote before, and would write identically again, must still be \
+             recorded as created, not downgraded to skipped: {manifest}"
+        );
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+
+        assert!(
+            !solo_file.exists(),
+            "link; link; unlink must remove everything link wrote"
+        );
+    }
+
+    /// Companion to `unlink_agents_filter_leaves_the_coordinator_and_unmatched_agents_alone`,
+    /// pinning the filter from the other direction (a test gap the review
+    /// found: `--agents` appears only once in this suite, and only
+    /// asserted survival — a mutation that unconditionally excludes every
+    /// `Coordinator`-kind entry whenever `--agents` is set would pass
+    /// that test too). Naming the coordinator explicitly must still
+    /// remove its document.
+    #[test]
+    fn unlink_agents_filter_including_the_coordinators_name_still_removes_it() {
+        let dir = project_with_coordinator_and_two_members();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let claude_md = root.join(".claude/CLAUDE.md");
+        assert!(claude_md.is_file());
+
+        let (unlink_ok, _, unlink_stderr) = run_armadai(
+            &root,
+            &config,
+            &["unlink", "--target", "claude", "--agents", "coord"],
+        );
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+
+        assert!(
+            !claude_md.exists(),
+            "naming the coordinator explicitly in --agents must still remove its \
+             document — proves the filter checks the name, not a blanket exclusion \
+             of Coordinator-kind entries"
+        );
+    }
+
+    /// Second half of the same pin: a plain `unlink`, with no `--agents`
+    /// filter at all, must remove the coordinator's document too.
+    #[test]
+    fn plain_unlink_without_a_filter_removes_the_coordinators_document_too() {
+        let dir = project_with_coordinator_and_two_members();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let claude_md = root.join(".claude/CLAUDE.md");
+        assert!(claude_md.is_file());
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+
+        assert!(
+            !claude_md.exists(),
+            "a plain unlink with no --agents filter must remove the coordinator's \
+             document too"
         );
     }
 }
