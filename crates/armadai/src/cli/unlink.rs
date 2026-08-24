@@ -109,26 +109,53 @@ pub async fn execute(
     // so — the user is in a degraded mode and should know why some files
     // might be kept that a manifest-driven unlink would have reclaimed.
     match linker::manifest::lookup_target(&root, &target_name) {
-        linker::manifest::Lookup::Found(target_manifest) => unlink_from_manifest(
-            &root,
-            &target_name,
-            target_manifest,
-            dry_run,
-            with_config,
-            agents_filter.as_deref(),
-        ),
-        linker::manifest::Lookup::Fallback => {
-            let w = crate::cli::style::warn();
-            anstream::eprintln!(
-                "{w}  No link manifest found for target '{}' — falling back to the #342 \
-                 content-match guard: a file is only removed when its on-disk content \
-                 still byte-for-byte matches what `link` would generate right now. This \
-                 happens on a fresh clone, after `.armadai/` was deleted, or for a project \
-                 linked before this armadai version. Some files may be kept that a \
-                 manifest-driven unlink would have reclaimed exactly — re-run `link` to \
-                 write one.{w:#}",
-                target_name
-            );
+        linker::manifest::Lookup::Found(target_manifest)
+            if linker::manifest::root_confirmed(&root, &target_root, &target_manifest.root) =>
+        {
+            unlink_from_manifest(
+                &root,
+                &target_name,
+                target_manifest,
+                dry_run,
+                with_config,
+                agents_filter.as_deref(),
+            )
+        }
+        lookup => {
+            // Either no manifest at all, or one whose declared root for
+            // this target doesn't match what `unlink` computes right now
+            // from the project's own config/`--output` (design review
+            // R1) — a manifest is user-writable data, so its `root` is
+            // never trusted on its own; only a root confirmed against one
+            // `unlink` derives independently is trusted at all. Either
+            // way, refuse the manifest wholesale and fall back, saying
+            // why.
+            match lookup {
+                linker::manifest::Lookup::Found(_) => {
+                    let w = crate::cli::style::warn();
+                    anstream::eprintln!(
+                        "{w}  The link manifest for target '{}' declares a root that \
+                         doesn't match this project's current output directory — refusing \
+                         to trust it and falling back to the #342 content-match guard. \
+                         This can happen if the manifest was hand-edited, corrupted, or \
+                         copied from another project.{w:#}",
+                        target_name
+                    );
+                }
+                linker::manifest::Lookup::Fallback => {
+                    let w = crate::cli::style::warn();
+                    anstream::eprintln!(
+                        "{w}  No link manifest found for target '{}' — falling back to the \
+                         #342 content-match guard: a file is only removed when its on-disk \
+                         content still byte-for-byte matches what `link` would generate \
+                         right now. This happens on a fresh clone, after `.armadai/` was \
+                         deleted, or for a project linked before this armadai version. Some \
+                         files may be kept that a manifest-driven unlink would have \
+                         reclaimed exactly — re-run `link` to write one.{w:#}",
+                        target_name
+                    );
+                }
+            }
             unlink_via_fallback(
                 root,
                 config,
@@ -283,7 +310,15 @@ fn unlink_from_manifest(
             continue;
         }
 
-        let path = root.join(&entry.path);
+        // Resolved via `resolve_real`, not a raw `root.join(&entry.path)`
+        // — the same path a symlinked intermediate would otherwise let
+        // slip past the trust check above (design review R2) is also the
+        // path every operation below actually acts on, and normalising
+        // it here is what makes "already absent" describe the real
+        // filesystem instead of a raw, un-normalised join that can
+        // report a false absence for an otherwise-valid `a/../b` entry
+        // whose literal `a` component doesn't exist (R4).
+        let path = linker::manifest::resolve_real(root, &entry.path);
         if !path.exists() {
             absent += 1;
             continue;
@@ -352,19 +387,29 @@ fn unlink_from_manifest(
     // outside the target's own tree either.
     let mut created_dirs = created_dirs;
     created_dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    // The target's own root, resolved once — never a removal candidate
+    // itself, no matter what `created_dirs` claims (design review R3).
+    // R1's root confirmation only constrains which root a manifest can
+    // *declare*; it says nothing about a `created_dirs` entry naming
+    // that root right back, which trivially satisfies `is_trusted`
+    // (a path is always contained within itself). This is the one
+    // invariant that does not depend on trusting the manifest at all.
+    let resolved_target_root = linker::manifest::resolve_real(root, &target_root);
     for dir in &created_dirs {
-        if !linker::manifest::is_trusted(root, &target_root, dir) {
+        let dir_path = linker::manifest::resolve_real(root, dir);
+        let refused = dir_path == resolved_target_root
+            || !linker::manifest::is_trusted(root, &target_root, dir);
+        if refused {
             let e = crate::cli::style::err();
             anstream::eprintln!(
                 "{e}  refused: recorded directory '{}' for target '{}' resolves outside its \
-                 trusted root — ignoring it{e:#}",
+                 trusted root, or names the root itself — ignoring it{e:#}",
                 dir.display(),
                 target_name
             );
             untrusted += 1;
             continue;
         }
-        let dir_path = root.join(dir);
         let is_empty = std::fs::read_dir(&dir_path)
             .map(|mut d| d.next().is_none())
             .unwrap_or(false);
@@ -396,6 +441,16 @@ fn unlink_from_manifest(
             "{e}  {} manifest entry(ies) were refused for resolving outside the trusted \
              root — see the warning(s) above; the manifest may be corrupt or forged.{e:#}",
             untrusted
+        );
+        // A refusal is a failure to complete the requested work, not a
+        // partial success — exit non-zero so scripted callers notice
+        // (design review R5), even though every trustworthy entry above
+        // was still handled.
+        anyhow::bail!(
+            "{} manifest entry(ies) for target '{}' were refused for resolving outside \
+             the trusted root; the request did not fully complete",
+            untrusted,
+            target_name
         );
     }
 
@@ -437,7 +492,7 @@ fn print_manifest_dry_run(
             untrusted += 1;
             continue;
         }
-        let path = root.join(&entry.path);
+        let path = linker::manifest::resolve_real(root, &entry.path);
         if !path.exists() {
             anstream::println!("{m}  {} (already absent){m:#}", path.display());
             absent += 1;
