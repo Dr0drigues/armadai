@@ -194,13 +194,20 @@ file-backed ones — except where noted:
 | `armadai models check` / `armadai models update` | Yes — including the deprecated-model rewrite described above |
 | `armadai unlink` | Yes |
 | `armadai validate` | Yes — a declared agent named as an `orchestration.coordinator`/`teams[].lead`/`teams[].agents` entry resolves, even when never relisted in `armadai.yaml`'s `agents:` |
-| TUI dashboard | **No** |
-| Web API | **No** |
+| TUI dashboard | Yes |
+| Web API | Yes |
 | `armadai shell` | **No** |
 
-Do not assume any of the three remaining "No" rows will discover a declared agent by some other
-path — they were simply not touched by this chantier, and hitting one of them is the way to find
-out the hard way if this table goes unread.
+Do not assume the remaining "No" row will discover a declared agent by some other path — it was
+simply not touched by this chantier, and hitting it is the way to find out the hard way if this
+table goes unread.
+
+The TUI dashboard and Web API used to be worse than an omission: both resolved a project's agents
+via `project::resolve_all_agents`, which only ever returns file paths, so a declared agent (which
+has no file) was silently dropped — and if a same-named agent happened to exist in the global
+library (`~/.config/armadai/agents/`), *that* agent was shown in its place, with no warning. Both
+now go through the same `agent_source::load_all_agents` every other wired surface uses, so a
+declared agent is loaded on its own terms rather than shadowed by an unrelated global homonym.
 
 ## Parity with the `.md` format — and its limits
 
