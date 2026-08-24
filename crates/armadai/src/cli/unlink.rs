@@ -5,34 +5,38 @@ use crate::linker::{self, LinkAgent};
 use armadai_core::project;
 
 /// A file `unlink` might remove, together with what removing it safely
-/// requires.
+/// requires. Used only by the **fallback** path (see [`unlink_via_fallback`])
+/// — the manifest path ([`unlink_from_manifest`]) reads what to do straight
+/// from the manifest's `outcome` field instead.
 ///
-/// `unlink` keeps no manifest of what `link` actually wrote (issue #338) —
-/// it only knows how to recompute what `link` *would* write today. So for
-/// anything the linker itself produces (agent/coordinator instruction
-/// files, skill copies, prompt copies), the only safe rule is: **delete a
+/// `unlink` prefers the link manifest (issue #338): a per-project record of
+/// exactly what `link` wrote and how to undo it, written by `link` itself
+/// (`cli::link::execute`, `linker::manifest`). Only when there is no usable
+/// manifest for a target — a fresh clone, a deleted `.armadai/`, or a
+/// project linked before the manifest existed — does `unlink` fall back to
+/// recomputing what `link` *would* write today. For anything the linker
+/// itself produces (agent/coordinator instruction files, skill copies,
+/// prompt copies), the only safe rule in that degraded mode is: **delete a
 /// file only if its on-disk content is byte-for-byte identical to what
 /// would be generated right now.** A hand-written file at a would-be
 /// generated path never matches and is always kept; a file the linker
 /// really did write and that hasn't been touched since always matches and
 /// is reclaimed.
 ///
-/// Accepted limitation, stated here and echoed in the CLI output: content
-/// can differ from what `link` would generate right now for two reasons
-/// `unlink` has no way to distinguish — the file was edited since linking,
-/// or it was linked with different options (an explicit `--model`, or an
-/// interactive prompt answer). Either way the file is kept, becoming a
-/// visible orphan instead of a silent deletion. An orphan can be spotted
-/// and removed by hand; content deleted by mistake cannot be un-deleted.
-/// On `opencode` (an `Orchestrator` target below) in particular, `--model`
-/// or an interactive answer at link time makes the generated file
-/// permanently un-reclaimable by `unlink` until the write manifest (the
-/// other half of #338) lands and makes detection exact.
+/// Accepted limitation of the fallback, stated here and echoed in the CLI
+/// output: content can differ from what `link` would generate right now for
+/// two reasons `unlink` has no way to distinguish — the file was edited
+/// since linking, or it was linked with different options (an explicit
+/// `--model`, or an interactive prompt answer). Either way the file is kept,
+/// becoming a visible orphan instead of a silent deletion. The manifest
+/// path above doesn't have this limitation — it diffs against the digest of
+/// what was actually written, not a regeneration.
 ///
 /// `AlwaysDelete` covers the single opt-in case that isn't linker output at
 /// all: the project config file removed via `--with-config`. There is
 /// nothing generated to diff it against — the flag is the user's own
-/// confirmation, so no content guard applies.
+/// confirmation, so no content guard applies. Both paths share this case
+/// via [`with_config_candidate`].
 enum Candidate {
     Generated { path: PathBuf, expected: Vec<u8> },
     AlwaysDelete { path: PathBuf },
@@ -62,6 +66,385 @@ pub async fn execute(
         )
     })?;
 
+    // 2. Determine target. Hoisted ahead of agent loading (unlike the old,
+    // pre-manifest flow) because the manifest lookup below needs it and
+    // must not depend on whether any agents are currently declared —
+    // that's the orphan case (issue #338 case 2): an agent can be gone
+    // from the config entirely and its manifest entry still be exactly
+    // what tells `unlink` to remove its file.
+    let target_name = target
+        .map(|t| t.to_string())
+        .or_else(|| config.link.as_ref().and_then(|l| l.target.clone()))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No link target specified. Use --target or set link.target in armadai.yaml.\n\
+                 Supported targets: claude, codex, copilot, gemini, opencode"
+            )
+        })?;
+
+    // 3. The target's output directory and its own root directory — needed
+    // by both paths below to bound `remove_empty_ancestors` (issue #338
+    // case 1's second half: `.claude/` itself must never be removed).
+    let linker_impl = linker::create_linker(&target_name)?;
+    let output_dir = output
+        .clone()
+        .or_else(|| {
+            config
+                .link
+                .as_ref()
+                .and_then(|l| l.overrides.get(&target_name))
+                .and_then(|o| o.output.as_ref())
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(|| PathBuf::from(linker_impl.default_output_dir()));
+    let target_root = root.join(&output_dir);
+
+    // 4. Prefer the link manifest (issue #338's second half): it records
+    // exactly what `link` wrote for this target, independent of the
+    // current config, so it has none of the fallback's blind spots — the
+    // orphan case above, the skills-recursion case, and the opencode
+    // `--model` case (see the module doc). Only fall back to the #342
+    // content-match guard when there is nothing usable recorded, and say
+    // so — the user is in a degraded mode and should know why some files
+    // might be kept that a manifest-driven unlink would have reclaimed.
+    match linker::manifest::lookup_target(&root, &target_name) {
+        linker::manifest::Lookup::Found(entries) => unlink_from_manifest(
+            &root,
+            &target_name,
+            &target_root,
+            entries,
+            dry_run,
+            with_config,
+            agents_filter.as_deref(),
+        ),
+        linker::manifest::Lookup::Fallback => {
+            let w = crate::cli::style::warn();
+            anstream::eprintln!(
+                "{w}  No link manifest found for target '{}' — falling back to the #342 \
+                 content-match guard: a file is only removed when its on-disk content \
+                 still byte-for-byte matches what `link` would generate right now. This \
+                 happens on a fresh clone, after `.armadai/` was deleted, or for a project \
+                 linked before this armadai version. Some files may be kept that a \
+                 manifest-driven unlink would have reclaimed exactly — re-run `link` to \
+                 write one.{w:#}",
+                target_name
+            );
+            unlink_via_fallback(
+                root,
+                config,
+                target_name,
+                linker_impl,
+                output_dir,
+                target_root,
+                coordinator_flag,
+                dry_run,
+                with_config,
+                agents_filter,
+            )
+            .await
+        }
+    }
+}
+
+/// Which project config file `--with-config` would remove, if any: the
+/// active one among the three candidate paths. `None` when `--with-config`
+/// wasn't passed, or when none of the candidate files exist. Shared by both
+/// the manifest path and the fallback — this case is identical in either:
+/// there is nothing generated to diff the config file against, so the flag
+/// itself is the confirmation, manifest or not.
+fn with_config_candidate(root: &Path, with_config: bool) -> Option<PathBuf> {
+    if !with_config {
+        return None;
+    }
+    let dotarmadai_config = root.join(".armadai").join("config.yaml");
+    let legacy_yaml = root.join("armadai.yaml");
+    let legacy_yml = root.join("armadai.yml");
+
+    if dotarmadai_config.exists() {
+        Some(dotarmadai_config)
+    } else if legacy_yaml.exists() {
+        Some(legacy_yaml)
+    } else if legacy_yml.exists() {
+        Some(legacy_yml)
+    } else {
+        None
+    }
+}
+
+/// Consume the link manifest for `target_name`: for each recorded entry,
+/// apply the inverse implied by its `outcome` (design §6) — never
+/// regenerate, never consult the current config.
+///
+/// `outcome: Skipped`'s inverse is "do nothing": `link` found this file
+/// already there and left it alone, so it was never `unlink`'s to remove
+/// (issue #338 case 1 — the over-deletion of a hand-written `CLAUDE.md`).
+///
+/// `outcome: Created`'s inverse is "delete, but only if the digest still
+/// matches" — the #342 guard, now checked against the digest of the
+/// content `link` actually wrote instead of a regeneration that may no
+/// longer be possible (the `opencode --model` case) or may no longer even
+/// be *produced* by the current config (issue #338 case 2, the orphan: an
+/// agent removed from the config still has its manifest entry, so its file
+/// is still a candidate here — this is the case the fallback cannot fix).
+///
+/// Only entries the manifest actually names are ever candidates at all —
+/// issue #338 case 3 (a user file dropped into a linked skill directory)
+/// simply has no entry and is never considered, with no recursive sweep to
+/// avoid it.
+fn unlink_from_manifest(
+    root: &Path,
+    target_name: &str,
+    target_root: &Path,
+    entries: Vec<linker::manifest::ManifestEntry>,
+    dry_run: bool,
+    with_config: bool,
+    agents_filter: Option<&[String]>,
+) -> anyhow::Result<()> {
+    // The bound for `remove_empty_ancestors` below should reflect where the
+    // manifest's own entries actually live, not the *current* output
+    // directory computation — those can disagree if `--output` is passed
+    // differently to `unlink` than it was to `link`. Every entry for a
+    // target shares the same top-level directory (`.claude/`, `.codex/`,
+    // ...) by construction, so the first entry's first path component is
+    // exactly that boundary; only an empty manifest falls back to the
+    // config-derived `target_root`, and even a wrong bound there only
+    // skips a cosmetic cleanup — it can never widen what gets deleted.
+    let cleanup_bound: PathBuf = entries
+        .first()
+        .and_then(|e| e.path.components().next())
+        .map(|c| root.join(c.as_os_str()))
+        .unwrap_or_else(|| target_root.to_path_buf());
+
+    let filter_lower: Option<Vec<String>> =
+        agents_filter.map(|f| f.iter().map(|s| s.to_lowercase()).collect());
+
+    // `--agents` only ever narrows which *agent*-produced entries are
+    // touched, exactly like the fallback path — coordinator/skill/prompt
+    // entries are never filtered by it.
+    let relevant: Vec<&linker::manifest::ManifestEntry> = entries
+        .iter()
+        .filter(|e| match (&filter_lower, e.produced_by.kind) {
+            (Some(filter), linker::manifest::ProducedByKind::Agent) => {
+                filter.contains(&e.produced_by.name.to_lowercase())
+            }
+            _ => true,
+        })
+        .collect();
+
+    if let Some(filter) = agents_filter
+        && !relevant
+            .iter()
+            .any(|e| e.produced_by.kind == linker::manifest::ProducedByKind::Agent)
+    {
+        anyhow::bail!("No agents match the given filter: {}", filter.join(", "));
+    }
+
+    let config_candidate = with_config_candidate(root, with_config);
+
+    if dry_run {
+        print_manifest_dry_run(root, target_name, &relevant, config_candidate.as_deref());
+        return Ok(());
+    }
+
+    let mut deleted = 0;
+    let mut kept = 0;
+    let mut absent = 0;
+    let mut deleted_generated: Vec<PathBuf> = Vec::new();
+
+    for entry in &relevant {
+        let path = root.join(&entry.path);
+        if !path.exists() {
+            absent += 1;
+            continue;
+        }
+        match entry.outcome {
+            linker::manifest::Outcome::Skipped => {
+                let w = crate::cli::style::warn();
+                anstream::println!(
+                    "{w}  kept {} (hand-written — link recorded it as skipped){w:#}",
+                    path.display()
+                );
+                kept += 1;
+            }
+            linker::manifest::Outcome::Created => {
+                let content_matches = entry
+                    .digest
+                    .as_deref()
+                    .zip(std::fs::read(&path).ok())
+                    .map(|(d, actual)| linker::manifest::digest_matches(d, &actual))
+                    .unwrap_or(false);
+                if content_matches {
+                    std::fs::remove_file(&path)?;
+                    let m = crate::cli::style::muted();
+                    anstream::println!("{m}  deleted {}{m:#}", path.display());
+                    deleted += 1;
+                    deleted_generated.push(path);
+                } else {
+                    let w = crate::cli::style::warn();
+                    anstream::println!(
+                        "{w}  kept {} (content differs from what link wrote){w:#}",
+                        path.display()
+                    );
+                    kept += 1;
+                }
+            }
+        }
+    }
+
+    let mut deleted_config: Vec<PathBuf> = Vec::new();
+    if let Some(config_path) = config_candidate {
+        if config_path.exists() {
+            std::fs::remove_file(&config_path)?;
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}  deleted {}{m:#}", config_path.display());
+            deleted += 1;
+            deleted_config.push(config_path);
+        } else {
+            absent += 1;
+        }
+    }
+
+    // Bounded exactly like the fallback path: linker-generated paths never
+    // remove past `cleanup_bound`, the config file never removes past the
+    // project root.
+    for path in &deleted_generated {
+        if let Some(parent) = path.parent() {
+            remove_empty_ancestors(parent, &cleanup_bound);
+        }
+    }
+    for path in &deleted_config {
+        if let Some(parent) = path.parent() {
+            remove_empty_ancestors(parent, root);
+        }
+    }
+
+    let o = crate::cli::style::ok();
+    let a = crate::cli::style::accent();
+    let m = crate::cli::style::muted();
+    anstream::println!(
+        "\n{o}Unlinked{o:#} {a}'{}'{a:#}: {m}{} deleted, {} kept, {} already absent.{m:#}",
+        target_name,
+        deleted,
+        kept,
+        absent
+    );
+    if kept > 0 {
+        anstream::println!(
+            "{m}  Kept files are either hand-written (link recorded them as skipped) or \
+             have content that no longer matches what link wrote — edited since linking. \
+             Remove them by hand if you no longer want them.{m:#}"
+        );
+    }
+
+    Ok(())
+}
+
+/// `--dry-run` rendering for the manifest path — mirrors the fallback's own
+/// dry-run output shape so the two paths read the same way to a user who
+/// doesn't know (and shouldn't need to know) which one is active.
+fn print_manifest_dry_run(
+    root: &Path,
+    target_name: &str,
+    entries: &[&linker::manifest::ManifestEntry],
+    config_candidate: Option<&Path>,
+) {
+    let h = crate::cli::style::header();
+    let a = crate::cli::style::accent();
+    let m = crate::cli::style::muted();
+    let w = crate::cli::style::warn();
+    anstream::println!(
+        "{h}Dry run{h:#} — files that would be removed for {a}'{}'{a:#}:\n",
+        target_name
+    );
+
+    let mut would_remove = 0;
+    let mut would_keep = 0;
+    let mut absent = 0;
+
+    for entry in entries {
+        let path = root.join(&entry.path);
+        if !path.exists() {
+            anstream::println!("{m}  {} (already absent){m:#}", path.display());
+            absent += 1;
+            continue;
+        }
+        match entry.outcome {
+            linker::manifest::Outcome::Skipped => {
+                anstream::println!(
+                    "{w}  {} (would keep — hand-written, recorded as skipped){w:#}",
+                    path.display()
+                );
+                would_keep += 1;
+            }
+            linker::manifest::Outcome::Created => {
+                let content_matches = entry
+                    .digest
+                    .as_deref()
+                    .zip(std::fs::read(&path).ok())
+                    .map(|(d, actual)| linker::manifest::digest_matches(d, &actual))
+                    .unwrap_or(false);
+                if content_matches {
+                    anstream::println!("{m}  {}{m:#}", path.display());
+                    would_remove += 1;
+                } else {
+                    anstream::println!(
+                        "{w}  {} (would keep — content differs){w:#}",
+                        path.display()
+                    );
+                    would_keep += 1;
+                }
+            }
+        }
+    }
+
+    if let Some(config_path) = config_candidate {
+        if config_path.exists() {
+            anstream::println!("{m}  {}{m:#}", config_path.display());
+            would_remove += 1;
+        } else {
+            anstream::println!("{m}  {} (already absent){m:#}", config_path.display());
+            absent += 1;
+        }
+    }
+
+    anstream::println!(
+        "\n{m}  {} would be removed, {} would be kept, {} already absent.{m:#}",
+        would_remove,
+        would_keep,
+        absent
+    );
+    if would_keep > 0 {
+        anstream::println!(
+            "{m}  Kept files are either hand-written (recorded as skipped by link) or have \
+             content that no longer matches what link wrote. Remove them by hand if you no \
+             longer want them.{m:#}"
+        );
+    }
+}
+
+/// The #342 fallback: recompute what `link` would write for the *current*
+/// config, and delete only what still matches byte-for-byte. Entered only
+/// when [`linker::manifest::lookup_target`] found nothing usable — see the
+/// module doc and `execute`'s step 4 for when and why.
+///
+/// This is deliberately close to `unlink`'s pre-manifest body: the
+/// content-match guard, the source-scoped skill sweep, and the bounded
+/// empty-ancestor cleanup are the mitigation issue #342 shipped, and they
+/// stay exactly as they were — the manifest path above is what changed,
+/// not this one.
+#[allow(clippy::too_many_arguments)]
+async fn unlink_via_fallback(
+    root: PathBuf,
+    config: armadai_core::project::ProjectConfig,
+    target_name: String,
+    linker_impl: Box<dyn linker::Linker>,
+    output_dir: PathBuf,
+    target_root: PathBuf,
+    coordinator_flag: Option<String>,
+    dry_run: bool,
+    with_config: bool,
+    agents_filter: Option<Vec<String>>,
+) -> anyhow::Result<()> {
     // Every agent in `.armadai/agents.yaml` is included automatically (it
     // does not need to be relisted in `agents:`), the same gate `link`,
     // `list` and `run` all widened for this format: an otherwise-empty
@@ -73,7 +456,7 @@ pub async fn execute(
         anyhow::bail!("No agents declared in project config.");
     }
 
-    // 2. Resolve and load agents — file-backed and declared alike.
+    // Resolve and load agents — file-backed and declared alike.
     let fragments = armadai_core::agent_source::project_fragments(&root);
     let (agents, warnings) =
         armadai_core::agent_source::load_all_agents(&config, &root, &fragments);
@@ -91,7 +474,7 @@ pub async fn execute(
         anyhow::bail!("No agents could be resolved. Check your project config.");
     }
 
-    // 2b. Resolve deprecated model aliases — `link` does this before
+    // Resolve deprecated model aliases — `link` does this before
     // generating, so the content guard below must reproduce it too, or
     // every agent still using a since-renamed model would never match.
     for agent in &mut link_agents {
@@ -101,7 +484,7 @@ pub async fn execute(
         );
     }
 
-    // 3. Filter by --agents if provided
+    // Filter by --agents if provided
     if let Some(ref filter) = agents_filter {
         let filter_lower: Vec<String> = filter.iter().map(|s| s.to_lowercase()).collect();
         link_agents.retain(|a| filter_lower.contains(&a.name.to_lowercase()));
@@ -110,7 +493,7 @@ pub async fn execute(
         }
     }
 
-    // 3b. Extract coordinator if configured (CLI flag takes priority over config)
+    // Extract coordinator if configured (CLI flag takes priority over config)
     let coordinator_name =
         coordinator_flag.or_else(|| config.link.as_ref().and_then(|l| l.coordinator.clone()));
     let mut coordinator = coordinator_name.and_then(|name| {
@@ -120,31 +503,20 @@ pub async fn execute(
         Some(link_agents.remove(idx))
     });
 
-    // 4. Determine target
-    let target_name = target
-        .map(|t| t.to_string())
-        .or_else(|| config.link.as_ref().and_then(|l| l.target.clone()))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No link target specified. Use --target or set link.target in armadai.yaml.\n\
-                 Supported targets: claude, copilot, gemini, opencode"
-            )
-        })?;
-
-    // 4b. Model resolution — mirror what `link` computes for this target,
-    // so the regenerated content used by the guard below matches what
-    // `link` actually wrote. For `LlmEditor` targets (claude, gemini,
-    // codex) this is a pure function of the current config, exactly like
-    // `link`'s own step 4b, so it reproduces byte-for-byte. For
-    // `Orchestrator` targets (copilot, opencode), `link` may additionally
-    // honour an explicit `--model` flag or an interactive prompt at link
-    // time — `unlink` takes neither, so it can only reproduce the
-    // no-flag/non-interactive default (`latest:*` resolution per agent). A
-    // link that used an explicit model there produces content `unlink`
-    // cannot recompute; the guard then correctly keeps those files rather
-    // than guessing why they differ. On `opencode` specifically, this makes
-    // a `--model`-linked (or interactively-answered) file permanently
-    // un-reclaimable by `unlink` until the write manifest lands.
+    // Model resolution — mirror what `link` computes for this target, so
+    // the regenerated content used by the guard below matches what `link`
+    // actually wrote. For `LlmEditor` targets (claude, gemini, codex) this
+    // is a pure function of the current config, exactly like `link`'s own
+    // step, so it reproduces byte-for-byte. For `Orchestrator` targets
+    // (copilot, opencode), `link` may additionally honour an explicit
+    // `--model` flag or an interactive prompt at link time — `unlink` takes
+    // neither, so it can only reproduce the no-flag/non-interactive default
+    // (`latest:*` resolution per agent). A link that used an explicit model
+    // there produces content `unlink` cannot recompute; the guard then
+    // correctly keeps those files rather than guessing why they differ. On
+    // `opencode` specifically, this makes a `--model`-linked (or
+    // interactively-answered) file permanently un-reclaimable by this
+    // fallback — exactly why the manifest path above exists.
     let target_kind = model_resolution::classify_target(&target_name);
     match target_kind {
         TargetKind::LlmEditor { provider } => {
@@ -178,30 +550,11 @@ pub async fn execute(
         }
     }
 
-    // 5. Create linker
-    let linker = linker::create_linker(&target_name)?;
-
-    // 6. Determine output directory
-    let output_dir = output
-        .or_else(|| {
-            config
-                .link
-                .as_ref()
-                .and_then(|l| l.overrides.get(&target_name))
-                .and_then(|o| o.output.as_ref())
-                .map(PathBuf::from)
-        })
-        .unwrap_or_else(|| PathBuf::from(linker.default_output_dir()));
-    // The target's own root directory (`.claude/`, `.github/`, ...) —
-    // `remove_empty_ancestors` must never delete this, however empty it
-    // ends up (issue #338 case 1's second half).
-    let target_root = root.join(&output_dir);
-
-    // 7. Regenerate the expected file list — same content `link` would
-    // write today — so deletions can be gated on a content match instead
-    // of trusting paths alone.
+    // Regenerate the expected file list — same content `link` would write
+    // today — so deletions can be gated on a content match instead of
+    // trusting paths alone.
     let sources = &config.sources;
-    let files = linker.generate(&link_agents, coordinator.as_ref(), sources);
+    let files = linker_impl.generate(&link_agents, coordinator.as_ref(), sources);
 
     if files.is_empty() {
         let m = crate::cli::style::muted();
@@ -209,12 +562,12 @@ pub async fn execute(
         return Ok(());
     }
 
-    // 8. Resolve output paths relative to project root, keeping the
-    // generated content alongside each path for the guard below.
+    // Resolve output paths relative to project root, keeping the generated
+    // content alongside each path for the guard below.
     let mut candidates: Vec<Candidate> = files
         .into_iter()
         .map(|f| {
-            let default_dir = PathBuf::from(linker.default_output_dir());
+            let default_dir = PathBuf::from(linker_impl.default_output_dir());
             let relative = f
                 .path
                 .strip_prefix(&default_dir)
@@ -227,7 +580,7 @@ pub async fn execute(
         })
         .collect();
 
-    // 8b. Include skill files — but only the ones the skill's *source*
+    // Include skill files — but only the ones the skill's *source*
     // directory still names. `link` copies exactly those paths into
     // `<output_dir>/skills/<name>/`; anything else found there afterwards
     // (issue #338 case 3 — the worst measured outcome) was placed by the
@@ -251,7 +604,7 @@ pub async fn execute(
         }
     }
 
-    // 8c. Include prompt files, gated the same way: the expected content is
+    // Include prompt files, gated the same way: the expected content is
     // whatever the source prompt file currently holds.
     let (prompt_paths, _) = project::resolve_all_prompts(&config, &root);
     for prompt_path in &prompt_paths {
@@ -267,28 +620,13 @@ pub async fn execute(
         }
     }
 
-    // 9. Optionally include the project config file itself. This is the
-    // user's own config, not something the linker generates, so there is
-    // nothing to diff it against — `--with-config` is opt-in and is itself
-    // the confirmation.
-    if with_config {
-        // Detect which config file is active
-        let dotarmadai_config = root.join(".armadai").join("config.yaml");
-        let legacy_yaml = root.join("armadai.yaml");
-        let legacy_yml = root.join("armadai.yml");
-
-        if dotarmadai_config.exists() {
-            candidates.push(Candidate::AlwaysDelete {
-                path: dotarmadai_config,
-            });
-        } else if legacy_yaml.exists() {
-            candidates.push(Candidate::AlwaysDelete { path: legacy_yaml });
-        } else if legacy_yml.exists() {
-            candidates.push(Candidate::AlwaysDelete { path: legacy_yml });
-        }
+    // Optionally include the project config file itself — shared with the
+    // manifest path via `with_config_candidate`.
+    if let Some(config_path) = with_config_candidate(&root, with_config) {
+        candidates.push(Candidate::AlwaysDelete { path: config_path });
     }
 
-    // 10. Dry run
+    // Dry run
     if dry_run {
         let h = crate::cli::style::header();
         let a = crate::cli::style::accent();
@@ -345,7 +683,7 @@ pub async fn execute(
         return Ok(());
     }
 
-    // 11. Delete existing files whose content still matches what the linker
+    // Delete existing files whose content still matches what the linker
     // would generate today.
     let mut deleted = 0;
     let mut kept = 0;
@@ -384,7 +722,7 @@ pub async fn execute(
         }
     }
 
-    // 12. Clean up empty ancestor directories left behind — bounded so the
+    // Clean up empty ancestor directories left behind — bounded so the
     // cascade can never remove the target's own root directory (issue
     // #338 case 1's second half). Linker-generated paths are bounded by
     // `target_root` (e.g. `.claude/`); the project config file (if

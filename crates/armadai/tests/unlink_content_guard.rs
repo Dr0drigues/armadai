@@ -9,6 +9,15 @@
 //! `remove_file` on every path `linker.generate()` still names today, plus
 //! an unbounded `remove_empty_ancestors` sweep). After the content-match
 //! guard + source-scoped skill sweep + bounded cascade land, all three pass.
+//!
+//! Issue #338's second half (the link manifest, `linker::manifest`) landed
+//! after these were written. `link` now always writes a manifest, so every
+//! test below actually runs through the **manifest** path, not this file's
+//! own fallback — `link_manifest.rs` is the dedicated manifest-path suite.
+//! What stays true here regardless: the guard this file is named for is
+//! still live code (`cli::unlink::unlink_via_fallback`), reached whenever
+//! there is no usable manifest. The last test below is this file's own
+//! proof of that — the one case here that forces the fallback on purpose.
 
 #[cfg(test)]
 mod tests {
@@ -365,6 +374,64 @@ mod tests {
         assert!(
             prompt_fragment.exists(),
             "--with-config must not remove sibling .armadai/ files"
+        );
+    }
+
+    /// This file's own proof that the #342 guard it is named for is still
+    /// reachable: delete the manifest `link` just wrote before running
+    /// `unlink`, forcing the fallback this file originally guarded end to
+    /// end — the same hand-written-file-survives / generated-file-removed
+    /// pair as the first test above, but via `unlink_via_fallback` instead
+    /// of `unlink_from_manifest`.
+    ///
+    /// Mutation this catches: if the fallback branch were ever deleted or
+    /// short-circuited (e.g. "no manifest" silently treated as "nothing to
+    /// remove"), a project with no manifest — a fresh clone, or one linked
+    /// before #338's second half — would either refuse to clean up
+    /// anything or, worse, go back to deleting unconditionally.
+    #[test]
+    fn unlink_falls_back_to_the_342_guard_when_the_manifest_is_absent() {
+        let dir = project_with_coordinator();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let claude_md_dir = root.join(".claude");
+        std::fs::create_dir_all(&claude_md_dir).unwrap();
+        let hand_written = "# My own notes\n\nDo not touch this file, it is mine.\n";
+        std::fs::write(claude_md_dir.join("CLAUDE.md"), hand_written).unwrap();
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let member_file = root.join(".claude/agents/member.md");
+        assert!(member_file.is_file());
+
+        // Force the fallback: no manifest, exactly like a fresh clone or a
+        // deleted `.armadai/`.
+        std::fs::remove_file(root.join(".armadai/link-manifest.yaml"))
+            .expect("link must have written a manifest to delete");
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+
+        assert!(
+            unlink_stderr.contains("falling back"),
+            "unlink must announce the degraded mode: stderr={unlink_stderr}"
+        );
+        let claude_md_path = claude_md_dir.join("CLAUDE.md");
+        assert!(
+            claude_md_path.exists(),
+            "the fallback's own content-match guard must still keep the hand-written file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&claude_md_path).unwrap(),
+            hand_written
+        );
+        assert!(
+            !member_file.exists(),
+            "the fallback must still reclaim a genuinely generated, unmodified file"
         );
     }
 }
