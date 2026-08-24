@@ -782,6 +782,7 @@ impl EffectRunner for RingEffectRunner {
         agent: &str,
         input: &str,
         state: &ExecutionState,
+        _batch_len: usize,
     ) -> anyhow::Result<ExecutionEvent> {
         let agent_def = self
             .agents
@@ -1907,7 +1908,7 @@ mod tests {
             );
             let state = fold(&[run_started(&["a", "b"]), E::LapStarted { lap: 0 }]);
 
-            let event = runner.run_invoke("a", "task", &state).await.unwrap();
+            let event = runner.run_invoke("a", "task", &state, 1).await.unwrap();
 
             match event {
                 E::ContributionAdded {
@@ -1953,7 +1954,7 @@ mod tests {
             );
             let state = fold(&[run_started(&["a", "b"]), E::LapStarted { lap: 0 }]);
 
-            let event = runner.run_invoke("a", "task", &state).await.unwrap();
+            let event = runner.run_invoke("a", "task", &state, 1).await.unwrap();
 
             match event {
                 E::ContributionAdded { action, .. } => assert_eq!(action, "pass"),
@@ -1996,7 +1997,7 @@ mod tests {
                     cost: 0.0,
                 },
             ]);
-            let event = runner.run_invoke("a", "task", &state).await.unwrap();
+            let event = runner.run_invoke("a", "task", &state, 1).await.unwrap();
 
             match event {
                 E::VoteCast {
@@ -2026,7 +2027,7 @@ mod tests {
             );
             let state = fold(&[run_started(&["a", "b"]), E::LapStarted { lap: 0 }]);
 
-            let event = runner.run_invoke("a", "task", &state).await.unwrap();
+            let event = runner.run_invoke("a", "task", &state, 1).await.unwrap();
 
             match event {
                 E::ContributionAdded {
@@ -2084,7 +2085,7 @@ mod tests {
                 },
             ]);
 
-            let event = runner.run_invoke("a", "task", &state).await.unwrap();
+            let event = runner.run_invoke("a", "task", &state, 1).await.unwrap();
 
             match event {
                 E::VoteCast {
@@ -2109,7 +2110,7 @@ mod tests {
             );
             let state = ExecutionState::default();
             let err = runner
-                .run_invoke("missing", "task", &state)
+                .run_invoke("missing", "task", &state, 1)
                 .await
                 .unwrap_err();
             assert!(err.to_string().contains("missing"));
@@ -2126,7 +2127,7 @@ mod tests {
                 BTreeMap::new(),
             );
             let state = ExecutionState::default();
-            let err = runner.run_invoke("a", "task", &state).await.unwrap_err();
+            let err = runner.run_invoke("a", "task", &state, 1).await.unwrap_err();
             let msg = err.to_string();
             assert!(
                 msg.contains("provider") && msg.contains("'a'"),
@@ -2159,7 +2160,7 @@ mod tests {
                     reason: "Length".into(),
                 },
             ]);
-            runner.run_invoke("a", "task", &state).await.unwrap();
+            runner.run_invoke("a", "task", &state, 1).await.unwrap();
 
             let expected =
                 fallback_model_for_tier("test-only-uncached-provider", ModelTier::Fast).to_string();

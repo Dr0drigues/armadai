@@ -1101,6 +1101,38 @@ impl HierarchicalEffectRunner {
     /// as legacy `run_nested_team` computes it. The tokens the sub-run consumes
     /// flow back into the parent budget through the aggregated `AgentObserved`
     /// (folded by `es::state::apply` like any other observation).
+    ///
+    /// ## Parallel batches (issue #291)
+    /// `run_invoke` — and therefore this function — is called once per entry
+    /// of an `Action::InvokeParallel` batch, all sharing the exact same
+    /// `state` snapshot (see `es::engine::run_loop`): nothing mutates it
+    /// between sibling calls, so every sibling would otherwise compute the
+    /// *identical* "remaining" budget and could each independently spend up
+    /// to all of it — the total overrun growing with the batch size. `batch_len`
+    /// (the number of siblings dispatched together, `1` for a solitary
+    /// `Action::Invoke`) is what lets this function partition the remaining
+    /// budget instead: each child gets `remaining / batch_len`, floor-divided.
+    /// An unequal, demand-driven split (a shared pot children draw from as
+    /// they run) would use the budget more efficiently, but requires shared
+    /// *mutable* state across concurrent effects — which this event-sourced
+    /// engine cannot allow without breaking `--replay` determinism (the
+    /// gaveldrop `direct-replay` case pins exactly that guarantee). Equal,
+    /// floor-divided partition is the deterministic alternative: it depends
+    /// only on inputs every sibling already has (the shared snapshot +
+    /// `batch_len`), so replay reconstructs the identical split with no
+    /// coordination at all.
+    ///
+    /// The `None` (no global `token_budget`) arm is unaffected: it always
+    /// hands back the sub-pattern's own default, regardless of `batch_len`.
+    ///
+    /// Consequence, stated plainly: a child in a parallel batch may now halt
+    /// earlier than it would have running alone — even if every sibling in
+    /// its batch ends up consuming nothing at all. That is the price of a
+    /// ceiling that holds without shared mutable state. A smarter split —
+    /// the coordinator receiving the remaining budget in its own context and
+    /// allocating it across delegations itself, rather than an equal a
+    /// priori division — needs a structured delegation channel the agent can
+    /// read/act on, which is deferred to #251 (native tool calling).
     async fn run_nested(
         &self,
         team_lead: &str,
@@ -1108,6 +1140,7 @@ impl HierarchicalEffectRunner {
         team: &TeamConfig,
         pattern: NestedPattern,
         state: &ExecutionState,
+        batch_len: usize,
     ) -> anyhow::Result<ExecutionEvent> {
         // Scope agents/providers to the team's members (the lead is the
         // arbiter, not a sub-run participant — matching legacy).
@@ -1127,10 +1160,17 @@ impl HierarchicalEffectRunner {
             member_providers.insert(name.clone(), Arc::clone(provider));
         }
 
-        // Remaining shared token budget (never below zero), or the
-        // sub-pattern default when the parent run sets no global budget.
+        // Remaining shared token budget, partitioned equally across this
+        // parallel batch (never below zero; see the doc comment above for
+        // why an equal, floor-divided split — not a shared mutable pot — is
+        // what keeps this deterministic), or the sub-pattern default when
+        // the parent run sets no global budget (unaffected by `batch_len`).
         let remaining_budget = match self.config.token_budget {
-            Some(total) => total.saturating_sub(state.budget_tokens_in + state.budget_tokens_out),
+            Some(total) => {
+                let remaining =
+                    total.saturating_sub(state.budget_tokens_in + state.budget_tokens_out);
+                remaining / (batch_len.max(1) as u64)
+            }
             None => match pattern {
                 NestedPattern::Blackboard => BlackboardConfig::default().token_budget,
                 NestedPattern::Ring => RingConfig::default().token_budget,
@@ -1266,15 +1306,18 @@ impl EffectRunner for HierarchicalEffectRunner {
         agent: &str,
         input: &str,
         state: &ExecutionState,
+        batch_len: usize,
     ) -> anyhow::Result<ExecutionEvent> {
         // C9 short-circuit: if `agent` leads a team declaring a nested
         // sub-pattern, drive a full event-sourced blackboard/ring sub-run for
         // that team instead of a flat LLM call, and surface its outcome +
-        // aggregated metrics as the lead's `AgentObserved` (see `run_nested`).
-        // Detection is the exact same `nested_team_for` test the decider used
-        // to emit the matching `NestedStarted`.
+        // aggregated metrics as the lead's `AgentObserved` (see `run_nested`,
+        // whose doc comment covers `batch_len`'s role in partitioning the
+        // budget across a parallel batch — issue #291).
         if let Some((team, pattern)) = nested_team_for(&self.config, agent) {
-            return self.run_nested(agent, input, team, pattern, state).await;
+            return self
+                .run_nested(agent, input, team, pattern, state, batch_len)
+                .await;
         }
 
         let agent_def = self
@@ -3017,7 +3060,7 @@ mod tests {
                 HierarchicalEffectRunner::new(agents, providers, OrchestrationConfig::default());
 
             let state = fold(&[run_started(&["a"], "go")]);
-            let ev = runner.run_invoke("a", "go", &state).await.unwrap();
+            let ev = runner.run_invoke("a", "go", &state, 1).await.unwrap();
 
             match ev {
                 ExecutionEvent::AgentObserved {
@@ -3048,7 +3091,7 @@ mod tests {
             );
             let state = ExecutionState::default();
             let err = runner
-                .run_invoke("missing", "go", &state)
+                .run_invoke("missing", "go", &state, 1)
                 .await
                 .unwrap_err();
             assert!(err.to_string().contains("missing"));
@@ -3065,7 +3108,7 @@ mod tests {
                 OrchestrationConfig::default(),
             );
             let state = ExecutionState::default();
-            let err = runner.run_invoke("a", "go", &state).await.unwrap_err();
+            let err = runner.run_invoke("a", "go", &state, 1).await.unwrap_err();
             let msg = err.to_string();
             assert!(
                 msg.contains("provider") && msg.contains("'a'"),
@@ -3096,7 +3139,7 @@ mod tests {
                     input: "go".into(),
                 },
             ]);
-            runner.run_invoke("a", "go", &state).await.unwrap();
+            runner.run_invoke("a", "go", &state, 1).await.unwrap();
 
             let sent = capturing.requests();
             assert_eq!(sent.len(), 1);
@@ -3128,7 +3171,7 @@ mod tests {
                 HierarchicalEffectRunner::new(agents, providers, OrchestrationConfig::default());
 
             let state = fold(&[run_started(&["a"], "go")]);
-            runner.run_invoke("a", "go", &state).await.unwrap();
+            runner.run_invoke("a", "go", &state, 1).await.unwrap();
 
             let sent = capturing.requests();
             assert_eq!(sent.len(), 1);
@@ -3179,7 +3222,7 @@ mod tests {
 
             let state = fold(&[run_started(&["dev-lead"], "build X")]);
             runner
-                .run_invoke("dev-lead", "build X", &state)
+                .run_invoke("dev-lead", "build X", &state, 1)
                 .await
                 .unwrap();
 
@@ -3210,7 +3253,7 @@ mod tests {
                 HierarchicalEffectRunner::new(agents, providers, OrchestrationConfig::default());
 
             let state = fold(&[run_started(&["a"], "go")]);
-            runner.run_invoke("a", "go", &state).await.unwrap();
+            runner.run_invoke("a", "go", &state, 1).await.unwrap();
 
             let sent = capturing.requests();
             assert_eq!(sent[0].model, "latest:pro");
@@ -3257,7 +3300,7 @@ mod tests {
                     reason: "Length".into(),
                 },
             ]);
-            let event = runner.run_invoke("a", "go", &state).await.unwrap();
+            let event = runner.run_invoke("a", "go", &state, 1).await.unwrap();
 
             // Deterministic, hardcoded fallback for an uncached provider —
             // see `fallback_model_for_tier`'s wildcard arm.
@@ -4386,6 +4429,387 @@ mod tests {
             core_b.call_count(),
             core_b_calls_before,
             "le replay ne doit pas ré-exécuter le sous-run (core-b)"
+        );
+    }
+
+    // ── Issue #291: InvokeParallel must partition the remaining budget ──
+    //
+    // `Action::InvokeParallel` (`es::engine`) hands every entry in its batch
+    // the SAME shared, immutable state snapshot (taken once, before any
+    // effect runs). `run_nested` derives each nested child's token
+    // allotment from that snapshot's `budget_tokens_in/out` — before the
+    // fix, both children see the *entire* remaining budget and can each
+    // spend up to all of it, so the combined nested consumption can be up
+    // to ~batch_len times what was actually left. The fix partitions
+    // equally: `remaining / batch_len`, floor. `batch_len` is `1` for the
+    // ordinary sequential `Action::Invoke`, so that path is unaffected.
+
+    /// A provider that returns a fixed response but also records every
+    /// `CompletionRequest` it receives — used to read back the exact
+    /// `Budget remaining: N tokens` line `BlackboardEffectRunner::build_prompt`
+    /// embeds in a nested member's round-0 prompt, which is the most direct
+    /// observable proxy for the `token_budget` value `run_nested` actually
+    /// handed to that child's `BlackboardConfig` (reading it back through
+    /// consumed tokens would require running the sub-pattern's own default
+    /// budget to exhaustion — hundreds of thousands of rounds).
+    struct CapturingProvider {
+        requests: std::sync::Mutex<Vec<CompletionRequest>>,
+        response: String,
+    }
+
+    impl CapturingProvider {
+        fn new(response: &str) -> Self {
+            Self {
+                requests: std::sync::Mutex::new(Vec::new()),
+                response: response.to_string(),
+            }
+        }
+
+        fn requests(&self) -> Vec<CompletionRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for CapturingProvider {
+        async fn complete(&self, request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            let model = request.model.clone();
+            self.requests.lock().unwrap().push(request);
+            Ok(CompletionResponse {
+                content: self.response.clone(),
+                model,
+                tokens_in: 1,
+                tokens_out: 1,
+                cost: 0.0,
+            })
+        }
+        async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("streaming not exercised by these tests")
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "capturing".to_string(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    /// Config: coordinator `dev-lead` delegating, in a SINGLE response (two
+    /// `@lead:` directives → one `Action::InvokeParallel`, see
+    /// `dispatch_actions`), to two distinct nested-team leads, each running
+    /// the Blackboard sub-pattern over a single member.
+    fn two_parallel_nested_teams_config(
+        token_budget: Option<u64>,
+        max_rounds: Option<u32>,
+    ) -> OrchestrationConfig {
+        OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some("dev-lead".to_string()),
+            teams: vec![
+                TeamConfig {
+                    lead: Some("core-lead".to_string()),
+                    agents: vec!["core-a".to_string()],
+                    pattern: Some(NestedPattern::Blackboard),
+                    max_rounds,
+                    ..Default::default()
+                },
+                TeamConfig {
+                    lead: Some("other-lead".to_string()),
+                    agents: vec!["other-a".to_string()],
+                    pattern: Some(NestedPattern::Blackboard),
+                    max_rounds,
+                    ..Default::default()
+                },
+            ],
+            token_budget,
+            ..Default::default()
+        }
+    }
+
+    // Scenario: dev-lead delegates to `core-lead` AND `other-lead` in the
+    // same message — one `InvokeParallel` batch of 2. `config.token_budget`
+    // is set; dev-lead's own opening turn (1 in / 1 out, `ScriptedProvider`'s
+    // fixed cost) consumes 2 of it before the batch is dispatched, leaving
+    // exactly 100. Each nested sub-run has 1 member, so every round of its
+    // own budget-bound Blackboard loop costs exactly 2 tokens (1 in + 1
+    // out) — chosen so both the "whole remaining budget" (bug) and the
+    // "half, floor-divided" (fix) amounts are themselves exact multiples of
+    // that round cost, leaving no rounding-granularity ambiguity in the
+    // expected counts.
+    //
+    // Mutation this catches: deleting the `/ batch_len` division (reverting
+    // to `total.saturating_sub(consumed)` alone) makes both children see
+    // the full 100 instead of 50 each — `(50, 50)` instead of `(25, 25)`,
+    // and `200 > 100` instead of `100 <= 100`. Confirmed failing against
+    // master (pre-fix) before this fix was applied.
+    #[tokio::test]
+    async fn es_parallel_nested_batch_partitions_remaining_budget_equally() {
+        let mut agents = BTreeMap::new();
+        for name in ["dev-lead", "core-lead", "core-a", "other-lead", "other-a"] {
+            agents.insert(name.to_string(), es_test_agent(name, "concrete-model"));
+        }
+
+        // Plain (non-`ACTION:CONFIRMATION`) content parses to `Finding`
+        // (`parse_board_action`'s fallback), which never counts toward the
+        // confirmation ratio `check_convergence` compares against
+        // `consensus_threshold` — with `CONFIRMATION` content instead, a
+        // single-member team "converges" after round 0 regardless of
+        // budget, which would make this scenario exercise convergence
+        // rather than the budget guard it's meant to test.
+        let core_a = Arc::new(ScriptedProvider::new(&["core-a note"]));
+        let other_a = Arc::new(ScriptedProvider::new(&["other-a note"]));
+        // Arbiters must never take the flat-LLM-call path (sentinel proves
+        // the nested short-circuit fired for both).
+        let core_lead = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+        let other_lead = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert("dev-lead".to_string(), {
+            Arc::new(ScriptedProvider::new(&[
+                "@core-lead: gère A\n@other-lead: gère B",
+                "Synthèse : livré.",
+            ])) as Arc<dyn Provider>
+        });
+        providers.insert(
+            "core-lead".to_string(),
+            core_lead.clone() as Arc<dyn Provider>,
+        );
+        providers.insert(
+            "other-lead".to_string(),
+            other_lead.clone() as Arc<dyn Provider>,
+        );
+        providers.insert("core-a".to_string(), core_a.clone() as Arc<dyn Provider>);
+        providers.insert("other-a".to_string(), other_a.clone() as Arc<dyn Provider>);
+
+        let config = two_parallel_nested_teams_config(Some(102), Some(1_000));
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-parallel-budget",
+            "dev-lead",
+            "build X and Y",
+            config,
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+        assert_eq!(
+            core_lead.call_count(),
+            0,
+            "core-lead must not make a flat LLM call"
+        );
+        assert_eq!(
+            other_lead.call_count(),
+            0,
+            "other-lead must not make a flat LLM call"
+        );
+
+        let (_, core_tin, core_tout, _) =
+            observed_for(&log, "run-parallel-budget", "core-lead").expect("core-lead observation");
+        let (_, other_tin, other_tout, _) = observed_for(&log, "run-parallel-budget", "other-lead")
+            .expect("other-lead observation");
+
+        // Each child individually: capped at exactly half of what was left
+        // (50), not the whole of it (100) — tight enough to also catch a
+        // division by the wrong denominator (e.g. `max_concurrency` instead
+        // of the actual batch length, which here happen to differ: 4 vs 2).
+        assert_eq!(
+            (core_tin, core_tout),
+            (25, 25),
+            "core-lead's nested sub-run must stop at half the remaining budget"
+        );
+        assert_eq!(
+            (other_tin, other_tout),
+            (25, 25),
+            "other-lead's nested sub-run must stop at half the remaining budget"
+        );
+
+        // The guarantee itself, in the issue's own terms: the two children
+        // dispatched in the same InvokeParallel batch must not collectively
+        // spend more than what was left of the shared budget at fork time.
+        let remaining_at_fork: u64 = 100; // 102 total − dev-lead's opening 1-in/1-out turn.
+        let combined = u64::from(core_tin)
+            + u64::from(core_tout)
+            + u64::from(other_tin)
+            + u64::from(other_tout);
+        assert!(
+            combined <= remaining_at_fork,
+            "combined nested consumption ({combined}) must not exceed what was \
+             remaining at fork time ({remaining_at_fork})"
+        );
+    }
+
+    // Scenario: same two-parallel-leads topology, but `config.token_budget`
+    // is `None`. `run_nested`'s `None` arm must keep handing each child the
+    // sub-pattern's own default budget verbatim, regardless of `batch_len`
+    // — the division only applies to the `Some(total)` arm. `max_rounds: 1`
+    // keeps each sub-run to a single round (so the test runs fast and
+    // doesn't need to spend the (huge) default budget to observe it); the
+    // `Budget remaining: N tokens` line `build_prompt` puts in each nested
+    // member's round-0 prompt is read back to assert on the exact budget
+    // value each child actually received.
+    //
+    // Mutation this catches: applying the `/ batch_len` division to the
+    // `None` arm too (e.g. dividing the sub-pattern default by 2) changes
+    // the observed "Budget remaining" line from the full default to half
+    // of it, for both children.
+    #[tokio::test]
+    async fn es_parallel_nested_batch_with_no_token_budget_keeps_subpattern_default() {
+        let mut agents = BTreeMap::new();
+        for name in ["dev-lead", "core-lead", "core-a", "other-lead", "other-a"] {
+            agents.insert(name.to_string(), es_test_agent(name, "concrete-model"));
+        }
+
+        let core_a = Arc::new(CapturingProvider::new(
+            "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:core-a confirme",
+        ));
+        let other_a = Arc::new(CapturingProvider::new(
+            "ACTION:CONFIRMATION\nTARGET:0\nCONFIDENCE:0.9\nCONTENT:other-a confirme",
+        ));
+        let core_lead = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+        let other_lead = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert("dev-lead".to_string(), {
+            Arc::new(ScriptedProvider::new(&[
+                "@core-lead: gère A\n@other-lead: gère B",
+                "Synthèse : livré.",
+            ])) as Arc<dyn Provider>
+        });
+        providers.insert("core-lead".to_string(), core_lead as Arc<dyn Provider>);
+        providers.insert("other-lead".to_string(), other_lead as Arc<dyn Provider>);
+        providers.insert("core-a".to_string(), core_a.clone() as Arc<dyn Provider>);
+        providers.insert("other-a".to_string(), other_a.clone() as Arc<dyn Provider>);
+
+        let config = two_parallel_nested_teams_config(None, Some(1));
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-parallel-none-budget",
+            "dev-lead",
+            "build X and Y",
+            config,
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+
+        let expected_default = BlackboardConfig::default().token_budget;
+        for (name, provider) in [("core-a", &core_a), ("other-a", &other_a)] {
+            let requests = provider.requests();
+            assert_eq!(
+                requests.len(),
+                1,
+                "{name} must be invoked exactly once (max_rounds: 1)"
+            );
+            let prompt = &requests[0].messages[0].content;
+            assert!(
+                prompt.contains(&format!("Budget remaining: {expected_default} tokens")),
+                "{name}'s nested sub-run must receive the full sub-pattern default \
+                 budget ({expected_default}) when the parent sets no token_budget, \
+                 batch_len notwithstanding; got prompt: {prompt}"
+            );
+        }
+    }
+
+    // Scenario: a SINGLE nested delegation — the ordinary sequential
+    // `Action::Invoke` path (`dispatch_actions`'s `invoke_steps.len() <= 1`
+    // branch), never `InvokeParallel` — with `config.token_budget` set.
+    // `batch_len == 1` must make `remaining / batch_len` a no-op: the lone
+    // child still gets the WHOLE remaining budget, exactly as before this
+    // fix. No existing test pinned this combination (the pre-existing
+    // `es_nested_blackboard_runs_and_folds_metrics` leaves `token_budget`
+    // unset, so it only exercises the `None` arm on the sequential path).
+    //
+    // Mutation this catches: hard-coding some other divisor for the
+    // sequential path (e.g. always dividing by `max_concurrency`, or a
+    // stray `+ 1`/`- 1` on `batch_len`) changes the observed count away
+    // from the full, unhalved remaining budget.
+    #[tokio::test]
+    async fn es_single_nested_delegation_gets_the_full_remaining_budget() {
+        let mut agents = BTreeMap::new();
+        for name in ["dev-lead", "core-lead", "core-a"] {
+            agents.insert(name.to_string(), es_test_agent(name, "concrete-model"));
+        }
+        // Plain content (see the sibling parallel-batch test above for why:
+        // `ACTION:CONFIRMATION` would converge a 1-member team after round
+        // 0 regardless of budget).
+        let core_a = Arc::new(ScriptedProvider::new(&["core-a note"]));
+        let core_lead = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert("dev-lead".to_string(), {
+            Arc::new(ScriptedProvider::new(&[
+                "@core-lead: gère la feature",
+                "Synthèse : livré.",
+            ])) as Arc<dyn Provider>
+        });
+        providers.insert(
+            "core-lead".to_string(),
+            core_lead.clone() as Arc<dyn Provider>,
+        );
+        providers.insert("core-a".to_string(), core_a.clone() as Arc<dyn Provider>);
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some("dev-lead".to_string()),
+            teams: vec![TeamConfig {
+                lead: Some("core-lead".to_string()),
+                agents: vec!["core-a".to_string()],
+                pattern: Some(NestedPattern::Blackboard),
+                max_rounds: Some(1_000),
+                ..Default::default()
+            }],
+            // dev-lead's opening turn costs 2 tokens (1 in + 1 out),
+            // leaving exactly 20 for core-lead's sole, sequential nested
+            // sub-run.
+            token_budget: Some(22),
+            ..Default::default()
+        };
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-single-nested-budget",
+            "dev-lead",
+            "build X",
+            config,
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+        assert_eq!(
+            core_lead.call_count(),
+            0,
+            "core-lead must not make a flat LLM call"
+        );
+
+        let (_, tin, tout, _) = observed_for(&log, "run-single-nested-budget", "core-lead")
+            .expect("core-lead observation");
+        // 1 member x 2 tokens/round; the budget guard halts once accumulated
+        // >= 20, i.e. after the 10th round — the FULL remaining budget,
+        // unhalved.
+        assert_eq!(
+            (tin, tout),
+            (10, 10),
+            "a solitary nested delegation (batch_len == 1) must still get the \
+             entire remaining budget, not a fraction of it"
         );
     }
 }
