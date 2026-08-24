@@ -179,6 +179,7 @@ impl EffectRunner for DirectEffectRunner {
         agent: &str,
         input: &str,
         state: &ExecutionState,
+        _batch_len: usize,
     ) -> anyhow::Result<ExecutionEvent> {
         let agent_def = self
             .agents
@@ -746,7 +747,7 @@ mod tests {
         let runner = DirectEffectRunner::new(BTreeMap::new(), BTreeMap::new());
         let state = ExecutionState::default();
         let err = runner
-            .run_invoke("missing", "go", &state)
+            .run_invoke("missing", "go", &state, 1)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("missing"));
@@ -758,7 +759,10 @@ mod tests {
         agents.insert("solo".to_string(), test_agent("solo", "concrete-model"));
         let runner = DirectEffectRunner::new(agents, BTreeMap::new());
         let state = ExecutionState::default();
-        let err = runner.run_invoke("solo", "go", &state).await.unwrap_err();
+        let err = runner
+            .run_invoke("solo", "go", &state, 1)
+            .await
+            .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("provider") && msg.contains("'solo'"),

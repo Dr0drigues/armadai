@@ -599,6 +599,7 @@ impl EffectRunner for BlackboardEffectRunner {
         agent: &str,
         input: &str,
         state: &ExecutionState,
+        _batch_len: usize,
     ) -> anyhow::Result<ExecutionEvent> {
         let agent_def = self
             .agents
@@ -1580,7 +1581,7 @@ mod tests {
                 board_run_started(&["a"]),
                 ExecutionEvent::RoundStarted { round: 0 },
             ]);
-            let ev = runner.run_invoke("a", "task", &state).await.unwrap();
+            let ev = runner.run_invoke("a", "task", &state, 1).await.unwrap();
 
             match ev {
                 ExecutionEvent::BoardEntryAdded {
@@ -1652,7 +1653,7 @@ mod tests {
                 },
             ];
             let state = fold(&events);
-            runner.run_invoke("b", "task", &state).await.unwrap();
+            runner.run_invoke("b", "task", &state, 1).await.unwrap();
 
             let sent = capturing.requests();
             assert_eq!(sent.len(), 1);
@@ -1707,7 +1708,7 @@ mod tests {
             }
             events.push(ExecutionEvent::RoundStarted { round: 1 });
             let state = fold(&events);
-            runner.run_invoke("b", "task", &state).await.unwrap();
+            runner.run_invoke("b", "task", &state, 1).await.unwrap();
 
             let sent = capturing.requests();
             assert_eq!(sent.len(), 1);
@@ -1751,7 +1752,7 @@ mod tests {
                 ExecutionEvent::RoundStarted { round: 2 },
             ]);
             let ev = runner
-                .run_invoke("a", "task", &state)
+                .run_invoke("a", "task", &state, 1)
                 .await
                 .expect("a provider error must not propagate as Err");
 
@@ -1818,7 +1819,7 @@ mod tests {
                     reason: "Length".into(),
                 },
             ]);
-            runner.run_invoke("a", "task", &state).await.unwrap();
+            runner.run_invoke("a", "task", &state, 1).await.unwrap();
 
             let expected =
                 fallback_model_for_tier("test-only-uncached-provider", ModelTier::Fast).to_string();
@@ -1840,7 +1841,7 @@ mod tests {
             );
             let state = ExecutionState::default();
             let err = runner
-                .run_invoke("missing", "task", &state)
+                .run_invoke("missing", "task", &state, 1)
                 .await
                 .unwrap_err();
             assert!(err.to_string().contains("missing"));
@@ -1853,7 +1854,7 @@ mod tests {
             let runner =
                 BlackboardEffectRunner::new(agents, BTreeMap::new(), BlackboardConfig::default());
             let state = ExecutionState::default();
-            let err = runner.run_invoke("a", "task", &state).await.unwrap_err();
+            let err = runner.run_invoke("a", "task", &state, 1).await.unwrap_err();
             let msg = err.to_string();
             assert!(
                 msg.contains("provider") && msg.contains("'a'"),

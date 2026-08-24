@@ -81,11 +81,24 @@ pub trait Decider {
 pub trait EffectRunner {
     /// Run the effect for invoking `agent` with `input` against the current
     /// `state`, returning the event to record (typically `AgentObserved`).
+    ///
+    /// `batch_len` is the number of sibling invocations dispatched together
+    /// with this one: `1` for a solitary `Action::Invoke`, or the batch size
+    /// for every entry of an `Action::InvokeParallel`. It exists so an
+    /// implementation that derives a per-invocation resource ceiling from
+    /// `state` (e.g. `HierarchicalEffectRunner::run_nested`'s remaining
+    /// token budget) can partition that ceiling across concurrent siblings
+    /// without any shared mutable state — every entry in a parallel batch
+    /// sees the exact same `state` snapshot (see `Action::InvokeParallel`
+    /// below), so `batch_len` is the only signal available to tell them
+    /// apart from a solo invocation. Most implementations have no use for
+    /// it and simply ignore it.
     async fn run_invoke(
         &self,
         agent: &str,
         input: &str,
         state: &ExecutionState,
+        batch_len: usize,
     ) -> anyhow::Result<ExecutionEvent>;
 }
 
@@ -204,7 +217,7 @@ where
                             input: input.clone(),
                         },
                     )?;
-                    let observed = effects.run_invoke(&agent, &input, state).await?;
+                    let observed = effects.run_invoke(&agent, &input, state, 1).await?;
                     append_and_apply(log, run_id, state, observed)?;
                 }
                 Action::Emit(event) => {
@@ -237,12 +250,18 @@ where
                     }
 
                     // 2. Run effects concurrently over a shared, immutable
-                    //    snapshot of the now-updated state. `buffer_unordered`
+                    //    snapshot of the now-updated state — every entry sees
+                    //    the exact same `state`, regardless of concurrency or
+                    //    completion order (`batch_len` below is how an
+                    //    `EffectRunner` can still tell a parallel sibling
+                    //    apart from a solo `Action::Invoke` — see its doc
+                    //    comment; issue #291). `buffer_unordered`
                     //    polls the borrowing futures in place (no spawn, no
                     //    'static bound). Nothing is appended during this phase,
                     //    so only shared borrows of `state`/`effects` are live.
                     let snapshot: &ExecutionState = state;
                     let cap = max_concurrency.max(1);
+                    let batch_len = batch.len();
                     // NOTE: iterate over owned clones (`InvokeSpec` is two
                     // `String`s — cheap) rather than `batch.iter()`. Borrowing
                     // the batch here makes rustc infer the closure's argument
@@ -260,7 +279,9 @@ where
                             .map(|(i, spec)| async move {
                                 (
                                     i,
-                                    effects.run_invoke(&spec.agent, &spec.input, snapshot).await,
+                                    effects
+                                        .run_invoke(&spec.agent, &spec.input, snapshot, batch_len)
+                                        .await,
                                 )
                             })
                             .buffer_unordered(cap)
@@ -418,6 +439,7 @@ mod tests {
             agent: &str,
             _input: &str,
             _s: &ExecutionState,
+            _batch_len: usize,
         ) -> anyhow::Result<E> {
             let idx = self.order.iter().position(|a| a == agent).unwrap_or(0);
             let delay_ms = 30u64.saturating_sub(idx as u64 * 10);
@@ -508,6 +530,7 @@ mod tests {
             agent: &str,
             _input: &str,
             _s: &ExecutionState,
+            _batch_len: usize,
         ) -> anyhow::Result<E> {
             let now = self.live.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             self.max_seen
@@ -568,6 +591,7 @@ mod tests {
             agent: &str,
             _input: &str,
             _s: &ExecutionState,
+            _batch_len: usize,
         ) -> anyhow::Result<E> {
             if agent == "b" {
                 anyhow::bail!("boom");
@@ -671,6 +695,7 @@ mod tests {
             agent: &str,
             _input: &str,
             _s: &ExecutionState,
+            _batch_len: usize,
         ) -> anyhow::Result<E> {
             Ok(E::AgentObserved {
                 agent: agent.into(),
@@ -753,6 +778,7 @@ mod tests {
             agent: &str,
             _input: &str,
             _s: &ExecutionState,
+            _batch_len: usize,
         ) -> anyhow::Result<E> {
             self.invoked.lock().unwrap().push(agent.to_string());
             Ok(E::AgentObserved {
