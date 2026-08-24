@@ -145,3 +145,16 @@ Le choix n'affecte que la valeur du champ `digest`, pas la structure. En cas de 
 **Une ambiguïté volontairement non tranchée** : le comportement de `link` quand un manifeste existe mais qu'un fichier qu'il dit avoir créé a disparu du disque. Deux lectures défendables — le réécrire (l'état cible le demande) ou le signaler (quelqu'un l'a supprimé exprès). Sans la réconciliation, `link` régénère tout de toute façon, donc la question ne se pose pas encore ; elle se posera à ce moment-là et mérite d'être tranchée là, avec le reste.
 
 **Ce que cette spec ne résout pas et qu'on pourrait croire résolu** : elle ne rend pas `link` idempotent. Deux `link` successifs produisent le même résultat aujourd'hui parce que tout est régénéré, pas parce que le manifeste le garantit.
+
+## 11. Amendement sécurité (post-implémentation)
+
+Une revue de code sur l'implémentation initiale a mesuré que `entry.path` était consommé par `unlink` sans validation : une entrée forgée (`../outside/victim.txt`) ou absolue était supprimée si son digest correspondait, et la limite de nettoyage des répertoires vides était elle-même dérivée du même contenu non validé. Un cas sans malice aucune reproduisait le défaut : `link --output ../sibling/out` enregistrait un chemin qui remonte hors du projet — légitime — et `unlink` supprimait `sibling/` **au-dessus** de la racine du projet lors du nettoyage.
+
+Deux ajouts au format, tous les deux dans `TargetManifest` (pas de nouveau champ sur `ManifestEntry` sauf pour l'exception ci-dessous) :
+
+- **`root`** — le répertoire où `link` avait le droit d'écrire pour cette cible (`.claude` par défaut, ou un `--output` explicite, qui peut légitimement pointer hors du projet ou être absolu). `unlink` calcule ce chemin (normalisé lexicalement, sans toucher au disque) et refuse — en le signalant, jamais en silence — toute entrée ou tout répertoire enregistré qui ne s'y résout pas. C'est la frontière de confiance réelle : elle rend `../sibling/out` valide tout en rejetant `../../etc/anything`.
+- **`created_dirs`** — les répertoires que `link` a réellement créés via `create_dir_all`, jamais la racine de la cible elle-même. `unlink` ne devine plus une limite de nettoyage à partir des chemins supprimés : il rejoue l'inverse exact de cette création, du plus profond au moins profond, chacun revalidé contre `root`.
+
+Exception documentée à « `path` n'est jamais absolu » (§3) : quand `root` lui-même est absolu (un `--output` absolu), `path` l'est aussi — cohérent avec `root`, et sans risque puisque la validation de frontière ci-dessus s'applique dans tous les cas.
+
+Conséquence sur §10 : le point d'écriture unique cité (`link.rs:310`) reste vrai pour le contenu des fichiers, mais `create_dir_all` était un second effet sans inverse enregistré — corrigé par `created_dirs`, qui naît au même point que la création elle-même, pas après coup.
