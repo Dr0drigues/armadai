@@ -188,20 +188,32 @@ pub struct ErrorResponse {
 }
 
 fn load_agents() -> Vec<Agent> {
+    use armadai_core::agent_source;
     use armadai_core::config::is_force_global;
     use armadai_core::project;
 
-    // If in a project context (and not forced global), resolve from project config
+    // If in a project context (and not forced global), resolve from project
+    // config — file-backed and declared agents alike.
+    // `project_declares_agents` (rather than a bare `!config.agents.is_empty()`
+    // check) so a project that relies purely on `.armadai/agents.yaml` — no
+    // `agents:` list at all — still takes this branch instead of falling
+    // through to the global library below, and `load_all_agents` (rather
+    // than `project::resolve_all_agents`, which only ever resolves file
+    // paths and silently drops every declared agent) so a declared agent is
+    // actually returned instead of leaving a same-named global agent to be
+    // served in its place.
     if !is_force_global()
         && let Some((root, config)) = project::find_project_config()
-        && !config.agents.is_empty()
+        && agent_source::project_declares_agents(&root, &config)
     {
-        let (paths, _) = project::resolve_all_agents(&config, &root);
-        let mut agents = Vec::new();
-        for path in &paths {
-            if let Ok(agent) = armadai_core::parser::parse_agent_file(path) {
-                agents.push(agent);
-            }
+        let fragments = agent_source::project_fragments(&root);
+        let (agents, warnings) = agent_source::load_all_agents(&config, &root, &fragments);
+        // Read-only endpoint: never refuse over a load warning. The JSON
+        // shape stays a bare agent list (unchanged API contract), so a
+        // dropped/shadowed declared agent is surfaced via the server log
+        // instead of vanishing unnoticed.
+        for w in &warnings {
+            tracing::warn!("agent load warning: {}", w.message());
         }
         return agents;
     }
@@ -1186,6 +1198,156 @@ mod tests {
         assert!(
             !traces.iter().any(|t| t["id"] == "c-1"),
             "nested child must not appear in the list"
+        );
+    }
+}
+
+#[cfg(test)]
+mod load_agents_declarative_tests {
+    use super::*;
+    use armadai_core::config::ENV_MUTEX;
+
+    /// Points `ARMADAI_CONFIG_DIR` at a fresh, empty temp dir and the
+    /// process's cwd at `project_root` for its lifetime, restoring both on
+    /// drop (even on panic via a plain `Drop` impl, not a try/finally). The
+    /// handler under test resolves its project via the cwd-based
+    /// `project::find_project_config()` and its global fallback via the
+    /// env-var-based `user_agents_dir()` -- both process-global state, so
+    /// this is serialised on `ENV_MUTEX` (shared with the rest of the
+    /// workspace's env-mutating tests) to avoid racing a concurrently
+    /// running test that reads either one unguarded.
+    struct ProjectDirGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        orig_cwd: std::path::PathBuf,
+        orig_config_dir: Option<String>,
+        config_tmp: tempfile::TempDir,
+    }
+
+    impl ProjectDirGuard {
+        fn enter(project_root: &std::path::Path) -> Self {
+            let lock = ENV_MUTEX.lock().unwrap();
+            let orig_cwd = std::env::current_dir().unwrap();
+            let orig_config_dir = std::env::var("ARMADAI_CONFIG_DIR").ok();
+            let config_tmp = tempfile::tempdir().unwrap();
+            // SAFETY: serialised via ENV_MUTEX above.
+            unsafe {
+                std::env::set_var("ARMADAI_CONFIG_DIR", config_tmp.path());
+            }
+            std::env::set_current_dir(project_root).unwrap();
+            Self {
+                _lock: lock,
+                orig_cwd,
+                orig_config_dir,
+                config_tmp,
+            }
+        }
+
+        /// The isolated global agent library, for a test that wants to
+        /// plant a same-named `.md` there to check it isn't shadowing a
+        /// declared agent.
+        fn global_agents_dir(&self) -> std::path::PathBuf {
+            self.config_tmp.path().join("agents")
+        }
+    }
+
+    impl Drop for ProjectDirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.orig_cwd);
+            // SAFETY: restoring original env state, still under the guard
+            // held by `self._lock` until this `Drop` returns.
+            unsafe {
+                match &self.orig_config_dir {
+                    Some(v) => std::env::set_var("ARMADAI_CONFIG_DIR", v),
+                    None => std::env::remove_var("ARMADAI_CONFIG_DIR"),
+                }
+            }
+        }
+    }
+
+    /// A declarations-only project: no `agents:` list at all (the layout
+    /// this format exists to enable), two declared agents -- one plain, one
+    /// named to collide with a global homonym a test can plant separately.
+    fn declared_only_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join(".armadai/prompts")).unwrap();
+        std::fs::write(root.join("armadai.yaml"), "link:\n  target: claude\n").unwrap();
+        std::fs::write(
+            root.join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  \
+             - name: healthy-declared\n    prompt: [base]\n  \
+             - name: shared-name\n    prompt: [base]\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".armadai/prompts/base.md"), "You are {{name}}.\n").unwrap();
+        dir
+    }
+
+    /// Catches a regression of the gate alone (`!config.agents.is_empty()`
+    /// instead of `agent_source::project_declares_agents`) as well as the
+    /// body alone (`project::resolve_all_agents` instead of
+    /// `agent_source::load_all_agents`): either mutation, on this fixture,
+    /// leaves the response without these two names.
+    #[test]
+    fn declared_agents_appear_for_a_declarations_only_project() {
+        let dir = declared_only_project();
+        let root = dir.path().join("project");
+        let _guard = ProjectDirGuard::enter(&root);
+
+        let mut names: Vec<String> = load_agents().into_iter().map(|a| a.name).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec!["healthy-declared", "shared-name"],
+            "a project relying purely on .armadai/agents.yaml (no `agents:` list) must still \
+             have its declared agents returned by /api/agents, not fall through to the global \
+             library"
+        );
+    }
+
+    /// The actual defect (#339 level 1): reverting the fix makes this
+    /// declarations-only project's empty `config.agents` fall through
+    /// entirely to the global library fallback, which then returns the
+    /// homonym's own content under the declared agent's name -- worse than
+    /// omission, a silent substitution (measured: `armadai list` shows the
+    /// project's declared agents while `/api/agents` returns the
+    /// global-library agent of the same name instead).
+    #[test]
+    fn a_declared_agent_is_not_shadowed_by_a_same_named_global_agent() {
+        let dir = declared_only_project();
+        let root = dir.path().join("project");
+        let guard = ProjectDirGuard::enter(&root);
+
+        let global_agents = guard.global_agents_dir();
+        std::fs::create_dir_all(&global_agents).unwrap();
+        std::fs::write(
+            global_agents.join("shared-name.md"),
+            "# shared-name\n\n## Metadata\n- provider: global-marker-provider\n\n\
+             ## System Prompt\n\nGlobal homonym.\n",
+        )
+        .unwrap();
+
+        let agents = load_agents();
+
+        assert!(
+            !agents
+                .iter()
+                .any(|a| a.metadata.provider == "global-marker-provider"),
+            "the project's declared 'shared-name' must never resolve to the global \
+             library's same-named agent's content: {:?}",
+            agents
+                .iter()
+                .map(|a| (&a.name, &a.metadata.provider))
+                .collect::<Vec<_>>()
+        );
+        // The colliding declaration is refused outright (no precedence
+        // between the two sides), but the unrelated declared agent must
+        // still load -- proving the assertion above isn't a vacuous pass
+        // from a totally broken load.
+        assert!(
+            agents.iter().any(|a| a.name == "healthy-declared"),
+            "an unrelated declared agent must still load despite the collision: {:?}",
+            agents.iter().map(|a| &a.name).collect::<Vec<_>>()
         );
     }
 }
