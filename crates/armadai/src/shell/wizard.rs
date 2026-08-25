@@ -23,6 +23,15 @@ pub struct WizardResult {
     pub project_name: String,
 }
 
+/// Fallback provider for a session where no assistant was ever chosen — the
+/// user picked `5) Skip` in `prompt_link` (see its doc: a target the user
+/// *did* choose is kept even if linking it failed, so this is `Skip`'s
+/// fallback only). The shell still needs *some* command to relay to;
+/// `claude` is the one this module already leans on as a default elsewhere
+/// (`detect_model_name`, the `resolve_shell_model` examples in
+/// `shell/config.rs`) when nothing more specific is known.
+const DEFAULT_UNLINKED_PROVIDER: &str = "claude";
+
 /// Check project readiness and run wizard if needed.
 /// Returns the provider configuration to use, or an error if setup was cancelled.
 pub async fn ensure_project_ready() -> Result<WizardResult> {
@@ -52,8 +61,27 @@ pub async fn ensure_project_ready() -> Result<WizardResult> {
         return build_wizard_result(&linked.name, "latest:pro");
     }
 
-    // Step 4: Prompt for link if needed
-    let provider = prompt_link().await?;
+    // Step 4: Prompt for link if needed. Neither declining (`Skip`) nor a
+    // link step that fails (e.g. `link`'s own `blocks_a_write` refusal on
+    // a shadowing collision) may prevent the shell from opening — the
+    // shell is an interactive environment a user needs precisely to fix
+    // the kind of problem that would make linking fail, so refusing entry
+    // over it would take away their own remedy. Only the *write* is ever
+    // refused; `prompt_link` reports why and still returns `Ok(Some(_))`
+    // for a chosen-but-unwritten target, `Ok(None)` only for `Skip` (see
+    // its own doc) — never an `Err` that would abort here via `?`. A
+    // genuine setup failure reading the choice itself still propagates as
+    // an `Err` untouched.
+    let provider = match prompt_link().await? {
+        Some(target) => target,
+        None => {
+            eprintln!(
+                "\nContinuing without a linked assistant — run `armadai link` from inside \
+                 the shell once you're ready."
+            );
+            DEFAULT_UNLINKED_PROVIDER.to_string()
+        }
+    };
 
     // Check auth
     if !check_auth(&provider) {
@@ -194,7 +222,26 @@ fn prompt_init() -> Result<bool> {
     Ok(true)
 }
 
-async fn prompt_link() -> Result<String> {
+/// Prompt for a link target and attempt to link it.
+///
+/// `Ok(None)` means "no assistant was chosen" — only `5) Skip`: that
+/// choice has nothing to refuse, there being no write behind it, so it
+/// always succeeds and the caller (`ensure_project_ready`) falls back to
+/// [`DEFAULT_UNLINKED_PROVIDER`].
+///
+/// A target the user *did* choose is never downgraded to that same
+/// fallback, even when linking it fails (most commonly `link`'s own
+/// `blocks_a_write` refusal on a shadowing collision, but any other
+/// link-step failure too) — only the *write* is refused, not the user's
+/// stated choice of assistant, so `Ok(Some(target))` is still returned
+/// after printing why the write didn't happen. Silently substituting
+/// `claude` for a user who said `gemini` would be a worse surprise than
+/// an assistant with no generated agent files yet.
+///
+/// A genuine setup failure reading the choice itself (`read_choice`'s own
+/// `Err`, e.g. unreadable stdin or an out-of-range answer) is a different
+/// class of problem and still propagates as `Err`.
+async fn prompt_link() -> Result<Option<String>> {
     println!("\nNo link found. Which AI assistant do you use?");
     println!("  1) Gemini CLI");
     println!("  2) Claude Code");
@@ -205,7 +252,7 @@ async fn prompt_link() -> Result<String> {
     let choice = read_choice(1, 5)?;
 
     if choice == 5 {
-        return Err(anyhow::anyhow!("Link setup skipped by user"));
+        return Ok(None);
     }
 
     let target = match choice {
@@ -216,10 +263,22 @@ async fn prompt_link() -> Result<String> {
         _ => unreachable!(),
     };
 
-    // Run link
-    run_link(target).await?;
+    Ok(Some(attempt_link(target).await))
+}
 
-    Ok(target.to_string())
+/// Link `target`, and report — never propagate — a failure. See
+/// `prompt_link`'s doc for why a link-step failure (most commonly `link`'s
+/// own `blocks_a_write` refusal on a shadowing collision) must still leave
+/// the user able to enter the shell with the assistant they chose: only
+/// the *write* is refused, not their presence in the one tool that lets
+/// them fix the underlying problem. Split out from `prompt_link` — which
+/// also reads the choice interactively from stdin — so this half is
+/// testable on its own.
+async fn attempt_link(target: &str) -> String {
+    if let Err(e) = run_link(target).await {
+        eprintln!("\nWarning: linking '{target}' failed: {e}");
+    }
+    target.to_string()
 }
 
 fn read_choice(min: usize, max: usize) -> Result<usize> {
@@ -608,7 +667,20 @@ mod run_link_tests {
 
     impl IsolatedGlobalConfig {
         fn enter() -> Self {
-            let lock = ENV_MUTEX.lock().unwrap();
+            // Poison-tolerant: `ENV_MUTEX` only ever guards `()` — there is
+            // no shared data a panicking prior holder could have left
+            // inconsistent, only the env var/cwd restoration each guard's
+            // own `Drop` already performs (and `Drop` still runs during
+            // unwinding, before the poison is even set). Review point 3
+            // (fix round on `fix/wizard-link-write-path`): a single
+            // legitimately failing test elsewhere in this module used to
+            // poison this mutex and cascade every *other* test using this
+            // guard into an unrelated `PoisonError` — recovering the guard
+            // instead keeps a real failure from being buried under
+            // phantom ones.
+            let lock = ENV_MUTEX
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let orig_config_dir = std::env::var("ARMADAI_CONFIG_DIR").ok();
             let config_tmp = tempfile::tempdir().unwrap();
             // SAFETY: serialised via ENV_MUTEX above.
@@ -661,6 +733,13 @@ mod run_link_tests {
                 _config: config,
                 orig_cwd,
             }
+        }
+
+        /// The isolated global agent library, for a test that wants to
+        /// plant a same-named `.md` there — see
+        /// [`IsolatedGlobalConfig::global_agents_dir`].
+        fn global_agents_dir(&self) -> std::path::PathBuf {
+            self._config.global_agents_dir()
         }
     }
 
@@ -925,6 +1004,125 @@ mod run_link_tests {
             written.contains("model: claude-sonnet-4-5-20250929"),
             "the wizard must resolve to the same fallback model `link` would, when no \
              models-cache is present: {written}"
+        );
+    }
+
+    /// Review point 2 (fix round on `fix/wizard-link-write-path`): every
+    /// pre-existing wizard test targets `"claude"`, an `LlmEditor` — so
+    /// `run_link_at`'s `TargetKind::Orchestrator` match arm, the one I1
+    /// was actually about (it is precisely where model resolution differs
+    /// from `LlmEditor`'s force-to-target-provider rule), had zero
+    /// coverage: gutting that whole arm left every wizard test green.
+    ///
+    /// Uses `opencode`, not `copilot` — the other `Orchestrator` target —
+    /// because `CopilotLinker::generate` never serialises `model:` into
+    /// its output at all (checked in `linker/copilot.rs`), so a byte-level
+    /// assertion has nothing to check there; `OpencodeLinker` does write
+    /// `model: <value>` frontmatter. A different tier (`latest:fast`) than
+    /// the test above's `latest:pro` keeps the two tests' expected values
+    /// visibly apart.
+    ///
+    /// Caveat this test does NOT cover, stated rather than silently
+    /// assumed: this pins the non-interactive default only. On a real
+    /// TTY, `link` itself prompts for a model and stamps that single
+    /// answer onto every agent for `Orchestrator` targets (`cli::link`'s
+    /// own interactive branch, gated on `std::io::stdin().is_terminal()`)
+    /// — a wizard/`link` byte-equality claim for `Orchestrator` targets
+    /// holds only against that same non-interactive path. Neither
+    /// `run_link_at` nor this test attempts the interactive path at all;
+    /// the wizard has no `--model` prompt of its own for the target's
+    /// *linked* agents (only for the shell's own conversation model —
+    /// see `run_link_at`'s doc).
+    ///
+    /// Mutation this catches: emptying the `TargetKind::Orchestrator`
+    /// match arm (or swapping it for the `LlmEditor` arm's
+    /// target-provider-forced resolution) either leaves `model:
+    /// latest:fast` unresolved or resolves it to a different tier's
+    /// fallback — either way this test's assertions fail, where all
+    /// `"claude"`-targeted tests stay green regardless.
+    #[tokio::test]
+    async fn wizard_link_resolves_latest_placeholders_for_an_orchestrator_target() {
+        let _isolated = IsolatedGlobalConfig::enter();
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join("agents")).unwrap();
+        std::fs::write(root.join("armadai.yaml"), "agents:\n  - name: solo\n").unwrap();
+        std::fs::write(
+            root.join("agents/solo.md"),
+            "# solo\n\n## Metadata\n- provider: claude\n- model: latest:fast\n\n\
+             ## System Prompt\n\nWork.\n",
+        )
+        .unwrap();
+
+        let (found_root, config) = project::find_project_config_from(&root).unwrap();
+        run_link_at(&found_root, &config, "opencode").await.unwrap();
+
+        let written = std::fs::read_to_string(root.join(".opencode/agents/solo.md")).unwrap();
+        assert!(
+            !written.contains("model: latest:fast"),
+            "the wizard must resolve latest:* placeholders for Orchestrator targets \
+             too, not write them verbatim: {written}"
+        );
+        assert!(
+            written.contains("model: claude-haiku-4-5-20251001"),
+            "the wizard must resolve to the same fallback model link's non-interactive \
+             path would, when no models-cache is present: {written}"
+        );
+    }
+
+    /// Review point 1 (blocking, on `fix/wizard-link-write-path`): a link
+    /// step that fails to *write* (here, `blocks_a_write` on a shadowing
+    /// collision — the same setup as
+    /// `wizard_link_refuses_a_write_when_a_declared_agent_is_shadowed`)
+    /// must never take the shell itself away. `attempt_link` is
+    /// `prompt_link`'s non-interactive half — see its doc — and must
+    /// report the failure without propagating it, still returning the
+    /// chosen target so `ensure_project_ready` can open the shell with
+    /// it. `attempt_link`'s return type (`String`, not `Result<String>`)
+    /// already makes the "propagate the error" mutant impossible to
+    /// reintroduce without a compile error; what this test pins is the
+    /// value that comes back on that path.
+    ///
+    /// Mutation this catches: if a failed link instead returned
+    /// [`DEFAULT_UNLINKED_PROVIDER`] (silently substituting `claude` for
+    /// whatever the user actually chose) rather than echoing the chosen
+    /// target back, this test's `assert_eq!` fails.
+    #[tokio::test]
+    async fn attempt_link_keeps_the_chosen_target_when_the_write_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join(".armadai")).unwrap();
+        std::fs::write(root.join(".armadai/config.yaml"), "agents: []\n").unwrap();
+        std::fs::write(
+            root.join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  - name: solo\n  - name: collide\n",
+        )
+        .unwrap();
+
+        let isolated = IsolatedProjectDir::enter(&root);
+        std::fs::create_dir_all(isolated.global_agents_dir()).unwrap();
+        std::fs::write(
+            isolated.global_agents_dir().join("collide.md"),
+            "# collide\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nGlobal.\n",
+        )
+        .unwrap();
+
+        // Deliberately NOT "claude": `DEFAULT_UNLINKED_PROVIDER` is also
+        // "claude", so a mutant that silently substitutes it would pass
+        // an assert_eq! against "claude" undetected — the exact
+        // mutually-confusable-value trap this project has hit before.
+        // "gemini" makes the two outcomes distinguishable.
+        let result = attempt_link("gemini").await;
+
+        assert_eq!(
+            result, "gemini",
+            "a link-step failure must still return the target the user chose, not an \
+             error and not a silently substituted default"
+        );
+        assert!(
+            !root.join(".gemini").exists(),
+            "the write itself must still be refused — nothing gets written"
         );
     }
 }
