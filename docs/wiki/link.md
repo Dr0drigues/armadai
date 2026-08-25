@@ -106,14 +106,14 @@ Each file `unlink` considers is reported as one of:
 |---|---|
 | `deleted` | recorded as `created` and still byte-for-byte what `link` wrote |
 | `kept (hand-written — link recorded it as skipped)` | `link` found it already there and left it alone |
-| `kept (content differs from what link wrote)` | edited since linking; removing it would be data loss |
+| `kept (content differs from what link wrote)` | edited since linking; removing it would be data loss. Without a manifest the fallback says only `kept (content differs)` — it compares against freshly generated content, not a recorded digest, so it cannot claim the file ever *was* what `link` wrote |
 | `kept (cannot verify …)` | unreadable, or a digest algorithm this build doesn't recognise |
 | `kept (broken symlink …)` | the link is on disk but its target is gone, so its content can't be checked. It is **not** "already absent" |
 | `already absent` | nothing at that path at all |
 
-Refusals — a manifest item outside its trusted root, one naming the target's own root, or one matching no recorded file — are reported on stderr, and each one names *which side* is at fault: the manifest's own text ("the manifest may be corrupt or forged"), or the filesystem having moved under an intact manifest (a symlink that appeared after `link` ran). The two call for different follow-up.
+Refusals — a manifest item outside its trusted root, one naming the target's own root, or one matching no recorded file — go to **stderr** in both the real pass and `--dry-run`, beside the summary line that points at them, while the per-file outcomes and the closing `Unlinked '<target>': …` counts stay on stdout. Each refusal names *which side* is at fault: the manifest's own text ("the manifest may be corrupt or forged"), or the filesystem ("something on the filesystem does, most likely a symlink along the path") under a manifest that is intact. The two call for different follow-up. Note what `unlink` deliberately does *not* claim: **when** a filesystem cause appeared. It compares the recorded text against the filesystem as it is now, and keeps no record of how the filesystem looked when `link` ran, so it can say which side puts a path where it is — never that anything changed since.
 
-**A refused item makes `unlink` exit non-zero**, and `--dry-run` mirrors that: it applies the same guards, prints the same refusals, and exits non-zero wherever a real run would — a preview that cannot fail is not a preview. Only one thing it deliberately does not mirror: whether a recorded directory is still empty on disk. The real pass checks that *after* deleting the files inside it, so the preview reports directories as "recorded for cleanup", not "will be removed".
+**A refused item makes `unlink` exit non-zero**, and `--dry-run` mirrors that: it applies the same guards, prints the same refusals, and exits non-zero wherever a real run would — a preview that cannot fail is not a preview. Only one thing it deliberately does not mirror: whether a recorded directory is still empty on disk. The real pass checks that *after* deleting the files inside it, so the preview reports directories as "eligible for cleanup" — the number that passed its guards — rather than "recorded" (which would deny a record it holds for a directory it refuses) or "will be removed".
 
 ## Agent-to-Format Mapping
 

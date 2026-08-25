@@ -245,6 +245,52 @@ fn resolve(project_root: &Path, field: &Path) -> PathBuf {
     lexically_normalize(&joined)
 }
 
+/// Resolve `field` like [`resolve`] — lexically, following no symlink
+/// *within* the project — but with exactly one filesystem fact folded in:
+/// the **spelling of the project root itself**. `/tmp` is a symlink to
+/// `/private/tmp` on macOS, and a home directory or an automount can be
+/// reached through one on Linux, so the very same directory has two
+/// absolute spellings. A manifest is not at fault for which of them it
+/// happens to hold.
+///
+/// This is the resolution [`fault_side`]'s question actually needs — "does
+/// the recorded *text* already put this path where it must not be?" — and
+/// plain [`resolve`] was not it (issue #348, third round, measured): a
+/// `created_dirs` entry naming the target root through `/tmp/…` names it
+/// just as literally as `.claude` does, yet compared lexically against a
+/// root spelled `/private/tmp/…` it read as a path the *filesystem* had
+/// moved, so `unlink` sent the user to inspect a directory where nothing
+/// had happened — the exact false accusation issue #348 exists to remove.
+///
+/// Canonicalising both sides outright would not do: it is what
+/// [`resolve_real`] already does, and by construction it makes the two
+/// paths equal in *both* cases, collapsing the distinction back into one
+/// answer. Only the prefix that is the project root under another
+/// spelling is resolved here; every component below it stays textual, so
+/// a symlink *inside* the project — the case where the disk really is
+/// what moved the path — still resolves differently and stays the
+/// filesystem's fault.
+fn resolve_lexical(project_root: &Path, field: &Path) -> PathBuf {
+    let lexical = resolve(project_root, field);
+    let Ok(canonical_project) = std::fs::canonicalize(project_root) else {
+        return lexical;
+    };
+    if lexical.starts_with(&canonical_project) {
+        return lexical;
+    }
+    let mut prefix = PathBuf::new();
+    let mut components = lexical.components();
+    while let Some(component) = components.next() {
+        prefix.push(component);
+        if std::fs::canonicalize(&prefix).is_ok_and(|c| c == canonical_project) {
+            let mut rerooted = canonical_project;
+            rerooted.extend(components);
+            return rerooted;
+        }
+    }
+    lexical
+}
+
 /// Resolve `field` into its real, symlink-free location as far as the
 /// filesystem allows *right now*: canonicalise the longest existing
 /// prefix, then re-append whatever suffix doesn't exist yet, lexically —
@@ -347,14 +393,15 @@ pub fn root_confirmed(project_root: &Path, computed_root: &Path, declared_root: 
 /// manifest's own text, or the filesystem it is being resolved against.
 /// Issue #348: these two causes were collapsed into a single "the manifest
 /// may be corrupt or forged" message, which is simply false for the second
-/// case — the manifest is exactly what `link` wrote, and the disk moved
-/// under it. The two call for different next steps from the user (fix or
-/// regenerate the manifest, versus investigate what changed on disk), so
-/// callers must keep them distinct.
+/// case — the manifest is exactly what `link` wrote, and the filesystem
+/// is what puts the path elsewhere. The two call for different next steps
+/// from the user (fix or regenerate the manifest, versus inspect the
+/// filesystem), so callers must keep them distinct.
 ///
 /// Used for both refusal kinds a recorded path can hit, because the
-/// question — "is the text wrong, or did the disk move?" — is the same one
-/// either way and must be answered the same way:
+/// question — "is the text wrong, or is the filesystem what puts it
+/// there?" — is the same one either way and must be answered the same
+/// way:
 ///
 /// - failing [`is_trusted`] (the path lands outside the trusted root), via
 ///   [`diagnose_trust_failure`];
@@ -365,20 +412,35 @@ pub fn root_confirmed(project_root: &Path, computed_root: &Path, declared_root: 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustFailure {
     /// The manifest's own text is what puts the path where it must not be:
-    /// even under pure lexical resolution (no filesystem access) it
-    /// escapes the trusted root, or names that root itself.
+    /// even under lexical resolution ([`resolve_lexical`] — no symlink
+    /// inside the project followed) it escapes the trusted root, or names
+    /// that root itself.
     ManifestEscapesRoot,
     /// Under lexical resolution the path is exactly where it should be;
     /// only resolving it against the real filesystem (following symlinks)
     /// puts it outside the root, or onto the root itself — something on
-    /// disk changed since `link` ran.
+    /// disk, not the recorded text, is what brings it there.
+    ///
+    /// Deliberately says nothing about *when* that something appeared:
+    /// this code compares "lexical" against "real", never "before `link`"
+    /// against "after `link`", and it has no record of the filesystem as
+    /// it was at link time to compare against. A message claiming the
+    /// disk "changed since `link` ran" asserts more than the value can
+    /// carry (issue #348, third round).
     FilesystemDiverged,
 }
 
 /// Which side is at fault, given whether the recorded path's own text is
-/// already enough to condemn it: if pure lexical resolution alone lands it
-/// where it must not be, the manifest is wrong; if only resolving against
-/// the real filesystem does, the disk moved under an intact manifest.
+/// already enough to condemn it: if lexical resolution alone
+/// ([`resolve_lexical`]) lands it where it must not be, the manifest is
+/// wrong; if only resolving against the real filesystem does, the
+/// manifest is intact and the filesystem is what puts it there.
+///
+/// The caller passes the lexical verdict computed with [`resolve_lexical`]
+/// — never plain [`resolve`]. The distinction this function draws is
+/// "text versus filesystem", and a path spelled through a non-canonical
+/// but perfectly ordinary prefix (`/tmp` for `/private/tmp`) is still the
+/// text naming a place, not the filesystem moving it.
 ///
 /// One function so the two refusal kinds ([`diagnose_trust_failure`] and
 /// [`CreatedDirDecision::IsTargetRoot`]) cannot answer it differently —
@@ -403,8 +465,8 @@ pub fn diagnose_trust_failure(
     if is_trusted(project_root, target_root, candidate) {
         return None;
     }
-    let lexical_root = resolve(project_root, target_root);
-    let lexical_candidate = resolve(project_root, candidate);
+    let lexical_root = resolve_lexical(project_root, target_root);
+    let lexical_candidate = resolve_lexical(project_root, candidate);
     Some(fault_side(!lexical_candidate.starts_with(&lexical_root)))
 }
 
@@ -446,8 +508,8 @@ pub enum CreatedDirDecision {
     /// Refused: resolves onto the target's own root — `link` never
     /// records that (design review R3). Carries which side put it there
     /// (issue #348): the manifest's text names the root outright, or the
-    /// disk has since merged a legitimately recorded subdirectory into it
-    /// (a symlink appeared). The second is reachable with the manifest
+    /// filesystem merges a legitimately recorded subdirectory into it (a
+    /// symlink along the path). The second is reachable with the manifest
     /// completely untouched, so this must never be reported as "corrupt
     /// or forged" unconditionally.
     IsTargetRoot(TrustFailure),
@@ -489,9 +551,12 @@ pub fn decide_created_dir(
         // for the same reason (issue #348): if the recorded text already
         // names the root, the manifest is wrong; if only the resolved
         // paths coincide, the manifest is intact and the filesystem
-        // merged the two.
+        // merged the two. The lexical half goes through
+        // `resolve_lexical`, not `resolve`, so a root named by a
+        // non-canonical absolute path (`/tmp/…` for `/private/tmp/…`) is
+        // still recognised as *named* rather than blamed on the disk.
         return CreatedDirDecision::IsTargetRoot(fault_side(
-            resolve(project_root, dir) == resolve(project_root, target_root),
+            resolve_lexical(project_root, dir) == resolve_lexical(project_root, target_root),
         ));
     }
     if let Some(cause) = diagnose_trust_failure(project_root, target_root, dir) {
@@ -1503,9 +1568,8 @@ mod tests {
         assert_eq!(
             cause,
             Some(TrustFailure::FilesystemDiverged),
-            "a legitimate path whose intermediate directory was symlinked away \
-             since link ran must not be reported as if the manifest's own text \
-             were at fault"
+            "a legitimate path whose intermediate directory is symlinked away must \
+             not be reported as if the manifest's own text were at fault"
         );
     }
 
@@ -1593,6 +1657,42 @@ mod tests {
         assert_eq!(
             decide_created_dir(root, &target_root, Path::new(".claude/agents"), &entries),
             CreatedDirDecision::IsTargetRoot(TrustFailure::FilesystemDiverged)
+        );
+    }
+
+    /// The third-round regression: a manifest that names the target's own
+    /// root through a **non-canonical absolute path** is still the
+    /// manifest naming the root, and must be diagnosed as such. Nothing
+    /// on the filesystem moved — an ancestor simply has two spellings, as
+    /// `/tmp` and `/private/tmp` do on macOS, or a symlinked home or
+    /// automount does on Linux.
+    ///
+    /// Mutation this catches: compare the two sides with `resolve`
+    /// instead of `resolve_lexical` (the code shipped in the previous fix
+    /// wave) and this answers `FilesystemDiverged` — sending the user to
+    /// inspect a directory where there is nothing to find, which is the
+    /// exact false accusation issue #348 exists to remove. Its two
+    /// siblings above fail on the opposite hardcodings, so no single
+    /// pinned value satisfies all three.
+    #[test]
+    #[cfg(unix)]
+    fn decide_created_dir_blames_the_manifest_when_it_names_the_root_non_canonically() {
+        let dir = tempfile::tempdir().unwrap();
+        // The project lives under `real/`, and `alias/` is another
+        // spelling of `real/` — a symlink *above* the project root, so
+        // nothing inside the project is symlinked at all.
+        let project = dir.path().join("real/project");
+        std::fs::create_dir_all(project.join(".claude/agents")).unwrap();
+        std::os::unix::fs::symlink("real", dir.path().join("alias")).unwrap();
+
+        let target_root = project.join(".claude");
+        let named_through_the_alias = dir.path().join("alias/project/.claude");
+        let entries = vec![entry(".claude/agents/solo.md", "solo", b"body")];
+
+        assert_eq!(
+            decide_created_dir(&project, &target_root, &named_through_the_alias, &entries),
+            CreatedDirDecision::IsTargetRoot(TrustFailure::ManifestEscapesRoot),
+            "the recorded text names the root; no filesystem change is involved"
         );
     }
 

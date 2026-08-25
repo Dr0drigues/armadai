@@ -470,9 +470,8 @@ fn unlink_from_manifest(
     );
     if kept > 0 {
         anstream::println!(
-            "{m}  Kept files are either hand-written (link recorded them as skipped), have \
-             content that no longer matches what link wrote, or could not be verified. \
-             Remove them by hand if you no longer want them.{m:#}"
+            "{m}  Kept files were left in place for the reason given on each line above: \
+             {KEPT_FILE_REASONS}. Remove them by hand if you no longer want them.{m:#}"
         );
     }
     if untrusted > 0 {
@@ -507,18 +506,39 @@ fn unlink_from_manifest(
     Ok(())
 }
 
+/// Why the manifest path can leave a file in place — one list, shared by
+/// the real pass and its `--dry-run` preview so the two cannot drift into
+/// two different accounts of the same set.
+///
+/// Open-ended on purpose (issue #348, third round): the closed list of
+/// three it replaces omitted the broken-symlink outcome the very same
+/// code path prints, so a user reading the footer could not find their
+/// own case in it. The fallback's footer had already been opened for
+/// exactly this reason.
+const KEPT_FILE_REASONS: &str = "hand-written (link recorded them as skipped), content \
+     that no longer matches what link wrote, a file that could not be verified, or a \
+     broken symlink whose content cannot be compared at all";
+
 /// Human-readable explanation for one [`linker::manifest::TrustFailure`]
 /// cause — shared by the real pass and its `--dry-run` preview so the two
 /// never phrase the same cause two different ways.
+///
+/// Neither wording dates the fault (issue #348, third round): the earlier
+/// `FilesystemDiverged` text said the filesystem "has changed since link
+/// ran", which is a claim the code cannot make. All it compares is the
+/// recorded text against the filesystem *as it is now* — it keeps no
+/// snapshot of how the filesystem looked at link time, so it can name
+/// which side puts the path where it is, never when that became true. The
+/// symlink may well have been there before `link` ever ran.
 fn trust_failure_reason(cause: linker::manifest::TrustFailure) -> &'static str {
     match cause {
         linker::manifest::TrustFailure::ManifestEscapesRoot => {
             "the manifest may be corrupt or forged"
         }
         linker::manifest::TrustFailure::FilesystemDiverged => {
-            "the manifest itself looks intact, but something on the filesystem has \
-             changed since link ran (e.g. a new symlink) — inspect the target \
-             directory before retrying"
+            "the manifest's own text does not put it there — something on the \
+             filesystem does, most likely a symlink along the path; inspect the \
+             target directory before retrying"
         }
     }
 }
@@ -530,14 +550,19 @@ fn trust_failure_reason(cause: linker::manifest::TrustFailure) -> &'static str {
 /// different ways.
 ///
 /// The verb has to move with the cause (issue #348): a manifest that
-/// literally records `.claude` *names* the root, while a manifest that
-/// correctly records `.claude/agents` and finds it symlinked to `.claude`
-/// afterwards *now resolves to* it — saying "names" for the second blames
-/// the manifest for text it never contained.
+/// literally records `.claude` — under any spelling of it — *names* the
+/// root, while a manifest that correctly records `.claude/agents` and
+/// finds a symlink collapsing it onto `.claude` *resolves onto* it.
+/// Saying "names" for the second blames the manifest for text it never
+/// contained; saying "resolves onto" for the first sends the user to
+/// inspect a filesystem where nothing is wrong.
+///
+/// "resolves onto", not "now resolves onto": the adverb dated a change
+/// this code cannot observe — see [`trust_failure_reason`].
 fn target_root_relation(cause: linker::manifest::TrustFailure) -> &'static str {
     match cause {
         linker::manifest::TrustFailure::ManifestEscapesRoot => "names",
-        linker::manifest::TrustFailure::FilesystemDiverged => "now resolves to",
+        linker::manifest::TrustFailure::FilesystemDiverged => "resolves onto",
     }
 }
 
@@ -561,10 +586,17 @@ fn target_root_relation(cause: linker::manifest::TrustFailure) -> &'static str {
 /// still on disk and *empty at that moment*, which is only true after the
 /// files inside it have been deleted — files this preview, by definition,
 /// has not deleted. So the count below is what its wording says,
-/// "recorded for cleanup", not "would be removed": a directory the user
+/// "eligible for cleanup", not "would be removed": a directory the user
 /// deleted by hand still counts here and the real pass then quietly
 /// touches nothing. Overstating that as an identical filesystem check is
 /// what this doc used to do.
+///
+/// "eligible", not "recorded" (issue #348, third round): the counter is
+/// the number of directories that passed
+/// [`linker::manifest::decide_created_dir`], which is neither how many
+/// the manifest records nor how many would actually be removed — a
+/// manifest recording one directory that the guard refuses used to print
+/// "0 directories recorded for cleanup", denying a record it holds.
 fn print_manifest_dry_run(
     root: &Path,
     target_name: &str,
@@ -594,7 +626,13 @@ fn print_manifest_dry_run(
             linker::manifest::diagnose_trust_failure(root, target_root, &entry.path)
         {
             let reason = trust_failure_reason(cause);
-            anstream::println!(
+            // On **stderr**, like the refusal the real pass prints for the
+            // same item (issue #348, third round): the preview must be
+            // readable the same way the run it previews is. As a
+            // `println!` a caller journalling `2>errors.log` got the
+            // reasons from a real pass and nothing at all from its
+            // preview, while one parsing stdout got the opposite.
+            anstream::eprintln!(
                 "{e}  {} (would refuse — outside the trusted root; {reason}){e:#}",
                 entry.path.display()
             );
@@ -675,7 +713,7 @@ fn print_manifest_dry_run(
             linker::manifest::CreatedDirDecision::IsTargetRoot(cause) => {
                 let relation = target_root_relation(cause);
                 let reason = trust_failure_reason(cause);
-                anstream::println!(
+                anstream::eprintln!(
                     "{e}  {} (would refuse — {relation} the target's own root; \
                      {reason}){e:#}",
                     dir.display()
@@ -684,14 +722,14 @@ fn print_manifest_dry_run(
             }
             linker::manifest::CreatedDirDecision::Untrusted(cause) => {
                 let reason = trust_failure_reason(cause);
-                anstream::println!(
+                anstream::eprintln!(
                     "{e}  {} (would refuse — outside the trusted root; {reason}){e:#}",
                     dir.display()
                 );
                 untrusted += 1;
             }
             linker::manifest::CreatedDirDecision::Implausible => {
-                anstream::println!(
+                anstream::eprintln!(
                     "{e}  {} (would refuse — matches no file link recorded creating; \
                      the manifest may be corrupt or forged){e:#}",
                     dir.display()
@@ -703,7 +741,7 @@ fn print_manifest_dry_run(
 
     anstream::println!(
         "\n{m}  {} would be removed, {} would be kept, {} already absent \
-         ({} director{} recorded for cleanup).{m:#}",
+         ({} director{} eligible for cleanup).{m:#}",
         would_remove,
         would_keep,
         absent,
@@ -712,15 +750,20 @@ fn print_manifest_dry_run(
     );
     if would_keep > 0 {
         anstream::println!(
-            "{m}  Kept files are either hand-written (recorded as skipped by link), have \
-             content that no longer matches what link wrote, or could not be verified. \
-             Remove them by hand if you no longer want them.{m:#}"
+            "{m}  Files listed as kept would be left in place for the reason given on \
+             each line above: {KEPT_FILE_REASONS}. Remove them by hand if you no longer \
+             want them.{m:#}"
         );
     }
     if untrusted > 0 {
-        anstream::println!(
-            "{e}  {} manifest item(s) would be refused — see the reason(s) given for \
-             each one above.{e:#}",
+        // Same sentence the real pass prints, on the same stream, with the
+        // one word that has to differ (issue #348, third round: the two
+        // summaries had drifted into two formulations of the same fact,
+        // which is what extracting `trust_failure_reason` and
+        // `target_root_relation` was supposed to stop).
+        anstream::eprintln!(
+            "{e}  {} manifest item(s) would be refused and left untouched; each \
+             refusal above names the item and why.{e:#}",
             untrusted
         );
         // Mirrors the real pass's own exit behaviour (design review R5):

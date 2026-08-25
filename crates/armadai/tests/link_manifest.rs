@@ -1210,11 +1210,16 @@ mod tests {
     /// `write_files`' refusal to record the root) are unreachable for a
     /// `.claude/` that already existed, because
     /// `create_dir_all_recording` never reports a directory it did not
-    /// create. Both guards could be deleted outright with that test still
-    /// green (measured). The load-bearing invariant here is one layer
-    /// earlier — `link` must not *record* a pre-existing user directory as
-    /// created — so that is what this now asserts, on the manifest `link`
-    /// wrote and on the directory that survives because of it.
+    /// create. Deleting either guard left *this scenario* green
+    /// (measured) — not the suite, which has its own tests for both:
+    /// mutating `write_files`' `created != target_root` filter turns 19
+    /// tests red (measured with `--no-fail-fast`; without it cargo stops
+    /// at the first failing target and only 3 show). The point is only
+    /// that this scenario proved nothing about them. The load-bearing
+    /// invariant here is one layer earlier — `link` must not *record* a
+    /// pre-existing user directory as created — so that is what this now
+    /// asserts, on the manifest `link` wrote and on the directory that
+    /// survives because of it.
     #[test]
     fn a_preexisting_user_claude_directory_survives_link_then_unlink_intact() {
         let dir = project_minimal();
@@ -1303,8 +1308,16 @@ mod tests {
     /// through `--dry-run` instead of a real unlink. Before this fix, the
     /// dry run's own `created_dirs` count used only `is_trusted` (which a
     /// path always satisfies against itself), so it announced both
-    /// `.claude/agents` *and* `.claude` itself as "recorded for cleanup"
+    /// `.claude/agents` *and* `.claude` itself as eligible for cleanup
     /// and exited 0 — while the real pass refuses `.claude` and exits 1.
+    ///
+    /// Also pins **which stream** each half of the preview goes to (issue
+    /// #348, third round): the refusal on stderr beside the reasons a
+    /// real pass puts there, the counts on stdout. They had drifted —
+    /// every refusal in the preview was a `println!` while every refusal
+    /// in the real pass was an `eprintln!`, so a caller journalling
+    /// `2>errors.log` got the reasons from the run and nothing from its
+    /// preview.
     ///
     /// Mutation this catches: if `--dry-run`'s `created_dirs` handling
     /// reverted to a plain "is_trusted" count with no `decide_created_dir`
@@ -1353,10 +1366,26 @@ mod tests {
              would: stdout={dry_run_stdout} stderr={dry_run_stderr}"
         );
         assert!(
-            dry_run_stdout.contains("(1 directory recorded for cleanup)"),
+            dry_run_stdout.contains("(1 directory eligible for cleanup)"),
             "only the legitimate .claude/agents entry is eligible — the forged \
              .claude entry (naming the target's own root) must be excluded from the \
              count, not just from the actual deletion: stdout={dry_run_stdout}"
+        );
+        assert!(
+            dry_run_stderr.contains("would refuse")
+                && dry_run_stderr.contains("names the target's own root"),
+            "the preview's refusal belongs on stderr, where the real pass puts its \
+             own: stderr={dry_run_stderr}"
+        );
+        assert!(
+            !dry_run_stdout.contains("would refuse"),
+            "and must not also be on stdout, or a caller reading one stream sees a \
+             different run than a caller reading the other: stdout={dry_run_stdout}"
+        );
+        assert!(
+            dry_run_stderr.contains("manifest item(s) would be refused"),
+            "the refusal summary must sit beside the refusals it points at: \
+             stderr={dry_run_stderr}"
         );
 
         // A dry run must never have any side effect either way.
@@ -1405,9 +1434,15 @@ mod tests {
         );
 
         assert!(
-            unlink_stderr.contains("filesystem") || unlink_stderr.contains("symlink"),
-            "unlink must explain that the filesystem changed since link ran: \
-             stderr={unlink_stderr}"
+            unlink_stderr.contains("something on the filesystem does"),
+            "unlink must point at the filesystem, which is what takes the recorded \
+             path outside the root: stderr={unlink_stderr}"
+        );
+        assert!(
+            !unlink_stderr.contains("since link ran"),
+            "and must not date that — the symlink did appear after `link` here, but \
+             nothing in the manifest records the filesystem as it was then, so the \
+             claim would be right only by luck: stderr={unlink_stderr}"
         );
         assert!(
             !unlink_stderr.contains("corrupt or forged"),
@@ -1426,6 +1461,13 @@ mod tests {
     /// follows the link to a target that's gone), this test's stdout
     /// assertions would fail — the entry would be silently miscounted
     /// absent instead of reported kept.
+    ///
+    /// Also pins that the kept-files footer accounts for this outcome
+    /// (issue #348, third round): both footers on the manifest path
+    /// carried a closed list of three reasons that omitted the very
+    /// outcome this test produces, so a user reading the explanation could
+    /// not find their own case in it. Reverting either footer to that list
+    /// fails here.
     #[test]
     #[cfg(unix)]
     fn a_broken_symlink_at_an_entrys_path_is_kept_and_reported_not_absent() {
@@ -1468,6 +1510,11 @@ mod tests {
             dry_stdout.contains("broken symlink"),
             "and must say why: stdout={dry_stdout}"
         );
+        assert!(
+            dry_stdout.contains("or a broken symlink whose content cannot be compared"),
+            "and the footer explaining kept files must account for this outcome \
+             instead of listing three reasons that exclude it: stdout={dry_stdout}"
+        );
 
         let (unlink_ok, unlink_stdout, unlink_stderr) =
             run_armadai(&root, &config, &["unlink", "--target", "claude"]);
@@ -1486,6 +1533,11 @@ mod tests {
         assert!(
             unlink_stdout.contains("broken symlink"),
             "unlink must explain why the dangling link was kept: \
+             stdout={unlink_stdout}"
+        );
+        assert!(
+            unlink_stdout.contains("or a broken symlink whose content cannot be compared"),
+            "and the footer explaining kept files must account for this outcome too: \
              stdout={unlink_stdout}"
         );
     }
@@ -1693,14 +1745,19 @@ mod tests {
              stdout={dry_stdout} stderr={dry_stderr}"
         );
         assert!(
-            dry_stdout.contains("now resolves to the target's own root"),
+            dry_stderr.contains("resolves onto the target's own root"),
             "the preview must say the directory *resolves onto* the root, not that it \
-             names it: stdout={dry_stdout}"
+             names it — on stderr, like the real pass: stderr={dry_stderr}"
         );
         assert!(
-            !dry_stdout.contains("corrupt or forged"),
+            !dry_stdout.contains("would refuse"),
+            "the preview must not put the same refusal on stdout as well: \
+             stdout={dry_stdout}"
+        );
+        assert!(
+            !dry_stderr.contains("corrupt or forged"),
             "the manifest is byte-for-byte what link wrote — the preview must not \
-             accuse it: stdout={dry_stdout}"
+             accuse it: stderr={dry_stderr}"
         );
 
         let (unlink_ok, _, unlink_stderr) =
@@ -1710,13 +1767,24 @@ mod tests {
             "unlink must refuse and exit non-zero: stderr={unlink_stderr}"
         );
         assert!(
-            unlink_stderr.contains("now resolves to the target's own root"),
+            unlink_stderr.contains("resolves onto the target's own root"),
             "the real pass must say the same thing its preview said: \
              stderr={unlink_stderr}"
         );
         assert!(
-            unlink_stderr.contains("something on the filesystem has changed"),
-            "the user must be pointed at the disk, which is what actually moved: \
+            unlink_stderr.contains("something on the filesystem does"),
+            "the user must be pointed at the disk, which is what puts the recorded \
+             directory on the root: stderr={unlink_stderr}"
+        );
+        // The code compares recorded text against the filesystem as it is
+        // now; it holds no snapshot of link time, so it must not date the
+        // change (issue #348, third round). Here the symlink really did
+        // appear after `link` — the point is that `unlink` cannot know
+        // that, and a message asserting it would be right by luck.
+        assert!(
+            !unlink_stderr.contains("since link ran"),
+            "the refusal must not claim *when* the filesystem came to say this — \
+             nothing in the manifest records the filesystem as it was at link time: \
              stderr={unlink_stderr}"
         );
         assert!(
@@ -1957,5 +2025,301 @@ mod tests {
         // Control: the generated files are still reclaimed.
         assert!(!root.join(".claude/agents/member-a.md").exists());
         assert!(!root.join(".claude/agents/member-b.md").exists());
+    }
+
+    // ── issue #348, third round ────────────────────────────────────────
+
+    /// A project whose skill has a subdirectory — the ordinary case, no
+    /// forging, no symlink. `link` records the parent `.claude/skills`
+    /// while writing `SKILL.md` and only then records the deeper
+    /// `.claude/skills/notes/refs` while writing the file inside it, so
+    /// `created_dirs` holds a parent *before* one of its own descendants:
+    ///
+    /// ```yaml
+    /// created_dirs:
+    /// - .claude/agents
+    /// - .claude/skills/notes
+    /// - .claude/skills
+    /// - .claude/skills/notes/refs
+    /// ```
+    ///
+    /// Walked in that order, `.claude/skills/notes` and `.claude/skills`
+    /// are both still non-empty when they come up (the `refs/` below them
+    /// has not been removed yet) and survive as empty residues — the very
+    /// class of bug this branch is named after.
+    ///
+    /// Mutation this catches: drop the
+    /// `linker::manifest::deepest_first` call from `unlink`'s real pass
+    /// (`for dir in created_dirs` instead of `for dir in
+    /// deepest_first(&created_dirs)`). Measured before this test existed:
+    /// removing it from *both* call sites left the whole suite green,
+    /// `deepest_first` being pinned only in isolation by its own unit
+    /// test.
+    #[test]
+    fn a_skill_with_a_subdirectory_leaves_no_empty_directories_behind() {
+        let dir = project_with_a_nested_skill();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        // Precondition — the ordering that makes this test load-bearing:
+        // a parent recorded before a descendant of its own.
+        let recorded = created_dirs_of(&read_manifest(&root));
+        let parent = recorded
+            .iter()
+            .position(|d| d == ".claude/skills")
+            .expect("link must record .claude/skills");
+        let deeper = recorded
+            .iter()
+            .position(|d| d == ".claude/skills/notes/refs")
+            .expect("link must record .claude/skills/notes/refs");
+        assert!(
+            parent < deeper,
+            "this test only bites while link records a parent before a deeper \
+             descendant; if that ever changes, rebuild the fixture rather than \
+             deleting the test: {recorded:?}"
+        );
+
+        let (unlink_ok, unlink_stdout, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+
+        for residue in [
+            ".claude/agents",
+            ".claude/skills",
+            ".claude/skills/notes",
+            ".claude/skills/notes/refs",
+        ] {
+            assert!(
+                !root.join(residue).exists(),
+                "'{residue}' must not survive as an empty directory: \
+                 stdout={unlink_stdout}"
+            );
+        }
+        // The target's own root is never recorded and never removed.
+        assert!(
+            root.join(".claude").is_dir(),
+            "the target root itself must stay: stdout={unlink_stdout}"
+        );
+
+        // The run summary belongs on stdout, where a caller redirecting
+        // stderr away still sees it (measured good in both the manifest
+        // and the fallback path — do not let a refusal-stream change take
+        // it along).
+        assert!(
+            unlink_stdout.contains("Unlinked 'claude'"),
+            "the summary belongs on stdout: stdout={unlink_stdout}"
+        );
+        assert!(
+            !unlink_stderr.contains("Unlinked 'claude'"),
+            "and only there: stderr={unlink_stderr}"
+        );
+    }
+
+    /// The `--dry-run` half of the ordering above. A preview prints
+    /// nothing at all for a directory it would clean up, so the only place
+    /// its walk order is observable is the refusals — which is also the
+    /// only thing that can pin
+    /// `linker::manifest::deepest_first`'s *second* call site.
+    ///
+    /// Two recorded directories at different depths, deliberately listed
+    /// shallowest-first, correspond to no recorded file, so both are
+    /// refused and both are printed. Deepest first means the deeper one is
+    /// named first, in the preview and in the real pass alike.
+    ///
+    /// Mutation this catches: drop the `deepest_first` call from
+    /// `print_manifest_dry_run` and the preview lists them in manifest
+    /// order — shallowest first — while the real pass still leads with the
+    /// deeper one. Dropping it from the real pass instead fails the second
+    /// half. Each call site is covered on its own.
+    #[test]
+    fn preview_and_real_pass_walk_recorded_directories_in_the_same_order() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let solo_file = root.join(".claude/agents/solo.md");
+        let solo_digest = sha256_digest(&std::fs::read(&solo_file).unwrap());
+
+        // Shallowest first, so manifest order and deepest-first order
+        // genuinely disagree.
+        let forged_manifest = [
+            "version: 1",
+            "targets:",
+            "  claude:",
+            "    linked_at: \"2026-01-01T00:00:00Z\"",
+            "    root: .claude",
+            "    created_dirs:",
+            "      - .claude/notes",
+            "      - .claude/notes/deep/deeper",
+            "    entries:",
+            "      - path: .claude/agents/solo.md",
+            "        produced_by: { kind: agent, name: solo }",
+            "        outcome: created",
+            &format!("        digest: \"{solo_digest}\""),
+            "",
+        ]
+        .join("\n");
+        std::fs::write(manifest_path(&root), forged_manifest).unwrap();
+
+        let (_, _, dry_stderr) = run_armadai(
+            &root,
+            &config,
+            &["unlink", "--target", "claude", "--dry-run"],
+        );
+        let dry_deep = dry_stderr
+            .find(".claude/notes/deep/deeper (would refuse")
+            .unwrap_or_else(|| panic!("preview must refuse the deeper dir: {dry_stderr}"));
+        let dry_shallow = dry_stderr
+            .find(".claude/notes (would refuse")
+            .unwrap_or_else(|| panic!("preview must refuse the shallow dir: {dry_stderr}"));
+        assert!(
+            dry_deep < dry_shallow,
+            "the preview must walk recorded directories deepest first, like the pass \
+             it previews: stderr={dry_stderr}"
+        );
+
+        let (_, _, unlink_stderr) = run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        let real_deep = unlink_stderr
+            .find("'.claude/notes/deep/deeper'")
+            .unwrap_or_else(|| panic!("real pass must refuse the deeper dir: {unlink_stderr}"));
+        let real_shallow = unlink_stderr
+            .find("'.claude/notes'")
+            .unwrap_or_else(|| panic!("real pass must refuse the shallow dir: {unlink_stderr}"));
+        assert!(
+            real_deep < real_shallow,
+            "the real pass must walk recorded directories deepest first: \
+             stderr={unlink_stderr}"
+        );
+    }
+
+    /// A manifest naming the target's own root through a **non-canonical
+    /// absolute path** — an ancestor reached through a symlink, exactly
+    /// how `/tmp` reaches `/private/tmp` on macOS or a symlinked home or
+    /// automount does on Linux. Nothing inside the project is symlinked
+    /// and nothing on disk moved: the recorded text names the root, and
+    /// the refusal must say so.
+    ///
+    /// Mutation this catches: compare the two paths with
+    /// `linker::manifest::resolve` instead of `resolve_lexical` in
+    /// `decide_created_dir` (what the previous fix wave shipped). The
+    /// refusal then reads "resolves onto the target's own root … something
+    /// on the filesystem does", sending the user to inspect a directory
+    /// where there is nothing to find — the false accusation issue #348
+    /// exists to remove, reintroduced by the fix for it.
+    #[test]
+    #[cfg(unix)]
+    fn a_manifest_naming_the_root_by_a_non_canonical_path_blames_the_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        // The project sits under `real/`; `alias/` is a second spelling of
+        // `real/`, above the project root — nothing within the project is
+        // a symlink.
+        let root = dir.path().join("real/project");
+        let agents = root.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            root.join("armadai.yaml"),
+            "agents:\n  - name: solo\nlink:\n  target: claude\n",
+        )
+        .unwrap();
+        std::fs::write(
+            agents.join("solo.md"),
+            "# solo\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou work alone.\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("real", dir.path().join("alias")).unwrap();
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let solo_file = root.join(".claude/agents/solo.md");
+        let solo_digest = sha256_digest(&std::fs::read(&solo_file).unwrap());
+        let through_the_alias = dir.path().join("alias/project/.claude");
+        assert_eq!(
+            std::fs::canonicalize(&through_the_alias).unwrap(),
+            std::fs::canonicalize(root.join(".claude")).unwrap(),
+            "the alias must really be another spelling of the target root"
+        );
+
+        let forged_manifest = [
+            "version: 1".to_string(),
+            "targets:".to_string(),
+            "  claude:".to_string(),
+            "    linked_at: \"2026-01-01T00:00:00Z\"".to_string(),
+            "    root: .claude".to_string(),
+            "    created_dirs:".to_string(),
+            format!("      - {}", through_the_alias.display()),
+            "    entries:".to_string(),
+            "      - path: .claude/agents/solo.md".to_string(),
+            "        produced_by: { kind: agent, name: solo }".to_string(),
+            "        outcome: created".to_string(),
+            format!("        digest: \"{solo_digest}\""),
+            String::new(),
+        ]
+        .join("\n");
+        std::fs::write(manifest_path(&root), forged_manifest).unwrap();
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(
+            !unlink_ok,
+            "unlink must refuse the recorded root: stderr={unlink_stderr}"
+        );
+        assert!(
+            unlink_stderr.contains("names the target's own root"),
+            "the manifest names the root — a second spelling of a directory is still \
+             that directory: stderr={unlink_stderr}"
+        );
+        assert!(
+            unlink_stderr.contains("corrupt or forged"),
+            "and that is the manifest's own fault: stderr={unlink_stderr}"
+        );
+        assert!(
+            !unlink_stderr.contains("something on the filesystem does"),
+            "nothing on the filesystem moved — the user must not be sent to inspect \
+             a directory where there is nothing to find: stderr={unlink_stderr}"
+        );
+        assert!(
+            root.join(".claude").is_dir(),
+            "and the target root must survive either way"
+        );
+    }
+
+    /// Fixture for the ordering test above: a skill with a subdirectory,
+    /// which is what makes `link` record a parent directory before a
+    /// deeper descendant of it.
+    fn project_with_a_nested_skill() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let agents = root.join("agents");
+        let skill_dir = root.join(".armadai/skills/notes");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::create_dir_all(skill_dir.join("refs")).unwrap();
+        std::fs::write(
+            root.join("armadai.yaml"),
+            "agents:\n  - name: solo\nskills:\n  - name: notes\nlink:\n  target: claude\n",
+        )
+        .unwrap();
+        std::fs::write(
+            agents.join("solo.md"),
+            "# solo\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou work alone.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: notes\ndescription: take notes\n---\n\nTake notes.\n",
+        )
+        .unwrap();
+        std::fs::write(skill_dir.join("refs/style.md"), "reference material\n").unwrap();
+        dir
     }
 }
