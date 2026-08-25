@@ -32,6 +32,16 @@ More targets (Cursor, Aider, Windsurf, Cline) may be added later.
 3. **Transform** — Converts ArmadAI agents to the target CLI's native format
 4. **Write** — Generates files in the appropriate directories
 
+### The Coordinator
+
+`link.coordinator` in the project config names one agent of the roster: the one whose prompt becomes the target's root instructions file (`.claude/CLAUDE.md`, `.opencode/instructions.md`, …) instead of a per-agent file. It is matched against each agent's **H1 title** — the `# Name` heading of its Markdown file — or that title's slug, case-insensitively. So `coordinator: dev-lead` resolves an agent titled `Dev Lead`, the same folding the linker uses to name files on disk.
+
+That target matters: `link.coordinator` is matched against the **title**, *not* against the key used in `agents:` or in `orchestration.coordinator`, which are a separate namespace. When the two differ — a roster entry `- name: lead` on a file titled `# Dev Lead` — `coordinator: lead` matches nothing, and nothing says so.
+
+`unlink` applies that identical rule whenever it has to regenerate (the no-manifest fallback below); a narrower match there would leave the root instructions file on disk as a silent orphan. Through the manifest the question never arises: `link`'s own attribution is what `unlink` reads back.
+
+A `link.coordinator` matching no agent is not an error — the target simply gets no root instructions file, and `unlink` removes none. It is also not reported, so a typo or a title/key mismatch is silent on both sides: `link` writes the per-agent files and announces success. Check that the root instructions file exists if you expected a coordinator.
+
 ## Examples
 
 ### Claude Code

@@ -108,10 +108,9 @@ pub async fn execute(
     let coordinator_name =
         coordinator_flag.or_else(|| config.link.as_ref().and_then(|l| l.coordinator.clone()));
     let mut coordinator = coordinator_name.and_then(|name| {
-        let idx = link_agents.iter().position(|a| {
-            a.name.eq_ignore_ascii_case(&name)
-                || crate::linker::slugify(&a.name).eq_ignore_ascii_case(&name)
-        })?;
+        let idx = link_agents
+            .iter()
+            .position(|a| crate::linker::name_matches_reference(&a.name, &name))?;
         Some(link_agents.remove(idx))
     });
 
