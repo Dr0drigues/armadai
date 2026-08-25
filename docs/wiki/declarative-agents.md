@@ -304,6 +304,12 @@ Skipping step 'review' ('opencode'): failed to spawn: No such file or directory 
 A step that spawns and then *exits non-zero* is a different case and still stops the pipeline: it
 ran, and what it printed on stderr is reported with the failure.
 
+If **every** step of a pipeline skips, the turn is not recorded at all — the shell says so and
+leaves the conversation history untouched. Skipping deliberately leaves the running input alone so
+the next link reads what it would have read anyway; with nothing left to answer, that input is
+still your own message, and filing it as the assistant's answer would persist it with the session
+and replay it as context on your next turn.
+
 ## Parity with the `.md` format — and its limits
 
 A declared agent and its hand-written `.md` twin are proven, by test
