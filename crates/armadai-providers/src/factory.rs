@@ -284,11 +284,67 @@ fn create_api_provider(provider: &str, _agent: &Agent) -> anyhow::Result<Box<dyn
             }
             Ok(Box::new(p))
         }
-        "openai" | "proxy" => {
-            anyhow::bail!("Provider '{provider}' is not yet implemented")
+        "openai" => {
+            let api_key = get_api_key("OPENAI_API_KEY", "openai")?;
+            let mut p = super::api::openai::OpenAiProvider::new(api_key);
+            if let Some(url) = resolve_base_url("openai", "OPENAI_BASE_URL") {
+                p.base_url = url;
+            }
+            Ok(Box::new(p))
+        }
+        "proxy" => {
+            // A proxy has no universal home: the base URL is the whole
+            // point of the provider. Env var wins, then `providers.yaml`,
+            // then the port `armadai up`'s LiteLLM listens on.
+            let base_url = resolve_base_url("proxy", "PROXY_BASE_URL")
+                .unwrap_or_else(|| DEFAULT_PROXY_BASE_URL.to_string());
+            // Optional on purpose: a gateway on localhost usually has no
+            // key, and `Authorization: Bearer ` (empty) is rejected by some
+            // servers — `ProxyProvider` sends no header at all for `None`.
+            let api_key = optional_api_key("PROXY_API_KEY", "proxy");
+            Ok(Box::new(super::proxy::ProxyProvider::new(
+                base_url, api_key,
+            )))
         }
         other => anyhow::bail!("Unknown API provider: '{other}'"),
     }
+}
+
+/// Where `armadai up`'s LiteLLM listens — the fallback base URL for
+/// `provider: proxy` when neither `PROXY_BASE_URL` nor `providers.yaml`
+/// says otherwise. Matches `DEFAULT_PROVIDERS_YAML`'s `proxy` entry.
+#[cfg(feature = "api")]
+const DEFAULT_PROXY_BASE_URL: &str = "http://localhost:4000/v1";
+
+/// Resolve an OpenAI-compatible provider's base URL: the environment
+/// variable first, then `providers.yaml`'s `providers.<key>.base_url`.
+///
+/// `anthropic` and `google` read only their own env var (they predate
+/// this and their vendor URL is fixed); `openai` and `proxy` also honour
+/// `providers.yaml` because pointing them somewhere else — a gateway, a
+/// local runtime — is the normal case rather than the exception, and that
+/// file is where a user would reasonably write it down. Documented in
+/// `docs/wiki/providers.md`.
+#[cfg(feature = "api")]
+fn resolve_base_url(config_key: &str, env_var: &str) -> Option<String> {
+    if let Ok(url) = std::env::var(env_var)
+        && !url.trim().is_empty()
+    {
+        return Some(url);
+    }
+    armadai_core::config::load_providers_config()
+        .providers
+        .get(config_key)
+        .and_then(|p| p.base_url.clone())
+        .filter(|u| !u.trim().is_empty())
+}
+
+/// Like `get_api_key`, but a missing key is a normal outcome rather than an
+/// error: an OpenAI-compatible gateway or local runtime frequently needs no
+/// authentication at all.
+#[cfg(feature = "api")]
+fn optional_api_key(env_var: &str, provider_name: &str) -> Option<String> {
+    get_api_key(env_var, provider_name).ok()
 }
 
 #[cfg(not(feature = "api"))]
@@ -458,5 +514,175 @@ mod tests {
         // Agent-level "1/sec" burst 1: the 2nd call must wait ~1s.
         assert!(start.elapsed() >= Duration::from_millis(800));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    // --- the four configurations that used to be refused (#368) ---
+    //
+    // Before this change `create_api_provider` answered `openai` and
+    // `proxy` with `bail!("... is not yet implemented")`, which also made
+    // `create_provider`'s documented "CLI not installed -> fall back to the
+    // API" promise false for `gpt` and `aider`. These tests drive the real
+    // `create_provider` entry point for all four.
+
+    #[cfg(feature = "api")]
+    mod api_wiring {
+        use super::*;
+        use armadai_core::agent::AgentMetadata;
+        use armadai_core::test_support::IsolatedConfigDir;
+
+        /// Redirect the config dir (so no real `providers.yaml`/secrets are
+        /// read) and pin the env vars named, restoring everything on drop.
+        ///
+        /// `IsolatedConfigDir` is the workspace's shared guard (#372): it
+        /// already holds the env lock, plants a temp `ARMADAI_CONFIG_DIR`
+        /// and restores it. The first version of these tests re-implemented
+        /// all of that privately — the very duplication this module's own
+        /// doc-comments call out — and stopped compiling the moment #372
+        /// moved the lock behind `test_support`.
+        fn env_scope(vars: &[(&str, Option<&str>)]) -> IsolatedConfigDir {
+            vars.iter().fold(IsolatedConfigDir::enter(), |scope, (name, value)| {
+                scope.with_var(name, *value)
+            })
+        }
+
+        fn agent_with(provider: &str, command: Option<&str>) -> Agent {
+            Agent {
+                name: "t".into(),
+                source: std::path::PathBuf::from("t.md"),
+                metadata: AgentMetadata {
+                    provider: provider.into(),
+                    model: None,
+                    command: command.map(str::to_string),
+                    args: None,
+                    temperature: 0.7,
+                    max_tokens: None,
+                    timeout: None,
+                    tags: vec![],
+                    stacks: vec![],
+                    scope: vec![],
+                    model_fallback: vec![],
+                    cost_limit: None,
+                    rate_limit: None,
+                    context_window: None,
+                    mode: None,
+                    orchestration: None,
+                    triggers: None,
+                    ring_config: None,
+                },
+                system_prompt: String::new(),
+                instructions: None,
+                output_format: None,
+                pipeline: None,
+                context: None,
+            }
+        }
+
+        #[test]
+        fn provider_openai_builds_a_real_provider_instead_of_being_refused() {
+            let _env = env_scope(&[
+                ("OPENAI_API_KEY", Some("sk-test")),
+                ("OPENAI_BASE_URL", None),
+            ]);
+
+            let provider = create_provider(&agent_with("openai", None))
+                .expect("provider: openai must build now");
+            assert_eq!(provider.metadata().name, "openai");
+            assert!(provider.metadata().supports_streaming);
+        }
+
+        /// A missing key must be reported as a missing key — the actionable
+        /// error — not as "not yet implemented".
+        #[test]
+        fn provider_openai_without_a_key_names_the_key_not_the_feature() {
+            let _env = env_scope(&[("OPENAI_API_KEY", None)]);
+
+            let err = match create_provider(&agent_with("openai", None)) {
+                Ok(_) => panic!("no key configured, yet a provider was built"),
+                Err(e) => e.to_string(),
+            };
+            assert!(err.contains("OPENAI_API_KEY"), "got: {err}");
+            assert!(!err.contains("not yet implemented"), "got: {err}");
+        }
+
+        /// The whole point of `proxy`: a gateway with no credentials at all
+        /// must still produce a usable provider.
+        #[test]
+        fn provider_proxy_builds_with_no_api_key_at_all() {
+            let _env = env_scope(&[
+                ("PROXY_API_KEY", None),
+                ("PROXY_BASE_URL", None),
+                ("OPENAI_API_KEY", None),
+            ]);
+
+            let provider =
+                create_provider(&agent_with("proxy", None)).expect("keyless proxy must build");
+            assert_eq!(provider.metadata().name, "proxy");
+        }
+
+        /// `create_provider` documents "CLI installed -> CLI, otherwise ->
+        /// API". With the CLI absent, the API fallback used to dead-end in
+        /// the `bail!`; `gpt` and `aider` now really reach the OpenAI path.
+        #[test]
+        fn gpt_and_aider_fall_back_to_the_api_when_their_cli_is_missing() {
+            let _env = env_scope(&[("OPENAI_API_KEY", Some("sk-test"))]);
+            let missing = "this_command_does_not_exist_xyz";
+            assert!(!cli_available(missing));
+
+            for tool in ["gpt", "aider"] {
+                let provider = create_provider(&agent_with(tool, Some(missing)))
+                    .unwrap_or_else(|e| panic!("{tool} API fallback failed: {e}"));
+                assert_eq!(
+                    provider.metadata().name,
+                    "openai",
+                    "{tool} must fall back to the OpenAI API backend"
+                );
+            }
+        }
+
+        #[test]
+        fn the_base_url_env_var_wins_over_providers_yaml() {
+            let env = env_scope(&[("PROXY_BASE_URL", Some("http://from-env:9/v1"))]);
+            std::fs::write(
+                env.config_dir().join("providers.yaml"),
+                "providers:\n  proxy:\n    base_url: http://from-file:8/v1\n",
+            )
+            .expect("write providers.yaml");
+
+            assert_eq!(
+                resolve_base_url("proxy", "PROXY_BASE_URL").as_deref(),
+                Some("http://from-env:9/v1")
+            );
+        }
+
+        #[test]
+        fn providers_yaml_supplies_the_base_url_when_no_env_var_is_set() {
+            let env = env_scope(&[("PROXY_BASE_URL", None)]);
+            std::fs::write(
+                env.config_dir().join("providers.yaml"),
+                "providers:\n  proxy:\n    base_url: http://from-file:8/v1\n",
+            )
+            .expect("write providers.yaml");
+
+            assert_eq!(
+                resolve_base_url("proxy", "PROXY_BASE_URL").as_deref(),
+                Some("http://from-file:8/v1")
+            );
+        }
+
+        /// Neither source configured: the caller falls back to the LiteLLM
+        /// port `armadai up` starts.
+        #[test]
+        fn a_proxy_with_nothing_configured_lands_on_the_documented_default() {
+            let _env = env_scope(&[("PROXY_BASE_URL", None)]);
+            assert_eq!(resolve_base_url("proxy", "PROXY_BASE_URL"), None);
+            assert_eq!(DEFAULT_PROXY_BASE_URL, "http://localhost:4000/v1");
+        }
+
+        /// An env var set to the empty string is not a configuration.
+        #[test]
+        fn an_empty_base_url_env_var_is_ignored() {
+            let _env = env_scope(&[("PROXY_BASE_URL", Some("   "))]);
+            assert_eq!(resolve_base_url("proxy", "PROXY_BASE_URL"), None);
+        }
     }
 }
