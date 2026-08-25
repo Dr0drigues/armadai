@@ -90,7 +90,10 @@ Available models: `claude-opus-4-6`, `claude-sonnet-4-5-20250929`, `claude-haiku
 - temperature: 0.7
 ```
 
-Available models: `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `o1`, `o3-mini` — plus anything else your endpoint serves.
+Available models: `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-mini`,
+`gpt-4.1-nano`, `o1`, `o1-mini`, `o3-mini` — plus anything else your endpoint
+serves. That is the same list `metadata().models` advertises and the same one
+the cost table prices; a test keeps the two from drifting apart.
 
 Requires `OPENAI_API_KEY` (see [Secret Management](#secret-management)). Both
 `complete()` and streaming are supported.
@@ -101,8 +104,18 @@ same code path.
 
 > **Reasoning models (`o1`, `o3`).** They reject `max_tokens` and any
 > `temperature` other than `1`. ArmadAI only sends `max_tokens` when the agent
-> declares one, so leave it out for those models; `temperature` is always sent,
-> so set `temperature: 1.0`.
+> declares one, so leave it out for those models. `temperature` **is** always
+> sent, so set `temperature: 1.0` explicitly.
+>
+> The asymmetry is a property of the domain type, not an oversight:
+> `max_tokens` is an `Option` in an agent's metadata, so "the author did not
+> ask for one" is representable and the field can simply be left off the wire.
+> `temperature` is a plain number defaulting to `0.7`, so there is no value
+> that means "unset" — omitting it would require guessing which `0.7` was
+> deliberate. Dropping it for model ids that look like reasoning models was
+> considered and rejected: a gateway can serve anything under any name, and
+> silently discarding an author's `temperature: 0.2` is worse than the clear
+> `400` OpenAI returns, which names the parameter and the value.
 
 ### Google
 
@@ -193,9 +206,12 @@ Resolved in this order, first match wins:
 2. `providers.proxy.base_url` in `providers.yaml`
 3. `http://localhost:4000/v1` (the default LiteLLM port)
 
-`openai` follows the same two-step override with `OPENAI_BASE_URL` /
-`providers.openai.base_url`. `anthropic` and `google` honour only their own
-`ANTHROPIC_BASE_URL` / `GOOGLE_BASE_URL` variable.
+All four API providers follow the same two-step override — the environment
+variable first, then `providers.<name>.base_url` in `providers.yaml`:
+`OPENAI_BASE_URL`, `PROXY_BASE_URL`, `ANTHROPIC_BASE_URL`, `GOOGLE_BASE_URL`.
+`armadai init` writes a `base_url` for all four in that file, so a value put
+there is honoured whichever provider it belongs to. A blank value is not a
+configuration and is ignored, in either source.
 
 ### Authentication is optional
 
@@ -265,6 +281,33 @@ export PROXY_BASE_URL=http://localhost:4000/v1
   `$0.00` in `armadai costs` rather than an invented figure. A response that
   carries no `usage` block at all — common on gateways and local runtimes —
   reports zero tokens and zero cost; the call itself still succeeds.
+
+  One consequence is worth knowing before you rely on a ceiling: an
+  orchestrated run's `token_budget` and `cost_limit` are enforced from those
+  same numbers, so against an endpoint that never reports `usage` they never
+  trigger, and each nested delegation is handed the full ceiling rather than
+  what is left of it. ArmadAI says so once per run — a `budget_usage_unreported`
+  warning on `--json`, and a log line otherwise — rather than letting the limit
+  look enforced.
+
+### Errors that arrive with a `200`
+
+Not every failure on this path comes with a failing status code. Ollama and
+LiteLLM in pass-through mode answer `200` with `{"error": {...}}` in the body,
+and once a *stream* has started the status line is already gone — OpenAI's own
+documented behaviour for anything that fails mid-stream is to send the error as
+an SSE frame. ArmadAI treats both as errors rather than as an empty answer:
+
+- a non-streaming `200` whose body carries an error envelope and no `choices`
+  fails with the server's own message;
+- an error frame mid-stream ends the stream with that message, instead of
+  quietly delivering the tokens received so far as if they were the whole
+  answer.
+
+The reason this needs saying is that every field of an OpenAI-shaped response
+is optional here (`usage`, `model`, even `choices`, because real servers omit
+them), so an error envelope would otherwise parse cleanly into a successful,
+empty, free run.
 
 ### Rate limits and retries
 
