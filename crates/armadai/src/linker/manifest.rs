@@ -159,10 +159,24 @@ pub struct Manifest {
 }
 
 /// `sha256:<hex>` of `content`.
+///
+/// The hex is written out byte by byte rather than through `{:x}`: sha2 0.11
+/// returns a `hybrid_array::Array`, which does not implement `LowerHex`. The
+/// output must stay identical across that change — every `digest:` already
+/// written into a project's `.armadai/link-manifest.yaml` is compared against
+/// it, and a different spelling would make `unlink` refuse to reclaim the very
+/// files `link` wrote. `digest_of_matches_the_canonical_sha256_vectors` pins
+/// that against published SHA-256 test vectors, so it holds for any version.
 pub fn digest_of(content: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content);
-    format!("sha256:{:x}", hasher.finalize())
+    let mut out = String::with_capacity(7 + 64);
+    out.push_str("sha256:");
+    for byte in hasher.finalize() {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// The result of checking a `Created` entry's digest against what is
@@ -843,6 +857,27 @@ pub fn write_files(
 
 #[cfg(test)]
 mod tests {
+
+    /// Published SHA-256 vectors (FIPS 180-4 / RFC 6234). They are properties
+    /// of the algorithm, not of the crate, so this test is what makes a sha2
+    /// major bump safe: a digest spelling that drifted would break every
+    /// manifest already on disk, and `unlink` would refuse to reclaim files
+    /// `link` itself wrote.
+    #[test]
+    fn digest_of_matches_the_canonical_sha256_vectors() {
+        assert_eq!(
+            digest_of(b""),
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            digest_of(b"abc"),
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            digest_of(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "sha256:248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
     use super::*;
 
     fn entry(path: &str, agent: &str, content: &[u8]) -> ManifestEntry {
