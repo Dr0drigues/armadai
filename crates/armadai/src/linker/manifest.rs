@@ -343,27 +343,53 @@ pub fn root_confirmed(project_root: &Path, computed_root: &Path, declared_root: 
     resolve_real(project_root, computed_root) == resolve_real(project_root, declared_root)
 }
 
-/// Why a candidate path failed [`is_trusted`] — distinguishes a manifest
-/// whose own text already escapes the trust root (forged, hand-corrupted,
-/// or otherwise wrong) from one whose text is fine but the *filesystem*
-/// changed since `link` ran (a symlink now redirects an otherwise
-/// legitimate path outside the root). Issue #348: these two causes were
-/// collapsed into a single "the manifest may be corrupt or forged"
-/// message, which is simply false for the second case — the manifest is
-/// exactly what `link` wrote, and the disk moved under it. The two causes
-/// call for different next steps from the user (fix or regenerate the
-/// manifest, versus investigate what changed on disk), so callers must
-/// keep them distinct.
+/// **Which side is at fault** when a manifest-recorded path is refused: the
+/// manifest's own text, or the filesystem it is being resolved against.
+/// Issue #348: these two causes were collapsed into a single "the manifest
+/// may be corrupt or forged" message, which is simply false for the second
+/// case — the manifest is exactly what `link` wrote, and the disk moved
+/// under it. The two call for different next steps from the user (fix or
+/// regenerate the manifest, versus investigate what changed on disk), so
+/// callers must keep them distinct.
+///
+/// Used for both refusal kinds a recorded path can hit, because the
+/// question — "is the text wrong, or did the disk move?" — is the same one
+/// either way and must be answered the same way:
+///
+/// - failing [`is_trusted`] (the path lands outside the trusted root), via
+///   [`diagnose_trust_failure`];
+/// - resolving *onto* the target's own root, via [`decide_created_dir`]'s
+///   [`CreatedDirDecision::IsTargetRoot`] — reachable by a pure filesystem
+///   mutation with the manifest untouched (replace `.claude/agents` with a
+///   symlink to `.claude`), so it must not hardcode either cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustFailure {
-    /// The path escapes the trusted root even under pure lexical
-    /// resolution (no filesystem access) — the manifest text itself names
-    /// a path outside its own root.
+    /// The manifest's own text is what puts the path where it must not be:
+    /// even under pure lexical resolution (no filesystem access) it
+    /// escapes the trusted root, or names that root itself.
     ManifestEscapesRoot,
-    /// The path stays within the trusted root under lexical resolution,
-    /// but resolving it against the real filesystem (following symlinks)
-    /// puts it outside — something on disk changed since `link` ran.
+    /// Under lexical resolution the path is exactly where it should be;
+    /// only resolving it against the real filesystem (following symlinks)
+    /// puts it outside the root, or onto the root itself — something on
+    /// disk changed since `link` ran.
     FilesystemDiverged,
+}
+
+/// Which side is at fault, given whether the recorded path's own text is
+/// already enough to condemn it: if pure lexical resolution alone lands it
+/// where it must not be, the manifest is wrong; if only resolving against
+/// the real filesystem does, the disk moved under an intact manifest.
+///
+/// One function so the two refusal kinds ([`diagnose_trust_failure`] and
+/// [`CreatedDirDecision::IsTargetRoot`]) cannot answer it differently —
+/// which is exactly the bug issue #348 found in the second one, where the
+/// cause was hardcoded to "corrupt or forged".
+fn fault_side(text_alone_condemns: bool) -> TrustFailure {
+    if text_alone_condemns {
+        TrustFailure::ManifestEscapesRoot
+    } else {
+        TrustFailure::FilesystemDiverged
+    }
 }
 
 /// Diagnose why `candidate` fails [`is_trusted`] under `target_root` — or
@@ -379,11 +405,7 @@ pub fn diagnose_trust_failure(
     }
     let lexical_root = resolve(project_root, target_root);
     let lexical_candidate = resolve(project_root, candidate);
-    if lexical_candidate.starts_with(&lexical_root) {
-        Some(TrustFailure::FilesystemDiverged)
-    } else {
-        Some(TrustFailure::ManifestEscapesRoot)
-    }
+    Some(fault_side(!lexical_candidate.starts_with(&lexical_root)))
 }
 
 /// Whether `dir` (a recorded `created_dirs` entry) is a plausible ancestor
@@ -421,15 +443,33 @@ pub fn created_dir_is_plausible(dir: &Path, entries: &[ManifestEntry]) -> bool {
 pub enum CreatedDirDecision {
     /// Safe to remove, once actually confirmed empty on disk.
     Eligible,
-    /// Refused: names the target's own root — `link` never records that
-    /// (design review R3), so a manifest claiming otherwise is simply
-    /// wrong.
-    IsTargetRoot,
+    /// Refused: resolves onto the target's own root — `link` never
+    /// records that (design review R3). Carries which side put it there
+    /// (issue #348): the manifest's text names the root outright, or the
+    /// disk has since merged a legitimately recorded subdirectory into it
+    /// (a symlink appeared). The second is reachable with the manifest
+    /// completely untouched, so this must never be reported as "corrupt
+    /// or forged" unconditionally.
+    IsTargetRoot(TrustFailure),
     /// Refused: fails the trust boundary — see [`TrustFailure`] for why.
     Untrusted(TrustFailure),
     /// Refused: doesn't correspond to any file `link` actually recorded
     /// creating — see [`created_dir_is_plausible`].
     Implausible,
+}
+
+/// The order `created_dirs` must be walked in: deepest first, so a child
+/// directory is always removed before the parent whose emptiness its own
+/// removal is what makes possible.
+///
+/// Extracted (issue #348) because `unlink`'s real pass sorted and its
+/// `--dry-run` preview did not, so the two listed the same recorded
+/// directories in different orders — a preview whose output doesn't match
+/// the run it previews. One function, called by both.
+pub fn deepest_first(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut sorted = dirs.to_vec();
+    sorted.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    sorted
 }
 
 /// Decide `dir`'s fate against `target_root`'s trust boundary and
@@ -445,7 +485,14 @@ pub fn decide_created_dir(
     let resolved_target_root = resolve_real(project_root, target_root);
     let dir_path = resolve_real(project_root, dir);
     if dir_path == resolved_target_root {
-        return CreatedDirDecision::IsTargetRoot;
+        // Same lexical-versus-real split `diagnose_trust_failure` makes,
+        // for the same reason (issue #348): if the recorded text already
+        // names the root, the manifest is wrong; if only the resolved
+        // paths coincide, the manifest is intact and the filesystem
+        // merged the two.
+        return CreatedDirDecision::IsTargetRoot(fault_side(
+            resolve(project_root, dir) == resolve(project_root, target_root),
+        ));
     }
     if let Some(cause) = diagnose_trust_failure(project_root, target_root, dir) {
         return CreatedDirDecision::Untrusted(cause);
@@ -1499,5 +1546,140 @@ mod tests {
             digest: None,
         }];
         assert!(!created_dir_is_plausible(Path::new(".claude"), &entries));
+    }
+
+    // ── issue #348: the two causes IsTargetRoot can have ──────────────
+
+    /// A manifest that literally records the target's own root is the
+    /// manifest's own fault.
+    ///
+    /// Mutation this catches: hardcode `IsTargetRoot`'s cause to
+    /// `FilesystemDiverged` and this fails; its sibling below fails on the
+    /// opposite hardcoding, so neither value can be pinned by accident.
+    #[test]
+    fn decide_created_dir_blames_the_manifest_when_its_text_names_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target_root = root.join(".claude");
+        std::fs::create_dir_all(target_root.join("agents")).unwrap();
+        let entries = vec![entry(".claude/agents/solo.md", "solo", b"body")];
+
+        assert_eq!(
+            decide_created_dir(root, &target_root, Path::new(".claude"), &entries),
+            CreatedDirDecision::IsTargetRoot(TrustFailure::ManifestEscapesRoot)
+        );
+    }
+
+    /// The same arm, reached with the manifest untouched: a recorded
+    /// subdirectory that a symlink has since collapsed onto the root. This
+    /// is a filesystem change, and `unlink` must not call it a forged
+    /// manifest.
+    ///
+    /// Mutation this catches: hardcode `IsTargetRoot`'s cause to
+    /// `ManifestEscapesRoot` — the value the code shipped with — and this
+    /// fails.
+    #[test]
+    #[cfg(unix)]
+    fn decide_created_dir_blames_the_filesystem_when_a_symlink_collapsed_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target_root = root.join(".claude");
+        std::fs::create_dir_all(&target_root).unwrap();
+        // `.claude/agents -> .` resolves to `.claude` itself, while the
+        // recorded text `.claude/agents` names a subdirectory.
+        std::os::unix::fs::symlink(".", target_root.join("agents")).unwrap();
+        let entries = vec![entry(".claude/agents/solo.md", "solo", b"body")];
+
+        assert_eq!(
+            decide_created_dir(root, &target_root, Path::new(".claude/agents"), &entries),
+            CreatedDirDecision::IsTargetRoot(TrustFailure::FilesystemDiverged)
+        );
+    }
+
+    // ── issue #348: created_dirs removal order ────────────────────────
+
+    /// `created_dirs` must be walked deepest first, so removing a child is
+    /// what makes its parent empty enough to remove in the same pass.
+    /// `unlink`'s real pass sorted and its `--dry-run` preview did not, so
+    /// the two listed the same directories in different orders; both now
+    /// call this.
+    ///
+    /// Mutation this catches: drop the `Reverse` (or the sort entirely) and
+    /// the returned order no longer puts the deepest path first.
+    #[test]
+    fn deepest_first_orders_children_before_their_parents() {
+        let dirs = vec![
+            PathBuf::from(".claude"),
+            PathBuf::from(".claude/skills/writer/refs"),
+            PathBuf::from(".claude/agents"),
+            PathBuf::from(".claude/skills/writer"),
+        ];
+        assert_eq!(
+            deepest_first(&dirs),
+            vec![
+                PathBuf::from(".claude/skills/writer/refs"),
+                PathBuf::from(".claude/skills/writer"),
+                PathBuf::from(".claude/agents"),
+                PathBuf::from(".claude"),
+            ]
+        );
+    }
+
+    /// The counterpart of
+    /// `write_files_relink_of_untouched_own_output_stays_created_even_when_content_changed_upstream`:
+    /// the previous-digest reclaim added for coordination note 2 must stay
+    /// unable to claim a file `link` never wrote. A hand-written file is
+    /// recorded `skipped` with no digest, so no digest of it ever enters
+    /// the reclaim's map, and repeated `link` runs — with the generated
+    /// content changing every time — must leave that verdict alone.
+    ///
+    /// Mutation this catches: have the differing-content branch record
+    /// `Outcome::Created` with the digest of what is on disk instead of
+    /// `Outcome::Skipped`/`None`, i.e. let `link` claim whatever it finds
+    /// in its way. Every assertion in the loop below fails on the first
+    /// pass.
+    #[test]
+    fn write_files_never_claims_a_hand_written_file_however_often_link_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target_root = root.join(".claude");
+        let path = target_root.join("agents/solo.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let hand_written = "mine, not link's";
+        std::fs::write(&path, hand_written).unwrap();
+
+        for pass in 1..=3 {
+            let generated = format!("generated revision {pass}");
+            let outcomes = write_files(
+                root,
+                "claude",
+                Path::new(".claude"),
+                &target_root,
+                vec![(path.clone(), generated, ProducedBy::agent("solo"))],
+                false,
+            )
+            .unwrap();
+            assert_eq!(outcomes, vec![FileOutcome::SkippedExisting(path.clone())]);
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                hand_written,
+                "pass {pass}: the file itself must be untouched"
+            );
+            match lookup_target(root, "claude") {
+                Lookup::Found(found) => {
+                    assert_eq!(
+                        found.entries[0].outcome,
+                        Outcome::Skipped,
+                        "pass {pass}: a file link never wrote stays hand-written"
+                    );
+                    assert_eq!(
+                        found.entries[0].digest, None,
+                        "pass {pass}: and carries no digest — a digest is exactly what \
+                         would authorise unlink to delete it"
+                    );
+                }
+                Lookup::Fallback => panic!("write_files must leave a usable manifest behind"),
+            }
+        }
     }
 }

@@ -64,6 +64,65 @@ mod tests {
         std::fs::read_to_string(manifest_path(root)).expect("manifest must exist and be readable")
     }
 
+    /// The `outcome:` the manifest records for one entry, by path.
+    ///
+    /// `read_manifest(..).contains("outcome: skipped")` cannot say *which*
+    /// entry it found, so a test with more than one entry can pass on the
+    /// wrong one. Relies on `ManifestEntry`'s field order (path,
+    /// produced_by, outcome, digest), which is what serde serialises.
+    fn outcome_for(manifest: &str, entry_path: &str) -> String {
+        for chunk in manifest.split("- path: ").skip(1) {
+            let (first_line, rest) = chunk.split_once('\n').unwrap_or((chunk, ""));
+            if first_line.trim() != entry_path {
+                continue;
+            }
+            for line in rest.lines() {
+                if let Some(value) = line.trim().strip_prefix("outcome: ") {
+                    return value.trim().to_string();
+                }
+            }
+            panic!("entry {entry_path} carries no outcome in:\n{manifest}");
+        }
+        panic!("no manifest entry for {entry_path} in:\n{manifest}");
+    }
+
+    /// The `created_dirs` list the manifest records for its single target
+    /// (every test using this links exactly one target).
+    fn created_dirs_of(manifest: &str) -> Vec<String> {
+        let after = manifest
+            .split_once("created_dirs:")
+            .unwrap_or_else(|| panic!("manifest has no created_dirs:\n{manifest}"))
+            .1;
+        let (same_line, rest) = after.split_once('\n').unwrap_or((after, ""));
+        if same_line.trim() == "[]" {
+            return Vec::new();
+        }
+        let mut dirs = Vec::new();
+        for line in rest.lines() {
+            match line.trim().strip_prefix("- ") {
+                Some(value) => dirs.push(value.trim().to_string()),
+                None => break,
+            }
+        }
+        dirs
+    }
+
+    /// The paths the manifest records as entries, in order.
+    fn entry_paths_of(manifest: &str) -> Vec<String> {
+        manifest
+            .split("- path: ")
+            .skip(1)
+            .map(|chunk| {
+                chunk
+                    .split_once('\n')
+                    .map(|(first, _)| first)
+                    .unwrap_or(chunk)
+                    .trim()
+                    .to_string()
+            })
+            .collect()
+    }
+
     /// A project with a coordinator ("coord") and two members
     /// ("member-a", "member-b"), targeting `claude`.
     fn project_with_coordinator_and_two_members() -> tempfile::TempDir {
@@ -601,7 +660,7 @@ mod tests {
         .join("\n");
         std::fs::write(manifest_path(&root), forged_manifest).unwrap();
 
-        let (unlink_ok, _, unlink_stderr) =
+        let (unlink_ok, unlink_stdout, unlink_stderr) =
             run_armadai(&root, &config, &["unlink", "--target", "claude"]);
         // Design review R5: refusing a forged entry is a failure to
         // complete the requested work, not a partial success — the
@@ -624,6 +683,29 @@ mod tests {
         assert!(
             unlink_stderr.contains("outside its trusted root"),
             "unlink must report the refused entry: stderr={unlink_stderr}"
+        );
+        // The *cause*, not only the refusal (issue #348): this manifest was
+        // hand-crafted, so the manifest is what must be blamed. Without
+        // this, mutating `diagnose_trust_failure` to always answer
+        // `FilesystemDiverged` left the whole suite green — the two
+        // messages the sibling fix split apart were interchangeable again.
+        assert!(
+            unlink_stderr.contains("corrupt or forged"),
+            "a hand-crafted manifest entry is the manifest's own fault and must be \
+             reported as such: stderr={unlink_stderr}"
+        );
+        // The refusal summary must sit on the same stream as the refusals
+        // it points at: as a `println!` it told a `2>/dev/null` caller to
+        // read reasons that stream had just discarded.
+        assert!(
+            unlink_stderr.contains("manifest item(s) were refused"),
+            "the refusal summary belongs on stderr, beside the per-item reasons: \
+             stderr={unlink_stderr}"
+        );
+        assert!(
+            !unlink_stdout.contains("manifest item(s) were refused"),
+            "and must not be left on stdout, pointing at reasons stdout never \
+             carried: stdout={unlink_stdout}"
         );
     }
 
@@ -914,6 +996,20 @@ mod tests {
             "the target's own root must never be removed, even when a manifest's \
              created_dirs names it directly"
         );
+        // The other half of the two-cause split: this manifest really does
+        // name the root in its own text, so this is the case that *is* the
+        // manifest's fault. Its sibling test
+        // (`a_symlink_merging_a_recorded_dir_into_the_target_root_blames_the_filesystem`)
+        // pins the opposite verdict for an intact manifest, and one of the
+        // two fails if the cause is hardcoded either way.
+        assert!(
+            unlink_stderr.contains("names the target's own root"),
+            "a manifest that literally records the root names it: stderr={unlink_stderr}"
+        );
+        assert!(
+            unlink_stderr.contains("corrupt or forged"),
+            "and that is the manifest's own fault: stderr={unlink_stderr}"
+        );
     }
 
     /// Design review R2 (critical in effect): lexical normalisation alone
@@ -1100,23 +1196,41 @@ mod tests {
     /// by hand in two separate design reviews, never pinned by an
     /// automated test until issue #348.
     ///
-    /// Mutation this catches: any future cleanup logic that walks up from
-    /// a deleted generated file and removes an ancestor merely because it
-    /// is empty *of generated files* — without the explicit "never the
-    /// target's own root" exclusion `unlink_from_manifest` applies to
-    /// `created_dirs` — would delete `.claude/settings.json`,
-    /// `.claude/commands/my-command.md`, or `.claude/` itself.
+    /// Mutation this catches: drop the `if current.exists() { break; }`
+    /// early-out from `linker::manifest::create_dir_all_recording`, so it
+    /// reports directories it merely *walked past* rather than only the
+    /// ones it created. `created_dirs` then names the user's own
+    /// pre-existing `.claude/agents/`, the manifest assertion below fails,
+    /// and — because a `created_dirs` entry is all `unlink` needs to
+    /// justify removing an empty directory — the directory-survival
+    /// assertion fails too.
+    ///
+    /// Its own earlier version could not fail, and this is why: the guards
+    /// it claimed to protect (`decide_created_dir`'s `IsTargetRoot`, and
+    /// `write_files`' refusal to record the root) are unreachable for a
+    /// `.claude/` that already existed, because
+    /// `create_dir_all_recording` never reports a directory it did not
+    /// create. Both guards could be deleted outright with that test still
+    /// green (measured). The load-bearing invariant here is one layer
+    /// earlier — `link` must not *record* a pre-existing user directory as
+    /// created — so that is what this now asserts, on the manifest `link`
+    /// wrote and on the directory that survives because of it.
     #[test]
     fn a_preexisting_user_claude_directory_survives_link_then_unlink_intact() {
         let dir = project_minimal();
         let root = dir.path().join("project");
         let config = isolated_config(dir.path());
 
-        // The user's own `.claude/` predates `link` entirely, with
-        // content that has nothing to do with anything the linker would
-        // generate — not even a colliding filename.
+        // The user's own `.claude/` predates `link` entirely: unrelated
+        // content, plus — and this is the part that makes the test
+        // load-bearing — an `agents/` directory they created themselves
+        // and left empty, which is exactly where `link` is about to write.
+        // `link` therefore creates *nothing*, and the manifest must say
+        // so; a `created_dirs` that claimed this directory would hand
+        // `unlink` a licence to remove it once solo.md is gone.
         let claude_dir = root.join(".claude");
         std::fs::create_dir_all(claude_dir.join("commands")).unwrap();
+        std::fs::create_dir_all(claude_dir.join("agents")).unwrap();
         std::fs::write(claude_dir.join("settings.json"), "{\"theme\":\"dark\"}\n").unwrap();
         std::fs::write(
             claude_dir.join("commands/my-command.md"),
@@ -1131,6 +1245,23 @@ mod tests {
         let solo_file = root.join(".claude/agents/solo.md");
         assert!(solo_file.is_file(), "link must have generated solo's file");
 
+        // The recorded effect, not just the final filesystem state: every
+        // directory this write needed already existed, so `link` created
+        // none and `created_dirs` must be empty.
+        let manifest = read_manifest(&root);
+        assert_eq!(
+            created_dirs_of(&manifest),
+            Vec::<String>::new(),
+            "link must record only directories it actually created — a pre-existing \
+             user directory it merely wrote into is not one of them: {manifest}"
+        );
+        assert_eq!(
+            entry_paths_of(&manifest),
+            vec![".claude/agents/solo.md".to_string()],
+            "only the file link generated may be recorded as an entry — nothing the \
+             user put in .claude/ themselves: {manifest}"
+        );
+
         let (unlink_ok, _, unlink_stderr) =
             run_armadai(&root, &config, &["unlink", "--target", "claude"]);
         assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
@@ -1138,6 +1269,11 @@ mod tests {
         assert!(
             !solo_file.exists(),
             "the genuinely generated file must still be reclaimed"
+        );
+        assert!(
+            claude_dir.join("agents").is_dir(),
+            "the user's own pre-existing (and now empty again) .claude/agents/ must \
+             survive — unlink may only remove directories link recorded creating"
         );
         assert!(
             claude_dir.is_dir(),
@@ -1313,6 +1449,26 @@ mod tests {
             "the symlink itself must be present on disk before unlink runs"
         );
 
+        // The preview has to say the same thing. Emptying
+        // `print_manifest_dry_run`'s own `is_symlink()` branch left the
+        // whole suite green — a surviving mutant on the very fix this
+        // chantier had just shipped.
+        let (dry_ok, dry_stdout, dry_stderr) = run_armadai(
+            &root,
+            &config,
+            &["unlink", "--target", "claude", "--dry-run"],
+        );
+        assert!(dry_ok, "the preview must succeed: stderr={dry_stderr}");
+        assert!(
+            dry_stdout.contains("0 would be removed, 1 would be kept, 0 already absent"),
+            "the preview must count the dangling link kept, exactly as the real pass \
+             does below: stdout={dry_stdout}"
+        );
+        assert!(
+            dry_stdout.contains("broken symlink"),
+            "and must say why: stdout={dry_stdout}"
+        );
+
         let (unlink_ok, unlink_stdout, unlink_stderr) =
             run_armadai(&root, &config, &["unlink", "--target", "claude"]);
         assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
@@ -1478,5 +1634,328 @@ mod tests {
              still be reclaimed by unlink, even though a later link's \
              regeneration would have produced different content"
         );
+    }
+    /// 2nd bullet, sibling branch: `decide_created_dir`'s `IsTargetRoot`
+    /// arm is reachable **by a pure filesystem mutation with the manifest
+    /// untouched** — replace a legitimately recorded `.claude/agents` with
+    /// a symlink to `.claude` and the recorded directory now resolves onto
+    /// the target's own root. The cause used to be hardcoded there ("the
+    /// manifest may be corrupt or forged"), so this scenario produced
+    /// exactly the false accusation the sibling fix removed from the
+    /// entry-level guard — in the very PR that removed it.
+    ///
+    /// Mutation this catches: replace `CreatedDirDecision::IsTargetRoot`'s
+    /// computed cause with a hardcoded
+    /// `TrustFailure::ManifestEscapesRoot` (or restore the hardcoded
+    /// message in either of `unlink`'s two `IsTargetRoot` arms) and both
+    /// the "corrupt or forged" assertions below fail — on the real pass
+    /// and on `--dry-run`, which is why both are exercised here.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_merging_a_recorded_dir_into_the_target_root_blames_the_filesystem() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        // Precondition: the manifest legitimately records `.claude/agents`
+        // as a directory `link` created. Nothing below edits the manifest.
+        let manifest = read_manifest(&root);
+        assert_eq!(
+            created_dirs_of(&manifest),
+            vec![".claude/agents".to_string()],
+            "link must have recorded the directory it created: {manifest}"
+        );
+
+        // Only the filesystem moves: `.claude/agents` becomes a symlink to
+        // its own parent, so the recorded directory resolves onto the
+        // target root without the manifest naming the root at all.
+        let claude_agents = root.join(".claude/agents");
+        std::fs::remove_dir_all(&claude_agents).unwrap();
+        std::os::unix::fs::symlink(".", &claude_agents).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&claude_agents).unwrap(),
+            std::fs::canonicalize(root.join(".claude")).unwrap(),
+            "the symlink must really collapse the recorded directory onto the root"
+        );
+
+        let (dry_ok, dry_stdout, dry_stderr) = run_armadai(
+            &root,
+            &config,
+            &["unlink", "--target", "claude", "--dry-run"],
+        );
+        assert!(
+            !dry_ok,
+            "the preview must refuse too, exactly like the real pass: \
+             stdout={dry_stdout} stderr={dry_stderr}"
+        );
+        assert!(
+            dry_stdout.contains("now resolves to the target's own root"),
+            "the preview must say the directory *resolves onto* the root, not that it \
+             names it: stdout={dry_stdout}"
+        );
+        assert!(
+            !dry_stdout.contains("corrupt or forged"),
+            "the manifest is byte-for-byte what link wrote — the preview must not \
+             accuse it: stdout={dry_stdout}"
+        );
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(
+            !unlink_ok,
+            "unlink must refuse and exit non-zero: stderr={unlink_stderr}"
+        );
+        assert!(
+            unlink_stderr.contains("now resolves to the target's own root"),
+            "the real pass must say the same thing its preview said: \
+             stderr={unlink_stderr}"
+        );
+        assert!(
+            unlink_stderr.contains("something on the filesystem has changed"),
+            "the user must be pointed at the disk, which is what actually moved: \
+             stderr={unlink_stderr}"
+        );
+        assert!(
+            !unlink_stderr.contains("corrupt or forged"),
+            "the manifest is byte-for-byte what link wrote — it must not be blamed \
+             for a filesystem change it had nothing to do with: stderr={unlink_stderr}"
+        );
+
+        // The symlink itself is left alone: refusing means touching nothing.
+        assert!(claude_agents.symlink_metadata().is_ok());
+    }
+
+    /// 4th bullet, the half `created_dir_is_plausible` does **not** cover:
+    /// that check asks whether a recorded directory is an ancestor of some
+    /// recorded `Created` entry — it never asks whether that entry itself
+    /// passed the trust boundary. A manifest can therefore make an
+    /// out-of-project directory "plausible" simply by forging an entry
+    /// under it, which is why `decide_created_dir` must keep its own trust
+    /// check rather than lean on plausibility.
+    ///
+    /// Mutation this catches: delete the `Untrusted` arm from
+    /// `decide_created_dir` (its `diagnose_trust_failure` early return).
+    /// The forged directory below then reads as plausible — the forged
+    /// entry `../victim-empty/ghost.md` sits under it — and is removed for
+    /// being merely empty, so the directory-survival assertion fails.
+    /// Measured: with that arm deleted and no test like this one, the full
+    /// suite stayed green.
+    #[test]
+    fn forged_created_dirs_outside_the_trusted_root_is_refused() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let solo_file = root.join(".claude/agents/solo.md");
+        let solo_digest = sha256_digest(&std::fs::read(&solo_file).unwrap());
+
+        // An empty directory outside the project entirely — a real one a
+        // user might own, which the forged manifest below claims `link`
+        // created and therefore may remove.
+        let victim_dir = dir.path().join("victim-empty");
+        std::fs::create_dir_all(&victim_dir).unwrap();
+
+        let forged_manifest = [
+            "version: 1",
+            "targets:",
+            "  claude:",
+            "    linked_at: \"2026-01-01T00:00:00Z\"",
+            "    root: .claude",
+            "    created_dirs:",
+            "      - ../victim-empty",
+            "    entries:",
+            "      - path: .claude/agents/solo.md",
+            "        produced_by: { kind: agent, name: solo }",
+            "        outcome: created",
+            &format!("        digest: \"{solo_digest}\""),
+            // Present only to make the forged directory pass
+            // `created_dir_is_plausible` — it is an ancestor of a recorded
+            // `created` entry. Nothing on disk answers to this path.
+            "      - path: ../victim-empty/ghost.md",
+            "        produced_by: { kind: agent, name: solo }",
+            "        outcome: created",
+            &format!("        digest: \"{solo_digest}\""),
+            "",
+        ]
+        .join("\n");
+        std::fs::write(manifest_path(&root), forged_manifest).unwrap();
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(
+            !unlink_ok,
+            "unlink must exit non-zero for the refused items: stderr={unlink_stderr}"
+        );
+
+        assert!(
+            victim_dir.is_dir(),
+            "an empty directory outside the trusted root must survive, however \
+             plausible the manifest's own entries make it look"
+        );
+        assert!(
+            unlink_stderr.contains("recorded directory '../victim-empty'"),
+            "unlink must name the refused directory, not only the refused entry: \
+             stderr={unlink_stderr}"
+        );
+        // Control: the one legitimate entry is still reclaimed.
+        assert!(!solo_file.exists());
+    }
+
+    /// The #342 fallback is the *degraded* mode — no manifest, so odd
+    /// trees are likelier, not less — and it reported a dangling symlink
+    /// as "already absent" long after the manifest path stopped (issue
+    /// #348's 3rd bullet, whose text restricts it to neither path). The
+    /// link is present on disk and its content can never be compared with
+    /// what `link` would generate, so the guard's own conservative "kept"
+    /// outcome applies, with an accurate reason.
+    ///
+    /// Mutation this catches: remove the `path.is_symlink()` branch from
+    /// either of `unlink_via_fallback`'s two existence checks (the real
+    /// pass's or its `--dry-run` preview's) and the corresponding count
+    /// assertion below flips back to "already absent".
+    #[test]
+    #[cfg(unix)]
+    fn the_fallback_reports_a_broken_symlink_as_kept_not_absent() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let solo_file = root.join(".claude/agents/solo.md");
+        std::fs::remove_file(&solo_file).unwrap();
+        std::os::unix::fs::symlink(root.join("does-not-exist.md"), &solo_file).unwrap();
+
+        // Drop the manifest so `unlink` takes the #342 fallback — the
+        // path this test is about.
+        std::fs::remove_dir_all(root.join(".armadai")).unwrap();
+
+        let (dry_ok, dry_stdout, dry_stderr) = run_armadai(
+            &root,
+            &config,
+            &["unlink", "--target", "claude", "--dry-run"],
+        );
+        assert!(dry_ok, "the preview must succeed: stderr={dry_stderr}");
+        assert!(
+            dry_stderr.contains("No link manifest found"),
+            "this test is only meaningful on the fallback path: stderr={dry_stderr}"
+        );
+        assert!(
+            dry_stdout.contains("0 would be removed, 1 would be kept, 0 already absent"),
+            "a dangling link is present on disk — the preview must count it kept, \
+             not absent: stdout={dry_stdout}"
+        );
+        assert!(
+            dry_stdout.contains("broken symlink"),
+            "the preview must say why it would be kept: stdout={dry_stdout}"
+        );
+
+        let (unlink_ok, unlink_stdout, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+        assert!(
+            unlink_stdout.contains("0 deleted, 1 kept, 0 already absent"),
+            "the real pass must count it exactly as its own preview did: \
+             stdout={unlink_stdout}"
+        );
+        assert!(
+            unlink_stdout.contains("broken symlink"),
+            "unlink must explain why the dangling link was kept: \
+             stdout={unlink_stdout}"
+        );
+        assert!(
+            solo_file.symlink_metadata().is_ok(),
+            "the dangling symlink must still be on disk, reported rather than \
+             miscounted as an unrelated absence"
+        );
+    }
+
+    /// The invariant the `previous_digests` reclaim in
+    /// `linker::manifest::write_files` must never move (issue #348,
+    /// coordination note 2): that reclaim exists so `link`'s *own*
+    /// untouched output keeps its `created` attribution when the upstream
+    /// source changes, and it must stay unable to claim a file `link`
+    /// never wrote. A hand-written file therefore stays `skipped` across
+    /// any number of `link` runs, however often the generated content
+    /// changes underneath it.
+    ///
+    /// Mutation this catches: make `write_files`' final differing-content
+    /// branch record `Outcome::Created` with the on-disk digest instead of
+    /// `Outcome::Skipped`/`None` — i.e. let `link` claim whatever it finds
+    /// in its way. Both the manifest assertions and the file-survival
+    /// assertion below fail. No test pinned this before; the reclaim was
+    /// added with only its own positive case covered.
+    #[test]
+    fn a_hand_written_file_stays_skipped_across_repeated_links() {
+        let dir = project_with_coordinator_and_two_members();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let claude_dir = root.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        let hand_written = "# My own notes\n\nDo not touch this file, it is mine.\n";
+        std::fs::write(claude_dir.join("CLAUDE.md"), hand_written).unwrap();
+
+        for pass in 1..=3 {
+            // Change the coordinator's source between passes so the
+            // content `link` would generate for CLAUDE.md differs every
+            // time — the situation the reclaim is about, applied to a file
+            // that is not link's to reclaim.
+            std::fs::write(
+                root.join("agents/coord.md"),
+                format!(
+                    "# coord\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\n\
+                     You coordinate, revision {pass}.\n"
+                ),
+            )
+            .unwrap();
+
+            let (link_ok, _, link_stderr) =
+                run_armadai(&root, &config, &["link", "--target", "claude"]);
+            assert!(
+                link_ok,
+                "link pass {pass} must succeed: stderr={link_stderr}"
+            );
+
+            let manifest = read_manifest(&root);
+            assert_eq!(
+                outcome_for(&manifest, ".claude/CLAUDE.md"),
+                "skipped",
+                "pass {pass}: a file link never wrote must stay recorded as \
+                 hand-written, whatever the manifest already said: {manifest}"
+            );
+            assert!(
+                !manifest.contains(&sha256_digest(hand_written.as_bytes())),
+                "pass {pass}: link must not record a digest for content it did not \
+                 write — that digest is what would authorise deleting it: {manifest}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap(),
+                hand_written,
+                "pass {pass}: the file itself must be untouched"
+            );
+        }
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+        assert_eq!(
+            std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap(),
+            hand_written,
+            "three links later, the hand-written file must still be there, untouched"
+        );
+        // Control: the generated files are still reclaimed.
+        assert!(!root.join(".claude/agents/member-a.md").exists());
+        assert!(!root.join(".claude/agents/member-b.md").exists());
     }
 }
