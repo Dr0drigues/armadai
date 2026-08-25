@@ -1390,10 +1390,24 @@ async fn execute_pipeline_steps(
             .spawn()
         {
             Ok(child) => child,
+            // One step lost, chain intact — the same bargain
+            // `StepPlan::NotRelayable` strikes for a step the relay can see
+            // in advance it cannot run (#364). A binary an agent declares
+            // and the machine simply does not have is only discoverable
+            // here, and answering it with `return Ok(())` charged every
+            // remaining link for one missing executable (#366).
+            //
+            // `current_input` is left untouched, so the next link reads what
+            // it would have read anyway. The message names the step and the
+            // command, because a bare "Failed to spawn" in a multi-step
+            // pipeline says neither which step lost nor what was missing.
             Err(e) => {
-                app.update_last_assistant(&format!("Failed to spawn: {}", e));
-                app.set_loading(false);
-                return Ok(());
+                app.update_last_assistant(&format!(
+                    "Skipping step '{}' ('{}'): failed to spawn: {}",
+                    step.name, resolved.cmd, e
+                ));
+                terminal.draw(|f| app.render(f))?;
+                continue;
             }
         };
 
@@ -2204,5 +2218,151 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------
+    // #366, adjacent 1: a step whose binary is genuinely missing costs
+    // that step, not every step after it.
+    //
+    // `execute_pipeline_steps` takes a concrete
+    // `Terminal<CrosstermBackend<Stdout>>` and, once a step has spawned,
+    // reads real crossterm events — which is why this exercises only
+    // steps that *fail* to spawn: that path returns before the stream
+    // loop, so no terminal input is ever read. A fixed viewport is used
+    // (rather than `Terminal::new`, which asks the backend for a size)
+    // so the test needs no controlling terminal, in CI as locally.
+    // -----------------------------------------------------------------
+
+    /// Points `ARMADAI_CONFIG_DIR` at a fresh temp dir for the guard's
+    /// lifetime, restoring it on drop, serialised on the workspace-wide
+    /// `ENV_MUTEX` (see `shell::wizard`'s own guard). Without it,
+    /// `execute_pipeline_steps`'s closing `save_current_session` would
+    /// write this test's session into the developer's real
+    /// `~/.config/armadai/sessions/` (#267).
+    struct IsolatedConfigDir {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        orig: Option<String>,
+        _tmp: tempfile::TempDir,
+    }
+
+    impl IsolatedConfigDir {
+        fn enter() -> Self {
+            // Poison-tolerant: `ENV_MUTEX` guards `()` only, so a panicking
+            // prior holder leaves no inconsistent state — only phantom
+            // failures if the poison is honoured.
+            let lock = armadai_core::config::ENV_MUTEX
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
+            let tmp = tempfile::tempdir().unwrap();
+            // SAFETY: serialised via ENV_MUTEX above.
+            unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", tmp.path()) };
+            Self {
+                _lock: lock,
+                orig,
+                _tmp: tmp,
+            }
+        }
+    }
+
+    impl Drop for IsolatedConfigDir {
+        fn drop(&mut self) {
+            // SAFETY: still under the guard held by `self._lock`.
+            unsafe {
+                match &self.orig {
+                    Some(v) => std::env::set_var("ARMADAI_CONFIG_DIR", v),
+                    None => std::env::remove_var("ARMADAI_CONFIG_DIR"),
+                }
+            }
+        }
+    }
+
+    /// A pipeline step in `provider:` mode naming `cmd`.
+    fn provider_step(name: &str, cmd: &str) -> armadai_core::project::PipelineStep {
+        armadai_core::project::PipelineStep {
+            name: name.to_string(),
+            prompt: None,
+            providers: vec![armadai_core::project::ShellProviderEntry {
+                provider: cmd.to_string(),
+                ..Default::default()
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn a_step_whose_binary_is_missing_costs_that_step_not_the_rest_of_the_chain() {
+        // `StepPlan::NotRelayable` (#364) already skips a step the relay can
+        // see in advance it cannot run. A binary that an agent *declares*
+        // and the machine simply does not have is only discovered at spawn
+        // time — and that was answered with `return Ok(())`, so one missing
+        // executable cancelled every remaining link. Same bargain, same
+        // outcome: one step lost, chain intact.
+        let _config = IsolatedConfigDir::enter();
+
+        // A *fixed, empty* viewport, for two reasons. Fixed, because
+        // `Terminal::new` asks the backend for a size and the crossterm
+        // backend needs a controlling terminal to answer — CI has none.
+        // Empty, because this backend writes to the real `io::Stdout`,
+        // which libtest does NOT capture (it only redirects the `print!`
+        // macros): a viewport with cells in it repaints an 80x24 frame over
+        // whatever terminal is running the suite. Nothing here asserts on
+        // pixels — only on what the session was told — so zero area costs
+        // the test nothing.
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 0, 0)),
+            },
+        )
+        .unwrap();
+        let mut app = ShellApp::new("test".into());
+        let mut runner = ShellRunner::new(super::super::runner::RunnerConfig::default());
+
+        // Deliberately implausible names so no machine can happen to have
+        // one on its PATH, and mutually unconfusable so the assertions
+        // cannot mistake one step for the other.
+        let steps = vec![
+            provider_step("first", "armadai-absent-binary-alpha"),
+            provider_step("second", "armadai-absent-binary-omega"),
+        ];
+
+        execute_pipeline_steps(
+            &mut terminal,
+            &mut app,
+            &mut runner,
+            "hello",
+            &steps,
+            "test-session",
+            "/tmp",
+            "test",
+            "test-model",
+        )
+        .await
+        .unwrap();
+
+        let messages = app.message_contents();
+        let shown = messages.join("\n");
+        let skipped = |step: &str, cmd: &str| {
+            messages
+                .iter()
+                .any(|m| m.contains(&format!("Skipping step '{step}'")) && m.contains(cmd))
+        };
+
+        assert!(
+            skipped("first", "armadai-absent-binary-alpha"),
+            "the first step's failure must be reported, naming both the step that \
+             lost and the binary that was missing — a bare 'Failed to spawn' in a \
+             multi-step pipeline says neither, got: {shown}"
+        );
+        assert!(
+            skipped("second", "armadai-absent-binary-omega"),
+            "the SECOND step must still have been attempted, and reported the same \
+             way, after the first failed to spawn — a missing executable costs its \
+             own step, not every step after it, got: {shown}"
+        );
+        assert!(
+            shown.contains("Pipeline step 2/2"),
+            "the second step must be announced, i.e. reached at all, got: {shown}"
+        );
     }
 }

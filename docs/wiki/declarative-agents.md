@@ -282,6 +282,18 @@ spawn at all. Such a step is **skipped with an explanation** and the rest of the
 step is lost, not the pipeline. Run those agents with `armadai run <name>`, which builds the API
 client instead of relaying a CLI.
 
+A command that *is* named but is not installed on this machine gets the same treatment. It can only
+be discovered when the spawn fails, and that used to end the whole pipeline; now it costs its own
+step, naming the step and the missing binary, and the next link reads what it would have read
+anyway:
+
+```
+Skipping step 'review' ('opencode'): failed to spawn: No such file or directory (os error 2)
+```
+
+A step that spawns and then *exits non-zero* is a different case and still stops the pipeline: it
+ran, and what it printed on stderr is reported with the failure.
+
 ## Parity with the `.md` format — and its limits
 
 A declared agent and its hand-written `.md` twin are proven, by test
