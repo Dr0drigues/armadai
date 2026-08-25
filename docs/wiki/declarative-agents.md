@@ -159,6 +159,11 @@ fine elsewhere. But the three commands that can hit one don't all react the same
   guess which side of a collision you meant: naming a colliding agent **hard-fails** (exit 1),
   naming both `agents.yaml` and the colliding `.md` file. A command that is about to execute or
   describe one agent must not silently pick a winner between a declaration and a file.
+- `armadai run --pipe` refuses a colliding name in **any** position of the chain, and refuses it
+  before running the first link — so a collision costs no provider call at all. It used to let the
+  chain through while the single-agent path refused the very same name, because the chain loop
+  resolved agents by file path and so never consulted the declarations; routing it through the same
+  by-name loader removed that inconsistency.
 - Because that check is scoped to just the one name you asked for, `armadai inspect
   <some-other-name>` says **nothing** about an unrelated collision sitting elsewhere in the fleet —
   it doesn't scan the whole project the way `list` does. Don't rely on `inspect` to surface
@@ -197,7 +202,7 @@ ones:
 | TUI dashboard | Yes |
 | Web API | Yes |
 | `armadai shell`'s setup wizard (its own `link`, run once before entering the shell) | Yes |
-| `armadai shell`'s in-session pipeline steps (an `agent:` entry relayed from inside the shell) | Yes |
+| `armadai shell`'s in-session pipeline steps (an `agent:` entry relayed from inside the shell) | Yes — declared or file-backed alike; an API-only provider is skipped with an explanation, see below |
 
 There is no longer a "No" row. If one ever reappears, read it as a real capability gap rather than
 a wording problem: a surface that resolves agents by *file path* cannot see a declared agent at all,
@@ -234,8 +239,22 @@ Both now call the same by-name loaders every other surface uses (`load_agent_for
 cannot pick it up and reintroduce the same blind spot. The shell's honest-but-limiting
 "declarative agents can't be run from the shell yet" message is gone because the capability it
 described as missing now exists: a pipeline step's `agent:` entry loads a declared agent and relays
-it exactly as it relays a file-backed one (same command from `provider:`, same composed system
-prompt).
+it exactly as it relays a file-backed one — same composed system prompt, and the same command
+resolution described below.
+
+### What the in-session relay can and cannot run
+
+A pipeline step spawns a CLI and hands it the prompt on argv, so the step's command comes from the
+agent's metadata the way `providers::factory` reads it: `provider: cli` spawns whatever `command:`
+names, any other provider spawns `command:` if set and the provider name otherwise, and an explicit
+`args:` list is passed through verbatim (otherwise the canonical JSON-mode argv for that command is
+used). Reading `provider:` alone — which this relay did until it was fixed — turned every
+`provider: cli` agent into an attempt to spawn a binary literally named `cli`.
+
+An agent whose provider is an HTTP API (`anthropic`, `openai`, `google`, `proxy`) has no command to
+spawn at all. Such a step is **skipped with an explanation** and the rest of the chain runs on: the
+step is lost, not the pipeline. Run those agents with `armadai run <name>`, which builds the API
+client instead of relaying a CLI.
 
 ## Parity with the `.md` format — and its limits
 

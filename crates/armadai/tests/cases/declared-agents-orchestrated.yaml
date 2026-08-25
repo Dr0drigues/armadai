@@ -21,8 +21,9 @@ setup:
 expect:
   exit_code: 0
   events:
-    # Proves task 7b review Finding 7's `run_orchestrated` roster-loader
-    # swap (`resolve_agent_path` -> `load_agent_for_run`): BOTH agents here
+    # Proves `run_orchestrated`'s roster loader goes through
+    # `load_agent_for_run` (the run path's only agent-resolution entry point
+    # since #364 deleted its path-returning sibling): BOTH agents here
     # are declared in `.armadai/agents.yaml`, not written as `.md` files —
     # a project with none at all. Matching `agent_start`/`board` on each
     # (rather than just `run_start`) also proves each declared agent's

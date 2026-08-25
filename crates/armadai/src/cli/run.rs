@@ -845,6 +845,22 @@ enum AgentResolution {
     Project {
         root: PathBuf,
         config: Box<ProjectConfig>,
+        /// The project's prompt fragments, scanned at most once per
+        /// invocation however many agents a run loads.
+        ///
+        /// They are invariant for the whole run — three directories' worth
+        /// of `.md` files, parsed — while every loop that loads agents by
+        /// name (`--pipe`'s chain, `--orchestrate`'s roster,
+        /// `--resume`'s roster reload) needs them once per agent. Computing
+        /// them inside [`load_agent_for_run`] instead re-read and re-parsed
+        /// the same files per link, and re-printed `load_all_prompts`'s
+        /// `warn: failed to load prompt …` once per link — N lines identical
+        /// byte for byte, naming no agent, saying nothing the first did not
+        /// (#364 review, m1; the same defect `eecbd0f` fixed for `unlink`).
+        ///
+        /// Lazy rather than eager so a path that resolves a project without
+        /// loading any agent by name pays nothing.
+        fragments: std::sync::OnceLock<Vec<armadai_core::prompt::Prompt>>,
     },
     /// No project config found — use default paths
     Default(PathBuf),
@@ -877,13 +893,20 @@ fn project_display_string(resolution: &AgentResolution) -> Option<String> {
 /// Called from the single-agent path (`chain.len() == 1`, the common
 /// `armadai run <name>` invocation), the `--pipe` chain loop, the
 /// `--orchestrate` roster loader (`run_orchestrated`), and `--resume`'s
-/// roster reload (`resume_run`).
+/// roster reload (`resume_run`) — the last three in a loop, which is why the
+/// loop-invariant half of the work (the prompt fragments) is memoised on
+/// `AgentResolution` rather than recomputed here per call.
 fn load_agent_for_run(resolution: &AgentResolution, agent_name: &str) -> anyhow::Result<Agent> {
     match resolution {
-        AgentResolution::Project { root, config } => {
-            let fragments = armadai_core::agent_source::project_fragments(root);
+        AgentResolution::Project {
+            root,
+            config,
+            fragments,
+        } => {
+            let fragments =
+                fragments.get_or_init(|| armadai_core::agent_source::project_fragments(root));
             let (agent, warning) = armadai_core::agent_source::load_agent_by_name(
-                agent_name, config, root, &fragments,
+                agent_name, config, root, fragments,
             )?;
             // Core returns the warning rather than printing it (see
             // `load_agent_by_name`'s own doc) precisely so it renders here,
@@ -1494,6 +1517,7 @@ fn resolve_agents_dir(headless: bool) -> AgentResolution {
         return AgentResolution::Project {
             root,
             config: Box::new(config),
+            fragments: std::sync::OnceLock::new(),
         };
     }
 
@@ -2668,7 +2692,7 @@ mod tests {
         // resolve_agents_dir should not panic regardless of cwd state
         let resolution = resolve_agents_dir(false);
         match resolution {
-            AgentResolution::Project { root, config } => {
+            AgentResolution::Project { root, config, .. } => {
                 assert!(!root.to_string_lossy().is_empty());
                 assert!(!config.agents.is_empty());
             }
@@ -4220,6 +4244,7 @@ mod es_switch_tests {
         let resolution = AgentResolution::Project {
             root: PathBuf::from("/tmp/project"),
             config: Box::new(config),
+            fragments: std::sync::OnceLock::new(),
         };
 
         run_orchestrated_inner(
@@ -4265,6 +4290,7 @@ mod es_switch_tests {
         let resolution = AgentResolution::Project {
             root: std::path::PathBuf::from("/tmp/project"),
             config: Box::new(config),
+            fragments: std::sync::OnceLock::new(),
         };
         assert_eq!(orchestration_cost_limit(&resolution), Some(2.5));
     }

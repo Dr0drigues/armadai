@@ -278,3 +278,103 @@ fn pipe_names_the_declarations_file_when_a_chained_agent_is_missing() {
          it also looked in — `list` and `inspect` already do, got: {combined}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #364 review, m2: a name that is both declared and written as a file is
+// refused on the `--pipe` path too.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pipe_refuses_a_name_that_is_both_declared_and_written_as_a_file() {
+    // `agent_source::load_agent_by_name` gives declarations and files NO
+    // precedence over each other: a colliding name is an error the user has
+    // to resolve, not a coin flip. `armadai run <name>` already refused it,
+    // but `--pipe` reached it through a path-shaped resolver that never
+    // consulted the declarations at all — so the same project refused a
+    // single-agent run and accepted the chain. Routing `--pipe` through the
+    // by-name loader closed that inconsistency; this pins it.
+    let (_dir, root) = project(&["alpha-decl"], &["alpha-decl", "beta-file"]);
+    let out = run_pipe(&root, "alpha-decl", "TASK-COLLIDING", &["beta-file"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        !out.status.success(),
+        "a chain whose head is both declared and written as a file must be refused, \
+         exactly as the single-agent path already refuses it.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        combined.contains("also written as"),
+        "the refusal must be the collision one — naming both places the name lives — \
+         not a generic 'not found', got: {combined}"
+    );
+    assert!(
+        combined.contains("remove one"),
+        "the refusal must say what to do about it, got: {combined}"
+    );
+    assert!(
+        agents_started(&stdout).is_empty(),
+        "the collision must be caught before the head agent burns a provider call, \
+         got: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #364 review, m1: loop-invariant work is done once per run, not once per
+// link — measured through the one symptom a user can see.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_broken_prompt_fragment_is_reported_once_for_the_whole_chain() {
+    // `project_fragments` scans and parses three prompt directories, and
+    // `load_all_prompts` prints `warn: failed to load prompt <file>: <err>`
+    // for each one it cannot read. That line names no agent and carries no
+    // per-link information, so printing it once per link — three identical
+    // lines for a three-link chain — is noise, the same defect `eecbd0f`
+    // fixed for `unlink`. One line per broken fragment, however long the
+    // chain.
+    let (_dir, root) = project(&[], &["chain-1", "chain-2", "chain-3"]);
+    std::fs::write(
+        root.join(".armadai/prompts/pipe-broken.md"),
+        "---\nname: [unterminated\n---\nbody\n",
+    )
+    .unwrap();
+
+    let out = run_pipe(
+        &root,
+        "chain-1",
+        "TASK-ONE-WARNING",
+        &["chain-2", "chain-3"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "a broken fragment no agent references must not fail the chain.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        agents_started(&stdout).len(),
+        3,
+        "all three links must still run.\nstdout: {stdout}"
+    );
+
+    let warnings: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("failed to load prompt"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "the broken fragment must be reported ONCE for the whole chain, not once per \
+         link — the lines are identical and name no agent, so N of them say nothing \
+         the first did not. Got {} line(s): {warnings:#?}",
+        warnings.len()
+    );
+    assert!(
+        warnings[0].contains("pipe-broken.md"),
+        "the one warning must still name the fragment it could not load, got: {warnings:#?}"
+    );
+}
