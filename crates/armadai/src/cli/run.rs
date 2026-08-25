@@ -11,6 +11,8 @@ use armadai_core::orchestration::es::log::{EventLog, InMemoryLog};
 use armadai_core::orchestration::es::state::ExecutionState;
 use armadai_core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
 use armadai_core::provider::{ChatMessage, CompletionRequest};
+#[cfg(test)]
+use armadai_providers::factory::DEFAULT_TIMEOUT_SECS;
 use armadai_providers::factory::create_provider;
 
 const GUIDED_MODE_INSTRUCTION: &str = "\
@@ -444,7 +446,8 @@ async fn resume_run(
     // Fix B (#270) covered fresh orchestrated runs via `run_orchestrated`'s
     // loading loop but not resume; without this, a resumed orchestrated run
     // rebuilds its providers with the plain `create_provider(&agent)` default
-    // (300s) and re-hits the exact timeout this fix exists to prevent. Source
+    // (`DEFAULT_TIMEOUT_SECS`) and re-hits the exact timeout this fix exists to
+    // prevent. Source
     // the config override the same way `run_orchestrated` does, from the
     // resolved project's `defaults.orchestration`.
     //
@@ -456,7 +459,7 @@ async fn resume_run(
     // `is_orchestrated_pattern` gate on the `apply_orchestrated_timeout` call
     // (a prior regression applied it unconditionally here, giving resumed
     // `direct` runs the 600s+ orchestrated timeout instead of the correct
-    // 300s default — see `.superpowers/sdd/orch-e2e-report.md`).
+    // `DEFAULT_TIMEOUT_SECS` default — see `.superpowers/sdd/orch-e2e-report.md`).
     let timeout_overrides = match &resolution {
         AgentResolution::Project { config, .. } => {
             config.defaults.orchestration.clone().unwrap_or_default()
@@ -478,7 +481,7 @@ async fn resume_run(
         );
         // Gate: only orchestrated patterns get the orchestrated timeout
         // override — a resumed `direct` run must keep `create_provider`'s
-        // own 300s default untouched.
+        // own `DEFAULT_TIMEOUT_SECS` default untouched.
         if is_orchestrated_pattern(&pattern) {
             apply_orchestrated_timeout(&mut agent, timeout_overrides.agent_timeout_secs);
         }
@@ -2408,14 +2411,36 @@ async fn dispatch_hierarchical_es(
 /// agent's own frontmatter `timeout` nor the project's
 /// `defaults.orchestration.agent_timeout_secs` sets one.
 ///
-/// Higher than the non-orchestrated single-agent default (300s, see
-/// `providers::factory::create_provider`) because an orchestrated
+/// Higher than the non-orchestrated single-agent default
+/// (`providers::factory::DEFAULT_TIMEOUT_SECS`) because an orchestrated
 /// coordinator's `claude -p` turn is itself agentic (delegating, waiting on
-/// sub-agents, synthesizing) and can legitimately run past 300s — 242k-499k
-/// tokens/turn were observed on real hierarchical runs (#270). This is a
-/// stopgap pending the per-delegation-reset timeout design (#270); it does
-/// NOT change the non-orchestrated default.
+/// sub-agents, synthesizing) — 242k-499k tokens/turn were observed on real
+/// hierarchical runs (#270).
+///
+/// Since #270, `CliProvider::timeout_secs` bounds *inactivity* between
+/// lines of subprocess output, not the call's total duration (see
+/// `providers::cli::CliProvider::complete`) — so this value no longer needs
+/// to cover an entire multi-delegation run in one wall-clock budget, only
+/// the longest silent gap within it. It stays higher than the non-
+/// orchestrated default because a coordinator can legitimately think for a
+/// long stretch (e.g. synthesizing a final answer) with no observable
+/// output at all before its next line.
 const ORCHESTRATED_DEFAULT_TIMEOUT_SECS: u64 = 600;
+
+// Three timeout constants govern this feature across two crates
+// (`providers::factory::DEFAULT_TIMEOUT_SECS`, this file's
+// `ORCHESTRATED_DEFAULT_TIMEOUT_SECS`, and `providers::cli::
+// ABSOLUTE_CEILING_SECS`) and nothing enforced their relationship — if an
+// inactivity default ever grew past the absolute ceiling, every timeout in
+// the product would be misreported as "absolute ceiling" instead of
+// "inactivity" (`cli::next_step_timeout`'s `ceiling_bound` flag would be
+// wrong for every call). This constant's sibling assertion, against
+// `factory::DEFAULT_TIMEOUT_SECS`, lives in `armadai-providers::cli` where
+// both those constants are in scope; this one covers the cross-crate half.
+const _: () = assert!(
+    armadai_providers::cli::ABSOLUTE_CEILING_SECS > ORCHESTRATED_DEFAULT_TIMEOUT_SECS,
+    "ABSOLUTE_CEILING_SECS must stay above ORCHESTRATED_DEFAULT_TIMEOUT_SECS"
+);
 
 /// Resolve the effective CLI provider timeout (seconds) for an agent
 /// participating in an orchestrated run.
@@ -2427,8 +2452,9 @@ const ORCHESTRATED_DEFAULT_TIMEOUT_SECS: u64 = 600;
 ///
 /// This is the ONE place that actually reaches the provider timeout for
 /// orchestrated runs: `create_provider` only reads `agent.metadata.timeout`
-/// (`.unwrap_or(300)`), so this must run before `create_provider` is called
-/// on each agent in `run_orchestrated`'s loading loop — the BlackboardConfig/
+/// (`.unwrap_or(DEFAULT_TIMEOUT_SECS)`), so this must run before
+/// `create_provider` is called on each agent in `run_orchestrated`'s
+/// loading loop — the BlackboardConfig/
 /// RingConfig `agent_timeout_secs` field (populated by
 /// `apply_blackboard_overrides`/`apply_ring_overrides`) is never read by the
 /// event-sourced engine (`es::blackboard`/`es::ring` call
@@ -2453,10 +2479,11 @@ fn orchestrated_agent_timeout_secs(
 /// Both roster-loading loops that feed an orchestrated run — the fresh-run
 /// loop in `run_orchestrated` AND the `--resume` reconstruction loop in
 /// `resume_run` — MUST call this before `create_provider`, since
-/// `create_provider` only reads `agent.metadata.timeout` (`.unwrap_or(300)`)
-/// once and never re-reads it afterward. Extracted to a single fn so both
-/// paths share the exact same precedence and cannot drift (a resumed
-/// orchestrated run re-hitting the 300s default was the gap this closes —
+/// `create_provider` only reads `agent.metadata.timeout`
+/// (`.unwrap_or(DEFAULT_TIMEOUT_SECS)`) once and never re-reads it
+/// afterward. Extracted to a single fn so both paths share the exact same
+/// precedence and cannot drift (a resumed
+/// orchestrated run re-hitting that default was the gap this closes —
 /// see `.superpowers/sdd/orch-e2e-report.md`).
 fn apply_orchestrated_timeout(agent: &mut Agent, config_override: Option<u64>) {
     agent.metadata.timeout = Some(orchestrated_agent_timeout_secs(
@@ -2473,8 +2500,9 @@ fn apply_orchestrated_timeout(agent: &mut Agent, config_override: Option<u64>) {
 /// touch `agent.metadata.timeout`: `resume_run` reconstructs the roster for
 /// BOTH `direct` and orchestrated resumes through the same loop, so calling
 /// the override unconditionally there once regressed a resumed `direct` run
-/// onto the 600s+ orchestrated timeout instead of the correct 300s default
-/// (see `.superpowers/sdd/orch-e2e-report.md`). `execute_resume`'s own
+/// onto the 600s+ orchestrated timeout instead of the correct
+/// `DEFAULT_TIMEOUT_SECS` default (see `.superpowers/sdd/orch-e2e-report.md`).
+/// `execute_resume`'s own
 /// `use_tui` decision uses the identical `!= "direct"` marker (the Workroom
 /// TUI never applies to `direct` runs either) — sharing this fn keeps both
 /// checks from drifting apart.
@@ -2700,13 +2728,16 @@ mod tests {
     }
 
     /// With neither frontmatter nor config override, the orchestrated default
-    /// must be 600s, NOT the non-orchestrated single-agent default (300s) —
-    /// an orchestrated coordinator's agentic turn can legitimately exceed
-    /// 300s.
+    /// must be 600s, NOT the non-orchestrated single-agent default
+    /// (`DEFAULT_TIMEOUT_SECS`) — an orchestrated coordinator's agentic turn
+    /// can legitimately exceed that default.
     #[test]
     fn orchestrated_timeout_defaults_to_600_not_300() {
         assert_eq!(orchestrated_agent_timeout_secs(None, None), 600);
-        assert_ne!(orchestrated_agent_timeout_secs(None, None), 300);
+        assert_ne!(
+            orchestrated_agent_timeout_secs(None, None),
+            DEFAULT_TIMEOUT_SECS
+        );
     }
 
     // --- resume-path coverage gap: `apply_orchestrated_timeout` is the SAME
@@ -2777,15 +2808,15 @@ mod tests {
     /// Mirrors `orchestrated_timeout_defaults_to_600_not_300`: with neither
     /// frontmatter nor config override, a resumed orchestrated run must land
     /// on the 600s orchestrated default, NOT silently fall back to
-    /// `create_provider`'s bare 300s default — that regression (a resumed
-    /// orchestrated run re-hitting the 300s wall) is exactly the gap this
-    /// fix closes.
+    /// `create_provider`'s bare `DEFAULT_TIMEOUT_SECS` default — that
+    /// regression (a resumed orchestrated run re-hitting that wall) is
+    /// exactly the gap this fix closes.
     #[test]
     fn apply_orchestrated_timeout_defaults_to_600_not_300() {
         let mut agent = agent_with_timeout(None);
         apply_orchestrated_timeout(&mut agent, None);
         assert_eq!(agent.metadata.timeout, Some(600));
-        assert_ne!(agent.metadata.timeout, Some(300));
+        assert_ne!(agent.metadata.timeout, Some(DEFAULT_TIMEOUT_SECS));
     }
 
     // --- Re-review regression: `resume_run` must NOT apply the orchestrated

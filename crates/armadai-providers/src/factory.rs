@@ -61,6 +61,51 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
     ),
 ];
 
+/// Default `CliProvider` timeout (seconds) when neither the agent's own
+/// frontmatter `timeout` nor an orchestration-level override sets one.
+///
+/// This value only applies to a `direct` (non-orchestrated) single-agent
+/// run: `armadai/src/cli/run.rs`'s `apply_orchestrated_timeout` always sets
+/// `agent.metadata.timeout` before `create_provider` runs for blackboard/
+/// ring/hierarchical agents, using its own `ORCHESTRATED_DEFAULT_TIMEOUT_SECS`
+/// (600s) — so this constant is never reached on the orchestrated path.
+/// The two are intentionally different, not merely duplicated: a `direct`
+/// run is one CLI call, whereas an orchestrated run's coordinator turn is
+/// itself agentic (delegating, waiting on sub-agents) and legitimately
+/// takes longer, see #270. They are named and documented on both sides so a
+/// future change to one doesn't silently drift from the other.
+///
+/// Since #270, `CliProvider::timeout_secs` bounds *inactivity* (the gap
+/// between consecutive lines of subprocess output), not the call's total
+/// duration — see `cli::CliProvider::complete`.
+///
+/// Honest caveat: that change buys real headroom for an orchestrated,
+/// multi-delegation run (each delegation's output resets the clock), but
+/// it buys a `direct` single-agent run comparatively little. A `direct`
+/// run is exactly one subprocess call with nothing inside it to reset the
+/// clock on its own output, so the largest inactivity gap it can have is
+/// approximately its *total* duration anyway — meaning 300s here still
+/// behaves close to the old wall-clock ceiling for that path. Measured
+/// machine-side turn durations on this project put a single agentic turn
+/// at roughly 500s+ (the same order of magnitude `ORCHESTRATED_DEFAULT_
+/// TIMEOUT_SECS`'s doc cites), i.e. *above* this 300s default — a long
+/// single-turn `direct` run can still hit this ceiling. Not changed here
+/// (raising it is a separate, deliberate call, not a side effect of this
+/// fix); recorded so the number isn't read as more protective than it is.
+///
+/// Previously duplicated as a bare `300` literal at both call sites below
+/// (`create_unified_provider` and `create_cli_provider`); collapsed to one
+/// named constant so the two can't independently drift.
+///
+/// `pub` (not `pub(crate)`): `armadai/src/cli/run.rs` needs to reference
+/// this exact value too (its own `ORCHESTRATED_DEFAULT_TIMEOUT_SECS` doc
+/// comment, and its `direct`-vs-orchestrated test assertions) — the point
+/// of naming this constant was to have ONE place a future change lands, so
+/// a private constant that forces callers to restate "300s" in prose or
+/// literals would just move the duplication one layer up instead of
+/// closing it.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
+
 fn find_tool(name: &str) -> Option<&'static ToolDef> {
     KNOWN_TOOLS
         .iter()
@@ -191,7 +236,7 @@ fn create_unified_provider(
         } else {
             tool.cli_args.iter().map(|s| (*s).to_string()).collect()
         };
-        let timeout = agent.metadata.timeout.unwrap_or(300);
+        let timeout = agent.metadata.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
         tracing::info!("Provider '{name}': using CLI ({command}) — tool detected on system");
         Ok(Box::new(super::cli::CliProvider::new(
             command.to_string(),
@@ -214,7 +259,7 @@ fn create_cli_provider(agent: &Agent) -> anyhow::Result<Box<dyn Provider>> {
         .clone()
         .ok_or_else(|| anyhow::anyhow!("CLI provider requires 'command' in Metadata"))?;
     let args = agent.metadata.args.clone().unwrap_or_default();
-    let timeout = agent.metadata.timeout.unwrap_or(300);
+    let timeout = agent.metadata.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
     Ok(Box::new(super::cli::CliProvider::new(
         command, args, timeout,
     )))

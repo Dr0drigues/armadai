@@ -64,7 +64,7 @@ Key-value pairs configuring the agent's technical behavior.
 | `args` | list | No | — | CLI arguments: `["-p", "--model", "sonnet"]` |
 | `temperature` | float | No | `0.7` | Sampling temperature (0.0 - 2.0) |
 | `max_tokens` | int | No | — | Maximum output tokens |
-| `timeout` | int | No | — | Execution timeout in seconds |
+| `timeout` | int | No | — | CLI-provider inactivity timeout in seconds (300s default for a non-orchestrated agent, 600s for one in an orchestrated run) — bounds the gap between two lines of subprocess output, not the call's total duration; a CLI call that keeps producing output survives past it, one that goes silent for this long is killed. Ignored by API providers. |
 | `tags` | list | No | `[]` | Tags for filtering: `[dev, review]` |
 | `stacks` | list | No | `[]` | Tech stacks: `[rust, typescript]` |
 | `cost_limit` | float | No | — | Max cost per execution in USD |

@@ -34,6 +34,14 @@ You can override the CLI args:
 - timeout: 600
 ```
 
+> **`timeout` bounds inactivity, not total duration.** When the CLI tool is
+> used (as opposed to the API fallback), `timeout` is the longest gap
+> allowed between two lines of subprocess output — it resets every time the
+> CLI produces something, including a native sub-agent delegation. A call
+> that keeps streaming output can run well past `timeout` seconds in total;
+> one that goes fully silent for that long is killed. See [CLI
+> Provider](#cli-provider) below for the full explanation.
+
 ## Model Selection
 
 When using `armadai new -i` (interactive wizard), the model selection step fetches available models from the [models.dev](https://models.dev) registry with enriched metadata (context window size, input/output cost per MTok). Results are cached locally for 24 hours. If the registry is unreachable, the wizard falls back to the static model list in `providers.yaml`.
@@ -108,6 +116,19 @@ Execute any command-line tool as an agent. The input is passed as the last argum
 - args: ["-p", "--model", "sonnet", "--output-format", "json"]
 - timeout: 300
 ```
+
+`timeout` here is an **inactivity** timeout, not a total-duration one: it is
+the longest gap allowed between two consecutive lines the command writes to
+stdout, and it is rearmed on every line — a delegation event, a token
+delta, or (for a CLI with no structured output) just the next chunk of
+text. A command that keeps producing output can run well past `timeout`
+seconds in total. A command that goes fully silent for `timeout` seconds
+(a hung process, a deadlocked script) is killed — that failure mode is
+exactly what `timeout` still protects against, so a script wrapped by
+`provider: cli` should still print *something* periodically if it expects
+to run long. There is also a generous absolute backstop (2 hours) so a
+process that never goes silent — but never finishes either — still ends
+eventually.
 
 ### Examples
 
