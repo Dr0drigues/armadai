@@ -179,15 +179,15 @@ over-written `.md`.
 
 ## What's wired, and what isn't
 
-Every command that resolves a project's agent fleet was updated to see declared agents alongside
-file-backed ones — except where noted:
+Every surface that resolves a project's agent fleet sees declared agents alongside file-backed
+ones:
 
 | Surface | Sees declared agents? |
 |---|---|
 | `armadai run <name>` (single agent) | Yes |
 | `armadai run --orchestrate` | Yes |
 | `armadai run --resume` | Yes |
-| `armadai run --pipe` (multi-agent chain) | **No** — the legacy chain loop still resolves purely by file path |
+| `armadai run --pipe` (multi-agent chain) | Yes — any position of the chain, mixed freely with file-backed agents |
 | `armadai link` | Yes (and refuses to write on an unresolved collision, see above) |
 | `armadai list` | Yes |
 | `armadai inspect` | Yes |
@@ -197,11 +197,11 @@ file-backed ones — except where noted:
 | TUI dashboard | Yes |
 | Web API | Yes |
 | `armadai shell`'s setup wizard (its own `link`, run once before entering the shell) | Yes |
-| `armadai shell`'s in-session pipeline steps (an `agent:` entry relayed from inside the shell) | **No** — refuses with an explicit message; the shell relay only runs file-backed agents today |
+| `armadai shell`'s in-session pipeline steps (an `agent:` entry relayed from inside the shell) | Yes |
 
-Do not assume a remaining "No" row will discover a declared agent by some other path — it was
-simply not touched by this chantier, and hitting it is the way to find out the hard way if this
-table goes unread.
+There is no longer a "No" row. If one ever reappears, read it as a real capability gap rather than
+a wording problem: a surface that resolves agents by *file path* cannot see a declared agent at all,
+because a declared agent has no file.
 
 The TUI dashboard and Web API used to be worse than an omission: both resolved a project's agents
 via `project::resolve_all_agents`, which only ever returns file paths, so a declared agent (which
@@ -223,15 +223,19 @@ resolution, and `linker::manifest::write_files` — the same function `cli::link
 calls — for the write, so the manifest entry and the exists-guard come from the same place `link`
 gets them rather than a third copy that could drift from both.
 
-That fix is scoped to the wizard's own `link` step — the one-time setup that runs before the shell
-session starts. It says nothing about what happens *inside* a running session: a pipeline step's
-`agent:` entry is resolved by a separate lookup (`shell::app::resolve_project_agent`) that only
-ever returns a file path or `AgentLookup::Declared`/`NotFound` — there is no code path from there
-to `agent_source::load_all_agents` at all. Naming a declared agent in a pipeline step gets an
-explicit, honest refusal (`declared_agent_not_runnable_message`) rather than a silent drop, but it
-still does not run. This is why the table above lists the wizard and the in-session pipeline as two
-separate rows with two separate answers, rather than one `armadai shell` row that would have to say
-both "yes" and "no" at once.
+The last two path-shaped resolvers were `armadai run --pipe`'s chain loop and the shell's
+in-session pipeline lookup (`shell::app::resolve_project_agent`). Both resolved a *path* per agent
+and handed it down to be parsed, which no declared agent can satisfy — the chain loop failed with a
+message naming the three library directories and never the `agents.yaml` that declares the agent,
+and the shell answered a declarations-only project with a false "not found in project config".
+Both now call the same by-name loaders every other surface uses (`load_agent_for_run`, itself
+`agent_source::load_agent_by_name`), and the path-returning helper the chain loop used
+(`cli::run::resolve_agent_path`) was **deleted** rather than left unused, so a future call site
+cannot pick it up and reintroduce the same blind spot. The shell's honest-but-limiting
+"declarative agents can't be run from the shell yet" message is gone because the capability it
+described as missing now exists: a pipeline step's `agent:` entry loads a declared agent and relays
+it exactly as it relays a file-backed one (same command from `provider:`, same composed system
+prompt).
 
 ## Parity with the `.md` format — and its limits
 
