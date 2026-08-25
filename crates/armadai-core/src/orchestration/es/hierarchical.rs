@@ -1102,6 +1102,17 @@ impl HierarchicalEffectRunner {
     /// flow back into the parent budget through the aggregated `AgentObserved`
     /// (folded by `es::state::apply` like any other observation).
     ///
+    /// `config.cost_limit` (issue #345) gets the identical treatment, in
+    /// `f64`: `remaining = (total − state.budget_cost).max(0.0)`, the float
+    /// analogue of `saturating_sub`. Before #345 this was the one ceiling
+    /// still handed down verbatim — never decremented — so a purely
+    /// *sequential* chain of nested delegations (`batch_len == 1` at every
+    /// hop, no fan-out involved at all) could each spend up to the full
+    /// parental `cost_limit` again, a strictly wider defect than #291's
+    /// (which needed `InvokeParallel` to manifest). `None` (no global
+    /// `cost_limit`) still means "hand the sub-pattern no cost ceiling",
+    /// unaffected by `batch_len` — matching the `token_budget` `None` arm.
+    ///
     /// ## Parallel batches (issue #291)
     /// `run_invoke` — and therefore this function — is called once per entry
     /// of an `Action::InvokeParallel` batch, all sharing the exact same
@@ -1111,8 +1122,13 @@ impl HierarchicalEffectRunner {
     /// to all of it — the total overrun growing with the batch size. `batch_len`
     /// (the number of siblings dispatched together, `1` for a solitary
     /// `Action::Invoke`) is what lets this function partition the remaining
-    /// budget instead: each child gets `remaining / batch_len`, floor-divided.
-    /// An unequal, demand-driven split (a shared pot children draw from as
+    /// budget instead: each child gets `remaining / batch_len`, floor-divided
+    /// for `token_budget` (`u64`) — `cost_limit` (`f64`) divides the same way
+    /// but without the floor, since a fractional dollar ceiling is
+    /// meaningful where a fractional token isn't; a remaining cost smaller
+    /// than `batch_len` therefore still yields a small nonzero share per
+    /// child instead of truncating to zero. An unequal, demand-driven split
+    /// (a shared pot children draw from as
     /// they run) would use the budget more efficiently, but requires shared
     /// *mutable* state across concurrent effects — which this event-sourced
     /// engine cannot allow without breaking `--replay` determinism (the
@@ -1124,6 +1140,8 @@ impl HierarchicalEffectRunner {
     ///
     /// The `None` (no global `token_budget`) arm is unaffected: it always
     /// hands back the sub-pattern's own default, regardless of `batch_len`.
+    /// `cost_limit`'s `None` arm is analogous: it always hands back `None`
+    /// (no cost ceiling for the sub-pattern), regardless of `batch_len`.
     ///
     /// Consequence, stated plainly: a child in a parallel batch may now halt
     /// earlier than it would have running alone — even if every sibling in
@@ -1177,6 +1195,34 @@ impl HierarchicalEffectRunner {
             },
         };
 
+        // Remaining cost budget (USD), the `cost_limit` counterpart of
+        // `remaining_budget` above (issue #345 — the same defect class as
+        // #291, just wider: `self.config.cost_limit` was previously handed
+        // down *verbatim*, both across an `InvokeParallel` batch and across
+        // a purely sequential chain of nested delegations, so it was never
+        // decremented at all — a chain could spend the full ceiling at every
+        // hop). Subtract what `state.budget_cost` already records as spent
+        // (every direct turn plus every prior nested sub-run, folded back by
+        // `nested_observed`), floor at zero (the `f64` analogue of
+        // `saturating_sub`), then divide equally across this batch for the
+        // exact replay-determinism reason `remaining_budget` is: no shared
+        // mutable pot, so every sibling can compute the identical split from
+        // inputs it already has. `batch_len` is floored to `1` (same
+        // belt-and-braces as `remaining_budget`'s `.max(1)`) — it should
+        // never be `0` in practice, but this keeps the division total
+        // instead of a `NaN`/`inf` trap either way. Unlike the integer
+        // `token_budget` split, this is float division: a remaining cost
+        // smaller than the batch length does not floor to zero the way
+        // integer division would — every sibling still gets a (tiny,
+        // nonzero) proportional share rather than being starved outright.
+        // `None` (no global `cost_limit`) is unaffected: `run_blackboard_es`
+        // / `run_ring_es` are handed `None` regardless of `batch_len`, so
+        // the sub-pattern's own cost guard stays off exactly as before.
+        let remaining_cost_limit = self.config.cost_limit.map(|total| {
+            let remaining = (total - state.budget_cost).max(0.0);
+            remaining / (batch_len.max(1) as f64)
+        });
+
         // Deterministic child run_id (carries the parent id + lead) on a
         // dedicated, ephemeral child log (see the doc comment above).
         let child_run_id = format!("{}::nested::{}", state.run_id, team_lead);
@@ -1199,7 +1245,7 @@ impl HierarchicalEffectRunner {
                     member_providers,
                     cfg,
                     self.routing_rules.clone(),
-                    self.config.cost_limit,
+                    remaining_cost_limit,
                     &mut child_log,
                 )
                 .await?
@@ -1230,7 +1276,7 @@ impl HierarchicalEffectRunner {
                     member_providers,
                     cfg.clone(),
                     self.routing_rules.clone(),
-                    self.config.cost_limit,
+                    remaining_cost_limit,
                     &mut child_log,
                 )
                 .await?;
@@ -4210,6 +4256,22 @@ mod tests {
             })
     }
 
+    /// Like `observed_for`, but reads back the `cost` field of `agent`'s
+    /// `AgentObserved` — for a nested team lead, this is the folded child
+    /// run's total accumulated cost (`nested_observed` sets it to
+    /// `child.budget_cost`), the most direct observable proxy for the
+    /// `cost_limit` ceiling `run_nested` actually handed that child (issue
+    /// #345 tests below).
+    fn observed_cost_for(log: &InMemoryLog, run_id: &str, agent: &str) -> Option<f64> {
+        log.events(run_id)
+            .unwrap()
+            .into_iter()
+            .find_map(|e| match e {
+                ExecutionEvent::AgentObserved { agent: a, cost, .. } if a == agent => Some(cost),
+                _ => None,
+            })
+    }
+
     /// Position (index) of the first `NestedStarted`/`NestedEnded` for
     /// `team_lead` in `run_id`'s log, for ordering assertions.
     fn nested_marker_positions(
@@ -4489,6 +4551,72 @@ mod tests {
         fn metadata(&self) -> ProviderMetadata {
             ProviderMetadata {
                 name: "capturing".to_string(),
+                models: vec![],
+                supports_streaming: false,
+            }
+        }
+    }
+
+    /// A provider scripted with a fixed sequence of `(response, cost)`
+    /// pairs, one per call (repeating the last pair for any call beyond the
+    /// scripted list, mirroring `ScriptedProvider`'s under-provisioning
+    /// behaviour) — the `cost_limit` counterpart of `ScriptedProvider` /
+    /// `CapturingProvider` above, neither of which can produce a nonzero
+    /// cost (both hardcode `cost: 0.0`). Used by the issue #345 tests
+    /// below, where `state.budget_cost` — and therefore the remaining
+    /// `cost_limit` ceiling `run_nested` computes — must actually move.
+    /// Responses are plain (non-`ACTION:CONFIRMATION`) content unless a
+    /// test scripts otherwise, for the same reason the token-budget tests
+    /// above avoid `CONFIRMATION`: it never trips convergence, so the cost
+    /// guard is the only thing that can halt a nested run.
+    struct CostedProvider {
+        responses: std::sync::Mutex<VecDeque<(String, f64)>>,
+        last: std::sync::Mutex<(String, f64)>,
+        calls: AtomicUsize,
+    }
+
+    impl CostedProvider {
+        fn new(responses: &[(&str, f64)]) -> Self {
+            Self {
+                responses: std::sync::Mutex::new(
+                    responses
+                        .iter()
+                        .map(|(s, c)| ((*s).to_string(), *c))
+                        .collect(),
+                ),
+                last: std::sync::Mutex::new((String::new(), 0.0)),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl Provider for CostedProvider {
+        async fn complete(&self, request: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut queue = self.responses.lock().unwrap();
+            let (content, cost) = queue
+                .pop_front()
+                .unwrap_or_else(|| self.last.lock().unwrap().clone());
+            *self.last.lock().unwrap() = (content.clone(), cost);
+            Ok(CompletionResponse {
+                content,
+                model: request.model,
+                tokens_in: 1,
+                tokens_out: 1,
+                cost,
+            })
+        }
+        async fn stream(&self, _request: CompletionRequest) -> anyhow::Result<TokenStream> {
+            anyhow::bail!("streaming not exercised by these tests")
+        }
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "costed".to_string(),
                 models: vec![],
                 supports_streaming: false,
             }
@@ -4810,6 +4938,364 @@ mod tests {
             (10, 10),
             "a solitary nested delegation (batch_len == 1) must still get the \
              entire remaining budget, not a fraction of it"
+        );
+    }
+
+    // ── Issue #345: cost_limit must be decremented AND partitioned ──
+    //
+    // `self.config.cost_limit` was previously handed to every nested
+    // sub-run VERBATIM: never reduced by `state.budget_cost` (the cost
+    // already spent) and never divided across an `InvokeParallel` batch —
+    // the same defect class #291 closed for `token_budget`, left open (and
+    // wider — see the sequential test below) for `cost_limit`.
+    // `ScriptedProvider`/`CapturingProvider` above cannot exercise this:
+    // both hardcode `cost: 0.0`, so `state.budget_cost` never moves under
+    // them — `CostedProvider` (defined above) fixes that.
+
+    // Scenario: dev-lead delegates to `core-lead` AND `other-lead` in the
+    // same message — one `InvokeParallel` batch of 2 — with
+    // `config.cost_limit` set. dev-lead's own opening turn costs $1.0
+    // before the batch is dispatched, leaving exactly $20.0; each nested
+    // sub-run has 1 member costing $1.0/round, chosen so both the "whole
+    // remaining" (one mutation) and the "half" (fix) amounts are exact
+    // multiples of that per-round cost — no float-rounding ambiguity in the
+    // expected round counts.
+    //
+    // Mutation sensitivity (the issue asks for each half's own sentinel):
+    // - drop the `/ batch_len` division, keep the subtraction: each child
+    //   gets the WHOLE $20.0 remaining instead of $10.0 — 20 rounds instead
+    //   of 10 (cost $20.0 each), combined $40.0 > the $20.0 bound.
+    // - drop the `(total − state.budget_cost).max(0.0)` subtraction, keep
+    //   the division: each child gets $21.0 / 2 = $10.5 instead of $10.0 —
+    //   halts one round later, at 11 rounds (cumulative >= 10.5), cost
+    //   $11.0 each, combined $22.0 > the $20.0 bound.
+    // Both mutations are caught by the tight `(10.0, 10.0)` equality below
+    // (each yields a distinct wrong value, $20.0 vs $11.0, not just "some
+    // overrun"), and independently by the `combined <= remaining_at_fork`
+    // guarantee-shaped assertion.
+    //
+    // Confirmed failing against master (pre-fix): `cost_limit` handed down
+    // verbatim ($21.0 to each child, ignoring both the batch and the
+    // dev-lead spend) lets each nested run go 21 rounds — combined $42.0,
+    // more than double the $20.0 that was actually left at fork time.
+    #[tokio::test]
+    async fn es_parallel_nested_batch_partitions_remaining_cost_equally() {
+        let mut agents = BTreeMap::new();
+        for name in ["dev-lead", "core-lead", "core-a", "other-lead", "other-a"] {
+            agents.insert(name.to_string(), es_test_agent(name, "concrete-model"));
+        }
+
+        let dev_lead = Arc::new(CostedProvider::new(&[
+            ("@core-lead: gère A\n@other-lead: gère B", 1.0),
+            ("Synthèse : livré.", 0.0),
+        ]));
+        let core_a = Arc::new(CostedProvider::new(&[("core-a note", 1.0)]));
+        let other_a = Arc::new(CostedProvider::new(&[("other-a note", 1.0)]));
+        // Arbiters must never take the flat-LLM-call path (sentinel proves
+        // the nested short-circuit fired for both).
+        let core_lead = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+        let other_lead = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert("dev-lead".to_string(), dev_lead as Arc<dyn Provider>);
+        providers.insert(
+            "core-lead".to_string(),
+            core_lead.clone() as Arc<dyn Provider>,
+        );
+        providers.insert(
+            "other-lead".to_string(),
+            other_lead.clone() as Arc<dyn Provider>,
+        );
+        providers.insert("core-a".to_string(), core_a.clone() as Arc<dyn Provider>);
+        providers.insert("other-a".to_string(), other_a.clone() as Arc<dyn Provider>);
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some("dev-lead".to_string()),
+            teams: vec![
+                TeamConfig {
+                    lead: Some("core-lead".to_string()),
+                    agents: vec!["core-a".to_string()],
+                    pattern: Some(NestedPattern::Blackboard),
+                    max_rounds: Some(1_000),
+                    ..Default::default()
+                },
+                TeamConfig {
+                    lead: Some("other-lead".to_string()),
+                    agents: vec!["other-a".to_string()],
+                    pattern: Some(NestedPattern::Blackboard),
+                    max_rounds: Some(1_000),
+                    ..Default::default()
+                },
+            ],
+            cost_limit: Some(21.0),
+            ..Default::default()
+        };
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-parallel-cost",
+            "dev-lead",
+            "build X and Y",
+            config,
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+        assert_eq!(
+            core_lead.call_count(),
+            0,
+            "core-lead must not make a flat LLM call"
+        );
+        assert_eq!(
+            other_lead.call_count(),
+            0,
+            "other-lead must not make a flat LLM call"
+        );
+
+        let core_cost =
+            observed_cost_for(&log, "run-parallel-cost", "core-lead").expect("core-lead cost");
+        let other_cost =
+            observed_cost_for(&log, "run-parallel-cost", "other-lead").expect("other-lead cost");
+
+        assert_eq!(
+            (core_cost, other_cost),
+            (10.0, 10.0),
+            "each nested sub-run must stop at half the remaining cost ($10.0), \
+             not the whole of it ($20.0) nor the unhalved total ($21.0)"
+        );
+
+        // The guarantee itself, in the issue's own terms: the two children
+        // dispatched in the same InvokeParallel batch must not collectively
+        // spend more than what was left of the shared cost ceiling at fork
+        // time.
+        let remaining_at_fork: f64 = 20.0; // $21.0 total − dev-lead's opening $1.0 turn.
+        let combined = core_cost + other_cost;
+        assert!(
+            combined <= remaining_at_fork,
+            "combined nested cost ({combined}) must not exceed what was \
+             remaining at fork time ({remaining_at_fork})"
+        );
+    }
+
+    // Scenario: the SEQUENTIAL half of the same defect (this issue's own
+    // half, per #345 — it needs no fan-out at all to manifest, unlike
+    // #291's). dev-lead delegates to `lead-1` (a solitary `Action::Invoke`,
+    // `batch_len == 1`); `lead-1`'s nested run completes and folds back into
+    // the parent state; only THEN, in a later, separate turn, does dev-lead
+    // delegate to `lead-2` (also `batch_len == 1`). No `InvokeParallel`
+    // batch is ever formed — both delegations divide by 1, a no-op — so
+    // this test is deliberately insensitive to the `/ batch_len` division
+    // and exercises ONLY the subtraction half, which #291's tests could not
+    // (every #291 scenario is a single fork with siblings dispatched
+    // together; none of them chains a SECOND delegation after the first
+    // has already spent something).
+    //
+    // `lead-1`'s team is capped at exactly 1 round (`max_rounds: 1`), so it
+    // spends a FIXED $50.0 (one call to `core-a`) regardless of whatever
+    // cost ceiling it is handed — its OWN ceiling never comes into play,
+    // which keeps "how much was already spent" deterministic and, at
+    // $50.0 of a $100.0 total, comfortably under the point where the
+    // top-level `HierarchicalDecider`'s own `cost_limit` guard (which gates
+    // the PARENT's loop — out of this issue's scope, like
+    // `max_depth`/`max_iterations`) would force the whole run to complete
+    // before dev-lead ever gets to delegate to `lead-2`.
+    //
+    // `lead-2`'s team, by contrast, has a huge `max_rounds` (1_000) and a
+    // small $1.0/round cost, so it is `lead-2`'s OWN cost ceiling — not
+    // `max_rounds` — that halts it, making its folded-back cost a direct,
+    // exact readout of the ceiling `run_nested` computed. On the FIXED
+    // code that ceiling is `remaining / batch_len` = `($100.0 − $50.0) / 1`
+    // = `$50.0`.
+    //
+    // Confirmed failing against master (pre-fix): `cost_limit` handed down
+    // verbatim gives `lead-2` the full, undiminished $100.0 ceiling all
+    // over again, ignoring the $50.0 `lead-1` already spent — `core-b` runs
+    // twice as many rounds (100 instead of 50) and the nested cost reads
+    // back as $100.0, not $50.0. Combined with `lead-1`'s $50.0, that is
+    // $150.0 spent against a $100.0 limit, entirely sequentially, with zero
+    // parallelism anywhere in this run — the issue's own "a chain of nested
+    // delegations can consume k times the limit" made concrete.
+    //
+    // Mutation sensitivity: dropping the subtraction (keeping the, here
+    // no-op, division) reproduces exactly that master behaviour above —
+    // `lead-2`'s folded cost reads $100.0 instead of $50.0. This test
+    // cannot distinguish a dropped division from a correct one (both are
+    // `x / 1 == x` at `batch_len == 1`), which is exactly why the parallel
+    // test above is needed as the division's own sentinel — the two halves
+    // are independent and neither test can stand in for the other.
+    #[tokio::test]
+    async fn es_sequential_nested_chain_sees_decreasing_cost_ceiling() {
+        let mut agents = BTreeMap::new();
+        for name in ["dev-lead", "lead-1", "core-a", "lead-2", "core-b"] {
+            agents.insert(name.to_string(), es_test_agent(name, "concrete-model"));
+        }
+
+        let dev_lead = Arc::new(ScriptedProvider::new(&[
+            "@lead-1: gère A",
+            "@lead-2: gère B",
+            "Synthèse : livré.",
+        ]));
+        let core_a = Arc::new(CostedProvider::new(&[("core-a note", 50.0)]));
+        let core_b = Arc::new(CostedProvider::new(&[("core-b note", 1.0)]));
+        let lead_1 = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+        let lead_2 = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert("dev-lead".to_string(), dev_lead as Arc<dyn Provider>);
+        providers.insert("lead-1".to_string(), lead_1.clone() as Arc<dyn Provider>);
+        providers.insert("lead-2".to_string(), lead_2.clone() as Arc<dyn Provider>);
+        providers.insert("core-a".to_string(), core_a.clone() as Arc<dyn Provider>);
+        providers.insert("core-b".to_string(), core_b.clone() as Arc<dyn Provider>);
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some("dev-lead".to_string()),
+            teams: vec![
+                TeamConfig {
+                    lead: Some("lead-1".to_string()),
+                    agents: vec!["core-a".to_string()],
+                    pattern: Some(NestedPattern::Blackboard),
+                    max_rounds: Some(1),
+                    ..Default::default()
+                },
+                TeamConfig {
+                    lead: Some("lead-2".to_string()),
+                    agents: vec!["core-b".to_string()],
+                    pattern: Some(NestedPattern::Blackboard),
+                    max_rounds: Some(1_000),
+                    ..Default::default()
+                },
+            ],
+            cost_limit: Some(100.0),
+            ..Default::default()
+        };
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-sequential-cost-chain",
+            "dev-lead",
+            "build X then Y",
+            config,
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+        assert_eq!(
+            lead_1.call_count(),
+            0,
+            "lead-1 must not make a flat LLM call"
+        );
+        assert_eq!(
+            lead_2.call_count(),
+            0,
+            "lead-2 must not make a flat LLM call"
+        );
+
+        let lead1_cost =
+            observed_cost_for(&log, "run-sequential-cost-chain", "lead-1").expect("lead-1 cost");
+        assert_eq!(
+            lead1_cost, 50.0,
+            "lead-1's single forced round (max_rounds: 1) costs a fixed \
+             $50.0, independent of whatever ceiling it was handed — this is \
+             the deterministic \"already spent\" this test relies on for \
+             lead-2's ceiling"
+        );
+
+        let lead2_cost =
+            observed_cost_for(&log, "run-sequential-cost-chain", "lead-2").expect("lead-2 cost");
+        assert_eq!(
+            lead2_cost, 50.0,
+            "lead-2's nested sub-run must halt once IT alone has spent \
+             $50.0 — the $100.0 total MINUS the $50.0 lead-1 already spent \
+             — not $100.0, the full, undecremented total master hands down \
+             verbatim (which would let lead-2 alone spend as much as the \
+             entire run was ever allowed)"
+        );
+    }
+
+    // Scenario: `config.cost_limit` is `None`. `remaining_cost_limit` must
+    // stay `None` regardless of `batch_len` or `state.budget_cost` — the
+    // sub-pattern's own cost guard must simply stay OFF, exactly as before
+    // this fix (`cost_limit: None` is explicitly called out as unaffected
+    // by the issue). A single sequential nested delegation whose member
+    // costs an outlandish $1,000,000.0 per round proves the guard is truly
+    // off: only `max_rounds` can halt it.
+    //
+    // Mutation this catches: any change that turns the `None` arm into
+    // `Some(0.0)` instead of `None` (e.g. an errant `.unwrap_or_default()`
+    // in place of `.map(...)`) would halt `core-a` at round 0 — 0 calls
+    // instead of the full 3 scripted rounds.
+    #[tokio::test]
+    async fn es_nested_cost_limit_none_is_unaffected() {
+        let mut agents = BTreeMap::new();
+        for name in ["dev-lead", "core-lead", "core-a"] {
+            agents.insert(name.to_string(), es_test_agent(name, "concrete-model"));
+        }
+
+        let core_a = Arc::new(CostedProvider::new(&[("core-a note", 1_000_000.0)]));
+        let core_lead = Arc::new(ScriptedProvider::new(&["LEAD-FLAT-CALL-SHOULD-NOT-HAPPEN"]));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert("dev-lead".to_string(), {
+            Arc::new(ScriptedProvider::new(&[
+                "@core-lead: gère la feature",
+                "Synthèse : livré.",
+            ])) as Arc<dyn Provider>
+        });
+        providers.insert(
+            "core-lead".to_string(),
+            core_lead.clone() as Arc<dyn Provider>,
+        );
+        providers.insert("core-a".to_string(), core_a.clone() as Arc<dyn Provider>);
+
+        let config = OrchestrationConfig {
+            enabled: true,
+            pattern: OrchestrationPattern::Hierarchical,
+            coordinator: Some("dev-lead".to_string()),
+            teams: vec![TeamConfig {
+                lead: Some("core-lead".to_string()),
+                agents: vec!["core-a".to_string()],
+                pattern: Some(NestedPattern::Blackboard),
+                max_rounds: Some(3),
+                ..Default::default()
+            }],
+            cost_limit: None,
+            ..Default::default()
+        };
+
+        let mut log = InMemoryLog::default();
+        let st = run_hierarchical_es(
+            "run-cost-limit-none",
+            "dev-lead",
+            "build X",
+            config,
+            agents,
+            providers,
+            RoutingRules::default(),
+            &mut log,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(st.status, RunStatus::Completed);
+        assert_eq!(
+            core_a.call_count(),
+            3,
+            "with no cost_limit configured, only max_rounds should halt the \
+             nested sub-run — an astronomically expensive member must still \
+             be allowed to run all 3 scripted rounds"
         );
     }
 }
