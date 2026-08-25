@@ -1,0 +1,470 @@
+//! Shared HTTP retry/backoff for the API providers (anthropic, google).
+//!
+//! Lot 1 (`rate_limiter.rs`, one directory up) is a pure token-bucket
+//! throttler: it smooths OUTGOING calls, proactively, before they hit the
+//! wire. It contains no retry, no backoff, no 429/529 handling. This module
+//! is the reactive half — what to do when the SERVER comes back with a
+//! rate-limit or overload response.
+//!
+//! Both providers speak plain HTTP and hit exactly the same two failure
+//! modes (429 rate-limited, 529 overloaded), read the same `Retry-After`
+//! header, and need the same retryable/terminal distinction (a 400 or 401
+//! is never worth retrying — doing so only delays a clear error). This is
+//! implemented ONCE here and used by both `api::anthropic` and `api::google`
+//! rather than grown independently in each — two copies of one policy is
+//! the defect class this repo has fixed repeatedly (see the issue write-up).
+//! `openai.rs`/`proxy.rs` are still `todo!()` stubs and make no HTTP calls
+//! yet, so they have nothing to wire up here.
+//!
+//! Bounded by ATTEMPT COUNT, not elapsed time and not a caller-supplied
+//! deadline: neither provider threads `agent.metadata.timeout` (that only
+//! feeds `CliProvider`) or any `reqwest::Client` timeout into its request
+//! path today, so there is no existing deadline for this loop to interact
+//! with. A `Retry-After` value from the server is honored verbatim and
+//! uncapped — capping it would defeat the point of trusting the server's
+//! own knowledge of its quota window — so the wall-clock cost of a single
+//! wait is not bounded, only the number of waits is (`RetryPolicy::max_retries`).
+//! If a caller-side deadline for API providers is added later, it composes
+//! for free: wrap the whole `complete()`/`stream()` call in
+//! `tokio::time::timeout(..)` from the outside; nothing in this loop needs
+//! to change.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use reqwest::{RequestBuilder, Response, StatusCode, header::RETRY_AFTER};
+
+/// Bounds and pacing for the retry loop. `Default` gives the production
+/// values; tests build a `RetryPolicy` with tiny delays so the suite stays
+/// fast and deterministic (never sleeping seconds for no reason).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RetryPolicy {
+    /// Retries allowed AFTER the first attempt. 3 -> up to 4 total tries.
+    pub max_retries: u32,
+    /// Base for the exponential backoff used when the server sends no
+    /// `Retry-After` (`base * 2^(attempt-1)`, before jitter).
+    pub base_delay: Duration,
+    /// Ceiling for a GUESSED backoff wait. Never applied to a server-declared
+    /// `Retry-After` (see module docs).
+    pub max_backoff: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            base_delay: Duration::from_millis(500),
+            max_backoff: Duration::from_secs(30),
+        }
+    }
+}
+
+/// One retry-or-give-up decision, and — when retrying — how long to wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryDecision {
+    Retry(Duration),
+    GiveUp,
+}
+
+/// Whether an HTTP status is worth retrying: 429 (rate limited) and 529
+/// (Anthropic's "overloaded"). Everything else — including other 4xx/5xx —
+/// is terminal. A 400 or 401 will never succeed on replay; retrying it only
+/// turns a clear, fast error into a slow one.
+pub(crate) fn is_retryable(status: StatusCode) -> bool {
+    matches!(status.as_u16(), 429 | 529)
+}
+
+/// Parse a `Retry-After` value as a plain count of seconds — the only form
+/// Anthropic/Google actually send. The HTTP-date form (`Retry-After: <date>`)
+/// is not produced by either provider today, so a value that doesn't parse
+/// as an unsigned integer is treated as absent rather than guessed at.
+pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
+    value.trim().parse::<u64>().ok().map(Duration::from_secs)
+}
+
+/// Decide whether the response to attempt number `attempt` (1-based: 1 is
+/// the first try) should be retried, and after how long.
+pub(crate) fn decide(
+    policy: &RetryPolicy,
+    status: StatusCode,
+    retry_after: Option<Duration>,
+    attempt: u32,
+) -> RetryDecision {
+    if !is_retryable(status) {
+        return RetryDecision::GiveUp;
+    }
+    if attempt > policy.max_retries {
+        return RetryDecision::GiveUp;
+    }
+    match retry_after {
+        Some(delay) => RetryDecision::Retry(delay),
+        None => RetryDecision::Retry(backoff_with_jitter(policy, attempt)),
+    }
+}
+
+fn backoff_with_jitter(policy: &RetryPolicy, attempt: u32) -> Duration {
+    let exp = attempt.saturating_sub(1).min(16);
+    let cap = policy
+        .base_delay
+        .saturating_mul(1u32 << exp)
+        .min(policy.max_backoff);
+    full_jitter(cap)
+}
+
+/// Uniform-in-`[0, cap]` "full jitter" (AWS's term for the classic
+/// decorrelated-backoff trick), so concurrent callers backing off from the
+/// same overload don't retry in lockstep. Hand-rolled xorshift64* seeded
+/// from the wall clock and a process-wide counter — no `rand` dependency
+/// needed for what is, deliberately, a dozen lines; this doesn't need to be
+/// cryptographically strong, only unpredictable enough to decorrelate.
+fn full_jitter(cap: Duration) -> Duration {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mut x = nanos ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    let frac = (x >> 11) as f64 / (1u64 << 53) as f64; // uniform in [0, 1)
+    cap.mul_f64(frac)
+}
+
+/// Send a request, retrying on 429/529 per `policy` and honoring
+/// `Retry-After` when the server sends one. `build` is called once per
+/// attempt (never `Fn`-cached) since a `RequestBuilder` is consumed by
+/// `send()` and can't be replayed.
+///
+/// Returns the FIRST response that is either successful or not worth
+/// retrying (terminal status, or the retry budget is exhausted) — success
+/// or failure, callers keep their existing status-check / error-body
+/// logic completely unchanged; this function only decides whether to try
+/// again, never how to interpret the final response.
+pub(crate) async fn send_with_retry<F>(
+    policy: &RetryPolicy,
+    mut build: F,
+) -> reqwest::Result<Response>
+where
+    F: FnMut() -> RequestBuilder,
+{
+    let mut attempt: u32 = 1;
+    loop {
+        let response = build().send().await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+
+        let retry_after = response
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_retry_after);
+
+        match decide(policy, status, retry_after, attempt) {
+            RetryDecision::GiveUp => return Ok(response),
+            RetryDecision::Retry(delay) => {
+                tracing::warn!(
+                    %status,
+                    attempt,
+                    max_retries = policy.max_retries,
+                    delay_ms = delay.as_millis() as u64,
+                    "provider HTTP error is retryable, backing off before retry",
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- pure decision logic: no networking, no sleeping ---
+
+    #[test]
+    fn parse_retry_after_reads_plain_seconds_and_rejects_garbage() {
+        // Mutation this catches: the parser accepting non-integer input
+        // (e.g. switching to `f64` parsing, or not trimming whitespace).
+        assert_eq!(parse_retry_after("7"), Some(Duration::from_secs(7)));
+        assert_eq!(parse_retry_after("  3  "), Some(Duration::from_secs(3)));
+        assert_eq!(parse_retry_after("0"), Some(Duration::from_secs(0)));
+        assert_eq!(parse_retry_after("abc"), None);
+        assert_eq!(parse_retry_after(""), None);
+        assert_eq!(parse_retry_after("-1"), None);
+        assert_eq!(parse_retry_after("1.5"), None);
+    }
+
+    #[test]
+    fn is_retryable_is_exactly_429_and_529() {
+        // Mutation this catches: the retryable set drifting — e.g. someone
+        // "helpfully" adding a generic 5xx, or dropping 529 because it's
+        // Anthropic-specific and easy to forget when generalizing.
+        for code in [429, 529] {
+            assert!(
+                is_retryable(StatusCode::from_u16(code).unwrap()),
+                "{code} should be retryable"
+            );
+        }
+        for code in [400, 401, 403, 404, 500, 502, 503] {
+            assert!(
+                !is_retryable(StatusCode::from_u16(code).unwrap()),
+                "{code} must NOT be retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn retry_after_header_is_honored_verbatim_over_backoff() {
+        // Mutation this catches: computing a backoff delay even when the
+        // server gave an explicit `Retry-After`, or scaling/capping that
+        // value instead of using it as-is.
+        let policy = RetryPolicy {
+            max_retries: 3,
+            base_delay: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+        };
+        let decision = decide(
+            &policy,
+            StatusCode::TOO_MANY_REQUESTS,
+            Some(Duration::from_secs(7)),
+            1,
+        );
+        assert_eq!(decision, RetryDecision::Retry(Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn no_header_backs_off_within_cap_and_jitters() {
+        // Mutation this catches: backoff ignoring `max_backoff` (unbounded
+        // growth), and backoff being deterministic (no jitter at all —
+        // e.g. always returning the cap), which would make concurrent
+        // retries lock-step.
+        let policy = RetryPolicy {
+            max_retries: 5,
+            base_delay: Duration::from_millis(100),
+            max_backoff: Duration::from_millis(100),
+        };
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..30 {
+            let RetryDecision::Retry(d) = decide(&policy, StatusCode::TOO_MANY_REQUESTS, None, 1)
+            else {
+                panic!("expected a retry decision");
+            };
+            assert!(
+                d <= Duration::from_millis(100),
+                "backoff exceeded the cap: {d:?}"
+            );
+            seen.insert(d);
+        }
+        assert!(
+            seen.len() > 1,
+            "30 samples produced no variation — jitter looks disabled"
+        );
+    }
+
+    #[test]
+    fn terminal_status_never_retries_regardless_of_attempt_or_header() {
+        // Mutation this catches: the retryable check being skipped or
+        // inverted, so a 400 with a (nonsensical but present) Retry-After
+        // header would still be retried.
+        let policy = RetryPolicy::default();
+        let decision = decide(
+            &policy,
+            StatusCode::BAD_REQUEST,
+            Some(Duration::from_secs(1)),
+            1,
+        );
+        assert_eq!(decision, RetryDecision::GiveUp);
+    }
+
+    #[test]
+    fn retry_budget_boundary_last_allowed_attempt_retries_next_gives_up() {
+        // Mutation this catches: an off-by-one in the exhaustion check
+        // (`>=` vs `>`), which either retries one time too many or gives up
+        // one time too early. Pins the exact boundary.
+        let policy = RetryPolicy {
+            max_retries: 2,
+            base_delay: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+        };
+        assert!(matches!(
+            decide(&policy, StatusCode::TOO_MANY_REQUESTS, None, 2),
+            RetryDecision::Retry(_)
+        ));
+        assert_eq!(
+            decide(&policy, StatusCode::TOO_MANY_REQUESTS, None, 3),
+            RetryDecision::GiveUp
+        );
+    }
+
+    // --- end-to-end over real (local-only) HTTP: proves the wiring, not
+    // just the decision table ---
+
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
+    /// Minimal scripted HTTP/1.1 server so `send_with_retry` is exercised
+    /// against REAL wire traffic (real status line, real headers) without
+    /// calling any external API. Each accepted connection gets exactly one
+    /// scripted `(status, headers, body)`, served then closed
+    /// (`Connection: close`, so reqwest never reuses a stale connection
+    /// across scripts). Requests past the end of the script repeat the last
+    /// entry — tests that don't know the exact attempt count (the
+    /// give-up-after-budget case) rely on that.
+    /// (status code, extra headers, body) for one scripted response.
+    type ScriptedResponse = (u16, Vec<(&'static str, String)>, &'static str);
+
+    struct ScriptedServer {
+        addr: std::net::SocketAddr,
+        requests: Arc<AtomicUsize>,
+    }
+
+    impl ScriptedServer {
+        fn start(responses: Vec<ScriptedResponse>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+            let addr = listener.local_addr().expect("local addr");
+            let requests = Arc::new(AtomicUsize::new(0));
+            let requests_clone = requests.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    let idx = requests_clone.fetch_add(1, Ordering::SeqCst);
+                    let (code, headers, body) = responses
+                        .get(idx)
+                        .or_else(|| responses.last())
+                        .cloned()
+                        .expect("script must have at least one response");
+
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf); // drain the request, ignore its content
+
+                    let mut resp = format!(
+                        "HTTP/1.1 {code} X\r\nConnection: close\r\nContent-Length: {}\r\n",
+                        body.len()
+                    );
+                    for (k, v) in &headers {
+                        resp.push_str(&format!("{k}: {v}\r\n"));
+                    }
+                    resp.push_str("\r\n");
+                    resp.push_str(body);
+                    let _ = stream.write_all(resp.as_bytes());
+                }
+            });
+            Self { addr, requests }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}", self.addr)
+        }
+
+        fn request_count(&self) -> usize {
+            self.requests.load(Ordering::SeqCst)
+        }
+    }
+
+    fn tiny_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_retries: 2,
+            base_delay: Duration::from_millis(20),
+            max_backoff: Duration::from_millis(20),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_honors_real_retry_after_header() {
+        // Mutation this catches: the header extraction never being wired
+        // into `send_with_retry` (wrong header name/case, or the
+        // `.headers().get(...)` call being dropped) — if honoring the
+        // header were broken, this would fall through to the tiny 20ms
+        // backoff instead of the header's declared 1s, and the timing
+        // assertion below would fail.
+        let server = ScriptedServer::start(vec![
+            (429, vec![("Retry-After", "1".to_string())], ""),
+            (200, vec![], "ok"),
+        ]);
+        let client = reqwest::Client::new();
+        let url = server.url();
+        let start = std::time::Instant::now();
+        let response = send_with_retry(&tiny_policy(), || client.get(&url))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            start.elapsed() >= Duration::from_millis(900),
+            "should have waited ~1s per Retry-After, took {:?}",
+            start.elapsed()
+        );
+        assert_eq!(server.request_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_backs_off_and_succeeds_without_header() {
+        // Mutation this catches: treating "no Retry-After header" as "don't
+        // retry" (an easy slip once the header-based path exists) — if so,
+        // the server would see only 1 request and the final status would
+        // still be 429, not 200.
+        let server = ScriptedServer::start(vec![(429, vec![], ""), (200, vec![], "ok")]);
+        let client = reqwest::Client::new();
+        let url = server.url();
+        let response = send_with_retry(&tiny_policy(), || client.get(&url))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(server.request_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_never_retries_a_400_over_the_wire() {
+        // Mutation this catches: retrying on any non-2xx instead of just
+        // 429/529 — would show up here as more than one request and a slow
+        // return instead of an immediate one.
+        let server = ScriptedServer::start(vec![(400, vec![], "bad request")]);
+        let client = reqwest::Client::new();
+        let url = server.url();
+        let start = std::time::Instant::now();
+        let response = send_with_retry(&tiny_policy(), || client.get(&url))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(server.request_count(), 1);
+        assert!(start.elapsed() < Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_gives_up_after_budget_and_stops_the_server_traffic() {
+        // The one that matters most: a server that NEVER recovers must not
+        // be retried forever. Mutation this catches: a missing/broken
+        // exhaustion check turning this into an infinite loop, or a count
+        // that drifts from the configured budget. An infinite loop would
+        // otherwise just hang this test (and the CI job) instead of failing
+        // it — confirmed by removing the exhaustion check by hand: the test
+        // hung until killed rather than reporting a failure — so the call
+        // is wrapped in a generous `tokio::time::timeout` that turns "loops
+        // forever" into an explicit, fast assertion failure.
+        let policy = RetryPolicy {
+            max_retries: 2,
+            base_delay: Duration::from_millis(5),
+            max_backoff: Duration::from_millis(5),
+        };
+        let server = ScriptedServer::start(vec![(429, vec![], "still overloaded")]);
+        let client = reqwest::Client::new();
+        let url = server.url();
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            send_with_retry(&policy, || client.get(&url)),
+        )
+        .await
+        .expect("send_with_retry did not give up — it looped past the retry budget")
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        // 1 initial attempt + 2 retries = 3, never more.
+        assert_eq!(server.request_count(), 3);
+    }
+}

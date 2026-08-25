@@ -5,6 +5,8 @@ use tokio_stream::StreamExt;
 
 use armadai_core::provider::*;
 
+use super::retry::{RetryPolicy, send_with_retry};
+
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 
@@ -117,14 +119,14 @@ impl Provider for AnthropicProvider {
             stream: None,
         };
 
-        let response = self
-            .client
-            .post(format!("{}/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
-            .await?;
+        let response = send_with_retry(&RetryPolicy::default(), || {
+            self.client
+                .post(format!("{}/messages", self.base_url))
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .json(&body)
+        })
+        .await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -179,14 +181,14 @@ impl Provider for AnthropicProvider {
             stream: Some(true),
         };
 
-        let response = self
-            .client
-            .post(format!("{}/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
-            .await?;
+        let response = send_with_retry(&RetryPolicy::default(), || {
+            self.client
+                .post(format!("{}/messages", self.base_url))
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .json(&body)
+        })
+        .await?;
 
         if !response.status().is_success() {
             let status = response.status();
