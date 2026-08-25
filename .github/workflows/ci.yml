@@ -61,13 +61,22 @@ jobs:
       # We run every feature combination the code is gated for so a lint that
       # only trips under one combo is caught in CI, not just locally. The
       # feature flags belong to the bin and propagate to the member crates,
-      # so these three combos also cover armadai-providers in BOTH states:
-      # `tui` builds it without `api` (the `#[cfg(not(feature = "api"))]`
+      # so these combos also cover armadai-providers in BOTH states: `tui`
+      # builds it without `api` (the `#[cfg(not(feature = "api"))]`
       # fallbacks), `tui,providers-api` builds it with `api` (HTTP providers +
       # online model_registry). See CLAUDE.md and the OH1 event-sourcing spec §9.
       - run: cargo clippy --all-targets --no-default-features --features tui -- -D warnings
       - run: cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
       - run: cargo clippy --all-targets --no-default-features --features tui,web,storage -- -D warnings
+      # tui,web,storage,providers-api: `web` and `providers-api` never appear
+      # together in any mode above (#355), so the `#[cfg(feature =
+      # "providers-api")]` arms inside src/web/ (e.g. `refresh_models` in
+      # web/api.rs) were never compiled by CI at all — only their
+      # `#[cfg(not(...))]` fallback was. This mode is also, deliberately,
+      # exactly the crate's default feature set (`default = ["tui", "web",
+      # "storage", "providers-api"]` in Cargo.toml): before this line, no job
+      # compiled what a user gets from a bare `cargo build`/`cargo install`.
+      - run: cargo clippy --all-targets --no-default-features --features tui,web,storage,providers-api -- -D warnings
       # tui,storage,e2e-fake: the only mode that compiles the e2e test surface
       # (crates/armadai/tests/gaveldrop.rs, the fake-claude bin, and
       # armadai-fake's `engine` feature) — everything else above skips it, so
@@ -88,7 +97,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       # The repo root is a VIRTUAL workspace, so each `cargo test` below runs
       # the WHOLE workspace (bin + core/providers/storage/secrets); the bin's
-      # feature flags propagate to the member crates. The three modes together
+      # feature flags propagate to the member crates. The modes together
       # exercise every crate in every gated state — no explicit `-p` steps needed.
       #
       # tui: baseline (bin + all members; armadai-providers without `api`).
@@ -111,11 +120,16 @@ jobs:
       # tui,providers-api: exercises the bin's providers-api-gated code
       # (linker/cli/tui) AND armadai-providers WITH `api` (HTTP providers +
       # online model_registry) — both untested by the two modes above. `web`
-      # is NOT enabled here, so none of `web`'s own providers-api-gated code
-      # (e.g. `refresh_models`) is exercised by this mode either — it has no
-      # test of its own today, see #350's report for the full feature/test
-      # coverage matrix.
+      # is NOT enabled here; its own providers-api-gated code (e.g.
+      # `refresh_models`) is covered by the dedicated mode below instead.
       - run: cargo test --no-default-features --features tui,providers-api
+      # tui,web,storage,providers-api: mirrors clippy's mode of the same name
+      # (#355) — `web` and `providers-api` are otherwise never enabled
+      # together, so `web/api.rs`'s `#[cfg(feature = "providers-api")]` arm
+      # (`refresh_models`'s real body) was compiled by no job and run by
+      # none. This is also exactly the crate's default feature set, so it
+      # doubles as the "does the default build even compile" check.
+      - run: cargo test --no-default-features --features tui,web,storage,providers-api
       - name: Upload gaveldrop report
         if: always()
         uses: actions/upload-artifact@v7

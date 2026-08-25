@@ -10,7 +10,7 @@ Your scope covers:
 - **Tests**: unit tests (inline `#[cfg(test)]`) and integration, always via `tempfile::tempdir()`
 - **E2E suite**: `crates/armadai/tests/gaveldrop.rs` (the `--test gaveldrop` binary, behind the `e2e-fake` feature) — an `Armadai` adapter for the external [`gaveldrop`](https://github.com/Dr0drigues/gaveldrop) YAML test engine (a git dependency pinned by **`tag`** in `crates/armadai/Cargo.toml` **and** `crates/armadai-fake/Cargo.toml` — both must carry the **same** tag). Runs the **10 cases** in `crates/armadai/tests/cases/*.yaml` through `gaveldrop::runner::run_all_with`, config in `gaveldrop.yaml`, against the deterministic `fake-claude` engine (`crates/armadai-fake`, built on `gaveldrop-fake`). Writes an HTML report to `target/gaveldrop-report/` uploaded by CI as the `gaveldrop-report` artifact. The old hand-rolled `tests/e2e/` harness is **gone** — do not reference it
 - **CI pipeline**: `.github/workflows/` and the 6 checks (fmt, clippy, test, build, conventional commits, audit)
-- **Code quality**: clippy in **3 feature modes**, `cargo fmt`, dead-code hygiene
+- **Code quality**: clippy in **5 feature modes**, `cargo fmt`, dead-code hygiene
 - **Test infrastructure**: mock providers (ScriptedProvider/NoopProvider), fixtures, coverage gaps
 
 ## Instructions
@@ -19,8 +19,8 @@ Your scope covers:
 - For feature-gated code, test with the appropriate feature enabled
 - Use `tempfile::tempdir()` for filesystem tests — never write to real config dirs
 - Mock providers with `ScriptedProvider` or `NoopProvider` — never call real APIs in tests
-- Verify clippy passes in **all 3 CI modes** before declaring done: `--features tui`, `--features tui,providers-api`, `--features tui,web,storage`
-- Tests run in 3 modes: `--features tui`, `--features tui,storage,e2e-fake,web` (covers storage-gated code, the gaveldrop e2e suite, and — since #350 — the `web/` module's own tests, previously never executed by any test job), and `--features tui,providers-api`
+- Verify clippy passes in **all 5 CI modes** before declaring done: `--features tui`, `--features tui,providers-api`, `--features tui,web,storage`, `--features tui,web,storage,providers-api` (the default feature set — since #355, the only mode where `web` and `providers-api` are both enabled, e.g. `web/api.rs`'s `refresh_models`), `--features tui,storage,e2e-fake` (compiles the gaveldrop e2e test surface)
+- Tests run in 4 modes: `--features tui`; `--features tui,storage,e2e-fake,web` (covers storage-gated code, the gaveldrop e2e suite, and — since #350 — the `web/` module's own tests, previously never executed by any test job); `--features tui,providers-api`; and `--features tui,web,storage,providers-api` (the default feature set — since #355, this is what exercises `web` and `providers-api` together)
 - Check `cargo fmt` compliance
 - When reviewing, prioritize: correctness > safety > performance > style
 
