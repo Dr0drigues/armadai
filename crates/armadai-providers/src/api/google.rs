@@ -5,6 +5,8 @@ use tokio_stream::StreamExt;
 
 use armadai_core::provider::*;
 
+use super::retry::{RetryPolicy, send_with_retry};
+
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 pub struct GoogleProvider {
@@ -125,7 +127,10 @@ impl Provider for GoogleProvider {
             self.base_url, request.model, self.api_key
         );
 
-        let response = self.client.post(&url).json(&body).send().await?;
+        let response = send_with_retry(&RetryPolicy::default(), || {
+            self.client.post(&url).json(&body)
+        })
+        .await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -179,7 +184,10 @@ impl Provider for GoogleProvider {
             self.base_url, request.model, self.api_key
         );
 
-        let response = self.client.post(&url).json(&body).send().await?;
+        let response = send_with_retry(&RetryPolicy::default(), || {
+            self.client.post(&url).json(&body)
+        })
+        .await?;
 
         if !response.status().is_success() {
             let status = response.status();
