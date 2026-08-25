@@ -2260,49 +2260,16 @@ mod tests {
     // so the test needs no controlling terminal, in CI as locally.
     // -----------------------------------------------------------------
 
-    /// Points `ARMADAI_CONFIG_DIR` at a fresh temp dir for the guard's
-    /// lifetime, restoring it on drop, serialised on the workspace-wide
-    /// `ENV_MUTEX` (see `shell::wizard`'s own guard). Without it,
-    /// `execute_pipeline_steps`'s closing `save_current_session` would
-    /// write this test's session into the developer's real
-    /// `~/.config/armadai/sessions/` (#267).
-    struct IsolatedConfigDir {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        orig: Option<String>,
-        _tmp: tempfile::TempDir,
-    }
-
-    impl IsolatedConfigDir {
-        fn enter() -> Self {
-            // Poison-tolerant: `ENV_MUTEX` guards `()` only, so a panicking
-            // prior holder leaves no inconsistent state — only phantom
-            // failures if the poison is honoured.
-            let lock = armadai_core::config::ENV_MUTEX
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
-            let tmp = tempfile::tempdir().unwrap();
-            // SAFETY: serialised via ENV_MUTEX above.
-            unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", tmp.path()) };
-            Self {
-                _lock: lock,
-                orig,
-                _tmp: tmp,
-            }
-        }
-    }
-
-    impl Drop for IsolatedConfigDir {
-        fn drop(&mut self) {
-            // SAFETY: still under the guard held by `self._lock`.
-            unsafe {
-                match &self.orig {
-                    Some(v) => std::env::set_var("ARMADAI_CONFIG_DIR", v),
-                    None => std::env::remove_var("ARMADAI_CONFIG_DIR"),
-                }
-            }
-        }
-    }
+    // Points `ARMADAI_CONFIG_DIR` at a fresh temp dir for the guard's
+    // lifetime, restoring it on drop, while holding the workspace-wide env
+    // lock. Without it, `execute_pipeline_steps`'s closing
+    // `save_current_session` would write this test's session into the
+    // developer's real `~/.config/armadai/sessions/` (#267).
+    //
+    // The shared guard from #365/#372, not a local copy: that PR made
+    // `ENV_MUTEX` private precisely so no test could acquire it — or fail to
+    // tolerate its poisoning — on its own terms.
+    use armadai_core::test_support::IsolatedConfigDir;
 
     /// A pipeline step in `provider:` mode naming `cmd`.
     fn provider_step(name: &str, cmd: &str) -> armadai_core::project::PipelineStep {
