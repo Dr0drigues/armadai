@@ -103,23 +103,76 @@ impl Provider for CliProvider {
         // the agent's explicit args). Then parse stdout opportunistically:
         // `parse_json_stdout` extracts content + cost/tokens from JSONL events
         // when present, and falls back to raw stdout (zeroed metrics) otherwise.
-        let mut cmd = self.build_command(&input);
+        let mut child = self.build_command(&input).spawn()?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture stderr"))?;
+
+        // Drain stderr concurrently. Reading stdout to EOF *before* `wait()`ing
+        // (below) is required to avoid the classic pipe-deadlock (a chatty
+        // child blocks on a full stdout pipe while we're not reading it), and
+        // draining stderr on its own task means a chatty stderr can't cause
+        // the same deadlock while we wait on stdout lines.
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = String::new();
+            let mut lines = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(stderr));
+            while let Ok(Some(line)) = lines.next_line().await {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+            buf
+        });
+
+        let mut lines = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(stdout));
         let timeout = std::time::Duration::from_secs(self.timeout_secs);
 
-        let output = match tokio::time::timeout(timeout, cmd.output()).await {
-            Ok(result) => result?,
-            Err(_) => {
-                anyhow::bail!("CLI command timed out after {}s", self.timeout_secs);
+        // Inactivity timeout (#270): rearmed on every line read from stdout,
+        // rather than a single deadline covering the whole call. Any line —
+        // a delegation (`tool_use`) event, a token delta, an init/result
+        // event, even a line that fails to parse as JSON — counts as
+        // activity: it proves the subprocess is still producing observable
+        // output, which is the only signal available here that it isn't
+        // hung (this works uniformly for JSON-streaming CLIs and plain-text
+        // ones like `aider`, without coupling to `json_runner`'s
+        // per-provider event parsing). A subprocess that goes fully silent
+        // for `timeout_secs` is killed; one that keeps streaming survives
+        // indefinitely past what used to be a hard wall-clock ceiling.
+        let mut raw = String::new();
+        loop {
+            match tokio::time::timeout(timeout, lines.next_line()).await {
+                Ok(Ok(Some(line))) => {
+                    raw.push_str(&line);
+                    raw.push('\n');
+                }
+                Ok(Ok(None)) => break, // stdout closed: subprocess done writing
+                Ok(Err(e)) => {
+                    let _ = child.kill().await;
+                    return Err(e.into());
+                }
+                Err(_) => {
+                    let _ = child.kill().await;
+                    anyhow::bail!(
+                        "CLI command timed out after {}s of inactivity (no output)",
+                        self.timeout_secs
+                    );
+                }
             }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("CLI command failed ({}): {stderr}", output.status);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(self.parse_json_stdout(&stdout))
+        let status = child.wait().await?;
+        let stderr_buf = stderr_task.await.unwrap_or_default();
+
+        if !status.success() {
+            anyhow::bail!("CLI command failed ({status}): {stderr_buf}");
+        }
+
+        Ok(self.parse_json_stdout(&raw))
     }
 
     async fn stream(&self, request: CompletionRequest) -> anyhow::Result<TokenStream> {
@@ -138,23 +191,45 @@ impl Provider for CliProvider {
         tokio::spawn(async move {
             let reader = tokio::io::BufReader::new(stdout);
             let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
-
             let timeout = std::time::Duration::from_secs(timeout_secs);
-            let result = tokio::time::timeout(timeout, async {
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if tx.send(Ok(line)).await.is_err() {
+
+            // Inactivity timeout (#270), mirroring `complete()`: the timeout
+            // is rearmed on every line, not held once around the whole loop
+            // — otherwise a steadily-streaming child would still be cut off
+            // once the loop's cumulative duration passed `timeout_secs`,
+            // even though it never went silent.
+            loop {
+                match tokio::time::timeout(timeout, lines.next_line()).await {
+                    Ok(Ok(Some(line))) => {
+                        if tx.send(Ok(line)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Ok(None)) => break, // stdout closed: child done writing
+                    Ok(Err(e)) => {
+                        let _ = tx
+                            .send(Err(anyhow::anyhow!("Failed to read CLI output: {e}")))
+                            .await;
                         break;
                     }
-                }
-            })
-            .await;
-
-            if result.is_err() {
-                if let Err(e) = tx.send(Err(anyhow::anyhow!("CLI command timed out"))).await {
-                    tracing::debug!("Failed to send timeout error (receiver dropped): {:?}", e);
-                }
-                if let Err(e) = child.kill().await {
-                    tracing::debug!("Failed to kill timed-out CLI command: {:?}", e);
+                    Err(_) => {
+                        if let Err(e) = tx
+                            .send(Err(anyhow::anyhow!(
+                                "CLI command timed out after {timeout_secs}s of inactivity (no output)"
+                            )))
+                            .await
+                        {
+                            tracing::debug!(
+                                "Failed to send timeout error (receiver dropped): {:?}",
+                                e
+                            );
+                        }
+                        if let Err(e) = child.kill().await {
+                            tracing::debug!("Failed to kill timed-out CLI command: {:?}", e);
+                        }
+                        let _ = child.wait().await;
+                        return;
+                    }
                 }
             }
 
@@ -321,6 +396,85 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("timed out"), "Error was: {err}");
+    }
+
+    // ── Inactivity timeout, rearmed per line (#270) ──
+    //
+    // The pre-fix implementation wrapped ONE `tokio::time::timeout` around
+    // the entire subprocess call, so the ceiling measured total call
+    // duration. That kills a hierarchical run mid-progress: each delegated
+    // `claude -p` turn is itself long-running and agentic, and a
+    // multi-delegation coordinator run legitimately exceeds any fixed
+    // wall-clock ceiling while still making steady progress. The two tests
+    // below pin the replacement contract: the ceiling must measure the gap
+    // between successive lines of subprocess output, not the call's total
+    // duration.
+
+    /// A subprocess whose individual gaps between lines never exceed the
+    /// ceiling must survive even once its TOTAL runtime exceeds it.
+    ///
+    /// Mutation this catches: reverting to a single `tokio::time::timeout`
+    /// around the whole read loop (the pre-fix shape) instead of one
+    /// rearmed on every line — that shape kills this exact case, since the
+    /// process's total runtime (~1.2s over 3 ticks of 0.4s) exceeds the 1s
+    /// ceiling even though no single gap does. It also catches a mutation
+    /// that reads the whole stdout in one shot before checking the
+    /// deadline (e.g. reverting to `cmd.output()`), which would observe no
+    /// intermediate activity at all and time out the same way.
+    #[tokio::test]
+    async fn steady_stream_survives_past_the_old_static_ceiling() {
+        let result = with_env_lock(async {
+            let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 1);
+            provider
+                .complete(echo_request(
+                    "for i in 1 2 3; do echo tick; sleep 0.4; done",
+                ))
+                .await
+        })
+        .await;
+
+        let response = result.expect("a steadily-ticking subprocess must not time out");
+        assert_eq!(
+            response.content.matches("tick").count(),
+            3,
+            "expected all 3 ticks to have been read before the process exited, got: {}",
+            response.content
+        );
+    }
+
+    /// A subprocess producing NOTHING on stdout must be killed once
+    /// `timeout_secs` of silence elapses — it must die near that ceiling,
+    /// not run toward its much longer natural completion (or hang forever
+    /// if the mechanism is broken).
+    ///
+    /// Mutation this catches: disabling/removing the inactivity check, or
+    /// rearming it on something other than actual stdout activity (e.g. an
+    /// unconditional tick) — either would let this call run well past the
+    /// 1s ceiling instead of erroring within a couple of seconds of it, so
+    /// the elapsed-time bound below would fail.
+    #[tokio::test]
+    async fn silent_subprocess_dies_near_the_inactivity_ceiling_not_later() {
+        let start = std::time::Instant::now();
+        let result = with_env_lock(async {
+            let provider = CliProvider::new("sleep".to_string(), vec![], 1);
+            provider.complete(echo_request("60")).await
+        })
+        .await;
+        let elapsed = start.elapsed();
+
+        let err = result
+            .expect_err("a silent subprocess must time out")
+            .to_string();
+        assert!(err.contains("timed out"), "error was: {err}");
+        // Generous bound (well under the 60s sleep, generous over the 1s
+        // ceiling) to absorb scheduling jitter when the full suite runs many
+        // real subprocess-spawning tests in parallel — the point is only to
+        // rule out "ran to natural completion" or "hung forever", not to
+        // pin exact timing.
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "should die near the 1s inactivity ceiling, not run toward the 60s sleep: {elapsed:?}"
+        );
     }
 
     // ── JSON-mode stdout parsing (Part C: real cost/tokens from `claude`) ──

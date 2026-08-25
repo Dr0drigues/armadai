@@ -2409,12 +2409,19 @@ async fn dispatch_hierarchical_es(
 /// `defaults.orchestration.agent_timeout_secs` sets one.
 ///
 /// Higher than the non-orchestrated single-agent default (300s, see
-/// `providers::factory::create_provider`) because an orchestrated
+/// `providers::factory::DEFAULT_TIMEOUT_SECS`) because an orchestrated
 /// coordinator's `claude -p` turn is itself agentic (delegating, waiting on
-/// sub-agents, synthesizing) and can legitimately run past 300s — 242k-499k
-/// tokens/turn were observed on real hierarchical runs (#270). This is a
-/// stopgap pending the per-delegation-reset timeout design (#270); it does
-/// NOT change the non-orchestrated default.
+/// sub-agents, synthesizing) — 242k-499k tokens/turn were observed on real
+/// hierarchical runs (#270).
+///
+/// Since #270, `CliProvider::timeout_secs` bounds *inactivity* between
+/// lines of subprocess output, not the call's total duration (see
+/// `providers::cli::CliProvider::complete`) — so this value no longer needs
+/// to cover an entire multi-delegation run in one wall-clock budget, only
+/// the longest silent gap within it. It stays higher than the non-
+/// orchestrated default because a coordinator can legitimately think for a
+/// long stretch (e.g. synthesizing a final answer) with no observable
+/// output at all before its next line.
 const ORCHESTRATED_DEFAULT_TIMEOUT_SECS: u64 = 600;
 
 /// Resolve the effective CLI provider timeout (seconds) for an agent
@@ -2427,7 +2434,7 @@ const ORCHESTRATED_DEFAULT_TIMEOUT_SECS: u64 = 600;
 ///
 /// This is the ONE place that actually reaches the provider timeout for
 /// orchestrated runs: `create_provider` only reads `agent.metadata.timeout`
-/// (`.unwrap_or(300)`), so this must run before `create_provider` is called
+/// (`.unwrap_or(DEFAULT_TIMEOUT_SECS)`, 300s), so this must run before `create_provider` is called
 /// on each agent in `run_orchestrated`'s loading loop — the BlackboardConfig/
 /// RingConfig `agent_timeout_secs` field (populated by
 /// `apply_blackboard_overrides`/`apply_ring_overrides`) is never read by the
@@ -2453,8 +2460,8 @@ fn orchestrated_agent_timeout_secs(
 /// Both roster-loading loops that feed an orchestrated run — the fresh-run
 /// loop in `run_orchestrated` AND the `--resume` reconstruction loop in
 /// `resume_run` — MUST call this before `create_provider`, since
-/// `create_provider` only reads `agent.metadata.timeout` (`.unwrap_or(300)`)
-/// once and never re-reads it afterward. Extracted to a single fn so both
+/// `create_provider` only reads `agent.metadata.timeout`
+/// (`.unwrap_or(DEFAULT_TIMEOUT_SECS)`, 300s) once and never re-reads it afterward. Extracted to a single fn so both
 /// paths share the exact same precedence and cannot drift (a resumed
 /// orchestrated run re-hitting the 300s default was the gap this closes —
 /// see `.superpowers/sdd/orch-e2e-report.md`).

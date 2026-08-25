@@ -61,6 +61,29 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
     ),
 ];
 
+/// Default `CliProvider` timeout (seconds) when neither the agent's own
+/// frontmatter `timeout` nor an orchestration-level override sets one.
+///
+/// This value only applies to a `direct` (non-orchestrated) single-agent
+/// run: `armadai/src/cli/run.rs`'s `apply_orchestrated_timeout` always sets
+/// `agent.metadata.timeout` before `create_provider` runs for blackboard/
+/// ring/hierarchical agents, using its own `ORCHESTRATED_DEFAULT_TIMEOUT_SECS`
+/// (600s) — so this constant is never reached on the orchestrated path.
+/// The two are intentionally different, not merely duplicated: a `direct`
+/// run is one CLI call, whereas an orchestrated run's coordinator turn is
+/// itself agentic (delegating, waiting on sub-agents) and legitimately
+/// takes longer, see #270. They are named and documented on both sides so a
+/// future change to one doesn't silently drift from the other.
+///
+/// Since #270, `CliProvider::timeout_secs` bounds *inactivity* (the gap
+/// between consecutive lines of subprocess output), not the call's total
+/// duration — see `cli::CliProvider::complete`.
+///
+/// Previously duplicated as a bare `300` literal at both call sites below
+/// (`create_unified_provider` and `create_cli_provider`); collapsed to one
+/// named constant so the two can't independently drift.
+const DEFAULT_TIMEOUT_SECS: u64 = 300;
+
 fn find_tool(name: &str) -> Option<&'static ToolDef> {
     KNOWN_TOOLS
         .iter()
@@ -191,7 +214,7 @@ fn create_unified_provider(
         } else {
             tool.cli_args.iter().map(|s| (*s).to_string()).collect()
         };
-        let timeout = agent.metadata.timeout.unwrap_or(300);
+        let timeout = agent.metadata.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
         tracing::info!("Provider '{name}': using CLI ({command}) — tool detected on system");
         Ok(Box::new(super::cli::CliProvider::new(
             command.to_string(),
@@ -214,7 +237,7 @@ fn create_cli_provider(agent: &Agent) -> anyhow::Result<Box<dyn Provider>> {
         .clone()
         .ok_or_else(|| anyhow::anyhow!("CLI provider requires 'command' in Metadata"))?;
     let args = agent.metadata.args.clone().unwrap_or_default();
-    let timeout = agent.metadata.timeout.unwrap_or(300);
+    let timeout = agent.metadata.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
     Ok(Box::new(super::cli::CliProvider::new(
         command, args, timeout,
     )))
