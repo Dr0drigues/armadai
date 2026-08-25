@@ -51,10 +51,19 @@ impl Provider for OpenAiProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "openai".to_string(),
+            // Every id here must be one `openai_compatible::rates_for_model`
+            // prices — otherwise we advertise a model whose real spend we
+            // would report as `$0.00`. Enforced by
+            // `every_advertised_model_is_one_the_cost_table_prices`.
             models: vec![
                 "gpt-4o".to_string(),
                 "gpt-4o-mini".to_string(),
+                "gpt-4.1".to_string(),
+                "gpt-4.1-mini".to_string(),
+                "gpt-4.1-nano".to_string(),
                 "o1".to_string(),
+                "o1-mini".to_string(),
+                "o3-mini".to_string(),
             ],
             supports_streaming: true,
         }
@@ -634,4 +643,20 @@ mod tests {
         assert!(meta.supports_streaming);
     }
 
+    /// The advertised list and the cost table are two lists of the same
+    /// thing, and #368 shipped them out of step: `metadata()` named three
+    /// ids while the table priced eight. A model we advertise but cannot
+    /// price reports `$0.00` for a real spend, which is the one wrong number
+    /// `rates_for_model` exists to avoid.
+    #[test]
+    fn every_advertised_model_is_one_the_cost_table_prices() {
+        let meta = OpenAiProvider::new("k".to_string()).metadata();
+        assert!(!meta.models.is_empty());
+        for model in &meta.models {
+            assert!(
+                crate::api::openai_compatible::rates_for_model(model).is_some(),
+                "advertised model {model:?} has no entry in the cost table"
+            );
+        }
+    }
 }

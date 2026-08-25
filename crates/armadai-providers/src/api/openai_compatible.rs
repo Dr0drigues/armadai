@@ -183,7 +183,7 @@ struct ChatUsage {
 /// unknown model as if it were GPT-4o would invent dollars that were never
 /// spent and feed them into `armadai costs`. A visible `$0.00` is a
 /// recognisable "not priced", a wrong number is not.
-fn rates_for_model(model: &str) -> Option<(f64, f64)> {
+pub(crate) fn rates_for_model(model: &str) -> Option<(f64, f64)> {
     let id = model
         .rsplit('/')
         .next()
