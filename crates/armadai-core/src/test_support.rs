@@ -43,10 +43,24 @@ fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// restoration each guard's own `Drop` already performs — and `Drop` runs
 /// during unwinding, before the poison is even set.
 ///
-/// Measured (issue #365, `--test-threads=1`): with `.unwrap()` here, a single
-/// deliberately failing test holding this lock turned into **48 failing
-/// tests**, 47 of them phantom `PoisonError`s spread over nine unrelated
-/// modules, burying the one real failure.
+/// That reasoning holds for the RAII guards below. It does **not** hold for
+/// the ~19 call sites that take this lock and then restore by hand, with no
+/// `Drop`: there, tolerating poison trades a cascade of phantom
+/// `PoisonError`s for one leaked env var propagating quietly into whichever
+/// tests run next. Measured (#372 review): 3 downstream tests read a value
+/// leaked by a deliberately failed `skill::tests` case — against 5 before
+/// this change, so an improvement rather than a regression, and it cannot
+/// turn CI falsely green (a test must already be failing for anything to
+/// leak at all). The real fix for those sites is `IsolatedConfigDir`, which
+/// does exactly what they open-code, safely.
+///
+/// Measured (issue #365, `--test-threads=1`, `--bin armadai`): with
+/// `.unwrap()` here, one deliberately failing test holding this lock turned
+/// into a cascade of phantom `PoisonError`s across unrelated modules, burying
+/// the one real failure — 74 with the red test early in the run, 8 with it
+/// late, since the blast radius is a function of how many sites still take
+/// the lock afterwards. With the tolerance, the same mutation gives
+/// `693 passed; 1 failed` and zero phantoms.
 pub fn env_lock() -> MutexGuard<'static, ()> {
     lock_ignoring_poison(&ENV_MUTEX)
 }
@@ -156,9 +170,33 @@ mod tests {
     /// [`env_lock`]'s `unwrap_or_else`. Tested against a private mutex rather
     /// than `ENV_MUTEX`, so proving it costs the rest of the suite nothing.
     ///
+    /// This covers the *delegate*, not the delegation — see
+    /// [`the_real_env_lock_tolerates_poisoning`], which covers `env_lock`
+    /// itself. Reverting `env_lock` alone to `.unwrap()` left 1281 tests green
+    /// (#372 review): a proxy for the property is not the property.
+    ///
     /// Mutation this catches: `lock_ignoring_poison`'s body reverted to
     /// `mutex.lock().unwrap()` — this test then panics with `PoisonError`
     /// instead of returning.
+    /// The property the whole module exists for, asserted on the **real**
+    /// `env_lock()` rather than through a stand-in. Once the tolerance is in
+    /// place, poisoning `ENV_MUTEX` is precisely harmless — which is what
+    /// makes this test affordable, and what makes it fail loudly across the
+    /// suite if the tolerance ever regresses.
+    #[test]
+    fn the_real_env_lock_tolerates_poisoning() {
+        let panicked = std::panic::catch_unwind(|| {
+            let _held = env_lock();
+            panic!("deliberate panic while holding the shared env lock");
+        });
+        assert!(panicked.is_err(), "the helper panic must have unwound");
+        assert!(
+            ENV_MUTEX.lock().is_err(),
+            "ENV_MUTEX must actually be poisoned now, otherwise this test proves nothing"
+        );
+        let _recovered = env_lock();
+    }
+
     #[test]
     fn a_poisoned_mutex_is_still_acquirable() {
         static POISONED: std::sync::LazyLock<Mutex<u32>> =
