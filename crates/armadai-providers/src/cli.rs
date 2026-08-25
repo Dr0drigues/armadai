@@ -689,17 +689,25 @@ mod tests {
     #[tokio::test]
     async fn steady_stream_survives_past_the_old_static_ceiling() {
         let old_static_ceiling = std::time::Duration::from_secs(1);
-        let start = std::time::Instant::now();
-        let result = with_env_lock(async {
+        // `start` MUST be taken inside `with_env_lock`, after the global
+        // `ENV_MUTEX` is actually held — not before. `with_env_lock` blocks
+        // on that mutex, shared by every test in this module that spawns a
+        // real subprocess; under a loaded parallel `cargo test`, queueing
+        // for it can itself take seconds. Timing from outside the lock
+        // measures queue-wait + real work, not the mechanism under test —
+        // which is exactly why this assertion could pass on a no-sleep
+        // script under load despite proving nothing (#270 review round 3).
+        let (result, elapsed) = with_env_lock(async {
+            let start = std::time::Instant::now();
             let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 1);
-            provider
+            let result = provider
                 .complete(echo_request(
                     "for i in 1 2 3 4 5; do echo tick; sleep 0.25; done",
                 ))
-                .await
+                .await;
+            (result, start.elapsed())
         })
         .await;
-        let elapsed = start.elapsed();
 
         let response = result.expect("a steadily-ticking subprocess must not time out");
         assert_eq!(
@@ -729,17 +737,21 @@ mod tests {
     /// catches the opposite mutation — e.g. a stray unit conversion turning
     /// the configured 1s into 1ms (`Duration::from_millis(self.timeout_secs)`
     /// instead of `from_secs`) — which the upper bound alone does not:
-    /// dying near-instantly still satisfies "died before 20s" (#270 review
+    /// dying near-instantly still satisfies "died before Ns" (#270 review
     /// F6).
     #[tokio::test]
     async fn silent_subprocess_dies_near_the_inactivity_ceiling_not_later() {
-        let start = std::time::Instant::now();
-        let result = with_env_lock(async {
+        // `start` inside `with_env_lock`, not outside — see the identical
+        // note on `steady_stream_survives_past_the_old_static_ceiling`
+        // (#270 review round 3: queue-wait for the shared `ENV_MUTEX` must
+        // not be counted as part of the measured duration).
+        let (result, elapsed) = with_env_lock(async {
+            let start = std::time::Instant::now();
             let provider = CliProvider::new("sleep".to_string(), vec![], 1);
-            provider.complete(echo_request("60")).await
+            let result = provider.complete(echo_request("60")).await;
+            (result, start.elapsed())
         })
         .await;
-        let elapsed = start.elapsed();
 
         let err = result
             .expect_err("a silent subprocess must time out")
@@ -748,17 +760,16 @@ mod tests {
         // Lower bound: must have actually waited close to the configured 1s
         // ceiling, not fired near-instantly (catches a unit-conversion-style
         // mutation that shrinks the effective ceiling by orders of
-        // magnitude). Upper bound: generous (well under the 60s sleep) to
-        // absorb scheduling jitter when the full suite runs many real
-        // subprocess-spawning tests in parallel — the point there is only to
-        // rule out "ran to natural completion" or "hung forever", not to pin
-        // exact timing.
+        // magnitude). Upper bound: tight now that `start` is measured
+        // inside the lock (well under the 60s sleep, but no longer needs
+        // to absorb queue-wait time from other tests contending for
+        // `ENV_MUTEX`).
         assert!(
             elapsed >= std::time::Duration::from_millis(500),
             "should wait close to the configured 1s ceiling before dying, not fire near-instantly: {elapsed:?}"
         );
         assert!(
-            elapsed < std::time::Duration::from_secs(20),
+            elapsed < std::time::Duration::from_secs(5),
             "should die near the 1s inactivity ceiling, not run toward the 60s sleep: {elapsed:?}"
         );
     }
@@ -785,15 +796,21 @@ mod tests {
     /// returning within roughly the 1s inactivity ceiling.
     #[tokio::test]
     async fn complete_does_not_hang_when_stdout_closes_but_the_child_keeps_running() {
-        let start = std::time::Instant::now();
-        let result = with_env_lock(async {
+        // `start` inside `with_env_lock`, not outside (#270 review round 3
+        // / round 4): the shared `ENV_MUTEX` is contended by every
+        // subprocess-spawning test in this module, and queue-wait for it
+        // must not be counted toward "did this call hang". The margin here
+        // is coarse (correct ~1s vs a hang toward 30s) so the bound itself
+        // doesn't need retuning — only the measurement point did.
+        let (result, elapsed) = with_env_lock(async {
+            let start = std::time::Instant::now();
             let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 1);
-            provider
+            let result = provider
                 .complete(echo_request("echo hi; exec 1>/dev/null; sleep 30"))
-                .await
+                .await;
+            (result, start.elapsed())
         })
         .await;
-        let elapsed = start.elapsed();
 
         assert!(
             elapsed < std::time::Duration::from_secs(10),
@@ -822,15 +839,17 @@ mod tests {
     /// resolves (near-instantly, since the direct child exits fast).
     #[tokio::test]
     async fn complete_does_not_hang_on_an_orphaned_descendant_holding_stderr_open() {
-        let start = std::time::Instant::now();
-        let result = with_env_lock(async {
+        // `start` inside `with_env_lock` — see the identical note on
+        // `complete_does_not_hang_when_stdout_closes_but_the_child_keeps_running`.
+        let (result, elapsed) = with_env_lock(async {
+            let start = std::time::Instant::now();
             let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 1);
-            provider
+            let result = provider
                 .complete(echo_request("(sleep 30 >/dev/null 0</dev/null &); echo hi"))
-                .await
+                .await;
+            (result, start.elapsed())
         })
         .await;
-        let elapsed = start.elapsed();
 
         assert!(
             elapsed < std::time::Duration::from_secs(10),
@@ -941,49 +960,159 @@ mod tests {
 
     /// Mutation this catches: replacing the `next_step_timeout(...)` call
     /// with an unconditional `Some((timeout, false))` (i.e. ignoring the
-    /// ceiling entirely, ceiling check optimized away/deleted) — the
-    /// heartbeat-forever script would then run forever, caught here by the
-    /// outer 6s test-level timeout instead of dying at the expected ~1s.
-    /// That outer timeout exists so a real regression fails this ONE test
-    /// cleanly instead of hanging the whole suite. Ceiling patched down to
-    /// 1s (not the reviewer's own 3s) to keep this fast — "prefer
-    /// patched-down constants over real sleeps" cuts both ways: patch it
-    /// down as far as it can go and still be unambiguous.
+    /// ceiling entirely, ceiling check optimized away/deleted). The script
+    /// never goes silent (a tick every 0.1s, far under the 30s inactivity
+    /// timeout), so with the ceiling bypassed this call has nothing left
+    /// to make it return at all — it hangs, caught by the generous outer
+    /// test-level timeout instead of the whole suite.
+    ///
+    /// Asserts on the OUTCOME, not the clock (#270 review round 4): a
+    /// prior version asserted `elapsed` fell in a tight window around the
+    /// patched 1s ceiling (even after fixing round 3's separate `start`-
+    /// outside-the-lock measurement bug). That is sensitive to a magnitude
+    /// mutation (e.g. a 10x ceiling inflation) but still flaky under real
+    /// load — subprocess spawn plus scheduling can push the observed time
+    /// past a tight bound even when the mechanism is correct — and this
+    /// sentinel is the ONLY guard on the ceiling's wiring, so a flaky one
+    /// is worse than none: it gets silenced, then deleted, and the wiring
+    /// goes back to being unguarded with a green suite. Measured: 1
+    /// failure in 12 full-suite runs with the tight bound. The categorical
+    /// check below — the error is specifically the absolute-ceiling one,
+    /// not an inactivity timeout — reads no clock at all, so it is immune
+    /// to scheduling load, while staying fully sensitive to the mutation
+    /// this test exists to catch (deleting/bypassing the ceiling check
+    /// either hangs, or would have to relabel the error as an inactivity
+    /// timeout instead — the negative assertion below rejects that).
+    /// Traded away, deliberately: sensitivity to the ceiling firing at the
+    /// WRONG time (a 10x inflation still produces a "ceiling" error, just
+    /// late) — closing that gap without a wall-clock assertion would
+    /// reintroduce the exact flakiness this redesign removes; the pure
+    /// `next_step_timeout` unit tests above remain the authority on the
+    /// scheduling math itself.
     #[tokio::test]
     async fn absolute_ceiling_is_actually_consulted_by_complete() {
-        // Margins are asymmetric on purpose: contention from the rest of the
-        // suite running real subprocesses in parallel can only ever DELAY
-        // this (never fire it early), so the lower bound stays tight while
-        // the upper bound (and the outer hang-guard) stay generous. A first
-        // version with `< 4s` / outer `6s` was observed to fail under full
-        // `cargo test` load; isolated it reliably lands just above 1s.
-        let outcome = tokio::time::timeout(Duration::from_secs(20), async {
-            let start = std::time::Instant::now();
-            let result = with_env_lock(async {
+        let outcome = tokio::time::timeout(Duration::from_secs(15), async {
+            with_env_lock(async {
                 let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 30)
                     .with_absolute_ceiling_secs(1);
                 provider
                     .complete(echo_request("while true; do echo tick; sleep 0.1; done"))
                     .await
             })
-            .await;
-            (result, start.elapsed())
+            .await
         })
         .await;
 
-        let (result, elapsed) =
-            outcome.expect("must not hang past 20s if the ceiling wiring regresses");
+        // The 15s outer bound is generous on purpose: its job is only to
+        // fail a genuine hang, not to measure the mechanism.
+        let result = outcome.expect("must not hang past 15s if the ceiling wiring regresses");
         let err = result
             .expect_err("a heartbeat-forever process must still die at the absolute ceiling")
             .to_string();
-        assert!(err.contains("ceiling"), "error was: {err}");
         assert!(
-            elapsed >= Duration::from_millis(900),
-            "must not fire meaningfully before the patched 1s ceiling: {elapsed:?}"
+            err.contains("ceiling"),
+            "expected the absolute-ceiling error specifically: {err}"
         );
         assert!(
-            elapsed < Duration::from_secs(15),
-            "must fire at the patched 1s ceiling, not the 30s inactivity one: {elapsed:?}"
+            !err.contains("inactivity"),
+            "the error must not be an inactivity timeout — this script never goes \
+             silent, so an inactivity error here means the ceiling check was \
+             bypassed and the (far longer) inactivity timeout fired instead: {err}"
+        );
+    }
+
+    /// Same sentinel, for `stream()`: its ceiling is threaded through
+    /// separately (`absolute_ceiling_secs` captured into the spawned task
+    /// before `complete()`'s logic ever runs), so pinning `complete()`
+    /// alone proves nothing about `stream()` — confirmed by hand:
+    /// multiplying `stream()`'s `absolute_ceiling` by 1000 left the whole
+    /// suite green (#270 review round 3, item 1). See the sibling test
+    /// above for why this asserts on the error kind, not elapsed time.
+    #[tokio::test]
+    async fn absolute_ceiling_is_actually_consulted_by_stream() {
+        use tokio_stream::StreamExt;
+        let outcome = tokio::time::timeout(Duration::from_secs(15), async {
+            with_env_lock(async {
+                let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 30)
+                    .with_absolute_ceiling_secs(1);
+                let mut stream = provider
+                    .stream(echo_request("while true; do echo tick; sleep 0.1; done"))
+                    .await
+                    .unwrap();
+                let mut items = Vec::new();
+                while let Some(item) = stream.next().await {
+                    items.push(item);
+                }
+                items
+            })
+            .await
+        })
+        .await;
+
+        let items = outcome.expect("must not hang past 15s if the ceiling wiring regresses");
+        let err = items
+            .last()
+            .expect("expected at least the ceiling error item")
+            .as_ref()
+            .expect_err("a heartbeat-forever process must still die at the absolute ceiling")
+            .to_string();
+        assert!(
+            err.contains("ceiling"),
+            "expected the absolute-ceiling error specifically: {err}"
+        );
+        assert!(
+            !err.contains("inactivity"),
+            "the error must not be an inactivity timeout — this script never goes \
+             silent, so an inactivity error here means the ceiling check was \
+             bypassed and the (far longer) inactivity timeout fired instead: {err}"
+        );
+    }
+
+    /// `stream()`'s post-EOF `child.wait()` must itself be BOUNDED, not
+    /// just correct about exit status once it returns — a script that
+    /// closes stdout but keeps running for far longer than the inactivity
+    /// timeout must not hang the spawned task forever (#270 review round
+    /// 3, item 1: `stream_gives_the_child_time_to_finish_after_stdout_eof`
+    /// and `stream_reports_a_non_zero_exit_after_successful_output` both
+    /// use a SHORT post-EOF delay, so neither would notice if the
+    /// `tokio::time::timeout` wrapping `child.wait()` were deleted and the
+    /// wait became unbounded — this is the dedicated sentinel for that).
+    ///
+    /// Mutation this catches: removing the `tokio::time::timeout(...)`
+    /// around `child.wait()` in `stream()`'s post-loop code (unbounded
+    /// wait) — this would hang past the 30s the script actually sleeps,
+    /// caught here by the outer 10s test-level guard instead of hanging
+    /// the whole suite.
+    #[tokio::test]
+    async fn stream_post_eof_wait_is_bounded_not_unbounded() {
+        use tokio_stream::StreamExt;
+        let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+            with_env_lock(async {
+                let start = std::time::Instant::now();
+                let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 1);
+                let mut stream = provider
+                    .stream(echo_request("echo hi; exec 1>/dev/null; sleep 30"))
+                    .await
+                    .unwrap();
+                let mut items = Vec::new();
+                while let Some(item) = stream.next().await {
+                    items.push(item);
+                }
+                (items, start.elapsed())
+            })
+            .await
+        })
+        .await;
+
+        let (items, elapsed) =
+            outcome.expect("must not hang past 10s if the post-EOF wait becomes unbounded");
+        assert!(
+            items.iter().any(|i| i.as_ref().is_ok_and(|s| s == "hi")),
+            "expected the line written before EOF to still arrive: {items:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "must not block toward the child's 30s post-EOF sleep: {elapsed:?}"
         );
     }
 
