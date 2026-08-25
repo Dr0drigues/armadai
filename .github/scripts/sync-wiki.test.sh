@@ -43,7 +43,9 @@ done
 
 # The regression this script exists for: links must be rewritten for ALL
 # pages, not a frozen subset. A link left as `page.md` 404s on the wiki.
-leftover=$(grep -roE '\((\./)?[a-z0-9][a-z0-9-]*\.md\)' "$WIKI" 2>/dev/null | grep -v 'Home.md:' || true)
+# The `(#anchor)?` matters: an anchored link looks rewritten right up to the
+# `#`, so a pattern anchored on `)` walks straight past it.
+leftover=$(grep -roE '\((\./)?[a-z0-9][a-z0-9-]*\.md(#[^)]*)?\)' "$WIKI" 2>/dev/null | grep -v 'Home.md:' || true)
 [ -z "$leftover" ] && pass "no link still points at a .md source name" \
     || fail "no link still points at a .md source name" "$(printf '%s' "$leftover" | head -5)"
 
@@ -83,6 +85,59 @@ else
     fail "a hand-written wiki page is left alone" "the sync deleted it"
 fi
 rm -rf "$WIKI2"
+
+# The `./`-prefixed and anchored forms do not occur in docs/wiki/ today, so
+# the real corpus cannot exercise them: without a synthetic source, half the
+# rewrite could be deleted and the suite would stay green. Verified: it does.
+SYNTH=$(mktemp -d)
+SYNTH_WIKI=$(mktemp -d)
+cat > "$SYNTH/alpha-page.md" <<'ALPHA'
+# Alpha
+bare [b](beta-page.md)
+dot-slash [b](./beta-page.md)
+anchored [b](beta-page.md#a-section)
+dot-slash anchored [b](./beta-page.md#other)
+ALPHA
+printf '# Beta
+' > "$SYNTH/beta-page.md"
+"$SYNC" "$SYNTH" "$SYNTH_WIKI" >/dev/null
+synth_out=$(cat "$SYNTH_WIKI/Alpha-Page.md")
+for want in '(Beta-Page)' '(Beta-Page#a-section)' '(Beta-Page#other)'; do
+    case "$synth_out" in
+        *"$want"*) pass "rewrites to $want" ;;
+        *) fail "rewrites to $want" "not found in synced output" ;;
+    esac
+done
+case "$synth_out" in
+    *'beta-page.md'*) fail "no raw beta-page.md survives any link form" \
+        "$(printf '%s' "$synth_out" | grep -n 'beta-page.md')" ;;
+    *) pass "no raw beta-page.md survives any link form" ;;
+esac
+rm -rf "$SYNTH" "$SYNTH_WIKI"
+
+# The collection filter, tested apart from the late cleanup that also removes
+# SUMMARY.md: with the filter gone, the cleanup still deletes the file from
+# disk, so asserting only on the file cannot see the filter at all. Home is
+# built from the collected list, so it can.
+if grep -qiE '^- \[SUMMARY\]' "$WIKI/Home.md"; then
+    fail "SUMMARY is not collected as a page" "Home lists it"
+else
+    pass "SUMMARY is not collected as a page"
+fi
+
+# The empty-source guard: it keeps a broken checkout from overwriting Home
+# with an empty page list.
+EMPTY_SRC=$(mktemp -d)
+EMPTY_WIKI=$(mktemp -d)
+printf 'existing\n' > "$EMPTY_WIKI/Home.md"
+if "$SYNC" "$EMPTY_SRC" "$EMPTY_WIKI" >/dev/null 2>&1; then
+    fail "an empty source directory is refused" "the sync reported success"
+elif [ "$(cat "$EMPTY_WIKI/Home.md")" = "existing" ]; then
+    pass "an empty source directory is refused, Home untouched"
+else
+    fail "an empty source directory is refused" "Home was overwritten anyway"
+fi
+rm -rf "$EMPTY_SRC" "$EMPTY_WIKI"
 
 # Home lists every published page.
 count_published=$(find "$WIKI" -name '*.md' -not -name 'Home.md' | wc -l | tr -d ' ')

@@ -56,12 +56,16 @@ for filename in "${SRC_FILES[@]}"; do
     dest="$WIKI_DIR/$(wiki_page_name "$filename")"
     cp "$SRC_DIR/$filename" "$dest"
 
-    # Rewrite links to every wiki page, both bare and `./`-prefixed. The wiki
-    # serves pages without the .md extension, so an unrewritten link 404s.
+    # Rewrite links to every wiki page: bare, `./`-prefixed, and with a
+    # `#section` anchor. The wiki serves pages without the .md extension, so an
+    # unrewritten link 404s — and an anchored link is the easiest of the three
+    # to miss, since it looks rewritten right up to the `#`.
     for target in "${SRC_FILES[@]}"; do
         page_link="$(wiki_page_name "$target")"
         page_link="${page_link%.md}"
-        sed -i.bak "s|(\./${target})|(${page_link})|g; s|(${target})|(${page_link})|g" "$dest"
+        # The filename's own dots must not act as ERE wildcards.
+        target_re=$(printf '%s' "$target" | sed 's/\./\\./g')
+        sed -i.bak -E "s|\((\./)?${target_re}(#[^)]*)?\)|(${page_link}\2)|g" "$dest"
         rm -f "$dest.bak"
     done
 done
