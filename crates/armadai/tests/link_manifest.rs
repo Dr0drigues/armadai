@@ -57,7 +57,16 @@ mod tests {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(content);
-        format!("sha256:{:x}", hasher.finalize())
+        // Byte-wise, like `manifest::digest_of`: sha2 0.11's `finalize()`
+        // returns a type without `LowerHex`. Kept as an independent
+        // re-implementation so this stays a real cross-check of the
+        // production digest rather than a call to it.
+        let mut out = String::from("sha256:");
+        for byte in hasher.finalize() {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
     }
 
     fn read_manifest(root: &std::path::Path) -> String {
