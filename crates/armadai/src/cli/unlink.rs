@@ -290,9 +290,10 @@ fn unlink_from_manifest(
             target_name,
             &target_root,
             &relevant,
+            &entries,
             &created_dirs,
             config_candidate.as_deref(),
-        );
+        )?;
         return Ok(());
     }
 
@@ -302,11 +303,14 @@ fn unlink_from_manifest(
     let mut untrusted = 0;
 
     for entry in &relevant {
-        if !linker::manifest::is_trusted(root, &target_root, &entry.path) {
+        if let Some(cause) =
+            linker::manifest::diagnose_trust_failure(root, &target_root, &entry.path)
+        {
             let e = crate::cli::style::err();
+            let reason = trust_failure_reason(cause);
             anstream::eprintln!(
                 "{e}  refused: manifest entry '{}' for target '{}' resolves outside its \
-                 trusted root — ignoring it; the manifest may be corrupt or forged{e:#}",
+                 trusted root — ignoring it; {reason}{e:#}",
                 entry.path.display(),
                 target_name
             );
@@ -324,7 +328,22 @@ fn unlink_from_manifest(
         // whose literal `a` component doesn't exist (R4).
         let path = linker::manifest::resolve_real(root, &entry.path);
         if !path.exists() {
-            absent += 1;
+            if path.is_symlink() {
+                // Present on disk, but its target is gone — not "already
+                // absent" (issue #348, 3rd bullet), and its content can
+                // never be verified against a digest either, so the same
+                // conservative "kept" outcome other unverifiable entries
+                // get applies here too — just with an accurate reason.
+                let w = crate::cli::style::warn();
+                anstream::println!(
+                    "{w}  kept {} (broken symlink — its target is missing, so its \
+                     content can't be verified){w:#}",
+                    path.display()
+                );
+                kept += 1;
+            } else {
+                absent += 1;
+            }
             continue;
         }
         match entry.outcome {
@@ -386,39 +405,57 @@ fn unlink_from_manifest(
 
     // Remove exactly the directories `link` itself created for this
     // target (design fix 1b) — deepest first, so a child never blocks its
-    // own parent's removal, and each still checked against the trust root
-    // so a corrupted `created_dirs` list can't be used to remove something
-    // outside the target's own tree either.
+    // own parent's removal. Every dir's fate is decided by the single
+    // `decide_created_dir` function `--dry-run`'s preview also calls
+    // (issue #348, 1st bullet: the two must never silently diverge on
+    // this decision again — a real regression this chantier shipped
+    // once).
     let mut created_dirs = created_dirs;
     created_dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
-    // The target's own root, resolved once — never a removal candidate
-    // itself, no matter what `created_dirs` claims (design review R3).
-    // R1's root confirmation only constrains which root a manifest can
-    // *declare*; it says nothing about a `created_dirs` entry naming
-    // that root right back, which trivially satisfies `is_trusted`
-    // (a path is always contained within itself). This is the one
-    // invariant that does not depend on trusting the manifest at all.
-    let resolved_target_root = linker::manifest::resolve_real(root, &target_root);
     for dir in &created_dirs {
-        let dir_path = linker::manifest::resolve_real(root, dir);
-        let refused = dir_path == resolved_target_root
-            || !linker::manifest::is_trusted(root, &target_root, dir);
-        if refused {
-            let e = crate::cli::style::err();
-            anstream::eprintln!(
-                "{e}  refused: recorded directory '{}' for target '{}' resolves outside its \
-                 trusted root, or names the root itself — ignoring it{e:#}",
-                dir.display(),
-                target_name
-            );
-            untrusted += 1;
-            continue;
-        }
-        let is_empty = std::fs::read_dir(&dir_path)
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false);
-        if dir_path.is_dir() && is_empty {
-            let _ = std::fs::remove_dir(&dir_path);
+        match linker::manifest::decide_created_dir(root, &target_root, dir, &entries) {
+            linker::manifest::CreatedDirDecision::Eligible => {
+                let dir_path = linker::manifest::resolve_real(root, dir);
+                let is_empty = std::fs::read_dir(&dir_path)
+                    .map(|mut d| d.next().is_none())
+                    .unwrap_or(false);
+                if dir_path.is_dir() && is_empty {
+                    let _ = std::fs::remove_dir(&dir_path);
+                }
+            }
+            linker::manifest::CreatedDirDecision::IsTargetRoot => {
+                let e = crate::cli::style::err();
+                anstream::eprintln!(
+                    "{e}  refused: recorded directory '{}' for target '{}' names the \
+                     target's own root — ignoring it; the manifest may be corrupt or \
+                     forged{e:#}",
+                    dir.display(),
+                    target_name
+                );
+                untrusted += 1;
+            }
+            linker::manifest::CreatedDirDecision::Untrusted(cause) => {
+                let e = crate::cli::style::err();
+                let reason = trust_failure_reason(cause);
+                anstream::eprintln!(
+                    "{e}  refused: recorded directory '{}' for target '{}' resolves \
+                     outside its trusted root — ignoring it; {reason}{e:#}",
+                    dir.display(),
+                    target_name
+                );
+                untrusted += 1;
+            }
+            linker::manifest::CreatedDirDecision::Implausible => {
+                let e = crate::cli::style::err();
+                anstream::eprintln!(
+                    "{e}  refused: recorded directory '{}' for target '{}' does not \
+                     correspond to any file link recorded creating — ignoring it; the \
+                     manifest may be corrupt or forged{e:#}",
+                    dir.display(),
+                    target_name
+                );
+                untrusted += 1;
+            }
         }
     }
 
@@ -441,9 +478,14 @@ fn unlink_from_manifest(
     }
     if untrusted > 0 {
         let e = crate::cli::style::err();
+        // Deliberately not a single blanket cause here (issue #348, 2nd
+        // bullet): the warning(s) printed above already said, per item,
+        // whether it was the manifest's own text or the filesystem that
+        // was at fault — this summary must not paper back over that
+        // distinction with one claim that doesn't hold for both.
         anstream::println!(
-            "{e}  {} manifest entry(ies) were refused for resolving outside the trusted \
-             root — see the warning(s) above; the manifest may be corrupt or forged.{e:#}",
+            "{e}  {} manifest item(s) were refused — see the reason(s) given for each \
+             one above.{e:#}",
             untrusted
         );
         // A refusal is a failure to complete the requested work, not a
@@ -451,8 +493,8 @@ fn unlink_from_manifest(
         // (design review R5), even though every trustworthy entry above
         // was still handled.
         anyhow::bail!(
-            "{} manifest entry(ies) for target '{}' were refused for resolving outside \
-             the trusted root; the request did not fully complete",
+            "{} manifest item(s) for target '{}' were refused; the request did not \
+             fully complete",
             untrusted,
             target_name
         );
@@ -461,17 +503,42 @@ fn unlink_from_manifest(
     Ok(())
 }
 
+/// Human-readable explanation for one [`linker::manifest::TrustFailure`]
+/// cause — shared by the real pass and its `--dry-run` preview so the two
+/// never phrase the same cause two different ways.
+fn trust_failure_reason(cause: linker::manifest::TrustFailure) -> &'static str {
+    match cause {
+        linker::manifest::TrustFailure::ManifestEscapesRoot => {
+            "the manifest may be corrupt or forged"
+        }
+        linker::manifest::TrustFailure::FilesystemDiverged => {
+            "the manifest itself looks intact, but something on the filesystem has \
+             changed since link ran (e.g. a new symlink) — inspect the target \
+             directory before retrying"
+        }
+    }
+}
+
 /// `--dry-run` rendering for the manifest path — mirrors the fallback's own
 /// dry-run output shape so the two paths read the same way to a user who
 /// doesn't know (and shouldn't need to know) which one is active.
+///
+/// Applies exactly the same guards the real pass does — `created_dirs`
+/// included (issue #348, 1st bullet: this was the actual defect, not just
+/// the wording — the pre-fix dry run counted a directory "recorded for
+/// cleanup" that the real pass would have refused, and exited 0 where the
+/// real pass exits 1). Anything this preview would refuse makes it return
+/// an error too, so scripted callers see the same signal a real run would
+/// give — a preview that can't fail is not a preview.
 fn print_manifest_dry_run(
     root: &Path,
     target_name: &str,
     target_root: &Path,
     entries: &[&linker::manifest::ManifestEntry],
+    all_entries: &[linker::manifest::ManifestEntry],
     created_dirs: &[PathBuf],
     config_candidate: Option<&Path>,
-) {
+) -> anyhow::Result<()> {
     let h = crate::cli::style::header();
     let a = crate::cli::style::accent();
     let m = crate::cli::style::muted();
@@ -488,9 +555,12 @@ fn print_manifest_dry_run(
     let mut untrusted = 0;
 
     for entry in entries {
-        if !linker::manifest::is_trusted(root, target_root, &entry.path) {
+        if let Some(cause) =
+            linker::manifest::diagnose_trust_failure(root, target_root, &entry.path)
+        {
+            let reason = trust_failure_reason(cause);
             anstream::println!(
-                "{e}  {} (would refuse — outside the trusted root){e:#}",
+                "{e}  {} (would refuse — outside the trusted root; {reason}){e:#}",
                 entry.path.display()
             );
             untrusted += 1;
@@ -498,8 +568,16 @@ fn print_manifest_dry_run(
         }
         let path = linker::manifest::resolve_real(root, &entry.path);
         if !path.exists() {
-            anstream::println!("{m}  {} (already absent){m:#}", path.display());
-            absent += 1;
+            if path.is_symlink() {
+                anstream::println!(
+                    "{w}  {} (would keep — broken symlink, cannot verify content){w:#}",
+                    path.display()
+                );
+                would_keep += 1;
+            } else {
+                anstream::println!("{m}  {} (already absent){m:#}", path.display());
+                absent += 1;
+            }
             continue;
         }
         match entry.outcome {
@@ -549,10 +627,42 @@ fn print_manifest_dry_run(
         }
     }
 
-    let would_clean_dirs = created_dirs
-        .iter()
-        .filter(|d| linker::manifest::is_trusted(root, target_root, d))
-        .count();
+    // Same decision the real pass makes for each recorded directory (issue
+    // #348, 1st bullet) — a refusal here counts into `untrusted` exactly
+    // like an entry's does, so the preview's exit code matches what a real
+    // run would do.
+    let mut would_clean_dirs = 0;
+    for dir in created_dirs {
+        match linker::manifest::decide_created_dir(root, target_root, dir, all_entries) {
+            linker::manifest::CreatedDirDecision::Eligible => {
+                would_clean_dirs += 1;
+            }
+            linker::manifest::CreatedDirDecision::IsTargetRoot => {
+                anstream::println!(
+                    "{e}  {} (would refuse — names the target's own root; the \
+                     manifest may be corrupt or forged){e:#}",
+                    dir.display()
+                );
+                untrusted += 1;
+            }
+            linker::manifest::CreatedDirDecision::Untrusted(cause) => {
+                let reason = trust_failure_reason(cause);
+                anstream::println!(
+                    "{e}  {} (would refuse — outside the trusted root; {reason}){e:#}",
+                    dir.display()
+                );
+                untrusted += 1;
+            }
+            linker::manifest::CreatedDirDecision::Implausible => {
+                anstream::println!(
+                    "{e}  {} (would refuse — matches no file link recorded creating; \
+                     the manifest may be corrupt or forged){e:#}",
+                    dir.display()
+                );
+                untrusted += 1;
+            }
+        }
+    }
 
     anstream::println!(
         "\n{m}  {} would be removed, {} would be kept, {} already absent \
@@ -572,11 +682,23 @@ fn print_manifest_dry_run(
     }
     if untrusted > 0 {
         anstream::println!(
-            "{e}  {} manifest entry(ies) would be refused for resolving outside the \
-             trusted root; the manifest may be corrupt or forged.{e:#}",
+            "{e}  {} manifest item(s) would be refused — see the reason(s) given for \
+             each one above.{e:#}",
             untrusted
         );
+        // Mirrors the real pass's own exit behaviour (design review R5):
+        // a refusal is a failure to complete, not a partial success, so
+        // the preview must fail too — otherwise it is not actually
+        // showing what the real run would do (issue #348, 1st bullet).
+        anyhow::bail!(
+            "{} manifest item(s) for target '{}' would be refused; a real run would \
+             not fully complete",
+            untrusted,
+            target_name
+        );
     }
+
+    Ok(())
 }
 
 /// The #342 fallback: recompute what `link` would write for the *current*

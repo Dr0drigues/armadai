@@ -1088,4 +1088,395 @@ mod tests {
              document too"
         );
     }
+
+    /// The original worst case of issue #338, generalised beyond a single
+    /// colliding filename (`case1` above pins that narrower one: a
+    /// hand-written `.claude/CLAUDE.md` at a path `link` would also
+    /// write): a `.claude/` directory that predates `armadai link`
+    /// entirely — the user's own Claude Code config, with content that
+    /// has nothing to do with anything the linker would ever generate,
+    /// not even a colliding filename — must survive a `link` + `unlink`
+    /// round trip completely intact, directory and all. Verified correct
+    /// by hand in two separate design reviews, never pinned by an
+    /// automated test until issue #348.
+    ///
+    /// Mutation this catches: any future cleanup logic that walks up from
+    /// a deleted generated file and removes an ancestor merely because it
+    /// is empty *of generated files* — without the explicit "never the
+    /// target's own root" exclusion `unlink_from_manifest` applies to
+    /// `created_dirs` — would delete `.claude/settings.json`,
+    /// `.claude/commands/my-command.md`, or `.claude/` itself.
+    #[test]
+    fn a_preexisting_user_claude_directory_survives_link_then_unlink_intact() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        // The user's own `.claude/` predates `link` entirely, with
+        // content that has nothing to do with anything the linker would
+        // generate — not even a colliding filename.
+        let claude_dir = root.join(".claude");
+        std::fs::create_dir_all(claude_dir.join("commands")).unwrap();
+        std::fs::write(claude_dir.join("settings.json"), "{\"theme\":\"dark\"}\n").unwrap();
+        std::fs::write(
+            claude_dir.join("commands/my-command.md"),
+            "# My own command\n\nDo not touch.\n",
+        )
+        .unwrap();
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let solo_file = root.join(".claude/agents/solo.md");
+        assert!(solo_file.is_file(), "link must have generated solo's file");
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+
+        assert!(
+            !solo_file.exists(),
+            "the genuinely generated file must still be reclaimed"
+        );
+        assert!(
+            claude_dir.is_dir(),
+            "the user's own pre-existing .claude/ directory must never be removed"
+        );
+        assert!(
+            claude_dir.join("settings.json").is_file(),
+            "unrelated pre-existing content must survive untouched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
+            "{\"theme\":\"dark\"}\n"
+        );
+        assert!(
+            claude_dir.join("commands/my-command.md").is_file(),
+            "a pre-existing subdirectory with unrelated content must survive \
+             untouched"
+        );
+    }
+
+    // ── issue #348: residues of this chantier's manifest ───────────────
+
+    /// 1st bullet: `--dry-run` must apply the exact same `created_dirs`
+    /// guard as the real pass, refusal and exit code included — reuses
+    /// R3's forged-root scenario above
+    /// (`forged_created_dirs_naming_the_targets_own_root_is_refused`) but
+    /// through `--dry-run` instead of a real unlink. Before this fix, the
+    /// dry run's own `created_dirs` count used only `is_trusted` (which a
+    /// path always satisfies against itself), so it announced both
+    /// `.claude/agents` *and* `.claude` itself as "recorded for cleanup"
+    /// and exited 0 — while the real pass refuses `.claude` and exits 1.
+    ///
+    /// Mutation this catches: if `--dry-run`'s `created_dirs` handling
+    /// reverted to a plain "is_trusted" count with no `decide_created_dir`
+    /// guard, this test's exit-code assertion would fail, and the printed
+    /// count would go back to 2 instead of 1.
+    #[test]
+    fn dry_run_applies_the_same_created_dirs_guard_as_the_real_pass() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let solo_file = root.join(".claude/agents/solo.md");
+        let solo_digest = sha256_digest(&std::fs::read(&solo_file).unwrap());
+
+        let forged_manifest = [
+            "version: 1",
+            "targets:",
+            "  claude:",
+            "    linked_at: \"2026-01-01T00:00:00Z\"",
+            "    root: .claude",
+            "    created_dirs:",
+            "      - .claude/agents",
+            "      - .claude",
+            "    entries:",
+            "      - path: .claude/agents/solo.md",
+            "        produced_by: { kind: agent, name: solo }",
+            "        outcome: created",
+            &format!("        digest: \"{solo_digest}\""),
+            "",
+        ]
+        .join("\n");
+        std::fs::write(manifest_path(&root), forged_manifest).unwrap();
+
+        let (dry_run_ok, dry_run_stdout, dry_run_stderr) = run_armadai(
+            &root,
+            &config,
+            &["unlink", "--target", "claude", "--dry-run"],
+        );
+        assert!(
+            !dry_run_ok,
+            "--dry-run must refuse and exit non-zero, exactly like the real pass \
+             would: stdout={dry_run_stdout} stderr={dry_run_stderr}"
+        );
+        assert!(
+            dry_run_stdout.contains("(1 directory recorded for cleanup)"),
+            "only the legitimate .claude/agents entry is eligible — the forged \
+             .claude entry (naming the target's own root) must be excluded from the \
+             count, not just from the actual deletion: stdout={dry_run_stdout}"
+        );
+
+        // A dry run must never have any side effect either way.
+        assert!(solo_file.exists());
+        assert!(root.join(".claude").is_dir());
+    }
+
+    /// 2nd bullet: when a symlink appears **between** `link` and `unlink`
+    /// — not a forged manifest at all, the manifest is exactly what
+    /// `link` itself wrote — the refusal must say the filesystem changed,
+    /// not accuse the manifest of being "corrupt or forged". The two
+    /// causes call for two different next steps from the user.
+    ///
+    /// Mutation this catches: if the cause were collapsed back into a
+    /// single message (`diagnose_trust_failure` dropped in favour of a
+    /// plain `is_trusted` boolean), this test's stderr assertions would
+    /// fail — the message would go back to blaming the manifest for a
+    /// disk change it had nothing to do with.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_appearing_after_link_is_blamed_on_the_filesystem_not_the_manifest() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        // The manifest at this point is exactly what `link` wrote —
+        // nothing hand-edited, nothing forged. Only the filesystem
+        // changes afterwards: `.claude/agents` is replaced with a symlink
+        // pointing outside the project, entirely independent of the
+        // manifest's own content.
+        let claude_agents = root.join(".claude/agents");
+        std::fs::remove_dir_all(&claude_agents).unwrap();
+        let outside_dir = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::os::unix::fs::symlink(&outside_dir, &claude_agents).unwrap();
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(
+            !unlink_ok,
+            "unlink must still refuse and exit non-zero: stderr={unlink_stderr}"
+        );
+
+        assert!(
+            unlink_stderr.contains("filesystem") || unlink_stderr.contains("symlink"),
+            "unlink must explain that the filesystem changed since link ran: \
+             stderr={unlink_stderr}"
+        );
+        assert!(
+            !unlink_stderr.contains("corrupt or forged"),
+            "the manifest is intact — it must not be blamed for a filesystem \
+             change it had nothing to do with: stderr={unlink_stderr}"
+        );
+    }
+
+    /// 3rd bullet: a manifest entry whose path is a *broken* symlink (the
+    /// link itself is present on disk, but its target is gone) must not
+    /// be reported "already absent" — it is present, just unverifiable,
+    /// and must be kept and reported as such.
+    ///
+    /// Mutation this catches: if the existence check reverted to a plain
+    /// `!path.exists()` (`true` for a broken symlink too, since it
+    /// follows the link to a target that's gone), this test's stdout
+    /// assertions would fail — the entry would be silently miscounted
+    /// absent instead of reported kept.
+    #[test]
+    #[cfg(unix)]
+    fn a_broken_symlink_at_an_entrys_path_is_kept_and_reported_not_absent() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let solo_file = root.join(".claude/agents/solo.md");
+        assert!(solo_file.is_file());
+
+        // Replace the linked file with a dangling symlink — present on
+        // disk, but its target doesn't exist.
+        std::fs::remove_file(&solo_file).unwrap();
+        std::os::unix::fs::symlink(root.join("does-not-exist.md"), &solo_file).unwrap();
+        assert!(
+            solo_file.symlink_metadata().is_ok(),
+            "the symlink itself must be present on disk before unlink runs"
+        );
+
+        let (unlink_ok, unlink_stdout, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+
+        assert!(
+            solo_file.symlink_metadata().is_ok(),
+            "the dangling symlink must still be on disk — unlink must not silently \
+             miscount it as an unrelated absence"
+        );
+        assert!(
+            unlink_stdout.contains("0 deleted, 1 kept, 0 already absent"),
+            "a broken symlink is present on disk and must count as kept, not \
+             absent: stdout={unlink_stdout}"
+        );
+        assert!(
+            unlink_stdout.contains("broken symlink"),
+            "unlink must explain why the dangling link was kept: \
+             stdout={unlink_stdout}"
+        );
+    }
+
+    /// 4th bullet, residue of design review R3: the trust root alone
+    /// bounds *where* a `created_dirs` entry may resolve, not *whether*
+    /// it corresponds to anything `link` actually created. A forged entry
+    /// naming a pre-existing, currently-empty directory the user made by
+    /// hand — inside the target's own tree, so it passes the trust-root
+    /// check trivially — must still survive, because it was never
+    /// `link`'s to remove.
+    ///
+    /// Mutation this catches: if the plausibility check
+    /// (`created_dir_is_plausible`) were removed and only the trust-root
+    /// and "not the root itself" guards remained, this test's
+    /// directory-survival assertion would fail — the forged entry would
+    /// be silently removed for being merely empty and in-bounds.
+    #[test]
+    fn forged_created_dirs_naming_a_preexisting_empty_user_directory_is_refused() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let solo_file = root.join(".claude/agents/solo.md");
+        let solo_digest = sha256_digest(&std::fs::read(&solo_file).unwrap());
+
+        // A directory the user made by hand, unrelated to anything link
+        // wrote — link never created it, and no manifest entry lives
+        // under it.
+        let user_dir = root.join(".claude/my-own-empty-dir");
+        std::fs::create_dir_all(&user_dir).unwrap();
+
+        let forged_manifest = [
+            "version: 1",
+            "targets:",
+            "  claude:",
+            "    linked_at: \"2026-01-01T00:00:00Z\"",
+            "    root: .claude",
+            "    created_dirs:",
+            "      - .claude/agents",
+            "      - .claude/my-own-empty-dir",
+            "    entries:",
+            "      - path: .claude/agents/solo.md",
+            "        produced_by: { kind: agent, name: solo }",
+            "        outcome: created",
+            &format!("        digest: \"{solo_digest}\""),
+            "",
+        ]
+        .join("\n");
+        std::fs::write(manifest_path(&root), forged_manifest).unwrap();
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(
+            !unlink_ok,
+            "unlink must exit non-zero for the implausible created_dirs entry: \
+             stderr={unlink_stderr}"
+        );
+
+        assert!(
+            !solo_file.exists(),
+            "the legitimate file entry must still be reclaimed"
+        );
+        assert!(
+            user_dir.is_dir(),
+            "a pre-existing, empty user directory falsely claimed by created_dirs \
+             must survive — it corresponds to no file link ever recorded creating"
+        );
+    }
+
+    /// Coordination note 2: a re-`link` that leaves an already-linked file
+    /// untouched (no `--force`, because the newly generated content
+    /// differs from what's on disk) must not downgrade that file to
+    /// "hand-written" in the manifest when the file itself is still
+    /// exactly what the *first* `link` wrote — only the upstream agent
+    /// source changed, not the file. Getting this wrong turns a
+    /// completely untouched, still-`link`-owned file into a permanent
+    /// residue `unlink` can never reclaim again short of a `--force`
+    /// relink the user has no reason to know they need.
+    ///
+    /// Mutation this catches: if the manifest kept mislabelling this file
+    /// `skipped`/no-digest on the second link (the pre-fix behaviour),
+    /// the final `unlink` here would report it "kept ... hand-written"
+    /// instead of deleting it, and the file-survival assertion would
+    /// fail.
+    #[test]
+    fn relink_of_an_untouched_file_after_an_upstream_source_change_stays_reclaimable() {
+        let dir = project_minimal();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link1_ok, _, link1_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link1_ok, "first link must succeed: stderr={link1_stderr}");
+
+        let solo_file = root.join(".claude/agents/solo.md");
+        let first_content = std::fs::read_to_string(&solo_file).unwrap();
+
+        // The agent's own source changes upstream — the next link would
+        // generate different content — but nobody touches the linked
+        // file itself.
+        std::fs::write(
+            root.join("agents/solo.md"),
+            "# solo\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou work \
+             alone, updated.\n",
+        )
+        .unwrap();
+
+        let (link2_ok, _, link2_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link2_ok, "second link must succeed: stderr={link2_stderr}");
+        assert!(
+            link2_stderr.contains("skip:"),
+            "without --force the file must not be overwritten: stderr={link2_stderr}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&solo_file).unwrap(),
+            first_content,
+            "the file itself must remain untouched without --force"
+        );
+
+        let manifest = read_manifest(&root);
+        assert!(
+            manifest.contains("outcome: created"),
+            "a file that is still exactly what the first link wrote must stay \
+             attributed to link, not be downgraded to skipped just because the \
+             upstream source changed: {manifest}"
+        );
+        assert!(
+            !manifest.contains("outcome: skipped"),
+            "with a single agent and no other entries, the manifest must not \
+             contain a skipped outcome at all: {manifest}"
+        );
+
+        let (unlink_ok, _, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+
+        assert!(
+            !solo_file.exists(),
+            "a file that was never touched since the first link wrote it must \
+             still be reclaimed by unlink, even though a later link's \
+             regeneration would have produced different content"
+        );
+    }
 }

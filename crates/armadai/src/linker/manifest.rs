@@ -343,6 +343,119 @@ pub fn root_confirmed(project_root: &Path, computed_root: &Path, declared_root: 
     resolve_real(project_root, computed_root) == resolve_real(project_root, declared_root)
 }
 
+/// Why a candidate path failed [`is_trusted`] — distinguishes a manifest
+/// whose own text already escapes the trust root (forged, hand-corrupted,
+/// or otherwise wrong) from one whose text is fine but the *filesystem*
+/// changed since `link` ran (a symlink now redirects an otherwise
+/// legitimate path outside the root). Issue #348: these two causes were
+/// collapsed into a single "the manifest may be corrupt or forged"
+/// message, which is simply false for the second case — the manifest is
+/// exactly what `link` wrote, and the disk moved under it. The two causes
+/// call for different next steps from the user (fix or regenerate the
+/// manifest, versus investigate what changed on disk), so callers must
+/// keep them distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustFailure {
+    /// The path escapes the trusted root even under pure lexical
+    /// resolution (no filesystem access) — the manifest text itself names
+    /// a path outside its own root.
+    ManifestEscapesRoot,
+    /// The path stays within the trusted root under lexical resolution,
+    /// but resolving it against the real filesystem (following symlinks)
+    /// puts it outside — something on disk changed since `link` ran.
+    FilesystemDiverged,
+}
+
+/// Diagnose why `candidate` fails [`is_trusted`] under `target_root` — or
+/// `None` if it doesn't. See [`TrustFailure`] for what the two possible
+/// causes mean and why callers must not collapse them into one message.
+pub fn diagnose_trust_failure(
+    project_root: &Path,
+    target_root: &Path,
+    candidate: &Path,
+) -> Option<TrustFailure> {
+    if is_trusted(project_root, target_root, candidate) {
+        return None;
+    }
+    let lexical_root = resolve(project_root, target_root);
+    let lexical_candidate = resolve(project_root, candidate);
+    if lexical_candidate.starts_with(&lexical_root) {
+        Some(TrustFailure::FilesystemDiverged)
+    } else {
+        Some(TrustFailure::ManifestEscapesRoot)
+    }
+}
+
+/// Whether `dir` (a recorded `created_dirs` entry) is a plausible ancestor
+/// of at least one `Created` entry — i.e. a directory `link` could
+/// plausibly have created while writing one of its own files.
+///
+/// This is the second half of the `created_dirs` trust boundary (residue
+/// of design review R3, issue #348's 4th bullet): [`is_trusted`] alone
+/// only bounds *where* a recorded directory may resolve — inside the
+/// target's own root — not *whether* it corresponds to anything `link`
+/// actually wrote. A forged or hand-corrupted `created_dirs` entry naming
+/// a pre-existing, currently-empty directory the user made by hand (e.g.
+/// `.claude/notes/`) passes [`is_trusted`] trivially as long as it sits
+/// under the target root, and would otherwise be removed on nothing more
+/// than "empty and trusted". Requiring it to be an ancestor of at least
+/// one `Created` entry ties the removal back to real generated content —
+/// [`create_dir_all_recording`] is only ever called immediately before
+/// writing a file that becomes a `Created` entry (see [`write_files`]), so
+/// every legitimate `created_dirs` entry satisfies this by construction.
+/// A `Skipped` entry never causes a directory to be created, so it never
+/// counts here either.
+pub fn created_dir_is_plausible(dir: &Path, entries: &[ManifestEntry]) -> bool {
+    entries
+        .iter()
+        .any(|e| e.outcome == Outcome::Created && e.path.starts_with(dir))
+}
+
+/// A recorded `created_dirs` entry's fate — decided once by
+/// [`decide_created_dir`] and shared by both `unlink`'s real pass and its
+/// `--dry-run` preview, so the two can never silently diverge on this
+/// decision again (issue #348's 1st bullet: they once did — the dry run
+/// announced a directory safe to clean up that the real pass would have
+/// refused).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreatedDirDecision {
+    /// Safe to remove, once actually confirmed empty on disk.
+    Eligible,
+    /// Refused: names the target's own root — `link` never records that
+    /// (design review R3), so a manifest claiming otherwise is simply
+    /// wrong.
+    IsTargetRoot,
+    /// Refused: fails the trust boundary — see [`TrustFailure`] for why.
+    Untrusted(TrustFailure),
+    /// Refused: doesn't correspond to any file `link` actually recorded
+    /// creating — see [`created_dir_is_plausible`].
+    Implausible,
+}
+
+/// Decide `dir`'s fate against `target_root`'s trust boundary and
+/// `entries`' recorded `Created` paths. Pure and side-effect free — the
+/// caller does the actual filesystem check (still empty? still a
+/// directory?) only for the [`CreatedDirDecision::Eligible`] case.
+pub fn decide_created_dir(
+    project_root: &Path,
+    target_root: &Path,
+    dir: &Path,
+    entries: &[ManifestEntry],
+) -> CreatedDirDecision {
+    let resolved_target_root = resolve_real(project_root, target_root);
+    let dir_path = resolve_real(project_root, dir);
+    if dir_path == resolved_target_root {
+        return CreatedDirDecision::IsTargetRoot;
+    }
+    if let Some(cause) = diagnose_trust_failure(project_root, target_root, dir) {
+        return CreatedDirDecision::Untrusted(cause);
+    }
+    if !created_dir_is_plausible(dir, entries) {
+        return CreatedDirDecision::Implausible;
+    }
+    CreatedDirDecision::Eligible
+}
+
 /// Result of looking up one target's manifest data.
 pub enum Lookup {
     /// A usable — possibly empty — target manifest.
@@ -497,6 +610,24 @@ pub fn write_files(
     files: Vec<(PathBuf, String, ProducedBy)>,
     force: bool,
 ) -> std::io::Result<Vec<FileOutcome>> {
+    // The previous manifest write for this exact target, keyed by path —
+    // used only to recognise a file that is still exactly what `link`
+    // itself wrote last time, even when the freshly generated content has
+    // since changed (issue #348, coordination note 2): without this, such
+    // a file gets downgraded to `Skipped`/no digest below purely because
+    // the *upstream* agent source changed, not because anyone touched the
+    // file — mislabelling `link`'s own untouched output as hand-written,
+    // permanently (nothing short of a `--force` relink ever corrects it).
+    let previous_digests: BTreeMap<PathBuf, String> = match lookup_target(root, target_name) {
+        Lookup::Found(t) => t
+            .entries
+            .into_iter()
+            .filter(|e| e.outcome == Outcome::Created)
+            .filter_map(|e| e.digest.map(|d| (e.path, d)))
+            .collect(),
+        Lookup::Fallback => BTreeMap::new(),
+    };
+
     let mut outcomes = Vec::with_capacity(files.len());
     let mut manifest_entries: Vec<ManifestEntry> = Vec::with_capacity(files.len());
     let mut created_dirs: Vec<PathBuf> = Vec::new();
@@ -520,6 +651,25 @@ pub fn write_files(
                     digest: Some(digest_of(content.as_bytes())),
                 });
                 outcomes.push(FileOutcome::UpToDate(path));
+                continue;
+            }
+
+            // The freshly generated content differs from what's on disk —
+            // but if the on-disk bytes are still exactly what `link`
+            // itself wrote last time (per the previous manifest), this is
+            // still `link`'s own file, just stale relative to an upstream
+            // change, not a stranger's to leave mislabelled forever.
+            let still_own_output = previous_digests
+                .get(&relative_path)
+                .is_some_and(|old_digest| check_digest(old_digest, &path) == DigestCheck::Matches);
+            if still_own_output {
+                manifest_entries.push(ManifestEntry {
+                    path: relative_path.clone(),
+                    produced_by,
+                    outcome: Outcome::Created,
+                    digest: previous_digests.get(&relative_path).cloned(),
+                });
+                outcomes.push(FileOutcome::SkippedExisting(path));
                 continue;
             }
 
@@ -1039,5 +1189,315 @@ mod tests {
             Lookup::Found(found) => assert_eq!(found.entries[0].outcome, Outcome::Created),
             Lookup::Fallback => panic!("write_files must leave a usable manifest behind"),
         }
+    }
+
+    /// Issue #348, coordination note 2: a re-`link` that leaves a file
+    /// untouched (no `--force`, because the *newly generated* content
+    /// differs from what's on disk) must not mislabel that file `Skipped`
+    /// in the manifest when the on-disk bytes are still exactly what
+    /// `link` itself wrote last time — only the upstream source changed,
+    /// not the file.
+    ///
+    /// Mutation this catches: if the previous-digest check were removed
+    /// (or always returned `false`), the second write's entry would come
+    /// back `Skipped`/`None` instead of `Created` with the digest of
+    /// what's actually on disk — this test's outcome/digest assertions
+    /// would fail.
+    #[test]
+    fn write_files_relink_of_untouched_own_output_stays_created_even_when_content_changed_upstream()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target_root = root.join(".claude");
+        let path = target_root.join("agents/solo.md");
+
+        // First link: writes "v1".
+        write_files(
+            root,
+            "claude",
+            Path::new(".claude"),
+            &target_root,
+            vec![(path.clone(), "v1".to_string(), ProducedBy::agent("solo"))],
+            false,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+
+        // Second link: the agent's source changed upstream, so the
+        // *newly generated* content is "v2" — but the file on disk is
+        // still exactly "v1", untouched by anyone since the first link
+        // wrote it.
+        let outcomes = write_files(
+            root,
+            "claude",
+            Path::new(".claude"),
+            &target_root,
+            vec![(path.clone(), "v2".to_string(), ProducedBy::agent("solo"))],
+            false,
+        )
+        .unwrap();
+
+        // Conservative file-system behaviour is unchanged: without
+        // --force, the file itself is never overwritten.
+        assert_eq!(outcomes, vec![FileOutcome::SkippedExisting(path.clone())]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+
+        match lookup_target(root, "claude") {
+            Lookup::Found(found) => {
+                assert_eq!(
+                    found.entries[0].outcome,
+                    Outcome::Created,
+                    "a file that is still exactly what link wrote last time must stay \
+                     attributed to link, not be downgraded to hand-written just \
+                     because the upstream source has since changed"
+                );
+                assert_eq!(
+                    found.entries[0].digest,
+                    Some(digest_of(b"v1")),
+                    "the recorded digest must match what's actually on disk, so a \
+                     later unlink can still reclaim this file"
+                );
+            }
+            Lookup::Fallback => panic!("write_files must leave a usable manifest behind"),
+        }
+    }
+
+    // ── resolve_real (issue #348: no direct unit tests before this) ───
+
+    /// The defining property `resolve_real` exists for: it follows a
+    /// symlink for the part of the path that actually exists on disk,
+    /// where a purely lexical join would just stop at the symlink's own
+    /// (lexically valid) path.
+    ///
+    /// Mutation this catches: if `resolve_real` were replaced by the
+    /// pure-lexical `resolve` fallback unconditionally (dropping the
+    /// `canonicalize` call entirely), the equality assertion against the
+    /// real, canonicalised target would fail — the result would instead
+    /// equal the un-followed `root.join("link-name/child.md")`.
+    #[test]
+    #[cfg(unix)]
+    fn resolve_real_follows_a_symlinked_existing_path_to_its_real_location() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let real_target = root.join("real-target");
+        std::fs::create_dir_all(&real_target).unwrap();
+        let link_name = root.join("link-name");
+        std::os::unix::fs::symlink(&real_target, &link_name).unwrap();
+
+        let resolved = resolve_real(root, Path::new("link-name/child.md"));
+        let expected = std::fs::canonicalize(&real_target)
+            .unwrap()
+            .join("child.md");
+        assert_eq!(
+            resolved, expected,
+            "resolve_real must follow the symlink to where it actually points"
+        );
+        assert_ne!(
+            resolved,
+            root.join("link-name/child.md"),
+            "a purely lexical join (never following the symlink) must not be what \
+             this function returns — that is exactly the boundary bypass R2 fixed"
+        );
+    }
+
+    /// The other half of `resolve_real`'s contract: for a tail that
+    /// doesn't exist yet, it canonicalises the longest existing prefix and
+    /// re-appends the missing suffix lexically, rather than failing or
+    /// falling back to a fully lexical resolution.
+    ///
+    /// Mutation this catches: if the suffix re-append loop dropped a
+    /// component, or canonicalised the wrong prefix, this test's equality
+    /// assertion against the manually constructed expected path would
+    /// fail.
+    #[test]
+    fn resolve_real_canonicalizes_the_existing_prefix_and_appends_the_missing_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let existing = root.join("existing");
+        std::fs::create_dir_all(&existing).unwrap();
+
+        let resolved = resolve_real(root, Path::new("existing/missing/deep/file.md"));
+        let expected = std::fs::canonicalize(&existing)
+            .unwrap()
+            .join("missing")
+            .join("deep")
+            .join("file.md");
+        assert_eq!(resolved, expected);
+    }
+
+    /// Issue #338's R4, pinned with its own test for the first time (issue
+    /// #348): `a/../b` must resolve to `<root>/b` even when `a` itself
+    /// doesn't exist as a real directory to canonicalise through. The OS
+    /// cannot traverse into a nonexistent `a` to cancel the following
+    /// `..`, so the *whole* literal path fails to resolve via
+    /// canonicalisation even though it logically names `<root>/b` — this
+    /// is exactly the false-absence trap `resolve_real`'s fallback to pure
+    /// lexical resolution (when canonicalising the found prefix itself
+    /// fails) exists to avoid.
+    ///
+    /// Mutation this catches: if the `Err(_) => resolve(project_root,
+    /// field)` fallback in `resolve_real` were removed (propagating the
+    /// canonicalize error, or returning the unresolved intermediate path
+    /// instead), this test's equality assertion would fail.
+    #[test]
+    fn resolve_real_normalizes_a_parent_escape_through_a_missing_intermediate() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Deliberately do NOT create `root/a` — it must never need to
+        // exist for this to resolve correctly.
+        let resolved = resolve_real(root, Path::new("a/../b"));
+        assert_eq!(resolved, root.join("b"));
+    }
+
+    // ── root_confirmed (issue #348: no direct unit tests before this) ─
+
+    #[test]
+    fn root_confirmed_true_for_textually_identical_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(root_confirmed(
+            root,
+            Path::new(".claude"),
+            Path::new(".claude")
+        ));
+    }
+
+    /// The property that actually justifies `resolve_real` over a plain
+    /// `PathBuf` equality check: two textually different roots that
+    /// resolve to the same real directory must still be confirmed as the
+    /// same root.
+    ///
+    /// Mutation this catches: if `root_confirmed` compared the two paths
+    /// with plain equality (or `resolve` instead of `resolve_real`)
+    /// instead of resolving both through the filesystem first, this
+    /// test's `assert!` would fail.
+    #[test]
+    #[cfg(unix)]
+    fn root_confirmed_true_when_the_declared_root_is_reached_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let real_dir = root.join("real-claude");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let link_dir = root.join(".claude");
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+        assert!(
+            root_confirmed(root, Path::new(".claude"), Path::new("real-claude")),
+            "two textually different roots that resolve to the same real directory \
+             must be confirmed as the same root"
+        );
+    }
+
+    /// Mutation this catches: if `root_confirmed` were hardcoded to `true`
+    /// (or its equality inverted), this test would fail to catch two
+    /// genuinely different directories being confirmed as the same root.
+    #[test]
+    fn root_confirmed_false_for_genuinely_different_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::create_dir_all(root.join(".codex")).unwrap();
+        assert!(!root_confirmed(
+            root,
+            Path::new(".claude"),
+            Path::new(".codex")
+        ));
+    }
+
+    // ── diagnose_trust_failure (issue #348, 2nd bullet) ────────────────
+
+    /// A path that escapes the trusted root even under pure lexical
+    /// resolution — no filesystem access needed to see it — is the
+    /// manifest's own text being wrong.
+    #[test]
+    fn diagnose_trust_failure_reports_manifest_escapes_root_for_a_textual_escape() {
+        let project_root = PathBuf::from("/project");
+        assert_eq!(
+            diagnose_trust_failure(
+                &project_root,
+                Path::new(".claude"),
+                Path::new(".claude/../../outside/victim.txt"),
+            ),
+            Some(TrustFailure::ManifestEscapesRoot)
+        );
+    }
+
+    /// A path that stays inside the trusted root textually, but resolves
+    /// outside once an intermediate symlink (added after `link` ran) is
+    /// followed, must be reported as a filesystem change — not blamed on
+    /// the manifest, which never named anything outside its root at all.
+    ///
+    /// Mutation this catches: if `diagnose_trust_failure` always returned
+    /// `ManifestEscapesRoot` for any `is_trusted` failure (the pre-#348
+    /// behaviour, collapsed into one cause), this test's equality
+    /// assertion would fail.
+    #[test]
+    #[cfg(unix)]
+    fn diagnose_trust_failure_reports_filesystem_diverged_when_only_a_symlink_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target_root = root.join(".claude");
+        std::fs::create_dir_all(target_root.join("agents")).unwrap();
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        // Text-wise, `.claude/agents/keys.md` stays fully inside `.claude`
+        // — no `..`, no absolute escape. Only the *filesystem* changes:
+        // `.claude/agents` becomes a symlink to somewhere outside the
+        // project.
+        std::fs::remove_dir_all(target_root.join("agents")).unwrap();
+        std::os::unix::fs::symlink(&outside, target_root.join("agents")).unwrap();
+
+        let cause = diagnose_trust_failure(
+            root,
+            Path::new(".claude"),
+            Path::new(".claude/agents/keys.md"),
+        );
+        assert_eq!(
+            cause,
+            Some(TrustFailure::FilesystemDiverged),
+            "a legitimate path whose intermediate directory was symlinked away \
+             since link ran must not be reported as if the manifest's own text \
+             were at fault"
+        );
+    }
+
+    // ── created_dir_is_plausible (issue #348, 4th bullet / R3 residue) ─
+
+    #[test]
+    fn created_dir_is_plausible_true_for_an_ancestor_of_a_created_entry() {
+        let entries = vec![entry(".claude/agents/solo.md", "solo", b"x")];
+        assert!(created_dir_is_plausible(
+            Path::new(".claude/agents"),
+            &entries
+        ));
+    }
+
+    /// The exact residue issue #348 names: a directory with no matching
+    /// `Created` entry at all — e.g. a pre-existing, empty user directory
+    /// a forged manifest merely claims to have created — must not be
+    /// considered plausible.
+    #[test]
+    fn created_dir_is_plausible_false_for_a_directory_with_no_matching_entry() {
+        let entries = vec![entry(".claude/agents/solo.md", "solo", b"x")];
+        assert!(!created_dir_is_plausible(
+            Path::new(".claude/my-own-empty-dir"),
+            &entries
+        ));
+    }
+
+    /// A `Skipped` entry never caused `create_dir_all` to run (`link`
+    /// only creates directories immediately before an actual write), so a
+    /// directory must not be considered plausible on the strength of a
+    /// `Skipped` entry living under it alone.
+    #[test]
+    fn created_dir_is_plausible_false_when_the_only_matching_entry_is_skipped() {
+        let entries = vec![ManifestEntry {
+            path: PathBuf::from(".claude/notes.md"),
+            produced_by: ProducedBy::agent("solo"),
+            outcome: Outcome::Skipped,
+            digest: None,
+        }];
+        assert!(!created_dir_is_plausible(Path::new(".claude"), &entries));
     }
 }
