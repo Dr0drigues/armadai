@@ -1,8 +1,8 @@
 # Wiki sync — publish docs/wiki/ pages to the GitHub Wiki
 #
 # Triggers on pushes to master that modify files in docs/wiki/.
-# Converts filenames from kebab-case to Title-Case (GitHub wiki convention),
-# fixes internal markdown links, and pushes to the wiki repository.
+# The sync logic lives in .github/scripts/sync-wiki.sh so it can be tested;
+# this workflow runs those tests first, then the sync.
 #
 # Requires: wiki must be initialized (at least one page created manually).
 
@@ -13,14 +13,33 @@ on:
     branches: [master]
     paths:
       - "docs/wiki/**"
+      - ".github/scripts/sync-wiki*.sh"
+      - ".github/workflows/wiki.yml"
+  pull_request:
+    paths:
+      - "docs/wiki/**"
+      - ".github/scripts/sync-wiki*.sh"
+      - ".github/workflows/wiki.yml"
 
 permissions:
   contents: write
 
 jobs:
+  test:
+    name: Test sync script
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+
+      - name: Run sync-wiki tests
+        run: .github/scripts/sync-wiki.test.sh
+
   sync:
     name: Publish to Wiki
     runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push'
     steps:
       - name: Checkout repo
         uses: actions/checkout@v7
@@ -33,85 +52,7 @@ jobs:
           token: ${{ secrets.WIKI_TOKEN }}
 
       - name: Sync wiki pages
-        run: |
-          # Map of source filenames to wiki page names
-          declare -A PAGE_MAP=(
-            ["getting-started.md"]="Getting-Started.md"
-            ["agent-format.md"]="Agent-Format.md"
-            ["providers.md"]="Providers.md"
-            ["templates.md"]="Templates.md"
-            ["starter-packs.md"]="Starter-Packs.md"
-            ["registry.md"]="Registry.md"
-            ["link.md"]="Link.md"
-            ["orchestration.md"]="Orchestration.md"
-            ["skills-prompts.md"]="Skills-Prompts.md"
-          )
-
-          # Link replacements: source .md references → wiki page names
-          declare -A LINK_MAP=(
-            ["getting-started.md"]="Getting-Started"
-            ["agent-format.md"]="Agent-Format"
-            ["providers.md"]="Providers"
-            ["templates.md"]="Templates"
-            ["starter-packs.md"]="Starter-Packs"
-            ["registry.md"]="Registry"
-            ["link.md"]="Link"
-            ["orchestration.md"]="Orchestration"
-            ["skills-prompts.md"]="Skills-Prompts"
-          )
-
-          for src in docs/wiki/*.md; do
-            filename=$(basename "$src")
-            # Use mapped name or convert kebab-case to Title-Case
-            if [[ -n "${PAGE_MAP[$filename]}" ]]; then
-              dest="wiki/${PAGE_MAP[$filename]}"
-            else
-              # Auto-convert: kebab-case.md → Kebab-Case.md
-              dest="wiki/$(echo "$filename" | sed -E 's/(^|-)([a-z])/\1\u\2/g')"
-            fi
-
-            cp "$src" "$dest"
-
-            # Fix internal links
-            for key in "${!LINK_MAP[@]}"; do
-              sed -i "s|($key)|( ${LINK_MAP[$key]})|g" "$dest"
-              # Also handle links with relative paths
-              sed -i "s|(\./$key)|( ${LINK_MAP[$key]})|g" "$dest"
-            done
-          done
-
-          # Generate Home.md with table of contents
-          cat > wiki/Home.md << 'HOMEEOF'
-          # ArmadAI Wiki
-
-          AI agent fleet orchestrator — define, manage and run specialized agents from Markdown files.
-
-          ## Pages
-
-          HOMEEOF
-
-          # Strip leading whitespace from heredoc
-          sed -i 's/^          //' wiki/Home.md
-
-          # Add links for each wiki page (excluding Home itself)
-          for f in wiki/*.md; do
-            page=$(basename "$f" .md)
-            [[ "$page" == "Home" ]] && continue
-            # Convert Title-Case to display name with spaces
-            display=$(echo "$page" | sed 's/-/ /g')
-            echo "- [$display]($page)" >> wiki/Home.md
-          done
-
-          cat >> wiki/Home.md << 'FOOTEREOF'
-
-          ## Quick Links
-
-          - [GitHub Repository](https://github.com/Dr0drigues/armadai)
-          - [Releases](https://github.com/Dr0drigues/armadai/releases)
-          - [Issues](https://github.com/Dr0drigues/armadai/issues)
-          FOOTEREOF
-
-          sed -i 's/^          //' wiki/Home.md
+        run: .github/scripts/sync-wiki.sh docs/wiki wiki
 
       - name: Push to wiki
         run: |
