@@ -350,10 +350,10 @@ mod tests {
     }
 
     fn with_config_dir<F: FnOnce(&std::path::Path)>(f: F) {
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
-        // SAFETY: serialised via ENV_MUTEX; restored at end of scope.
+        // SAFETY: serialised via `env_lock()`; restored at end of scope.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
         }

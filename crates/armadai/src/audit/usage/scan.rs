@@ -319,8 +319,8 @@ mod tests {
     }
     impl ProjectsDirGuard {
         fn set(path: &Path) -> Self {
-            let lock = armadai_core::config::ENV_MUTEX.lock().unwrap();
-            // SAFETY: modifies the global environment; serialised via ENV_MUTEX.
+            let lock = armadai_core::test_support::env_lock();
+            // SAFETY: modifies the global environment; serialised via `env_lock()`.
             unsafe { std::env::set_var("ARMADAI_CLAUDE_PROJECTS_DIR", path) }
             Self { _lock: lock }
         }

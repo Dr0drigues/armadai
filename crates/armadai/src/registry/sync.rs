@@ -240,10 +240,10 @@ mod tests {
 
     #[test]
     fn is_stale_true_when_never_synced() {
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
-        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        // SAFETY: serialised via `env_lock()`; restored at end of test.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
         }
@@ -258,10 +258,10 @@ mod tests {
 
     #[test]
     fn is_stale_false_right_after_mark_synced() {
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
-        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        // SAFETY: serialised via `env_lock()`; restored at end of test.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
         }
@@ -277,10 +277,10 @@ mod tests {
 
     #[test]
     fn is_stale_true_when_marker_older_than_ttl() {
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
-        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        // SAFETY: serialised via `env_lock()`; restored at end of test.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
         }
@@ -310,10 +310,10 @@ mod tests {
         // Exercises the real `effective_sources()` glue (not just the pure
         // `resolved_sources` helper) with a `RegistriesConfig` loaded from
         // disk, per the B2 Task 2 review follow-up.
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
-        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        // SAFETY: serialised via `env_lock()`; restored at end of test.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
         }

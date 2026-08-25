@@ -19,6 +19,8 @@ mod registry;
 mod shell;
 mod skills_registry;
 mod starters_registry;
+#[cfg(test)]
+mod test_support;
 #[cfg(feature = "tui")]
 mod theme;
 #[cfg(feature = "tui")]

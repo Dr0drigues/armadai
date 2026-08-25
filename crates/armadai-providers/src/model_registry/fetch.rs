@@ -485,7 +485,7 @@ mod tests {
     #[test]
     #[cfg(feature = "api")]
     fn source_cache_path_is_stable_and_distinct_per_source() {
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let a = source_cache_path("https://models.dev/api.json");
         let b = source_cache_path("https://example.com/custom-models.json");
         assert_ne!(a, b);
@@ -499,10 +499,10 @@ mod tests {
         // Exercises the real `resolved_model_sources()` glue (not just the
         // pure `resolved_sources` helper) with a `RegistriesConfig` loaded
         // from disk, per the B2 Task 2 review follow-up.
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let dir = tempfile::tempdir().unwrap();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
-        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        // SAFETY: serialised via `env_lock()`; restored at end of test.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
         }

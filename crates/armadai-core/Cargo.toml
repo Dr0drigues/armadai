@@ -7,7 +7,7 @@ repository.workspace = true
 description = "ArmadAI — reusable orchestration core: domain types, Provider/EventLog traits, parser, event-sourced engine."
 
 [features]
-test-support = []
+test-support = ["dep:tempfile"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -23,6 +23,7 @@ pulldown-cmark = { workspace = true }
 include_dir = { workspace = true }
 tracing = { workspace = true }
 dialoguer = { workspace = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

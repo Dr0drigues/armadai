@@ -359,9 +359,9 @@ registries:
 
     #[test]
     fn load_user_registries_missing_file_returns_default() {
-        let _guard = crate::config::ENV_MUTEX.lock().unwrap();
+        let _guard = crate::test_support::env_lock();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
-        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        // SAFETY: serialised via `env_lock()`; restored at end of test.
         unsafe {
             std::env::set_var(
                 "ARMADAI_CONFIG_DIR",
