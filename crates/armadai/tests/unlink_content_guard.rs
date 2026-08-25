@@ -434,4 +434,126 @@ mod tests {
             "the fallback must still reclaim a genuinely generated, unmodified file"
         );
     }
+
+    /// Every file (not directory) under `dir`, recursively, sorted — empty
+    /// when `dir` itself does not exist. Lets a round-trip test assert on
+    /// what actually survives rather than on one path it remembered to
+    /// name.
+    fn files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut found = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return found;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(files_under(&path));
+            } else {
+                found.push(path);
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// Same shape as `project_with_coordinator`, but the coordinator is
+    /// referenced by its **slug** (`dev-lead`) while the agent's own name
+    /// — its H1 title — is written in plain words (`Dev Lead`). Naming
+    /// agents in title case and referencing the coordinator in kebab-case
+    /// is exactly the combination `slugify` exists to reconcile.
+    fn project_with_slug_referenced_coordinator() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let agents = root.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            root.join("armadai.yaml"),
+            "agents:\n  - name: dev-lead\n  - name: member\nlink:\n  target: claude\n  coordinator: dev-lead\n",
+        )
+        .unwrap();
+        std::fs::write(
+            agents.join("dev-lead.md"),
+            "# Dev Lead\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou coordinate.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            agents.join("member.md"),
+            "# member\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou work.\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    /// Issue #341: `link` matched the configured coordinator against an
+    /// agent's name **or** its slug, the fallback path of `unlink` against
+    /// its name alone. With `coordinator: dev-lead` and an agent named
+    /// `Dev Lead`, `link` recognised the coordinator and wrote
+    /// `.claude/CLAUDE.md`; `unlink` did not, so that file was never even a
+    /// candidate for removal — it stayed on disk, silently, with no message
+    /// naming it.
+    ///
+    /// Deliberately forces the #342 fallback (the manifest is deleted
+    /// before `unlink` runs) because that is where the divergence lives:
+    /// through the manifest, `link`'s own attribution is what `unlink`
+    /// reads back, so the two cannot disagree. Without this the test would
+    /// take the manifest path and prove nothing.
+    #[test]
+    fn unlink_fallback_matches_the_coordinator_by_slug_like_link_does() {
+        let dir = project_with_slug_referenced_coordinator();
+        let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
+
+        let (link_ok, _, link_stderr) =
+            run_armadai(&root, &config, &["link", "--target", "claude"]);
+        assert!(link_ok, "link must succeed: stderr={link_stderr}");
+
+        let claude_md = root.join(".claude/CLAUDE.md");
+        let member_file = root.join(".claude/agents/member.md");
+        assert!(
+            claude_md.is_file(),
+            "sanity: link resolves `coordinator: dev-lead` to the agent named \
+             `Dev Lead` via its slug, so it must have written the root context file"
+        );
+        assert!(
+            member_file.is_file(),
+            "sanity: link must have generated the non-coordinator member's file"
+        );
+        assert!(
+            !root.join(".claude/agents/dev-lead.md").exists(),
+            "sanity: the coordinator is excluded from the sub-agent files"
+        );
+
+        // Force the fallback: no manifest, exactly like a fresh clone, a
+        // project linked before the manifest landed, or a deleted
+        // `.armadai/`.
+        std::fs::remove_file(root.join(".armadai/link-manifest.yaml"))
+            .expect("link must have written a manifest to delete");
+
+        let (unlink_ok, unlink_stdout, unlink_stderr) =
+            run_armadai(&root, &config, &["unlink", "--target", "claude"]);
+        assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
+        assert!(
+            unlink_stderr.contains("falling back"),
+            "this test is only meaningful on the fallback path: stderr={unlink_stderr}"
+        );
+
+        assert!(
+            !claude_md.exists(),
+            "the coordinator's own file must be reclaimed: `unlink` has to resolve \
+             `coordinator: dev-lead` to `Dev Lead` exactly as `link` did, or the root \
+             context file survives as a silent orphan: stdout={unlink_stdout}"
+        );
+        assert!(
+            !member_file.exists(),
+            "control: the plain member file must still be reclaimed: stdout={unlink_stdout}"
+        );
+        assert_eq!(
+            files_under(&root.join(".claude")),
+            Vec::<std::path::PathBuf>::new(),
+            "no file may survive the round trip anywhere under the output \
+             directory (the now-empty `.claude/` itself is deliberately left \
+             standing — `remove_empty_ancestors` is bounded by the target root): \
+             stdout={unlink_stdout}"
+        );
+    }
 }

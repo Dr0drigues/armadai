@@ -125,6 +125,27 @@ pub fn slugify(name: &str) -> String {
         .join("-")
 }
 
+/// Does the config reference `reference` designate the agent named
+/// `agent_name`?
+///
+/// Configs name agents both ways: an agent's own name is its H1 title
+/// (`Dev Lead`), while `link.coordinator` — like every path the linker
+/// writes — is usually spelled as the slug (`dev-lead`). Reconciling the
+/// two is exactly what [`slugify`] is for, so every command that resolves a
+/// configured reference against a loaded roster must use this one criterion:
+/// when `link` and `unlink` disagreed on it, `link` wrote a root context
+/// file for a coordinator `unlink` did not recognise, leaving it on disk
+/// with no message even naming it (issue #341).
+///
+/// The two arguments are NOT interchangeable: `reference` is matched
+/// verbatim (case-insensitively) or against the slug of `agent_name`, never
+/// the other way round — `name_matches_reference("Dev Lead", "dev-lead")`
+/// holds while the swapped call does not.
+pub fn name_matches_reference(agent_name: &str, reference: &str) -> bool {
+    agent_name.eq_ignore_ascii_case(reference)
+        || slugify(agent_name).eq_ignore_ascii_case(reference)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
     /// Agents to chain after this one
@@ -232,5 +253,38 @@ impl Agent {
             .stacks
             .iter()
             .any(|s| s.eq_ignore_ascii_case(stack))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reference_matches_a_name_spelled_identically() {
+        assert!(name_matches_reference("dev-lead", "dev-lead"));
+        assert!(name_matches_reference("Dev Lead", "dev lead"));
+    }
+
+    /// The case issue #341 is about: `coordinator: dev-lead` beside an
+    /// agent whose H1 title is `Dev Lead`.
+    #[test]
+    fn a_slug_reference_matches_a_title_cased_name() {
+        assert!(name_matches_reference("Dev Lead", "dev-lead"));
+        assert!(name_matches_reference("My_Test Agent", "my-test-agent"));
+    }
+
+    #[test]
+    fn an_unrelated_reference_never_matches() {
+        assert!(!name_matches_reference("Dev Lead", "qa-lead"));
+        assert!(!name_matches_reference("Dev Lead", "dev"));
+    }
+
+    /// The arguments are directional — pinned so a swapped call site is a
+    /// behaviour change, not a silent no-op.
+    #[test]
+    fn the_two_arguments_are_not_interchangeable() {
+        assert!(name_matches_reference("Dev Lead", "dev-lead"));
+        assert!(!name_matches_reference("dev-lead", "Dev Lead"));
     }
 }

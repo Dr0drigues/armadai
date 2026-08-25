@@ -855,10 +855,16 @@ async fn unlink_via_fallback(
     // Extract coordinator if configured (CLI flag takes priority over config)
     let coordinator_name =
         coordinator_flag.or_else(|| config.link.as_ref().and_then(|l| l.coordinator.clone()));
+    // Matched by name *or* slug, through the same
+    // `name_matches_reference` `link` uses — never by name alone. `link`
+    // resolves `coordinator: dev-lead` to the agent titled `Dev Lead` and
+    // writes its root context file; a narrower criterion here would not
+    // even make that file a candidate for removal, leaving it on disk with
+    // no message naming it (issue #341).
     let mut coordinator = coordinator_name.and_then(|name| {
         let idx = link_agents
             .iter()
-            .position(|a| a.name.eq_ignore_ascii_case(&name))?;
+            .position(|a| crate::linker::name_matches_reference(&a.name, &name))?;
         Some(link_agents.remove(idx))
     });
 

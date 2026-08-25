@@ -104,6 +104,12 @@ pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
 /// crate has to change.
 pub use armadai_core::agent::slugify;
 
+/// Re-exported for the same reason as [`slugify`], which it is built on:
+/// resolving a configured agent reference (`link.coordinator`) against a
+/// loaded roster is one decision, and `link` and `unlink` must not each
+/// keep their own copy of it (issue #341).
+pub use armadai_core::agent::name_matches_reference;
+
 impl From<&Agent> for LinkAgent {
     fn from(agent: &Agent) -> Self {
         let description = agent
