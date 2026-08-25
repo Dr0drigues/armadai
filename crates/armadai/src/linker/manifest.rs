@@ -911,11 +911,20 @@ mod tests {
     /// A pre-existing file whose content already matches is reported
     /// `UpToDate` — left alone on disk — but still recorded `created` in
     /// the manifest (design review R6: `link; link; unlink` must still
-    /// remove it).
+    /// remove it), **with a digest** — `unlink`'s `Created` branch reads
+    /// `entry.digest` unconditionally (`check_digest`, called with
+    /// `entry.digest.as_deref()`), so a `Created` entry with `digest: None`
+    /// would make `unlink` report every such file "cannot be verified —
+    /// unreadable, or an unrecognised digest algorithm" and keep it
+    /// forever, never actually comparing content at all (M2, independent
+    /// review of #347: this exact assertion was missing, so a mutant
+    /// hard-coding `digest: None` in this branch survived undetected).
     ///
     /// Mutation this catches: if a byte-identical pre-existing file were
     /// recorded `Skipped` instead of `Created` (the pre-#338 behaviour),
-    /// this test's manifest assertion would fail.
+    /// the `outcome` assertion fails; if `digest` were `None` or wrong
+    /// (M2's own mutant) instead of the actual content's digest, the
+    /// `digest` assertion fails.
     #[test]
     fn write_files_reports_up_to_date_but_still_records_created() {
         let dir = tempfile::tempdir().unwrap();
@@ -937,7 +946,15 @@ mod tests {
 
         assert_eq!(outcomes, vec![FileOutcome::UpToDate(path)]);
         match lookup_target(root, "claude") {
-            Lookup::Found(found) => assert_eq!(found.entries[0].outcome, Outcome::Created),
+            Lookup::Found(found) => {
+                assert_eq!(found.entries[0].outcome, Outcome::Created);
+                assert_eq!(
+                    found.entries[0].digest,
+                    Some(digest_of(b"hello")),
+                    "a Created entry must carry the digest of the content actually on \
+                     disk, or unlink's digest check has nothing to compare against"
+                );
+            }
             Lookup::Fallback => panic!("write_files must leave a usable manifest behind"),
         }
     }

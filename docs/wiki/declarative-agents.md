@@ -196,7 +196,8 @@ file-backed ones — except where noted:
 | `armadai validate` | Yes — a declared agent named as an `orchestration.coordinator`/`teams[].lead`/`teams[].agents` entry resolves, even when never relisted in `armadai.yaml`'s `agents:` |
 | TUI dashboard | Yes |
 | Web API | Yes |
-| `armadai shell` (the wizard's own `link`, run before entering the shell) | Yes |
+| `armadai shell`'s setup wizard (its own `link`, run once before entering the shell) | Yes |
+| `armadai shell`'s in-session pipeline steps (an `agent:` entry relayed from inside the shell) | **No** — refuses with an explicit message; the shell relay only runs file-backed agents today |
 
 Do not assume a remaining "No" row will discover a declared agent by some other path — it was
 simply not touched by this chantier, and hitting it is the way to find out the hard way if this
@@ -221,6 +222,16 @@ using its own variant instead of the primitive the rest of the fleet already sha
 resolution, and `linker::manifest::write_files` — the same function `cli::link::execute` itself
 calls — for the write, so the manifest entry and the exists-guard come from the same place `link`
 gets them rather than a third copy that could drift from both.
+
+That fix is scoped to the wizard's own `link` step — the one-time setup that runs before the shell
+session starts. It says nothing about what happens *inside* a running session: a pipeline step's
+`agent:` entry is resolved by a separate lookup (`shell::app::resolve_project_agent`) that only
+ever returns a file path or `AgentLookup::Declared`/`NotFound` — there is no code path from there
+to `agent_source::load_all_agents` at all. Naming a declared agent in a pipeline step gets an
+explicit, honest refusal (`declared_agent_not_runnable_message`) rather than a silent drop, but it
+still does not run. This is why the table above lists the wizard and the in-session pipeline as two
+separate rows with two separate answers, rather than one `armadai shell` row that would have to say
+both "yes" and "no" at once.
 
 ## Parity with the `.md` format — and its limits
 
