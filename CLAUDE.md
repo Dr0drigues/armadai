@@ -33,7 +33,7 @@ CI runs clippy in **3 feature modes** to catch lints that only trip under one co
 - `--no-default-features --features tui,providers-api`
 - `--no-default-features --features tui,web,storage`
 
-Tests run in 3 modes: `--no-default-features --features tui`, `--no-default-features --features tui,storage,e2e-fake` (this one also covers the SQLite storage paths and the gaveldrop e2e suite, run via the `--test gaveldrop` target), and `--no-default-features --features tui,providers-api`. Build (`--release`) uses `--no-default-features --features tui,storage`.
+Tests run in 3 modes: `--no-default-features --features tui`, `--no-default-features --features tui,storage,e2e-fake,web` (this one also covers the SQLite storage paths, the gaveldrop e2e suite run via the `--test gaveldrop` target, and — since #350 — the `web/` module's own tests, previously compiled/linted by clippy's `tui,web,storage` combo but never executed by any test job), and `--no-default-features --features tui,providers-api`. Build (`--release`) uses `--no-default-features --features tui,storage`.
 
 ## Feature Flags
 
