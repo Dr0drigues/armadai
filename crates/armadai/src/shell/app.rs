@@ -101,7 +101,7 @@ pub async fn run_shell(ascii: bool) -> Result<()> {
     crate::theme::init(ascii);
 
     // Run wizard to ensure project is ready
-    let wizard_result = super::wizard::ensure_project_ready()?;
+    let wizard_result = super::wizard::ensure_project_ready().await?;
 
     // Load shell config from project config (if available)
     let shell_config = armadai_core::project::find_project_config()

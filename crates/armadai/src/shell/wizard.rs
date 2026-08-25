@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use armadai_core::project;
 use armadai_core::starter::{find_pack_dir, list_available_packs};
 
+use crate::linker::model_resolution::{self, TargetKind};
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -21,9 +23,18 @@ pub struct WizardResult {
     pub project_name: String,
 }
 
+/// Fallback provider for a session where no assistant was ever chosen — the
+/// user picked `5) Skip` in `prompt_link` (see its doc: a target the user
+/// *did* choose is kept even if linking it failed, so this is `Skip`'s
+/// fallback only). The shell still needs *some* command to relay to;
+/// `claude` is the one this module already leans on as a default elsewhere
+/// (`detect_model_name`, the `resolve_shell_model` examples in
+/// `shell/config.rs`) when nothing more specific is known.
+const DEFAULT_UNLINKED_PROVIDER: &str = "claude";
+
 /// Check project readiness and run wizard if needed.
 /// Returns the provider configuration to use, or an error if setup was cancelled.
-pub fn ensure_project_ready() -> Result<WizardResult> {
+pub async fn ensure_project_ready() -> Result<WizardResult> {
     // Step 1: Check project state
     let project_state = detect_project();
 
@@ -50,8 +61,27 @@ pub fn ensure_project_ready() -> Result<WizardResult> {
         return build_wizard_result(&linked.name, "latest:pro");
     }
 
-    // Step 4: Prompt for link if needed
-    let provider = prompt_link()?;
+    // Step 4: Prompt for link if needed. Neither declining (`Skip`) nor a
+    // link step that fails (e.g. `link`'s own `blocks_a_write` refusal on
+    // a shadowing collision) may prevent the shell from opening — the
+    // shell is an interactive environment a user needs precisely to fix
+    // the kind of problem that would make linking fail, so refusing entry
+    // over it would take away their own remedy. Only the *write* is ever
+    // refused; `prompt_link` reports why and still returns `Ok(Some(_))`
+    // for a chosen-but-unwritten target, `Ok(None)` only for `Skip` (see
+    // its own doc) — never an `Err` that would abort here via `?`. A
+    // genuine setup failure reading the choice itself still propagates as
+    // an `Err` untouched.
+    let provider = match prompt_link().await? {
+        Some(target) => target,
+        None => {
+            eprintln!(
+                "\nContinuing without a linked assistant — run `armadai link` from inside \
+                 the shell once you're ready."
+            );
+            DEFAULT_UNLINKED_PROVIDER.to_string()
+        }
+    };
 
     // Check auth
     if !check_auth(&provider) {
@@ -192,7 +222,26 @@ fn prompt_init() -> Result<bool> {
     Ok(true)
 }
 
-fn prompt_link() -> Result<String> {
+/// Prompt for a link target and attempt to link it.
+///
+/// `Ok(None)` means "no assistant was chosen" — only `5) Skip`: that
+/// choice has nothing to refuse, there being no write behind it, so it
+/// always succeeds and the caller (`ensure_project_ready`) falls back to
+/// [`DEFAULT_UNLINKED_PROVIDER`].
+///
+/// A target the user *did* choose is never downgraded to that same
+/// fallback, even when linking it fails (most commonly `link`'s own
+/// `blocks_a_write` refusal on a shadowing collision, but any other
+/// link-step failure too) — only the *write* is refused, not the user's
+/// stated choice of assistant, so `Ok(Some(target))` is still returned
+/// after printing why the write didn't happen. Silently substituting
+/// `claude` for a user who said `gemini` would be a worse surprise than
+/// an assistant with no generated agent files yet.
+///
+/// A genuine setup failure reading the choice itself (`read_choice`'s own
+/// `Err`, e.g. unreadable stdin or an out-of-range answer) is a different
+/// class of problem and still propagates as `Err`.
+async fn prompt_link() -> Result<Option<String>> {
     println!("\nNo link found. Which AI assistant do you use?");
     println!("  1) Gemini CLI");
     println!("  2) Claude Code");
@@ -203,7 +252,7 @@ fn prompt_link() -> Result<String> {
     let choice = read_choice(1, 5)?;
 
     if choice == 5 {
-        return Err(anyhow::anyhow!("Link setup skipped by user"));
+        return Ok(None);
     }
 
     let target = match choice {
@@ -214,10 +263,22 @@ fn prompt_link() -> Result<String> {
         _ => unreachable!(),
     };
 
-    // Run link
-    run_link(target)?;
+    Ok(Some(attempt_link(target).await))
+}
 
-    Ok(target.to_string())
+/// Link `target`, and report — never propagate — a failure. See
+/// `prompt_link`'s doc for why a link-step failure (most commonly `link`'s
+/// own `blocks_a_write` refusal on a shadowing collision) must still leave
+/// the user able to enter the shell with the assistant they chose: only
+/// the *write* is refused, not their presence in the one tool that lets
+/// them fix the underlying problem. Split out from `prompt_link` — which
+/// also reads the choice interactively from stdin — so this half is
+/// testable on its own.
+async fn attempt_link(target: &str) -> String {
+    if let Err(e) = run_link(target).await {
+        eprintln!("\nWarning: linking '{target}' failed: {e}");
+    }
+    target.to_string()
 }
 
 fn read_choice(min: usize, max: usize) -> Result<usize> {
@@ -302,38 +363,65 @@ fn run_init_with_pack(pack_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_link(target: &str) -> Result<()> {
-    println!("\nLinking to '{}'...", target);
-
-    // Reuse link logic from cli/link.rs
-    // We need to call it synchronously, so we'll use a minimal version here
-
+async fn run_link(target: &str) -> Result<()> {
     let (root, config) = project::find_project_config()
         .ok_or_else(|| anyhow::anyhow!("No project config found after initialization"))?;
+    run_link_at(&root, &config, target).await
+}
 
-    if config.agents.is_empty() {
+/// The testable core of [`run_link`], taking an already-resolved project
+/// root/config so tests can drive it against a tempdir without touching
+/// the process's current directory (`project::find_project_config` reads
+/// `std::env::current_dir()`, which a parallel test suite cannot safely
+/// mutate).
+///
+/// This used to be a hand-rolled, independent re-implementation of
+/// `cli::link::execute`'s project-detection gate, agent resolution and
+/// write loop (issue #347, and #339's "fifth copy of the project-detection
+/// gate" — `armadai shell` could not see declared agents at all). It now
+/// goes through the exact same primitives `link` does for each of those:
+/// `agent_source::project_declares_agents`/`load_all_agents` for detection
+/// and resolution, `linker::manifest::write_files` for the write itself —
+/// so the manifest write and the exists-guard come from the same place
+/// `link` gets them, rather than a third copy that could drift from both.
+///
+/// Deliberately narrower than `link`'s own CLI surface: no coordinator, no
+/// skills/prompts, no `--agents` filter, no `--model`/interactive model
+/// prompt, no `--force` — the wizard flow never had any of those, and none
+/// of them are part of what issue #347 asks to fix.
+async fn run_link_at(
+    root: &Path,
+    config: &armadai_core::project::ProjectConfig,
+    target: &str,
+) -> Result<()> {
+    println!("\nLinking to '{}'...", target);
+
+    // Every agent in `.armadai/agents.yaml` is included automatically —
+    // same widened gate `link`, `list`, `run` and `unlink` all share via
+    // `agent_source::project_declares_agents` (issue #337/#339). The old
+    // `config.agents.is_empty()` check here was the one copy that never
+    // learned about declared agents at all: a declarations-only project
+    // would fail here with a false "No agents declared", and even a
+    // project mixing both formats would only ever resolve the file-backed
+    // half below.
+    if !armadai_core::agent_source::project_declares_agents(root, config) {
         return Err(anyhow::anyhow!("No agents declared in project config"));
     }
 
-    // Resolve agents
-    let (paths, errors) = project::resolve_all_agents(&config, &root);
-    for err in &errors {
-        eprintln!("  warn: {}", err);
+    let fragments = armadai_core::agent_source::project_fragments(root);
+    let (agents, warnings) = armadai_core::agent_source::load_all_agents(config, root, &fragments);
+    for w in &warnings {
+        eprintln!("  warn: {}", w.message());
     }
 
-    let mut link_agents: Vec<crate::linker::LinkAgent> = Vec::new();
-    for path in &paths {
-        match armadai_core::parser::parse_agent_file(path) {
-            Ok(agent) => link_agents.push(crate::linker::LinkAgent::from(&agent)),
-            Err(e) => eprintln!("  warn: failed to parse {}: {}", path.display(), e),
-        }
-    }
+    let mut link_agents: Vec<crate::linker::LinkAgent> =
+        agents.iter().map(crate::linker::LinkAgent::from).collect();
 
     if link_agents.is_empty() {
         return Err(anyhow::anyhow!("No agents could be resolved"));
     }
 
-    // Resolve deprecated models
+    // Resolve deprecated models — same as `link`.
     for agent in &mut link_agents {
         armadai_core::model_aliases::resolve_model_deprecations(
             &mut agent.model,
@@ -341,10 +429,56 @@ fn run_link(target: &str) -> Result<()> {
         );
     }
 
-    // Create linker
+    // `link` pairs `load_all_agents` with this refusal (issue #342/#349's
+    // closed defect: never write a smaller fleet than declared) — the one
+    // piece of that pairing this function's earlier fix left out. Without
+    // it, a loss this chantier's declarative format is responsible for (a
+    // dropped declaration, or a shadowing collision) would still only warn,
+    // then have `write_files` below record the amputated fleet actually
+    // written as the *authoritative* manifest for this target — worse than
+    // the pre-manifest world, where at least nothing durable claimed to be
+    // complete. The wizard has no `--agents` filter to scope this to, so —
+    // like a plain `armadai link` with none either — any such loss refuses
+    // the whole write.
+    if armadai_core::agent_source::blocks_a_write(&warnings, None) {
+        return Err(anyhow::anyhow!(
+            "one or more agents could not be loaded (see warning(s) above) — refusing to \
+             link a smaller fleet than declared. Fix the issue(s), or rerun once resolved."
+        ));
+    }
+
+    // The same model resolution `link`'s own step 4b performs (issue I1 on
+    // #347's review): without this, a `latest:*` placeholder reaches
+    // `generate()` completely unresolved, so the wizard writes a literal
+    // `model: latest:pro` where `link` writes the actual resolved model
+    // (e.g. `claude-sonnet-4-5-20250929`) for the same agent and target.
+    // That mismatch is why the #342 fallback can never reclaim a
+    // wizard-written file on its own: regenerating "the `link` way" never
+    // produces the same bytes the wizard wrote, so a project that lost its
+    // manifest has no way back for these files at all. The wizard has no
+    // `--model` flag and no interactive model prompt of its own (its
+    // earlier performance-tier prompt picks the *shell's* conversation
+    // model, a separate concern) — for an `Orchestrator` target this
+    // mirrors `link`'s own non-interactive, no-`--model` default exactly.
+    let target_kind = model_resolution::classify_target(target);
+    match target_kind {
+        TargetKind::LlmEditor { provider } => {
+            #[cfg(feature = "providers-api")]
+            {
+                model_resolution::remap_models_for_llm_editor(&mut link_agents, provider).await;
+            }
+            #[cfg(not(feature = "providers-api"))]
+            {
+                model_resolution::remap_models_for_llm_editor(&mut link_agents, provider);
+            }
+        }
+        TargetKind::Orchestrator => {
+            model_resolution::resolve_latest_placeholders(&mut link_agents);
+        }
+    }
+
     let linker = crate::linker::create_linker(target)?;
 
-    // Generate files
     let sources = &config.sources;
     let files = linker.generate(&link_agents, None, sources);
 
@@ -352,22 +486,92 @@ fn run_link(target: &str) -> Result<()> {
         return Err(anyhow::anyhow!("No files to generate"));
     }
 
-    // Resolve output paths
-    let output_dir = PathBuf::from(linker.default_output_dir());
+    // The same output-directory resolution `link` uses (there is no
+    // wizard equivalent of `link`'s `--output` flag, but a project's own
+    // `link.overrides` still applies) — needed so the manifest this
+    // writes declares the same `root` a later plain `armadai unlink` would
+    // independently compute. A mismatch there makes `unlink` refuse the
+    // manifest wholesale (`root_confirmed`) and fall back to the #342
+    // guard instead of consuming what was just written here.
+    let output_dir = config
+        .link
+        .as_ref()
+        .and_then(|l| l.overrides.get(target))
+        .and_then(|o| o.output.as_ref())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(linker.default_output_dir()));
+    let target_root = root.join(&output_dir);
+
     let default_dir = PathBuf::from(linker.default_output_dir());
+    let agent_count = link_agents.len();
+    let output_files: Vec<(PathBuf, String, crate::linker::manifest::ProducedBy)> = files
+        .into_iter()
+        .enumerate()
+        .map(|(idx, f)| {
+            let relative = f
+                .path
+                .strip_prefix(&default_dir)
+                .unwrap_or(&f.path)
+                .to_path_buf();
+            let final_path = root.join(&output_dir).join(&relative);
+            let produced_by = if idx < agent_count {
+                crate::linker::manifest::ProducedBy::agent(link_agents[idx].name.clone())
+            } else {
+                // No coordinator in the wizard flow — same convention
+                // `link` uses for a target that still emits a
+                // team-roster document with none configured.
+                crate::linker::manifest::ProducedBy::coordinator(target.to_string())
+            };
+            (final_path, f.content, produced_by)
+        })
+        .collect();
 
-    for file in &files {
-        let relative = file.path.strip_prefix(&default_dir).unwrap_or(&file.path);
-        let final_path = root.join(&output_dir).join(relative);
+    // The actual write, through the exact same path `link` uses: an
+    // exists-guard (the wizard has no `--force` of its own, so this is
+    // always `force: false` — a hand-written file is never overwritten)
+    // and a manifest entry for every decision, written at the point of
+    // effect.
+    let outcomes = crate::linker::manifest::write_files(
+        root,
+        target,
+        &output_dir,
+        &target_root,
+        output_files,
+        false,
+    )?;
 
-        if let Some(parent) = final_path.parent() {
-            std::fs::create_dir_all(parent)?;
+    let mut written = 0;
+    let mut skipped = 0;
+    let mut unchanged = 0;
+    for outcome in &outcomes {
+        match outcome {
+            crate::linker::manifest::FileOutcome::Wrote(path) => {
+                println!("  wrote {}", path.display());
+                written += 1;
+            }
+            crate::linker::manifest::FileOutcome::UpToDate(path) => {
+                println!("  up-to-date {}", path.display());
+                unchanged += 1;
+            }
+            crate::linker::manifest::FileOutcome::SkippedExisting(path) => {
+                eprintln!(
+                    "  skip: {} already exists (use `armadai link --target {} --force` to overwrite)",
+                    path.display(),
+                    target
+                );
+                skipped += 1;
+            }
         }
-        std::fs::write(&final_path, &file.content)?;
-        println!("  wrote {}", final_path.display());
     }
 
-    println!("\nLinked {} agent(s) to '{}'", link_agents.len(), target);
+    println!(
+        "\nLinked {} agent(s) to '{}': {} written, {} skipped, {} unchanged.",
+        link_agents.len(),
+        target,
+        written,
+        skipped,
+        unchanged
+    );
 
     Ok(())
 }
@@ -441,4 +645,484 @@ fn detect_project_name() -> String {
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+#[cfg(test)]
+mod run_link_tests {
+    use super::*;
+    use armadai_core::config::ENV_MUTEX;
+
+    /// Points `ARMADAI_CONFIG_DIR` at a fresh, empty temp dir for the
+    /// guard's lifetime, restoring it on drop — serialised on `ENV_MUTEX`
+    /// (shared with the rest of the workspace's env-mutating tests, see
+    /// `armadai_core::config`'s own tests and `web::api`'s
+    /// `load_agents_declarative_tests`). Without this, `load_all_agents`'s
+    /// shadowing check would scan whatever `~/.config/armadai/agents/`
+    /// happens to hold on the machine running the test.
+    struct IsolatedGlobalConfig {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        orig_config_dir: Option<String>,
+        config_tmp: tempfile::TempDir,
+    }
+
+    impl IsolatedGlobalConfig {
+        fn enter() -> Self {
+            // Poison-tolerant: `ENV_MUTEX` only ever guards `()` — there is
+            // no shared data a panicking prior holder could have left
+            // inconsistent, only the env var/cwd restoration each guard's
+            // own `Drop` already performs (and `Drop` still runs during
+            // unwinding, before the poison is even set). Review point 3
+            // (fix round on `fix/wizard-link-write-path`): a single
+            // legitimately failing test elsewhere in this module used to
+            // poison this mutex and cascade every *other* test using this
+            // guard into an unrelated `PoisonError` — recovering the guard
+            // instead keeps a real failure from being buried under
+            // phantom ones.
+            let lock = ENV_MUTEX
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let orig_config_dir = std::env::var("ARMADAI_CONFIG_DIR").ok();
+            let config_tmp = tempfile::tempdir().unwrap();
+            // SAFETY: serialised via ENV_MUTEX above.
+            unsafe {
+                std::env::set_var("ARMADAI_CONFIG_DIR", config_tmp.path());
+            }
+            Self {
+                _lock: lock,
+                orig_config_dir,
+                config_tmp,
+            }
+        }
+
+        /// The isolated global agent library (`<ARMADAI_CONFIG_DIR>/agents`)
+        /// — for a test that wants to plant a same-named `.md` there to
+        /// trigger a declared/global shadowing collision deliberately.
+        fn global_agents_dir(&self) -> std::path::PathBuf {
+            self.config_tmp.path().join("agents")
+        }
+    }
+
+    impl Drop for IsolatedGlobalConfig {
+        fn drop(&mut self) {
+            // SAFETY: still under the guard held by `self._lock`.
+            unsafe {
+                match &self.orig_config_dir {
+                    Some(v) => std::env::set_var("ARMADAI_CONFIG_DIR", v),
+                    None => std::env::remove_var("ARMADAI_CONFIG_DIR"),
+                }
+            }
+        }
+    }
+
+    /// Extends [`IsolatedGlobalConfig`] with a process cwd change, for the
+    /// one test below that must exercise `cli::unlink::execute` — which,
+    /// unlike [`run_link_at`], has no root-taking variant and resolves its
+    /// project via `project::find_project_config()`'s cwd read. Restores
+    /// the original cwd on drop, still under the same env-mutex guard.
+    struct IsolatedProjectDir {
+        _config: IsolatedGlobalConfig,
+        orig_cwd: std::path::PathBuf,
+    }
+
+    impl IsolatedProjectDir {
+        fn enter(root: &Path) -> Self {
+            let config = IsolatedGlobalConfig::enter();
+            let orig_cwd = std::env::current_dir().unwrap();
+            std::env::set_current_dir(root).unwrap();
+            Self {
+                _config: config,
+                orig_cwd,
+            }
+        }
+
+        /// The isolated global agent library, for a test that wants to
+        /// plant a same-named `.md` there — see
+        /// [`IsolatedGlobalConfig::global_agents_dir`].
+        fn global_agents_dir(&self) -> std::path::PathBuf {
+            self._config.global_agents_dir()
+        }
+    }
+
+    impl Drop for IsolatedProjectDir {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.orig_cwd);
+        }
+    }
+
+    /// A project with two file-backed agents, `keep` and `drop`, no
+    /// declarative agents, targeting nothing in particular — `run_link_at`
+    /// is always called with an explicit `target`.
+    fn write_two_agent_project(root: &Path) {
+        std::fs::create_dir_all(root.join("agents")).unwrap();
+        std::fs::write(
+            root.join("armadai.yaml"),
+            "agents:\n  - name: keep\n  - name: drop\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("agents/keep.md"),
+            "# keep\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nStay.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("agents/drop.md"),
+            "# drop\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nLeave.\n",
+        )
+        .unwrap();
+    }
+
+    /// A wizard-driven link must write the same `.armadai/link-manifest.yaml`
+    /// `link` itself writes, so `unlink` can act on it afterwards instead
+    /// of falling back to the #342 content-match guard — the exact gap
+    /// issue #347 measured (the wizard's own write loop skipped the
+    /// manifest entirely, so `unlink` never knew what it had produced).
+    ///
+    /// Proven the same way `link_manifest.rs`'s own `case2` does: drop an
+    /// agent from the config *after* linking, then unlink. Only a
+    /// manifest can reclaim that agent's file at all — the #342 fallback
+    /// regenerates against the *current* config, which no longer names
+    /// `drop`, so its file could never even be a candidate there. This
+    /// guards against the exact trap #349 warned about: a version of this
+    /// test that passed identically with the manifest deleted would only
+    /// be proving the fallback, not the wizard's manifest write.
+    ///
+    /// Mutation this catches: reverting `run_link_at`'s write to a
+    /// hand-rolled `fs::write` loop with no `linker::manifest::write_files`
+    /// call (the pre-fix wizard) leaves no manifest behind at all, so
+    /// `unlink` falls back and `drop.md` survives — this assertion fails.
+    #[tokio::test]
+    async fn wizard_link_writes_a_manifest_that_unlink_consumes_for_an_orphaned_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        write_two_agent_project(&root);
+
+        let _isolated = IsolatedProjectDir::enter(&root);
+
+        let (found_root, config) = project::find_project_config_from(&root).unwrap();
+        run_link_at(&found_root, &config, "claude").await.unwrap();
+
+        let manifest_path = root.join(".armadai/link-manifest.yaml");
+        assert!(
+            manifest_path.is_file(),
+            "a wizard-driven link must write a manifest, the same way `link` does"
+        );
+
+        let drop_file = root.join(".claude/agents/drop.md");
+        assert!(drop_file.is_file(), "link must have generated drop's file");
+
+        // Drop `drop` from the config entirely — the orphan case only a
+        // manifest can still reclaim.
+        std::fs::write(root.join("armadai.yaml"), "agents:\n  - name: keep\n").unwrap();
+
+        crate::cli::unlink::execute(
+            Some(crate::linker::LinkTarget::Claude),
+            None,
+            false,
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !drop_file.exists(),
+            "an orphaned agent's file must be reclaimed via the manifest the wizard-driven \
+             link wrote"
+        );
+    }
+
+    /// `run_link_at` refuses to overwrite a hand-written file, exactly as
+    /// `link` does (`link.rs:295` before the shared write path existed) —
+    /// the second gap issue #347 measured: the wizard's own write loop had
+    /// no exists-guard at all and would have clobbered it.
+    ///
+    /// Mutation this catches: if the exists-guard were removed (or
+    /// `run_link_at` passed `force: true` to `write_files`), the
+    /// hand-written content would be overwritten and this test's content
+    /// assertion would fail.
+    #[tokio::test]
+    async fn wizard_link_refuses_to_overwrite_a_hand_written_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join("agents")).unwrap();
+        std::fs::write(root.join("armadai.yaml"), "agents:\n  - name: solo\n").unwrap();
+        std::fs::write(
+            root.join("agents/solo.md"),
+            "# solo\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nWork.\n",
+        )
+        .unwrap();
+
+        let claude_agents = root.join(".claude/agents");
+        std::fs::create_dir_all(&claude_agents).unwrap();
+        let hand_written = "# written by a human before the wizard ever ran\n";
+        std::fs::write(claude_agents.join("solo.md"), hand_written).unwrap();
+
+        let (found_root, config) = project::find_project_config_from(&root).unwrap();
+        run_link_at(&found_root, &config, "claude").await.unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(claude_agents.join("solo.md")).unwrap(),
+            hand_written,
+            "a hand-written file must never be overwritten by the wizard's link, \
+             matching link's own --force-less behaviour"
+        );
+    }
+
+    /// #339's other half: `run_link_at` must see agents declared purely
+    /// via `.armadai/agents.yaml`, not just `armadai.yaml`'s `agents:`
+    /// list — the "fifth copy of the project-detection gate" issue #347
+    /// named alongside the manifest/exists-guard gap. Before this fix,
+    /// `config.agents.is_empty()` was the whole check here, so a
+    /// declarations-only project (a real, common shape: this chantier's
+    /// whole point is not needing to relist every agent in `agents:`)
+    /// would fail with a false "No agents declared in project config".
+    ///
+    /// Mutation this catches: reverting the gate to
+    /// `config.agents.is_empty()` makes this test's `run_link_at` call
+    /// return an error instead of `Ok`.
+    #[tokio::test]
+    async fn wizard_link_sees_agents_declared_only_in_agents_yaml() {
+        let _isolated = IsolatedGlobalConfig::enter();
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join(".armadai")).unwrap();
+        std::fs::write(root.join(".armadai/config.yaml"), "agents: []\n").unwrap();
+        std::fs::write(
+            root.join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  - name: declared-only\n",
+        )
+        .unwrap();
+
+        let (found_root, config) = project::find_project_config_from(&root).unwrap();
+        run_link_at(&found_root, &config, "claude").await.unwrap();
+
+        assert!(
+            root.join(".claude/agents/declared-only.md").is_file(),
+            "an agent declared only in .armadai/agents.yaml must still be linked by the wizard"
+        );
+    }
+
+    /// B1 (independent review of #347): `link` pairs `load_all_agents`
+    /// with `blocks_a_write` — never write a smaller fleet than declared
+    /// when the loss is this chantier's format's own responsibility (a
+    /// dropped declaration, or a shadowing collision). `run_link_at`
+    /// adopted the resolution half of that pairing but not the refusal
+    /// half, so a declared agent shadowed by a same-named global `.md`
+    /// would only warn, then have the *rest* of the fleet written and
+    /// recorded in the manifest as if it were complete — worse than the
+    /// pre-manifest world, since the manifest is now the authoritative
+    /// record `unlink` trusts.
+    ///
+    /// Mutation this catches: removing the `blocks_a_write` call (or
+    /// calling it with an argument that can never block, e.g. a filter
+    /// that excludes the shadowed name) makes this test's `run_link_at`
+    /// call return `Ok` and write `solo.md` — both assertions below fail.
+    #[tokio::test]
+    async fn wizard_link_refuses_a_write_when_a_declared_agent_is_shadowed() {
+        let isolated = IsolatedGlobalConfig::enter();
+        std::fs::create_dir_all(isolated.global_agents_dir()).unwrap();
+        std::fs::write(
+            isolated.global_agents_dir().join("collide.md"),
+            "# collide\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nGlobal.\n",
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join(".armadai")).unwrap();
+        std::fs::write(root.join(".armadai/config.yaml"), "agents: []\n").unwrap();
+        std::fs::write(
+            root.join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  - name: solo\n  - name: collide\n",
+        )
+        .unwrap();
+
+        let (found_root, config) = project::find_project_config_from(&root).unwrap();
+        let result = run_link_at(&found_root, &config, "claude").await;
+
+        assert!(
+            result.is_err(),
+            "a shadowing collision on one declared agent must refuse the whole write, \
+             not silently link the rest as if the fleet were complete"
+        );
+        assert!(
+            !root.join(".claude").exists(),
+            "nothing must be written at all when the write is refused — not even the \
+             unaffected agent's file"
+        );
+    }
+
+    /// I1 (independent review of #347): the wizard must write the same
+    /// bytes `link` would for the same agent and target, which means
+    /// resolving a `latest:*` placeholder into a concrete model (`link`'s
+    /// own step 4b) rather than leaving the literal placeholder string in
+    /// the generated file. Without this, the #342 fallback can never
+    /// reclaim a wizard-written file at all — regenerating "the `link`
+    /// way" resolves the placeholder, so it never byte-matches what the
+    /// wizard actually wrote, and an unrecoverable orphan is the result
+    /// the moment the manifest is gone.
+    ///
+    /// An isolated, empty `ARMADAI_CONFIG_DIR` guarantees no
+    /// `models-cache.json` is present, so `resolve_model_for_tier`
+    /// deterministically falls back to `fallback_model_for_tier`
+    /// ("claude-sonnet-4-5-20250929" for anthropic/Pro) — pinning this
+    /// test to that fallback rather than to whatever a live models.dev
+    /// cache happens to hold on the machine running it.
+    ///
+    /// Mutation this catches: removing the model-resolution step (or its
+    /// `.await` under `providers-api`, which would fail to compile rather
+    /// than silently no-op, but the sync-mode call is removable the same
+    /// way) leaves `model: latest:pro` verbatim in the written file, and
+    /// both assertions below fail.
+    #[tokio::test]
+    async fn wizard_link_resolves_latest_placeholders_the_way_link_does() {
+        let _isolated = IsolatedGlobalConfig::enter();
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join("agents")).unwrap();
+        std::fs::write(root.join("armadai.yaml"), "agents:\n  - name: solo\n").unwrap();
+        std::fs::write(
+            root.join("agents/solo.md"),
+            "# solo\n\n## Metadata\n- provider: claude\n- model: latest:pro\n\n\
+             ## System Prompt\n\nWork.\n",
+        )
+        .unwrap();
+
+        let (found_root, config) = project::find_project_config_from(&root).unwrap();
+        run_link_at(&found_root, &config, "claude").await.unwrap();
+
+        let written = std::fs::read_to_string(root.join(".claude/agents/solo.md")).unwrap();
+        assert!(
+            !written.contains("model: latest:pro"),
+            "the wizard must resolve latest:* placeholders, not write them verbatim: \
+             {written}"
+        );
+        assert!(
+            written.contains("model: claude-sonnet-4-5-20250929"),
+            "the wizard must resolve to the same fallback model `link` would, when no \
+             models-cache is present: {written}"
+        );
+    }
+
+    /// Review point 2 (fix round on `fix/wizard-link-write-path`): every
+    /// pre-existing wizard test targets `"claude"`, an `LlmEditor` — so
+    /// `run_link_at`'s `TargetKind::Orchestrator` match arm, the one I1
+    /// was actually about (it is precisely where model resolution differs
+    /// from `LlmEditor`'s force-to-target-provider rule), had zero
+    /// coverage: gutting that whole arm left every wizard test green.
+    ///
+    /// Uses `opencode`, not `copilot` — the other `Orchestrator` target —
+    /// because `CopilotLinker::generate` never serialises `model:` into
+    /// its output at all (checked in `linker/copilot.rs`), so a byte-level
+    /// assertion has nothing to check there; `OpencodeLinker` does write
+    /// `model: <value>` frontmatter. A different tier (`latest:fast`) than
+    /// the test above's `latest:pro` keeps the two tests' expected values
+    /// visibly apart.
+    ///
+    /// Caveat this test does NOT cover, stated rather than silently
+    /// assumed: this pins the non-interactive default only. On a real
+    /// TTY, `link` itself prompts for a model and stamps that single
+    /// answer onto every agent for `Orchestrator` targets (`cli::link`'s
+    /// own interactive branch, gated on `std::io::stdin().is_terminal()`)
+    /// — a wizard/`link` byte-equality claim for `Orchestrator` targets
+    /// holds only against that same non-interactive path. Neither
+    /// `run_link_at` nor this test attempts the interactive path at all;
+    /// the wizard has no `--model` prompt of its own for the target's
+    /// *linked* agents (only for the shell's own conversation model —
+    /// see `run_link_at`'s doc).
+    ///
+    /// Mutation this catches: emptying the `TargetKind::Orchestrator`
+    /// match arm (or swapping it for the `LlmEditor` arm's
+    /// target-provider-forced resolution) either leaves `model:
+    /// latest:fast` unresolved or resolves it to a different tier's
+    /// fallback — either way this test's assertions fail, where all
+    /// `"claude"`-targeted tests stay green regardless.
+    #[tokio::test]
+    async fn wizard_link_resolves_latest_placeholders_for_an_orchestrator_target() {
+        let _isolated = IsolatedGlobalConfig::enter();
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join("agents")).unwrap();
+        std::fs::write(root.join("armadai.yaml"), "agents:\n  - name: solo\n").unwrap();
+        std::fs::write(
+            root.join("agents/solo.md"),
+            "# solo\n\n## Metadata\n- provider: claude\n- model: latest:fast\n\n\
+             ## System Prompt\n\nWork.\n",
+        )
+        .unwrap();
+
+        let (found_root, config) = project::find_project_config_from(&root).unwrap();
+        run_link_at(&found_root, &config, "opencode").await.unwrap();
+
+        let written = std::fs::read_to_string(root.join(".opencode/agents/solo.md")).unwrap();
+        assert!(
+            !written.contains("model: latest:fast"),
+            "the wizard must resolve latest:* placeholders for Orchestrator targets \
+             too, not write them verbatim: {written}"
+        );
+        assert!(
+            written.contains("model: claude-haiku-4-5-20251001"),
+            "the wizard must resolve to the same fallback model link's non-interactive \
+             path would, when no models-cache is present: {written}"
+        );
+    }
+
+    /// Review point 1 (blocking, on `fix/wizard-link-write-path`): a link
+    /// step that fails to *write* (here, `blocks_a_write` on a shadowing
+    /// collision — the same setup as
+    /// `wizard_link_refuses_a_write_when_a_declared_agent_is_shadowed`)
+    /// must never take the shell itself away. `attempt_link` is
+    /// `prompt_link`'s non-interactive half — see its doc — and must
+    /// report the failure without propagating it, still returning the
+    /// chosen target so `ensure_project_ready` can open the shell with
+    /// it. `attempt_link`'s return type (`String`, not `Result<String>`)
+    /// already makes the "propagate the error" mutant impossible to
+    /// reintroduce without a compile error; what this test pins is the
+    /// value that comes back on that path.
+    ///
+    /// Mutation this catches: if a failed link instead returned
+    /// [`DEFAULT_UNLINKED_PROVIDER`] (silently substituting `claude` for
+    /// whatever the user actually chose) rather than echoing the chosen
+    /// target back, this test's `assert_eq!` fails.
+    #[tokio::test]
+    async fn attempt_link_keeps_the_chosen_target_when_the_write_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join(".armadai")).unwrap();
+        std::fs::write(root.join(".armadai/config.yaml"), "agents: []\n").unwrap();
+        std::fs::write(
+            root.join(".armadai/agents.yaml"),
+            "defaults:\n  provider: claude\nagents:\n  - name: solo\n  - name: collide\n",
+        )
+        .unwrap();
+
+        let isolated = IsolatedProjectDir::enter(&root);
+        std::fs::create_dir_all(isolated.global_agents_dir()).unwrap();
+        std::fs::write(
+            isolated.global_agents_dir().join("collide.md"),
+            "# collide\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nGlobal.\n",
+        )
+        .unwrap();
+
+        // Deliberately NOT "claude": `DEFAULT_UNLINKED_PROVIDER` is also
+        // "claude", so a mutant that silently substitutes it would pass
+        // an assert_eq! against "claude" undetected — the exact
+        // mutually-confusable-value trap this project has hit before.
+        // "gemini" makes the two outcomes distinguishable.
+        let result = attempt_link("gemini").await;
+
+        assert_eq!(
+            result, "gemini",
+            "a link-step failure must still return the target the user chose, not an \
+             error and not a silently substituted default"
+        );
+        assert!(
+            !root.join(".gemini").exists(),
+            "the write itself must still be refused — nothing gets written"
+        );
+    }
 }

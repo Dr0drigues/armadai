@@ -18,7 +18,7 @@ mod run_replay;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;
-mod unlink;
+pub(crate) mod unlink;
 mod up;
 mod update;
 mod validate;
