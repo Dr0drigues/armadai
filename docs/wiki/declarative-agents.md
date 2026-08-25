@@ -195,9 +195,19 @@ not undoable — spent on a chain that could never have completed. If you are us
 first links produce output before a later typo surfaced, that is the behaviour that changed: you
 now get the error immediately, and nothing runs.
 
-Only *resolution* moves up front. A link that resolves fine and then fails while running still
-fails where it always did, part-way through the chain, and the earlier links' calls are already
-spent — that is inherent to running them.
+Each link's **provider** is built up front too, not only its definition. An agent whose
+`provider:` is misspelled, whose API key is nowhere to be found, or which asks for `provider: cli`
+without naming a `command:`, fails on its own metadata — nothing an earlier link produces could
+change the outcome — so it is caught in the same pass, and the failure names the link the same way:
+
+```
+chain link 2/3 ('summariser') has no usable provider, so no agent was run: No API key found for
+'anthropic'. Set ANTHROPIC_API_KEY or add to config/providers.secret.yaml
+```
+
+What stays where it was is *running*. A link that resolves and builds fine and then fails during
+its call still fails part-way through the chain, and the earlier links' calls are already spent —
+that is inherent to running them.
 
 ## Long compositions still get audited
 

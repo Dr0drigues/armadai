@@ -798,18 +798,27 @@ async fn run_inner(
     let mut agg_tout = 0u32;
     let mut agg_cost = 0.0f64;
 
-    // Resolve EVERY link of the chain before running the first one (#366).
-    // See [`load_chain`] for why the loop is no longer allowed to do it.
-    let chain_agents = load_chain(&resolution, &chain)?;
+    // Resolve EVERY link of the chain — and build its provider — before
+    // running the first one (#366). See [`load_chain`] for why the loop is no
+    // longer allowed to do either.
+    let chain_links = load_chain(&resolution, &chain)?;
 
-    for (i, (name, agent)) in chain.iter().zip(chain_agents).enumerate() {
+    for (i, (name, link)) in chain.iter().zip(chain_links).enumerate() {
         if chain.len() > 1 && !json {
             let h = crate::cli::style::header();
             anstream::eprintln!("{h}--- [{}/{} {}] ---{h:#}", i + 1, chain.len(), name);
         }
+        // Under this link's own header, not in a block ahead of the first
+        // one: a warning that names an agent belongs where that agent is
+        // announced (#373 review, m5).
+        if let Some(w) = &link.warning {
+            let s = crate::cli::style::warn();
+            anstream::eprintln!("{s}  warn: {w}{s:#}");
+        }
 
         let (output, metrics) = run_single_agent(
-            agent,
+            link.agent,
+            link.provider,
             name,
             &current_input,
             project_defaults,
@@ -894,12 +903,37 @@ fn project_display_string(resolution: &AgentResolution) -> Option<String> {
 /// armed for the next call site.
 ///
 /// Called from the single-agent path (`chain.len() == 1`, the common
-/// `armadai run <name>` invocation), the `--pipe` chain loop, the
-/// `--orchestrate` roster loader (`run_orchestrated`), and `--resume`'s
-/// roster reload (`resume_run`) — the last three in a loop, which is why the
-/// loop-invariant half of the work (the prompt fragments) is memoised on
-/// `AgentResolution` rather than recomputed here per call.
+/// `armadai run <name>` invocation), the `--orchestrate` roster loader
+/// (`run_orchestrated`), and `--resume`'s roster reload (`resume_run`) — the
+/// last two in a loop, as is [`load_chain`], which is why the loop-invariant
+/// half of the work (the prompt fragments) is memoised on `AgentResolution`
+/// rather than recomputed per call. `--pipe` goes through
+/// [`load_agent_reporting_warning`] instead, for the reason given there.
 fn load_agent_for_run(resolution: &AgentResolution, agent_name: &str) -> anyhow::Result<Agent> {
+    let (agent, warning) = load_agent_reporting_warning(resolution, agent_name)?;
+    // Core returns the warning rather than printing it (see
+    // `load_agent_by_name`'s own doc) precisely so it renders here, in the
+    // CLI's own voice, instead of a bare `tracing::warn!` line reaching the
+    // user's terminal directly from core.
+    if let Some(w) = warning {
+        let s = crate::cli::style::warn();
+        anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
+    }
+    Ok(agent)
+}
+
+/// [`load_agent_for_run`] without the printing: the load warning is handed
+/// back instead.
+///
+/// Split out for [`load_chain`], which resolves the whole chain *before* the
+/// first link's `--- [1/N …] ---` header exists to print under. Printing
+/// from in here would put every link's warning in one block ahead of the
+/// first header, losing the positional anchoring that says which link each
+/// one is about (#373 review, m5).
+fn load_agent_reporting_warning(
+    resolution: &AgentResolution,
+    agent_name: &str,
+) -> anyhow::Result<(Agent, Option<armadai_core::agent_source::LoadWarning>)> {
     match resolution {
         AgentResolution::Project {
             root,
@@ -908,29 +942,30 @@ fn load_agent_for_run(resolution: &AgentResolution, agent_name: &str) -> anyhow:
         } => {
             let fragments =
                 fragments.get_or_init(|| armadai_core::agent_source::project_fragments(root));
-            let (agent, warning) = armadai_core::agent_source::load_agent_by_name(
-                agent_name, config, root, fragments,
-            )?;
-            // Core returns the warning rather than printing it (see
-            // `load_agent_by_name`'s own doc) precisely so it renders here,
-            // in the CLI's own voice, instead of a bare `tracing::warn!`
-            // line reaching the user's terminal directly from core.
-            if let Some(w) = warning {
-                let s = crate::cli::style::warn();
-                anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
-            }
-            Ok(agent)
+            armadai_core::agent_source::load_agent_by_name(agent_name, config, root, fragments)
         }
         AgentResolution::Default(agents_dir) => {
             let path = Agent::find_file(agents_dir, agent_name).ok_or_else(|| {
                 anyhow::anyhow!("Agent '{agent_name}' not found in {}", agents_dir.display())
             })?;
-            armadai_core::parser::parse_agent_file(&path)
+            armadai_core::parser::parse_agent_file(&path).map(|a| (a, None))
         }
     }
 }
 
-/// Resolve every link of a `--pipe` chain up front, before any of them runs.
+/// One resolved link of a `--pipe` chain: everything the execution loop
+/// needs, so that loop can no longer fail on anything but the call itself.
+struct ChainLink {
+    agent: Agent,
+    provider: Box<dyn armadai_core::provider::Provider>,
+    /// The load warning, if any, deferred so the loop can print it under
+    /// this link's own `--- [i/N name] ---` header — and already deduplicated
+    /// by [`load_chain`].
+    warning: Option<String>,
+}
+
+/// Resolve every link of a `--pipe` chain up front — agent *and* provider —
+/// before any of them runs.
 ///
 /// The chain used to be resolved lazily, one link at a time, inside the
 /// execution loop: a typo on link N was only discovered after links 1..N-1
@@ -940,24 +975,61 @@ fn load_agent_for_run(resolution: &AgentResolution, agent_name: &str) -> anyhow:
 /// the sequential chain the same shape, and leaves the loop purely
 /// executional.
 ///
+/// **Provider construction belongs here too**, for the same reason and not
+/// merely by symmetry with `run_orchestrated`: `create_provider` fails
+/// deterministically, on the agent's own metadata, with nothing a preceding
+/// link could change — a misspelled `provider:`, an API provider whose key
+/// is nowhere to be found, `provider: cli` with no `command:`. Resolving the
+/// definition but not the provider left #366's exact bill one gate further
+/// on: `agent_start`/`agent_end` for link 1, *then* `Unknown provider:
+/// 'gtp'` (#373 review, i3). It is safe to hoist because nothing
+/// `create_provider` does is ordered against a run: it reads env/config,
+/// probes `which` for unified names, and constructs clients — no connection
+/// is opened, and the rate limiters it takes are either process-global and
+/// memoised or per-agent buckets that start full, so building one earlier
+/// can only ever leave it *more* permissive by the time it is used.
+///
 /// The failure names the link's position as well as its name: with several
 /// names on one command line, `'x' not found` alone leaves the user counting
 /// them. The resolver's own message is kept inline rather than as an
 /// `anyhow` context layer, because the headless error event reports only
 /// `Error::to_string()` (the outermost layer) — wrapping would drop the part
 /// that names `.armadai/agents.yaml` for a project that declares its agents
-/// (#339).
-fn load_chain(resolution: &AgentResolution, chain: &[String]) -> anyhow::Result<Vec<Agent>> {
+/// (#339). Inlining it costs the *chain* of causes, though, which is why the
+/// interpolation is `{e:#}` (alternate `Display` = every layer, joined by
+/// `: `) and not `{e}`: with `{e}` a chain link failing on an unreadable
+/// `.md` reported `reading <path>` and dropped the `Permission denied (os
+/// error 13)` that says why, where the single-agent path kept it (#373
+/// review, i1).
+fn load_chain(resolution: &AgentResolution, chain: &[String]) -> anyhow::Result<Vec<ChainLink>> {
+    // `LoadWarning::DeclarationsUnreadable` states a *project* fact — this
+    // one `.armadai/agents.yaml` cannot be parsed — with only the served
+    // agent's name varying at the tail. Every link re-reads the same file in
+    // the same loop, so N links restate it N times, ~380 characters apiece,
+    // byte-identical whenever two links name the same agent. Said once
+    // (#373 review, m5).
+    let mut declarations_reported = false;
     chain
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            load_agent_for_run(resolution, name).map_err(|e| {
-                anyhow::anyhow!(
-                    "chain link {}/{} ('{name}') could not be resolved, so no agent was run: {e}",
-                    i + 1,
-                    chain.len()
-                )
+            let position = format!("chain link {}/{} ('{name}')", i + 1, chain.len());
+            let (agent, warning) = load_agent_reporting_warning(resolution, name).map_err(|e| {
+                anyhow::anyhow!("{position} could not be resolved, so no agent was run: {e:#}")
+            })?;
+            let provider = create_provider(&agent).map_err(|e| {
+                anyhow::anyhow!("{position} has no usable provider, so no agent was run: {e:#}")
+            })?;
+            let warning = warning.and_then(|w| match w {
+                armadai_core::agent_source::LoadWarning::DeclarationsUnreadable(m) => {
+                    (!std::mem::replace(&mut declarations_reported, true)).then_some(m)
+                }
+                other => Some(other.message().to_string()),
+            });
+            Ok(ChainLink {
+                agent,
+                provider,
+                warning,
             })
         })
         .collect()
@@ -971,9 +1043,15 @@ fn load_chain(resolution: &AgentResolution, chain: &[String]) -> anyhow::Result<
 /// `run_single_agent_es` has. Loading is the caller's job (via
 /// [`load_agent_for_run`]) precisely because an agent declared in
 /// `.armadai/agents.yaml` has no file to hand down here (#339).
+///
+/// It takes an already-built `provider` for the same reason: its only caller
+/// is the `--pipe` loop, and a provider this fn built itself could only fail
+/// after the links before it had already been billed (#373 review, i3). See
+/// [`load_chain`].
 #[allow(clippy::too_many_arguments)]
 async fn run_single_agent(
     mut agent: Agent,
+    provider: Box<dyn armadai_core::provider::Provider>,
     agent_name: &str,
     input: &str,
     project_defaults: Option<&ProjectDefaults>,
@@ -1007,8 +1085,11 @@ async fn run_single_agent(
         crate::linker::model_resolution::warn_unknown_model(model, &agent.metadata.provider);
     }
 
-    // 2. Create provider
-    let provider = create_provider(&agent)?;
+    // 2. Provider: built by `load_chain` before the chain's first link ran.
+    // `create_provider` reads none of the metadata step 1b rewrites (only
+    // `provider`/`command`/`args`/`timeout`/`rate_limit`), so hoisting it
+    // ahead of the deprecation resolution changes nothing about the provider
+    // it returns.
 
     // 4. Resolve effective mode and build system prompt
     let effective_mode = agent
