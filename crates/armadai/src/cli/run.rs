@@ -2075,6 +2075,7 @@ async fn run_orchestrated_inner(
                 println!("{outcome_text}");
             }
 
+            warn_unreported_usage(sink, Some(config.token_budget), cost_limit, &state);
             sink.emit(&RunEvent::Result {
                 content: outcome_text,
                 tin: u32::try_from(state.budget_tokens_in).unwrap_or(u32::MAX),
@@ -2157,6 +2158,7 @@ async fn run_orchestrated_inner(
                 println!("{outcome_text}");
             }
 
+            warn_unreported_usage(sink, Some(config.token_budget), cost_limit, &state);
             sink.emit(&RunEvent::Result {
                 content: outcome_text,
                 tin: u32::try_from(state.budget_tokens_in).unwrap_or(u32::MAX),
@@ -2177,6 +2179,12 @@ async fn run_orchestrated_inner(
                 }
                 _ => OrchestrationConfig::default(),
             };
+
+            // Captured before `orch_config` is moved into the dispatch below:
+            // the post-run budget notice needs the ceilings that were asked
+            // for, not the ones the run consumed.
+            let (declared_token_budget, declared_cost_limit) =
+                (orch_config.token_budget, orch_config.cost_limit);
 
             // Validate the config
             if let Err(errors) = armadai_core::orchestration::validate_config(&orch_config) {
@@ -2263,6 +2271,7 @@ async fn run_orchestrated_inner(
                 println!("{}", result.content);
             }
 
+            warn_unreported_usage(sink, declared_token_budget, declared_cost_limit, &state);
             sink.emit(&RunEvent::Result {
                 content: result.content,
                 tin: result.total_tokens_in,
@@ -2279,6 +2288,33 @@ async fn run_orchestrated_inner(
     }
 
     Ok(())
+}
+
+/// Surface, once per orchestrated run, that a configured budget was fed no
+/// usage at all — see `armadai_core::orchestration::es::state::
+/// unreported_usage_warning` for what makes that worth saying.
+///
+/// Both channels, because they reach different readers: the structured
+/// `RunEvent::Warning` is what `--json` and the Workroom consume (the same
+/// vehicle `deprecated_model` and `routing_ignored_hierarchical` already
+/// use), and `tracing::warn!` is what a plain `armadai run` shows.
+fn warn_unreported_usage(
+    sink: &Arc<dyn EventSink>,
+    token_budget: Option<u64>,
+    cost_limit: Option<f64>,
+    state: &armadai_core::orchestration::es::state::ExecutionState,
+) {
+    use armadai_core::orchestration::es::state::{UNREPORTED_USAGE_CODE, unreported_usage_warning};
+
+    let Some(message) = unreported_usage_warning(token_budget, cost_limit, state) else {
+        return;
+    };
+    tracing::warn!("{message}");
+    sink.emit(&RunEvent::Warning {
+        code: UNREPORTED_USAGE_CODE.to_string(),
+        from: None,
+        to: None,
+    });
 }
 
 /// Resolve the top-level `orchestration:` block's `cost_limit` for a
