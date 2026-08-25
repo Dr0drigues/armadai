@@ -1,7 +1,49 @@
 use async_trait::async_trait;
+use std::time::{Duration, Instant};
 use tokio::process::Command;
 
 use armadai_core::provider::*;
+
+/// Absolute backstop on top of the per-line inactivity timeout (#270 review
+/// F4): inactivity is the right thing to bound (see `CliProvider::complete`),
+/// but it cannot be the *only* bound — a subprocess that keeps producing
+/// some output forever (a heartbeat that never converges) would otherwise
+/// never be killed. This must never trip on any legitimate call, including
+/// a single `claude -p` invocation that itself drives many native
+/// Task-tool delegations in one process (a whole hierarchical session can
+/// be ONE `CliProvider::complete()` call) — so it is deliberately large: 2
+/// hours comfortably exceeds every turn duration observed on this project
+/// (single agentic turns ~500-600s) with room for several chained turns.
+/// It is a safety net, not a tuned control: if genuinely multi-hour
+/// sessions become routine, this should become its own configurable field
+/// instead of a larger constant.
+const ABSOLUTE_CEILING_SECS: u64 = 2 * 60 * 60;
+
+/// Decide how long the next single read may wait, given how long the call
+/// has run so far (`elapsed`), the per-line inactivity ceiling
+/// (`inactivity_timeout`), and the absolute backstop (`absolute_ceiling`).
+///
+/// Returns `None` once `absolute_ceiling` itself has already been reached
+/// (the caller must stop, regardless of activity). Otherwise returns the
+/// duration the next read may wait, and whether THIS step is bounded by
+/// the absolute ceiling rather than by genuine inactivity — the caller
+/// uses that flag to report an accurate reason if the step times out.
+///
+/// Pure and sync so the scheduling math is unit-testable without any real
+/// waiting (mirrors this codebase's existing `orchestrated_agent_timeout_secs`
+/// pattern of keeping timeout arithmetic in a plain, fast-testable fn).
+fn next_step_timeout(
+    elapsed: Duration,
+    inactivity_timeout: Duration,
+    absolute_ceiling: Duration,
+) -> Option<(Duration, bool)> {
+    if elapsed >= absolute_ceiling {
+        return None;
+    }
+    let remaining_to_ceiling = absolute_ceiling - elapsed;
+    let ceiling_bound = remaining_to_ceiling < inactivity_timeout;
+    Some((inactivity_timeout.min(remaining_to_ceiling), ceiling_bound))
+}
 
 /// Generic CLI provider that spawns any configured command.
 pub struct CliProvider {
@@ -118,19 +160,28 @@ impl Provider for CliProvider {
         // (below) is required to avoid the classic pipe-deadlock (a chatty
         // child blocks on a full stdout pipe while we're not reading it), and
         // draining stderr on its own task means a chatty stderr can't cause
-        // the same deadlock while we wait on stdout lines.
+        // the same deadlock while we wait on stdout lines. Byte-oriented
+        // (`read_until`, not `.lines()`): a single non-UTF-8 byte on stderr
+        // must not abort the drain, it must lossily substitute like the rest
+        // of this method (#270 review F2).
         let stderr_task = tokio::spawn(async move {
-            let mut buf = String::new();
-            let mut lines = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(stderr));
-            while let Ok(Some(line)) = lines.next_line().await {
-                buf.push_str(&line);
-                buf.push('\n');
+            let mut reader = tokio::io::BufReader::new(stderr);
+            let mut out = Vec::new();
+            let mut chunk = Vec::new();
+            loop {
+                chunk.clear();
+                match tokio::io::AsyncBufReadExt::read_until(&mut reader, b'\n', &mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => out.extend_from_slice(&chunk),
+                }
             }
-            buf
+            String::from_utf8_lossy(&out).into_owned()
         });
 
-        let mut lines = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(stdout));
-        let timeout = std::time::Duration::from_secs(self.timeout_secs);
+        let mut reader = tokio::io::BufReader::new(stdout);
+        let timeout = Duration::from_secs(self.timeout_secs);
+        let absolute_ceiling = Duration::from_secs(ABSOLUTE_CEILING_SECS);
+        let start = Instant::now();
 
         // Inactivity timeout (#270): rearmed on every line read from stdout,
         // rather than a single deadline covering the whole call. Any line —
@@ -142,21 +193,49 @@ impl Provider for CliProvider {
         // ones like `aider`, without coupling to `json_runner`'s
         // per-provider event parsing). A subprocess that goes fully silent
         // for `timeout_secs` is killed; one that keeps streaming survives
-        // indefinitely past what used to be a hard wall-clock ceiling.
+        // past what used to be a hard wall-clock ceiling, up to the
+        // `ABSOLUTE_CEILING_SECS` backstop.
+        //
+        // Reads are byte-oriented (`read_until`, not `.lines()`), so a
+        // single non-UTF-8 byte lossily substitutes (matching the pre-#270
+        // `String::from_utf8_lossy(&output.stdout)` behavior) instead of
+        // aborting the whole call — `provider: cli` is documented for
+        // arbitrary scripts, and a stray byte from one must not be fatal.
         let mut raw = String::new();
+        let mut line_buf: Vec<u8> = Vec::new();
         loop {
-            match tokio::time::timeout(timeout, lines.next_line()).await {
-                Ok(Ok(Some(line))) => {
-                    raw.push_str(&line);
-                    raw.push('\n');
-                }
-                Ok(Ok(None)) => break, // stdout closed: subprocess done writing
+            let Some((step_timeout, ceiling_bound)) =
+                next_step_timeout(start.elapsed(), timeout, absolute_ceiling)
+            else {
+                let _ = child.start_kill();
+                stderr_task.abort();
+                anyhow::bail!(
+                    "CLI command exceeded the absolute {}s ceiling despite ongoing activity",
+                    absolute_ceiling.as_secs()
+                );
+            };
+
+            line_buf.clear();
+            let read = tokio::io::AsyncBufReadExt::read_until(&mut reader, b'\n', &mut line_buf);
+            match tokio::time::timeout(step_timeout, read).await {
+                Ok(Ok(0)) => break, // stdout closed: subprocess done writing
+                Ok(Ok(_)) => raw.push_str(&String::from_utf8_lossy(&line_buf)),
                 Ok(Err(e)) => {
-                    let _ = child.kill().await;
+                    let _ = child.start_kill();
+                    stderr_task.abort();
                     return Err(e.into());
                 }
+                Err(_) if ceiling_bound => {
+                    let _ = child.start_kill();
+                    stderr_task.abort();
+                    anyhow::bail!(
+                        "CLI command exceeded the absolute {}s ceiling despite ongoing activity",
+                        absolute_ceiling.as_secs()
+                    );
+                }
                 Err(_) => {
-                    let _ = child.kill().await;
+                    let _ = child.start_kill();
+                    stderr_task.abort();
                     anyhow::bail!(
                         "CLI command timed out after {}s of inactivity (no output)",
                         self.timeout_secs
@@ -165,13 +244,49 @@ impl Provider for CliProvider {
             }
         }
 
-        let status = child.wait().await?;
-        let stderr_buf = stderr_task.await.unwrap_or_default();
+        // Bound the post-EOF awaits too (#270 review F1): a process — or an
+        // orphaned descendant that inherited a pipe fd (e.g. an MCP server
+        // `claude -p` spawned) — that doesn't exit/close promptly once
+        // stdout is fully read must not hang the whole call. `child` is
+        // dropped on every return path below; `kill_on_drop` (set in
+        // `build_command`) then SIGKILLs it and tokio's own orphan queue
+        // reaps it in the background, so no explicit wait-for-exit is
+        // needed here to avoid leaking a zombie.
+        let status = match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(result) => result?,
+            Err(_) => {
+                // stdout already reached a clean EOF, so `raw` holds a
+                // complete response (the common real case: `claude -p`
+                // itself finished and flushed its `result` event; a
+                // spawned MCP server subprocess is what's still holding a
+                // pipe open). Prefer that known-good content over hanging
+                // or discarding it — we cannot learn anything more here
+                // without blocking indefinitely on a descendant we don't
+                // control (a surviving grandchild is a separate, pre-
+                // existing concern, not this call's to solve). Abort the
+                // stderr drain too rather than leaving it detached forever
+                // reading a pipe that may never EOF.
+                stderr_task.abort();
+                return Ok(self.parse_json_stdout(&raw));
+            }
+        };
 
         if !status.success() {
+            let stderr_buf = tokio::time::timeout(timeout, stderr_task)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
             anyhow::bail!("CLI command failed ({status}): {stderr_buf}");
         }
 
+        // Successful exit: `stderr_buf` was never needed. Abort the drain
+        // task explicitly rather than leaving it detached — the child
+        // already exited, so in the common case this is a no-op (the task
+        // already finished on its own when the child's stderr fd closed),
+        // but it still frees the task+fd promptly if some descendant is
+        // holding the pipe open.
+        stderr_task.abort();
         Ok(self.parse_json_stdout(&raw))
     }
 
@@ -189,23 +304,56 @@ impl Provider for CliProvider {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
         tokio::spawn(async move {
-            let reader = tokio::io::BufReader::new(stdout);
-            let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
-            let timeout = std::time::Duration::from_secs(timeout_secs);
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let timeout = Duration::from_secs(timeout_secs);
+            let absolute_ceiling = Duration::from_secs(ABSOLUTE_CEILING_SECS);
+            let start = Instant::now();
+            let mut line_buf: Vec<u8> = Vec::new();
 
-            // Inactivity timeout (#270), mirroring `complete()`: the timeout
-            // is rearmed on every line, not held once around the whole loop
-            // — otherwise a steadily-streaming child would still be cut off
-            // once the loop's cumulative duration passed `timeout_secs`,
-            // even though it never went silent.
+            // Mirrors `complete()`: inactivity timeout rearmed on every
+            // line (byte-oriented `read_until`, lossy on non-UTF-8, not
+            // `.lines()` — #270 review F1/F2/F4), bounded overall by
+            // `ABSOLUTE_CEILING_SECS` so a child that never goes silent
+            // still ends eventually. `child` is dropped on every path out
+            // of this task; `kill_on_drop` (set in `build_command`) then
+            // handles the kill+reap, so no unbounded `child.wait()` is
+            // needed here to avoid a zombie.
             loop {
-                match tokio::time::timeout(timeout, lines.next_line()).await {
-                    Ok(Ok(Some(line))) => {
+                let Some((step_timeout, ceiling_bound)) =
+                    next_step_timeout(start.elapsed(), timeout, absolute_ceiling)
+                else {
+                    let _ = child.start_kill();
+                    let _ = tx
+                        .send(Err(anyhow::anyhow!(
+                            "CLI command exceeded the absolute {}s ceiling despite ongoing activity",
+                            absolute_ceiling.as_secs()
+                        )))
+                        .await;
+                    return;
+                };
+
+                line_buf.clear();
+                let read =
+                    tokio::io::AsyncBufReadExt::read_until(&mut reader, b'\n', &mut line_buf);
+                match tokio::time::timeout(step_timeout, read).await {
+                    Ok(Ok(0)) => break, // stdout closed: child done writing
+                    Ok(Ok(_)) => {
+                        // `read_until` keeps the delimiter; strip it (and a
+                        // preceding `\r`) so a line matches what `.lines()`
+                        // used to yield — callers expect terminator-free
+                        // lines (e.g. `cli_stream_echo`, `json_runner`'s
+                        // per-line JSONL parsing).
+                        if line_buf.last() == Some(&b'\n') {
+                            line_buf.pop();
+                            if line_buf.last() == Some(&b'\r') {
+                                line_buf.pop();
+                            }
+                        }
+                        let line = String::from_utf8_lossy(&line_buf).into_owned();
                         if tx.send(Ok(line)).await.is_err() {
                             break;
                         }
                     }
-                    Ok(Ok(None)) => break, // stdout closed: child done writing
                     Ok(Err(e)) => {
                         let _ = tx
                             .send(Err(anyhow::anyhow!("Failed to read CLI output: {e}")))
@@ -213,27 +361,27 @@ impl Provider for CliProvider {
                         break;
                     }
                     Err(_) => {
-                        if let Err(e) = tx
-                            .send(Err(anyhow::anyhow!(
+                        let _ = child.start_kill();
+                        let message = if ceiling_bound {
+                            format!(
+                                "CLI command exceeded the absolute {}s ceiling despite ongoing activity",
+                                absolute_ceiling.as_secs()
+                            )
+                        } else {
+                            format!(
                                 "CLI command timed out after {timeout_secs}s of inactivity (no output)"
-                            )))
-                            .await
-                        {
+                            )
+                        };
+                        if let Err(e) = tx.send(Err(anyhow::anyhow!(message))).await {
                             tracing::debug!(
                                 "Failed to send timeout error (receiver dropped): {:?}",
                                 e
                             );
                         }
-                        if let Err(e) = child.kill().await {
-                            tracing::debug!("Failed to kill timed-out CLI command: {:?}", e);
-                        }
-                        let _ = child.wait().await;
                         return;
                     }
                 }
             }
-
-            let _ = child.wait().await;
         });
 
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
@@ -416,29 +564,47 @@ mod tests {
     /// Mutation this catches: reverting to a single `tokio::time::timeout`
     /// around the whole read loop (the pre-fix shape) instead of one
     /// rearmed on every line — that shape kills this exact case, since the
-    /// process's total runtime (~1.2s over 3 ticks of 0.4s) exceeds the 1s
+    /// process's total runtime (~2.4s over 6 ticks of 0.4s) exceeds the 2s
     /// ceiling even though no single gap does. It also catches a mutation
     /// that reads the whole stdout in one shot before checking the
     /// deadline (e.g. reverting to `cmd.output()`), which would observe no
     /// intermediate activity at all and time out the same way.
+    ///
+    /// The elapsed-time assertion is load-bearing, not decorative: without
+    /// it, degenerating the script to `sleep 0` would still pass in ~10ms
+    /// while proving nothing about surviving PAST the old ceiling — the
+    /// exact premise in this test's name (#270 review F6). Margins are
+    /// deliberately generous (2s ceiling, 0.4s ticks): a 5x per-gap margin
+    /// tolerates scheduling jitter when the full suite runs many real
+    /// subprocess-spawning tests in parallel, without needing the test
+    /// itself to run much longer.
     #[tokio::test]
     async fn steady_stream_survives_past_the_old_static_ceiling() {
+        let old_static_ceiling = std::time::Duration::from_secs(2);
+        let start = std::time::Instant::now();
         let result = with_env_lock(async {
-            let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 1);
+            let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 2);
             provider
                 .complete(echo_request(
-                    "for i in 1 2 3; do echo tick; sleep 0.4; done",
+                    "for i in 1 2 3 4 5 6; do echo tick; sleep 0.4; done",
                 ))
                 .await
         })
         .await;
+        let elapsed = start.elapsed();
 
         let response = result.expect("a steadily-ticking subprocess must not time out");
         assert_eq!(
             response.content.matches("tick").count(),
-            3,
-            "expected all 3 ticks to have been read before the process exited, got: {}",
+            6,
+            "expected all 6 ticks to have been read before the process exited, got: {}",
             response.content
+        );
+        assert!(
+            elapsed > old_static_ceiling,
+            "test must actually run longer than the old 2s ceiling to prove the premise \
+             (a degenerate sleep-0 script would pass this test without exercising the \
+             reset-on-activity behavior at all): elapsed {elapsed:?}"
         );
     }
 
@@ -451,7 +617,12 @@ mod tests {
     /// rearming it on something other than actual stdout activity (e.g. an
     /// unconditional tick) — either would let this call run well past the
     /// 1s ceiling instead of erroring within a couple of seconds of it, so
-    /// the elapsed-time bound below would fail.
+    /// the UPPER elapsed-time bound below would fail. The LOWER bound
+    /// catches the opposite mutation — e.g. a stray unit conversion turning
+    /// the configured 1s into 1ms (`Duration::from_millis(self.timeout_secs)`
+    /// instead of `from_secs`) — which the upper bound alone does not:
+    /// dying near-instantly still satisfies "died before 20s" (#270 review
+    /// F6).
     #[tokio::test]
     async fn silent_subprocess_dies_near_the_inactivity_ceiling_not_later() {
         let start = std::time::Instant::now();
@@ -466,14 +637,184 @@ mod tests {
             .expect_err("a silent subprocess must time out")
             .to_string();
         assert!(err.contains("timed out"), "error was: {err}");
-        // Generous bound (well under the 60s sleep, generous over the 1s
-        // ceiling) to absorb scheduling jitter when the full suite runs many
-        // real subprocess-spawning tests in parallel — the point is only to
-        // rule out "ran to natural completion" or "hung forever", not to
-        // pin exact timing.
+        // Lower bound: must have actually waited close to the configured 1s
+        // ceiling, not fired near-instantly (catches a unit-conversion-style
+        // mutation that shrinks the effective ceiling by orders of
+        // magnitude). Upper bound: generous (well under the 60s sleep) to
+        // absorb scheduling jitter when the full suite runs many real
+        // subprocess-spawning tests in parallel — the point there is only to
+        // rule out "ran to natural completion" or "hung forever", not to pin
+        // exact timing.
+        assert!(
+            elapsed >= std::time::Duration::from_millis(500),
+            "should wait close to the configured 1s ceiling before dying, not fire near-instantly: {elapsed:?}"
+        );
         assert!(
             elapsed < std::time::Duration::from_secs(20),
             "should die near the 1s inactivity ceiling, not run toward the 60s sleep: {elapsed:?}"
+        );
+    }
+
+    // ── Post-EOF phase must be bounded too (#270 review F1) ──
+    //
+    // The read loop above only covers reading stdout up to EOF. Two MORE
+    // awaits follow it: `child.wait()` (for the exit status) and, on
+    // failure, joining the stderr-drain task. Both were originally
+    // unbounded, so a subprocess (or an orphaned descendant holding an
+    // inherited pipe fd — e.g. an MCP server `claude -p` spawns) that
+    // reaches stdout EOF but doesn't exit/close promptly would hang
+    // `complete()` forever, reproducing #274's symptom even though the read
+    // loop itself timed out correctly. Both tests below are direct
+    // reconstructions of the review's own repro shapes.
+
+    /// The direct child keeps running (sleeping) itself after redirecting
+    /// its OWN stdout away — stdout hits EOF almost immediately, but the
+    /// process doesn't exit for a long time afterward.
+    ///
+    /// Mutation this catches: reverting `child.wait()` after the read loop
+    /// to an unbounded `.await` (no `tokio::time::timeout` around it) —
+    /// this call would then block for the full 30s sleep instead of
+    /// returning within roughly the 1s inactivity ceiling.
+    #[tokio::test]
+    async fn complete_does_not_hang_when_stdout_closes_but_the_child_keeps_running() {
+        let start = std::time::Instant::now();
+        let result = with_env_lock(async {
+            let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 1);
+            provider
+                .complete(echo_request("echo hi; exec 1>/dev/null; sleep 30"))
+                .await
+        })
+        .await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "must not block toward the child's 30s post-EOF sleep: {elapsed:?}"
+        );
+        // Either outcome (a successful response built from the already-read
+        // "hi", or a bounded timeout error) is acceptable — what matters is
+        // that the call returns promptly. It must not hang.
+        match result {
+            Ok(response) => assert!(response.content.contains("hi")),
+            Err(e) => {
+                assert!(e.to_string().contains("timed out") || e.to_string().contains("ceiling"))
+            }
+        }
+    }
+
+    /// The direct child exits almost immediately after printing "hi", but
+    /// backgrounds a detached grandchild that inherits the (unredirected)
+    /// stderr pipe fd and keeps it open — so `stderr` never sees EOF, even
+    /// though the process we spawned is long gone.
+    ///
+    /// Mutation this catches: reverting the success path to unconditionally
+    /// join `stderr_task` (or joining it without a `tokio::time::timeout`)
+    /// before returning — this call would then block for the full 30s the
+    /// grandchild lives, instead of returning as soon as `child.wait()`
+    /// resolves (near-instantly, since the direct child exits fast).
+    #[tokio::test]
+    async fn complete_does_not_hang_on_an_orphaned_descendant_holding_stderr_open() {
+        let start = std::time::Instant::now();
+        let result = with_env_lock(async {
+            let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 1);
+            provider
+                .complete(echo_request("(sleep 30 >/dev/null 0</dev/null &); echo hi"))
+                .await
+        })
+        .await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "must not block on the orphaned grandchild's 30s lifetime: {elapsed:?}"
+        );
+        let response = result.expect("the direct child exits successfully");
+        assert!(response.content.contains("hi"));
+    }
+
+    // ── Lossy UTF-8 on stdout must not be fatal (#270 review F2) ──
+
+    /// `provider: cli` is documented for arbitrary scripts; a single
+    /// non-UTF-8 byte from one must lossily substitute (matching the
+    /// pre-#270 `String::from_utf8_lossy(&output.stdout)` behavior), not
+    /// abort the whole call.
+    ///
+    /// Mutation this catches: reverting the byte-oriented `read_until`
+    /// reader back to `.lines()` (which requires valid UTF-8 and errors
+    /// out on a bad byte) — this call would then fail instead of returning
+    /// a response containing the lossy replacement character.
+    #[tokio::test]
+    async fn non_utf8_byte_on_stdout_is_lossily_substituted_not_fatal() {
+        let result = with_env_lock(async {
+            // printf writes a lone continuation byte (0x80), invalid on its
+            // own in UTF-8, between two valid words.
+            let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 10);
+            provider
+                .complete(echo_request(r"printf 'hello \200world\n'"))
+                .await
+        })
+        .await;
+
+        let response = result.expect("a stray non-UTF-8 byte must not fail the call");
+        assert!(
+            response.content.contains("hello") && response.content.contains("world"),
+            "expected the surrounding valid text to survive: {:?}",
+            response.content
+        );
+        assert!(
+            response.content.contains('\u{FFFD}'),
+            "expected the invalid byte to lossily substitute as U+FFFD: {:?}",
+            response.content
+        );
+    }
+
+    // ── Absolute ceiling scheduling math is pure/sync (#270 review F4) ──
+    //
+    // `next_step_timeout` is unit-tested directly, without any real
+    // waiting, so the ceiling-vs-inactivity arithmetic is verified fast and
+    // deterministically rather than only implicitly via a multi-hour test.
+
+    #[test]
+    fn next_step_timeout_uses_inactivity_timeout_when_far_from_the_ceiling() {
+        let (step, ceiling_bound) = next_step_timeout(
+            Duration::from_secs(0),
+            Duration::from_secs(300),
+            Duration::from_secs(7200),
+        )
+        .expect("well under the ceiling");
+        assert_eq!(step, Duration::from_secs(300));
+        assert!(!ceiling_bound);
+    }
+
+    #[test]
+    fn next_step_timeout_shrinks_the_step_as_the_ceiling_approaches() {
+        let (step, ceiling_bound) = next_step_timeout(
+            Duration::from_secs(7100),
+            Duration::from_secs(300),
+            Duration::from_secs(7200),
+        )
+        .expect("still under the ceiling, by 100s");
+        assert_eq!(step, Duration::from_secs(100));
+        assert!(ceiling_bound);
+    }
+
+    #[test]
+    fn next_step_timeout_is_none_once_the_ceiling_is_reached() {
+        assert!(
+            next_step_timeout(
+                Duration::from_secs(7200),
+                Duration::from_secs(300),
+                Duration::from_secs(7200),
+            )
+            .is_none()
+        );
+        assert!(
+            next_step_timeout(
+                Duration::from_secs(7300),
+                Duration::from_secs(300),
+                Duration::from_secs(7200),
+            )
+            .is_none()
         );
     }
 

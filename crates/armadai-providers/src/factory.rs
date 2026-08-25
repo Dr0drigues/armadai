@@ -79,10 +79,32 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
 /// between consecutive lines of subprocess output), not the call's total
 /// duration — see `cli::CliProvider::complete`.
 ///
+/// Honest caveat: that change buys real headroom for an orchestrated,
+/// multi-delegation run (each delegation's output resets the clock), but
+/// it buys a `direct` single-agent run comparatively little. A `direct`
+/// run is exactly one subprocess call with nothing inside it to reset the
+/// clock on its own output, so the largest inactivity gap it can have is
+/// approximately its *total* duration anyway — meaning 300s here still
+/// behaves close to the old wall-clock ceiling for that path. Measured
+/// machine-side turn durations on this project put a single agentic turn
+/// at roughly 500s+ (the same order of magnitude `ORCHESTRATED_DEFAULT_
+/// TIMEOUT_SECS`'s doc cites), i.e. *above* this 300s default — a long
+/// single-turn `direct` run can still hit this ceiling. Not changed here
+/// (raising it is a separate, deliberate call, not a side effect of this
+/// fix); recorded so the number isn't read as more protective than it is.
+///
 /// Previously duplicated as a bare `300` literal at both call sites below
 /// (`create_unified_provider` and `create_cli_provider`); collapsed to one
 /// named constant so the two can't independently drift.
-const DEFAULT_TIMEOUT_SECS: u64 = 300;
+///
+/// `pub` (not `pub(crate)`): `armadai/src/cli/run.rs` needs to reference
+/// this exact value too (its own `ORCHESTRATED_DEFAULT_TIMEOUT_SECS` doc
+/// comment, and its `direct`-vs-orchestrated test assertions) — the point
+/// of naming this constant was to have ONE place a future change lands, so
+/// a private constant that forces callers to restate "300s" in prose or
+/// literals would just move the duplication one layer up instead of
+/// closing it.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
 fn find_tool(name: &str) -> Option<&'static ToolDef> {
     KNOWN_TOOLS
