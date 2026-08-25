@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -9,7 +9,7 @@ use armadai_core::orchestration::es::bridge::{SinkProjectingLog, to_orchestratio
 use armadai_core::orchestration::es::event::ExecutionEvent;
 use armadai_core::orchestration::es::log::{EventLog, InMemoryLog};
 use armadai_core::orchestration::es::state::ExecutionState;
-use armadai_core::project::{self, AgentRef, ProjectConfig, ProjectDefaults};
+use armadai_core::project::{self, ProjectConfig, ProjectDefaults};
 use armadai_core::provider::{ChatMessage, CompletionRequest};
 #[cfg(test)]
 use armadai_providers::factory::DEFAULT_TIMEOUT_SECS;
@@ -804,9 +804,9 @@ async fn run_inner(
             anstream::eprintln!("{h}--- [{}/{} {}] ---{h:#}", i + 1, chain.len(), name);
         }
 
-        let agent_path = resolve_agent_path(&resolution, name)?;
+        let agent = load_agent_for_run(&resolution, name)?;
         let (output, metrics) = run_single_agent(
-            &agent_path,
+            agent,
             name,
             &current_input,
             project_defaults,
@@ -845,6 +845,22 @@ enum AgentResolution {
     Project {
         root: PathBuf,
         config: Box<ProjectConfig>,
+        /// The project's prompt fragments, scanned at most once per
+        /// invocation however many agents a run loads.
+        ///
+        /// They are invariant for the whole run — three directories' worth
+        /// of `.md` files, parsed — while every loop that loads agents by
+        /// name (`--pipe`'s chain, `--orchestrate`'s roster,
+        /// `--resume`'s roster reload) needs them once per agent. Computing
+        /// them inside [`load_agent_for_run`] instead re-read and re-parsed
+        /// the same files per link, and re-printed `load_all_prompts`'s
+        /// `warn: failed to load prompt …` once per link — N lines identical
+        /// byte for byte, naming no agent, saying nothing the first did not
+        /// (#364 review, m1; the same defect `eecbd0f` fixed for `unlink`).
+        ///
+        /// Lazy rather than eager so a path that resolves a project without
+        /// loading any agent by name pays nothing.
+        fragments: std::sync::OnceLock<Vec<armadai_core::prompt::Prompt>>,
     },
     /// No project config found — use default paths
     Default(PathBuf),
@@ -863,60 +879,34 @@ fn project_display_string(resolution: &AgentResolution) -> Option<String> {
     }
 }
 
-/// Resolve a single agent name to a file path using the resolution context.
-fn resolve_agent_path(resolution: &AgentResolution, agent_name: &str) -> anyhow::Result<PathBuf> {
-    match resolution {
-        AgentResolution::Project { root, config } => {
-            // If the agent is declared in the project config, resolve it
-            if let Some(agent_ref) = config.agents.iter().find(|r| match r {
-                AgentRef::Named { name } => name == agent_name,
-                AgentRef::Path { path } => path.file_stem().is_some_and(|s| s == agent_name),
-                AgentRef::Registry { registry } => registry.ends_with(agent_name),
-                // Matched by name so a later step can report the ref by
-                // name; `resolve_agent` below refuses it because it has no
-                // file to return a path for.
-                AgentRef::Declared { declared } => declared == agent_name,
-            }) {
-                return project::resolve_agent(agent_ref, root);
-            }
-
-            // Not declared in config — try resolving as Named anyway
-            let fallback_ref = AgentRef::Named {
-                name: agent_name.to_string(),
-            };
-            project::resolve_agent(&fallback_ref, root)
-        }
-        AgentResolution::Default(agents_dir) => Agent::find_file(agents_dir, agent_name)
-            .ok_or_else(|| {
-                anyhow::anyhow!("Agent '{agent_name}' not found in {}", agents_dir.display())
-            }),
-    }
-}
-
-/// Load the primary agent for a run, whether it is written as a file or
-/// declared in `.armadai/agents.yaml` — the by-name counterpart to
-/// [`resolve_agent_path`], used where the loaded [`Agent`] itself is needed
-/// rather than a file path to hand to a lower-level step.
+/// Load an agent for a run by name, whether it is written as a file or
+/// declared in `.armadai/agents.yaml`.
+///
+/// The ONLY agent-resolution entry point on the run path, and deliberately
+/// so. It used to have a path-returning sibling (`resolve_agent_path`),
+/// which no declared agent can ever satisfy — a declared agent has no file
+/// — and every surface that kept calling it silently served a smaller
+/// fleet than the project declares (#339). That primitive is gone rather
+/// than merely bypassed: leaving it in place would have left the same trap
+/// armed for the next call site.
 ///
 /// Called from the single-agent path (`chain.len() == 1`, the common
-/// `armadai run <name>` invocation), the `--orchestrate` roster loader
-/// (`run_orchestrated`), and `--resume`'s roster reload (`resume_run`) —
-/// each of those three already parsed the path into an `Agent` immediately
-/// after resolving it, so swapping in the by-name load was a same-shape
-/// change at each site (task 7b review, Finding 7).
-///
-/// `--pipe`'s legacy chain loop (`run_inner`'s multi-agent branch, which
-/// still calls [`resolve_agent_path`] directly into the older
-/// `run_single_agent`) is NOT wired here: `run_single_agent` loads by path
-/// internally rather than accepting an already-loaded `Agent`, so extending
-/// it needs the same signature change `run_single_agent_es` already got —
-/// real, separate follow-up work, reported rather than done here.
+/// `armadai run <name>` invocation), the `--pipe` chain loop, the
+/// `--orchestrate` roster loader (`run_orchestrated`), and `--resume`'s
+/// roster reload (`resume_run`) — the last three in a loop, which is why the
+/// loop-invariant half of the work (the prompt fragments) is memoised on
+/// `AgentResolution` rather than recomputed here per call.
 fn load_agent_for_run(resolution: &AgentResolution, agent_name: &str) -> anyhow::Result<Agent> {
     match resolution {
-        AgentResolution::Project { root, config } => {
-            let fragments = armadai_core::agent_source::project_fragments(root);
+        AgentResolution::Project {
+            root,
+            config,
+            fragments,
+        } => {
+            let fragments =
+                fragments.get_or_init(|| armadai_core::agent_source::project_fragments(root));
             let (agent, warning) = armadai_core::agent_source::load_agent_by_name(
-                agent_name, config, root, &fragments,
+                agent_name, config, root, fragments,
             )?;
             // Core returns the warning rather than printing it (see
             // `load_agent_by_name`'s own doc) precisely so it renders here,
@@ -938,11 +928,16 @@ fn load_agent_for_run(resolution: &AgentResolution, agent_name: &str) -> anyhow:
 }
 
 /// Execute a single agent with given input and configuration. Parameters represent
-/// environment (path, input), configuration (defaults, rules), and I/O (sink, quiet, max_content);
+/// environment (agent, input), configuration (defaults, rules), and I/O (sink, quiet, max_content);
 /// grouping would obscure distinct concerns in request building and provider creation.
+///
+/// Takes an already-loaded `agent` rather than a path — the same shape
+/// `run_single_agent_es` has. Loading is the caller's job (via
+/// [`load_agent_for_run`]) precisely because an agent declared in
+/// `.armadai/agents.yaml` has no file to hand down here (#339).
 #[allow(clippy::too_many_arguments)]
 async fn run_single_agent(
-    agent_path: &Path,
+    mut agent: Agent,
     agent_name: &str,
     input: &str,
     project_defaults: Option<&ProjectDefaults>,
@@ -957,8 +952,6 @@ async fn run_single_agent(
     // call site) regardless of which features are enabled.
     #[cfg(not(feature = "storage"))]
     let _ = project;
-    // 1. Load agent
-    let mut agent = armadai_core::parser::parse_agent_file(agent_path)?;
 
     // 1b. Resolve deprecated model aliases
     let model_before = agent.metadata.model.clone();
@@ -1323,9 +1316,9 @@ async fn dispatch_direct_es(
 /// (via [`QuietMaxContentSink`] in [`dispatch_direct_es`]), matching
 /// `run_single_agent`'s step 6.
 ///
-/// Takes an already-loaded `agent` rather than a path (unlike
-/// `run_single_agent`, which still loads from a path): the caller resolves
-/// it via [`load_agent_for_run`], which — unlike a bare path — also covers an
+/// Takes an already-loaded `agent` rather than a path, as
+/// `run_single_agent` now does too: the caller resolves it via
+/// [`load_agent_for_run`], which — unlike a bare path — also covers an
 /// agent declared in `.armadai/agents.yaml`.
 #[allow(clippy::too_many_arguments)]
 async fn run_single_agent_es(
@@ -1524,6 +1517,7 @@ fn resolve_agents_dir(headless: bool) -> AgentResolution {
         return AgentResolution::Project {
             root,
             config: Box::new(config),
+            fragments: std::sync::OnceLock::new(),
         };
     }
 
@@ -2698,7 +2692,7 @@ mod tests {
         // resolve_agents_dir should not panic regardless of cwd state
         let resolution = resolve_agents_dir(false);
         match resolution {
-            AgentResolution::Project { root, config } => {
+            AgentResolution::Project { root, config, .. } => {
                 assert!(!root.to_string_lossy().is_empty());
                 assert!(!config.agents.is_empty());
             }
@@ -4250,6 +4244,7 @@ mod es_switch_tests {
         let resolution = AgentResolution::Project {
             root: PathBuf::from("/tmp/project"),
             config: Box::new(config),
+            fragments: std::sync::OnceLock::new(),
         };
 
         run_orchestrated_inner(
@@ -4295,6 +4290,7 @@ mod es_switch_tests {
         let resolution = AgentResolution::Project {
             root: std::path::PathBuf::from("/tmp/project"),
             config: Box::new(config),
+            fragments: std::sync::OnceLock::new(),
         };
         assert_eq!(orchestration_cost_limit(&resolution), Some(2.5));
     }
@@ -4650,8 +4646,8 @@ mod es_switch_tests {
 
     // ── OH1 Lot 6 whole-branch review, I2: `--resume` RunStart bookend ──
     //
-    // `resume_run` (the CLI wrapper) reloads its roster from real agent
-    // files on disk via `resolve_agents_dir`/`resolve_agent_path` — driving
+    // `resume_run` (the CLI wrapper) reloads its roster from the project it
+    // resolves via `resolve_agents_dir`/`load_agent_for_run` — driving
     // it directly in a hermetic unit test would mean mutating the process
     // CWD/project resolution, racing every other test in this file that
     // also touches `crate::db::init_db()`/project resolution (same

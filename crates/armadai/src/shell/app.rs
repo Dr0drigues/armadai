@@ -3,6 +3,7 @@
 #![cfg(feature = "tui")]
 
 use anyhow::Result;
+use armadai_core::agent::Agent;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -1097,78 +1098,161 @@ async fn execute_tandem(
     Ok(())
 }
 
-/// Outcome of looking an agent name up against the project config.
+/// Outcome of looking an agent name up against the project.
 ///
-/// Plain `Option<PathBuf>` used to stand in for this, but that collapses two
-/// different truths into one `None`: "no such agent" and "that agent exists,
-/// declared in `agents.yaml`, but has no file to run from the shell relay".
-/// Only the first one means "not found in project config" — saying that for
-/// the second sends the user hunting through `armadai.yaml` for something
-/// that is, in fact, correctly declared.
-#[derive(Debug, PartialEq)]
+/// One loaded-or-not distinction, because that is the only one the shell
+/// still has to make: an agent declared in `.armadai/agents.yaml` now runs
+/// here exactly like one written as a `.md` file. The enum used to carry a
+/// third `Declared` state whose whole job was to say "correctly declared,
+/// but this surface cannot run it" — replacing that message with the actual
+/// capability is what removed the state (#339).
 enum AgentLookup {
-    /// Resolved to a file, exactly as the three pre-existing `AgentRef`
-    /// variants (`Named`, `Path`, `Registry`) always have.
-    Path(std::path::PathBuf),
-    /// Declared in `.armadai/agents.yaml`, not file-backed. The shell relay
-    /// only runs file-backed agents today — wiring it to
-    /// `agent_source::load_agent_by_name` for declared agents is a later
-    /// task's job.
-    Declared,
-    /// No ref in the project config matches this name at all.
-    NotFound,
+    /// Loaded from the project, whether written as a file or declared.
+    Loaded {
+        agent: Box<Agent>,
+        /// A non-fatal problem core reported while loading (e.g. an
+        /// unparsable `.armadai/agents.yaml` that was ignored in favour of
+        /// a same-named file-backed agent). Surfaced in the transcript
+        /// rather than dropped, so the user knows which fleet answered.
+        warning: Option<String>,
+    },
+    /// The agent could not be loaded — carrying core's own reason, which
+    /// names every place it looked (the declarations file included).
+    Failed(String),
 }
 
-/// Message shown when a step's `--agent` name resolves to a declared
-/// (non-file) agent. Kept as its own function so both the shell and its
-/// tests say the exact same thing.
-fn declared_agent_not_runnable_message(agent_name: &str) -> String {
-    format!(
-        "Agent '{agent_name}' is declared in .armadai/agents.yaml but has no \
-         file — declarative agents can't be run from the shell yet"
-    )
-}
-
-/// Look `name` up against a project config already resolved to `root`. Pure
-/// with respect to the filesystem beyond what `resolve_agent` itself touches
-/// — split out from `resolve_project_agent` so it can be tested without
+/// Look `name` up against a project config already resolved to `root`, via
+/// the same `agent_source::load_agent_by_name` `run`/`inspect`/`link` use —
+/// so a name this surface accepts is exactly a name those accept, and the
+/// four `AgentRef` variants are matched in ONE place rather than re-matched
+/// here.
+///
+/// Split out from `resolve_project_agent` so it can be tested without
 /// depending on (and mutating) the process's current directory.
 fn lookup_agent_in_config(
     config: &armadai_core::project::ProjectConfig,
     root: &std::path::Path,
     name: &str,
 ) -> AgentLookup {
-    for agent_ref in &config.agents {
-        let agent_name = match agent_ref {
-            armadai_core::project::AgentRef::Named { name: n } => n.clone(),
-            armadai_core::project::AgentRef::Path { path } => path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
-                .unwrap_or_default(),
-            armadai_core::project::AgentRef::Declared { declared } => declared.clone(),
-            _ => continue,
-        };
-        if agent_name != name {
-            continue;
-        }
-        if matches!(agent_ref, armadai_core::project::AgentRef::Declared { .. }) {
-            return AgentLookup::Declared;
-        }
-        return match armadai_core::project::resolve_agent(agent_ref, root) {
-            Ok(path) => AgentLookup::Path(path),
-            Err(_) => AgentLookup::NotFound,
-        };
+    let fragments = armadai_core::agent_source::project_fragments(root);
+    match armadai_core::agent_source::load_agent_by_name(name, config, root, &fragments) {
+        Ok((agent, warning)) => AgentLookup::Loaded {
+            agent: Box::new(agent),
+            warning: warning.map(|w| format!("warn: {}", w.message())),
+        },
+        Err(e) => AgentLookup::Failed(format!("Cannot load agent '{name}': {e}")),
     }
-    AgentLookup::NotFound
 }
 
-/// Resolve an agent file path by name from the current project config.
+/// Load an agent by name from the project the process's current directory
+/// sits in.
 fn resolve_project_agent(name: &str) -> AgentLookup {
-    let Some((root, config)) = armadai_core::project::find_project_config() else {
-        return AgentLookup::NotFound;
+    let Ok(cwd) = std::env::current_dir() else {
+        return AgentLookup::Failed(format!(
+            "Cannot load agent '{name}': the current directory is unreadable"
+        ));
+    };
+    resolve_project_agent_from(&cwd, name)
+}
+
+/// [`resolve_project_agent`] with an explicit start directory, so the
+/// no-project branch below is reachable from a test without mutating the
+/// process's cwd — `project::find_project_config_from` is the same seam six
+/// `shell::wizard` tests already use.
+fn resolve_project_agent_from(start: &std::path::Path, name: &str) -> AgentLookup {
+    let Some((root, config)) = armadai_core::project::find_project_config_from(start) else {
+        return AgentLookup::Failed(format!(
+            "Cannot load agent '{name}': no armadai.yaml found from the current directory"
+        ));
     };
     lookup_agent_in_config(&config, &root, name)
+}
+
+/// Providers `providers::factory` serves over HTTP instead of spawning
+/// anything: `create_api_provider` builds a client from an API key and never
+/// reads `command:`, so there is no executable for this session to relay.
+///
+/// Kept as the exhaustive complement of what CAN be relayed rather than as a
+/// list of relayable names: the relay spawns whatever `command:` names, so a
+/// project is free to point a step at a CLI neither `json_runner` nor
+/// `factory` has heard of, and an allow-list would silently refuse those.
+const API_ONLY_PROVIDERS: [&str; 4] = ["anthropic", "openai", "google", "proxy"];
+
+/// What this session can do with a loaded agent — data, not a spawn attempt.
+///
+/// The distinction exists so a step the relay cannot run costs *that step*
+/// and nothing more. Discovering it at spawn time instead means an
+/// `io::ErrorKind::NotFound` the caller can only report as `Failed to spawn`,
+/// and `execute_pipeline_steps` answers that by returning, killing every
+/// remaining link of the chain (#364 review, I2).
+enum StepPlan {
+    /// Spawn `cmd` with `args`, feeding it `system_prompt` plus the step's
+    /// own input on argv.
+    Relay {
+        cmd: String,
+        args: Vec<String>,
+        system_prompt: String,
+        label: String,
+    },
+    /// Nothing to spawn: the reason to show before skipping this one step.
+    NotRelayable(String),
+}
+
+/// How one pipeline step runs a loaded agent — the command, its args, the
+/// system prompt and the display label — or why it cannot run here.
+///
+/// Pure, and deliberately taking an `Agent` rather than anything file-shaped:
+/// this is the point past which a declared agent and a file-backed one are
+/// provably the same thing to the relay.
+///
+/// Reads `command:`/`args:` the way `providers::factory` does, because those
+/// two fields are the whole of how an agent says *what to spawn*: reading
+/// only `provider:` (as this did until the #364 review) turns every
+/// `provider: cli` agent into an attempt to spawn a binary literally named
+/// `cli`.
+fn step_from_agent(agent_name: &str, agent: &Agent) -> StepPlan {
+    let provider = agent.metadata.provider.as_str();
+
+    if API_ONLY_PROVIDERS.contains(&provider) {
+        return StepPlan::NotRelayable(format!(
+            "Skipping '{agent_name}': provider '{provider}' is an HTTP API and this \
+             session relays a CLI, so there is no command to run it with here. Run \
+             it with `armadai run {agent_name}`, or give the agent a CLI provider."
+        ));
+    }
+
+    // `provider: cli` carries its executable in `command:` and nowhere else —
+    // the same field `factory::create_cli_provider` requires. Missing it is
+    // the agent's own error, reported here as a skip rather than as a failure
+    // to spawn a binary named `cli`.
+    let cmd = match (provider, agent.metadata.command.clone()) {
+        (_, Some(c)) => c,
+        ("cli", None) => {
+            return StepPlan::NotRelayable(format!(
+                "Skipping '{agent_name}': provider 'cli' needs a `command:` naming \
+                 the executable to run, and this agent sets none."
+            ));
+        }
+        (p, None) => p.to_string(),
+    };
+
+    // Explicit `args:` verbatim (as `factory::create_unified_provider` does),
+    // else the canonical JSON-mode argv for whatever `cmd` turned out to be —
+    // keyed on `cmd`, not on `provider`, because the stream parsing below is
+    // keyed on `cmd` too (`supports_json(&resolved.cmd)`), and the two
+    // disagreeing is how a step ends up parsed in the wrong mode.
+    let args = agent
+        .metadata
+        .args
+        .clone()
+        .unwrap_or_else(|| super::detect::args_for_provider(&cmd));
+    let label = format!("{agent_name} [{cmd}]");
+    StepPlan::Relay {
+        cmd,
+        args,
+        system_prompt: agent.system_prompt.clone(),
+        label,
+    }
 }
 
 /// Resolved step data: command, args, combined prompt, display label.
@@ -1217,30 +1301,31 @@ async fn execute_pipeline_steps(
         // Resolve entry to cmd + args + optional agent system prompt
         let (cmd, args, agent_system_prompt, display_label) = if let Some(agent_name) = &entry.agent
         {
-            // Agent mode: load the agent from project config
+            // Agent mode: load the agent from the project, whether it is
+            // written as a `.md` file or declared in `.armadai/agents.yaml`.
             match resolve_project_agent(agent_name) {
-                AgentLookup::Path(path) => match armadai_core::parser::parse_agent_file(&path) {
-                    Ok(agent) => {
-                        let cmd = agent.metadata.provider.clone();
-                        let args = super::detect::args_for_provider(&cmd);
-                        let label = format!("{} [{}]", agent_name, cmd);
-                        (cmd, args, Some(agent.system_prompt.clone()), label)
+                AgentLookup::Loaded { agent, warning } => {
+                    if let Some(w) = warning {
+                        app.add_system_message(&w);
                     }
-                    Err(e) => {
-                        app.add_system_message(&format!(
-                            "Failed to parse agent '{agent_name}': {e}"
-                        ));
-                        continue;
+                    match step_from_agent(agent_name, &agent) {
+                        StepPlan::Relay {
+                            cmd,
+                            args,
+                            system_prompt,
+                            label,
+                        } => (cmd, args, Some(system_prompt), label),
+                        // One step lost, chain intact: `current_input` still
+                        // holds the previous step's output, so the next link
+                        // reads what it would have read anyway.
+                        StepPlan::NotRelayable(reason) => {
+                            app.add_system_message(&reason);
+                            continue;
+                        }
                     }
-                },
-                AgentLookup::Declared => {
-                    app.add_system_message(&declared_agent_not_runnable_message(agent_name));
-                    continue;
                 }
-                AgentLookup::NotFound => {
-                    app.add_system_message(&format!(
-                        "Agent '{agent_name}' not found in project config"
-                    ));
+                AgentLookup::Failed(reason) => {
+                    app.add_system_message(&reason);
                     continue;
                 }
             }
@@ -1723,53 +1808,401 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // AgentLookup: distinguishing "no such agent" from "declared, not
-    // file-backed" so the shell's message stays true. `lookup_agent_in_config`
-    // takes the project config directly, so these don't touch the process's
-    // current directory the way `resolve_project_agent` itself does.
+    // AgentLookup: an in-session pipeline step's `agent:` must load a
+    // declared agent as readily as a file-backed one (#339).
+    // `lookup_agent_in_config` takes the project config and root directly,
+    // so these don't touch the process's current directory the way
+    // `resolve_project_agent` itself does.
+    //
+    // Fixture names are deliberately implausible (`shell-pipeline-fixture-*`)
+    // rather than realistic ones: `load_agent_by_name` resolves file-backed
+    // names against the user's real global library too, so a realistic name
+    // like `core-specialist` would collide with what a developer's
+    // `~/.config/armadai/agents/` actually holds on a machine that has ever
+    // run `armadai extract` from this repo (the same trap
+    // `tests/link_list_gate.rs` documents), and the test's verdict would
+    // depend on the machine.
     // -----------------------------------------------------------------
 
+    /// A project root whose only agents are declared: no `.md` anywhere,
+    /// and an `armadai.yaml` with no `agents:` list at all.
+    fn declarations_only_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai/prompts")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/prompts/shell-fixture-base.md"),
+            "You are {{name}}, reporting for pipeline duty.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "defaults:\n  provider: gemini\nagents:\n  \
+             - name: shell-pipeline-fixture-alpha\n    prompt: [shell-fixture-base]\n",
+        )
+        .unwrap();
+        dir
+    }
+
     #[test]
-    fn a_declared_ref_is_looked_up_as_declared_not_as_a_missing_file() {
+    fn a_declared_agent_loads_for_an_in_session_pipeline_step() {
+        let dir = declarations_only_project();
+        let config = armadai_core::project::ProjectConfig::default();
+
+        match lookup_agent_in_config(&config, dir.path(), "shell-pipeline-fixture-alpha") {
+            AgentLookup::Loaded { agent, warning } => {
+                assert_eq!(warning, None, "a clean declaration warns about nothing");
+                // The composed prompt, not a placeholder: proves the
+                // declaration's fragment was rendered with its own name.
+                assert_eq!(
+                    agent.system_prompt.trim(),
+                    "You are shell-pipeline-fixture-alpha, reporting for pipeline duty."
+                );
+                assert_eq!(agent.metadata.provider, "gemini");
+            }
+            AgentLookup::Failed(reason) => panic!("declared agent must load, got: {reason}"),
+        }
+    }
+
+    #[test]
+    fn a_declared_agent_yields_the_same_step_data_as_its_file_backed_twin() {
+        // The relay only ever sees `step_from_agent`'s output, so this is
+        // where "declared agents are runnable here" is actually cashed in.
+        // Asserted against the file-backed twin's own step data — not
+        // against `args_for_provider` re-called, which would just restate
+        // the implementation — plus the literal gemini JSON-mode argv, so
+        // the two sides cannot agree on something wrong.
+        let dir = declarations_only_project();
+        std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+        std::fs::write(
+            dir.path().join("agents/shell-pipeline-fixture-twin.md"),
+            "# shell-pipeline-fixture-twin\n\n\
+             ## Metadata\n- provider: gemini\n\n\
+             ## System Prompt\nYou are the twin, reporting for pipeline duty.\n",
+        )
+        .unwrap();
+        let config = armadai_core::project::ProjectConfig::default();
+
+        let AgentLookup::Loaded {
+            agent: declared, ..
+        } = lookup_agent_in_config(&config, dir.path(), "shell-pipeline-fixture-alpha")
+        else {
+            panic!("declared agent must load");
+        };
+        let AgentLookup::Loaded { agent: twin, .. } =
+            lookup_agent_in_config(&config, dir.path(), "shell-pipeline-fixture-twin")
+        else {
+            panic!("file-backed twin must load");
+        };
+
+        let StepPlan::Relay {
+            cmd,
+            args,
+            system_prompt: prompt,
+            label,
+        } = step_from_agent("shell-pipeline-fixture-alpha", &declared)
+        else {
+            panic!("a gemini-backed declared agent must be relayable");
+        };
+        let StepPlan::Relay {
+            cmd: twin_cmd,
+            args: twin_args,
+            system_prompt: twin_prompt,
+            label: twin_label,
+        } = step_from_agent("shell-pipeline-fixture-twin", &twin)
+        else {
+            panic!("a gemini-backed file agent must be relayable");
+        };
+
+        // Same command and argv as the file-backed twin, from the same
+        // `provider:` value — the declared agent is relayed identically.
+        assert_eq!(cmd, twin_cmd);
+        assert_eq!(args, twin_args);
+        assert_eq!(cmd, "gemini");
+        assert_eq!(args, ["-o", "stream-json", "-p"]);
+
+        // And each carries its OWN composed prompt, not the other's: the
+        // shared shape must not come from the two collapsing into one.
+        assert_eq!(
+            prompt.trim(),
+            "You are shell-pipeline-fixture-alpha, reporting for pipeline duty."
+        );
+        assert_eq!(
+            twin_prompt.trim(),
+            "You are the twin, reporting for pipeline duty."
+        );
+        assert_eq!(label, "shell-pipeline-fixture-alpha [gemini]");
+        assert_eq!(twin_label, "shell-pipeline-fixture-twin [gemini]");
+    }
+
+    #[test]
+    fn a_file_backed_agent_still_loads_for_an_in_session_pipeline_step() {
+        // Regression guard for the path this change rewrote: swapping the
+        // lookup onto `load_agent_by_name` must not cost the file-backed
+        // case that always worked.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+        std::fs::write(
+            dir.path().join("agents/shell-pipeline-fixture-beta.md"),
+            "# shell-pipeline-fixture-beta\n\n\
+             ## Metadata\n- provider: gemini\n\n\
+             ## System Prompt\nWritten as a file, not declared.\n",
+        )
+        .unwrap();
         let config = armadai_core::project::ProjectConfig {
-            agents: vec![armadai_core::project::AgentRef::Declared {
-                declared: "core-specialist".to_string(),
+            agents: vec![armadai_core::project::AgentRef::Named {
+                name: "shell-pipeline-fixture-beta".to_string(),
             }],
             ..Default::default()
         };
-        let root = std::path::Path::new("/does/not/matter");
 
+        match lookup_agent_in_config(&config, dir.path(), "shell-pipeline-fixture-beta") {
+            AgentLookup::Loaded { agent, .. } => {
+                assert_eq!(
+                    agent.system_prompt.trim(),
+                    "Written as a file, not declared."
+                );
+            }
+            AgentLookup::Failed(reason) => panic!("file-backed agent must load, got: {reason}"),
+        }
+    }
+
+    /// Write `agents/<name>.md` under `root` with the given `## Metadata`
+    /// body, and load it the way an in-session pipeline step would.
+    fn load_file_agent(root: &std::path::Path, name: &str, metadata: &str) -> Agent {
+        std::fs::create_dir_all(root.join("agents")).unwrap();
+        std::fs::write(
+            root.join("agents").join(format!("{name}.md")),
+            format!("# {name}\n\n## Metadata\n{metadata}\n\n## System Prompt\nRelay me.\n"),
+        )
+        .unwrap();
+        let config = armadai_core::project::ProjectConfig::default();
+        match lookup_agent_in_config(&config, root, name) {
+            AgentLookup::Loaded { agent, .. } => *agent,
+            AgentLookup::Failed(reason) => panic!("fixture must load, got: {reason}"),
+        }
+    }
+
+    #[test]
+    fn a_cli_backed_agent_relays_the_command_it_names_not_the_literal_word_cli() {
+        // `provider: cli` says "spawn what `command:` names" — the shape the
+        // `--pipe` tests in this very PR use, and the shape that used to make
+        // this step try to spawn a binary called `cli` (#364 review, I2).
+        // Asserted on `echo` specifically because it exists everywhere: the
+        // plan is not merely well-formed, it is spawnable.
+        let dir = tempfile::tempdir().unwrap();
+        let agent = load_file_agent(
+            dir.path(),
+            "shell-pipeline-fixture-cli",
+            "- provider: cli\n- command: echo",
+        );
+
+        match step_from_agent("shell-pipeline-fixture-cli", &agent) {
+            StepPlan::Relay { cmd, args, .. } => {
+                assert_eq!(
+                    cmd, "echo",
+                    "the step must spawn the `command:` the agent names"
+                );
+                assert_ne!(
+                    cmd, "cli",
+                    "'cli' is the provider kind, never an executable on anyone's PATH"
+                );
+                assert!(
+                    args.is_empty(),
+                    "`echo` has no JSON mode, so no JSON-mode argv, got: {args:?}"
+                );
+                let out = std::process::Command::new(&cmd)
+                    .args(&args)
+                    .arg("RELAYED")
+                    .output()
+                    .expect("the planned command must actually be spawnable");
+                assert!(String::from_utf8_lossy(&out.stdout).contains("RELAYED"));
+            }
+            StepPlan::NotRelayable(reason) => {
+                panic!("a `command: echo` agent is exactly what this session can relay: {reason}")
+            }
+        }
+    }
+
+    #[test]
+    fn an_explicit_args_list_reaches_the_relay_verbatim() {
+        // `args:` is the second half of how an agent says what to spawn, and
+        // `factory::create_unified_provider` honours it verbatim. A relay that
+        // read `command:` but substituted its own argv would run the user's
+        // binary with flags the user never asked for.
+        let dir = tempfile::tempdir().unwrap();
+        let agent = load_file_agent(
+            dir.path(),
+            "shell-pipeline-fixture-args",
+            "- provider: cli\n- command: echo\n- args: [\"-n\", \"PREFIXED\"]",
+        );
+
+        let StepPlan::Relay { cmd, args, .. } =
+            step_from_agent("shell-pipeline-fixture-args", &agent)
+        else {
+            panic!("an agent naming `echo` must be relayable");
+        };
+        assert_eq!(cmd, "echo");
         assert_eq!(
-            lookup_agent_in_config(&config, root, "core-specialist"),
-            AgentLookup::Declared
+            args,
+            ["-n", "PREFIXED"],
+            "the agent's own `args:` must reach the relay unchanged"
         );
     }
 
     #[test]
-    fn a_name_absent_from_the_config_is_not_found() {
-        let config = armadai_core::project::ProjectConfig {
-            agents: vec![armadai_core::project::AgentRef::Declared {
-                declared: "core-specialist".to_string(),
-            }],
-            ..Default::default()
-        };
-        let root = std::path::Path::new("/does/not/matter");
+    fn an_api_backed_agent_is_skipped_with_a_reason_rather_than_spawned() {
+        // `providers::factory` serves these over HTTP and never spawns
+        // anything, so there is no command to relay. Before the #364 review
+        // this step tried to spawn a binary named `anthropic`, and
+        // `execute_pipeline_steps` answered the resulting `NotFound` by
+        // returning — killing every remaining link of the chain. The reason
+        // has to be data so the caller can skip one step and carry on.
+        let dir = tempfile::tempdir().unwrap();
+        for provider in API_ONLY_PROVIDERS {
+            let name = format!("shell-pipeline-fixture-{provider}");
+            let agent = load_file_agent(
+                dir.path(),
+                &name,
+                &format!("- provider: {provider}\n- model: some-model"),
+            );
 
-        assert_eq!(
-            lookup_agent_in_config(&config, root, "ghost"),
-            AgentLookup::NotFound
-        );
+            match step_from_agent(&name, &agent) {
+                StepPlan::Relay { cmd, .. } => panic!(
+                    "'{provider}' has no CLI to relay, yet the step planned to spawn {cmd:?}"
+                ),
+                StepPlan::NotRelayable(reason) => {
+                    assert!(
+                        reason.contains(&name),
+                        "the reason must name the step being skipped, got: {reason}"
+                    );
+                    assert!(
+                        reason.contains(provider),
+                        "the reason must name the provider that cannot run here, got: {reason}"
+                    );
+                    assert!(
+                        reason.contains("armadai run"),
+                        "the reason must say where the agent CAN run, got: {reason}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
-    fn the_declared_agent_message_is_true_and_names_the_agent() {
-        // Pins the exact wording so a future edit can't silently regress it
-        // back to the false "not found in project config" message this
-        // fix replaced.
-        assert_eq!(
-            declared_agent_not_runnable_message("core-specialist"),
-            "Agent 'core-specialist' is declared in .armadai/agents.yaml but has no \
-             file — declarative agents can't be run from the shell yet"
+    fn a_cli_agent_without_a_command_is_skipped_naming_the_field_it_lacks() {
+        // `factory::create_cli_provider` refuses this agent for the same
+        // reason. Falling through to `provider.clone()` here would spawn a
+        // binary named `cli` — the very confusion I2 was about.
+        let dir = tempfile::tempdir().unwrap();
+        let agent = load_file_agent(
+            dir.path(),
+            "shell-pipeline-fixture-nocommand",
+            "- provider: cli",
         );
+
+        match step_from_agent("shell-pipeline-fixture-nocommand", &agent) {
+            StepPlan::Relay { cmd, .. } => {
+                panic!("a `provider: cli` agent with no `command:` names nothing to spawn: {cmd:?}")
+            }
+            StepPlan::NotRelayable(reason) => assert!(
+                reason.contains("command:"),
+                "the reason must name the field the agent is missing, got: {reason}"
+            ),
+        }
+    }
+
+    #[test]
+    fn a_directory_in_no_project_fails_saying_no_armadai_yaml_was_found() {
+        // The one branch of `resolve_project_agent` that never reaches
+        // `lookup_agent_in_config`. A tempdir has no `armadai.yaml` anywhere
+        // above it, so the walk-up finds nothing — and the step must say so
+        // rather than blame the agent name.
+        let dir = tempfile::tempdir().unwrap();
+
+        match resolve_project_agent_from(dir.path(), "shell-pipeline-fixture-orphan") {
+            AgentLookup::Loaded { .. } => {
+                panic!("there is no project here, so nothing can be loaded")
+            }
+            AgentLookup::Failed(reason) => {
+                assert!(
+                    reason.contains("armadai.yaml"),
+                    "the reason must name the project file it could not find, got: {reason}"
+                );
+                assert!(
+                    reason.contains("shell-pipeline-fixture-orphan"),
+                    "the reason must still name the agent the step asked for, got: {reason}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unreadable_declarations_file_surfaces_a_warning_with_the_file_backed_fallback() {
+        // The one capability this PR *adds* beyond running declared agents:
+        // core's non-fatal `LoadWarning` now reaches the transcript instead of
+        // being dropped. Without this test, `warning: None` unconditionally
+        // was a passing implementation (#364 review, I1).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents.yaml"),
+            "agents:\n  - name: [not-a-string\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+        std::fs::write(
+            dir.path().join("agents/shell-pipeline-fixture-fallback.md"),
+            "# shell-pipeline-fixture-fallback\n\n## Metadata\n- provider: gemini\n\n\
+             ## System Prompt\nServed from the file, declarations unreadable.\n",
+        )
+        .unwrap();
+        let config = armadai_core::project::ProjectConfig::default();
+
+        match lookup_agent_in_config(&config, dir.path(), "shell-pipeline-fixture-fallback") {
+            AgentLookup::Loaded { agent, warning } => {
+                assert_eq!(
+                    agent.system_prompt.trim(),
+                    "Served from the file, declarations unreadable."
+                );
+                let w = warning.expect(
+                    "an unreadable .armadai/agents.yaml must reach the transcript, \
+                     not be dropped on the floor",
+                );
+                assert!(
+                    w.contains("agents.yaml"),
+                    "must name the file it ignored, got: {w}"
+                );
+                assert!(
+                    w.contains("shell-pipeline-fixture-fallback"),
+                    "must name which fleet answered, got: {w}"
+                );
+            }
+            AgentLookup::Failed(reason) => {
+                panic!("the file-backed homonym must still be served, got: {reason}")
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_name_fails_naming_the_declarations_file_it_looked_in() {
+        // The message must not send the user hunting through `armadai.yaml`
+        // alone: the declarations file is a real place the name could have
+        // been, so it belongs in the reason.
+        let dir = declarations_only_project();
+        let config = armadai_core::project::ProjectConfig::default();
+
+        match lookup_agent_in_config(&config, dir.path(), "shell-pipeline-fixture-absent") {
+            AgentLookup::Loaded { .. } => panic!("an absent name must not load"),
+            AgentLookup::Failed(reason) => {
+                assert!(
+                    reason.contains("shell-pipeline-fixture-absent"),
+                    "the reason must name the agent, got: {reason}"
+                );
+                assert!(
+                    reason.contains("agents.yaml"),
+                    "the reason must name the declarations file it also looked in, got: {reason}"
+                );
+            }
+        }
     }
 }
