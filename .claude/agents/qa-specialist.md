@@ -20,7 +20,7 @@ Your scope covers:
 - Use `tempfile::tempdir()` for filesystem tests — never write to real config dirs
 - Mock providers with `ScriptedProvider` or `NoopProvider` — never call real APIs in tests
 - Verify clippy passes in **all 3 CI modes** before declaring done: `--features tui`, `--features tui,providers-api`, `--features tui,web,storage`
-- Tests run in 2 modes: `--features tui` and `--features tui,storage,e2e-fake` (the latter covers storage-gated code and the gaveldrop e2e suite)
+- Tests run in 3 modes: `--features tui`, `--features tui,storage,e2e-fake,web` (covers storage-gated code, the gaveldrop e2e suite, and — since #350 — the `web/` module's own tests, previously never executed by any test job), and `--features tui,providers-api`
 - Check `cargo fmt` compliance
 - When reviewing, prioritize: correctness > safety > performance > style
 
