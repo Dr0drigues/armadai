@@ -468,7 +468,12 @@ mod tests {
         std::fs::create_dir_all(&agents).unwrap();
         std::fs::write(
             root.join("armadai.yaml"),
-            "agents:\n  - name: dev-lead\n  - name: member\nlink:\n  target: claude\n  coordinator: dev-lead\n",
+            // `member` FIRST, deliberately: with the coordinator at index 0 a
+            // predicate hardcoded to `true` still selects it, so every assertion
+            // below stays green and the match itself is never observed
+            // (measured, #370 review). Listing it second makes a wrong match
+            // land another agent's prompt in the root context file.
+            "agents:\n  - name: member\n  - name: dev-lead\nlink:\n  target: claude\n  coordinator: dev-lead\n",
         )
         .unwrap();
         std::fs::write(
@@ -513,6 +518,17 @@ mod tests {
             claude_md.is_file(),
             "sanity: link resolves `coordinator: dev-lead` to the agent named \
              `Dev Lead` via its slug, so it must have written the root context file"
+        );
+        // Existence alone proves less than it reads: this fixture lists the
+        // coordinator first, so `position()` returns 0 for ANY predicate — a
+        // `name_matches_reference` hardcoded to `true` left the assertion above
+        // green (measured, #370 review). Asserting *whose* prompt landed there
+        // is what makes the match itself observable.
+        assert!(
+            std::fs::read_to_string(&claude_md)
+                .unwrap()
+                .contains("You coordinate."),
+            "the root context file must carry the *coordinator's* prompt, not another agent's"
         );
         assert!(
             member_file.is_file(),
