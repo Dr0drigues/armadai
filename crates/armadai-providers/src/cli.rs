@@ -1086,7 +1086,13 @@ mod tests {
     #[tokio::test]
     async fn stream_post_eof_wait_is_bounded_not_unbounded() {
         use tokio_stream::StreamExt;
-        let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+        // Both bounds sit well below the child's 30s sleep, which is what an
+        // unbounded post-EOF wait would run toward — so either bound tripping
+        // still proves the defect. They are generous because the timings are
+        // measured against a real subprocess spawn under a loaded parallel
+        // `cargo test`: at 10s/5s this test failed roughly 1 run in 12 on the
+        // full suite while passing 6/6 in isolation (#270 review, #348).
+        let outcome = tokio::time::timeout(Duration::from_secs(25), async {
             with_env_lock(async {
                 let start = std::time::Instant::now();
                 let provider = CliProvider::new("sh".to_string(), vec!["-c".to_string()], 1);
@@ -1105,13 +1111,15 @@ mod tests {
         .await;
 
         let (items, elapsed) =
-            outcome.expect("must not hang past 10s if the post-EOF wait becomes unbounded");
+            outcome.expect("must not hang past 25s if the post-EOF wait becomes unbounded");
         assert!(
             items.iter().any(|i| i.as_ref().is_ok_and(|s| s == "hi")),
             "expected the line written before EOF to still arrive: {items:?}"
         );
+        // The inner bound catches a *partial* regression — a wait that grew but
+        // did not become infinite — which the outer timeout alone would miss.
         assert!(
-            elapsed < Duration::from_secs(5),
+            elapsed < Duration::from_secs(15),
             "must not block toward the child's 30s post-EOF sleep: {elapsed:?}"
         );
     }
