@@ -265,6 +265,16 @@ impl ShellApp {
         }
     }
 
+    /// Every message's content, in display order.
+    ///
+    /// Test-only: the shell otherwise only ever *renders* its messages, so a
+    /// test that needs to know what the session was told has no other window
+    /// on it than parsing a rendered frame.
+    #[cfg(test)]
+    pub(crate) fn message_contents(&self) -> Vec<&str> {
+        self.messages.iter().map(|m| m.content.as_str()).collect()
+    }
+
     /// Get content of the last assistant message
     pub fn get_last_assistant_content(&self) -> String {
         self.messages

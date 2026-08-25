@@ -160,10 +160,11 @@ fine elsewhere. But the three commands that can hit one don't all react the same
   naming both `agents.yaml` and the colliding `.md` file. A command that is about to execute or
   describe one agent must not silently pick a winner between a declaration and a file.
 - `armadai run --pipe` refuses a colliding name in **any** position of the chain, and refuses it
-  before running the first link — so a collision costs no provider call at all. It used to let the
-  chain through while the single-agent path refused the very same name, because the chain loop
-  resolved agents by file path and so never consulted the declarations; routing it through the same
-  by-name loader removed that inconsistency.
+  before running the first link — so a collision costs no provider call at all (see [a chain is
+  resolved before it runs](#a-chain-is-resolved-before-it-runs)). It used to let the chain through
+  while the single-agent path refused the very same name, because the chain loop resolved agents by
+  file path and so never consulted the declarations; routing it through the same by-name loader
+  removed that inconsistency.
 - Because that check is scoped to just the one name you asked for, `armadai inspect
   <some-other-name>` says **nothing** about an unrelated collision sitting elsewhere in the fleet —
   it doesn't scan the whole project the way `list` does. Don't rely on `inspect` to surface
@@ -172,6 +173,41 @@ fine elsewhere. But the three commands that can hit one don't all react the same
   write **anything** when the collision falls inside what you asked it to link (the whole fleet by
   default, or the names passed to `--agents`) — a command that writes config must not silently ship
   a smaller fleet than the one you declared.
+
+## A chain is resolved before it runs
+
+`armadai run <head> <task> --pipe b c d` resolves **every** link — declared or file-backed — before
+it runs the first one. A name that resolves nowhere, or a name caught by the collision check above,
+fails the whole command at once, with no agent started:
+
+```
+chain link 3/4 ('reviwer') could not be resolved, so no agent was run: agent
+'reviwer' not found: not resolvable as a file (…), and not declared in
+/path/to/project/.armadai/agents.yaml
+```
+
+The failure names the link's **position** as well as its name, because with several names on one
+command line the name alone leaves you counting them.
+
+This used to happen link by link, inside the execution loop: a typo on the third of four links was
+only discovered after the first two had already run. Those are real provider calls — billed, and
+not undoable — spent on a chain that could never have completed. If you are used to seeing the
+first links produce output before a later typo surfaced, that is the behaviour that changed: you
+now get the error immediately, and nothing runs.
+
+Each link's **provider** is built up front too, not only its definition. An agent whose
+`provider:` is misspelled, whose API key is nowhere to be found, or which asks for `provider: cli`
+without naming a `command:`, fails on its own metadata — nothing an earlier link produces could
+change the outcome — so it is caught in the same pass, and the failure names the link the same way:
+
+```
+chain link 2/3 ('summariser') has no usable provider, so no agent was run: No API key found for
+'anthropic'. Set ANTHROPIC_API_KEY or add to config/providers.secret.yaml
+```
+
+What stays where it was is *running*. A link that resolves and builds fine and then fails during
+its call still fails part-way through the chain, and the earlier links' calls are already spent —
+that is inherent to running them.
 
 ## Long compositions still get audited
 
@@ -255,6 +291,24 @@ An agent whose provider is an HTTP API (`anthropic`, `openai`, `google`, `proxy`
 spawn at all. Such a step is **skipped with an explanation** and the rest of the chain runs on: the
 step is lost, not the pipeline. Run those agents with `armadai run <name>`, which builds the API
 client instead of relaying a CLI.
+
+A command that *is* named but is not installed on this machine gets the same treatment. It can only
+be discovered when the spawn fails, and that used to end the whole pipeline; now it costs its own
+step, naming the step and the missing binary, and the next link reads what it would have read
+anyway:
+
+```
+Skipping step 'review' ('opencode'): failed to spawn: No such file or directory (os error 2)
+```
+
+A step that spawns and then *exits non-zero* is a different case and still stops the pipeline: it
+ran, and what it printed on stderr is reported with the failure.
+
+If **every** step of a pipeline skips, the turn is not recorded at all — the shell says so and
+leaves the conversation history untouched. Skipping deliberately leaves the running input alone so
+the next link reads what it would have read anyway; with nothing left to answer, that input is
+still your own message, and filing it as the assistant's answer would persist it with the session
+and replay it as context on your next turn.
 
 ## Parity with the `.md` format — and its limits
 

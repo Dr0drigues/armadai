@@ -109,6 +109,23 @@ fn project(declared: &[&str], file_backed: &[&str]) -> (tempfile::TempDir, std::
 /// library, and without the latter `record_run` would write this test's runs
 /// into the developer's real SQLite database (#267).
 fn run_pipe(root: &Path, head: &str, input: &str, rest: &[&str]) -> std::process::Output {
+    run_pipe_inner(root, head, input, rest, true)
+}
+
+/// [`run_pipe`] without `--json`: the plain human invocation, whose failures
+/// go through `main`'s `Debug`-formatted `anyhow::Error` (`Error: …` plus a
+/// `Caused by:` section) rather than through an `error` event.
+fn run_pipe_human(root: &Path, head: &str, input: &str, rest: &[&str]) -> std::process::Output {
+    run_pipe_inner(root, head, input, rest, false)
+}
+
+fn run_pipe_inner(
+    root: &Path,
+    head: &str,
+    input: &str,
+    rest: &[&str],
+    json: bool,
+) -> std::process::Output {
     let sandbox = root.parent().unwrap();
     let config = sandbox.join("config");
     let data = sandbox.join("data");
@@ -120,8 +137,10 @@ fn run_pipe(root: &Path, head: &str, input: &str, rest: &[&str]) -> std::process
         .env("ARMADAI_CONFIG_DIR", &config)
         .env("XDG_DATA_HOME", &data)
         .args(["run", head, input, "--pipe"])
-        .args(rest)
-        .arg("--json");
+        .args(rest);
+    if json {
+        cmd.arg("--json");
+    }
     cmd.output().unwrap()
 }
 
@@ -376,5 +395,251 @@ fn a_broken_prompt_fragment_is_reported_once_for_the_whole_chain() {
     assert!(
         warnings[0].contains("pipe-broken.md"),
         "the one warning must still name the fragment it could not load, got: {warnings:#?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #366: the whole chain is resolved before the first link runs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pipe_resolves_every_link_before_running_the_first() {
+    // The chain used to be resolved lazily, one link at a time, *inside* the
+    // execution loop: a typo on link N was only discovered after links
+    // 1..N-1 had already run — real provider calls, billed, on a chain that
+    // could never complete. Measured on this exact fixture: `agent_start`
+    // and `agent_end` for `m3-a` and `m3-b`, and only then the `error`.
+    //
+    // The `echo` provider makes those calls free here, which is precisely
+    // why the assertion is on the events and not on a bill: with a real
+    // provider the same two `agent_start`s are two model calls.
+    let (_dir, root) = project(&["m3-a", "m3-b", "m3-c"], &[]);
+    let out = run_pipe(
+        &root,
+        "m3-a",
+        "TASK-LATE-TYPO",
+        &["m3-b", "typo-agent", "m3-c"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        !out.status.success(),
+        "a chain naming an unknown agent must fail.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        agents_started(&stdout),
+        Vec::<String>::new(),
+        "NO agent may start when a later link of the chain cannot be resolved — every \
+         one of them is a billed provider call on a run that cannot complete.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        combined.contains("typo-agent"),
+        "the failure must name the link it could not resolve, got: {combined}"
+    );
+    assert!(
+        combined.contains("3/4"),
+        "the failure must place the bad link in the chain (link 3 of 4) — with four \
+         names on one command line, the name alone leaves the user counting, \
+         got: {combined}"
+    );
+    assert!(
+        combined.contains(".armadai/agents.yaml") || combined.contains(".armadai\\agents.yaml"),
+        "positioning the bad link must not swallow the resolution message: a project \
+         that declares agents must still be told the declarations file was looked in \
+         (#339), got: {combined}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #373 review, i1 + m4: the human error path keeps the whole chain of causes.
+//
+// Every test above passes `--json`, which is exactly how the regression got
+// in: the headless `error` event reports `Error::to_string()` — one layer —
+// so a flattened error looks identical there, while `main`'s `Debug`-printed
+// `anyhow::Error` on the human path lost its whole `Caused by:` section.
+// ---------------------------------------------------------------------------
+
+/// Overwrite one of [`project`]'s file-backed agents with Markdown carrying
+/// `extra_metadata` as an additional `## Metadata` line, leaving the
+/// `armadai.yaml` entry `project` already wrote for it in place.
+fn break_file_agent(root: &Path, agent: &str, extra_metadata: &str) {
+    let md = file_agent_markdown(agent).replace(
+        "- command: echo\n",
+        &format!("- command: echo\n{extra_metadata}\n"),
+    );
+    std::fs::write(root.join("agents").join(format!("{agent}.md")), md).unwrap();
+}
+
+/// `armadai run <agent> <input>` — the single-agent path, whose error
+/// reporting `--pipe`'s must not be worse than.
+fn run_single_human(root: &Path, agent: &str, input: &str) -> std::process::Output {
+    let sandbox = root.parent().unwrap();
+    let config = sandbox.join("config");
+    let data = sandbox.join("data");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+
+    Command::cargo_bin("armadai")
+        .unwrap()
+        .current_dir(root)
+        .env("ARMADAI_CONFIG_DIR", &config)
+        .env("XDG_DATA_HOME", &data)
+        .args(["run", agent, input])
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn a_chain_link_that_fails_to_load_reports_why_not_just_what() {
+    // `- temperature: warm` fails deep in the parser: `invalid temperature`
+    // wrapping `invalid float literal`. The outer layer alone names the field
+    // but not what was wrong with it — and a user who can already see
+    // `temperature: warm` in the file learns nothing from it.
+    let (_dir, root) = project(&[], &["m4-head", "m4-broken"]);
+    break_file_agent(&root, "m4-broken", "- temperature: warm");
+
+    let single = run_single_human(&root, "m4-broken", "TASK-CAUSE-CHAIN");
+    let single_err = String::from_utf8_lossy(&single.stderr).to_string();
+    assert!(
+        single_err.contains("invalid temperature") && single_err.contains("invalid float literal"),
+        "fixture check: the single-agent path must report both layers, otherwise this \
+         test cannot tell a flattened chain from an already-flat one, got: {single_err}"
+    );
+
+    let out = run_pipe_human(&root, "m4-head", "TASK-CAUSE-CHAIN", &["m4-broken"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "a chain whose second link cannot be parsed must fail.\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("m4-broken") && stderr.contains("2/2"),
+        "the failure must still place and name the bad link, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("invalid temperature"),
+        "the failure must carry the resolver's own message, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("invalid float literal"),
+        "the failure must carry the ROOT cause too, not only the outermost layer: \
+         positioning the bad link inlines the resolver's message into a new error, and a \
+         non-alternate `{{e}}` there silently drops everything under it — the same \
+         `armadai run m4-broken` prints under `Caused by:`, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #373 review, i3: the up-front pass validates the provider too, not just the
+// agent definition — otherwise #366's own bill survives one gate further on.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pipe_builds_every_link_provider_before_running_the_first() {
+    // `create_provider` fails deterministically on the agent's own metadata,
+    // with nothing an earlier link could have changed. Resolving definitions
+    // up front but leaving provider construction inside `run_single_agent`
+    // meant a misspelled `provider:` on link 2 was discovered only after link
+    // 1 had run: measured as `agent_start`/`agent_end` for the head, then
+    // `error: Unknown provider: 'gtp'` — a billed call on a chain that could
+    // never complete, which is the exact defect #366 is about.
+    let (_dir, root) = project(&[], &["m5-head", "m5-typo-prov", "m5-tail"]);
+    break_file_agent(&root, "m5-typo-prov", "- provider: gtp");
+
+    let out = run_pipe(
+        &root,
+        "m5-head",
+        "TASK-BAD-PROVIDER",
+        &["m5-typo-prov", "m5-tail"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        !out.status.success(),
+        "a chain naming an unconstructible provider must fail.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        agents_started(&stdout),
+        Vec::<String>::new(),
+        "NO agent may start when a later link's provider cannot be built — the failure \
+         is decided by that agent's own metadata, so nothing the head produces could \
+         have changed it, and running the head only bills a chain that cannot \
+         complete.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        combined.contains("m5-typo-prov") && combined.contains("2/3"),
+        "the failure must name and place the offending link — `Unknown provider: 'gtp'` \
+         on its own names neither, got: {combined}"
+    );
+    assert!(
+        combined.contains("Unknown provider"),
+        "the failure must still carry the provider factory's own reason, got: {combined}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #373 review, m5: a per-link warning is printed under its own link's header,
+// and a project-wide one is printed once.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_project_wide_load_warning_is_printed_once_under_the_first_link() {
+    // An unparsable `.armadai/agents.yaml` makes `load_agent_by_name` return
+    // `DeclarationsUnreadable` for EVERY link that falls back to a file —
+    // ~380 characters restating one project fact, differing only in the
+    // served agent's name at the very end, and byte-identical whenever two
+    // links name the same agent. Resolving the chain up front also moved the
+    // whole block ahead of `--- [1/3 …] ---`, so nothing said which link any
+    // of them was about.
+    let (_dir, root) = project(&[], &["m6-one", "m6-two"]);
+    std::fs::write(
+        root.join(".armadai/agents.yaml"),
+        "agents:\n  - name: [unterminated\n",
+    )
+    .unwrap();
+
+    let out = run_pipe_human(&root, "m6-one", "TASK-ONE-WARNING", &["m6-two", "m6-one"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "an unparsable declarations file must not fail a chain of file-backed agents.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let lines: Vec<&str> = stderr.lines().collect();
+    let warnings: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.contains("ignoring unparsable"))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "the unparsable declarations file is one project fact, not one per link: three \
+         links restated it three times, twice byte for byte. Got {} line(s): {:#?}",
+        warnings.len(),
+        warnings.iter().map(|&i| lines[i]).collect::<Vec<_>>()
+    );
+
+    let first_header = lines
+        .iter()
+        .position(|l| l.contains("[1/3"))
+        .unwrap_or_else(|| panic!("no chain header on stderr: {stderr}"));
+    assert!(
+        warnings[0] > first_header,
+        "the warning must sit UNDER the header of the link it is about, not in a block \
+         ahead of the whole chain — with the header above it, the trailing agent name is \
+         what anchors it. Got the warning at line {} and `[1/3 …]` at line {}: {stderr}",
+        warnings[0],
+        first_header
     );
 }
