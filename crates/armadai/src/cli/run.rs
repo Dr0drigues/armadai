@@ -798,13 +798,16 @@ async fn run_inner(
     let mut agg_tout = 0u32;
     let mut agg_cost = 0.0f64;
 
-    for (i, name) in chain.iter().enumerate() {
+    // Resolve EVERY link of the chain before running the first one (#366).
+    // See [`load_chain`] for why the loop is no longer allowed to do it.
+    let chain_agents = load_chain(&resolution, &chain)?;
+
+    for (i, (name, agent)) in chain.iter().zip(chain_agents).enumerate() {
         if chain.len() > 1 && !json {
             let h = crate::cli::style::header();
             anstream::eprintln!("{h}--- [{}/{} {}] ---{h:#}", i + 1, chain.len(), name);
         }
 
-        let agent = load_agent_for_run(&resolution, name)?;
         let (output, metrics) = run_single_agent(
             agent,
             name,
@@ -925,6 +928,39 @@ fn load_agent_for_run(resolution: &AgentResolution, agent_name: &str) -> anyhow:
             armadai_core::parser::parse_agent_file(&path)
         }
     }
+}
+
+/// Resolve every link of a `--pipe` chain up front, before any of them runs.
+///
+/// The chain used to be resolved lazily, one link at a time, inside the
+/// execution loop: a typo on link N was only discovered after links 1..N-1
+/// had already run. Those are real provider calls — billed, irreversible —
+/// spent on a run that could never have completed (#366). `run_orchestrated`
+/// already built its whole roster before dispatching anything; this gives
+/// the sequential chain the same shape, and leaves the loop purely
+/// executional.
+///
+/// The failure names the link's position as well as its name: with several
+/// names on one command line, `'x' not found` alone leaves the user counting
+/// them. The resolver's own message is kept inline rather than as an
+/// `anyhow` context layer, because the headless error event reports only
+/// `Error::to_string()` (the outermost layer) — wrapping would drop the part
+/// that names `.armadai/agents.yaml` for a project that declares its agents
+/// (#339).
+fn load_chain(resolution: &AgentResolution, chain: &[String]) -> anyhow::Result<Vec<Agent>> {
+    chain
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            load_agent_for_run(resolution, name).map_err(|e| {
+                anyhow::anyhow!(
+                    "chain link {}/{} ('{name}') could not be resolved, so no agent was run: {e}",
+                    i + 1,
+                    chain.len()
+                )
+            })
+        })
+        .collect()
 }
 
 /// Execute a single agent with given input and configuration. Parameters represent

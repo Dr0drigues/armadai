@@ -160,10 +160,11 @@ fine elsewhere. But the three commands that can hit one don't all react the same
   naming both `agents.yaml` and the colliding `.md` file. A command that is about to execute or
   describe one agent must not silently pick a winner between a declaration and a file.
 - `armadai run --pipe` refuses a colliding name in **any** position of the chain, and refuses it
-  before running the first link — so a collision costs no provider call at all. It used to let the
-  chain through while the single-agent path refused the very same name, because the chain loop
-  resolved agents by file path and so never consulted the declarations; routing it through the same
-  by-name loader removed that inconsistency.
+  before running the first link — so a collision costs no provider call at all (see [a chain is
+  resolved before it runs](#a-chain-is-resolved-before-it-runs)). It used to let the chain through
+  while the single-agent path refused the very same name, because the chain loop resolved agents by
+  file path and so never consulted the declarations; routing it through the same by-name loader
+  removed that inconsistency.
 - Because that check is scoped to just the one name you asked for, `armadai inspect
   <some-other-name>` says **nothing** about an unrelated collision sitting elsewhere in the fleet —
   it doesn't scan the whole project the way `list` does. Don't rely on `inspect` to surface
@@ -172,6 +173,31 @@ fine elsewhere. But the three commands that can hit one don't all react the same
   write **anything** when the collision falls inside what you asked it to link (the whole fleet by
   default, or the names passed to `--agents`) — a command that writes config must not silently ship
   a smaller fleet than the one you declared.
+
+## A chain is resolved before it runs
+
+`armadai run <head> <task> --pipe b c d` resolves **every** link — declared or file-backed — before
+it runs the first one. A name that resolves nowhere, or a name caught by the collision check above,
+fails the whole command at once, with no agent started:
+
+```
+chain link 3/4 ('reviwer') could not be resolved, so no agent was run: agent
+'reviwer' not found: not resolvable as a file (…), and not declared in
+/path/to/project/.armadai/agents.yaml
+```
+
+The failure names the link's **position** as well as its name, because with several names on one
+command line the name alone leaves you counting them.
+
+This used to happen link by link, inside the execution loop: a typo on the third of four links was
+only discovered after the first two had already run. Those are real provider calls — billed, and
+not undoable — spent on a chain that could never have completed. If you are used to seeing the
+first links produce output before a later typo surfaced, that is the behaviour that changed: you
+now get the error immediately, and nothing runs.
+
+Only *resolution* moves up front. A link that resolves fine and then fails while running still
+fails where it always did, part-way through the chain, and the earlier links' calls are already
+spent — that is inherent to running them.
 
 ## Long compositions still get audited
 

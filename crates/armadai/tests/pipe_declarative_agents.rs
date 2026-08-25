@@ -378,3 +378,58 @@ fn a_broken_prompt_fragment_is_reported_once_for_the_whole_chain() {
         "the one warning must still name the fragment it could not load, got: {warnings:#?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #366: the whole chain is resolved before the first link runs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pipe_resolves_every_link_before_running_the_first() {
+    // The chain used to be resolved lazily, one link at a time, *inside* the
+    // execution loop: a typo on link N was only discovered after links
+    // 1..N-1 had already run — real provider calls, billed, on a chain that
+    // could never complete. Measured on this exact fixture: `agent_start`
+    // and `agent_end` for `m3-a` and `m3-b`, and only then the `error`.
+    //
+    // The `echo` provider makes those calls free here, which is precisely
+    // why the assertion is on the events and not on a bill: with a real
+    // provider the same two `agent_start`s are two model calls.
+    let (_dir, root) = project(&["m3-a", "m3-b", "m3-c"], &[]);
+    let out = run_pipe(
+        &root,
+        "m3-a",
+        "TASK-LATE-TYPO",
+        &["m3-b", "typo-agent", "m3-c"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        !out.status.success(),
+        "a chain naming an unknown agent must fail.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        agents_started(&stdout),
+        Vec::<String>::new(),
+        "NO agent may start when a later link of the chain cannot be resolved — every \
+         one of them is a billed provider call on a run that cannot complete.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        combined.contains("typo-agent"),
+        "the failure must name the link it could not resolve, got: {combined}"
+    );
+    assert!(
+        combined.contains("3/4"),
+        "the failure must place the bad link in the chain (link 3 of 4) — with four \
+         names on one command line, the name alone leaves the user counting, \
+         got: {combined}"
+    );
+    assert!(
+        combined.contains(".armadai/agents.yaml") || combined.contains(".armadai\\agents.yaml"),
+        "positioning the bad link must not swallow the resolution message: a project \
+         that declares agents must still be told the declarations file was looked in \
+         (#339), got: {combined}"
+    );
+}
