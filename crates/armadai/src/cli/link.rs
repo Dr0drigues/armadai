@@ -330,114 +330,45 @@ pub async fn execute(
         return Ok(());
     }
 
+    // The actual write — exists-guard and manifest write both live in
+    // `linker::manifest::write_files` now (issue #347): this used to be an
+    // inline loop here, and the shell wizard's own independent copy of it
+    // (with neither guarantee) is exactly the defect that extraction
+    // fixed. Every caller that writes linker output goes through this one
+    // function.
+    let outcomes = linker::manifest::write_files(
+        &root,
+        &target_name,
+        &output_dir,
+        &target_root,
+        output_files.into_iter().chain(extra_files).collect(),
+        force,
+    )?;
+
     let mut written = 0;
     let mut skipped = 0;
     let mut unchanged = 0;
-    // Each write decision produces its own manifest entry, at the same
-    // point as the effect it describes (design §5) — never re-derived
-    // afterwards by asking what *would* happen again.
-    let mut manifest_entries: Vec<linker::manifest::ManifestEntry> = Vec::new();
-    // `create_dir_all` is itself an effect with no inverse of its own —
-    // record exactly which directories it actually created (a security
-    // review's fix 1b), so `unlink` can reverse precisely that instead of
-    // guessing an ancestor-sweep boundary from the deleted files' paths.
-    let mut created_dirs: Vec<PathBuf> = Vec::new();
-
-    for (path, content, produced_by) in output_files.iter().chain(extra_files.iter()) {
-        let relative_path = path.strip_prefix(&root).unwrap_or(path).to_path_buf();
-
-        if path.exists() && !force {
-            // A pre-existing file whose bytes are *already* exactly what
-            // `link` would write is ours in every sense `unlink` cares
-            // about — recorded as `created`, with its digest, not
-            // `skipped` (design review R6). Without this, `link; link;
-            // unlink` removes nothing: the second `link` would silently
-            // downgrade every file's entry to `skipped`, and `unlink`
-            // would then report every one of them as "hand-written" and
-            // leave the whole target in place. A file whose content
-            // actually differs — genuinely hand-written, or edited since
-            // — still gets `Skipped`: `link` didn't touch it, so its
-            // inverse is still "do nothing".
-            let matches_expected = std::fs::read(path)
-                .map(|actual| actual == content.as_bytes())
-                .unwrap_or(false);
-            if matches_expected {
+    for outcome in &outcomes {
+        match outcome {
+            linker::manifest::FileOutcome::Wrote(path) => {
+                let m = crate::cli::style::muted();
+                anstream::println!("{m}  wrote {}{m:#}", path.display());
+                written += 1;
+            }
+            linker::manifest::FileOutcome::UpToDate(path) => {
                 let m = crate::cli::style::muted();
                 anstream::println!("{m}  up-to-date {}{m:#}", path.display());
                 unchanged += 1;
-                manifest_entries.push(linker::manifest::ManifestEntry {
-                    path: relative_path,
-                    produced_by: produced_by.clone(),
-                    outcome: linker::manifest::Outcome::Created,
-                    digest: Some(linker::manifest::digest_of(content.as_bytes())),
-                });
-                continue;
             }
-
-            let w = crate::cli::style::warn();
-            anstream::eprintln!(
-                "{w}  skip: {} already exists (use --force to overwrite){w:#}",
-                path.display()
-            );
-            skipped += 1;
-            manifest_entries.push(linker::manifest::ManifestEntry {
-                path: relative_path,
-                produced_by: produced_by.clone(),
-                outcome: linker::manifest::Outcome::Skipped,
-                digest: None,
-            });
-            continue;
-        }
-
-        if let Some(parent) = path.parent() {
-            for created in linker::manifest::create_dir_all_recording(parent)? {
-                // Never record the target's own root, or anything above
-                // it — only its descendants are ever eligible for
-                // `unlink` to remove later.
-                if created.starts_with(&target_root) && created != target_root {
-                    created_dirs.push(
-                        created
-                            .strip_prefix(&root)
-                            .unwrap_or(&created)
-                            .to_path_buf(),
-                    );
-                }
+            linker::manifest::FileOutcome::SkippedExisting(path) => {
+                let w = crate::cli::style::warn();
+                anstream::eprintln!(
+                    "{w}  skip: {} already exists (use --force to overwrite){w:#}",
+                    path.display()
+                );
+                skipped += 1;
             }
         }
-        std::fs::write(path, content)?;
-        let m = crate::cli::style::muted();
-        anstream::println!("{m}  wrote {}{m:#}", path.display());
-        written += 1;
-        // `outcome: Created` regardless of whether `path` pre-existed —
-        // this is `Created` in the sense of "link wrote it", not "the
-        // path was new", which is the fact `unlink` actually needs: it
-        // must delete this on a matching digest either way. A pre-existing
-        // file reaches this branch only via `--force`, i.e. the same
-        // explicit user confirmation that let `link` overwrite it in the
-        // first place — `unlink` deleting it later on the same terms
-        // (content still matches) is consistent, not a new risk.
-        manifest_entries.push(linker::manifest::ManifestEntry {
-            path: relative_path,
-            produced_by: produced_by.clone(),
-            outcome: linker::manifest::Outcome::Created,
-            digest: Some(linker::manifest::digest_of(content.as_bytes())),
-        });
-    }
-
-    if let Err(e) = linker::manifest::write_target(
-        &root,
-        &target_name,
-        output_dir.clone(),
-        created_dirs,
-        manifest_entries,
-    ) {
-        // Deliberately non-fatal: `link` already wrote every file the user
-        // asked for, and refusing to report success over a manifest write
-        // failure (a permissions issue on `.armadai/`, a full disk, ...)
-        // would be a worse outcome than a degraded `unlink` next time. The
-        // warning is the signal; `unlink` falls back to the #342 guard and
-        // says so if this manifest never lands.
-        tracing::warn!("Failed to write link manifest: {:?}", e);
     }
 
     let mut summary = format!("Linked {} agent(s)", link_agents.len());

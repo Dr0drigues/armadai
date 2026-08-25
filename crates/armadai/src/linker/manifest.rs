@@ -444,6 +444,141 @@ pub fn create_dir_all_recording(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(missing)
 }
 
+/// One decision made while writing a target's linked files, as data rather
+/// than a side-effecting print call — so every caller can format it
+/// however it likes (`link`'s styled `anstream` lines, the shell wizard's
+/// plain ones) without re-deriving what happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileOutcome {
+    /// Wrote (or, with `force`, overwrote) `path`.
+    Wrote(PathBuf),
+    /// `path` already existed with exactly the bytes this write would have
+    /// produced — nothing changed on disk, but the manifest still records
+    /// it as [`Outcome::Created`] (see that type's doc: `link; link;
+    /// unlink` must still remove it).
+    UpToDate(PathBuf),
+    /// `path` already existed with *different* content and `force` was not
+    /// set — left untouched, recorded as [`Outcome::Skipped`].
+    SkippedExisting(PathBuf),
+}
+
+/// Write every `(path, content, produced_by)` tuple in `files` under
+/// `root`, and record a link manifest entry for each one at the point of
+/// effect — this is `link`'s actual write path (the loop that used to sit
+/// inline in `cli::link::execute`, lines 333-441 before this function
+/// existed), now the **only** place in the codebase that writes linker
+/// output to disk.
+///
+/// Two guarantees come from going through this function instead of a
+/// second hand-rolled loop — exactly the two issue #347 measured missing
+/// from the shell wizard's own copy:
+///
+/// - **The exists-guard**: a pre-existing file whose content differs from
+///   what would be written is left untouched unless `force` is set — the
+///   same rule `link` has always had (`link.rs:295` before the extraction).
+/// - **The manifest write**: every decision (`Wrote`/`UpToDate`/
+///   `SkippedExisting`) becomes a [`ManifestEntry`] via [`write_target`],
+///   so `unlink` can act on exactly what happened here instead of
+///   re-deriving it later by regenerating against the *current* config
+///   (the #342 fallback's blind spots — see `cli::unlink`'s module doc).
+///
+/// `target_root` is the target's own resolved root (e.g.
+/// `<project>/.claude`, or a custom `--output`) — recorded into the
+/// manifest via [`write_target`] and used here to decide which created
+/// ancestor directories are eligible to be recorded as `created_dirs`
+/// (never the root itself, never anything above it: `unlink` must never
+/// remove `.claude/` itself, see [`create_dir_all_recording`]'s caller
+/// discipline).
+pub fn write_files(
+    root: &Path,
+    target_name: &str,
+    output_dir: &Path,
+    target_root: &Path,
+    files: Vec<(PathBuf, String, ProducedBy)>,
+    force: bool,
+) -> std::io::Result<Vec<FileOutcome>> {
+    let mut outcomes = Vec::with_capacity(files.len());
+    let mut manifest_entries: Vec<ManifestEntry> = Vec::with_capacity(files.len());
+    let mut created_dirs: Vec<PathBuf> = Vec::new();
+
+    for (path, content, produced_by) in files {
+        let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+
+        if path.exists() && !force {
+            // A pre-existing file whose bytes are *already* exactly what
+            // this write would produce is this write's to reclaim, not a
+            // stranger's to leave alone (design review R6 — see
+            // `Outcome`'s own doc).
+            let matches_expected = std::fs::read(&path)
+                .map(|actual| actual == content.as_bytes())
+                .unwrap_or(false);
+            if matches_expected {
+                manifest_entries.push(ManifestEntry {
+                    path: relative_path,
+                    produced_by,
+                    outcome: Outcome::Created,
+                    digest: Some(digest_of(content.as_bytes())),
+                });
+                outcomes.push(FileOutcome::UpToDate(path));
+                continue;
+            }
+
+            manifest_entries.push(ManifestEntry {
+                path: relative_path,
+                produced_by,
+                outcome: Outcome::Skipped,
+                digest: None,
+            });
+            outcomes.push(FileOutcome::SkippedExisting(path));
+            continue;
+        }
+
+        if let Some(parent) = path.parent() {
+            for created in create_dir_all_recording(parent)? {
+                // Never record the target's own root, or anything above
+                // it — only its descendants are ever eligible for
+                // `unlink` to remove later.
+                if created.starts_with(target_root) && created != target_root {
+                    created_dirs.push(created.strip_prefix(root).unwrap_or(&created).to_path_buf());
+                }
+            }
+        }
+        std::fs::write(&path, &content)?;
+        // `Outcome::Created` regardless of whether `path` pre-existed —
+        // this is `Created` in the sense of "this write produced it", not
+        // "the path was new", which is the fact `unlink` actually needs: it
+        // must delete this on a matching digest either way. A pre-existing
+        // file reaches this branch only via `force`, i.e. the same
+        // explicit confirmation that let the write overwrite it in the
+        // first place.
+        manifest_entries.push(ManifestEntry {
+            path: relative_path,
+            produced_by,
+            outcome: Outcome::Created,
+            digest: Some(digest_of(content.as_bytes())),
+        });
+        outcomes.push(FileOutcome::Wrote(path));
+    }
+
+    if let Err(e) = write_target(
+        root,
+        target_name,
+        output_dir.to_path_buf(),
+        created_dirs,
+        manifest_entries,
+    ) {
+        // Deliberately non-fatal: every file above was already written (or
+        // correctly left alone); refusing to report success over a
+        // manifest write failure (a permissions issue on `.armadai/`, a
+        // full disk, ...) would be a worse outcome than a degraded
+        // `unlink` next time. `unlink` falls back to the #342 guard and
+        // says so if this manifest never lands.
+        tracing::warn!("Failed to write link manifest: {:?}", e);
+    }
+
+    Ok(outcomes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -730,6 +865,162 @@ mod tests {
         match lookup_target(dir.path(), "codex") {
             Lookup::Found(found) => assert_eq!(found.entries, codex_entries),
             Lookup::Fallback => panic!("expected Found for codex, untouched by the claude relink"),
+        }
+    }
+
+    // ── write_files (issue #347's shared write path) ──────────────────
+
+    /// A fresh file is written, reported as `Wrote`, and gets a manifest
+    /// entry recorded as `created` with a digest of its actual content.
+    ///
+    /// Mutation this catches: if the manifest write were dropped from
+    /// this function (the exact defect #347 measured in the shell
+    /// wizard's independent copy of this loop), `lookup_target` below
+    /// would return `Fallback` instead of `Found`.
+    #[test]
+    fn write_files_writes_a_fresh_file_and_records_it_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target_root = root.join(".claude");
+        let path = target_root.join("agents/solo.md");
+        let content = "hello".to_string();
+
+        let outcomes = write_files(
+            root,
+            "claude",
+            Path::new(".claude"),
+            &target_root,
+            vec![(path.clone(), content.clone(), ProducedBy::agent("solo"))],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(outcomes, vec![FileOutcome::Wrote(path.clone())]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+
+        match lookup_target(root, "claude") {
+            Lookup::Found(found) => {
+                assert_eq!(found.entries.len(), 1);
+                assert_eq!(found.entries[0].outcome, Outcome::Created);
+                assert_eq!(found.entries[0].digest, Some(digest_of(content.as_bytes())));
+            }
+            Lookup::Fallback => panic!("write_files must leave a usable manifest behind"),
+        }
+    }
+
+    /// A pre-existing file whose content already matches is reported
+    /// `UpToDate` — left alone on disk — but still recorded `created` in
+    /// the manifest (design review R6: `link; link; unlink` must still
+    /// remove it).
+    ///
+    /// Mutation this catches: if a byte-identical pre-existing file were
+    /// recorded `Skipped` instead of `Created` (the pre-#338 behaviour),
+    /// this test's manifest assertion would fail.
+    #[test]
+    fn write_files_reports_up_to_date_but_still_records_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target_root = root.join(".claude");
+        let path = target_root.join("agents/solo.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "hello").unwrap();
+
+        let outcomes = write_files(
+            root,
+            "claude",
+            Path::new(".claude"),
+            &target_root,
+            vec![(path.clone(), "hello".to_string(), ProducedBy::agent("solo"))],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(outcomes, vec![FileOutcome::UpToDate(path)]);
+        match lookup_target(root, "claude") {
+            Lookup::Found(found) => assert_eq!(found.entries[0].outcome, Outcome::Created),
+            Lookup::Fallback => panic!("write_files must leave a usable manifest behind"),
+        }
+    }
+
+    /// The exists-guard (issue #347's second gap): a pre-existing file
+    /// whose content differs is left completely untouched when `force` is
+    /// false, and recorded `Skipped` — never `Created` — so `unlink` never
+    /// treats it as its own to remove.
+    ///
+    /// Mutation this catches: if the guard were removed (or `force`
+    /// defaulted to `true`), the hand-written content would be
+    /// overwritten — this test's content assertion would fail.
+    #[test]
+    fn write_files_refuses_to_overwrite_a_hand_written_file_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target_root = root.join(".claude");
+        let path = target_root.join("agents/solo.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let hand_written = "# written by a human\n";
+        std::fs::write(&path, hand_written).unwrap();
+
+        let outcomes = write_files(
+            root,
+            "claude",
+            Path::new(".claude"),
+            &target_root,
+            vec![(
+                path.clone(),
+                "# generated content\n".to_string(),
+                ProducedBy::agent("solo"),
+            )],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(outcomes, vec![FileOutcome::SkippedExisting(path.clone())]);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            hand_written,
+            "a hand-written file must never be touched without force"
+        );
+        match lookup_target(root, "claude") {
+            Lookup::Found(found) => {
+                assert_eq!(found.entries[0].outcome, Outcome::Skipped);
+                assert_eq!(found.entries[0].digest, None);
+            }
+            Lookup::Fallback => panic!("write_files must leave a usable manifest behind"),
+        }
+    }
+
+    /// The other half of the guard: `force: true` does overwrite a
+    /// differing pre-existing file, and records it `Created` — the same
+    /// explicit confirmation `link --force` has always required.
+    ///
+    /// Mutation this catches: if `force` were ignored (the guard always
+    /// applied), this test's content assertion would fail — the file
+    /// would still hold the old hand-written text.
+    #[test]
+    fn write_files_overwrites_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target_root = root.join(".claude");
+        let path = target_root.join("agents/solo.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "old content").unwrap();
+
+        let new_content = "new content".to_string();
+        let outcomes = write_files(
+            root,
+            "claude",
+            Path::new(".claude"),
+            &target_root,
+            vec![(path.clone(), new_content.clone(), ProducedBy::agent("solo"))],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(outcomes, vec![FileOutcome::Wrote(path.clone())]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), new_content);
+        match lookup_target(root, "claude") {
+            Lookup::Found(found) => assert_eq!(found.entries[0].outcome, Outcome::Created),
+            Lookup::Fallback => panic!("write_files must leave a usable manifest behind"),
         }
     }
 }

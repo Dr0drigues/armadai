@@ -196,9 +196,9 @@ file-backed ones — except where noted:
 | `armadai validate` | Yes — a declared agent named as an `orchestration.coordinator`/`teams[].lead`/`teams[].agents` entry resolves, even when never relisted in `armadai.yaml`'s `agents:` |
 | TUI dashboard | Yes |
 | Web API | Yes |
-| `armadai shell` | **No** |
+| `armadai shell` (the wizard's own `link`, run before entering the shell) | Yes |
 
-Do not assume the remaining "No" row will discover a declared agent by some other path — it was
+Do not assume a remaining "No" row will discover a declared agent by some other path — it was
 simply not touched by this chantier, and hitting it is the way to find out the hard way if this
 table goes unread.
 
@@ -208,6 +208,19 @@ has no file) was silently dropped — and if a same-named agent happened to exis
 library (`~/.config/armadai/agents/`), *that* agent was shown in its place, with no warning. Both
 now go through the same `agent_source::load_all_agents` every other wired surface uses, so a
 declared agent is loaded on its own terms rather than shadowed by an unrelated global homonym.
+
+`armadai shell`'s wizard used to be a fifth, independent copy of the project-detection gate — a
+plain `config.agents.is_empty()` check with no notion of `.armadai/agents.yaml` at all, so a
+declarations-only project failed the wizard's own `link` step with a false "No agents declared"
+(issue #339's second half). Its write side had also drifted from `link`'s in a second, unrelated
+way: the wizard hand-rolled its own file-write loop, with no link manifest entry and no
+exists-guard, so `unlink` could never account for what it wrote and a hand-written file in its way
+could be silently overwritten (issue #347). Both were fixed together, since both were the wizard
+using its own variant instead of the primitive the rest of the fleet already shares: the wizard's
+`run_link` now calls `agent_source::project_declares_agents`/`load_all_agents` for detection and
+resolution, and `linker::manifest::write_files` — the same function `cli::link::execute` itself
+calls — for the write, so the manifest entry and the exists-guard come from the same place `link`
+gets them rather than a third copy that could drift from both.
 
 ## Parity with the `.md` format — and its limits
 
