@@ -507,14 +507,14 @@ impl Provider for CliProvider {
 mod tests {
     use super::*;
 
-    /// Run `fut` while holding `ENV_MUTEX`, serialising the child-process spawn's
+    /// Run `fut` while holding `env_lock()`, serialising the child-process spawn's
     /// read of `environ` against tests that mutate it via `std::env::set_var`
     /// (otherwise a data race — the reason `set_var` is `unsafe`). Holding the
     /// guard across `.await` is safe here: no other async task contends for
-    /// `ENV_MUTEX`, so there is no deadlock risk.
+    /// `env_lock()`, so there is no deadlock risk.
     #[allow(clippy::await_holding_lock)]
     async fn with_env_lock<T>(fut: impl std::future::Future<Output = T>) -> T {
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         fut.await
     }
 
@@ -690,7 +690,7 @@ mod tests {
     async fn steady_stream_survives_past_the_old_static_ceiling() {
         let old_static_ceiling = std::time::Duration::from_secs(1);
         // `start` MUST be taken inside `with_env_lock`, after the global
-        // `ENV_MUTEX` is actually held — not before. `with_env_lock` blocks
+        // `env_lock()` is actually held — not before. `with_env_lock` blocks
         // on that mutex, shared by every test in this module that spawns a
         // real subprocess; under a loaded parallel `cargo test`, queueing
         // for it can itself take seconds. Timing from outside the lock
@@ -743,7 +743,7 @@ mod tests {
     async fn silent_subprocess_dies_near_the_inactivity_ceiling_not_later() {
         // `start` inside `with_env_lock`, not outside — see the identical
         // note on `steady_stream_survives_past_the_old_static_ceiling`
-        // (#270 review round 3: queue-wait for the shared `ENV_MUTEX` must
+        // (#270 review round 3: queue-wait for the shared `env_lock()` must
         // not be counted as part of the measured duration).
         let (result, elapsed) = with_env_lock(async {
             let start = std::time::Instant::now();
@@ -763,7 +763,7 @@ mod tests {
         // magnitude). Upper bound: tight now that `start` is measured
         // inside the lock (well under the 60s sleep, but no longer needs
         // to absorb queue-wait time from other tests contending for
-        // `ENV_MUTEX`).
+        // `env_lock()`).
         assert!(
             elapsed >= std::time::Duration::from_millis(500),
             "should wait close to the configured 1s ceiling before dying, not fire near-instantly: {elapsed:?}"
@@ -797,7 +797,7 @@ mod tests {
     #[tokio::test]
     async fn complete_does_not_hang_when_stdout_closes_but_the_child_keeps_running() {
         // `start` inside `with_env_lock`, not outside (#270 review round 3
-        // / round 4): the shared `ENV_MUTEX` is contended by every
+        // / round 4): the shared `env_lock()` is contended by every
         // subprocess-spawning test in this module, and queue-wait for it
         // must not be counted toward "did this call hang". The margin here
         // is coarse (correct ~1s vs a hang toward 30s) so the bound itself

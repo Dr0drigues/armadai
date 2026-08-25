@@ -650,104 +650,7 @@ fn detect_project_name() -> String {
 #[cfg(test)]
 mod run_link_tests {
     use super::*;
-    use armadai_core::config::ENV_MUTEX;
-
-    /// Points `ARMADAI_CONFIG_DIR` at a fresh, empty temp dir for the
-    /// guard's lifetime, restoring it on drop — serialised on `ENV_MUTEX`
-    /// (shared with the rest of the workspace's env-mutating tests, see
-    /// `armadai_core::config`'s own tests and `web::api`'s
-    /// `load_agents_declarative_tests`). Without this, `load_all_agents`'s
-    /// shadowing check would scan whatever `~/.config/armadai/agents/`
-    /// happens to hold on the machine running the test.
-    struct IsolatedGlobalConfig {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        orig_config_dir: Option<String>,
-        config_tmp: tempfile::TempDir,
-    }
-
-    impl IsolatedGlobalConfig {
-        fn enter() -> Self {
-            // Poison-tolerant: `ENV_MUTEX` only ever guards `()` — there is
-            // no shared data a panicking prior holder could have left
-            // inconsistent, only the env var/cwd restoration each guard's
-            // own `Drop` already performs (and `Drop` still runs during
-            // unwinding, before the poison is even set). Review point 3
-            // (fix round on `fix/wizard-link-write-path`): a single
-            // legitimately failing test elsewhere in this module used to
-            // poison this mutex and cascade every *other* test using this
-            // guard into an unrelated `PoisonError` — recovering the guard
-            // instead keeps a real failure from being buried under
-            // phantom ones.
-            let lock = ENV_MUTEX
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let orig_config_dir = std::env::var("ARMADAI_CONFIG_DIR").ok();
-            let config_tmp = tempfile::tempdir().unwrap();
-            // SAFETY: serialised via ENV_MUTEX above.
-            unsafe {
-                std::env::set_var("ARMADAI_CONFIG_DIR", config_tmp.path());
-            }
-            Self {
-                _lock: lock,
-                orig_config_dir,
-                config_tmp,
-            }
-        }
-
-        /// The isolated global agent library (`<ARMADAI_CONFIG_DIR>/agents`)
-        /// — for a test that wants to plant a same-named `.md` there to
-        /// trigger a declared/global shadowing collision deliberately.
-        fn global_agents_dir(&self) -> std::path::PathBuf {
-            self.config_tmp.path().join("agents")
-        }
-    }
-
-    impl Drop for IsolatedGlobalConfig {
-        fn drop(&mut self) {
-            // SAFETY: still under the guard held by `self._lock`.
-            unsafe {
-                match &self.orig_config_dir {
-                    Some(v) => std::env::set_var("ARMADAI_CONFIG_DIR", v),
-                    None => std::env::remove_var("ARMADAI_CONFIG_DIR"),
-                }
-            }
-        }
-    }
-
-    /// Extends [`IsolatedGlobalConfig`] with a process cwd change, for the
-    /// one test below that must exercise `cli::unlink::execute` — which,
-    /// unlike [`run_link_at`], has no root-taking variant and resolves its
-    /// project via `project::find_project_config()`'s cwd read. Restores
-    /// the original cwd on drop, still under the same env-mutex guard.
-    struct IsolatedProjectDir {
-        _config: IsolatedGlobalConfig,
-        orig_cwd: std::path::PathBuf,
-    }
-
-    impl IsolatedProjectDir {
-        fn enter(root: &Path) -> Self {
-            let config = IsolatedGlobalConfig::enter();
-            let orig_cwd = std::env::current_dir().unwrap();
-            std::env::set_current_dir(root).unwrap();
-            Self {
-                _config: config,
-                orig_cwd,
-            }
-        }
-
-        /// The isolated global agent library, for a test that wants to
-        /// plant a same-named `.md` there — see
-        /// [`IsolatedGlobalConfig::global_agents_dir`].
-        fn global_agents_dir(&self) -> std::path::PathBuf {
-            self._config.global_agents_dir()
-        }
-    }
-
-    impl Drop for IsolatedProjectDir {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.orig_cwd);
-        }
-    }
+    use armadai_core::test_support::{IsolatedConfigDir, IsolatedProjectDir};
 
     /// A project with two file-backed agents, `keep` and `drop`, no
     /// declarative agents, targeting nothing in particular — `run_link_at`
@@ -883,7 +786,7 @@ mod run_link_tests {
     /// return an error instead of `Ok`.
     #[tokio::test]
     async fn wizard_link_sees_agents_declared_only_in_agents_yaml() {
-        let _isolated = IsolatedGlobalConfig::enter();
+        let _isolated = IsolatedConfigDir::enter();
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
@@ -921,7 +824,7 @@ mod run_link_tests {
     /// call return `Ok` and write `solo.md` — both assertions below fail.
     #[tokio::test]
     async fn wizard_link_refuses_a_write_when_a_declared_agent_is_shadowed() {
-        let isolated = IsolatedGlobalConfig::enter();
+        let isolated = IsolatedConfigDir::enter();
         std::fs::create_dir_all(isolated.global_agents_dir()).unwrap();
         std::fs::write(
             isolated.global_agents_dir().join("collide.md"),
@@ -978,7 +881,7 @@ mod run_link_tests {
     /// both assertions below fail.
     #[tokio::test]
     async fn wizard_link_resolves_latest_placeholders_the_way_link_does() {
-        let _isolated = IsolatedGlobalConfig::enter();
+        let _isolated = IsolatedConfigDir::enter();
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
@@ -1042,7 +945,7 @@ mod run_link_tests {
     /// `"claude"`-targeted tests stay green regardless.
     #[tokio::test]
     async fn wizard_link_resolves_latest_placeholders_for_an_orchestrator_target() {
-        let _isolated = IsolatedGlobalConfig::enter();
+        let _isolated = IsolatedConfigDir::enter();
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");

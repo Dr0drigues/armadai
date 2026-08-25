@@ -81,10 +81,10 @@ mod tests {
         // low/fast → Fast tier and high/max → Max tier collapsing invariant
         // this test is meant to guard. Mirrors
         // `armadai_core::model_resolution::test_preview_resolution_with_latest`.
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         let tmp = tempfile::tempdir().expect("tempdir");
-        // SAFETY: env mutation is serialised via ENV_MUTEX for the duration
+        // SAFETY: env mutation is serialised via `env_lock()` for the duration
         // of this test, and the original value is restored before returning.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", tmp.path());

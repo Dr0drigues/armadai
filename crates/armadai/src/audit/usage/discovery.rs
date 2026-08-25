@@ -264,8 +264,8 @@ mod tests {
 
     impl ProjectsDirGuard {
         fn set(path: &Path) -> Self {
-            let lock = armadai_core::config::ENV_MUTEX.lock().unwrap();
-            // SAFETY: modifies the global environment; serialised via ENV_MUTEX.
+            let lock = armadai_core::test_support::env_lock();
+            // SAFETY: modifies the global environment; serialised via `env_lock()`.
             unsafe { std::env::set_var("ARMADAI_CLAUDE_PROJECTS_DIR", path) }
             Self { _lock: lock }
         }
@@ -280,7 +280,7 @@ mod tests {
 
     /// Removes `ARMADAI_CLAUDE_PROJECTS_DIR` and `HOME` for the test's
     /// duration, restoring both original values (present or absent) on drop.
-    /// Serialises via `ENV_MUTEX`, like `ProjectsDirGuard` — the rest of the
+    /// Serialises via `env_lock()`, like `ProjectsDirGuard` — the rest of the
     /// suite needs `HOME` back, since other tests rely on it implicitly.
     struct NoHomeGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -290,10 +290,10 @@ mod tests {
 
     impl NoHomeGuard {
         fn set() -> Self {
-            let lock = armadai_core::config::ENV_MUTEX.lock().unwrap();
+            let lock = armadai_core::test_support::env_lock();
             let original_home = std::env::var("HOME").ok();
             let original_projects_dir = std::env::var("ARMADAI_CLAUDE_PROJECTS_DIR").ok();
-            // SAFETY: modifies the global environment; serialised via ENV_MUTEX.
+            // SAFETY: modifies the global environment; serialised via `env_lock()`.
             unsafe {
                 std::env::remove_var("HOME");
                 std::env::remove_var("ARMADAI_CLAUDE_PROJECTS_DIR");

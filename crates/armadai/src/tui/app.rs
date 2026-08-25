@@ -943,64 +943,7 @@ mod esc_armed_tests {
 #[cfg(test)]
 mod load_agents_declarative_tests {
     use super::*;
-    use armadai_core::config::ENV_MUTEX;
-
-    /// Points `ARMADAI_CONFIG_DIR` at a fresh, empty temp dir and the
-    /// process's cwd at `project_root` for its lifetime, restoring both on
-    /// drop (even on panic via a plain `Drop` impl, not a try/finally).
-    /// `App::load_agents` resolves its project via the cwd-based
-    /// `project::find_project_config()` and its global fallback via the
-    /// env-var-based `user_agents_dir()` -- both process-global state, so
-    /// this is serialised on `ENV_MUTEX` (shared with the rest of the
-    /// workspace's env-mutating tests) to avoid racing a concurrently
-    /// running test that reads either one unguarded.
-    struct ProjectDirGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        orig_cwd: std::path::PathBuf,
-        orig_config_dir: Option<String>,
-        config_tmp: tempfile::TempDir,
-    }
-
-    impl ProjectDirGuard {
-        fn enter(project_root: &std::path::Path) -> Self {
-            let lock = ENV_MUTEX.lock().unwrap();
-            let orig_cwd = std::env::current_dir().unwrap();
-            let orig_config_dir = std::env::var("ARMADAI_CONFIG_DIR").ok();
-            let config_tmp = tempfile::tempdir().unwrap();
-            // SAFETY: serialised via ENV_MUTEX above.
-            unsafe {
-                std::env::set_var("ARMADAI_CONFIG_DIR", config_tmp.path());
-            }
-            std::env::set_current_dir(project_root).unwrap();
-            Self {
-                _lock: lock,
-                orig_cwd,
-                orig_config_dir,
-                config_tmp,
-            }
-        }
-
-        /// The isolated global agent library, for a test that wants to
-        /// plant a same-named `.md` there to check it isn't shadowing a
-        /// declared agent.
-        fn global_agents_dir(&self) -> std::path::PathBuf {
-            self.config_tmp.path().join("agents")
-        }
-    }
-
-    impl Drop for ProjectDirGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.orig_cwd);
-            // SAFETY: restoring original env state, still under the guard
-            // held by `self._lock` until this `Drop` returns.
-            unsafe {
-                match &self.orig_config_dir {
-                    Some(v) => std::env::set_var("ARMADAI_CONFIG_DIR", v),
-                    None => std::env::remove_var("ARMADAI_CONFIG_DIR"),
-                }
-            }
-        }
-    }
+    use armadai_core::test_support::IsolatedProjectDir;
 
     /// A declarations-only project: no `agents:` list at all (the layout
     /// this format exists to enable), two declared agents -- one plain, one
@@ -1030,7 +973,7 @@ mod load_agents_declarative_tests {
     fn declared_agents_appear_for_a_declarations_only_project() {
         let dir = declared_only_project();
         let root = dir.path().join("project");
-        let _guard = ProjectDirGuard::enter(&root);
+        let _guard = IsolatedProjectDir::enter(&root);
 
         let mut app = App::new();
         app.load_agents();
@@ -1054,7 +997,7 @@ mod load_agents_declarative_tests {
     fn a_declared_agent_is_not_shadowed_by_a_same_named_global_agent() {
         let dir = declared_only_project();
         let root = dir.path().join("project");
-        let guard = ProjectDirGuard::enter(&root);
+        let guard = IsolatedProjectDir::enter(&root);
 
         let global_agents = guard.global_agents_dir();
         std::fs::create_dir_all(&global_agents).unwrap();

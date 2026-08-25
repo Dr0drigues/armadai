@@ -610,11 +610,11 @@ mod tests {
     async fn sources_add_and_load() {
         use tempfile::tempdir;
 
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
 
         let temp = tempdir().unwrap();
-        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        // SAFETY: serialised via `env_lock()`; restored at end of test.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", temp.path());
         }
@@ -637,11 +637,11 @@ mod tests {
     async fn sources_remove_existing() {
         use tempfile::tempdir;
 
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
 
         let temp = tempdir().unwrap();
-        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        // SAFETY: serialised via `env_lock()`; restored at end of test.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", temp.path());
         }
@@ -664,11 +664,11 @@ mod tests {
     async fn sources_add_is_idempotent() {
         use tempfile::tempdir;
 
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
 
         let temp = tempdir().unwrap();
-        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        // SAFETY: serialised via `env_lock()`; restored at end of test.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", temp.path());
         }

@@ -452,10 +452,10 @@ mod tests {
         // Backward compat: with no starter registry sources configured (the
         // default — no `registries.yaml`), a miss on an unknown pack name
         // must return None without attempting any sync/network call.
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         let config_dir = tempfile::tempdir().unwrap();
-        // SAFETY: serialised via ENV_MUTEX; restored at end of test.
+        // SAFETY: serialised via `env_lock()`; restored at end of test.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", config_dir.path());
         }

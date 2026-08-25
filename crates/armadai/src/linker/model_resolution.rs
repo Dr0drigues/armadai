@@ -461,10 +461,10 @@ mod tests {
         // machine + parallel test runs — see resolve_model_for_tier's
         // doc-comment). With no cache reachable, resolution always takes the
         // hardcoded-fallback path, making the assertion deterministic.
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         let tmp = tempfile::tempdir().expect("tempdir");
-        // SAFETY: env mutation is serialised via ENV_MUTEX for the duration
+        // SAFETY: env mutation is serialised via `env_lock()` for the duration
         // of this test, and the original value is restored before returning.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", tmp.path());

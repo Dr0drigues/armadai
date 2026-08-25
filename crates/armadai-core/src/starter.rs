@@ -571,12 +571,12 @@ description: Minimal pack
 
     #[test]
     fn test_install_pack() {
-        let _guard = crate::config::ENV_MUTEX.lock().unwrap();
+        let _guard = crate::test_support::env_lock();
         let config_dir = tempfile::tempdir().unwrap();
 
         // Override config dir for test.
         // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
-        // Serialised via ENV_MUTEX to avoid data races with other tests.
+        // Serialised via `env_lock()` to avoid data races with other tests.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", config_dir.path());
         }
@@ -668,11 +668,11 @@ skills:
 
     #[test]
     fn test_install_rejects_path_traversal_agent_name() {
-        let _guard = crate::config::ENV_MUTEX.lock().unwrap();
+        let _guard = crate::test_support::env_lock();
         let config_dir = tempfile::tempdir().unwrap();
 
         // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
-        // Serialised via ENV_MUTEX to avoid data races with other tests.
+        // Serialised via `env_lock()` to avoid data races with other tests.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", config_dir.path());
         }

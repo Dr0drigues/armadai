@@ -737,13 +737,13 @@ agents:
     /// included). A test exercising `load_all_agents` without isolating
     /// this can pass — or fail — for a reason that has nothing to do with
     /// its own fixture, and would behave differently on a machine that has
-    /// never run those commands. Serialised via `ENV_MUTEX` since it
+    /// never run those commands. Serialised via `env_lock()` since it
     /// mutates a process-global env var.
     fn with_isolated_global_library<T>(f: impl FnOnce() -> T) -> T {
-        let _guard = crate::config::ENV_MUTEX.lock().unwrap();
+        let _guard = crate::test_support::env_lock();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         let empty = tempfile::tempdir().unwrap();
-        // SAFETY: serialised via ENV_MUTEX above.
+        // SAFETY: serialised via `env_lock()` above.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", empty.path());
         }

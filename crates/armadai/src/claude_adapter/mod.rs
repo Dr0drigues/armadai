@@ -348,8 +348,8 @@ mod tests {
     fn register_from_reader_appends_index() {
         let dir = tempfile::tempdir().unwrap();
         let idx = dir.path().join("idx.jsonl");
-        // SAFETY: single-threaded test; serialise env via ENV_MUTEX in real cross-test setups.
-        let _g = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        // SAFETY: single-threaded test; serialise env via `env_lock()` in real cross-test setups.
+        let _g = armadai_core::test_support::env_lock();
         unsafe {
             std::env::set_var("ARMADAI_SESSION_INDEX", &idx);
         }
@@ -370,8 +370,8 @@ mod tests {
     fn register_from_reader_stamps_started_at_when_payload_has_no_timestamp() {
         let dir = tempfile::tempdir().unwrap();
         let idx = dir.path().join("idx.jsonl");
-        // SAFETY: single-threaded test; serialise env via ENV_MUTEX.
-        let _g = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        // SAFETY: single-threaded test; serialise env via `env_lock()`.
+        let _g = armadai_core::test_support::env_lock();
         unsafe {
             std::env::set_var("ARMADAI_SESSION_INDEX", &idx);
         }

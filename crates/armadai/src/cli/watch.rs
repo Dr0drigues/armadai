@@ -65,7 +65,7 @@ mod tests {
         assert_eq!(claude.role, AgentRole::Coordinator);
     }
 
-    /// Holds `ENV_MUTEX` for the duration of `ARMADAI_SESSION_INDEX`
+    /// Holds `env_lock()` for the duration of `ARMADAI_SESSION_INDEX`
     /// mutation, serialising it against other env-mutating tests across the
     /// crate. Wrapped in a struct (rather than a bare local `MutexGuard`)
     /// because these tests are `#[tokio::test]` and hold the lock across an
@@ -78,8 +78,8 @@ mod tests {
 
     impl SessionIndexEnvGuard {
         fn set(path: &std::path::Path) -> Self {
-            let lock = armadai_core::config::ENV_MUTEX.lock().unwrap();
-            // SAFETY: modifies the global environment; serialised via ENV_MUTEX.
+            let lock = armadai_core::test_support::env_lock();
+            // SAFETY: modifies the global environment; serialised via `env_lock()`.
             unsafe {
                 std::env::set_var("ARMADAI_SESSION_INDEX", path);
             }

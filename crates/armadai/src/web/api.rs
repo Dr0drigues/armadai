@@ -916,58 +916,12 @@ pub async fn get_orchestration_topology() -> Json<serde_json::Value> {
 #[cfg(all(test, feature = "storage"))]
 mod tests {
     use super::*;
-    use armadai_core::config::ENV_MUTEX;
+    use crate::test_support::TempStorageGuard;
     use armadai_storage::queries::{
         BoardEntryRecord, DelegationEventRecord, OrchestrationRunRecord, RingVoteRecord, RunRecord,
         insert_board_entry, insert_delegation_event, insert_orchestration_run, insert_ring_vote,
         insert_run_with_id,
     };
-
-    /// Guard that points `ARMADAI_CONFIG_DIR` at a fresh temp dir with a
-    /// `config.yaml` redirecting storage to a scratch sqlite file, so
-    /// `init_db()` (as called by the handler under test) reads/writes there
-    /// instead of the real user config. Restores the original env var and
-    /// releases the shared env-mutation lock (`ENV_MUTEX`) on drop.
-    struct TempStorageGuard {
-        _dir: tempfile::TempDir,
-        orig: Option<String>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl TempStorageGuard {
-        fn new() -> Self {
-            let lock = ENV_MUTEX.lock().unwrap();
-            let dir = tempfile::tempdir().unwrap();
-            let db_path = dir.path().join("test.sqlite");
-            let config_yaml = format!(
-                "storage:\n  mode: embedded\n  path: \"{}\"\n",
-                db_path.display()
-            );
-            std::fs::write(dir.path().join("config.yaml"), config_yaml).unwrap();
-
-            let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
-            // SAFETY: modifies the global environment; serialised via ENV_MUTEX.
-            unsafe {
-                std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
-            }
-
-            Self {
-                _dir: dir,
-                orig,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for TempStorageGuard {
-        fn drop(&mut self) {
-            match self.orig.take() {
-                // SAFETY: restoring original env state at end of test scope.
-                Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
-                None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
-            }
-        }
-    }
 
     #[tokio::test]
     async fn test_get_orchestration_trace_detail_returns_run_and_entries() {
@@ -1205,64 +1159,7 @@ mod tests {
 #[cfg(test)]
 mod load_agents_declarative_tests {
     use super::*;
-    use armadai_core::config::ENV_MUTEX;
-
-    /// Points `ARMADAI_CONFIG_DIR` at a fresh, empty temp dir and the
-    /// process's cwd at `project_root` for its lifetime, restoring both on
-    /// drop (even on panic via a plain `Drop` impl, not a try/finally). The
-    /// handler under test resolves its project via the cwd-based
-    /// `project::find_project_config()` and its global fallback via the
-    /// env-var-based `user_agents_dir()` -- both process-global state, so
-    /// this is serialised on `ENV_MUTEX` (shared with the rest of the
-    /// workspace's env-mutating tests) to avoid racing a concurrently
-    /// running test that reads either one unguarded.
-    struct ProjectDirGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        orig_cwd: std::path::PathBuf,
-        orig_config_dir: Option<String>,
-        config_tmp: tempfile::TempDir,
-    }
-
-    impl ProjectDirGuard {
-        fn enter(project_root: &std::path::Path) -> Self {
-            let lock = ENV_MUTEX.lock().unwrap();
-            let orig_cwd = std::env::current_dir().unwrap();
-            let orig_config_dir = std::env::var("ARMADAI_CONFIG_DIR").ok();
-            let config_tmp = tempfile::tempdir().unwrap();
-            // SAFETY: serialised via ENV_MUTEX above.
-            unsafe {
-                std::env::set_var("ARMADAI_CONFIG_DIR", config_tmp.path());
-            }
-            std::env::set_current_dir(project_root).unwrap();
-            Self {
-                _lock: lock,
-                orig_cwd,
-                orig_config_dir,
-                config_tmp,
-            }
-        }
-
-        /// The isolated global agent library, for a test that wants to
-        /// plant a same-named `.md` there to check it isn't shadowing a
-        /// declared agent.
-        fn global_agents_dir(&self) -> std::path::PathBuf {
-            self.config_tmp.path().join("agents")
-        }
-    }
-
-    impl Drop for ProjectDirGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.orig_cwd);
-            // SAFETY: restoring original env state, still under the guard
-            // held by `self._lock` until this `Drop` returns.
-            unsafe {
-                match &self.orig_config_dir {
-                    Some(v) => std::env::set_var("ARMADAI_CONFIG_DIR", v),
-                    None => std::env::remove_var("ARMADAI_CONFIG_DIR"),
-                }
-            }
-        }
-    }
+    use armadai_core::test_support::IsolatedProjectDir;
 
     /// A declarations-only project: no `agents:` list at all (the layout
     /// this format exists to enable), two declared agents -- one plain, one
@@ -1292,7 +1189,7 @@ mod load_agents_declarative_tests {
     fn declared_agents_appear_for_a_declarations_only_project() {
         let dir = declared_only_project();
         let root = dir.path().join("project");
-        let _guard = ProjectDirGuard::enter(&root);
+        let _guard = IsolatedProjectDir::enter(&root);
 
         let mut names: Vec<String> = load_agents().into_iter().map(|a| a.name).collect();
         names.sort_unstable();
@@ -1316,7 +1213,7 @@ mod load_agents_declarative_tests {
     fn a_declared_agent_is_not_shadowed_by_a_same_named_global_agent() {
         let dir = declared_only_project();
         let root = dir.path().join("project");
-        let guard = ProjectDirGuard::enter(&root);
+        let guard = IsolatedProjectDir::enter(&root);
 
         let global_agents = guard.global_agents_dir();
         std::fs::create_dir_all(&global_agents).unwrap();

@@ -22,3 +22,5 @@ pub mod routing;
 pub mod skill;
 pub mod starter;
 pub mod template;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;

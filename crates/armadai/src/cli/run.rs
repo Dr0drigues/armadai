@@ -3286,50 +3286,7 @@ mod es_switch_tests {
         (capture, dyn_sink)
     }
 
-    /// Redirect `storage` at a throwaway temp DB for the scope of a test, so
-    /// the ES dispatch's persistence (`SqliteLog` via `crate::db::init_db`)
-    /// never writes into the user's real event log (#267). Points
-    /// `ARMADAI_CONFIG_DIR` at a temp `config.yaml` whose `storage.path` is a
-    /// scratch sqlite file; serialised via `ENV_MUTEX` and restored on drop.
-    /// Mirrors the guard in `src/web/api.rs` tests.
-    struct TempStorageGuard {
-        _dir: tempfile::TempDir,
-        orig: Option<String>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl TempStorageGuard {
-        fn new() -> Self {
-            let lock = armadai_core::config::ENV_MUTEX.lock().unwrap();
-            let dir = tempfile::tempdir().unwrap();
-            let db_path = dir.path().join("test.sqlite");
-            let config_yaml = format!(
-                "storage:\n  mode: embedded\n  path: \"{}\"\n",
-                db_path.display()
-            );
-            std::fs::write(dir.path().join("config.yaml"), config_yaml).unwrap();
-            let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
-            // SAFETY: modifies the global environment; serialised via ENV_MUTEX.
-            unsafe {
-                std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
-            }
-            Self {
-                _dir: dir,
-                orig,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for TempStorageGuard {
-        fn drop(&mut self) {
-            match self.orig.take() {
-                // SAFETY: restoring original env state at end of test scope.
-                Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
-                None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
-            }
-        }
-    }
+    use crate::test_support::TempStorageGuard;
 
     // ── T5a: direct ──────────────────────────────────────────────────
 

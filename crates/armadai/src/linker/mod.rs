@@ -400,13 +400,13 @@ mod tests {
     /// from a dev box's real global library instead of the fixture below,
     /// and pass or fail for a reason that has nothing to do with its own
     /// fixture. Mirrors `agent_source.rs`'s own
-    /// `with_isolated_global_library`; serialised via `ENV_MUTEX` since it
+    /// `with_isolated_global_library`; serialised via `env_lock()` since it
     /// mutates a process-global env var.
     fn with_isolated_global_library<T>(f: impl FnOnce() -> T) -> T {
-        let _guard = armadai_core::config::ENV_MUTEX.lock().unwrap();
+        let _guard = armadai_core::test_support::env_lock();
         let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
         let empty = tempfile::tempdir().unwrap();
-        // SAFETY: serialised via ENV_MUTEX above.
+        // SAFETY: serialised via `env_lock()` above.
         unsafe {
             std::env::set_var("ARMADAI_CONFIG_DIR", empty.path());
         }
