@@ -6,26 +6,46 @@
 //! is the reactive half — what to do when the SERVER comes back with a
 //! rate-limit or overload response.
 //!
-//! Both providers speak plain HTTP and hit exactly the same two failure
-//! modes (429 rate-limited, 529 overloaded), read the same `Retry-After`
-//! header, and need the same retryable/terminal distinction (a 400 or 401
-//! is never worth retrying — doing so only delays a clear error). This is
-//! implemented ONCE here and used by both `api::anthropic` and `api::google`
-//! rather than grown independently in each — two copies of one policy is
-//! the defect class this repo has fixed repeatedly (see the issue write-up).
-//! `openai.rs`/`proxy.rs` are still `todo!()` stubs and make no HTTP calls
-//! yet, so they have nothing to wire up here.
+//! Both providers speak plain HTTP and hit overlapping — not identical —
+//! failure modes under overload, all of which need the same retryable/
+//! terminal distinction (a 400 or 401 is never worth retrying — doing so
+//! only delays a clear error):
+//!
+//! - **429** (rate limited): both Anthropic (`rate_limit_error`) and
+//!   Google/Gemini (`RESOURCE_EXHAUSTED`) emit this.
+//! - **529**: Anthropic's `overloaded_error`. Not part of Gemini's
+//!   documented error taxonomy, but harmless to keep in the shared set —
+//!   Google will simply never produce it.
+//! - **503**: Gemini's overload signal (`UNAVAILABLE`). Also RFC 7231's
+//!   generic "Service Unavailable", which per spec MAY carry `Retry-After`
+//!   and is meant to be transient — so treating it as retryable is the
+//!   conventional reading, not a stretch. Anthropic doesn't document it,
+//!   but the same "harmless if unused" reasoning applies.
+//!
+//! One shared, provider-agnostic set — `is_retryable` below — covers both
+//! rather than dispatching per provider, and is implemented ONCE here and
+//! used by both `api::anthropic` and `api::google` rather than grown
+//! independently in each — two copies of one policy is the defect class
+//! this repo has fixed repeatedly (see the issue write-up). `openai.rs`/
+//! `proxy.rs` are still `todo!()` stubs and make no HTTP calls yet, so they
+//! have nothing to wire up here.
 //!
 //! Bounded by ATTEMPT COUNT, not elapsed time and not a caller-supplied
 //! deadline: neither provider threads `agent.metadata.timeout` (that only
 //! feeds `CliProvider`) or any `reqwest::Client` timeout into its request
 //! path today, so there is no existing deadline for this loop to interact
-//! with. A `Retry-After` value from the server is honored verbatim and
-//! uncapped — capping it would defeat the point of trusting the server's
-//! own knowledge of its quota window — so the wall-clock cost of a single
-//! wait is not bounded, only the number of waits is (`RetryPolicy::max_retries`).
-//! If a caller-side deadline for API providers is added later, it composes
-//! for free: wrap the whole `complete()`/`stream()` call in
+//! with. A `Retry-After` value from the server is honored close to
+//! verbatim — capping it too aggressively would defeat the point of
+//! trusting the server's own knowledge of its quota window — but it IS
+//! capped, at the dedicated, more generous `RetryPolicy::max_retry_after`
+//! (default 60s, well above the guessed-backoff cap): an unbounded,
+//! server-controlled sleep inside a client is a defect regardless of
+//! whether the server is well-behaved — a misconfigured proxy or a buggy
+//! upstream sending `Retry-After: 86400` must not park the caller for a
+//! day. Only the HTTP delta-seconds form of the header is parsed (see
+//! `parse_retry_after`); the header is only ever a hint, and every wait is
+//! still bounded overall by `max_retries`, so a caller-side deadline added
+//! later composes for free: wrap the whole `complete()`/`stream()` call in
 //! `tokio::time::timeout(..)` from the outside; nothing in this loop needs
 //! to change.
 
@@ -44,9 +64,16 @@ pub(crate) struct RetryPolicy {
     /// Base for the exponential backoff used when the server sends no
     /// `Retry-After` (`base * 2^(attempt-1)`, before jitter).
     pub base_delay: Duration,
-    /// Ceiling for a GUESSED backoff wait. Never applied to a server-declared
-    /// `Retry-After` (see module docs).
+    /// Ceiling for a GUESSED backoff wait (no `Retry-After` present).
     pub max_backoff: Duration,
+    /// Ceiling for a server-declared `Retry-After`. Deliberately separate
+    /// from, and more generous than, `max_backoff`: the server told us
+    /// something real about its own quota window, which deserves more
+    /// trust than our own guess — but not unlimited trust. 60s is long
+    /// enough to respect a real rate-limit window while still bounding the
+    /// worst case from a misconfigured proxy or a buggy/malicious upstream
+    /// (e.g. `Retry-After: 86400`) to something sane.
+    pub max_retry_after: Duration,
 }
 
 impl Default for RetryPolicy {
@@ -55,6 +82,7 @@ impl Default for RetryPolicy {
             max_retries: 3,
             base_delay: Duration::from_millis(500),
             max_backoff: Duration::from_secs(30),
+            max_retry_after: Duration::from_secs(60),
         }
     }
 }
@@ -66,18 +94,23 @@ pub(crate) enum RetryDecision {
     GiveUp,
 }
 
-/// Whether an HTTP status is worth retrying: 429 (rate limited) and 529
-/// (Anthropic's "overloaded"). Everything else — including other 4xx/5xx —
-/// is terminal. A 400 or 401 will never succeed on replay; retrying it only
-/// turns a clear, fast error into a slow one.
+/// Whether an HTTP status is worth retrying: 429 (rate limited, both
+/// providers), 529 (Anthropic's "overloaded"), and 503 (Gemini's overload
+/// signal, and RFC 7231's generic transient "Service Unavailable"). See the
+/// module docs for which provider actually emits which. Everything else —
+/// including other 4xx/5xx — is terminal. A 400 or 401 will never succeed
+/// on replay; retrying it only turns a clear, fast error into a slow one.
 pub(crate) fn is_retryable(status: StatusCode) -> bool {
-    matches!(status.as_u16(), 429 | 529)
+    matches!(status.as_u16(), 429 | 503 | 529)
 }
 
 /// Parse a `Retry-After` value as a plain count of seconds — the only form
-/// Anthropic/Google actually send. The HTTP-date form (`Retry-After: <date>`)
-/// is not produced by either provider today, so a value that doesn't parse
-/// as an unsigned integer is treated as absent rather than guessed at.
+/// Anthropic/Google actually send. The HTTP-date form (`Retry-After: <date>`,
+/// e.g. `Wed, 21 Oct 2026 07:28:00 GMT`) is legal per RFC 7231 but is not
+/// produced by either provider today and is not parsed here — a value that
+/// doesn't parse as an unsigned integer is treated as absent (falling back
+/// to computed backoff) rather than guessed at. `send_with_retry` logs when
+/// this happens so the fallback isn't silent.
 pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
     value.trim().parse::<u64>().ok().map(Duration::from_secs)
 }
@@ -97,7 +130,7 @@ pub(crate) fn decide(
         return RetryDecision::GiveUp;
     }
     match retry_after {
-        Some(delay) => RetryDecision::Retry(delay),
+        Some(delay) => RetryDecision::Retry(delay.min(policy.max_retry_after)),
         None => RetryDecision::Retry(backoff_with_jitter(policy, attempt)),
     }
 }
@@ -132,8 +165,9 @@ fn full_jitter(cap: Duration) -> Duration {
     cap.mul_f64(frac)
 }
 
-/// Send a request, retrying on 429/529 per `policy` and honoring
-/// `Retry-After` when the server sends one. `build` is called once per
+/// Send a request, retrying on 429/503/529 per `policy` and honoring
+/// `Retry-After` (capped, see module docs) when the server sends one.
+/// `build` is called once per
 /// attempt (never `Fn`-cached) since a `RequestBuilder` is consumed by
 /// `send()` and can't be replayed.
 ///
@@ -157,11 +191,24 @@ where
             return Ok(response);
         }
 
-        let retry_after = response
+        let retry_after_raw = response
             .headers()
             .get(RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_retry_after);
+            .and_then(|v| v.to_str().ok());
+        let retry_after = retry_after_raw.and_then(parse_retry_after);
+
+        if let Some(raw) = retry_after_raw
+            && retry_after.is_none()
+        {
+            // Legal (HTTP-date) but unsupported form — see parse_retry_after.
+            // Not silent: falling back to computed backoff without saying so
+            // would hide that we ignored a hint the server actually gave us.
+            tracing::debug!(
+                raw_value = raw,
+                "Retry-After header present but not in the supported delta-seconds form \
+                 (HTTP-date is not parsed) — falling back to computed backoff",
+            );
+        }
 
         match decide(policy, status, retry_after, attempt) {
             RetryDecision::GiveUp => return Ok(response),
@@ -200,17 +247,28 @@ mod tests {
     }
 
     #[test]
-    fn is_retryable_is_exactly_429_and_529() {
-        // Mutation this catches: the retryable set drifting — e.g. someone
-        // "helpfully" adding a generic 5xx, or dropping 529 because it's
-        // Anthropic-specific and easy to forget when generalizing.
-        for code in [429, 529] {
+    fn parse_retry_after_does_not_parse_the_http_date_form() {
+        // Documents a known, deliberate limitation (see module docs):
+        // Retry-After's HTTP-date form is legal per RFC 7231 but not
+        // parsed. Mutation this catches: silently starting to accept it
+        // (which would need re-auditing the "falls back to backoff, with a
+        // log line" behavior this test and `send_with_retry` both assume).
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+    }
+
+    #[test]
+    fn is_retryable_is_exactly_429_503_and_529() {
+        // Mutation this catches: the retryable set drifting — e.g. dropping
+        // 503 (Gemini's actual overload status) or 529 (Anthropic's,
+        // easy to forget when generalizing) because they're
+        // provider-specific, or "helpfully" widening to a generic 5xx.
+        for code in [429, 503, 529] {
             assert!(
                 is_retryable(StatusCode::from_u16(code).unwrap()),
                 "{code} should be retryable"
             );
         }
-        for code in [400, 401, 403, 404, 500, 502, 503] {
+        for code in [400, 401, 403, 404, 500, 502, 504] {
             assert!(
                 !is_retryable(StatusCode::from_u16(code).unwrap()),
                 "{code} must NOT be retryable"
@@ -219,14 +277,17 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_header_is_honored_verbatim_over_backoff() {
+    fn retry_after_header_is_honored_up_to_the_cap() {
         // Mutation this catches: computing a backoff delay even when the
-        // server gave an explicit `Retry-After`, or scaling/capping that
-        // value instead of using it as-is.
+        // server gave an explicit `Retry-After`, or scaling that value
+        // instead of using it as-is (for a value comfortably under the
+        // cap, "as-is" and "capped" are indistinguishable — that's the
+        // point of this test; the next one pins the cap itself).
         let policy = RetryPolicy {
             max_retries: 3,
             base_delay: Duration::from_millis(1),
             max_backoff: Duration::from_millis(1),
+            max_retry_after: Duration::from_secs(60),
         };
         let decision = decide(
             &policy,
@@ -235,6 +296,28 @@ mod tests {
             1,
         );
         assert_eq!(decision, RetryDecision::Retry(Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn retry_after_header_above_the_cap_is_clamped() {
+        // The defect this closes: a buggy server or an injecting proxy
+        // sending `Retry-After: 86400` must not park the caller for a day.
+        // Mutation this catches: dropping the `.min(max_retry_after)` (or
+        // applying it to the wrong branch, e.g. the guessed backoff
+        // instead of the header).
+        let policy = RetryPolicy {
+            max_retries: 3,
+            base_delay: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+            max_retry_after: Duration::from_secs(60),
+        };
+        let decision = decide(
+            &policy,
+            StatusCode::TOO_MANY_REQUESTS,
+            Some(Duration::from_secs(86_400)),
+            1,
+        );
+        assert_eq!(decision, RetryDecision::Retry(Duration::from_secs(60)));
     }
 
     #[test]
@@ -247,6 +330,7 @@ mod tests {
             max_retries: 5,
             base_delay: Duration::from_millis(100),
             max_backoff: Duration::from_millis(100),
+            ..RetryPolicy::default()
         };
         let mut seen = std::collections::HashSet::new();
         for _ in 0..30 {
@@ -290,6 +374,7 @@ mod tests {
             max_retries: 2,
             base_delay: Duration::from_millis(1),
             max_backoff: Duration::from_millis(1),
+            ..RetryPolicy::default()
         };
         assert!(matches!(
             decide(&policy, StatusCode::TOO_MANY_REQUESTS, None, 2),
@@ -374,6 +459,7 @@ mod tests {
             max_retries: 2,
             base_delay: Duration::from_millis(20),
             max_backoff: Duration::from_millis(20),
+            ..RetryPolicy::default()
         }
     }
 
@@ -401,6 +487,75 @@ mod tests {
             "should have waited ~1s per Retry-After, took {:?}",
             start.elapsed()
         );
+        assert_eq!(server.request_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_clamps_a_pathological_retry_after_header() {
+        // The over-the-wire proof of the cap fix: a server (or an
+        // injecting proxy) sending a huge Retry-After must not park the
+        // caller anywhere near that long. Mutation this catches: the cap
+        // not actually being wired into the real `send_with_retry` path
+        // (e.g. only added to `decide` in isolation, or applied to the
+        // wrong Duration) — this test uses a policy whose cap is tiny and
+        // whose base_delay/max_backoff are LARGER, so honoring the
+        // (huge) header uncapped OR falling back to the backoff cap would
+        // both blow the timing assertion; only clamping to
+        // `max_retry_after` fits inside it. Without the cap this doesn't
+        // just fail the assertion — it actually sleeps for 999999s
+        // (confirmed by hand: the test hung until killed), so the call is
+        // wrapped in a `tokio::time::timeout` the same way as the
+        // give-up-after-budget test, turning "no cap" into a fast failure.
+        let policy = RetryPolicy {
+            max_retries: 2,
+            base_delay: Duration::from_millis(200),
+            max_backoff: Duration::from_millis(200),
+            max_retry_after: Duration::from_millis(20),
+        };
+        let server = ScriptedServer::start(vec![
+            (429, vec![("Retry-After", "999999".to_string())], ""),
+            (200, vec![], "ok"),
+        ]);
+        let client = reqwest::Client::new();
+        let url = server.url();
+        let start = std::time::Instant::now();
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            send_with_retry(&policy, || client.get(&url)),
+        )
+        .await
+        .expect("send_with_retry did not clamp the Retry-After header")
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            start.elapsed() < Duration::from_millis(150),
+            "a Retry-After of 999999s must be clamped to the 20ms cap, took {:?}",
+            start.elapsed()
+        );
+        assert_eq!(server.request_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_falls_back_to_backoff_on_an_http_date_header() {
+        // Wiring proof for the HTTP-date limitation: a legal but unparsed
+        // `Retry-After` form must not crash or hang the request — it
+        // should behave exactly like "no header", i.e. computed backoff.
+        // Mutation this catches: `send_with_retry` panicking or stalling
+        // on a header it can't parse instead of falling through cleanly.
+        let server = ScriptedServer::start(vec![
+            (
+                429,
+                vec![("Retry-After", "Wed, 21 Oct 2026 07:28:00 GMT".to_string())],
+                "",
+            ),
+            (200, vec![], "ok"),
+        ]);
+        let client = reqwest::Client::new();
+        let url = server.url();
+        let response = send_with_retry(&tiny_policy(), || client.get(&url))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(server.request_count(), 2);
     }
 
@@ -452,6 +607,7 @@ mod tests {
             max_retries: 2,
             base_delay: Duration::from_millis(5),
             max_backoff: Duration::from_millis(5),
+            ..RetryPolicy::default()
         };
         let server = ScriptedServer::start(vec![(429, vec![], "still overloaded")]);
         let client = reqwest::Client::new();
