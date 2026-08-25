@@ -24,6 +24,11 @@
 //! - **Request capture** (`request(i)`): the raw bytes the server received,
 //!   so a test can assert on what was *sent* (e.g. that no `Authorization`
 //!   header went out for a keyless proxy).
+//! - **A gate** (`start_gated`/`release`): the server writes the first body
+//!   chunk and then holds the connection open indefinitely. That turns "was
+//!   this event emitted as it arrived, or only rescued at EOF?" into a
+//!   categorical question — with no EOF to rescue it, a reader that misses
+//!   the boundary produces nothing at all.
 //!
 //! Each accepted connection serves exactly one scripted response and then
 //! closes (`Connection: close`, so reqwest never reuses a stale connection
@@ -33,7 +38,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -90,14 +95,49 @@ impl From<(u16, ScriptedHeaders, &'static str)> for ScriptedResponse {
     }
 }
 
+/// How long a gated server waits for [`ScriptedServer::release`] before
+/// giving up and finishing the body anyway. Only reached when a test panics
+/// before releasing — without it that test would leak a thread spinning for
+/// the lifetime of the process.
+const GATE_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub(crate) struct ScriptedServer {
     addr: std::net::SocketAddr,
     requests: Arc<AtomicUsize>,
     received: Arc<Mutex<Vec<String>>>,
+    gate: Arc<AtomicBool>,
 }
 
 impl ScriptedServer {
     pub(crate) fn start<R: Into<ScriptedResponse>>(responses: Vec<R>) -> Self {
+        Self::start_with_gate(responses, Arc::new(AtomicBool::new(true)))
+    }
+
+    /// Like [`ScriptedServer::start`], but the server writes the head and the
+    /// **first** body chunk and then holds the connection open, writing
+    /// nothing more until [`ScriptedServer::release`] is called.
+    ///
+    /// This is what turns "did the client emit the first event as it
+    /// arrived?" from a timing measurement into a categorical one: while the
+    /// gate is shut there is no further data and no EOF, so a client that
+    /// only recognises its event boundary at end-of-stream produces *nothing
+    /// at all* rather than the same tokens a little later. The test then
+    /// bounds the read with a generous `timeout` that is an anti-hang guard,
+    /// not a threshold to tune.
+    pub(crate) fn start_gated<R: Into<ScriptedResponse>>(responses: Vec<R>) -> Self {
+        Self::start_with_gate(responses, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Open the gate: a server started with [`ScriptedServer::start_gated`]
+    /// finishes writing its body and closes.
+    pub(crate) fn release(&self) {
+        self.gate.store(true, Ordering::SeqCst);
+    }
+
+    fn start_with_gate<R: Into<ScriptedResponse>>(
+        responses: Vec<R>,
+        gate: Arc<AtomicBool>,
+    ) -> Self {
         let responses: Vec<ScriptedResponse> = responses.into_iter().map(Into::into).collect();
         assert!(
             !responses.is_empty(),
@@ -111,6 +151,7 @@ impl ScriptedServer {
 
         let requests_clone = requests.clone();
         let received_clone = received.clone();
+        let gate_clone = gate.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
@@ -152,6 +193,7 @@ impl ScriptedServer {
                         // Long enough that the client's read loop wakes up
                         // between writes, short enough to keep the suite fast.
                         std::thread::sleep(Duration::from_millis(30));
+                        wait_for_gate(&gate_clone);
                     }
                     if stream.write_all(chunk.as_bytes()).is_err() {
                         break;
@@ -165,6 +207,7 @@ impl ScriptedServer {
             addr,
             requests,
             received,
+            gate,
         }
     }
 
@@ -180,6 +223,14 @@ impl ScriptedServer {
     /// and body), or `None` if that many requests never arrived.
     pub(crate) fn request(&self, index: usize) -> Option<String> {
         self.received.lock().ok()?.get(index).cloned()
+    }
+}
+
+/// Block until the gate opens, or until [`GATE_TIMEOUT`] elapses.
+fn wait_for_gate(gate: &AtomicBool) {
+    let deadline = std::time::Instant::now() + GATE_TIMEOUT;
+    while !gate.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 

@@ -194,6 +194,53 @@ mod tests {
         assert_eq!(resp.model, "gpt-4o-mini");
     }
 
+    /// The defect this guards: a `200` whose body is an error envelope.
+    /// Every field of the response type is optional, so such a body parses
+    /// into an empty completion and the run is recorded as successful, empty
+    /// and free — `Ok(CompletionResponse { content: "", tokens_in: 0, cost:
+    /// 0.0 })`. Ollama and LiteLLM in pass-through mode both answer this way.
+    ///
+    /// `anthropic`/`google` are protected here by accident: their required
+    /// `content`/`candidates` fields make the same body a parse failure. This
+    /// path had to be told.
+    #[tokio::test]
+    async fn complete_rejects_a_success_status_carrying_an_error_envelope() {
+        let server = ScriptedServer::start(vec![ScriptedResponse::body(
+            200,
+            r#"{"error":{"message":"Rate limit exceeded","type":"rate_limit"}}"#,
+        )]);
+
+        let err = match provider_at(&server).complete(request()).await {
+            Ok(resp) => panic!(
+                "an error envelope was reported as a successful empty run: \
+                 content={:?} tokens_in={} cost={}",
+                resp.content, resp.tokens_in, resp.cost
+            ),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("Rate limit exceeded"), "got: {err}");
+    }
+
+    /// The other side of the same check: a `200` that legitimately carries
+    /// no `choices` (a filtered answer, a usage-only body) must stay a
+    /// success. `is_error_body` is what separates the two, so this is the
+    /// test that would catch it being widened into "any empty response is an
+    /// error".
+    #[tokio::test]
+    async fn complete_still_accepts_an_empty_body_that_is_not_an_error() {
+        let server = ScriptedServer::start(vec![ScriptedResponse::body(
+            200,
+            r#"{"model":"gpt-4o","error":null,"usage":{"prompt_tokens":4,"completion_tokens":0}}"#,
+        )]);
+
+        let resp = provider_at(&server)
+            .complete(request())
+            .await
+            .expect("an empty-but-successful body must not be rejected");
+        assert_eq!(resp.content, "");
+        assert_eq!(resp.tokens_in, 4);
+    }
+
     #[tokio::test]
     async fn an_http_error_surfaces_the_servers_own_message() {
         let body = r#"{"error": {"message": "Unsupported parameter: 'max_tokens'",
@@ -402,41 +449,147 @@ mod tests {
         assert_eq!(collect(stream).await, vec!["one", "two"]);
     }
 
-    /// CRLF-framed events must be recognised **as they arrive**, not
-    /// rescued at EOF by the end-of-stream flush.
+    /// CRLF-framed events must be recognised **as they arrive**, not rescued
+    /// at EOF by the end-of-stream flush.
     ///
-    /// This has to be a timing assertion, and the bound comes from the
-    /// defect rather than from the nominal time: searching only for `\n\n`
-    /// (what `anthropic.rs`/`google.rs` do) leaves a CRLF stream buffered
-    /// until the connection closes, so the first token would arrive only
-    /// after the whole 21-chunk tail — the server pauses 30ms between
-    /// chunks, so ~630ms. Correct framing emits it as soon as chunk 0
-    /// lands. The 250ms bound sits well below the defect's floor and well
-    /// above the correct behaviour's cost. Asserting the *content* alone
-    /// cannot fail here: with the framing broken the same tokens still come
-    /// out at EOF, only later — measured, see the report for #368.
+    /// Categorical, not a timing measurement: the server writes the first
+    /// event and then *holds the connection open*, sending neither more data
+    /// nor EOF until `release()`. A reader that searches only for `\n\n`
+    /// (what `anthropic.rs`/`google.rs` do) therefore emits nothing at all
+    /// rather than the same tokens a little later, and the `timeout` below
+    /// is an anti-hang guard rather than a threshold to tune. The previous
+    /// version of this test asserted `elapsed < 250ms` against a 21-chunk
+    /// tail; it held (worst case 161ms over 1150 runs) but spent 64% of its
+    /// budget, and a bound that can be approached is a bound that can be
+    /// crossed on a loaded machine.
     #[tokio::test]
-    async fn stream_emits_a_crlf_framed_event_before_the_connection_closes() {
-        let mut chunks =
-            vec!["data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\r\n\r\n".to_string()];
-        // SSE comments: valid frames carrying no token, so only the timing
-        // of the first token is under test.
-        chunks.extend(std::iter::repeat_n(": keep-alive\r\n\r\n".to_string(), 20));
-        chunks.push("data: [DONE]\r\n\r\n".to_string());
-        let server = ScriptedServer::start(vec![ScriptedResponse::streamed(200, chunks)]);
+    async fn stream_emits_a_crlf_framed_event_while_the_connection_is_open() {
+        let server = ScriptedServer::start_gated(vec![ScriptedResponse::streamed(
+            200,
+            vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\r\n\r\n",
+                "data: [DONE]\r\n\r\n",
+            ],
+        )]);
 
         let mut stream = provider_at(&server)
             .stream(request())
             .await
             .expect("stream");
-        let started = std::time::Instant::now();
-        let first = stream.next().await.expect("a first token").expect("ok");
-        let elapsed = started.elapsed();
-
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .expect("a CRLF-framed event was buffered instead of emitted on arrival")
+            .expect("a first token")
+            .expect("ok");
         assert_eq!(first, "one");
+        server.release();
+    }
+
+    /// A CR-only stream: legal SSE, and a third framing a reader can be
+    /// blind to. Same categorical shape as the CRLF case above — while the
+    /// gate is shut there is no EOF to rescue an unrecognised boundary.
+    #[tokio::test]
+    async fn stream_emits_a_cr_framed_event_while_the_connection_is_open() {
+        let server = ScriptedServer::start_gated(vec![ScriptedResponse::streamed(
+            200,
+            vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"cr\"}}]}\r\r",
+                "data: [DONE]\r\r",
+            ],
+        )]);
+
+        let mut stream = provider_at(&server)
+            .stream(request())
+            .await
+            .expect("stream");
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .expect("a CR-framed event was never recognised as an event")
+            .expect("a first token")
+            .expect("ok");
+        assert_eq!(first, "cr");
+        server.release();
+    }
+
+    /// One `data` field spread over two lines — the spec's own spelling for
+    /// a multi-line payload, joined with `\n`. Read line by line, each half
+    /// is invalid JSON and both are dropped in silence.
+    #[tokio::test]
+    async fn stream_joins_a_data_field_split_across_two_lines() {
+        let server = ScriptedServer::start(vec![ScriptedResponse::streamed(
+            200,
+            vec![concat!(
+                "data: {\"choices\":[{\"delta\":\n",
+                "data: {\"content\":\"joined\"}}]}\n\n",
+                "data: [DONE]\n\n",
+            )],
+        )]);
+
+        let stream = provider_at(&server)
+            .stream(request())
+            .await
+            .expect("stream");
+        assert_eq!(collect(stream).await, vec!["joined"]);
+    }
+
+    /// The defect this guards: an error frame arriving **after** the stream
+    /// has started. The status line said 200 long ago, so SSE is the only
+    /// channel left — this is OpenAI's documented behaviour for anything
+    /// that fails mid-stream. Dropped silently, it delivers a truncated
+    /// answer as a complete one.
+    #[tokio::test]
+    async fn stream_surfaces_an_error_frame_instead_of_ending_early() {
+        let server = ScriptedServer::start(vec![ScriptedResponse::streamed(
+            200,
+            vec![concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"partial ans\"}}]}\n\n",
+                "data: {\"error\":{\"message\":\"upstream timed out\",\"type\":\"server_error\"}}\n\n",
+            )],
+        )]);
+
+        let mut stream = provider_at(&server)
+            .stream(request())
+            .await
+            .expect("stream");
+
+        let first = stream
+            .next()
+            .await
+            .expect("a first token")
+            .expect("the first delta is fine");
+        assert_eq!(first, "partial ans");
+
+        let second = stream
+            .next()
+            .await
+            .expect("the error frame must reach the caller, not end the stream");
+        let err = second.expect_err("the error frame must arrive as an Err");
+        assert!(err.to_string().contains("upstream timed out"), "got: {err}");
+    }
+
+    /// A streaming request answered with a plain JSON error body and a 200
+    /// status — no SSE framing at all. Ollama and LiteLLM in pass-through do
+    /// this. With no `data:` line there is nothing to parse, so the stream
+    /// would simply end empty and successful.
+    #[tokio::test]
+    async fn stream_surfaces_an_unframed_error_body_sent_with_a_200() {
+        let server = ScriptedServer::start(vec![ScriptedResponse::streamed(
+            200,
+            vec![r#"{"error":{"message":"model 'nope' not found"}}"#],
+        )]);
+
+        let mut stream = provider_at(&server)
+            .stream(request())
+            .await
+            .expect("stream");
+        let item = stream
+            .next()
+            .await
+            .expect("an error body must not read as an empty answer");
+        let err = item.expect_err("must be an Err");
         assert!(
-            elapsed < std::time::Duration::from_millis(250),
-            "first token took {elapsed:?}: a CRLF-framed event was buffered until EOF"
+            err.to_string().contains("model 'nope' not found"),
+            "got: {err}"
         );
     }
 
@@ -480,4 +633,5 @@ mod tests {
         assert_eq!(meta.name, "openai");
         assert!(meta.supports_streaming);
     }
+
 }

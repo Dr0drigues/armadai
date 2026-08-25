@@ -24,9 +24,11 @@
 //! - `choices` may be **empty** on a streaming chunk (Azure's leading
 //!   content-filter frame; the usage-only trailer several gateways append),
 //!   and `delta.content` may be `null`. Both are skipped, never indexed.
-//! - SSE events may be separated by `\n\n` **or** `\r\n\r\n`, the `data:`
-//!   prefix may or may not be followed by a space, and the final event may
-//!   arrive with no trailing blank line before the connection closes.
+//! - SSE events may be separated by `\n\n`, `\r\n\r\n` **or** `\r\r`, the
+//!   `data:` prefix may or may not be followed by a space, consecutive
+//!   `data:` lines in one event are one field joined with `\n` (what the
+//!   spec prescribes), and the final event may arrive with no trailing
+//!   blank line before the connection closes.
 //! - The response body is buffered as **bytes** and only decoded once a
 //!   whole event is in hand, so a multi-byte UTF-8 character split across
 //!   two TCP packets is reassembled instead of being mangled into
@@ -35,6 +37,25 @@
 //!   models (`o1`, `o3`) reject it outright, and some gateways reject
 //!   unknown or unsupported parameters wholesale, so an unrequested
 //!   parameter is a compatibility liability, not a harmless default.
+//! - `temperature`, by contrast, is **always** sent, and those same models
+//!   reject any value but `1`. That is an asymmetry in the domain type, not
+//!   in this file: `CompletionRequest::max_tokens` is an `Option`, so "the
+//!   agent asked for nothing" is representable, while `temperature` is a
+//!   plain `f32` defaulting to `0.7` — there is no value meaning "unset",
+//!   and omitting it would mean guessing which `0.7` was deliberate.
+//!   Dropping it for ids that *look* like reasoning models was considered
+//!   and rejected: a gateway serves anything under any name, and silently
+//!   discarding an author's `temperature: 0.2` is worse than the `400`
+//!   OpenAI returns, which names the parameter and the value. The
+//!   workaround (`temperature: 1.0`) is in `docs/wiki/providers.md`;
+//!   representing "unset" properly means an `Option<f32>` reaching every
+//!   provider, which is a domain change, not a protocol one.
+//! - A **success status is not a success**. Several servers answer `200`
+//!   with an error envelope, and after a stream has started an SSE frame is
+//!   the only channel an error has left. Since every field above is
+//!   optional, such a body parses into an empty response — see
+//!   [`is_error_body`] for why that had to be recognised explicitly here
+//!   and not in `anthropic.rs`/`google.rs`.
 //! - `stream_options: {include_usage: true}` is deliberately **not** sent
 //!   for the same reason: it would buy usage numbers on OpenAI proper at
 //!   the price of a 400 from every server that doesn't know the field.
@@ -229,6 +250,36 @@ fn error_message_from_body(body: &str) -> String {
     truncate_chars(trimmed, MAX_RAW_ERROR_CHARS)
 }
 
+/// Whether a body is an **error envelope** rather than a completion.
+///
+/// This dialect reports plenty of errors with a `200` status: Ollama and
+/// LiteLLM in pass-through mode both answer `200` + `{"error": {...}}`, and
+/// OpenAI itself has no other way to report a failure that happens *after* a
+/// stream has started — the status line is long gone by then, so the error
+/// can only arrive as an SSE frame.
+///
+/// That matters here more than for the two single-vendor providers, because
+/// every field of [`ChatResponse`] is optional: such a body deserialises
+/// cleanly into an empty response, and the run would be recorded as
+/// successful, empty and free. `anthropic`/`google` are accidentally
+/// protected by their required fields (`missing field 'content'` /
+/// `'candidates'`); this path has to look.
+///
+/// Recognised: a non-null `error` member (OpenAI, LiteLLM, OpenRouter, Groq,
+/// Ollama) and vLLM's `{"object": "error", ...}`. Deliberately *not* a bare
+/// `message`/`detail`: [`error_message_from_body`] reads those once the
+/// status has already said "error", which is a different question from "is
+/// this an error at all" — a completion body may legitimately carry neither
+/// an `error` member nor an `object: error` marker and still contain the
+/// word.
+fn is_error_body(body: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+        return false;
+    };
+    value.get("error").is_some_and(|e| !e.is_null())
+        || value.get("object").and_then(|o| o.as_str()) == Some("error")
+}
+
 fn truncate_chars(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
@@ -239,27 +290,36 @@ fn truncate_chars(text: &str, max: usize) -> String {
 
 // --- SSE parsing ---
 
+/// The three line-ending pairs that can terminate an SSE event, longest
+/// first. The spec lets a stream be framed with LF, CRLF **or** CR, and a
+/// reader that knows only one of them does not fail — it buffers forever and
+/// then flushes everything at EOF, which reads as "the server was slow" or,
+/// with no EOF, as an empty answer.
+const EVENT_SEPARATORS: [&[u8]; 3] = [b"\r\n\r\n", b"\n\n", b"\r\r"];
+
 /// Offset and separator length of the first complete SSE event boundary,
 /// or `None` while the buffer still holds a partial event.
 ///
-/// Both `\n\n` and `\r\n\r\n` are accepted: the SSE spec allows either, and
-/// searching only for `\n\n` (what `anthropic.rs`/`google.rs` do — safe
-/// against those two servers) would buffer a CRLF stream forever.
+/// The earliest boundary wins; on a tie the longest separator does, so
+/// `\r\n\r\n` is never mistaken for a shorter framing starting at the same
+/// byte.
 fn find_event_end(buffer: &[u8]) -> Option<(usize, usize)> {
-    let crlf = find_subslice(buffer, b"\r\n\r\n");
-    let lf = find_subslice(buffer, b"\n\n");
-    match (crlf, lf) {
-        (Some(c), Some(l)) => {
-            if c <= l {
-                Some((c, 4))
-            } else {
-                Some((l, 2))
+    let mut best: Option<(usize, usize)> = None;
+    for separator in EVENT_SEPARATORS {
+        let Some(at) = find_subslice(buffer, separator) else {
+            continue;
+        };
+        let better = match best {
+            None => true,
+            Some((best_at, best_len)) => {
+                at < best_at || (at == best_at && separator.len() > best_len)
             }
+        };
+        if better {
+            best = Some((at, separator.len()));
         }
-        (Some(c), None) => Some((c, 4)),
-        (None, Some(l)) => Some((l, 2)),
-        (None, None) => None,
     }
+    best
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -300,29 +360,100 @@ fn parse_content_delta(data: &str) -> Option<String> {
     Some(content.to_string())
 }
 
+/// Split an SSE event block into lines, accepting LF, CRLF **and** CR
+/// endings. `str::lines` handles the first two; a CR-framed stream would
+/// come through as one unsplittable line, so every field in it would be
+/// invisible.
+///
+/// Splitting on both characters yields an empty string in the middle of each
+/// CRLF pair. That is harmless: an empty line is not a field, and a genuinely
+/// empty line cannot occur inside an event (it would be the event boundary).
+fn sse_lines(event: &str) -> impl Iterator<Item = &str> {
+    event.split(['\n', '\r'])
+}
+
+/// The `data` field of one event: every `data:` line in it, joined with
+/// `\n`, or `None` when the event carries no `data:` line at all (a comment,
+/// an `event:`/`id:`/`retry:`-only frame — or a body that is not SSE).
+///
+/// Joining is what the spec prescribes, and skipping it is another silent
+/// empty: a server that splits its JSON payload across two `data:` lines
+/// would give two fragments that each fail to parse, and
+/// [`parse_content_delta`] would drop both without a word. The trade-off is
+/// that a server writing two *independent* JSON objects as consecutive
+/// `data:` lines inside one block — which no SSE-conforming server does,
+/// since that is precisely how the spec spells a single multi-line field —
+/// is now read as one malformed payload rather than as two chunks.
+fn event_data(event: &str) -> Option<String> {
+    let mut payload: Option<String> = None;
+    for line in sse_lines(event) {
+        let Some(part) = sse_data_payload(line) else {
+            continue;
+        };
+        match &mut payload {
+            Some(acc) => {
+                acc.push('\n');
+                acc.push_str(part);
+            }
+            None => payload = Some(part.to_string()),
+        }
+    }
+    payload
+}
+
 /// Whether the reader should keep going after an event.
 enum Flow {
     Continue,
     Stop,
 }
 
-/// Emit every text delta in one SSE event block. Stops the stream on the
-/// terminal `[DONE]` marker (anything a chatty gateway appends after it is
-/// not the model's answer) or when the receiver has gone away.
-async fn emit_event(event: &str, tx: &Sender<anyhow::Result<String>>) -> Flow {
-    for line in event.lines() {
-        let Some(payload) = sse_data_payload(line) else {
-            continue;
-        };
-        if payload.trim() == DONE_MARKER {
+/// Emit the text delta carried by one SSE event block.
+///
+/// Stops the stream on the terminal `[DONE]` marker (anything a chatty
+/// gateway appends after it is not the model's answer), on an error frame,
+/// and when the receiver has gone away.
+///
+/// The error branch is the streaming half of [`is_error_body`]: once the
+/// `200` status line has gone out, an SSE frame is the *only* way a server
+/// can report a failure, and OpenAI documents exactly that for anything that
+/// goes wrong after the stream starts. Without it a truncated answer is
+/// delivered as a complete one — the stream simply ends.
+async fn emit_event(event: &str, tx: &Sender<anyhow::Result<String>>, label: &str) -> Flow {
+    let Some(payload) = event_data(event) else {
+        // No `data:` line at all. Usually a comment or a keep-alive, but it
+        // is also what a server answering a streaming request with a plain
+        // JSON error body and a 200 status looks like (Ollama, LiteLLM in
+        // pass-through): no framing, so nothing would ever be emitted and
+        // the caller would see an empty, successful answer.
+        if is_error_body(event) {
+            let _ = tx
+                .send(Err(anyhow::anyhow!(
+                    "{label} API error (HTTP 200): {}",
+                    error_message_from_body(event)
+                )))
+                .await;
             return Flow::Stop;
         }
-        let Some(text) = parse_content_delta(payload) else {
-            continue;
-        };
-        if tx.send(Ok(text)).await.is_err() {
-            return Flow::Stop;
-        }
+        return Flow::Continue;
+    };
+
+    if payload.trim() == DONE_MARKER {
+        return Flow::Stop;
+    }
+    if is_error_body(&payload) {
+        let _ = tx
+            .send(Err(anyhow::anyhow!(
+                "{label} stream error: {}",
+                error_message_from_body(&payload)
+            )))
+            .await;
+        return Flow::Stop;
+    }
+    let Some(text) = parse_content_delta(&payload) else {
+        return Flow::Continue;
+    };
+    if tx.send(Ok(text)).await.is_err() {
+        return Flow::Stop;
     }
     Flow::Continue
 }
@@ -387,7 +518,29 @@ impl Endpoint<'_> {
     ) -> anyhow::Result<CompletionResponse> {
         let body = self.body(&request, false);
         let response = self.send(&body).await?;
-        let api_resp: ChatResponse = response.json().await?;
+        // Read the body as text first: `response.json()` would throw the raw
+        // bytes away, and both the error-envelope check below and a readable
+        // parse failure need them.
+        let raw = response.text().await?;
+        let api_resp: ChatResponse = serde_json::from_str(&raw).map_err(|e| {
+            anyhow::anyhow!(
+                "{} API returned an unreadable body ({e}): {}",
+                self.label,
+                error_message_from_body(&raw)
+            )
+        })?;
+
+        // A success status carrying an error envelope. Every field of
+        // `ChatResponse` is optional, so such a body parses into an empty
+        // response and would otherwise be recorded as a successful, free run
+        // that produced nothing. See `is_error_body`.
+        if api_resp.choices.is_empty() && is_error_body(&raw) {
+            anyhow::bail!(
+                "{} API error (HTTP 200): {}",
+                self.label,
+                error_message_from_body(&raw)
+            );
+        }
 
         let content = api_resp
             .choices
@@ -420,6 +573,8 @@ impl Endpoint<'_> {
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let byte_stream = response.bytes_stream();
+        // Owned: the reader outlives this borrow of the provider.
+        let label = self.label.to_string();
 
         tokio::spawn(async move {
             // Bytes, not a `String`: an event boundary is ASCII, but the
@@ -449,7 +604,7 @@ impl Endpoint<'_> {
                 while let Some((end, sep)) = find_event_end(&buffer) {
                     let event = String::from_utf8_lossy(&buffer[..end]).into_owned();
                     buffer.drain(..end + sep);
-                    if let Flow::Stop = emit_event(&event, &tx).await {
+                    if let Flow::Stop = emit_event(&event, &tx, &label).await {
                         return;
                     }
                 }
@@ -459,7 +614,7 @@ impl Endpoint<'_> {
             // trailing blank line. Whatever is left is a complete event.
             if !buffer.is_empty() {
                 let event = String::from_utf8_lossy(&buffer).into_owned();
-                let _ = emit_event(&event, &tx).await;
+                let _ = emit_event(&event, &tx, &label).await;
             }
         });
 
@@ -579,6 +734,46 @@ mod tests {
         );
     }
 
+    // --- error envelopes on a success status ---
+
+    #[test]
+    fn an_error_envelope_is_recognised_whatever_shape_it_takes() {
+        assert!(is_error_body(
+            r#"{"error":{"message":"Rate limit exceeded","type":"rate_limit"}}"#
+        ));
+        // Ollama's flat spelling.
+        assert!(is_error_body(r#"{"error":"model 'x' not found"}"#));
+        // vLLM says so in `object`.
+        assert!(is_error_body(
+            r#"{"object":"error","message":"bad request"}"#
+        ));
+    }
+
+    /// The other half, and the one that decides whether this check can be
+    /// trusted at all: a real completion must never be read as an error.
+    #[test]
+    fn a_real_completion_is_never_taken_for_an_error() {
+        assert!(!is_error_body(
+            r#"{"object":"chat.completion","choices":[{"message":{"content":"hi"}}]}"#
+        ));
+        // Some servers send an explicit `error: null` alongside a result.
+        assert!(!is_error_body(
+            r#"{"error":null,"choices":[{"message":{"content":"hi"}}]}"#
+        ));
+        // A streaming delta that happens to contain the word.
+        assert!(!is_error_body(
+            r#"{"choices":[{"delta":{"content":"an error occurred in my code"}}]}"#
+        ));
+        // `message`/`detail` alone are read by `error_message_from_body`
+        // only once the status already said "error" — they are not evidence
+        // on their own.
+        assert!(!is_error_body(r#"{"message":"all good"}"#));
+        assert!(!is_error_body(r#"{"detail":"nothing to see"}"#));
+        assert!(!is_error_body("[DONE]"));
+        assert!(!is_error_body(": keep-alive comment"));
+        assert!(!is_error_body(""));
+    }
+
     // --- SSE framing ---
 
     #[test]
@@ -600,6 +795,37 @@ mod tests {
         assert_eq!(find_event_end(b"a\n\nb\r\n\r\nc"), Some((1, 2)));
         // And the reverse ordering.
         assert_eq!(find_event_end(b"a\r\n\r\nb\n\nc"), Some((1, 4)));
+    }
+
+    /// A CR-only stream is legal SSE. A reader that knows only LF and CRLF
+    /// never finds a boundary in it, so it emits nothing until EOF — and
+    /// nothing at all if the connection stays open.
+    #[test]
+    fn a_cr_framed_event_boundary_is_found_too() {
+        assert_eq!(find_event_end(b"data: a\r\rdata: b"), Some((7, 2)));
+        // A lone CR is still a partial event.
+        assert_eq!(find_event_end(b"data: a\r"), None);
+    }
+
+    /// Per the spec, consecutive `data:` lines in one event are ONE field,
+    /// joined with `\n`. Reading them as separate payloads gives two
+    /// fragments that each fail to parse — dropped without a word.
+    #[test]
+    fn consecutive_data_lines_are_joined_into_one_field() {
+        assert_eq!(
+            event_data("data: {\"choices\":[{\"delta\":\ndata: {\"content\":\"split\"}}]}"),
+            Some("{\"choices\":[{\"delta\":\n{\"content\":\"split\"}}]}".to_string())
+        );
+        // And the ordinary single-line case is untouched.
+        assert_eq!(event_data("data: {\"a\":1}"), Some("{\"a\":1}".to_string()));
+        // CR-only line endings inside the event, too.
+        assert_eq!(
+            event_data("event: message\rdata: {\"a\":1}"),
+            Some("{\"a\":1}".to_string())
+        );
+        // No `data:` line at all.
+        assert_eq!(event_data(": keep-alive"), None);
+        assert_eq!(event_data("event: ping\nid: 7"), None);
     }
 
     #[test]
