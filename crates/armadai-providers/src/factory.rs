@@ -271,7 +271,7 @@ fn create_api_provider(provider: &str, _agent: &Agent) -> anyhow::Result<Box<dyn
         "anthropic" => {
             let api_key = get_api_key("ANTHROPIC_API_KEY", "anthropic")?;
             let mut p = super::api::anthropic::AnthropicProvider::new(api_key);
-            if let Ok(url) = std::env::var("ANTHROPIC_BASE_URL") {
+            if let Some(url) = resolve_base_url("anthropic", "ANTHROPIC_BASE_URL") {
                 p.base_url = url;
             }
             Ok(Box::new(p))
@@ -279,7 +279,7 @@ fn create_api_provider(provider: &str, _agent: &Agent) -> anyhow::Result<Box<dyn
         "google" => {
             let api_key = get_api_key("GOOGLE_API_KEY", "google")?;
             let mut p = super::api::google::GoogleProvider::new(api_key);
-            if let Ok(url) = std::env::var("GOOGLE_BASE_URL") {
+            if let Some(url) = resolve_base_url("google", "GOOGLE_BASE_URL") {
                 p.base_url = url;
             }
             Ok(Box::new(p))
@@ -316,15 +316,23 @@ fn create_api_provider(provider: &str, _agent: &Agent) -> anyhow::Result<Box<dyn
 #[cfg(feature = "api")]
 const DEFAULT_PROXY_BASE_URL: &str = "http://localhost:4000/v1";
 
-/// Resolve an OpenAI-compatible provider's base URL: the environment
-/// variable first, then `providers.yaml`'s `providers.<key>.base_url`.
+/// Resolve an API provider's base URL: the environment variable first, then
+/// `providers.yaml`'s `providers.<key>.base_url`.
 ///
-/// `anthropic` and `google` read only their own env var (they predate
-/// this and their vendor URL is fixed); `openai` and `proxy` also honour
-/// `providers.yaml` because pointing them somewhere else — a gateway, a
-/// local runtime — is the normal case rather than the exception, and that
-/// file is where a user would reasonably write it down. Documented in
-/// `docs/wiki/providers.md`.
+/// All four API providers go through this. They did not at first: `openai`
+/// and `proxy` read the file while `anthropic` and `google` kept reading
+/// only their env var — which turned a file `armadai init` writes with a
+/// `base_url` for **all four** (`DEFAULT_PROVIDERS_YAML`) from uniformly
+/// decorative into honoured-for-two-silently-ignored-for-two. A file whose
+/// keys work for half its entries is a worse trap than one whose keys work
+/// for none, so the reading was widened rather than the file trimmed.
+///
+/// A blank value is not a configuration, in either source. The env-var-only
+/// version accepted one (`if let Ok(url) = var(..)`), so
+/// `ANTHROPIC_BASE_URL=""` used to blank the vendor URL and every call then
+/// failed against a relative path; it is now ignored.
+///
+/// Documented in `docs/wiki/providers.md`.
 #[cfg(feature = "api")]
 fn resolve_base_url(config_key: &str, env_var: &str) -> Option<String> {
     if let Ok(url) = std::env::var(env_var)
@@ -540,9 +548,10 @@ mod tests {
         /// doc-comments call out — and stopped compiling the moment #372
         /// moved the lock behind `test_support`.
         fn env_scope(vars: &[(&str, Option<&str>)]) -> IsolatedConfigDir {
-            vars.iter().fold(IsolatedConfigDir::enter(), |scope, (name, value)| {
-                scope.with_var(name, *value)
-            })
+            vars.iter()
+                .fold(IsolatedConfigDir::enter(), |scope, (name, value)| {
+                    scope.with_var(name, *value)
+                })
         }
 
         fn agent_with(provider: &str, command: Option<&str>) -> Agent {
@@ -679,10 +688,149 @@ mod tests {
         }
 
         /// An env var set to the empty string is not a configuration.
+        ///
+        /// Before this went through `resolve_base_url`, `anthropic`'s
+        /// `if let Ok(url) = var(..)` accepted the empty string and blanked
+        /// the vendor URL with it.
         #[test]
         fn an_empty_base_url_env_var_is_ignored() {
-            let _env = env_scope(&[("PROXY_BASE_URL", Some("   "))]);
-            assert_eq!(resolve_base_url("proxy", "PROXY_BASE_URL"), None);
+            // One guard at a time: `env_scope` takes the shared env lock, and
+            // a second one on the same thread would deadlock on it.
+            {
+                let _env = env_scope(&[("PROXY_BASE_URL", Some("   "))]);
+                assert_eq!(resolve_base_url("proxy", "PROXY_BASE_URL"), None);
+            }
+            {
+                let _env = env_scope(&[("ANTHROPIC_BASE_URL", Some(""))]);
+                assert_eq!(resolve_base_url("anthropic", "ANTHROPIC_BASE_URL"), None);
+            }
+        }
+
+        /// `armadai init` writes a `base_url` for all four providers
+        /// (`DEFAULT_PROVIDERS_YAML`). Two of them honouring it and two
+        /// ignoring it is the trap; this pins that all four read the file.
+        #[test]
+        fn providers_yaml_base_url_is_honoured_for_every_api_provider() {
+            let env = env_scope(&[
+                ("ANTHROPIC_BASE_URL", None),
+                ("GOOGLE_BASE_URL", None),
+                ("OPENAI_BASE_URL", None),
+                ("PROXY_BASE_URL", None),
+            ]);
+            std::fs::write(
+                env.config_dir().join("providers.yaml"),
+                "providers:\n  \
+                 anthropic:\n    base_url: http://anthropic.test/v1\n  \
+                 google:\n    base_url: http://google.test/v1\n  \
+                 openai:\n    base_url: http://openai.test/v1\n  \
+                 proxy:\n    base_url: http://proxy.test/v1\n",
+            )
+            .expect("write providers.yaml");
+
+            for (key, env_var, expected) in [
+                (
+                    "anthropic",
+                    "ANTHROPIC_BASE_URL",
+                    "http://anthropic.test/v1",
+                ),
+                ("google", "GOOGLE_BASE_URL", "http://google.test/v1"),
+                ("openai", "OPENAI_BASE_URL", "http://openai.test/v1"),
+                ("proxy", "PROXY_BASE_URL", "http://proxy.test/v1"),
+            ] {
+                assert_eq!(
+                    resolve_base_url(key, env_var).as_deref(),
+                    Some(expected),
+                    "{key} must read its providers.yaml base_url"
+                );
+            }
+        }
+
+        fn probe_request() -> armadai_core::provider::CompletionRequest {
+            armadai_core::provider::CompletionRequest {
+                model: "probe".to_string(),
+                system_prompt: String::new(),
+                messages: vec![armadai_core::provider::ChatMessage {
+                    role: "user".to_string(),
+                    content: "hi".to_string(),
+                }],
+                temperature: 0.0,
+                max_tokens: None,
+            }
+        }
+
+        /// The whole reason the file is read: a provider built through the
+        /// factory must actually **talk to** the URL the file supplies.
+        ///
+        /// Asserting that `resolve_base_url` returns it proves only that the
+        /// helper works — the arm can still ignore it. Measured: the first
+        /// version of this test did exactly that and survived the mutation
+        /// restoring `anthropic`'s env-var-only read. So the assertion is on
+        /// a real socket: the scripted server must receive the call.
+        #[tokio::test]
+        #[allow(clippy::await_holding_lock)]
+        async fn an_anthropic_provider_really_calls_the_file_supplied_base_url() {
+            use crate::api::test_server::{ScriptedResponse, ScriptedServer};
+
+            let server = ScriptedServer::start(vec![ScriptedResponse::body(
+                200,
+                r#"{"content":[{"type":"text","text":"ok"}],"model":"m",
+                    "usage":{"input_tokens":1,"output_tokens":1}}"#,
+            )]);
+            let env = env_scope(&[
+                ("ANTHROPIC_BASE_URL", None),
+                ("ANTHROPIC_API_KEY", Some("sk-ant-test")),
+            ]);
+            std::fs::write(
+                env.config_dir().join("providers.yaml"),
+                format!("providers:\n  anthropic:\n    base_url: {}\n", server.url()),
+            )
+            .expect("write providers.yaml");
+
+            let provider =
+                create_provider(&agent_with("anthropic", None)).expect("anthropic must build");
+            // The answer itself is irrelevant; where the call went is not.
+            let _ = provider.complete(probe_request()).await;
+
+            assert_eq!(
+                server.request_count(),
+                1,
+                "the factory-built provider never called the base URL providers.yaml supplies"
+            );
+            let raw = server.request(0).expect("one request received");
+            assert!(raw.contains("POST /messages "), "wrong path in:\n{raw}");
+        }
+
+        /// Same proof for `google`: a second arm, a second chance to ignore
+        /// the file.
+        #[tokio::test]
+        #[allow(clippy::await_holding_lock)]
+        async fn a_google_provider_really_calls_the_file_supplied_base_url() {
+            use crate::api::test_server::{ScriptedResponse, ScriptedServer};
+
+            let server = ScriptedServer::start(vec![ScriptedResponse::body(
+                200,
+                r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}"#,
+            )]);
+            let env = env_scope(&[
+                ("GOOGLE_BASE_URL", None),
+                ("GOOGLE_API_KEY", Some("g-test")),
+            ]);
+            std::fs::write(
+                env.config_dir().join("providers.yaml"),
+                format!("providers:\n  google:\n    base_url: {}\n", server.url()),
+            )
+            .expect("write providers.yaml");
+
+            let provider = create_provider(&agent_with("google", None)).expect("google must build");
+            let _ = provider.complete(probe_request()).await;
+
+            assert_eq!(
+                server.request_count(),
+                1,
+                "the factory-built provider never called the base URL providers.yaml supplies"
+            );
+            let raw = server.request(0).expect("one request received");
+            assert!(raw.contains("POST /models/probe:"), "wrong path in:\n{raw}");
         }
     }
 }
