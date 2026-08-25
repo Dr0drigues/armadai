@@ -2411,8 +2411,8 @@ async fn dispatch_hierarchical_es(
 /// agent's own frontmatter `timeout` nor the project's
 /// `defaults.orchestration.agent_timeout_secs` sets one.
 ///
-/// Higher than the non-orchestrated single-agent default (300s, see
-/// `providers::factory::DEFAULT_TIMEOUT_SECS`) because an orchestrated
+/// Higher than the non-orchestrated single-agent default
+/// (`providers::factory::DEFAULT_TIMEOUT_SECS`) because an orchestrated
 /// coordinator's `claude -p` turn is itself agentic (delegating, waiting on
 /// sub-agents, synthesizing) — 242k-499k tokens/turn were observed on real
 /// hierarchical runs (#270).
@@ -2427,6 +2427,21 @@ async fn dispatch_hierarchical_es(
 /// output at all before its next line.
 const ORCHESTRATED_DEFAULT_TIMEOUT_SECS: u64 = 600;
 
+// Three timeout constants govern this feature across two crates
+// (`providers::factory::DEFAULT_TIMEOUT_SECS`, this file's
+// `ORCHESTRATED_DEFAULT_TIMEOUT_SECS`, and `providers::cli::
+// ABSOLUTE_CEILING_SECS`) and nothing enforced their relationship — if an
+// inactivity default ever grew past the absolute ceiling, every timeout in
+// the product would be misreported as "absolute ceiling" instead of
+// "inactivity" (`cli::next_step_timeout`'s `ceiling_bound` flag would be
+// wrong for every call). This constant's sibling assertion, against
+// `factory::DEFAULT_TIMEOUT_SECS`, lives in `armadai-providers::cli` where
+// both those constants are in scope; this one covers the cross-crate half.
+const _: () = assert!(
+    armadai_providers::cli::ABSOLUTE_CEILING_SECS > ORCHESTRATED_DEFAULT_TIMEOUT_SECS,
+    "ABSOLUTE_CEILING_SECS must stay above ORCHESTRATED_DEFAULT_TIMEOUT_SECS"
+);
+
 /// Resolve the effective CLI provider timeout (seconds) for an agent
 /// participating in an orchestrated run.
 ///
@@ -2437,7 +2452,7 @@ const ORCHESTRATED_DEFAULT_TIMEOUT_SECS: u64 = 600;
 ///
 /// This is the ONE place that actually reaches the provider timeout for
 /// orchestrated runs: `create_provider` only reads `agent.metadata.timeout`
-/// (`.unwrap_or(DEFAULT_TIMEOUT_SECS)`, 300s), so this must run before
+/// (`.unwrap_or(DEFAULT_TIMEOUT_SECS)`), so this must run before
 /// `create_provider` is called on each agent in `run_orchestrated`'s
 /// loading loop — the BlackboardConfig/
 /// RingConfig `agent_timeout_secs` field (populated by
@@ -2465,10 +2480,10 @@ fn orchestrated_agent_timeout_secs(
 /// loop in `run_orchestrated` AND the `--resume` reconstruction loop in
 /// `resume_run` — MUST call this before `create_provider`, since
 /// `create_provider` only reads `agent.metadata.timeout`
-/// (`.unwrap_or(DEFAULT_TIMEOUT_SECS)`, 300s) once and never re-reads it
+/// (`.unwrap_or(DEFAULT_TIMEOUT_SECS)`) once and never re-reads it
 /// afterward. Extracted to a single fn so both paths share the exact same
 /// precedence and cannot drift (a resumed
-/// orchestrated run re-hitting the 300s default was the gap this closes —
+/// orchestrated run re-hitting that default was the gap this closes —
 /// see `.superpowers/sdd/orch-e2e-report.md`).
 fn apply_orchestrated_timeout(agent: &mut Agent, config_override: Option<u64>) {
     agent.metadata.timeout = Some(orchestrated_agent_timeout_secs(
@@ -2485,8 +2500,9 @@ fn apply_orchestrated_timeout(agent: &mut Agent, config_override: Option<u64>) {
 /// touch `agent.metadata.timeout`: `resume_run` reconstructs the roster for
 /// BOTH `direct` and orchestrated resumes through the same loop, so calling
 /// the override unconditionally there once regressed a resumed `direct` run
-/// onto the 600s+ orchestrated timeout instead of the correct 300s default
-/// (see `.superpowers/sdd/orch-e2e-report.md`). `execute_resume`'s own
+/// onto the 600s+ orchestrated timeout instead of the correct
+/// `DEFAULT_TIMEOUT_SECS` default (see `.superpowers/sdd/orch-e2e-report.md`).
+/// `execute_resume`'s own
 /// `use_tui` decision uses the identical `!= "direct"` marker (the Workroom
 /// TUI never applies to `direct` runs either) — sharing this fn keeps both
 /// checks from drifting apart.
