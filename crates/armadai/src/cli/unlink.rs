@@ -290,9 +290,10 @@ fn unlink_from_manifest(
             target_name,
             &target_root,
             &relevant,
+            &entries,
             &created_dirs,
             config_candidate.as_deref(),
-        );
+        )?;
         return Ok(());
     }
 
@@ -302,11 +303,14 @@ fn unlink_from_manifest(
     let mut untrusted = 0;
 
     for entry in &relevant {
-        if !linker::manifest::is_trusted(root, &target_root, &entry.path) {
+        if let Some(cause) =
+            linker::manifest::diagnose_trust_failure(root, &target_root, &entry.path)
+        {
             let e = crate::cli::style::err();
+            let reason = trust_failure_reason(cause);
             anstream::eprintln!(
                 "{e}  refused: manifest entry '{}' for target '{}' resolves outside its \
-                 trusted root — ignoring it; the manifest may be corrupt or forged{e:#}",
+                 trusted root — ignoring it; {reason}{e:#}",
                 entry.path.display(),
                 target_name
             );
@@ -324,7 +328,22 @@ fn unlink_from_manifest(
         // whose literal `a` component doesn't exist (R4).
         let path = linker::manifest::resolve_real(root, &entry.path);
         if !path.exists() {
-            absent += 1;
+            if path.is_symlink() {
+                // Present on disk, but its target is gone — not "already
+                // absent" (issue #348, 3rd bullet), and its content can
+                // never be verified against a digest either, so the same
+                // conservative "kept" outcome other unverifiable entries
+                // get applies here too — just with an accurate reason.
+                let w = crate::cli::style::warn();
+                anstream::println!(
+                    "{w}  kept {} (broken symlink — its target is missing, so its \
+                     content can't be verified){w:#}",
+                    path.display()
+                );
+                kept += 1;
+            } else {
+                absent += 1;
+            }
             continue;
         }
         match entry.outcome {
@@ -386,39 +405,56 @@ fn unlink_from_manifest(
 
     // Remove exactly the directories `link` itself created for this
     // target (design fix 1b) — deepest first, so a child never blocks its
-    // own parent's removal, and each still checked against the trust root
-    // so a corrupted `created_dirs` list can't be used to remove something
-    // outside the target's own tree either.
-    let mut created_dirs = created_dirs;
-    created_dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
-    // The target's own root, resolved once — never a removal candidate
-    // itself, no matter what `created_dirs` claims (design review R3).
-    // R1's root confirmation only constrains which root a manifest can
-    // *declare*; it says nothing about a `created_dirs` entry naming
-    // that root right back, which trivially satisfies `is_trusted`
-    // (a path is always contained within itself). This is the one
-    // invariant that does not depend on trusting the manifest at all.
-    let resolved_target_root = linker::manifest::resolve_real(root, &target_root);
-    for dir in &created_dirs {
-        let dir_path = linker::manifest::resolve_real(root, dir);
-        let refused = dir_path == resolved_target_root
-            || !linker::manifest::is_trusted(root, &target_root, dir);
-        if refused {
-            let e = crate::cli::style::err();
-            anstream::eprintln!(
-                "{e}  refused: recorded directory '{}' for target '{}' resolves outside its \
-                 trusted root, or names the root itself — ignoring it{e:#}",
-                dir.display(),
-                target_name
-            );
-            untrusted += 1;
-            continue;
-        }
-        let is_empty = std::fs::read_dir(&dir_path)
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false);
-        if dir_path.is_dir() && is_empty {
-            let _ = std::fs::remove_dir(&dir_path);
+    // own parent's removal. Every dir's fate is decided by the single
+    // `decide_created_dir` function `--dry-run`'s preview also calls
+    // (issue #348, 1st bullet: the two must never silently diverge on
+    // this decision again — a real regression this chantier shipped
+    // once).
+    for dir in linker::manifest::deepest_first(&created_dirs) {
+        match linker::manifest::decide_created_dir(root, &target_root, &dir, &entries) {
+            linker::manifest::CreatedDirDecision::Eligible => {
+                let dir_path = linker::manifest::resolve_real(root, &dir);
+                let is_empty = std::fs::read_dir(&dir_path)
+                    .map(|mut d| d.next().is_none())
+                    .unwrap_or(false);
+                if dir_path.is_dir() && is_empty {
+                    let _ = std::fs::remove_dir(&dir_path);
+                }
+            }
+            linker::manifest::CreatedDirDecision::IsTargetRoot(cause) => {
+                let e = crate::cli::style::err();
+                let relation = target_root_relation(cause);
+                let reason = trust_failure_reason(cause);
+                anstream::eprintln!(
+                    "{e}  refused: recorded directory '{}' for target '{}' {relation} the \
+                     target's own root — ignoring it; {reason}{e:#}",
+                    dir.display(),
+                    target_name
+                );
+                untrusted += 1;
+            }
+            linker::manifest::CreatedDirDecision::Untrusted(cause) => {
+                let e = crate::cli::style::err();
+                let reason = trust_failure_reason(cause);
+                anstream::eprintln!(
+                    "{e}  refused: recorded directory '{}' for target '{}' resolves \
+                     outside its trusted root — ignoring it; {reason}{e:#}",
+                    dir.display(),
+                    target_name
+                );
+                untrusted += 1;
+            }
+            linker::manifest::CreatedDirDecision::Implausible => {
+                let e = crate::cli::style::err();
+                anstream::eprintln!(
+                    "{e}  refused: recorded directory '{}' for target '{}' does not \
+                     correspond to any file link recorded creating — ignoring it; the \
+                     manifest may be corrupt or forged{e:#}",
+                    dir.display(),
+                    target_name
+                );
+                untrusted += 1;
+            }
         }
     }
 
@@ -434,16 +470,25 @@ fn unlink_from_manifest(
     );
     if kept > 0 {
         anstream::println!(
-            "{m}  Kept files are either hand-written (link recorded them as skipped), have \
-             content that no longer matches what link wrote, or could not be verified. \
-             Remove them by hand if you no longer want them.{m:#}"
+            "{m}  Kept files were left in place for the reason given on each line above: \
+             {KEPT_FILE_REASONS}. Remove them by hand if you no longer want them.{m:#}"
         );
     }
     if untrusted > 0 {
         let e = crate::cli::style::err();
-        anstream::println!(
-            "{e}  {} manifest entry(ies) were refused for resolving outside the trusted \
-             root — see the warning(s) above; the manifest may be corrupt or forged.{e:#}",
+        // Deliberately not a single blanket cause here (issue #348, 2nd
+        // bullet): the refusal(s) printed above already said, per item,
+        // whether it was the manifest's own text or the filesystem that
+        // was at fault — this summary must not paper back over that
+        // distinction with one claim that doesn't hold for both.
+        //
+        // On **stderr**, like the per-item refusals it points at: as a
+        // `println!` it told a `2>/dev/null` caller to consult reasons
+        // that stream had just discarded. A pointer must live on the same
+        // stream as what it points to.
+        anstream::eprintln!(
+            "{e}  {} manifest item(s) were refused and left untouched; each refusal \
+             above names the item and why.{e:#}",
             untrusted
         );
         // A refusal is a failure to complete the requested work, not a
@@ -451,8 +496,8 @@ fn unlink_from_manifest(
         // (design review R5), even though every trustworthy entry above
         // was still handled.
         anyhow::bail!(
-            "{} manifest entry(ies) for target '{}' were refused for resolving outside \
-             the trusted root; the request did not fully complete",
+            "{} manifest item(s) for target '{}' were refused; the request did not \
+             fully complete",
             untrusted,
             target_name
         );
@@ -461,17 +506,106 @@ fn unlink_from_manifest(
     Ok(())
 }
 
+/// Why the manifest path can leave a file in place — one list, shared by
+/// the real pass and its `--dry-run` preview so the two cannot drift into
+/// two different accounts of the same set.
+///
+/// Open-ended on purpose (issue #348, third round): the closed list of
+/// three it replaces omitted the broken-symlink outcome the very same
+/// code path prints, so a user reading the footer could not find their
+/// own case in it. The fallback's footer had already been opened for
+/// exactly this reason.
+const KEPT_FILE_REASONS: &str = "hand-written (link recorded them as skipped), content \
+     that no longer matches what link wrote, a file that could not be verified, or a \
+     broken symlink whose content cannot be compared at all";
+
+/// Human-readable explanation for one [`linker::manifest::TrustFailure`]
+/// cause — shared by the real pass and its `--dry-run` preview so the two
+/// never phrase the same cause two different ways.
+///
+/// Neither wording dates the fault (issue #348, third round): the earlier
+/// `FilesystemDiverged` text said the filesystem "has changed since link
+/// ran", which is a claim the code cannot make. All it compares is the
+/// recorded text against the filesystem *as it is now* — it keeps no
+/// snapshot of how the filesystem looked at link time, so it can name
+/// which side puts the path where it is, never when that became true. The
+/// symlink may well have been there before `link` ever ran.
+fn trust_failure_reason(cause: linker::manifest::TrustFailure) -> &'static str {
+    match cause {
+        linker::manifest::TrustFailure::ManifestEscapesRoot => {
+            "the manifest may be corrupt or forged"
+        }
+        linker::manifest::TrustFailure::FilesystemDiverged => {
+            "the manifest's own text does not put it there — something on the \
+             filesystem does, most likely a symlink along the path; inspect the \
+             target directory before retrying"
+        }
+    }
+}
+
+/// How a recorded `created_dirs` entry relates to the target's own root,
+/// for the two causes [`linker::manifest::CreatedDirDecision::IsTargetRoot`]
+/// can have — shared by the real pass and its `--dry-run` preview, like
+/// [`trust_failure_reason`], so the two never phrase the same cause two
+/// different ways.
+///
+/// The verb has to move with the cause (issue #348): a manifest that
+/// literally records `.claude` — under any spelling of it — *names* the
+/// root, while a manifest that correctly records `.claude/agents` and
+/// finds a symlink collapsing it onto `.claude` *resolves onto* it.
+/// Saying "names" for the second blames the manifest for text it never
+/// contained; saying "resolves onto" for the first sends the user to
+/// inspect a filesystem where nothing is wrong.
+///
+/// "resolves onto", not "now resolves onto": the adverb dated a change
+/// this code cannot observe — see [`trust_failure_reason`].
+fn target_root_relation(cause: linker::manifest::TrustFailure) -> &'static str {
+    match cause {
+        linker::manifest::TrustFailure::ManifestEscapesRoot => "names",
+        linker::manifest::TrustFailure::FilesystemDiverged => "resolves onto",
+    }
+}
+
 /// `--dry-run` rendering for the manifest path — mirrors the fallback's own
 /// dry-run output shape so the two paths read the same way to a user who
 /// doesn't know (and shouldn't need to know) which one is active.
+///
+/// Applies the same *decisions* the real pass does — `created_dirs`
+/// included (issue #348, 1st bullet: this was the actual defect, not just
+/// the wording — the pre-fix dry run counted a directory "recorded for
+/// cleanup" that the real pass would have refused, and exited 0 where the
+/// real pass exits 1). Every refusal comes from the same
+/// [`linker::manifest::decide_created_dir`] call, in the same
+/// deepest-first order ([`linker::manifest::deepest_first`]), and anything
+/// this preview would refuse makes it return an error too, so scripted
+/// callers see the same signal a real run would give — a preview that
+/// can't fail is not a preview.
+///
+/// One thing it deliberately does **not** mirror, because it cannot: the
+/// real pass removes an eligible directory only if that directory is
+/// still on disk and *empty at that moment*, which is only true after the
+/// files inside it have been deleted — files this preview, by definition,
+/// has not deleted. So the count below is what its wording says,
+/// "eligible for cleanup", not "would be removed": a directory the user
+/// deleted by hand still counts here and the real pass then quietly
+/// touches nothing. Overstating that as an identical filesystem check is
+/// what this doc used to do.
+///
+/// "eligible", not "recorded" (issue #348, third round): the counter is
+/// the number of directories that passed
+/// [`linker::manifest::decide_created_dir`], which is neither how many
+/// the manifest records nor how many would actually be removed — a
+/// manifest recording one directory that the guard refuses used to print
+/// "0 directories recorded for cleanup", denying a record it holds.
 fn print_manifest_dry_run(
     root: &Path,
     target_name: &str,
     target_root: &Path,
     entries: &[&linker::manifest::ManifestEntry],
+    all_entries: &[linker::manifest::ManifestEntry],
     created_dirs: &[PathBuf],
     config_candidate: Option<&Path>,
-) {
+) -> anyhow::Result<()> {
     let h = crate::cli::style::header();
     let a = crate::cli::style::accent();
     let m = crate::cli::style::muted();
@@ -488,9 +622,18 @@ fn print_manifest_dry_run(
     let mut untrusted = 0;
 
     for entry in entries {
-        if !linker::manifest::is_trusted(root, target_root, &entry.path) {
-            anstream::println!(
-                "{e}  {} (would refuse — outside the trusted root){e:#}",
+        if let Some(cause) =
+            linker::manifest::diagnose_trust_failure(root, target_root, &entry.path)
+        {
+            let reason = trust_failure_reason(cause);
+            // On **stderr**, like the refusal the real pass prints for the
+            // same item (issue #348, third round): the preview must be
+            // readable the same way the run it previews is. As a
+            // `println!` a caller journalling `2>errors.log` got the
+            // reasons from a real pass and nothing at all from its
+            // preview, while one parsing stdout got the opposite.
+            anstream::eprintln!(
+                "{e}  {} (would refuse — outside the trusted root; {reason}){e:#}",
                 entry.path.display()
             );
             untrusted += 1;
@@ -498,8 +641,16 @@ fn print_manifest_dry_run(
         }
         let path = linker::manifest::resolve_real(root, &entry.path);
         if !path.exists() {
-            anstream::println!("{m}  {} (already absent){m:#}", path.display());
-            absent += 1;
+            if path.is_symlink() {
+                anstream::println!(
+                    "{w}  {} (would keep — broken symlink, cannot verify content){w:#}",
+                    path.display()
+                );
+                would_keep += 1;
+            } else {
+                anstream::println!("{m}  {} (already absent){m:#}", path.display());
+                absent += 1;
+            }
             continue;
         }
         match entry.outcome {
@@ -549,14 +700,48 @@ fn print_manifest_dry_run(
         }
     }
 
-    let would_clean_dirs = created_dirs
-        .iter()
-        .filter(|d| linker::manifest::is_trusted(root, target_root, d))
-        .count();
+    // Same decision the real pass makes for each recorded directory (issue
+    // #348, 1st bullet) — a refusal here counts into `untrusted` exactly
+    // like an entry's does, so the preview's exit code matches what a real
+    // run would do.
+    let mut would_clean_dirs = 0;
+    for dir in linker::manifest::deepest_first(created_dirs) {
+        match linker::manifest::decide_created_dir(root, target_root, &dir, all_entries) {
+            linker::manifest::CreatedDirDecision::Eligible => {
+                would_clean_dirs += 1;
+            }
+            linker::manifest::CreatedDirDecision::IsTargetRoot(cause) => {
+                let relation = target_root_relation(cause);
+                let reason = trust_failure_reason(cause);
+                anstream::eprintln!(
+                    "{e}  {} (would refuse — {relation} the target's own root; \
+                     {reason}){e:#}",
+                    dir.display()
+                );
+                untrusted += 1;
+            }
+            linker::manifest::CreatedDirDecision::Untrusted(cause) => {
+                let reason = trust_failure_reason(cause);
+                anstream::eprintln!(
+                    "{e}  {} (would refuse — outside the trusted root; {reason}){e:#}",
+                    dir.display()
+                );
+                untrusted += 1;
+            }
+            linker::manifest::CreatedDirDecision::Implausible => {
+                anstream::eprintln!(
+                    "{e}  {} (would refuse — matches no file link recorded creating; \
+                     the manifest may be corrupt or forged){e:#}",
+                    dir.display()
+                );
+                untrusted += 1;
+            }
+        }
+    }
 
     anstream::println!(
         "\n{m}  {} would be removed, {} would be kept, {} already absent \
-         ({} director{} recorded for cleanup).{m:#}",
+         ({} director{} eligible for cleanup).{m:#}",
         would_remove,
         would_keep,
         absent,
@@ -565,18 +750,35 @@ fn print_manifest_dry_run(
     );
     if would_keep > 0 {
         anstream::println!(
-            "{m}  Kept files are either hand-written (recorded as skipped by link), have \
-             content that no longer matches what link wrote, or could not be verified. \
-             Remove them by hand if you no longer want them.{m:#}"
+            "{m}  Files listed as kept would be left in place for the reason given on \
+             each line above: {KEPT_FILE_REASONS}. Remove them by hand if you no longer \
+             want them.{m:#}"
         );
     }
     if untrusted > 0 {
-        anstream::println!(
-            "{e}  {} manifest entry(ies) would be refused for resolving outside the \
-             trusted root; the manifest may be corrupt or forged.{e:#}",
+        // Same sentence the real pass prints, on the same stream, with the
+        // one word that has to differ (issue #348, third round: the two
+        // summaries had drifted into two formulations of the same fact,
+        // which is what extracting `trust_failure_reason` and
+        // `target_root_relation` was supposed to stop).
+        anstream::eprintln!(
+            "{e}  {} manifest item(s) would be refused and left untouched; each \
+             refusal above names the item and why.{e:#}",
             untrusted
         );
+        // Mirrors the real pass's own exit behaviour (design review R5):
+        // a refusal is a failure to complete, not a partial success, so
+        // the preview must fail too — otherwise it is not actually
+        // showing what the real run would do (issue #348, 1st bullet).
+        anyhow::bail!(
+            "{} manifest item(s) for target '{}' would be refused; a real run would \
+             not fully complete",
+            untrusted,
+            target_name
+        );
     }
+
+    Ok(())
 }
 
 /// The #342 fallback: recompute what `link` would write for the *current*
@@ -799,8 +1001,16 @@ async fn unlink_via_fallback(
         for candidate in &candidates {
             let path = candidate.path();
             if !path.exists() {
-                anstream::println!("{m}  {} (already absent){m:#}", path.display());
-                absent += 1;
+                if path.is_symlink() {
+                    anstream::println!(
+                        "{w}  {} (would keep — broken symlink, cannot verify content){w:#}",
+                        path.display()
+                    );
+                    would_keep += 1;
+                } else {
+                    anstream::println!("{m}  {} (already absent){m:#}", path.display());
+                    absent += 1;
+                }
                 continue;
             }
             match candidate {
@@ -823,18 +1033,19 @@ async fn unlink_via_fallback(
             }
         }
         anstream::println!(
-            "\n{m}  {} would be removed, {} would be kept (content differs), \
-             {} already absent.{m:#}",
+            "\n{m}  {} would be removed, {} would be kept, {} already absent.{m:#}",
             would_remove,
             would_keep,
             absent
         );
         if would_keep > 0 {
             anstream::println!(
-                "{m}  Kept files differ from what link would generate now — possibly \
-                 edited since linking, or linked with different options (e.g. \
-                 --model, or an interactive prompt answer); unlink cannot tell \
-                 which. Remove them by hand if you no longer want them.{m:#}"
+                "{m}  Kept files were left in place for the reason given on each line \
+                 above: content that differs from what link would generate now \
+                 (possibly edited since linking, or linked with different options — \
+                 e.g. --model, or an interactive prompt answer; unlink cannot tell \
+                 which), or a broken symlink whose content cannot be compared at all. \
+                 Remove them by hand if you no longer want them.{m:#}"
             );
         }
         return Ok(());
@@ -851,7 +1062,25 @@ async fn unlink_via_fallback(
     for candidate in &candidates {
         let path = candidate.path();
         if !path.exists() {
-            absent += 1;
+            if path.is_symlink() {
+                // Present on disk, its target gone. The manifest path
+                // stopped calling this "already absent" for issue #348's
+                // 3rd bullet; the same reasoning holds here word for word
+                // — a dangling link is not an absence, and its content
+                // can never match what `link` would generate, so the
+                // guard's own conservative "kept" outcome is the right
+                // one. The fallback is the *degraded* mode, where odd
+                // trees are more likely, not less.
+                let w = crate::cli::style::warn();
+                anstream::println!(
+                    "{w}  kept {} (broken symlink — its target is missing, so its \
+                     content can't be compared){w:#}",
+                    path.display()
+                );
+                kept += 1;
+            } else {
+                absent += 1;
+            }
             continue;
         }
 
@@ -900,8 +1129,8 @@ async fn unlink_via_fallback(
     let a = crate::cli::style::accent();
     let m = crate::cli::style::muted();
     anstream::println!(
-        "\n{o}Unlinked{o:#} {a}'{}'{a:#}: {m}{} deleted, {} kept (content differs), \
-         {} already absent.{m:#}",
+        "\n{o}Unlinked{o:#} {a}'{}'{a:#}: {m}{} deleted, {} kept, {} already \
+         absent.{m:#}",
         target_name,
         deleted,
         kept,
@@ -909,10 +1138,12 @@ async fn unlink_via_fallback(
     );
     if kept > 0 {
         anstream::println!(
-            "{m}  Kept files differ from what link would generate now — possibly edited \
-             since linking, or linked with different options (e.g. --model, or an \
-             interactive prompt answer); unlink cannot tell which. Remove them by hand \
-             if you no longer want them.{m:#}"
+            "{m}  Kept files were left in place for the reason given on each line \
+             above: content that differs from what link would generate now \
+             (possibly edited since linking, or linked with different options — \
+             e.g. --model, or an interactive prompt answer; unlink cannot tell \
+             which), or a broken symlink whose content cannot be compared at all. \
+             Remove them by hand if you no longer want them.{m:#}"
         );
     }
 
