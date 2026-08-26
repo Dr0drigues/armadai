@@ -21,7 +21,7 @@ Measured on our own assets, 2026-08-26, before correction:
 
 | Asset | Before | After | Finding |
 |---|---|---|---|
-| skill `armadai` | 6163 words, loaded **in full on every invocation** | 1334 (−78%) | 9 of 10 lessons **duplicated the memory** |
+| skill `armadai` | 6163 words, loaded **in full as soon as the skill triggers** | 1334 (−78%) | 9 of 10 lessons **duplicated the memory** |
 | root `CLAUDE.md` | 1247 words | 726 | its module map was **stale** — OH7 (#252) had moved `parser/`, `providers/`, `core/`, `storage/`, `secrets/`, and `ls` showed none of them at the documented path; `claude_adapter/`, which exists, was absent; and it described `api/openai.rs`/`proxy.rs` as `todo!()` stubs one day after #374 implemented them |
 
 A stale map is **worse** than no map: it is read as authoritative. Both defects survived weeks
@@ -72,6 +72,15 @@ never its size.
 - Suggestion: name the mechanism the product already supports — `core/skill.rs:61` loads
   `references/`, `:106` copies it on install. The author is not being asked to invent anything.
 
+> **Correction (post-review, measured):** the conversion above is wrong and the default is
+> **4000**, not 3000. On the same 460-skill corpus the ratio is **1.84 tokens per word**
+> (median), not 1 — so the p90 of 2224 words is ≈4100 tokens, and the p90 of the token
+> distribution read directly is 3956. Measured through the real command over those 460 skills:
+> the 3000 default flagged **54 (11.7%)** where this section promises ~4.6%; 4000 flags
+> **20 (4.3%)**. The p90 was the right criterion; only its conversion was wrong. Also stale
+> here: the loader is at `crates/armadai-core/src/skill.rs` — `core/skill.rs` is one of the 16
+> paths `R02` itself reports as nonexistent.
+
 ### `R02` — a path named in the instructions file does not exist
 
 **Warning.** A filesystem path cited in the root instructions file that resolves to nothing.
@@ -89,7 +98,13 @@ False positives are the whole difficulty, so the rule is deliberately narrow:
 
 Anything that survives those filters and does not exist is a real broken claim.
 
-### `R04` — weight of the always-loaded context
+> **Correction (Task 3-4, measured against the standard):** the Agent Skills standard is
+> three-tier — metadata always, the `SKILL.md` body **when the skill triggers**, linked
+> files on demand. Earlier wording here said a skill body loads "on every invocation",
+> which is wrong. The cost is real but it is engaged at trigger time; the instructions
+> file is what loads unconditionally. Rule messages were reworded accordingly.
+
+### `R04` — weight of the front-loaded context
 
 **Info, no judgement.** Reports the total estimated tokens loaded by default: root instructions
 file + each skill's `SKILL.md` (excluding its `references/`, which load on demand).
@@ -113,7 +128,8 @@ here"*.
 
 - New module `crates/armadai/src/audit/rules/rightsizing.rs`.
 - Three entries in `registry()` (`audit/rules/mod.rs:155`).
-- Two fields on `AuditSettings`: `skill_token_threshold: usize` (default 3000) and nothing for
+- Two fields on `AuditSettings`: `skill_token_threshold: usize` (default 4000, see the
+  correction under `R01`) and nothing for
   `R02`/`R04` — neither has a tunable.
 - `R04`'s output is a finding like any other, so `report.rs` needs no new plumbing; the report
   groups by rule family already.

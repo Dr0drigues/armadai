@@ -130,6 +130,7 @@ fn parse_skill_dir(dir: &Path) -> ImportedSkill {
             description: None,
             has_skill_md: false,
             has_frontmatter: false,
+            body_tokens: 0,
             issues: Vec::new(),
             extra: BTreeMap::new(),
         };
@@ -156,6 +157,7 @@ fn parse_skill_dir(dir: &Path) -> ImportedSkill {
         description: fm.description,
         has_skill_md: true,
         has_frontmatter,
+        body_tokens: crate::audit::rules::estimate_tokens(&content),
         issues,
         extra: fm.extra,
     }
@@ -431,6 +433,10 @@ mod tests {
             .find(|s| s.name == "empty-skill")
             .unwrap();
         assert!(!empty.has_skill_md);
+        assert_eq!(
+            empty.body_tokens, 0,
+            "a skill with no readable SKILL.md must report no size, not a guess"
+        );
         assert!(config.instructions.unwrap().content.contains("@reviewer"));
     }
 
@@ -595,6 +601,29 @@ mod tests {
             a.issues[0].message.contains("line 6"),
             "expected exact 'line 6' reference, got: {}",
             a.issues[0].message
+        );
+    }
+
+    #[test]
+    fn a_parsed_skill_carries_its_body_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = dir.path().join(".claude/skills/big");
+        std::fs::create_dir_all(&skills).unwrap();
+        // 400 chars of body -> 100 estimated tokens (chars / 4); the 33-char
+        // frontmatter block brings the whole file to 433 chars -> 108 tokens.
+        let body = "x".repeat(400);
+        std::fs::write(
+            skills.join("SKILL.md"),
+            format!("---\nname: big\ndescription: d\n---\n{body}"),
+        )
+        .unwrap();
+
+        let parsed = parse_skill_dir(&skills);
+
+        assert_eq!(
+            parsed.body_tokens, 108,
+            "the whole file must be counted, frontmatter included (a body-only \
+             count would be 100, an unfilled field 0)"
         );
     }
 }

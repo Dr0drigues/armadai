@@ -10,6 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-26-audit-context-rightsizing-design.md`
 
+> **Superseded, post-review (measured):** every `3000` below is the threshold this plan was
+> written with. It is **4000** as shipped. The plan's derivation was wrong by ~36 %: the real
+> ratio is **1.843 token/word** (median of the same 460-skill corpus), so the p90 of 2224 words
+> is ~4090 tokens, not 3000. Measured through the real binary on those 460 skills: 3000 flags
+> **54 (11.7 %)**, 4000 flags **20 (4.3 %)** — and 4.3 % is what the spec promised. The spec
+> carries the correction; `docs/wiki/audit.md` and the code carry the right number. This file is
+> a dated execution log, kept as written apart from this note.
+
 ## Global Constraints
 
 - Rules are **pure functions of `AuditContext`**. No rule reads the filesystem — the reverse pass does. The single `read_to_string` in the rules tree is `AuditSettings::from_project` loading config.
@@ -31,7 +39,7 @@
 | `crates/armadai/tests/audit_rightsizing.rs` | **Create** — black-box cases on the real binary |
 | `docs/wiki/audit.md` | **Modify** — document the three rules and the new setting |
 
-13 of the 14 `ImportedSkill { .. }` construction sites are in tests (`rules/assets.rs` ×6, `rules/collisions.rs` ×3, `rules/usage_rules.rs` ×2, `reverse/claude.rs` tests ×2). They get `body_tokens: 0` — they do not test size. New tests use the helper from Task 1.
+**Corrected during Task 1, measured:** 12 `ImportedSkill { .. }` literals, **10 in tests** (`rules/assets.rs` ×6, `rules/collisions.rs` ×2, `rules/usage_rules.rs` ×2) and **2 in production** — both inside `parse_skill_dir`, its early return for an unreadable file *and* its main return. `claude.rs`'s own tests build no `ImportedSkill` by hand; they go through `parse_skill_dir` on tempdirs. The 10 test sites get `body_tokens: 0`; the early return gets `0` too (absent file, no size to guess).
 
 ---
 
@@ -67,10 +75,13 @@ fn a_parsed_skill_carries_its_body_size() {
 
     let parsed = parse_skill_dir(&skills);
 
-    assert!(
-        parsed.body_tokens >= 100,
-        "the whole file must be counted, got {} tokens",
-        parsed.body_tokens
+    // Exact, not `>= 100`: the body alone is exactly 400 chars = 100 tokens, so
+    // a `>= 100` assertion stays GREEN under the mutation that counts the body
+    // instead of the file — measured during Task 1. 33 chars of frontmatter +
+    // 400 = 433 -> 108 tokens at chars/4.
+    assert_eq!(
+        parsed.body_tokens, 108,
+        "the whole file must be counted, frontmatter included"
     );
 }
 ```
@@ -126,10 +137,20 @@ In `rules/mod.rs`, inside `pub(crate) mod test_support`:
     }
 ```
 
-- [ ] **Step 6: Run the tests**
+- [ ] **Step 6: Run the tests AND clippy**
 
-Run: `cargo test --bin armadai --no-fail-fast`
-Expected: PASS, including the new test.
+Run: `cargo test --bin armadai --no-fail-fast`, then clippy in all 5 modes.
+
+`cargo test` alone is not enough here and the first draft of this plan got it wrong: a
+foundation task creates a producer with no consumer, so `-D warnings` fails on two
+`dead_code` errors — the field (non-test build; `pub` does not exempt it, this crate is
+binary-only) and the helper (test build).
+
+Gate them, and pick the attribute deliberately: `#[expect(dead_code)]` on the **helper**, so
+the gate *breaks* the moment Task 2 uses it and the scaffolding cannot rot; `#[allow(dead_code)]`
+on the **field**, because `expect` there is `unfulfilled` — the field *is* read by `reverse`'s
+own tests. Measured, not reasoned. Mark both with a `Scaffold:` comment so Task 2 can
+`grep -n "Scaffold:"` them.
 
 - [ ] **Step 7: Mutation check**
 
@@ -329,7 +350,7 @@ Add `skill_token_threshold: 3000,` to `Default::default()`, `skill_token_thresho
 Option<usize>` to the private `AuditSection`, and the corresponding override in
 `from_project`, mirroring `prompt_token_threshold` exactly.
 
-Add to `registry()`, after the `A` block so report ordering stays grouped:
+Add to `registry()`. Position is cosmetic — **the plan's original claim that it groups the report is false**, measured: `run_rules` (`rules/mod.rs:184`) sorts by `(severity, file, rule)`, so the registry order cannot reach the report. Put it after the `A` block because R01 reads well next to A05, not because it changes output:
 
 ```rust
         rightsizing::r01_oversized_skill,
@@ -356,6 +377,77 @@ mutation that kills it is a condition that can silently stop working.
 git add crates/armadai/src/audit/
 git commit -m "feat(audit): add R01, flagging an oversized skill with no references/"
 ```
+
+---
+
+---
+
+## Lessons from Tasks 1-4 — apply to every remaining task
+
+Measured by executing this plan, not by reading it. Each of these was a real gap in the task
+as written, so assume the same gaps in yours.
+
+**A rule needs a registry test.** Removing the `registry()` entry leaves the rule's own unit
+tests green while the rule never runs. That is exactly the dead-call defect found in #374.
+Every rule gets a test asserting `run_rules` emits it — R01's is
+`r01_is_wired_into_the_registry`.
+
+**Settings plumbing needs its own tests.** R01's positive test asserted only that the message
+carried the size, so raising the default *or* deleting the `from_project` override left
+everything green. Assert the default value **and** an override, in the existing
+`from_project_*` tests.
+
+**One mutation per condition, and count the conditions first.** The plan listed three
+conditions for R01 and gave two mutations, both aimed at the same one — the threshold had
+none, and a fourth condition (`has_skill_md`) had neither test nor mutation. Enumerate the
+conditions in the rule body, then check each has a mutation that kills exactly one test.
+
+**Never let a test's answer depend on the ambient filesystem.** `test_support::skill` returns a
+*relative* `source_path`, and anything resolving it hits the process cwd — which is global to
+the test binary and moved mid-suite by `IsolatedProjectDir`. Three of R01's five planned tests
+needed a `false` from `has_references` and got it by luck. The grave case was that a test's
+*mutation sensitivity* depended on it: had the ambient answer been `true`, removing a filter
+would have left it green. Use real tempdirs; `rightsizing.rs` now has a `skill_on_disk` helper.
+
+**The plan's own assertions can be unfalsifiable.** Task 1 found `assert!(body_tokens >= 100)`
+staying green under the mutation it was written to catch, because the body alone is exactly 100
+tokens. Prefer exact equality with the arithmetic in a comment.
+
+**A negative fixture must contain a token that only the filter under test rejects.** Measured in
+Task 3: `r02_ignores_paths_inside_a_code_fence` first cited a *bare* path inside the fence, and a
+bare path is no candidate to begin with — removing the fence tracking left the test green. Same
+shape as the Task 1 defect, one level up: the fixture, not the assertion. For every filter, ask
+what makes the fixture a candidate *before* that filter runs.
+
+**A filter can be redundant with another, and then its mutation kills nothing.** Task 3's
+"a path must have a directory part" was fully shadowed by the host-shape rejection for
+`armadai.yaml` (a dot in the first component). Only a dotfile with a real extension
+(`.mcp.json`) reaches it. Two filters that never disagree are one filter plus dead code — find
+the input that separates them, or drop one.
+
+**Measure a heuristic rule against the real corpus before writing its tests.** Task 3's
+implementation as sketched in the plan produced **23 findings on this repo's own `CLAUDE.md`, 22
+of them false**, and 24 (9 false) on the pre-#382 one. The shipped filters were derived from that
+run. Unit tests on invented fixtures would have shipped all 22: every one of them passed the
+plan's filters *by design*.
+
+**A "sanity read" step can carry a false expectation.** Task 3's Step 6 asserted R02 must report
+nothing on this repo. It reports exactly one thing, and the finding is **true**: `CLAUDE.md:80`
+still says the Provider trait is in `providers/traits.rs`, while it is in
+`crates/armadai-core/src/provider.rs` and no `traits.rs` exists anywhere in the tree (`find`,
+0 hits). #382 rewrote the module map and carried that line over. The rule's first real catch is a
+one-day-old stale path — left in place deliberately, so the finding is visible rather than
+quietly patched away. Fixing it is a one-line `docs:` change and belongs to whoever owns
+`CLAUDE.md`.
+
+**A skill's body does not load on every invocation, and the report must not say it does.** The
+Agent Skills standard is three-level: metadata always, the `SKILL.md` body when the skill
+triggers, bundled files on demand. R04's message was reworded accordingly (instructions "on every
+invocation", skills "each loaded whole when it triggers"). **R01's message still reads "so all of
+it loads on every invocation"** — same inaccuracy, shipped in Task 2, not corrected here because
+it is outside Tasks 3-4's scope. Task 5 must not restate it in `docs/wiki/audit.md`; the accurate
+claim is that a skill body is loaded *whole* the moment the skill triggers, so its size is a cost
+the author commits to at that point.
 
 ---
 
@@ -550,14 +642,35 @@ Expected: PASS (6 tests).
 2. Remove the `is_placeholder` guard → `r02_ignores_placeholders_and_globs` must FAIL.
 3. Remove the `looks_like_path` guard → `r02_ignores_backticked_prose_that_is_not_a_path` must FAIL.
 4. Invert the existence check to `base.join(p).exists()` → `r02_leaves_an_existing_path_alone` must FAIL.
+5. **Remove the `registry()` entry** → a `r02_is_wired_into_the_registry` test must FAIL. Write
+   that test; without it, forgetting the entry ships a rule that never runs with every unit
+   test green.
 
 Restore after each and record the outputs.
 
 - [ ] **Step 6: Run it against this repo's own CLAUDE.md**
 
-Not an assertion, a sanity read: `cargo run --bin armadai -- audit` and check `R02` reports
-nothing on the current tree (PR #382 fixed the stale paths). If it reports something, either
-the tree regressed or a filter is too narrow — investigate before continuing.
+Not an assertion, a sanity read: `cargo run --bin armadai -- audit`.
+
+**Measured outcome, correcting this step's original expectation** ("R02 reports nothing, #382
+fixed the stale paths"): R02 reports **one** finding, and it is a **true positive** —
+`CLAUDE.md:80` places the Provider trait at `providers/traits.rs`, which exists nowhere
+(`find` over the tree, `.git`/`target` excluded: 0 hits); the trait is at
+`crates/armadai-core/src/provider.rs:47`. #382 rewrote the module map and carried that one line
+over. Verdict: the rule is right, the file is stale. Left unfixed on purpose so the finding stays
+visible; the fix is one line and is not part of Tasks 3-4.
+
+The same run also showed that **the `cited_paths` sketched in Step 1 is not shippable**: it
+reports 23 paths on this `CLAUDE.md`, 22 false — crate-relative fragments (`cli/`, `web/`,
+`parser/`, `test_support/`, …), user-config paths (`~/.config/armadai/`), a bare extension
+(`.md`), a bare convention filename (`armadai.yaml`), a module directory
+(`core/orchestration/es/`). See the shipped `rightsizing.rs` for what replaced it: a path must
+carry a directory part *and* a real source extension (via `Path::extension`, so a bare `.md`
+never qualifies) and must not be absolute, home-relative or URL-shaped; and resolution is
+root-relative **or** a whole-component suffix anywhere in the tree, because a multi-crate repo
+cites modules relative to their crate. Measured on the pre-#382 `CLAUDE.md`, suffix resolution
+reports 16 stale paths with no crate-prefix false positive where root-only reports 24 with 9
+false — and it catches the exact family #382 called INTROUVABLES (`core/*.rs`, `storage/*.rs`).
 
 - [ ] **Step 7: Commit**
 
@@ -568,7 +681,10 @@ git commit -m "feat(audit): add R02, flagging a cited path that does not exist"
 
 ---
 
-### Task 4: `R04` — weight of the always-loaded context
+### Task 4: `R04` — weight of the front-loaded context
+
+> Titled "always-loaded" in the original plan. Renamed on measurement: only the instructions
+> file is always loaded. See the last lesson above.
 
 **Files:**
 - Modify: `crates/armadai/src/audit/rules/rightsizing.rs`
@@ -664,8 +780,13 @@ Expected: PASS.
 
 - [ ] **Step 5: Mutation check**
 
-Drop `skills_tokens` from the sum (`let total = instructions_tokens;`) →
-`r04_sums_instructions_and_skills` must FAIL on the `600` assertion. Restore, re-run green.
+Two, not one:
+
+1. Drop `skills_tokens` from the sum (`let total = instructions_tokens;`) →
+   `r04_sums_instructions_and_skills` must FAIL on the `600` assertion.
+2. **Remove the `registry()` entry** → a `r04_is_wired_into_the_registry` test must FAIL.
+
+Restore after each, re-run green, record both outputs.
 
 - [ ] **Step 6: Commit**
 
@@ -800,3 +921,55 @@ git commit -m "test(audit): cover the R rules on the real binary"
 ```
 
 PR body in French, linking #384, with the mutation outputs for each rule. Do not merge.
+
+---
+
+## Task 5 — measured corrections
+
+Six, in the same spirit as the lessons above: found by executing the task, not by reading it.
+
+**The isolation list was short by one variable.** Step 1 redirects `ARMADAI_CONFIG_DIR` and
+`XDG_DATA_HOME`, and both are needed. But `cli::audit::execute` also calls
+`usage::scan(&root)` unconditionally, which reads the developer's real `~/.claude/projects`
+unless `ARMADAI_CLAUDE_PROJECTS_DIR` says otherwise — machine-dependent, potentially hundreds of
+megabytes, and any `U0x` finding it produces lands in the very stdout these tests assert on.
+`audit_usage.rs` already sets it; the shipped helper sets all three.
+
+**The proposed assertions were whole-output `contains`, the exact defect `audit_usage.rs`
+documents.** `text.contains("R01") && text.contains("heavy")` can pass on two unrelated lines —
+the report names the same file on its `A09`, `A12` and `R04` lines. Every assertion here is
+same-line, through an `Output::line_with(rule, needles)` helper that also insists on **exactly
+one** matching line, and each carries the measured number (`~4010 tokens`, `(threshold 3000)`,
+`~300 tokens`) rather than the rule code alone.
+
+**Step 4 pointed at a settings section that does not exist.** "document
+`skill_token_threshold` alongside `prompt_token_threshold` in the `audit:` settings section" —
+`grep -rn prompt_token_threshold docs/` finds it only in `declarative-agents.md` and in older
+plans. `docs/wiki/audit.md` had no settings section at all, so one was created, documenting all
+five keys.
+
+**Unregistering a rule is necessary but not sufficient to prove CLI reachability.** Task 3-4
+already added `rXX_is_wired_into_the_registry` unit tests, which go red on that same mutation —
+so on its own it does not separate "the CLI reaches the rule" from "`run_rules` reaches the
+rule". Two mutations that **only** the black-box tests catch were measured instead, and they are
+the ones that answer the question:
+
+1. `print_terminal`'s severity loop reduced to `[Critical, Warning]` — the R04 finding is still
+   computed (the Summary line still says `1 info`, the Breakdown still says `R04×1`) and is
+   never printed. **734 unit tests green, `r04_totals_the_front_loaded_context_from_the_real_files`
+   red.**
+2. `cli::audit::execute` passing `&AuditSettings::default()` instead of the loaded `&settings` —
+   the project's `audit.skill_token_threshold` is read, parsed, and thrown away. **734 unit tests
+   green, `the_project_config_threshold_reaches_r01_through_the_cli` red.**
+
+**Two lessons above are now stale, and the fix landed before Task 5 started.** The last lesson
+says "R01's message still reads 'so all of it loads on every invocation'"; `ce7fd30` reworded it
+to "so the whole body is loaded as soon as the skill triggers". Task 3's Step 6 says the stale
+`providers/traits.rs` in `CLAUDE.md` was left in place deliberately; `ce7fd30` fixed that too, and
+`armadai audit --no-usage` on this repo now reports **zero** R02 findings (`R04  CLAUDE.md
+~1423 tokens`, plus pre-existing `A06`/`A08`/`A10`).
+
+**The R01 fixture's missing `.claude/agents/` is fine — do not "fix" it.** `ClaudeReverseLinker::detect`
+(`reverse/claude.rs:52-56`) returns true on `.claude/skills` or `CLAUDE.md` alone, so a
+skills-only project is detected and `execute` does not take its "nothing here" early return.
+Verified by running it.

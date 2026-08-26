@@ -59,6 +59,13 @@ pub struct ImportedSkill {
     pub description: Option<String>,
     pub has_skill_md: bool,
     pub has_frontmatter: bool,
+    /// Estimated tokens of the whole `SKILL.md`, frontmatter included. `0`
+    /// when the file is absent or unreadable.
+    ///
+    /// A count, not the body: `R01` only asks how big the file is, and
+    /// loading a whole SKILL.md into the audit context to answer that would be
+    /// the very defect the R family exists to measure.
+    pub body_tokens: usize,
     pub issues: Vec<ParseIssue>,
     /// Frontmatter fields we do not type (kept verbatim for --propose and
     /// custom-field rules). Never populated by salvage.
