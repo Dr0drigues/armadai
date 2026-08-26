@@ -342,7 +342,7 @@ Add `skill_token_threshold: 3000,` to `Default::default()`, `skill_token_thresho
 Option<usize>` to the private `AuditSection`, and the corresponding override in
 `from_project`, mirroring `prompt_token_threshold` exactly.
 
-Add to `registry()`, after the `A` block so report ordering stays grouped:
+Add to `registry()`. Position is cosmetic — **the plan's original claim that it groups the report is false**, measured: `run_rules` (`rules/mod.rs:184`) sorts by `(severity, file, rule)`, so the registry order cannot reach the report. Put it after the `A` block because R01 reads well next to A05, not because it changes output:
 
 ```rust
         rightsizing::r01_oversized_skill,
@@ -369,6 +369,41 @@ mutation that kills it is a condition that can silently stop working.
 git add crates/armadai/src/audit/
 git commit -m "feat(audit): add R01, flagging an oversized skill with no references/"
 ```
+
+---
+
+---
+
+## Lessons from Tasks 1-2 — apply to every remaining task
+
+Measured by executing this plan, not by reading it. Each of these was a real gap in the task
+as written, so assume the same gaps in yours.
+
+**A rule needs a registry test.** Removing the `registry()` entry leaves the rule's own unit
+tests green while the rule never runs. That is exactly the dead-call defect found in #374.
+Every rule gets a test asserting `run_rules` emits it — R01's is
+`r01_is_wired_into_the_registry`.
+
+**Settings plumbing needs its own tests.** R01's positive test asserted only that the message
+carried the size, so raising the default *or* deleting the `from_project` override left
+everything green. Assert the default value **and** an override, in the existing
+`from_project_*` tests.
+
+**One mutation per condition, and count the conditions first.** The plan listed three
+conditions for R01 and gave two mutations, both aimed at the same one — the threshold had
+none, and a fourth condition (`has_skill_md`) had neither test nor mutation. Enumerate the
+conditions in the rule body, then check each has a mutation that kills exactly one test.
+
+**Never let a test's answer depend on the ambient filesystem.** `test_support::skill` returns a
+*relative* `source_path`, and anything resolving it hits the process cwd — which is global to
+the test binary and moved mid-suite by `IsolatedProjectDir`. Three of R01's five planned tests
+needed a `false` from `has_references` and got it by luck. The grave case was that a test's
+*mutation sensitivity* depended on it: had the ambient answer been `true`, removing a filter
+would have left it green. Use real tempdirs; `rightsizing.rs` now has a `skill_on_disk` helper.
+
+**The plan's own assertions can be unfalsifiable.** Task 1 found `assert!(body_tokens >= 100)`
+staying green under the mutation it was written to catch, because the body alone is exactly 100
+tokens. Prefer exact equality with the arithmetic in a comment.
 
 ---
 
@@ -563,6 +598,9 @@ Expected: PASS (6 tests).
 2. Remove the `is_placeholder` guard → `r02_ignores_placeholders_and_globs` must FAIL.
 3. Remove the `looks_like_path` guard → `r02_ignores_backticked_prose_that_is_not_a_path` must FAIL.
 4. Invert the existence check to `base.join(p).exists()` → `r02_leaves_an_existing_path_alone` must FAIL.
+5. **Remove the `registry()` entry** → a `r02_is_wired_into_the_registry` test must FAIL. Write
+   that test; without it, forgetting the entry ships a rule that never runs with every unit
+   test green.
 
 Restore after each and record the outputs.
 
@@ -677,8 +715,13 @@ Expected: PASS.
 
 - [ ] **Step 5: Mutation check**
 
-Drop `skills_tokens` from the sum (`let total = instructions_tokens;`) →
-`r04_sums_instructions_and_skills` must FAIL on the `600` assertion. Restore, re-run green.
+Two, not one:
+
+1. Drop `skills_tokens` from the sum (`let total = instructions_tokens;`) →
+   `r04_sums_instructions_and_skills` must FAIL on the `600` assertion.
+2. **Remove the `registry()` entry** → a `r04_is_wired_into_the_registry` test must FAIL.
+
+Restore after each, re-run green, record both outputs.
 
 - [ ] **Step 6: Commit**
 
