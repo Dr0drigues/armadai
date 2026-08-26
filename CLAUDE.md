@@ -77,7 +77,7 @@ while the domain lives in `crates/armadai-core` (incl. `parser/`, `orchestration
 - Test env isolation lives in `armadai_core::test_support` and is **not reentrant** — two
   guards on one thread deadlock.
 
-**Provider trait** (`providers/traits.rs`):
+**Provider trait** (`crates/armadai-core/src/provider.rs`):
 ```rust
 trait Provider: Send + Sync {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;

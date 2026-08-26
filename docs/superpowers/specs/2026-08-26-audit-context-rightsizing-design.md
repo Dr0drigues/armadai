@@ -21,7 +21,7 @@ Measured on our own assets, 2026-08-26, before correction:
 
 | Asset | Before | After | Finding |
 |---|---|---|---|
-| skill `armadai` | 6163 words, loaded **in full on every invocation** | 1334 (−78%) | 9 of 10 lessons **duplicated the memory** |
+| skill `armadai` | 6163 words, loaded **in full as soon as the skill triggers** | 1334 (−78%) | 9 of 10 lessons **duplicated the memory** |
 | root `CLAUDE.md` | 1247 words | 726 | its module map was **stale** — OH7 (#252) had moved `parser/`, `providers/`, `core/`, `storage/`, `secrets/`, and `ls` showed none of them at the documented path; `claude_adapter/`, which exists, was absent; and it described `api/openai.rs`/`proxy.rs` as `todo!()` stubs one day after #374 implemented them |
 
 A stale map is **worse** than no map: it is read as authoritative. Both defects survived weeks
@@ -89,7 +89,13 @@ False positives are the whole difficulty, so the rule is deliberately narrow:
 
 Anything that survives those filters and does not exist is a real broken claim.
 
-### `R04` — weight of the always-loaded context
+> **Correction (Task 3-4, measured against the standard):** the Agent Skills standard is
+> three-tier — metadata always, the `SKILL.md` body **when the skill triggers**, linked
+> files on demand. Earlier wording here said a skill body loads "on every invocation",
+> which is wrong. The cost is real but it is engaged at trigger time; the instructions
+> file is what loads unconditionally. Rule messages were reworded accordingly.
+
+### `R04` — weight of the front-loaded context
 
 **Info, no judgement.** Reports the total estimated tokens loaded by default: root instructions
 file + each skill's `SKILL.md` (excluding its `references/`, which load on demand).

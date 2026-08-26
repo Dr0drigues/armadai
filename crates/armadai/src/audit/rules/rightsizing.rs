@@ -35,8 +35,7 @@ pub(super) fn r01_oversized_skill(ctx: &AuditContext) -> Vec<Finding> {
             file: s.source_path.clone(),
             related: Vec::new(),
             message: format!(
-                "skill '{}' is ~{} tokens (threshold {}) and has no references/, so all of it \
-                 loads on every invocation",
+                "skill '{}' is ~{} tokens (threshold {}) and has no references/, so the whole body is loaded as soon as the skill triggers",
                 s.name, s.body_tokens, ctx.settings.skill_token_threshold
             ),
             suggestion: Some(
