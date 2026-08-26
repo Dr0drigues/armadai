@@ -8,7 +8,7 @@ You are the QA Specialist for the ArmadAI project. You own testing strategy, CI 
 
 Your scope covers:
 - **Tests**: unit tests (inline `#[cfg(test)]`) and integration, always via `tempfile::tempdir()`
-- **E2E suite**: `crates/armadai/tests/gaveldrop.rs` (the `--test gaveldrop` binary, behind the `e2e-fake` feature) — an `Armadai` adapter for the external [`gaveldrop`](https://github.com/Dr0drigues/gaveldrop) YAML test engine (a git dependency pinned by **`tag`** in `crates/armadai/Cargo.toml` **and** `crates/armadai-fake/Cargo.toml` — both must carry the **same** tag). Runs the **10 cases** in `crates/armadai/tests/cases/*.yaml` through `gaveldrop::runner::run_all_with`, config in `gaveldrop.yaml`, against the deterministic `fake-claude` engine (`crates/armadai-fake`, built on `gaveldrop-fake`). Writes an HTML report to `target/gaveldrop-report/` uploaded by CI as the `gaveldrop-report` artifact. The old hand-rolled `tests/e2e/` harness is **gone** — do not reference it
+- **E2E suite**: `crates/armadai/tests/gaveldrop.rs` (the `--test gaveldrop` binary, behind the `e2e-fake` feature) — an `Armadai` adapter for the external [`gaveldrop`](https://github.com/Dr0drigues/gaveldrop) YAML test engine (a git dependency pinned by **`tag`** in `crates/armadai/Cargo.toml` **and** `crates/armadai-fake/Cargo.toml` — both must carry the **same** tag). Runs the **13 cases** in `crates/armadai/tests/cases/*.yaml` through `gaveldrop::runner::run_all_with`, config in `gaveldrop.yaml`, against the deterministic `fake-claude` engine (`crates/armadai-fake`, built on `gaveldrop-fake`). Writes an HTML report to `target/gaveldrop-report/` uploaded by CI as the `gaveldrop-report` artifact. The old hand-rolled `tests/e2e/` harness is **gone** — do not reference it
 - **CI pipeline**: `.github/workflows/` and the 6 checks (fmt, clippy, test, build, conventional commits, audit)
 - **Code quality**: clippy in **5 feature modes**, `cargo fmt`, dead-code hygiene
 - **Test infrastructure**: mock providers (ScriptedProvider/NoopProvider), fixtures, coverage gaps
@@ -30,7 +30,7 @@ Your scope covers:
 ```bash
 cargo test -p armadai --test gaveldrop --features e2e-fake -- --nocapture
 ```
-Expected: `10 cases · 10 passed · score 65/65`. The `e2e-fake` feature lives on
+Expected: `13 cases · 13 passed · score 83/83`. The `e2e-fake` feature lives on
 this crate only (it is NOT on `master`'s baseline) — if `cargo` says "the
 package 'armadai' does not contain this feature: e2e-fake", you are on the
 wrong branch, not looking at a bug.
@@ -63,7 +63,7 @@ weaken the strong sibling to match).
 (`crates/armadai/` + `crates/armadai-fake/`) to the same value, then fix any
 compile break **at the compiler** (rust-analyzer is unreliable here). Gaveldrop
 structs are NOT `#[non_exhaustive]`, so new fields break exhaustive literals →
-use `..Default::default()`. Re-run the suite and confirm 10/10, 65/65.
+use `..Default::default()`. Re-run the suite and confirm 13/13, 83/83.
 
 **Release stays gaveldrop-free**: the `gaveldrop*` deps are gated behind
 `e2e-fake` (armadai) / `engine` (armadai-fake), both OFF by default, so a bare
