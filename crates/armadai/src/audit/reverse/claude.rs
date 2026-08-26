@@ -68,7 +68,9 @@ impl ReverseLinker for ClaudeReverseLinker {
 /// nested subdirectories (e.g. `.claude/agents/backend/dev.md`).
 const MAX_AGENT_SCAN_DEPTH: u32 = 3;
 
-fn parse_agents(dir: &Path) -> Vec<ImportedAgent> {
+/// `pub(crate)` so the global scope can point the same parser at
+/// `~/.claude/agents` — see `crate::audit::scope`.
+pub(crate) fn parse_agents(dir: &Path) -> Vec<ImportedAgent> {
     let mut files = Vec::new();
     collect_agent_files(dir, MAX_AGENT_SCAN_DEPTH, &mut files);
     let mut agents: Vec<ImportedAgent> = files.iter().map(|p| parse_agent_file(p)).collect();
@@ -103,7 +105,9 @@ struct SkillFm {
     extra: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
-fn parse_skills(dir: &Path) -> Vec<ImportedSkill> {
+/// `pub(crate)` so the global scope can point the same parser at both
+/// `~/.claude/skills` and `~/.config/armadai/skills`.
+pub(crate) fn parse_skills(dir: &Path) -> Vec<ImportedSkill> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -163,7 +167,9 @@ fn parse_skill_dir(dir: &Path) -> ImportedSkill {
     }
 }
 
-fn parse_instructions(path: &Path) -> Option<ImportedInstructions> {
+/// `pub(crate)` so the global scope can point the same parser at
+/// `~/.claude/CLAUDE.md`, which is not `~/CLAUDE.md`.
+pub(crate) fn parse_instructions(path: &Path) -> Option<ImportedInstructions> {
     let content = std::fs::read_to_string(path).ok()?;
     Some(ImportedInstructions {
         source_path: path.to_path_buf(),
