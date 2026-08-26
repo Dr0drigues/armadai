@@ -327,6 +327,82 @@ pub fn fold(events: &[ExecutionEvent]) -> ExecutionState {
     state
 }
 
+/// Warning code emitted when a configured budget was fed no usage at all.
+pub const UNREPORTED_USAGE_CODE: &str = "budget_usage_unreported";
+
+/// `Some(message)` when a configured `token_budget`/`cost_limit` cannot
+/// possibly do its job, because the provider reported no usage whatsoever
+/// for the whole run.
+///
+/// The budget counters here are fed exclusively by `AgentObserved`'s
+/// `tokens_in`/`tokens_out`/`cost`, which come straight from
+/// `CompletionResponse`. That type has no way to say "unknown": a provider
+/// that does not report usage — many OpenAI-compatible gateways and local
+/// runtimes simply omit the `usage` block, and `CliProvider` reports nothing
+/// for a plain-text CLI — is indistinguishable from one reporting a free,
+/// zero-token call. Reporting `0.0` is the right choice (inventing a median
+/// price would put dollars into `armadai costs` that were never spent), but
+/// downstream every zero reads as "free":
+///
+/// - `token_budget`/`cost_limit` never breach, so a run that should have
+///   halted keeps going up to `max_iterations`/`max_depth`;
+/// - the per-hop partition (`remaining = total - consumed`) hands **every**
+///   nested delegation the full original ceiling — the very defect #345
+///   closed, reopened through the data;
+/// - `remaining_ratio` stays at `1.0`, so `budget_downgrade_ratio` never
+///   engages.
+///
+/// None of that is unbounded — `max_iterations` (50) and `max_depth` (5) are
+/// checked before the budget branches, and the socle's `MAX_ITERATIONS`
+/// (500) is the outer net — but a silently inoperative limit is worth one
+/// line of warning. The real fix is an `Option` for unknown usage carried
+/// end to end (`CliResponse` in `json_runner.rs` already distinguishes
+/// them); that reaches `CompletionResponse`, the event log and the SQLite
+/// schema, and is deliberately not attempted here.
+///
+/// Returns `None` when no budget is configured, when any usage at all was
+/// reported, or when no agent ever answered (nothing to measure). A run in
+/// which every call *failed* also reports no usage; the notice is still
+/// literally true there, only less interesting.
+pub fn unreported_usage_warning(
+    token_budget: Option<u64>,
+    cost_limit: Option<f64>,
+    state: &ExecutionState,
+) -> Option<String> {
+    let mut configured: Vec<&str> = Vec::new();
+    if token_budget.is_some_and(|b| b > 0) {
+        configured.push("token_budget");
+    }
+    if cost_limit.is_some_and(|c| c > 0.0) {
+        configured.push("cost_limit");
+    }
+    if configured.is_empty() {
+        return None;
+    }
+
+    if state.budget_tokens_in > 0 || state.budget_tokens_out > 0 || state.budget_cost > 0.0 {
+        return None;
+    }
+
+    let anyone_answered = state
+        .conversations
+        .values()
+        .flatten()
+        .any(|m| m.role == "assistant");
+    if !anyone_answered {
+        return None;
+    }
+
+    Some(format!(
+        "{} is configured, but the provider reported no usage for this run \
+         (0 tokens, $0.00) — the limit can never trigger, and each nested \
+         delegation receives the full ceiling instead of its share. \
+         Endpoints that omit `usage` (many OpenAI-compatible gateways and \
+         local runtimes) make budget limits inoperative.",
+        configured.join(" and ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,5 +604,72 @@ mod tests {
         ];
         let state = fold(&events);
         assert_eq!(state.config_json.as_deref(), Some("{\"max_rounds\":5}"));
+    }
+    // --- unreported usage (#374 review, I3) ---
+
+    fn state_with(tokens_in: u64, tokens_out: u64, cost: f64) -> ExecutionState {
+        let mut state = ExecutionState::default();
+        state.conversations.insert(
+            "lead".to_string(),
+            vec![ChatMessage {
+                role: "assistant".to_string(),
+                content: "answered".to_string(),
+            }],
+        );
+        state.budget_tokens_in = tokens_in;
+        state.budget_tokens_out = tokens_out;
+        state.budget_cost = cost;
+        state
+    }
+
+    #[test]
+    fn a_configured_budget_fed_no_usage_at_all_is_reported() {
+        let state = state_with(0, 0, 0.0);
+        let warning = unreported_usage_warning(Some(10_000), None, &state)
+            .expect("a token_budget with zero reported usage must be reported");
+        assert!(warning.contains("token_budget"), "{warning}");
+
+        let warning = unreported_usage_warning(None, Some(5.0), &state)
+            .expect("a cost_limit with zero reported usage must be reported");
+        assert!(warning.contains("cost_limit"), "{warning}");
+
+        let warning = unreported_usage_warning(Some(10_000), Some(5.0), &state).expect("both");
+        assert!(warning.contains("token_budget"), "{warning}");
+        assert!(warning.contains("cost_limit"), "{warning}");
+    }
+
+    /// The three ways this must stay quiet. Without them the notice would
+    /// fire on every run that configures nothing, on every healthy run, and
+    /// on a run where nothing was ever invoked.
+    #[test]
+    fn nothing_is_reported_when_there_is_nothing_to_report() {
+        // No budget configured at all.
+        assert!(unreported_usage_warning(None, None, &state_with(0, 0, 0.0)).is_none());
+        // A budget of zero is not a budget.
+        assert!(unreported_usage_warning(Some(0), Some(0.0), &state_with(0, 0, 0.0)).is_none());
+        // Usage really was reported — any one of the three counters is enough.
+        assert!(unreported_usage_warning(Some(10), None, &state_with(1, 0, 0.0)).is_none());
+        assert!(unreported_usage_warning(Some(10), None, &state_with(0, 1, 0.0)).is_none());
+        assert!(unreported_usage_warning(None, Some(1.0), &state_with(0, 0, 0.01)).is_none());
+        // Nothing ran: no usage to miss.
+        assert!(
+            unreported_usage_warning(Some(10), Some(1.0), &ExecutionState::default()).is_none()
+        );
+    }
+
+    /// An invoked-but-unanswered run (only the `user` turn recorded) must
+    /// not warn either — otherwise the notice fires before the first
+    /// provider call has had a chance to report anything.
+    #[test]
+    fn a_run_with_no_assistant_turn_yet_is_not_reported() {
+        let mut state = ExecutionState::default();
+        state.conversations.insert(
+            "lead".to_string(),
+            vec![ChatMessage {
+                role: "user".to_string(),
+                content: "go".to_string(),
+            }],
+        );
+        assert!(unreported_usage_warning(Some(10_000), None, &state).is_none());
     }
 }

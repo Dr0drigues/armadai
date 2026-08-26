@@ -45,7 +45,7 @@ An ArmadAI agent is a Markdown file (`.md`) that defines an AI-powered specialis
 | `openai` | API only | `model` field, `OPENAI_API_KEY` env var |
 | `google` | API only | `model` field, `GOOGLE_API_KEY` env var |
 | `cli` | CLI only | `command` field (e.g. `command: claude`) |
-| `proxy` | API proxy | `model` field, proxy running via `armadai up` |
+| `proxy` | Any OpenAI-compatible server | `model` field, `PROXY_BASE_URL` (or `providers.proxy.base_url`) pointing at the gateway or local runtime |
 
 ## Known Models
 

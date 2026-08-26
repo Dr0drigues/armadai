@@ -1,6 +1,6 @@
 # Providers
 
-ArmadAI supports three types of providers for executing agents, plus **unified tool names** that auto-detect the best backend.
+ArmadAI supports three types of providers for executing agents — **API** (direct HTTP), **CLI** (run a command-line tool) and **proxy** (any OpenAI-compatible server) — plus **unified tool names** that auto-detect the best backend.
 
 ## Unified Tool Names (Recommended)
 
@@ -58,35 +58,71 @@ When using `armadai new -i` (interactive wizard), the model selection step fetch
 
 Direct HTTP calls to LLM APIs. Use these when you want explicit API control.
 
+> **Write a concrete model id for an API provider.** The tier placeholders
+> `latest:fast` / `latest:pro` / `latest:max` are resolved when ArmadAI
+> *generates a native CLI config* (`armadai link`) and by `armadai shell` — not
+> on the `armadai run` path, where only `latest:auto` is resolved (by the
+> router). A literal `latest:pro` on `provider: anthropic|openai|google|proxy`
+> — or on a unified name (`claude`, `gpt`, …) that has fallen back to the API
+> because its CLI is not installed — is sent to the server verbatim as the
+> model name, and the server rejects it. Measured on the current code, not a
+> hypothetical. Keeping `latest:pro` in an agent you link into a native CLI
+> config is fine and intended; it is the API path that takes it literally.
+
 ### Anthropic
 
 ```markdown
 ## Metadata
 - provider: anthropic
-- model: latest:pro
+- model: claude-sonnet-4-5-20250929
 - temperature: 0.3
 - max_tokens: 4096
 ```
 
-Available models: `claude-opus-4-6`, `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001` — or use `latest:max`, `latest:pro`, `latest:fast`
+Available models: `claude-opus-4-6`, `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`
 
 ### OpenAI
 
 ```markdown
 ## Metadata
 - provider: openai
-- model: latest:pro
+- model: gpt-4o-mini
 - temperature: 0.7
 ```
 
-Available models: `gpt-4o`, `gpt-4o-mini`, `o1` — or use `latest:pro`, `latest:fast`, `latest:max`
+Available models: `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-mini`,
+`gpt-4.1-nano`, `o1`, `o1-mini`, `o3-mini` — plus anything else your endpoint
+serves. That is the same list `metadata().models` advertises and the same one
+the cost table prices; a test keeps the two from drifting apart.
+
+Requires `OPENAI_API_KEY` (see [Secret Management](#secret-management)). Both
+`complete()` and streaming are supported.
+
+The base URL defaults to `https://api.openai.com/v1` and can be redirected —
+see [OpenAI-compatible servers](#openai-compatible-servers) below, which is the
+same code path.
+
+> **Reasoning models (`o1`, `o3`).** They reject `max_tokens` and any
+> `temperature` other than `1`. ArmadAI only sends `max_tokens` when the agent
+> declares one, so leave it out for those models. `temperature` **is** always
+> sent, so set `temperature: 1.0` explicitly.
+>
+> The asymmetry is a property of the domain type, not an oversight:
+> `max_tokens` is an `Option` in an agent's metadata, so "the author did not
+> ask for one" is representable and the field can simply be left off the wire.
+> `temperature` is a plain number defaulting to `0.7`, so there is no value
+> that means "unset" — omitting it would require guessing which `0.7` was
+> deliberate. Dropping it for model ids that look like reasoning models was
+> considered and rejected: a gateway can serve anything under any name, and
+> silently discarding an author's `temperature: 0.2` is worse than the clear
+> `400` OpenAI returns, which names the parameter and the value.
 
 ### Google
 
 ```markdown
 ## Metadata
 - provider: google
-- model: latest:pro
+- model: gemini-2.5-pro
 - temperature: 0.7
 ```
 
@@ -97,8 +133,8 @@ Declare fallback models for automatic retry when the primary model is unavailabl
 ```markdown
 ## Metadata
 - provider: google
-- model: latest:max
-- model_fallback: [latest:pro, latest:fast]
+- model: gemini-2.5-pro
+- model_fallback: [gemini-2.5-flash, gemini-2.0-flash]
 ```
 
 If the primary model returns a "model not found" error, ArmadAI automatically retries with each fallback in order. Non-model errors (auth, rate limit) are not retried.
@@ -142,25 +178,148 @@ eventually.
 
 > **Note:** For standard tools (claude, gemini, gpt, aider), prefer using the unified tool name (`provider: claude`) instead of `provider: cli` + `command: claude`. The unified names auto-detect CLI availability and provide sensible defaults.
 
-## Proxy Provider
+## OpenAI-compatible servers
 
-Route requests through an OpenAI-compatible proxy like LiteLLM or OpenRouter.
+`POST {base_url}/chat/completions` (plus SSE for streaming) is spoken by far
+more than OpenAI itself. `provider: proxy` is exactly the `openai` provider
+with a user-supplied base URL and an **optional** API key, so a single
+implementation reaches:
+
+| Kind | Examples | Base URL shape |
+|---|---|---|
+| Gateways | LiteLLM, OpenRouter, Groq, Together, Fireworks | `https://openrouter.ai/api/v1` |
+| Vendor endpoints | DeepSeek, Mistral | `https://api.deepseek.com/v1` |
+| Local runtimes | Ollama, vLLM, LM Studio, llama.cpp | `http://localhost:11434/v1` |
 
 ```markdown
 ## Metadata
 - provider: proxy
-- model: latest:pro
+- model: openai/gpt-4o-mini
+- temperature: 0.7
 ```
 
-### Setting up LiteLLM
+### Where the base URL comes from
 
-Start the proxy with Docker Compose:
+Resolved in this order, first match wins:
+
+1. `PROXY_BASE_URL` (environment variable)
+2. `providers.proxy.base_url` in `providers.yaml`
+3. `http://localhost:4000/v1` (the default LiteLLM port)
+
+All four API providers follow the same two-step override — the environment
+variable first, then `providers.<name>.base_url` in `providers.yaml`:
+`OPENAI_BASE_URL`, `PROXY_BASE_URL`, `ANTHROPIC_BASE_URL`, `GOOGLE_BASE_URL`.
+`armadai init` writes a `base_url` for all four in that file, so a value put
+there is honoured whichever provider it belongs to. A blank value is not a
+configuration and is ignored, in either source.
+
+### Authentication is optional
+
+`PROXY_API_KEY` (or a `proxy:` entry in the secrets file) is sent as
+`Authorization: Bearer …`. If neither is set, **no `Authorization` header is
+sent at all** — which is what a keyless local gateway or an Ollama server
+expects. An empty `Bearer ` would be rejected by several servers, so it is
+never sent.
+
+### Example: a hosted gateway (OpenRouter)
 
 ```bash
-armadai up
+export PROXY_BASE_URL=https://openrouter.ai/api/v1
+export PROXY_API_KEY=sk-or-v1-…
 ```
 
-This starts LiteLLM on port 4000 (configured in `docker-compose.yml`).
+```markdown
+## Metadata
+- provider: proxy
+- model: anthropic/claude-sonnet-4.5
+```
+
+### Example: a local runtime (Ollama)
+
+Ollama exposes an OpenAI-compatible surface and needs no key:
+
+```bash
+ollama serve            # listens on 11434
+export PROXY_BASE_URL=http://localhost:11434/v1
+```
+
+```markdown
+## Metadata
+- provider: proxy
+- model: llama3.1
+- temperature: 0.7
+```
+
+The same shape works for vLLM (`http://localhost:8000/v1`), LM Studio
+(`http://localhost:1234/v1`) and llama.cpp's server.
+
+### Example: LiteLLM via Docker Compose
+
+`docker-compose.yml` ships a LiteLLM service, but it sits behind the `proxy`
+compose profile and mounts a config file you provide, so plain `armadai up`
+does **not** start it:
+
+```bash
+# write your own config/litellm.yaml first (model_list: …)
+docker compose --profile proxy up -d litellm
+export PROXY_BASE_URL=http://localhost:4000/v1
+```
+
+### What is not supported
+
+- **Azure OpenAI.** It diverges from the dialect on three axes: an `api-key`
+  header instead of `Authorization: Bearer`, deployment-scoped paths
+  (`/openai/deployments/{deployment}/chat/completions`) and a mandatory
+  `api-version` query parameter. ArmadAI does not handle it, and pointing
+  `base_url` at an Azure endpoint will fail. Reach Azure through a gateway
+  (LiteLLM) that presents an OpenAI-shaped front instead.
+- **Tool/function calling, structured outputs, images, audio.** An ArmadAI
+  agent exchanges plain text, so these have nothing to map onto.
+- **Cost for unknown models.** Only OpenAI's own model ids are priced
+  (`gpt-4o`, `gpt-4o-mini`, the `gpt-4.1` family, `o1`, `o1-mini`, `o3-mini`,
+  with any vendor prefix such as `openai/` stripped). Anything else reports
+  `$0.00` in `armadai costs` rather than an invented figure. A response that
+  carries no `usage` block at all — common on gateways and local runtimes —
+  reports zero tokens and zero cost; the call itself still succeeds.
+
+  One consequence is worth knowing before you rely on a ceiling: an
+  orchestrated run's `token_budget` and `cost_limit` are enforced from those
+  same numbers, so against an endpoint that never reports `usage` they never
+  trigger, and each nested delegation is handed the full ceiling rather than
+  what is left of it. ArmadAI says so once per run — a `budget_usage_unreported`
+  warning on `--json`, and a log line otherwise — rather than letting the limit
+  look enforced.
+
+### Errors that arrive with a `200`
+
+Not every failure on this path comes with a failing status code. Ollama and
+LiteLLM in pass-through mode answer `200` with `{"error": {...}}` in the body,
+and once a *stream* has started the status line is already gone — OpenAI's own
+documented behaviour for anything that fails mid-stream is to send the error as
+an SSE frame. ArmadAI treats both as errors rather than as an empty answer:
+
+- a non-streaming `200` whose body carries an error envelope and no `choices`
+  fails with the server's own message;
+- an error frame mid-stream ends the stream with that message, instead of
+  quietly delivering the tokens received so far as if they were the whole
+  answer.
+
+The reason this needs saying is that every field of an OpenAI-shaped response
+is optional here (`usage`, `model`, even `choices`, because real servers omit
+them), so an error envelope would otherwise parse cleanly into a successful,
+empty, free run.
+
+### Rate limits and retries
+
+Every HTTP provider, this one included, goes through the same retry policy:
+`429`, `503` and `529` are retried with exponential backoff (up to 3 retries),
+honouring the server's `Retry-After` header when it sends one in
+delta-seconds form. Other statuses — `400`, `401`, `404` — are terminal and
+surfaced immediately with the server's own message.
+
+An agent can also throttle itself before it hits the wire with the
+`rate_limit` metadata field (`"10/min"`), and a per-provider ceiling can be
+set under `rate_limits` in `config.yaml`.
 
 ## Secret Management
 
@@ -228,16 +387,27 @@ Shows configured providers, secrets status (encrypted/unencrypted/missing), and 
 
 ## Provider Configuration
 
-Global provider settings are in `config/providers.yaml`:
+Global provider settings live in `providers.yaml` (`~/.config/armadai/providers.yaml`,
+falling back to a project-local `config/providers.yaml`):
 
 ```yaml
 providers:
-  anthropic:
-    base_url: https://api.anthropic.com
-    default_model: latest:pro
   openai:
     base_url: https://api.openai.com/v1
-    default_model: latest:pro
+    models:
+      - gpt-4o
+      - gpt-4o-mini
   proxy:
-    base_url: http://localhost:4000
+    base_url: http://localhost:11434/v1
+    models: []
 ```
+
+Two keys are read, and only these two:
+
+| Key | Read by |
+|---|---|
+| `base_url` | provider construction, for `openai` and `proxy` only (see [above](#where-the-base-url-comes-from)) |
+| `models` | the `armadai new -i` wizard, as the fallback model list when models.dev is unreachable |
+
+There is no `default_model` key — the model comes from the agent's `## Metadata`
+(or `defaults.model` in `config.yaml`).

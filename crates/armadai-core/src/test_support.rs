@@ -76,6 +76,9 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
 pub struct IsolatedConfigDir {
     _lock: MutexGuard<'static, ()>,
     orig_config_dir: Option<String>,
+    /// Extra variables set through [`IsolatedConfigDir::with_var`], in the
+    /// order they were set, each paired with the value it displaced.
+    saved_vars: Vec<(String, Option<String>)>,
     config_tmp: tempfile::TempDir,
 }
 
@@ -91,8 +94,35 @@ impl IsolatedConfigDir {
         Self {
             _lock: lock,
             orig_config_dir,
+            saved_vars: Vec::new(),
             config_tmp,
         }
+    }
+
+    /// Set (`Some`) or unset (`None`) one more environment variable for this
+    /// guard's lifetime, restoring whatever it displaced on drop. Chainable.
+    ///
+    /// Code under test reads more than `ARMADAI_CONFIG_DIR` — a provider's
+    /// `*_API_KEY` or `*_BASE_URL`, say — and a test that wants to pin those
+    /// needs the same save/restore discipline, under the same
+    /// [`env_lock`]. Without this the test writes its own guard, which is
+    /// the duplication this module exists to end: `providers::factory`'s
+    /// `EnvScope` (#368) was a ~50-line copy of exactly this, and it stopped
+    /// compiling the moment #372 moved the lock.
+    ///
+    /// Setting the same name twice is fine: the values are restored in
+    /// reverse order, so the original still wins.
+    pub fn with_var(mut self, name: &str, value: Option<&str>) -> Self {
+        self.saved_vars
+            .push((name.to_string(), std::env::var(name).ok()));
+        // SAFETY: serialised via the lock held by `self._lock`.
+        unsafe {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+        self
     }
 
     /// The isolated config dir itself — for a test that wants to plant a
@@ -114,6 +144,13 @@ impl Drop for IsolatedConfigDir {
         // SAFETY: restoring original env state, still under the lock held by
         // `self._lock` until this `Drop` returns.
         unsafe {
+            // Reverse order, so a name set twice ends on its original value.
+            for (name, value) in self.saved_vars.iter().rev() {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
             match &self.orig_config_dir {
                 Some(v) => std::env::set_var("ARMADAI_CONFIG_DIR", v),
                 None => std::env::remove_var("ARMADAI_CONFIG_DIR"),
@@ -287,5 +324,73 @@ mod tests {
             before,
             "the cwd must be back where it started"
         );
+    }
+
+    /// `with_var` must set what it is given, unset what it is given `None`
+    /// for, and put both back — a variable that was present before, and one
+    /// that was not.
+    ///
+    /// Mutation this catches: dropping the `saved_vars` loop from
+    /// `IsolatedConfigDir`'s `Drop`, which leaks the test's `*_API_KEY` into
+    /// every test that runs afterwards.
+    #[test]
+    fn extra_env_vars_are_set_then_restored_present_or_absent() {
+        const PRESENT: &str = "ARMADAI_TEST_SUPPORT_PRESENT";
+        const ABSENT: &str = "ARMADAI_TEST_SUPPORT_ABSENT";
+
+        // A value that exists before the guard, so restoration has something
+        // to put back rather than merely something to remove.
+        {
+            let _lock = env_lock();
+            // SAFETY: serialised via the lock held above.
+            unsafe {
+                std::env::set_var(PRESENT, "original");
+                std::env::remove_var(ABSENT);
+            }
+        }
+
+        {
+            let guard = IsolatedConfigDir::enter()
+                .with_var(PRESENT, Some("overridden"))
+                .with_var(ABSENT, Some("invented"));
+            assert_eq!(std::env::var(PRESENT).as_deref(), Ok("overridden"));
+            assert_eq!(std::env::var(ABSENT).as_deref(), Ok("invented"));
+            drop(guard);
+        }
+
+        let (present, absent) =
+            undisturbed(|| (std::env::var(PRESENT).ok(), std::env::var(ABSENT).ok()));
+        assert_eq!(
+            present.as_deref(),
+            Some("original"),
+            "a variable that existed before must come back with its own value"
+        );
+        assert_eq!(
+            absent, None,
+            "a variable invented by the guard must be gone again"
+        );
+
+        // And `None` really unsets for the guard's lifetime.
+        {
+            let _lock = env_lock();
+            // SAFETY: serialised via the lock held above.
+            unsafe { std::env::set_var(PRESENT, "original") };
+        }
+        {
+            let _guard = IsolatedConfigDir::enter().with_var(PRESENT, None);
+            assert!(
+                std::env::var(PRESENT).is_err(),
+                "`None` must remove the variable, not set it to the empty string"
+            );
+        }
+        assert_eq!(
+            undisturbed(|| std::env::var(PRESENT).ok()).as_deref(),
+            Some("original")
+        );
+        {
+            let _lock = env_lock();
+            // SAFETY: serialised via the lock held above.
+            unsafe { std::env::remove_var(PRESENT) };
+        }
     }
 }

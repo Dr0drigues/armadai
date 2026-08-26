@@ -24,11 +24,13 @@
 //!
 //! One shared, provider-agnostic set — `is_retryable` below — covers both
 //! rather than dispatching per provider, and is implemented ONCE here and
-//! used by both `api::anthropic` and `api::google` rather than grown
-//! independently in each — two copies of one policy is the defect class
-//! this repo has fixed repeatedly (see the issue write-up). `openai.rs`/
-//! `proxy.rs` are still `todo!()` stubs and make no HTTP calls yet, so they
-//! have nothing to wire up here.
+//! used by every HTTP provider rather than grown independently in each —
+//! two copies of one policy is the defect class this repo has fixed
+//! repeatedly (see the issue write-up). Since #368 that includes the
+//! OpenAI-compatible path (`api::openai_compatible`, behind both
+//! `api::openai` and `proxy`), which reaches a far wider set of servers
+//! (gateways, local runtimes) than the two first-party APIs — all the more
+//! reason for one shared policy rather than a per-vendor one.
 //!
 //! Bounded by ATTEMPT COUNT, not elapsed time and not a caller-supplied
 //! deadline: neither provider threads `agent.metadata.timeout` (that only
@@ -389,70 +391,11 @@ mod tests {
     // --- end-to-end over real (local-only) HTTP: proves the wiring, not
     // just the decision table ---
 
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-
-    /// Minimal scripted HTTP/1.1 server so `send_with_retry` is exercised
-    /// against REAL wire traffic (real status line, real headers) without
-    /// calling any external API. Each accepted connection gets exactly one
-    /// scripted `(status, headers, body)`, served then closed
-    /// (`Connection: close`, so reqwest never reuses a stale connection
-    /// across scripts). Requests past the end of the script repeat the last
-    /// entry — tests that don't know the exact attempt count (the
-    /// give-up-after-budget case) rely on that.
-    /// (status code, extra headers, body) for one scripted response.
-    type ScriptedResponse = (u16, Vec<(&'static str, String)>, &'static str);
-
-    struct ScriptedServer {
-        addr: std::net::SocketAddr,
-        requests: Arc<AtomicUsize>,
-    }
-
-    impl ScriptedServer {
-        fn start(responses: Vec<ScriptedResponse>) -> Self {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
-            let addr = listener.local_addr().expect("local addr");
-            let requests = Arc::new(AtomicUsize::new(0));
-            let requests_clone = requests.clone();
-            std::thread::spawn(move || {
-                for stream in listener.incoming() {
-                    let Ok(mut stream) = stream else { break };
-                    let idx = requests_clone.fetch_add(1, Ordering::SeqCst);
-                    let (code, headers, body) = responses
-                        .get(idx)
-                        .or_else(|| responses.last())
-                        .cloned()
-                        .expect("script must have at least one response");
-
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                    let mut buf = [0u8; 4096];
-                    let _ = stream.read(&mut buf); // drain the request, ignore its content
-
-                    let mut resp = format!(
-                        "HTTP/1.1 {code} X\r\nConnection: close\r\nContent-Length: {}\r\n",
-                        body.len()
-                    );
-                    for (k, v) in &headers {
-                        resp.push_str(&format!("{k}: {v}\r\n"));
-                    }
-                    resp.push_str("\r\n");
-                    resp.push_str(body);
-                    let _ = stream.write_all(resp.as_bytes());
-                }
-            });
-            Self { addr, requests }
-        }
-
-        fn url(&self) -> String {
-            format!("http://{}", self.addr)
-        }
-
-        fn request_count(&self) -> usize {
-            self.requests.load(Ordering::SeqCst)
-        }
-    }
+    // The scripted local HTTP server used below now lives in
+    // `super::test_server`, shared with `openai_compatible.rs` — see that
+    // module for what it does and why mocking at the client level would not
+    // do instead.
+    use crate::api::test_server::ScriptedServer;
 
     fn tiny_policy() -> RetryPolicy {
         RetryPolicy {
