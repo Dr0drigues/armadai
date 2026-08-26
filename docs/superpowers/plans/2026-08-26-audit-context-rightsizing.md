@@ -1,0 +1,802 @@
+# Audit context rightsizing — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Add an `R` rule family to `armadai audit` that measures whether agentic assets are *sized* correctly — the question none of the existing 26 rules asks.
+
+**Architecture:** Three pure rule functions in a new `audit/rules/rightsizing.rs`, registered in the existing static registry. One field added to `ImportedSkill` so `R01` stays a pure function of the pre-loaded context, as every other rule is. No new plumbing in `report.rs`.
+
+**Tech Stack:** Rust edition 2024, `regex` (already a dependency), `serde_yaml_ng` for the settings section.
+
+**Spec:** `docs/superpowers/specs/2026-08-26-audit-context-rightsizing-design.md`
+
+## Global Constraints
+
+- Rules are **pure functions of `AuditContext`**. No rule reads the filesystem — the reverse pass does. The single `read_to_string` in the rules tree is `AuditSettings::from_project` loading config.
+- `crates/armadai` is **binary-only**: `cargo test --lib` returns `0 passed` with **no error**. Use `cargo test --bin armadai` for unit tests. Always `--no-fail-fast`.
+- Every test is verified by mutation: break what it protects, confirm red, restore, report the observed output. A test still green under mutation does not count.
+- Gate before pushing: `cargo fmt --all`, clippy `-D warnings` in 5 feature modes, tests in 4 modes, gaveldrop must stay **13 cases · 83/83**.
+- Conventional Commits, one type per subject. Trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`. Code, comments, commits in English.
+
+---
+
+## File Structure
+
+| File | Responsibility |
+|---|---|
+| `crates/armadai/src/audit/reverse/mod.rs` | **Modify** — add `body_tokens: usize` to `ImportedSkill` |
+| `crates/armadai/src/audit/reverse/claude.rs` | **Modify** — fill it in `parse_skill_dir`, which already reads the file (`:126`) |
+| `crates/armadai/src/audit/rules/mod.rs` | **Modify** — `skill_token_threshold` on `AuditSettings`, 3 registry entries, `estimate_tokens` visibility, a `skill()` test helper |
+| `crates/armadai/src/audit/rules/rightsizing.rs` | **Create** — `r01`, `r02`, `r04` and their unit tests |
+| `crates/armadai/tests/audit_rightsizing.rs` | **Create** — black-box cases on the real binary |
+| `docs/wiki/audit.md` | **Modify** — document the three rules and the new setting |
+
+13 of the 14 `ImportedSkill { .. }` construction sites are in tests (`rules/assets.rs` ×6, `rules/collisions.rs` ×3, `rules/usage_rules.rs` ×2, `reverse/claude.rs` tests ×2). They get `body_tokens: 0` — they do not test size. New tests use the helper from Task 1.
+
+---
+
+### Task 1: `body_tokens` on `ImportedSkill`
+
+**Files:**
+- Modify: `crates/armadai/src/audit/reverse/mod.rs:56-66`
+- Modify: `crates/armadai/src/audit/reverse/claude.rs:120-160`
+- Modify: `crates/armadai/src/audit/rules/mod.rs` (helper + `estimate_tokens` visibility)
+
+**Interfaces:**
+- Produces: `ImportedSkill.body_tokens: usize` — estimated tokens of the whole `SKILL.md`, including frontmatter. `0` when the file is unreadable or absent.
+- Produces: `rules::test_support::skill(name, body_tokens) -> ImportedSkill`.
+- Consumes: `rules::estimate_tokens`, which must become reachable from `reverse::claude` (it is `pub(crate)` in `rules/mod.rs`; `reverse` is a sibling module of `rules` under `audit`, so `pub(crate)` already suffices — verify at the compiler rather than assuming).
+
+- [ ] **Step 1: Write the failing test**
+
+In `crates/armadai/src/audit/reverse/claude.rs`, in its existing `mod tests`:
+
+```rust
+#[test]
+fn a_parsed_skill_carries_its_body_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let skills = dir.path().join(".claude/skills/big");
+    std::fs::create_dir_all(&skills).unwrap();
+    // 400 chars of body -> 100 estimated tokens (chars/4).
+    let body = "x".repeat(400);
+    std::fs::write(
+        skills.join("SKILL.md"),
+        format!("---\nname: big\ndescription: d\n---\n{body}"),
+    )
+    .unwrap();
+
+    let parsed = parse_skill_dir(&skills);
+
+    assert!(
+        parsed.body_tokens >= 100,
+        "the whole file must be counted, got {} tokens",
+        parsed.body_tokens
+    );
+}
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `cargo test --bin armadai --no-fail-fast a_parsed_skill_carries_its_body_size`
+Expected: compile error — no field `body_tokens` on `ImportedSkill`.
+
+- [ ] **Step 3: Add the field and fill it**
+
+In `reverse/mod.rs`, inside `pub struct ImportedSkill`, after `has_frontmatter`:
+
+```rust
+    /// Estimated tokens of the whole `SKILL.md`, frontmatter included. `0`
+    /// when the file is absent or unreadable.
+    ///
+    /// A count, not the body: `R01` only asks how big the file is, and
+    /// loading a whole SKILL.md into the audit context to answer that would be
+    /// the very defect the R family exists to measure.
+    pub body_tokens: usize,
+```
+
+In `reverse/claude.rs::parse_skill_dir`, the function already holds `content` from its
+`read_to_string` at `:126`. Add to the returned literal:
+
+```rust
+        body_tokens: crate::audit::rules::estimate_tokens(&content),
+```
+
+- [ ] **Step 4: Fix the 13 test construction sites**
+
+Add `body_tokens: 0,` to each `ImportedSkill { .. }` literal in `rules/assets.rs`,
+`rules/collisions.rs`, `rules/usage_rules.rs` and `reverse/claude.rs`'s own tests. The
+compiler lists them all; none of them tests size.
+
+- [ ] **Step 5: Add the test helper**
+
+In `rules/mod.rs`, inside `pub(crate) mod test_support`:
+
+```rust
+    pub fn skill(name: &str, body_tokens: usize) -> ImportedSkill {
+        ImportedSkill {
+            name: name.to_string(),
+            source_path: PathBuf::from(format!(".claude/skills/{name}/SKILL.md")),
+            description: Some(format!("{name} description")),
+            has_skill_md: true,
+            has_frontmatter: true,
+            body_tokens,
+            issues: Vec::new(),
+            extra: BTreeMap::new(),
+        }
+    }
+```
+
+- [ ] **Step 6: Run the tests**
+
+Run: `cargo test --bin armadai --no-fail-fast`
+Expected: PASS, including the new test.
+
+- [ ] **Step 7: Mutation check**
+
+Replace the fill with `body_tokens: 0` in `parse_skill_dir`. Run
+`cargo test --bin armadai --no-fail-fast a_parsed_skill_carries_its_body_size`.
+Expected: FAIL with `the whole file must be counted, got 0 tokens`. Restore, re-run green.
+Record the observed output.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/armadai/src/audit/
+git commit -m "feat(audit): carry each skill's body size on ImportedSkill"
+```
+
+---
+
+### Task 2: `R01` — oversized skill with no progressive disclosure
+
+**Files:**
+- Create: `crates/armadai/src/audit/rules/rightsizing.rs`
+- Modify: `crates/armadai/src/audit/rules/mod.rs` (module declaration, `skill_token_threshold`, registry entry)
+
+**Interfaces:**
+- Consumes: `ImportedSkill.body_tokens` (Task 1), `rules::test_support::skill` (Task 1).
+- Produces: `pub(super) fn r01_oversized_skill(ctx: &AuditContext) -> Vec<Finding>`.
+- Produces: `AuditSettings.skill_token_threshold: usize`, default `3000`, overridable via the `audit:` section.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `crates/armadai/src/audit/rules/rightsizing.rs`:
+
+```rust
+use std::path::Path;
+
+use super::{AuditContext, Finding, Severity};
+
+/// R01 — a `SKILL.md` past the token threshold whose skill directory has no
+/// `references/` at all.
+///
+/// Size alone is a bad signal, measured: across 460 real skills, 46% of those
+/// above the p90 have a `references/` directory against 67% below it — large
+/// skills are *more* often split. So both conditions are required, which is
+/// also what keeps a correctly-structured 41795-word skill out of the report.
+///
+/// Counterpart of `A05` for skills (`A05` covers agents' `system_prompt`).
+/// `A09` validates a skill's structure but never its size.
+pub(super) fn r01_oversized_skill(ctx: &AuditContext) -> Vec<Finding> {
+    ctx.config
+        .skills
+        .iter()
+        // Anti-cascade, same as A05: a skill that failed to parse is A01/A09's
+        // job — one root cause, one finding.
+        .filter(|s| s.issues.is_empty() && s.has_skill_md)
+        .filter(|s| s.body_tokens > ctx.settings.skill_token_threshold)
+        .filter(|s| !has_references(&s.source_path))
+        .map(|s| Finding {
+            rule: "R01",
+            severity: Severity::Warning,
+            file: s.source_path.clone(),
+            related: Vec::new(),
+            message: format!(
+                "skill '{}' is ~{} tokens (threshold {}) and has no references/, so all of it \
+                 loads on every invocation",
+                s.name, s.body_tokens, ctx.settings.skill_token_threshold
+            ),
+            suggestion: Some(
+                "split the detail into references/ — the Agent Skills standard loads those on \
+                 demand, and armadai already installs them (core/skill.rs)"
+                    .to_string(),
+            ),
+        })
+        .collect()
+}
+
+/// Whether the skill directory holding this `SKILL.md` has a non-empty
+/// `references/`. An empty directory is not progressive disclosure.
+fn has_references(skill_md: &Path) -> bool {
+    skill_md
+        .parent()
+        .map(|dir| dir.join("references"))
+        .and_then(|refs| std::fs::read_dir(refs).ok())
+        .is_some_and(|mut entries| entries.next().is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audit::reverse::ImportedConfig;
+    use crate::audit::rules::{AuditSettings, test_support::skill};
+
+    fn ctx_for<'a>(
+        config: &'a ImportedConfig,
+        settings: &'a AuditSettings,
+    ) -> AuditContext<'a> {
+        AuditContext { config, settings, usage: None }
+    }
+
+    #[test]
+    fn r01_flags_a_big_skill_with_no_references() {
+        let config = ImportedConfig {
+            skills: vec![skill("heavy", 5000)],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = r01_oversized_skill(&ctx_for(&config, &settings));
+        assert_eq!(f.len(), 1, "expected exactly one finding, got {f:?}");
+        assert_eq!(f[0].rule, "R01");
+        assert!(
+            f[0].message.contains("5000"),
+            "the message must carry the measured size: {}",
+            f[0].message
+        );
+    }
+
+    #[test]
+    fn r01_leaves_a_small_skill_alone() {
+        let config = ImportedConfig {
+            skills: vec![skill("light", 700)],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        assert!(r01_oversized_skill(&ctx_for(&config, &settings)).is_empty());
+    }
+
+    #[test]
+    fn r01_leaves_a_big_but_split_skill_alone() {
+        // The `quality-playbook` case: 41795 words with 16 references. Big and
+        // correctly structured must not be flagged.
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("split");
+        std::fs::create_dir_all(skill_dir.join("references")).unwrap();
+        std::fs::write(skill_dir.join("references/detail.md"), "detail").unwrap();
+        let mut s = skill("split", 40_000);
+        s.source_path = skill_dir.join("SKILL.md");
+
+        let config = ImportedConfig { skills: vec![s], ..Default::default() };
+        let settings = AuditSettings::default();
+        assert!(
+            r01_oversized_skill(&ctx_for(&config, &settings)).is_empty(),
+            "a split skill must never be flagged, however big"
+        );
+    }
+
+    #[test]
+    fn r01_treats_an_empty_references_dir_as_no_disclosure() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("hollow");
+        std::fs::create_dir_all(skill_dir.join("references")).unwrap();
+        let mut s = skill("hollow", 5000);
+        s.source_path = skill_dir.join("SKILL.md");
+
+        let config = ImportedConfig { skills: vec![s], ..Default::default() };
+        let settings = AuditSettings::default();
+        assert_eq!(
+            r01_oversized_skill(&ctx_for(&config, &settings)).len(),
+            1,
+            "an empty references/ is not progressive disclosure"
+        );
+    }
+
+    #[test]
+    fn r01_does_not_stack_on_an_unparsable_skill() {
+        let mut s = skill("broken", 9000);
+        s.issues = vec![crate::audit::reverse::ParseIssue {
+            file: s.source_path.clone(),
+            message: "invalid yaml".into(),
+        }];
+        let config = ImportedConfig { skills: vec![s], ..Default::default() };
+        let settings = AuditSettings::default();
+        assert!(
+            r01_oversized_skill(&ctx_for(&config, &settings)).is_empty(),
+            "A01/A09 own parse failures — one root cause, one finding"
+        );
+    }
+}
+```
+
+- [ ] **Step 2: Run and watch them fail**
+
+Run: `cargo test --bin armadai --no-fail-fast rightsizing`
+Expected: compile error — `rightsizing` module not declared, `skill_token_threshold` missing.
+
+- [ ] **Step 3: Wire the module and the setting**
+
+In `rules/mod.rs`: add `mod rightsizing;` next to the other module declarations. Add to
+`AuditSettings`:
+
+```rust
+    /// R01: estimated token count above which a skill with no `references/`
+    /// is flagged. Default derived from a measured distribution: 460 real
+    /// SKILL.md files give a p90 of 2224 words, ~3000 tokens at chars/4.
+    pub skill_token_threshold: usize,
+```
+
+Add `skill_token_threshold: 3000,` to `Default::default()`, `skill_token_threshold:
+Option<usize>` to the private `AuditSection`, and the corresponding override in
+`from_project`, mirroring `prompt_token_threshold` exactly.
+
+Add to `registry()`, after the `A` block so report ordering stays grouped:
+
+```rust
+        rightsizing::r01_oversized_skill,
+```
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cargo test --bin armadai --no-fail-fast rightsizing`
+Expected: PASS (5 tests).
+
+- [ ] **Step 5: Mutation checks — three, because three conditions carry this rule**
+
+1. Remove the `!has_references(..)` filter → `r01_leaves_a_big_but_split_skill_alone` must FAIL.
+2. Change `entries.next().is_some()` to `true` in `has_references` →
+   `r01_treats_an_empty_references_dir_as_no_disclosure` must FAIL.
+3. Remove the `s.issues.is_empty()` filter → `r01_does_not_stack_on_an_unparsable_skill` must FAIL.
+
+Restore after each, re-run green, and record each observed output. A condition with no
+mutation that kills it is a condition that can silently stop working.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/armadai/src/audit/
+git commit -m "feat(audit): add R01, flagging an oversized skill with no references/"
+```
+
+---
+
+### Task 3: `R02` — a path named in the instructions does not exist
+
+**Files:**
+- Modify: `crates/armadai/src/audit/rules/rightsizing.rs`
+- Modify: `crates/armadai/src/audit/rules/mod.rs` (registry entry)
+
+**Interfaces:**
+- Consumes: `ImportedConfig.instructions: Option<ImportedInstructions>` (which carries `content: String` and `source_path`).
+- Produces: `pub(super) fn r02_stale_path(ctx: &AuditContext) -> Vec<Finding>`.
+- Consumes: the project root, **without needing a new context field**. Checked: `ReverseLinker::parse(&self, root)` builds every path from `root.join(..)` (`reverse/claude.rs:60-62`), so `instructions.source_path` is `root.join("CLAUDE.md")` and `source_path.parent()` *is* the root. Resolve cited paths against it — never against the cwd, which is the trap already tracked at `config.rs:303`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `rightsizing.rs`:
+
+```rust
+/// R02 — a repo path cited in the root instructions file that resolves to
+/// nothing.
+///
+/// Counterpart of `A10`, which does this for `@agent` mentions. This is the
+/// rule that would have caught our own stale map: `CLAUDE.md` placed five
+/// modules at a path where `ls` showed none of them, and described two
+/// providers as `todo!()` stubs one day after they were implemented. A stale
+/// map is worse than no map — it is read as authoritative.
+///
+/// False positives are the whole difficulty, so the filters are deliberately
+/// narrow. Each one has its own negative test; a filter with no test is a
+/// filter that can silently stop working.
+pub(super) fn r02_stale_path(ctx: &AuditContext) -> Vec<Finding> {
+    let Some(instructions) = &ctx.config.instructions else {
+        return Vec::new();
+    };
+    let Some(base) = instructions.source_path.parent() else {
+        return Vec::new();
+    };
+
+    cited_paths(&instructions.content)
+        .into_iter()
+        .filter(|p| !base.join(p).exists())
+        .map(|p| Finding {
+            rule: "R02",
+            severity: Severity::Warning,
+            file: instructions.source_path.clone(),
+            related: Vec::new(),
+            message: format!("instructions cite `{p}`, which does not exist"),
+            suggestion: Some(
+                "fix or drop the reference — a stale map is read as authoritative".to_string(),
+            ),
+        })
+        .collect()
+}
+
+/// Backticked strings from `text` that look like real repo paths, excluding
+/// fenced code blocks and obvious placeholders.
+fn cited_paths(text: &str) -> Vec<String> {
+    const SOURCE_EXT: [&str; 8] = [".rs", ".toml", ".md", ".yaml", ".yml", ".json", ".sh", ".ts"];
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for candidate in backticked(line) {
+            let looks_like_path =
+                candidate.contains('/') || SOURCE_EXT.iter().any(|e| candidate.ends_with(e));
+            let is_placeholder = candidate.starts_with("path/to")
+                || candidate.contains('<')
+                || candidate.contains('*')
+                || candidate.contains(' ');
+            if looks_like_path && !is_placeholder {
+                out.push(candidate.trim_end_matches('/').to_string());
+            }
+        }
+    }
+    out
+}
+
+fn backticked(line: &str) -> Vec<String> {
+    line.split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+```
+
+And its tests, inside the same `mod tests`:
+
+```rust
+    use crate::audit::reverse::ImportedInstructions;
+
+    fn instructions_saying(dir: &std::path::Path, body: &str) -> ImportedConfig {
+        ImportedConfig {
+            instructions: Some(ImportedInstructions {
+                source_path: dir.join("CLAUDE.md"),
+                content: body.to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn r02_flags_a_path_that_does_not_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = instructions_saying(dir.path(), "See `src/gone/mod.rs` for details.");
+        let settings = AuditSettings::default();
+        let f = r02_stale_path(&ctx_for(&config, &settings));
+        assert_eq!(f.len(), 1, "got {f:?}");
+        assert_eq!(f[0].rule, "R02");
+        assert!(f[0].message.contains("src/gone/mod.rs"));
+    }
+
+    #[test]
+    fn r02_leaves_an_existing_path_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/here")).unwrap();
+        std::fs::write(dir.path().join("src/here/mod.rs"), "").unwrap();
+        let config = instructions_saying(dir.path(), "See `src/here/mod.rs`.");
+        let settings = AuditSettings::default();
+        assert!(r02_stale_path(&ctx_for(&config, &settings)).is_empty());
+    }
+
+    #[test]
+    fn r02_ignores_paths_inside_a_code_fence() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = instructions_saying(
+            dir.path(),
+            "Run it:\n```bash\ncat `src/example/never.rs`\n```\n",
+        );
+        let settings = AuditSettings::default();
+        assert!(
+            r02_stale_path(&ctx_for(&config, &settings)).is_empty(),
+            "a fenced block is an example, not a claim"
+        );
+    }
+
+    #[test]
+    fn r02_ignores_placeholders_and_globs() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = instructions_saying(
+            dir.path(),
+            "Use `path/to/thing.rs`, `<your>/file.rs`, `crates/*/src/lib.rs`.",
+        );
+        let settings = AuditSettings::default();
+        assert!(
+            r02_stale_path(&ctx_for(&config, &settings)).is_empty(),
+            "placeholders and globs describe a shape, not a file"
+        );
+    }
+
+    #[test]
+    fn r02_ignores_backticked_prose_that_is_not_a_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = instructions_saying(dir.path(), "The `Provider` trait and `complete()`.");
+        let settings = AuditSettings::default();
+        assert!(r02_stale_path(&ctx_for(&config, &settings)).is_empty());
+    }
+
+    #[test]
+    fn r02_is_silent_without_an_instructions_file() {
+        let settings = AuditSettings::default();
+        let config = ImportedConfig::default();
+        assert!(r02_stale_path(&ctx_for(&config, &settings)).is_empty());
+    }
+```
+
+- [ ] **Step 2: Run and watch them fail**
+
+Run: `cargo test --bin armadai --no-fail-fast r02`
+Expected: FAIL — function not yet registered / not yet written, depending on order.
+
+- [ ] **Step 3: Register the rule**
+
+Add `rightsizing::r02_stale_path,` to `registry()`.
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cargo test --bin armadai --no-fail-fast r02`
+Expected: PASS (6 tests).
+
+- [ ] **Step 5: Mutation checks — one per filter**
+
+1. Remove the fence tracking → `r02_ignores_paths_inside_a_code_fence` must FAIL.
+2. Remove the `is_placeholder` guard → `r02_ignores_placeholders_and_globs` must FAIL.
+3. Remove the `looks_like_path` guard → `r02_ignores_backticked_prose_that_is_not_a_path` must FAIL.
+4. Invert the existence check to `base.join(p).exists()` → `r02_leaves_an_existing_path_alone` must FAIL.
+
+Restore after each and record the outputs.
+
+- [ ] **Step 6: Run it against this repo's own CLAUDE.md**
+
+Not an assertion, a sanity read: `cargo run --bin armadai -- audit` and check `R02` reports
+nothing on the current tree (PR #382 fixed the stale paths). If it reports something, either
+the tree regressed or a filter is too narrow — investigate before continuing.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/armadai/src/audit/
+git commit -m "feat(audit): add R02, flagging a cited path that does not exist"
+```
+
+---
+
+### Task 4: `R04` — weight of the always-loaded context
+
+**Files:**
+- Modify: `crates/armadai/src/audit/rules/rightsizing.rs`
+- Modify: `crates/armadai/src/audit/rules/mod.rs` (registry entry)
+
+**Interfaces:**
+- Produces: `pub(super) fn r04_context_weight(ctx: &AuditContext) -> Vec<Finding>` — exactly one `Info` finding, or none when there is nothing to weigh.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+/// R04 — how many tokens load by default, every time.
+///
+/// Info, no judgement, on the model of `U04`. Its value is making a cost
+/// visible that nobody currently sees. `references/` are excluded on purpose:
+/// they load on demand, which is the whole point of splitting.
+pub(super) fn r04_context_weight(ctx: &AuditContext) -> Vec<Finding> {
+    let instructions_tokens = ctx
+        .config
+        .instructions
+        .as_ref()
+        .map(|i| super::estimate_tokens(&i.content))
+        .unwrap_or(0);
+    let skills_tokens: usize = ctx.config.skills.iter().map(|s| s.body_tokens).sum();
+    let total = instructions_tokens + skills_tokens;
+    if total == 0 {
+        return Vec::new();
+    }
+
+    let anchor = ctx
+        .config
+        .instructions
+        .as_ref()
+        .map(|i| i.source_path.clone())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    vec![Finding {
+        rule: "R04",
+        severity: Severity::Info,
+        file: anchor,
+        related: Vec::new(),
+        message: format!(
+            "~{total} tokens load on every invocation: {instructions_tokens} from the \
+             instructions file, {skills_tokens} from {} skill(s). references/ excluded — \
+             those load on demand",
+            ctx.config.skills.len()
+        ),
+        suggestion: None,
+    }]
+}
+```
+
+Tests:
+
+```rust
+    #[test]
+    fn r04_sums_instructions_and_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = instructions_saying(dir.path(), &"x".repeat(400)); // 100 tokens
+        config.skills = vec![skill("a", 300), skill("b", 200)];
+        let settings = AuditSettings::default();
+        let f = r04_context_weight(&ctx_for(&config, &settings));
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].severity, Severity::Info);
+        assert!(
+            f[0].message.contains("600"),
+            "total must be 100 + 300 + 200: {}",
+            f[0].message
+        );
+    }
+
+    #[test]
+    fn r04_is_silent_on_an_empty_project() {
+        let settings = AuditSettings::default();
+        let config = ImportedConfig::default();
+        assert!(r04_context_weight(&ctx_for(&config, &settings)).is_empty());
+    }
+```
+
+- [ ] **Step 2: Run and watch them fail**
+
+Run: `cargo test --bin armadai --no-fail-fast r04`
+Expected: FAIL — `600` absent, or compile error before registration.
+
+- [ ] **Step 3: Register**
+
+Add `rightsizing::r04_context_weight,` to `registry()`.
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cargo test --bin armadai --no-fail-fast r04`
+Expected: PASS.
+
+- [ ] **Step 5: Mutation check**
+
+Drop `skills_tokens` from the sum (`let total = instructions_tokens;`) →
+`r04_sums_instructions_and_skills` must FAIL on the `600` assertion. Restore, re-run green.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/armadai/src/audit/
+git commit -m "feat(audit): add R04, reporting the always-loaded context weight"
+```
+
+---
+
+### Task 5: Black-box coverage and documentation
+
+**Files:**
+- Create: `crates/armadai/tests/audit_rightsizing.rs`
+- Modify: `docs/wiki/audit.md`
+
+**Interfaces:**
+- Consumes: the real `armadai` binary via `env!("CARGO_BIN_EXE_armadai")`.
+
+- [ ] **Step 1: Write the black-box test**
+
+The substance of `R02` is filesystem resolution and of `R04` aggregation — neither is proven by
+a unit test on a fixture. Follow the isolation pattern of `crates/armadai/tests/link_manifest.rs`:
+redirect **both** `ARMADAI_CONFIG_DIR` and `XDG_DATA_HOME`, because the `#[cfg(test)]` guard in
+`db.rs` does not protect a *spawned* binary.
+
+```rust
+//! Black-box coverage for the R (rightsizing) rules, on the real binary.
+
+use std::process::Command;
+
+fn run_audit(root: &std::path::Path) -> (bool, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_armadai"))
+        .args(["audit"])
+        .current_dir(root)
+        .env("NO_COLOR", "1")
+        .env("ARMADAI_CONFIG_DIR", root.join(".cfg"))
+        .env("XDG_DATA_HOME", root.join(".data"))
+        .output()
+        .expect("armadai must run");
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.success(), text)
+}
+
+#[test]
+fn r02_names_a_stale_path_in_the_instructions() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".claude/agents")).unwrap();
+    std::fs::write(
+        root.join(".claude/agents/one.md"),
+        "---\nname: one\ndescription: d\n---\nBody.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("CLAUDE.md"),
+        "The engine lives in `src/vanished/engine.rs`.\n",
+    )
+    .unwrap();
+
+    let (_ok, text) = run_audit(root);
+    assert!(
+        text.contains("R02") && text.contains("src/vanished/engine.rs"),
+        "R02 must name the missing path; got:\n{text}"
+    );
+}
+
+#[test]
+fn r01_names_an_oversized_skill_without_references() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let skill = root.join(".claude/skills/heavy");
+    std::fs::create_dir_all(&skill).unwrap();
+    // Past the 3000-token default: 16k chars -> ~4000 tokens.
+    std::fs::write(
+        skill.join("SKILL.md"),
+        format!("---\nname: heavy\ndescription: d\n---\n{}", "x".repeat(16_000)),
+    )
+    .unwrap();
+
+    let (_ok, text) = run_audit(root);
+    assert!(
+        text.contains("R01") && text.contains("heavy"),
+        "R01 must name the oversized skill; got:\n{text}"
+    );
+}
+```
+
+- [ ] **Step 2: Run and watch them fail, then pass**
+
+Run: `cargo test --test audit_rightsizing --no-fail-fast`
+If red for a reason other than the assertion (binary not found, audit refusing to run on a
+bare project), fix that first — a test that fails for the wrong reason proves nothing.
+
+- [ ] **Step 3: Mutation check**
+
+Unregister `r02_stale_path` from `registry()` → `r02_names_a_stale_path_in_the_instructions`
+must FAIL. Same for `r01`. This is what proves the rules are actually wired into the CLI path,
+not just unit-tested. Restore both.
+
+- [ ] **Step 4: Document the rules**
+
+In `docs/wiki/audit.md`, add three rows to the rule table in the existing format, and document
+`skill_token_threshold` alongside `prompt_token_threshold` in the `audit:` settings section.
+State the derivation of the default (p90 of 460 measured skills) so the number does not read as
+arbitrary.
+
+- [ ] **Step 5: Full gate**
+
+```bash
+cargo fmt --all
+cargo clippy --all-targets --no-default-features --features tui -- -D warnings
+cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
+cargo clippy --all-targets --no-default-features --features tui,web,storage -- -D warnings
+cargo clippy --all-targets --no-default-features --features tui,web,storage,providers-api -- -D warnings
+cargo clippy --all-targets --no-default-features --features tui,storage,e2e-fake -- -D warnings
+cargo test --no-default-features --features tui --no-fail-fast
+cargo test --no-default-features --features tui,storage,e2e-fake,web --no-fail-fast
+cargo test --no-default-features --features tui,providers-api --no-fail-fast
+cargo test --no-default-features --features tui,web,storage,providers-api --no-fail-fast
+cargo test --no-default-features --features tui,storage,e2e-fake --test gaveldrop
+```
+
+gaveldrop must still read **13 cases · 83/83**.
+
+- [ ] **Step 6: Commit and open the PR**
+
+```bash
+git add crates/armadai/tests/ docs/wiki/audit.md
+git commit -m "test(audit): cover the R rules on the real binary"
+```
+
+PR body in French, linking #384, with the mutation outputs for each rule. Do not merge.
