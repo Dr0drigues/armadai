@@ -113,3 +113,44 @@ looking where the fleet lives.
   that boundary than a project one, so if this is ever revisited it belongs here, not in the
   project scope.
 - Any automatic rewriting. The audit reports.
+
+## Measured corrections, found while implementing (2026-08-26)
+
+The three decisions above held. Four factual claims inside them did not — each measured on the
+same machine the spec was measured on, through the real binary where the binary can answer.
+
+1. **`~/.config/armadai/agents` cannot be read by this reverse pass.** The design above lists it
+   as a global surface ("**77 entries here**") and applies the `assets` family to it. All 77 files
+   are ArmadAI-format (H1 + `## Metadata` + `## System Prompt`); **none** carries YAML
+   frontmatter. Measured by pointing the shipped binary at them
+   (`ln -s ~/.config/armadai/agents probe/.claude/agents && armadai audit probe`):
+   `77 critical, 2 warning(s), 0 info` / `A01×77` — every file flagged "missing YAML
+   frontmatter", and a non-zero exit on a healthy library. So `--global` reads
+   `~/.claude/agents` and *names* `~/.config/armadai/agents` as skipped, with its file count.
+   Reading it properly needs an ArmadAI-format reverse importer, which is separate work: even
+   with one, `A02` would fire on all 77, because the ArmadAI agent format has no `description`
+   field at all.
+
+2. **"Recalibrating to 2456 would flag roughly 5 skills instead of 1" is false.** Measured over
+   the installed corpus: 2456 flags **1**, exactly as 4000 does. Only 4 skills exceed 2456 and
+   3 of them already carry a `references/`. This *strengthens* the decision to keep 4000 — the
+   threshold is not the binding constraint on this corpus, the `references/` condition is — but
+   the reason given was not the real one.
+
+3. **The `references/` split-rate argument does not survive the corpus fix.** It is inherited
+   from #386 (`52%` of skills above the p90 carry a `references/` against `32%` below), and that
+   was measured on the same 88%-catalogue corpus this spec disqualifies. Re-measured on the
+   auditable 48: **75%** above the p90 versus **77%** at or below — no contrast at all, on 4
+   samples and 44. The two-condition rule is still right, for a definitional reason (a skill
+   with `references/` has already used the mechanism the suggestion recommends), and the
+   statistical claim has been removed from both the rule and the wiki.
+
+4. **The corpus is 48, not 47.** `~/.config/armadai/skills` now holds 41 directories, one of
+   which has no `SKILL.md` (hence `min=0`, not `min=2`). `p90=2456` is unchanged and the
+   reported rate is unchanged at 2%, which is the point: the figure is robust to that drift and
+   the exact `n` is not load-bearing.
+
+One limit worth recording rather than fixing here: `R04` counts the instructions file as it sits
+on disk and does not follow Claude Code's `@file` imports. On this machine `~/.claude/CLAUDE.md`
+is 59 tokens and `@`-imports a 241-token file, so the global weight figure is a floor. That is a
+pre-existing `R04` limit, not one the scope split introduced.
