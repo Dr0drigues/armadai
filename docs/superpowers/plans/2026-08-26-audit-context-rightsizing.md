@@ -10,6 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-26-audit-context-rightsizing-design.md`
 
+> **Superseded, post-review (measured):** every `3000` below is the threshold this plan was
+> written with. It is **4000** as shipped. The plan's derivation was wrong by ~36 %: the real
+> ratio is **1.843 token/word** (median of the same 460-skill corpus), so the p90 of 2224 words
+> is ~4090 tokens, not 3000. Measured through the real binary on those 460 skills: 3000 flags
+> **54 (11.7 %)**, 4000 flags **20 (4.3 %)** — and 4.3 % is what the spec promised. The spec
+> carries the correction; `docs/wiki/audit.md` and the code carry the right number. This file is
+> a dated execution log, kept as written apart from this note.
+
 ## Global Constraints
 
 - Rules are **pure functions of `AuditContext`**. No rule reads the filesystem — the reverse pass does. The single `read_to_string` in the rules tree is `AuditSettings::from_project` loading config.
