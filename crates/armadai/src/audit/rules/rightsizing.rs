@@ -310,6 +310,61 @@ fn has_repo_path_shape(candidate: &str) -> bool {
         .is_some_and(|e| SOURCE_EXT.contains(&e))
 }
 
+/// R04 — how much context is front-loaded, every time.
+///
+/// Info, no judgement, on the model of `U04`: its value is making a cost
+/// visible that nobody currently sees, not flagging anything. There is no
+/// threshold and no suggestion.
+///
+/// What it counts, and what it deliberately does not:
+/// - the root instructions file, which really is in context on every
+///   invocation;
+/// - each `SKILL.md` in full, which is not: only its description is always
+///   loaded, the body enters context the moment the skill triggers. Counted
+///   anyway, and worded as such, because a skill body is loaded *whole* —
+///   there is no partial read, so its size is a cost the author commits to
+///   the moment the skill is named.
+/// - `references/` are excluded: they load on demand, which is the entire
+///   point of splitting them out, and R01 exists to encourage exactly that.
+/// - agent bodies are excluded for the same reason as `references/`: they
+///   load on delegation, and `A05` already sizes them one by one.
+pub(super) fn r04_context_weight(ctx: &AuditContext) -> Vec<Finding> {
+    let instructions_tokens = ctx
+        .config
+        .instructions
+        .as_ref()
+        .map(|i| super::estimate_tokens(&i.content))
+        .unwrap_or(0);
+    let skills_tokens: usize = ctx.config.skills.iter().map(|s| s.body_tokens).sum();
+    let total = instructions_tokens + skills_tokens;
+    if total == 0 {
+        // Nothing to weigh. A project with agents but no instructions and no
+        // skills front-loads nothing this rule can measure.
+        return Vec::new();
+    }
+
+    let anchor = ctx
+        .config
+        .instructions
+        .as_ref()
+        .map(|i| i.source_path.clone())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    vec![Finding {
+        rule: "R04",
+        severity: Severity::Info,
+        file: anchor,
+        related: Vec::new(),
+        message: format!(
+            "~{total} tokens of front-loaded context: {instructions_tokens} from the \
+             instructions file, on every invocation, plus {skills_tokens} across {} skill(s), \
+             each loaded whole when it triggers. references/ excluded — those load on demand",
+            ctx.config.skills.len()
+        ),
+        suggestion: None,
+    }]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -761,6 +816,103 @@ mod tests {
             r02.len(),
             1,
             "run_rules must emit R02; all findings: {findings:?}"
+        );
+    }
+
+    // ---- R04 -------------------------------------------------------------
+
+    fn r04_on(config: &ImportedConfig) -> Vec<Finding> {
+        let settings = AuditSettings::default();
+        r04_context_weight(&ctx_for(config, &settings))
+    }
+
+    /// 400 chars of instructions is exactly 100 tokens at chars/4, so the
+    /// figure below is arithmetic, not an approximation to be loosened into a
+    /// `>=` that no mutation can falsify.
+    #[test]
+    fn r04_counts_the_instructions_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = instructions_saying(dir.path(), &"x".repeat(400));
+        let f = r04_on(&config);
+        assert_eq!(f.len(), 1, "got {:?}", cited_in(&f));
+        assert!(
+            f[0].message.contains("100 from the instructions file"),
+            "{}",
+            f[0].message
+        );
+    }
+
+    #[test]
+    fn r04_counts_every_skill() {
+        let config = config_of(vec![skill("a", 300), skill("b", 200)]);
+        let f = r04_on(&config);
+        assert_eq!(f.len(), 1, "got {:?}", cited_in(&f));
+        assert!(
+            f[0].message.contains("500 across 2 skill(s)"),
+            "every skill's size and the skill count must both be reported: {}",
+            f[0].message
+        );
+    }
+
+    #[test]
+    fn r04_sums_the_instructions_file_and_the_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = instructions_saying(dir.path(), &"x".repeat(400));
+        config.skills = vec![skill("a", 300), skill("b", 200)];
+        let f = r04_on(&config);
+        assert_eq!(f.len(), 1, "got {:?}", cited_in(&f));
+        assert!(
+            f[0].message.contains("~600 tokens"),
+            "the total must be 100 + 300 + 200: {}",
+            f[0].message
+        );
+    }
+
+    /// Modelled on U04: R04 measures, it does not judge. An Info finding with
+    /// no suggestion is the shape of that promise.
+    #[test]
+    fn r04_reports_without_judgement() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = instructions_saying(dir.path(), &"x".repeat(400));
+        let f = r04_on(&config);
+        assert_eq!(f[0].severity, Severity::Info);
+        assert_eq!(f[0].suggestion, None, "nothing here is a defect to fix");
+    }
+
+    #[test]
+    fn r04_is_silent_on_an_empty_project() {
+        let config = ImportedConfig::default();
+        assert_eq!(cited_in(&r04_on(&config)), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn r04_anchors_on_the_instructions_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = instructions_saying(dir.path(), &"x".repeat(400));
+        assert_eq!(r04_on(&config)[0].file, dir.path().join("CLAUDE.md"));
+    }
+
+    /// Skills but no instructions file: the finding still needs an anchor, and
+    /// the project root is the only honest one.
+    #[test]
+    fn r04_falls_back_to_the_project_root_without_instructions() {
+        let config = config_of(vec![skill("a", 300)]);
+        assert_eq!(r04_on(&config)[0].file, std::path::PathBuf::from("."));
+    }
+
+    #[test]
+    fn r04_is_wired_into_the_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        // Instructions only: no skill means R01 cannot reach the filesystem,
+        // so this assertion depends on the registry alone.
+        let config = instructions_saying(dir.path(), &"x".repeat(400));
+        let settings = AuditSettings::default();
+        let findings = crate::audit::rules::run_rules(&ctx_for(&config, &settings));
+        let r04: Vec<_> = findings.iter().filter(|f| f.rule == "R04").collect();
+        assert_eq!(
+            r04.len(),
+            1,
+            "run_rules must emit R04; all findings: {findings:?}"
         );
     }
 }

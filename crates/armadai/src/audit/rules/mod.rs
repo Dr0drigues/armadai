@@ -178,6 +178,7 @@ fn registry() -> Vec<RuleFn> {
         assets::a12_nonstandard_fields,
         rightsizing::r01_oversized_skill,
         rightsizing::r02_stale_path,
+        rightsizing::r04_context_weight,
         collisions::c01_name_collisions,
         collisions::c02_scope_overlap,
         collisions::c03_activation_overlap,
