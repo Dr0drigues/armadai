@@ -22,10 +22,70 @@ Most of the rule surface predates this page's focus and is only summarized here 
 
 - **`A0x` — static asset rules.** Checks over the declared `.claude/agents/`, `.claude/skills/` and `CLAUDE.md` in isolation: unparsable files, missing descriptive fields, deprecated or unknown models, oversized prompts, duplicated content, permissive tool access, malformed skills, broken `@agent` references, plaintext secrets.
 - **`C0x` — collision rules.** Checks across declared assets: name collisions, overlapping scopes, overlapping activation surfaces, double ownership of the same module, inconsistent tool restrictions.
+- **`R0x` — context rightsizing.** Checks what the project front-loads into context rather than what it declares: an oversized skill with no progressive disclosure, a path cited in the instructions file that no longer exists, and the total weight of the context a project loads up front. Detailed below.
 - **`D0x` — optional deep pass (`--deep`).** Sends secret-redacted prompt excerpts to an installed CLI (`claude` or `gemini`) for an LLM-driven review, layered on top of the static findings.
 - **`--propose`.** Generates an installable ArmadAI pack (`.armadai-proposal/`) from the audited native configuration.
 
-The rest of this page covers the newer half: **observed usage**, rules `U01`–`U04`.
+The rest of this page covers the two newer halves: **context rightsizing**, rules `R01`, `R02` and `R04`, and **observed usage**, rules `U01`–`U04`.
+
+## Context rightsizing
+
+The `A`, `C` and `U` families ask *is it declared?* and *does it run?*. The `R` family asks a third question none of the others does: **is it sized correctly?** — what a project spends on context before anyone has typed a prompt.
+
+### Rules
+
+| Rule | Severity | Detects |
+|---|---|---|
+| `R01` | Warning | A `SKILL.md` whose estimated size exceeds `audit.skill_token_threshold` **and** whose skill directory has no `references/` at all. Both conditions are required — see below. |
+| `R02` | Warning | A repo path cited in backticks in the root instructions file that resolves to nothing. The counterpart of `A10`, which does the same for `@agent` mentions. |
+| `R04` | Info | The total front-loaded context — the instructions file plus every `SKILL.md` — reported without judgement, on the model of `U04`. No threshold, no suggestion. |
+
+`R03` was designed and dropped. It would have flagged a lesson duplicated between a skill and the user's personal memory; that memory lives outside the project, under the user's own directory. `armadai audit` is project-scoped and must not read it.
+
+### What "front-loaded" means, exactly
+
+The Agent Skills standard loads a skill at **three** levels, and the distinction is the whole point of `R01`:
+
+1. **metadata** (name and description) is in context always — it is what lets the model decide whether the skill applies;
+2. the **body of `SKILL.md`** enters context when the skill *triggers*. Not on every invocation — but whole, because there is no partial read, so its size is a cost the author commits to at that moment;
+3. **bundled files** (`references/`, scripts, templates) load only when something asks for them.
+
+Only the root instructions file is loaded unconditionally, on every invocation. `R04` words its message that way and counts each skill body in full, because level 2 is all or nothing; `references/` are excluded, because level 3 is precisely what splitting them out buys.
+
+So `R01` does not say "this skill is too big". It says "this skill is big *and* has nothing at level 3" — and `armadai` already installs `references/` (`core/skill.rs`), so the fix asks the author to use a mechanism that exists rather than invent one.
+
+### Where the default threshold comes from
+
+`audit.skill_token_threshold` defaults to **3000** estimated tokens. That number is derived, not picked: 460 real `SKILL.md` files measured on one machine give `min=3 · median=746 · p75=1343 · p90=2224 · max=41795` words, and the p90 of 2224 words is ≈3000 tokens under the `chars/4` estimate the audit uses everywhere.
+
+Size alone would be the wrong signal, and the same corpus says why: **46%** of the skills above p90 carry a `references/` directory against **67%** below it — large skills are *more* often split, not less. Hence two conditions rather than one. The largest skill in that corpus (41795 words, 16 references) is big and correctly structured, and must never be flagged.
+
+The intersection is deliberately narrow. In that corpus 21 skills of 460 (4.6%) exceed p90 with no `references/` at all, and a run of the shipped rule over the 291 skills installed on the development machine — a narrower corpus than the 460, being the skills actually installed for the tool rather than every `SKILL.md` on disk — flagged **11** (3.8%): of 24 above the threshold, 13 were already split. That is the right order of magnitude for a warning: neither noise nor decoration.
+
+### `R02`'s known blind spots
+
+`R02` reads prose, so it is a heuristic and its filters *are* the rule: a citation must sit inside backticks, outside a fenced code block, carry both a directory part and a real source extension, and not look like a placeholder or a glob. On this repository's own `CLAUDE.md`, the naive form — any backticked token containing `/` — reported 23 paths, 22 of them false.
+
+A citation resolves either under the instructions file's own directory or as a whole-component suffix anywhere deeper in the tree, because a multi-crate repo cites modules relative to their crate (`cli/mod.rs`, not `crates/armadai/src/cli/mod.rs`). Measured against this repository's pre-rewrite `CLAUDE.md`, suffix resolution reported 16 stale paths with no crate-prefix false positive where root-only resolution reported 24 with 9 false.
+
+Three limits are known, and documented rather than hidden — a rule whose blind spots are written down survives its first false positive; one that claims to be exact does not:
+
+- **An unclosed backtick silences its line.** Every span after it pairs with the wrong delimiter, so code reads as prose and prose as code. The direction is the safe one: it loses a real citation (a false negative) rather than inventing one, and guarding on backtick parity would cost recall without buying precision.
+- **A path differing only in case is not detected** on a case-insensitive filesystem (macOS by default): `exists()` answers `true` where a human reader would not. Another false negative, and a platform-dependent one.
+- **A path cited as a convention can be reported.** `.armadai/agents.yaml` named in a repository that ships no example of one is a true statement about a naming convention, not a claim about a location — and nothing short of reading the sentence tells the two apart.
+
+## Settings
+
+Every threshold the static rules use is tunable per project, in an optional `audit:` section of `armadai.yaml` (or `.armadai/config.yaml`; the first of the two that exists wins). A missing file, a missing section, or YAML that fails to parse all leave the defaults in place — the audit never refuses to run over its own configuration.
+
+```yaml
+audit:
+  prompt_token_threshold: 4000   # A05: an agent system prompt above this is flagged
+  skill_token_threshold: 3000    # R01: a SKILL.md above this with no references/ is flagged
+  activation_similarity: 0.6     # C03: Jaccard similarity above which two descriptions collide
+  deep_prompt_truncation: 2000   # --deep: max characters kept per excerpt sent to the LLM
+  usage: true                    # scan this project's transcripts (--no-usage always wins)
+```
 
 ## Observed usage
 

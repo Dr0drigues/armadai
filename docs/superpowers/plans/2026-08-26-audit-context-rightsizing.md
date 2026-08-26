@@ -913,3 +913,55 @@ git commit -m "test(audit): cover the R rules on the real binary"
 ```
 
 PR body in French, linking #384, with the mutation outputs for each rule. Do not merge.
+
+---
+
+## Task 5 — measured corrections
+
+Six, in the same spirit as the lessons above: found by executing the task, not by reading it.
+
+**The isolation list was short by one variable.** Step 1 redirects `ARMADAI_CONFIG_DIR` and
+`XDG_DATA_HOME`, and both are needed. But `cli::audit::execute` also calls
+`usage::scan(&root)` unconditionally, which reads the developer's real `~/.claude/projects`
+unless `ARMADAI_CLAUDE_PROJECTS_DIR` says otherwise — machine-dependent, potentially hundreds of
+megabytes, and any `U0x` finding it produces lands in the very stdout these tests assert on.
+`audit_usage.rs` already sets it; the shipped helper sets all three.
+
+**The proposed assertions were whole-output `contains`, the exact defect `audit_usage.rs`
+documents.** `text.contains("R01") && text.contains("heavy")` can pass on two unrelated lines —
+the report names the same file on its `A09`, `A12` and `R04` lines. Every assertion here is
+same-line, through an `Output::line_with(rule, needles)` helper that also insists on **exactly
+one** matching line, and each carries the measured number (`~4010 tokens`, `(threshold 3000)`,
+`~300 tokens`) rather than the rule code alone.
+
+**Step 4 pointed at a settings section that does not exist.** "document
+`skill_token_threshold` alongside `prompt_token_threshold` in the `audit:` settings section" —
+`grep -rn prompt_token_threshold docs/` finds it only in `declarative-agents.md` and in older
+plans. `docs/wiki/audit.md` had no settings section at all, so one was created, documenting all
+five keys.
+
+**Unregistering a rule is necessary but not sufficient to prove CLI reachability.** Task 3-4
+already added `rXX_is_wired_into_the_registry` unit tests, which go red on that same mutation —
+so on its own it does not separate "the CLI reaches the rule" from "`run_rules` reaches the
+rule". Two mutations that **only** the black-box tests catch were measured instead, and they are
+the ones that answer the question:
+
+1. `print_terminal`'s severity loop reduced to `[Critical, Warning]` — the R04 finding is still
+   computed (the Summary line still says `1 info`, the Breakdown still says `R04×1`) and is
+   never printed. **734 unit tests green, `r04_totals_the_front_loaded_context_from_the_real_files`
+   red.**
+2. `cli::audit::execute` passing `&AuditSettings::default()` instead of the loaded `&settings` —
+   the project's `audit.skill_token_threshold` is read, parsed, and thrown away. **734 unit tests
+   green, `the_project_config_threshold_reaches_r01_through_the_cli` red.**
+
+**Two lessons above are now stale, and the fix landed before Task 5 started.** The last lesson
+says "R01's message still reads 'so all of it loads on every invocation'"; `ce7fd30` reworded it
+to "so the whole body is loaded as soon as the skill triggers". Task 3's Step 6 says the stale
+`providers/traits.rs` in `CLAUDE.md` was left in place deliberately; `ce7fd30` fixed that too, and
+`armadai audit --no-usage` on this repo now reports **zero** R02 findings (`R04  CLAUDE.md
+~1423 tokens`, plus pre-existing `A06`/`A08`/`A10`).
+
+**The R01 fixture's missing `.claude/agents/` is fine — do not "fix" it.** `ClaudeReverseLinker::detect`
+(`reverse/claude.rs:52-56`) returns true on `.claude/skills` or `CLAUDE.md` alone, so a
+skills-only project is detected and `execute` does not take its "nothing here" early return.
+Verified by running it.
