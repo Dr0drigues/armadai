@@ -72,6 +72,15 @@ never its size.
 - Suggestion: name the mechanism the product already supports — `core/skill.rs:61` loads
   `references/`, `:106` copies it on install. The author is not being asked to invent anything.
 
+> **Correction (post-review, measured):** the conversion above is wrong and the default is
+> **4000**, not 3000. On the same 460-skill corpus the ratio is **1.84 tokens per word**
+> (median), not 1 — so the p90 of 2224 words is ≈4100 tokens, and the p90 of the token
+> distribution read directly is 3956. Measured through the real command over those 460 skills:
+> the 3000 default flagged **54 (11.7%)** where this section promises ~4.6%; 4000 flags
+> **20 (4.3%)**. The p90 was the right criterion; only its conversion was wrong. Also stale
+> here: the loader is at `crates/armadai-core/src/skill.rs` — `core/skill.rs` is one of the 16
+> paths `R02` itself reports as nonexistent.
+
 ### `R02` — a path named in the instructions file does not exist
 
 **Warning.** A filesystem path cited in the root instructions file that resolves to nothing.
@@ -119,7 +128,8 @@ here"*.
 
 - New module `crates/armadai/src/audit/rules/rightsizing.rs`.
 - Three entries in `registry()` (`audit/rules/mod.rs:155`).
-- Two fields on `AuditSettings`: `skill_token_threshold: usize` (default 3000) and nothing for
+- Two fields on `AuditSettings`: `skill_token_threshold: usize` (default 4000, see the
+  correction under `R01`) and nothing for
   `R02`/`R04` — neither has a tunable.
 - `R04`'s output is a finding like any other, so `report.rs` needs no new plumbing; the report
   groups by rule family already.

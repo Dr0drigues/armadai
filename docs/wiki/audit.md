@@ -52,25 +52,31 @@ The Agent Skills standard loads a skill at **three** levels, and the distinction
 
 Only the root instructions file is loaded unconditionally, on every invocation. `R04` words its message that way and counts each skill body in full, because level 2 is all or nothing; `references/` are excluded, because level 3 is precisely what splitting them out buys.
 
-So `R01` does not say "this skill is too big". It says "this skill is big *and* has nothing at level 3" — and `armadai` already installs `references/` (`core/skill.rs`), so the fix asks the author to use a mechanism that exists rather than invent one.
+So `R01` does not say "this skill is too big". It says "this skill is big *and* has nothing at level 3" — and `armadai` already installs `references/` (`crates/armadai-core/src/skill.rs`), so the fix asks the author to use a mechanism that exists rather than invent one.
 
 ### Where the default threshold comes from
 
-`audit.skill_token_threshold` defaults to **3000** estimated tokens. That number is derived, not picked: 460 real `SKILL.md` files measured on one machine give `min=3 · median=746 · p75=1343 · p90=2224 · max=41795` words, and the p90 of 2224 words is ≈3000 tokens under the `chars/4` estimate the audit uses everywhere.
+`audit.skill_token_threshold` defaults to **4000** estimated tokens. That number is derived, not picked: 460 real `SKILL.md` files measured on one machine give `min=3 · median=746 · p75=1343 · p90=2224 · max=41795` words — and the *same corpus* measures **1.84 tokens per word** (median) under the `chars/4` estimate the audit uses everywhere. So the p90 is ≈4100 tokens; read directly in tokens rather than converted, the p90 of the same distribution is 3956. Either way the answer rounds to 4000.
 
-Size alone would be the wrong signal, and the same corpus says why: **46%** of the skills above p90 carry a `references/` directory against **67%** below it — large skills are *more* often split, not less. Hence two conditions rather than one. The largest skill in that corpus (41795 words, 16 references) is big and correctly structured, and must never be flagged.
+The rule first shipped with 3000, from assuming one token per word. The corpus says 1.84, so the converted threshold came out **36% low** — and the consequence was measurable, not theoretical: run over those same 460 skills, the 3000 default flagged **54 (11.7%)** where the p90 criterion promises ~4.6%. The criterion was right; only its conversion was wrong.
 
-The intersection is deliberately narrow. In that corpus 21 skills of 460 (4.6%) exceed p90 with no `references/` at all, and a run of the shipped rule over the 291 skills installed on the development machine — a narrower corpus than the 460, being the skills actually installed for the tool rather than every `SKILL.md` on disk — flagged **11** (3.8%): of 24 above the threshold, 13 were already split. That is the right order of magnitude for a warning: neither noise nor decoration.
+Size alone would be the wrong signal, and the same corpus says why: **52%** of the skills above p90 carry a `references/` directory against **32%** below it — large skills are *more* often split, not less. Hence two conditions rather than one. The largest skill in that corpus (41795 words, 16 references) is big and correctly structured, and must never be flagged.
+
+The intersection is deliberately narrow, and this is where the threshold is judged rather than argued. The design target was the 21 skills of 460 (4.6%) that exceed the p90 with no `references/` at all. Run through the real command over those same 460 skills, the shipped rule at the 4000 default flags **20 (4.3%)**: of the 44 skills above the threshold, 24 are already split. Target met — the right order of magnitude for a warning, neither noise nor decoration. At 3000 the same run flagged 54 (11.7%), 2.5× the promise.
 
 ### `R02`'s known blind spots
 
-`R02` reads prose, so it is a heuristic and its filters *are* the rule: a citation must sit inside backticks, outside a fenced code block, carry both a directory part and a real source extension, and not look like a placeholder or a glob. On this repository's own `CLAUDE.md`, the naive form — any backticked token containing `/` — reported 23 paths, 22 of them false.
+`R02` reads prose, so it is a heuristic and its filters *are* the rule: a citation must sit inside backticks, outside a fenced code block, carry both a directory part and a real source extension, and not look like a placeholder, a glob or a template (`{userData}/config.json`, `$HOME/x.yaml`, `%APPDATA%/x.json`, `[version]/notes.md`, `:owner/:repo.md` — all measured or observed forms, the first on a real project's `CLAUDE.md`). On this repository's own `CLAUDE.md`, the naive form — any backticked token containing `/` — reported 23 paths, 22 of them false.
 
 A citation resolves either under the instructions file's own directory or as a whole-component suffix anywhere deeper in the tree, because a multi-crate repo cites modules relative to their crate (`cli/mod.rs`, not `crates/armadai/src/cli/mod.rs`). Measured against this repository's pre-rewrite `CLAUDE.md`, suffix resolution reported 16 stale paths with no crate-prefix false positive where root-only resolution reported 24 with 9 false.
 
-Three limits are known, and documented rather than hidden — a rule whose blind spots are written down survives its first false positive; one that claims to be exact does not:
+Limits are known, and documented rather than hidden — a rule whose blind spots are written down survives its first false positive; one that claims to be exact does not. The first is the largest by far:
 
+- **Only eight extensions are recognised**, and everything else is dropped in silence: `rs`, `toml`, `md`, `yaml`, `yml`, `json`, `sh`, `ts`. Measured: `scripts/deploy.py`, `web/ui/src/App.svelte`, `src/main.go`, `pkg/mod/x.java` and `styles/app.css` are all rejected, so in a project written in Python, Go, Java, Svelte or CSS **`R02` is inert**. That is a false negative and it is deliberate — each extension added is a new false-positive surface, and these eight are the only ones whose false-positive rate has been measured. If you audit such a project and `R02` never fires, this is why.
+- **A real path containing a template character is silenced with the templates.** The framework dynamic-route form `app/[id]/route.ts` reads exactly like the `[version]/notes.md` metavariable the placeholder filter exists to drop. Taken knowingly: the alternative was a measured false positive on `{userData}/config.json`.
 - **An unclosed backtick silences its line.** Every span after it pairs with the wrong delimiter, so code reads as prose and prose as code. The direction is the safe one: it loses a real citation (a false negative) rather than inventing one, and guarding on backtick parity would cost recall without buying precision.
+- **Only backtick fences are tracked.** A `~~~` fence, or a code block indented by four spaces, is read as prose, so a path cited inside one can be reported. Compared against a tracker handling all three over the 234 markdown files of this repository, the difference is **0 candidates** — a constructed risk, not an observed one, so the simpler tracker stays.
+- **Build output is not indexed** (`.git`, `target`, `node_modules`, `dist`, `build`, `.venv`). A real file under one of those, cited *relative to its crate* rather than to the audited root, is reported as nonexistent, since only the index resolves that form. Accepted: build output holds no path a human cites, and the same skip is what keeps `target/` from dwarfing the index.
 - **A path differing only in case is not detected** on a case-insensitive filesystem (macOS by default): `exists()` answers `true` where a human reader would not. Another false negative, and a platform-dependent one.
 - **A path cited as a convention can be reported.** `.armadai/agents.yaml` named in a repository that ships no example of one is a true statement about a naming convention, not a claim about a location — and nothing short of reading the sentence tells the two apart.
 
@@ -81,7 +87,7 @@ Every threshold the static rules use is tunable per project, in an optional `aud
 ```yaml
 audit:
   prompt_token_threshold: 4000   # A05: an agent system prompt above this is flagged
-  skill_token_threshold: 3000    # R01: a SKILL.md above this with no references/ is flagged
+  skill_token_threshold: 4000    # R01: a SKILL.md above this with no references/ is flagged
   activation_similarity: 0.6     # C03: Jaccard similarity above which two descriptions collide
   deep_prompt_truncation: 2000   # --deep: max characters kept per excerpt sent to the LLM
   usage: true                    # scan this project's transcripts (--no-usage always wins)
