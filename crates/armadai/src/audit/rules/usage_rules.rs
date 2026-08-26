@@ -340,6 +340,7 @@ mod tests {
             description: Some("project skill".to_string()),
             has_skill_md: true,
             has_frontmatter: true,
+            body_tokens: 0,
             issues: vec![],
             extra: Default::default(),
         });
@@ -584,6 +585,7 @@ mod tests {
             description: Some("project skill".to_string()),
             has_skill_md: true,
             has_frontmatter: true,
+            body_tokens: 0,
             issues: vec![],
             extra: Default::default(),
         });

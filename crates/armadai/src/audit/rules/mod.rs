@@ -212,6 +212,25 @@ pub(crate) mod test_support {
         }
     }
 
+    /// A well-formed skill of a chosen size. `body_tokens` is the only knob
+    /// the R rules read; everything else is the "nothing else is wrong" shape
+    /// so a size finding cannot be confused with a structural one.
+    // Scaffold: no rule reads a skill's size yet. `expect` on purpose, so the
+    // gate forces this attribute out the moment `R01` uses the helper.
+    #[expect(dead_code)]
+    pub fn skill(name: &str, body_tokens: usize) -> ImportedSkill {
+        ImportedSkill {
+            name: name.to_string(),
+            source_path: PathBuf::from(format!(".claude/skills/{name}/SKILL.md")),
+            description: Some(format!("{name} description")),
+            has_skill_md: true,
+            has_frontmatter: true,
+            body_tokens,
+            issues: Vec::new(),
+            extra: BTreeMap::new(),
+        }
+    }
+
     pub fn config_with(agents: Vec<ImportedAgent>) -> ImportedConfig {
         ImportedConfig {
             agents,

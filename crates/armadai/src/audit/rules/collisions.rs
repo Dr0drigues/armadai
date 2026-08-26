@@ -402,6 +402,7 @@ mod tests {
                 description: Some("d".into()),
                 has_skill_md: true,
                 has_frontmatter: true,
+                body_tokens: 0,
                 issues: Vec::new(),
                 extra: BTreeMap::new(),
             }],
@@ -424,6 +425,7 @@ mod tests {
             description: Some(description.into()),
             has_skill_md: true,
             has_frontmatter: true,
+            body_tokens: 0,
             issues: Vec::new(),
             extra: std::collections::BTreeMap::new(),
         }
