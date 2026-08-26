@@ -56,37 +56,26 @@ Code that depends on optional features must use `#[cfg(feature = "...")]`.
 
 **Execution flow**: CLI command → load agent `.md` file → parse with `pulldown-cmark` → create provider via factory → execute `complete()` or `stream()` → display result → record in storage.
 
-**Key modules**:
-- `cli/` — One file per command, each exports `async fn execute(...)`. Add new commands in `cli/mod.rs` (enum variant + handler).
-- `parser/` — Converts Markdown agent files into `Agent` struct. Required sections: H1 (name), `## Metadata`, `## System Prompt`.
-- `providers/` — `Provider` trait (in `traits.rs`) with `complete()` and `stream()` methods. Factory (`factory.rs`) constructs the right provider from agent metadata. Implementations: `api/anthropic.rs` (full), `api/google.rs` (full), `cli.rs` (full); `api/openai.rs` and `proxy.rs` are `todo!()` stubs.
-- `core/` — Domain types: `Agent`, `AgentMetadata`, `PipelineConfig`, `events::RunEvent`/`EventSink`, `routing.rs` (model-tier auto-routing for `latest:auto`). Orchestration lives under `core/orchestration/` (`OrchestrationPattern { Direct, Blackboard, Ring, Hierarchical, Auto }`) with the event-sourced engine under `core/orchestration/es/`. There is no `Task`/`SharedContext`/`Coordinator`/`Pipeline` type.
-- `core/project.rs` — Project config (`armadai.yaml`) with agent/prompt/skill resolution.
-- `core/prompt.rs` — Composable prompt fragments with YAML frontmatter.
-- `core/agent_decl.rs` + `core/agent_source.rs` — declarative agents: `.armadai/agents.yaml` declares agents (defaults merge + prompt composed from fragments with `{{var}}` substitution); `load_all_agents()`/`load_agent_by_name()` return `Agent`(s) where `resolve_agent()` returns a path. `core/template.rs` holds the substitution, shared with `cli/new.rs`.
-- `core/skill.rs` — Skills following the Agent Skills open standard (SKILL.md).
-- `core/model_updater.rs` — Deprecated model detection, in-place update, and auto-check with interactive prompt (`auto_check_and_prompt()`). Called automatically by `run`, `link`, and `init`.
-- `core/project_registry.rs` — JSON registry of known projects (auto-registered on `run`/`link`). Supports `prune` for stale entries.
-- `core/starter.rs` — Starter packs: curated agent bundles installed via `armadai init --pack`.
-- `core/embedded.rs` — Version-based extraction for embedded resources (`.armadai-version` marker).
-- `core/events.rs` — `RunEvent`/`EventSink`: the provider-agnostic event stream emitted by a run (consumed by `--json` and by the TUI Workroom).
-- `core/routing.rs` — model-tier auto-routing for `latest:auto` agents (Fast/Pro/Max tiers via length/keyword/budget rules; `RoutingRules`).
-- `core/orchestration/agent_selection.rs` — C8 deterministic declarative agent selection: named routes (`orchestration.routes`) + capability tag/stack matching for `--route`/`--tags`.
-- `core/orchestration/policy.rs` — delegation policy: turns a declared topology (`orchestration.policy: strict`, `coordinator`, `teams`, `free_agents`) into a rule enforced by the Claude Code `PreToolUse` hook. Pure decision function; the adapter is the hidden `armadai __claude-policy-gate` subcommand in `claude_adapter/policy_gate.rs`.
-- `parser/frontmatter.rs` — Generic YAML frontmatter extraction reused by prompts and skills.
-- `linker/` — Generates native config files for target AI CLIs. Trait `Linker` with one implementation per CLI (**claude, codex, copilot, gemini, opencode**). `model_resolution.rs` handles model remapping per target and exposes `preview_model_resolution()` for UI previews. `model_aliases.rs` maps deprecated model names to their replacements (embedded YAML registry). `armadai_protocol_block()` (in `mod.rs`) injects the `<!--ARMADAI_DELEGATE/META/END-->` marker protocol into generated configs (shell-relay delegation, see below).
-- `registry/` — awesome-copilot integration. Sync, search, convert agents from the community catalog.
-- `skills_registry/` — GitHub-based skills discovery. Sync repos, build search index, install skills (`sync.rs`, `cache.rs`, `search.rs`).
-- `starters_registry/` — Remote starter pack registry (fetch/install curated starter bundles from external sources).
-- `model_registry/` — Dynamic model catalog from models.dev. Fetches and caches model metadata (cost, context window) for enriched selection in `armadai new -i`. Gated behind `providers-api` for HTTP fetch, cache-only fallback otherwise. Sync cache-only helpers (`load_models_cached`, `load_all_providers_cached`) always available for TUI/Web.
-- `storage/` — SQLite wrapper (via rusqlite). `schema.rs` defines the `runs` table, `queries.rs` has CRUD operations.
-- `audit/` — `armadai audit`: agentic-asset adoption/collision audit engine (collision matrix, frontmatter passthrough). `audit/reverse/` reads what a project declares; `audit/usage/` scans Claude Code transcripts for what it actually ran (rules `U01`–`U04`).
-- `tui/` — Ratatui-based terminal UI. `app.rs` holds state (incl. command palette), `views/` renders tabs (Agents/Prompts/Skills/Starters/History/Costs/Models + detail views + shortcuts bar + command palette overlay + orchestration/Workroom view), `widgets/` provides reusable components. Supports `i` key to init project from starters. Models tab (key `7`) shows cached model catalog from models.dev. Agent detail view includes model resolution preview for all link targets.
-- `shell/` — `armadai shell`: conversational PTY shell relaying a native CLI. `app.rs`, `tui.rs`, `workroom.rs` (live run view), `json_runner.rs` (stream-json), `runner.rs`, `parser.rs`.
-- `theme.rs` — Single shared theme (TUI + shell), color-tier aware (truecolor/256/16).
-- `logging.rs` — Tracing setup, incl. a reload handle used to silence logs during the live Workroom view.
-- `web/` — Axum-based web UI. The frontend is a **Svelte SPA** (`web/ui/`, built to `web/ui/dist/`) embedded at compile time via `include_dir!`. JSON API endpoints: `/api/agents(/{name})`, `/api/prompts(/{name})`, `/api/skills(/{name})`, `/api/starters(/{name}, /{name}/config)`, `/api/history`, `/api/costs`, `/api/models` (+ `/api/models/refresh`), `/api/orchestration/trace(/{run_id})`, `/api/orchestration/topology`.
-- `secrets/` — SOPS + age encrypted secrets loader.
+**Where things live** — the one thing `ls` will not tell you, since OH7 (#252) split the
+workspace: `crates/armadai` holds the binary-only surface (`cli/`, `linker/`, `tui/`, `shell/`,
+`web/`, `audit/`, `registry/`, `skills_registry/`, `starters_registry/`, `claude_adapter/`),
+while the domain lives in `crates/armadai-core` (incl. `parser/`, `orchestration/`,
+`test_support/`), providers in `crates/armadai-providers` (incl. `model_registry/`), plus
+`armadai-storage`, `armadai-secrets`, `armadai-fake`.
+
+**Non-obvious facts** (the rest of the layout is readable from the tree):
+- `crates/armadai` is **binary-only** — no `lib.rs`. `cargo test --lib` there returns
+  "0 passed" with **no error**; use `--bin armadai` or `--test <name>`.
+- There is no `Task`/`SharedContext`/`Coordinator`/`Pipeline` type. Orchestration is
+  `OrchestrationPattern { Direct, Blackboard, Ring, Hierarchical, Auto }`, event-sourced under
+  `core/orchestration/es/`.
+- `routing.rs` is model-tier routing for `latest:auto` only — the `latest:pro`/`fast`/`max`
+  aliases are **not** resolved on the `run` path (#376).
+- Two delegation mechanisms, don't conflate them: the core engine's `@agent: task` text, and
+  the linker-injected `<!--ARMADAI_DELEGATE-->` marker protocol (shell relay, Claude-only in
+  practice).
+- Test env isolation lives in `armadai_core::test_support` and is **not reentrant** — two
+  guards on one thread deadlock.
 
 **Provider trait** (`providers/traits.rs`):
 ```rust
