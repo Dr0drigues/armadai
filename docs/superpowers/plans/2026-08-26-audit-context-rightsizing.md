@@ -31,7 +31,7 @@
 | `crates/armadai/tests/audit_rightsizing.rs` | **Create** — black-box cases on the real binary |
 | `docs/wiki/audit.md` | **Modify** — document the three rules and the new setting |
 
-13 of the 14 `ImportedSkill { .. }` construction sites are in tests (`rules/assets.rs` ×6, `rules/collisions.rs` ×3, `rules/usage_rules.rs` ×2, `reverse/claude.rs` tests ×2). They get `body_tokens: 0` — they do not test size. New tests use the helper from Task 1.
+**Corrected during Task 1, measured:** 12 `ImportedSkill { .. }` literals, **10 in tests** (`rules/assets.rs` ×6, `rules/collisions.rs` ×2, `rules/usage_rules.rs` ×2) and **2 in production** — both inside `parse_skill_dir`, its early return for an unreadable file *and* its main return. `claude.rs`'s own tests build no `ImportedSkill` by hand; they go through `parse_skill_dir` on tempdirs. The 10 test sites get `body_tokens: 0`; the early return gets `0` too (absent file, no size to guess).
 
 ---
 
@@ -67,10 +67,13 @@ fn a_parsed_skill_carries_its_body_size() {
 
     let parsed = parse_skill_dir(&skills);
 
-    assert!(
-        parsed.body_tokens >= 100,
-        "the whole file must be counted, got {} tokens",
-        parsed.body_tokens
+    // Exact, not `>= 100`: the body alone is exactly 400 chars = 100 tokens, so
+    // a `>= 100` assertion stays GREEN under the mutation that counts the body
+    // instead of the file — measured during Task 1. 33 chars of frontmatter +
+    // 400 = 433 -> 108 tokens at chars/4.
+    assert_eq!(
+        parsed.body_tokens, 108,
+        "the whole file must be counted, frontmatter included"
     );
 }
 ```
@@ -126,10 +129,20 @@ In `rules/mod.rs`, inside `pub(crate) mod test_support`:
     }
 ```
 
-- [ ] **Step 6: Run the tests**
+- [ ] **Step 6: Run the tests AND clippy**
 
-Run: `cargo test --bin armadai --no-fail-fast`
-Expected: PASS, including the new test.
+Run: `cargo test --bin armadai --no-fail-fast`, then clippy in all 5 modes.
+
+`cargo test` alone is not enough here and the first draft of this plan got it wrong: a
+foundation task creates a producer with no consumer, so `-D warnings` fails on two
+`dead_code` errors — the field (non-test build; `pub` does not exempt it, this crate is
+binary-only) and the helper (test build).
+
+Gate them, and pick the attribute deliberately: `#[expect(dead_code)]` on the **helper**, so
+the gate *breaks* the moment Task 2 uses it and the scaffolding cannot rot; `#[allow(dead_code)]`
+on the **field**, because `expect` there is `unfulfilled` — the field *is* read by `reverse`'s
+own tests. Measured, not reasoned. Mark both with a `Scaffold:` comment so Task 2 can
+`grep -n "Scaffold:"` them.
 
 - [ ] **Step 7: Mutation check**
 
