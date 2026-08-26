@@ -6,6 +6,7 @@ mod assets;
 mod collisions;
 mod models;
 pub(crate) mod references;
+mod rightsizing;
 mod similarity;
 mod usage_rules;
 
@@ -47,6 +48,10 @@ pub struct Finding {
 pub struct AuditSettings {
     /// A05: estimated token count above which a prompt is flagged.
     pub prompt_token_threshold: usize,
+    /// R01: estimated token count above which a skill with no `references/`
+    /// is flagged. Default derived from a measured distribution: 460 real
+    /// SKILL.md files give a p90 of 2224 words, ~3000 tokens at chars/4.
+    pub skill_token_threshold: usize,
     /// C03: Jaccard similarity above which two activation descriptions are
     /// considered ambiguous for routing.
     pub activation_similarity: f64,
@@ -64,6 +69,7 @@ impl Default for AuditSettings {
     fn default() -> Self {
         Self {
             prompt_token_threshold: 4000,
+            skill_token_threshold: 3000,
             activation_similarity: 0.6,
             deep_prompt_truncation: 2000,
             usage: true,
@@ -84,6 +90,7 @@ impl AuditSettings {
         #[serde(default)]
         struct AuditSection {
             prompt_token_threshold: Option<usize>,
+            skill_token_threshold: Option<usize>,
             activation_similarity: Option<f64>,
             deep_prompt_truncation: Option<usize>,
             usage: Option<bool>,
@@ -98,6 +105,9 @@ impl AuditSettings {
             {
                 if let Some(t) = section.prompt_token_threshold {
                     settings.prompt_token_threshold = t;
+                }
+                if let Some(t) = section.skill_token_threshold {
+                    settings.skill_token_threshold = t;
                 }
                 if let Some(s) = section.activation_similarity {
                     settings.activation_similarity = s;
@@ -166,6 +176,7 @@ fn registry() -> Vec<RuleFn> {
         references::a10_broken_references,
         references::a11_plaintext_secret,
         assets::a12_nonstandard_fields,
+        rightsizing::r01_oversized_skill,
         collisions::c01_name_collisions,
         collisions::c02_scope_overlap,
         collisions::c03_activation_overlap,
@@ -215,9 +226,6 @@ pub(crate) mod test_support {
     /// A well-formed skill of a chosen size. `body_tokens` is the only knob
     /// the R rules read; everything else is the "nothing else is wrong" shape
     /// so a size finding cannot be confused with a structural one.
-    // Scaffold: no rule reads a skill's size yet. `expect` on purpose, so the
-    // gate forces this attribute out the moment `R01` uses the helper.
-    #[expect(dead_code)]
     pub fn skill(name: &str, body_tokens: usize) -> ImportedSkill {
         ImportedSkill {
             name: name.to_string(),
@@ -271,11 +279,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("armadai.yaml"),
-            "audit:\n  prompt_token_threshold: 1234\n  activation_similarity: 0.75\n  deep_prompt_truncation: 500\n  usage: false\n",
+            "audit:\n  prompt_token_threshold: 1234\n  skill_token_threshold: 1500\n  activation_similarity: 0.75\n  deep_prompt_truncation: 500\n  usage: false\n",
         )
         .unwrap();
         let s = AuditSettings::from_project(dir.path());
         assert_eq!(s.prompt_token_threshold, 1234);
+        assert_eq!(s.skill_token_threshold, 1500);
         assert!((s.activation_similarity - 0.75).abs() < f64::EPSILON);
         assert_eq!(s.deep_prompt_truncation, 500);
         assert!(!s.usage, "usage: false in config must be honoured");
@@ -286,6 +295,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = AuditSettings::from_project(dir.path());
         assert_eq!(s.prompt_token_threshold, 4000);
+        assert_eq!(
+            s.skill_token_threshold, 3000,
+            "R01's default comes from the measured p90 of 460 real skills"
+        );
         assert!((s.activation_similarity - 0.6).abs() < f64::EPSILON);
         assert_eq!(s.deep_prompt_truncation, 2000);
         assert!(

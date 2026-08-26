@@ -65,10 +65,6 @@ pub struct ImportedSkill {
     /// A count, not the body: `R01` only asks how big the file is, and
     /// loading a whole SKILL.md into the audit context to answer that would be
     /// the very defect the R family exists to measure.
-    // Scaffold: written here, read by `R01` once it lands — remove this
-    // attribute then. `expect` cannot be used: the field IS read by the
-    // reverse tests, so the expectation would be unfulfilled under `--tests`.
-    #[allow(dead_code)]
     pub body_tokens: usize,
     pub issues: Vec<ParseIssue>,
     /// Frontmatter fields we do not type (kept verbatim for --propose and
