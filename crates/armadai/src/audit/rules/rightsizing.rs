@@ -1,8 +1,14 @@
 //! Family `R` — rightsizing: the cost of the context loaded by default.
 //!
 //! Where the `A` rules judge one asset's own quality, `R` asks what every
-//! invocation pays for. Same shape as every other family: each rule is a pure
-//! function of [`AuditContext`], and the reverse pass is what read the disk.
+//! invocation pays for. Same shape as every other family — each rule is a
+//! function of [`AuditContext`] alone — with one departure: two `R` rules are
+//! not *pure*. `R01` asks whether a skill directory holds a non-empty
+//! `references/`, `R02` whether a cited path exists; both are questions about
+//! the disk, and the reverse pass cannot answer either without carrying a
+//! directory listing it has no other use for. Between them they make exactly
+//! two kinds of filesystem access, documented on [`has_references`] and
+//! [`index_source_files`]. Every other family reads nothing.
 
 use std::path::Path;
 
@@ -11,10 +17,11 @@ use super::{AuditContext, Finding, Severity};
 /// R01 — a `SKILL.md` past the token threshold whose skill directory has no
 /// `references/` at all.
 ///
-/// Size alone is a bad signal, measured: across 460 real skills, 46% of those
-/// above the p90 have a `references/` directory against 67% below it — large
-/// skills are *more* often split. So both conditions are required, which is
-/// also what keeps a correctly-structured 41795-word skill out of the report.
+/// Size alone is a bad signal, measured: across 460 real skills, 52% of those
+/// above the p90 have a `references/` directory against 32% below it — large
+/// skills are *more* often split, not less. So both conditions are required,
+/// which is also what keeps a correctly-structured 41795-word skill out of
+/// the report.
 ///
 /// Counterpart of `A05` for skills (`A05` covers agents' `system_prompt`).
 /// `A09` validates a skill's structure but never its size.
@@ -40,7 +47,8 @@ pub(super) fn r01_oversized_skill(ctx: &AuditContext) -> Vec<Finding> {
             ),
             suggestion: Some(
                 "split the detail into references/ — the Agent Skills standard loads those on \
-                 demand, and armadai already installs them (core/skill.rs)"
+                 demand, and armadai already installs them \
+                 (crates/armadai-core/src/skill.rs)"
                     .to_string(),
             ),
         })
@@ -52,10 +60,11 @@ pub(super) fn r01_oversized_skill(ctx: &AuditContext) -> Vec<Finding> {
 /// and neither is a plain file that happens to be named `references`:
 /// `read_dir` fails on both, which is exactly the answer we want.
 ///
-/// The only filesystem read any *rule* makes (the other one in this tree is
-/// `AuditSettings::from_project` loading config), and unavoidable: "is this
-/// skill split" is a question about the disk, and the reverse pass cannot
-/// answer it without carrying a directory listing it has no other use for.
+/// One of the two filesystem accesses the rules make — a single `read_dir`
+/// per skill; the other is [`index_source_files`]'s walk, for `R02`. It is
+/// unavoidable: "is this skill split" is a question about the disk, and the
+/// reverse pass cannot answer it without carrying a directory listing it has
+/// no other use for.
 ///
 /// A relative `source_path` resolves against the process cwd — measured. That
 /// is correct for `armadai audit <relative-path>`, since the reverse pass read
@@ -73,10 +82,23 @@ fn has_references(skill_md: &Path) -> bool {
 /// Extensions that turn a backticked token into a claim about a file rather
 /// than a piece of prose. Read through [`Path::extension`], so a bare `.md`
 /// (which has no extension, only a leading dot) never qualifies.
+///
+/// This list is also `R02`'s largest blind spot, and it is deliberate: a
+/// citation of `scripts/deploy.py`, `web/ui/src/App.svelte`, `src/main.go`,
+/// `pkg/x.java` or `styles/app.css` is dropped in silence, so in a project
+/// written in any of those languages the rule is inert (measured). Widening
+/// it is not free — every extension added is a new false-positive surface,
+/// and the eight below are the only ones whose false-positive rate has been
+/// measured. A false negative was the safer default to ship.
 const SOURCE_EXT: [&str; 8] = ["rs", "toml", "md", "yaml", "yml", "json", "sh", "ts"];
 
 /// Directory names the index never descends into: build output and vendored
 /// trees, which hold no path anyone cites and can dwarf the source tree.
+///
+/// The skip costs one false positive, characterized by
+/// `r02_does_not_resolve_through_a_skipped_directory`: a real file under one
+/// of these, cited relative to its crate rather than to the audited root, is
+/// reported as nonexistent because only the index resolves that form.
 const SKIPPED_DIRS: [&str; 6] = [".git", "target", "node_modules", "dist", "build", ".venv"];
 
 /// Depth cap for the index walk — deeper than any real source tree, shallow
@@ -117,6 +139,17 @@ const MAX_INDEX_DEPTH: u32 = 16;
 /// - A path-shaped *convention* (`.armadai/agents.yaml` in a repo that ships
 ///   no example of one) is reported. Nothing short of reading the sentence
 ///   distinguishes it from a location claim.
+/// - A real path containing a template character is silenced with the
+///   templates: `app/[id]/route.ts`, the framework dynamic-route form, reads
+///   exactly like the `[version]/notes.md` metavariable that
+///   [`is_placeholder`] exists to drop. Another false negative, taken
+///   knowingly — the alternative is the measured `{userData}/config.json`
+///   false positive.
+/// - Only backtick fences are tracked. A `~~~` fence or a block indented by
+///   four spaces is read as prose, so a path cited inside one can be
+///   reported. Compared against a tracker handling all three over the 234
+///   markdown files of this repository: **0 difference**, so the risk is
+///   constructed rather than observed and the simpler tracker stays.
 pub(super) fn r02_stale_path(ctx: &AuditContext) -> Vec<Finding> {
     let Some(instructions) = &ctx.config.instructions else {
         return Vec::new();
@@ -167,9 +200,11 @@ fn resolves(base: &Path, index: &[std::path::PathBuf], cited: &str) -> bool {
 /// without one — so the index stays a fraction of the tree (505 of 600 files
 /// on this repo, measured).
 ///
-/// The one filesystem walk any rule performs, and unavoidable: "does this
-/// path exist" is a question about the disk, and the reverse pass cannot
-/// answer it without carrying a full listing it has no other use for.
+/// The only *recursive* walk any rule performs — [`has_references`] makes the
+/// other access, one `read_dir` per skill. It is unavoidable for the same
+/// reason: "does this path exist" is a question about the disk, and the
+/// reverse pass cannot answer it without carrying a full listing it has no
+/// other use for.
 fn index_source_files(base: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     collect_source_files(base, MAX_INDEX_DEPTH, &mut out);
@@ -269,10 +304,20 @@ fn strip_line_reference(candidate: &str) -> &str {
 /// as a path to any naive extractor.
 fn is_placeholder(candidate: &str) -> bool {
     const PLACEHOLDER_ROOTS: [&str; 4] = ["path", "foo", "bar", "example"];
+    // Characters that only ever appear in a path *template*: brace
+    // interpolation (`{userData}/config.json`, `{{project}}/armadai.yaml`),
+    // a shell or Windows variable (`$HOME/...`, `${XDG_CONFIG_HOME}/...`,
+    // `%APPDATA%/...`) and a bracketed metavariable (`[version]/notes.md`).
+    // Measured: `{userData}/config.json` was a live false positive on a real
+    // project's `CLAUDE.md`.
+    const TEMPLATE_CHARS: [char; 6] = ['{', '}', '$', '%', '[', ']'];
     candidate.contains(' ')
         || candidate.contains('<')
         || candidate.contains('*')
         || candidate.contains("...")
+        || candidate.contains(TEMPLATE_CHARS)
+        // A `:name` component is a route/metavariable, not a directory.
+        || candidate.split('/').any(|c| c.starts_with(':'))
         || candidate
             .split('/')
             .next()
@@ -415,7 +460,8 @@ mod tests {
             f[0].message
         );
         assert!(
-            f[0].message.contains("3000"),
+            f[0].message
+                .contains(&settings.skill_token_threshold.to_string()),
             "the message must carry the threshold it was judged against: {}",
             f[0].message
         );
@@ -429,6 +475,41 @@ mod tests {
         let config = config_of(vec![skill_on_disk(dir.path(), "light", 700)]);
         let settings = AuditSettings::default();
         assert!(r01_oversized_skill(&ctx_for(&config, &settings)).is_empty());
+    }
+
+    /// The threshold is a strict bound — the report says "exceeds". Without
+    /// this case, relaxing `>` into `>=` passes the whole suite.
+    #[test]
+    fn r01_is_silent_at_exactly_the_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = AuditSettings::default();
+        let config = config_of(vec![skill_on_disk(
+            dir.path(),
+            "exact",
+            settings.skill_token_threshold,
+        )]);
+        assert!(
+            r01_oversized_skill(&ctx_for(&config, &settings)).is_empty(),
+            "at exactly the threshold nothing is exceeded, so R01 stays silent"
+        );
+    }
+
+    /// The other side of the same bound: one token past it does fire, so the
+    /// test above cannot be satisfied by a rule that never fires at all.
+    #[test]
+    fn r01_fires_one_token_past_the_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = AuditSettings::default();
+        let config = config_of(vec![skill_on_disk(
+            dir.path(),
+            "over",
+            settings.skill_token_threshold + 1,
+        )]);
+        assert_eq!(
+            r01_oversized_skill(&ctx_for(&config, &settings)).len(),
+            1,
+            "one token past the threshold is past it"
+        );
     }
 
     #[test]
@@ -636,6 +717,46 @@ mod tests {
         );
     }
 
+    /// Measured false positive: `/Users/…/work/conceptions/refonte-front/CLAUDE.md`
+    /// line 128 reads ``- macOS/Linux: `{userData}/config.json` `` — an
+    /// Electron path template. R02 reported it as a path that does not exist.
+    /// Brace interpolation, shell and Windows variables and bracketed
+    /// metavariables are all templates, never locations.
+    #[test]
+    fn r02_ignores_a_path_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = instructions_saying(
+            dir.path(),
+            "Electron: `{userData}/config.json`. Handlebars: `{{project}}/armadai.yaml`. \
+             Shell: `$HOME/.config/tool.yaml`. Braced: `${XDG_CONFIG_HOME}/tool/conf.toml`. \
+             Windows: `%APPDATA%/tool/conf.json`. Bracketed: `[version]/notes.md`. \
+             Route: `:owner/:repo.md`.",
+        );
+        assert_eq!(
+            cited_in(&r02_on(&config)),
+            Vec::<&str>::new(),
+            "a path template describes a shape, not a file"
+        );
+    }
+
+    /// The guard above must not swallow a real citation that merely sits next
+    /// to one, on the same line — otherwise it buys precision with recall.
+    #[test]
+    fn r02_still_flags_a_real_stale_path_beside_a_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = instructions_saying(
+            dir.path(),
+            "Config is at `{userData}/config.json`, the engine at `src/gone/mod.rs`.",
+        );
+        let f = r02_on(&config);
+        assert_eq!(f.len(), 1, "got {:?}", cited_in(&f));
+        assert!(
+            f[0].message.contains("src/gone/mod.rs"),
+            "the real stale path must survive the template guard: {}",
+            f[0].message
+        );
+    }
+
     #[test]
     fn r02_ignores_backticked_prose_that_is_not_a_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -770,6 +891,40 @@ mod tests {
         let config = instructions_saying(dir.path(), "Commands live in `li/mod.rs`.");
         let f = r02_on(&config);
         assert_eq!(f.len(), 1, "got {:?}", cited_in(&f));
+    }
+
+    /// Characterization of what [`SKIPPED_DIRS`] costs, and the only cover it
+    /// has: replacing the list with a sentinel otherwise leaves the suite
+    /// green. The index does not descend into build output, so a real file
+    /// there is invisible to suffix resolution — and a citation relative to
+    /// its crate (the form the suffix branch exists for) is reported as
+    /// nonexistent. Accepted: build output holds no path a human cites, and
+    /// the same walk is what keeps `target/` and `node_modules/` from
+    /// dwarfing the index.
+    #[test]
+    fn r02_does_not_resolve_through_a_skipped_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "crates/app/dist/bundle.ts");
+        let config = instructions_saying(dir.path(), "The bundle is at `dist/bundle.ts`.");
+        let f = r02_on(&config);
+        assert_eq!(
+            f.len(),
+            1,
+            "a file under a skipped directory is not indexed, so the crate-relative \
+             citation resolves nowhere; got {:?}",
+            cited_in(&f)
+        );
+    }
+
+    /// The control for the case above: the very same citation, one directory
+    /// name away from a skipped one, does resolve. Without it, the test above
+    /// would also pass on a rule that never resolves anything.
+    #[test]
+    fn r02_resolves_through_a_directory_that_is_not_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "crates/app/dists/bundle.ts");
+        let config = instructions_saying(dir.path(), "The bundle is at `dists/bundle.ts`.");
+        assert_eq!(cited_in(&r02_on(&config)), Vec::<&str>::new());
     }
 
     #[test]

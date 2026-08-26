@@ -1,6 +1,6 @@
 //! Black-box coverage for the `R` (rightsizing) rules, on the real binary.
 //!
-//! The 36 unit tests in `audit/rules/rightsizing.rs` call the rule functions
+//! The 42 unit tests in `audit/rules/rightsizing.rs` call the rule functions
 //! directly, on a hand-built `AuditContext`. They cannot see the chain that
 //! actually delivers a finding to a user: `cli::audit::execute` → reverse pass
 //! → `AuditSettings::from_project` → `run_rules` → `print_terminal`. A rule can
@@ -183,19 +183,31 @@ mod tests {
     // -- R01 ----------------------------------------------------------------
 
     /// The token count in the report is computed by the reverse pass from the
-    /// bytes on disk: 16 040 chars / 4 = 4010. No fixture supplies it, and no
+    /// bytes on disk: 20 040 chars / 4 = 5010. No fixture supplies it, and no
     /// unit test can — they all hand `body_tokens` to the rule directly.
+    ///
+    /// The wording fragment is load-bearing too: a skill body is not loaded on
+    /// every invocation, it is loaded when the skill *triggers*, and that
+    /// correction (`ce7fd30`) was protected by nothing until this needle.
     #[test]
     fn r01_sizes_an_oversized_skill_from_the_file_on_disk() {
         let sb = Sandbox::new();
-        sb.write(".claude/skills/heavy/SKILL.md", &skill_md("heavy", 16_040));
+        sb.write(".claude/skills/heavy/SKILL.md", &skill_md("heavy", 20_040));
 
         let out = sb.audit_project();
         out.ran();
-        // 4010 > the default 3000, and both numbers must appear: the count
+        // 5010 > the default 4000, and both numbers must appear: the count
         // proves the file was measured, the threshold proves which setting
         // judged it.
-        out.line_with("R01", &["heavy", "~4010 tokens", "(threshold 3000)"]);
+        out.line_with(
+            "R01",
+            &[
+                "heavy",
+                "~5010 tokens",
+                "(threshold 4000)",
+                "as soon as the skill triggers",
+            ],
+        );
     }
 
     /// Two oversized skills, one split and one not, audited through a
@@ -207,8 +219,8 @@ mod tests {
     #[test]
     fn r01_spares_the_split_skill_under_a_relative_root() {
         let sb = Sandbox::new();
-        sb.write(".claude/skills/heavy/SKILL.md", &skill_md("heavy", 16_040));
-        sb.write(".claude/skills/split/SKILL.md", &skill_md("split", 16_040));
+        sb.write(".claude/skills/heavy/SKILL.md", &skill_md("heavy", 20_040));
+        sb.write(".claude/skills/split/SKILL.md", &skill_md("split", 20_040));
         sb.write(".claude/skills/split/references/detail.md", "detail");
 
         // cwd = sandbox root, target = "project": every path the reverse pass
@@ -271,6 +283,9 @@ mod tests {
                 "~300 tokens",
                 "100 from the instructions file",
                 "200 across 2 skill(s)",
+                // Same correction as R01's, on the rule that words the
+                // three-tier distinction explicitly.
+                "each loaded whole when it triggers",
             ],
         );
         // Neither skill is anywhere near the default threshold, so the Info
@@ -284,7 +299,7 @@ mod tests {
     /// through the real command.
     ///
     /// Two runs on the same fixture, differing only by `armadai.yaml`. The
-    /// first is the control: at 200 tokens the skill is far below the 3000
+    /// first is the control: at 200 tokens the skill is far below the 4000
     /// default, so the finding in the second run can only come from the config
     /// being read, parsed, and carried into the rule.
     #[test]

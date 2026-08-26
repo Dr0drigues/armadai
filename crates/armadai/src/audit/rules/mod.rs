@@ -50,7 +50,12 @@ pub struct AuditSettings {
     pub prompt_token_threshold: usize,
     /// R01: estimated token count above which a skill with no `references/`
     /// is flagged. Default derived from a measured distribution: 460 real
-    /// SKILL.md files give a p90 of 2224 words, ~3000 tokens at chars/4.
+    /// SKILL.md files give a p90 of 2224 words, and the same corpus measures
+    /// **1.84 tokens per word** (median) under the `chars/4` estimate — so
+    /// the p90 is ~4100 tokens, and the p90 of the token distribution read
+    /// directly is 3956. Hence 4000. An earlier 3000 came from assuming one
+    /// token per word — 36% low, and measured on the corpus it flagged 54 of
+    /// the 460 (11.7%) where the p90 criterion promises ~4.6%.
     pub skill_token_threshold: usize,
     /// C03: Jaccard similarity above which two activation descriptions are
     /// considered ambiguous for routing.
@@ -69,7 +74,7 @@ impl Default for AuditSettings {
     fn default() -> Self {
         Self {
             prompt_token_threshold: 4000,
-            skill_token_threshold: 3000,
+            skill_token_threshold: 4000,
             activation_similarity: 0.6,
             deep_prompt_truncation: 2000,
             usage: true,
@@ -298,8 +303,9 @@ mod tests {
         let s = AuditSettings::from_project(dir.path());
         assert_eq!(s.prompt_token_threshold, 4000);
         assert_eq!(
-            s.skill_token_threshold, 3000,
-            "R01's default comes from the measured p90 of 460 real skills"
+            s.skill_token_threshold, 4000,
+            "R01's default is the measured p90 of 460 real skills, converted at the \
+             corpus's own 1.84 tokens/word — changing it must be a deliberate act"
         );
         assert!((s.activation_similarity - 0.6).abs() < f64::EPSILON);
         assert_eq!(s.deep_prompt_truncation, 2000);
