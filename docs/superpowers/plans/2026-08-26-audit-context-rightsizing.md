@@ -374,7 +374,7 @@ git commit -m "feat(audit): add R01, flagging an oversized skill with no referen
 
 ---
 
-## Lessons from Tasks 1-2 — apply to every remaining task
+## Lessons from Tasks 1-4 — apply to every remaining task
 
 Measured by executing this plan, not by reading it. Each of these was a real gap in the task
 as written, so assume the same gaps in yours.
@@ -404,6 +404,42 @@ would have left it green. Use real tempdirs; `rightsizing.rs` now has a `skill_o
 **The plan's own assertions can be unfalsifiable.** Task 1 found `assert!(body_tokens >= 100)`
 staying green under the mutation it was written to catch, because the body alone is exactly 100
 tokens. Prefer exact equality with the arithmetic in a comment.
+
+**A negative fixture must contain a token that only the filter under test rejects.** Measured in
+Task 3: `r02_ignores_paths_inside_a_code_fence` first cited a *bare* path inside the fence, and a
+bare path is no candidate to begin with — removing the fence tracking left the test green. Same
+shape as the Task 1 defect, one level up: the fixture, not the assertion. For every filter, ask
+what makes the fixture a candidate *before* that filter runs.
+
+**A filter can be redundant with another, and then its mutation kills nothing.** Task 3's
+"a path must have a directory part" was fully shadowed by the host-shape rejection for
+`armadai.yaml` (a dot in the first component). Only a dotfile with a real extension
+(`.mcp.json`) reaches it. Two filters that never disagree are one filter plus dead code — find
+the input that separates them, or drop one.
+
+**Measure a heuristic rule against the real corpus before writing its tests.** Task 3's
+implementation as sketched in the plan produced **23 findings on this repo's own `CLAUDE.md`, 22
+of them false**, and 24 (9 false) on the pre-#382 one. The shipped filters were derived from that
+run. Unit tests on invented fixtures would have shipped all 22: every one of them passed the
+plan's filters *by design*.
+
+**A "sanity read" step can carry a false expectation.** Task 3's Step 6 asserted R02 must report
+nothing on this repo. It reports exactly one thing, and the finding is **true**: `CLAUDE.md:80`
+still says the Provider trait is in `providers/traits.rs`, while it is in
+`crates/armadai-core/src/provider.rs` and no `traits.rs` exists anywhere in the tree (`find`,
+0 hits). #382 rewrote the module map and carried that line over. The rule's first real catch is a
+one-day-old stale path — left in place deliberately, so the finding is visible rather than
+quietly patched away. Fixing it is a one-line `docs:` change and belongs to whoever owns
+`CLAUDE.md`.
+
+**A skill's body does not load on every invocation, and the report must not say it does.** The
+Agent Skills standard is three-level: metadata always, the `SKILL.md` body when the skill
+triggers, bundled files on demand. R04's message was reworded accordingly (instructions "on every
+invocation", skills "each loaded whole when it triggers"). **R01's message still reads "so all of
+it loads on every invocation"** — same inaccuracy, shipped in Task 2, not corrected here because
+it is outside Tasks 3-4's scope. Task 5 must not restate it in `docs/wiki/audit.md`; the accurate
+claim is that a skill body is loaded *whole* the moment the skill triggers, so its size is a cost
+the author commits to at that point.
 
 ---
 
@@ -606,9 +642,27 @@ Restore after each and record the outputs.
 
 - [ ] **Step 6: Run it against this repo's own CLAUDE.md**
 
-Not an assertion, a sanity read: `cargo run --bin armadai -- audit` and check `R02` reports
-nothing on the current tree (PR #382 fixed the stale paths). If it reports something, either
-the tree regressed or a filter is too narrow — investigate before continuing.
+Not an assertion, a sanity read: `cargo run --bin armadai -- audit`.
+
+**Measured outcome, correcting this step's original expectation** ("R02 reports nothing, #382
+fixed the stale paths"): R02 reports **one** finding, and it is a **true positive** —
+`CLAUDE.md:80` places the Provider trait at `providers/traits.rs`, which exists nowhere
+(`find` over the tree, `.git`/`target` excluded: 0 hits); the trait is at
+`crates/armadai-core/src/provider.rs:47`. #382 rewrote the module map and carried that one line
+over. Verdict: the rule is right, the file is stale. Left unfixed on purpose so the finding stays
+visible; the fix is one line and is not part of Tasks 3-4.
+
+The same run also showed that **the `cited_paths` sketched in Step 1 is not shippable**: it
+reports 23 paths on this `CLAUDE.md`, 22 false — crate-relative fragments (`cli/`, `web/`,
+`parser/`, `test_support/`, …), user-config paths (`~/.config/armadai/`), a bare extension
+(`.md`), a bare convention filename (`armadai.yaml`), a module directory
+(`core/orchestration/es/`). See the shipped `rightsizing.rs` for what replaced it: a path must
+carry a directory part *and* a real source extension (via `Path::extension`, so a bare `.md`
+never qualifies) and must not be absolute, home-relative or URL-shaped; and resolution is
+root-relative **or** a whole-component suffix anywhere in the tree, because a multi-crate repo
+cites modules relative to their crate. Measured on the pre-#382 `CLAUDE.md`, suffix resolution
+reports 16 stale paths with no crate-prefix false positive where root-only reports 24 with 9
+false — and it catches the exact family #382 called INTROUVABLES (`core/*.rs`, `storage/*.rs`).
 
 - [ ] **Step 7: Commit**
 
@@ -619,7 +673,10 @@ git commit -m "feat(audit): add R02, flagging a cited path that does not exist"
 
 ---
 
-### Task 4: `R04` — weight of the always-loaded context
+### Task 4: `R04` — weight of the front-loaded context
+
+> Titled "always-loaded" in the original plan. Renamed on measurement: only the instructions
+> file is always loaded. See the last lesson above.
 
 **Files:**
 - Modify: `crates/armadai/src/audit/rules/rightsizing.rs`
