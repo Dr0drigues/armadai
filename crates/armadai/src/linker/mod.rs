@@ -81,6 +81,27 @@ pub trait Linker: Send + Sync {
     ) -> Vec<OutputFile>;
 }
 
+/// Every target `create_linker` can build, as a comma-separated list for an
+/// error message.
+///
+/// Derived from `LinkTarget` rather than typed out. Three separate messages
+/// (`create_linker`, `link`, `unlink`) each carried their own copy of the
+/// five names — the same shape as the `Unknown provider` message that had
+/// silently stopped advertising `proxy` (issue #369). A target added to the
+/// enum now reaches all three at once.
+pub fn supported_target_names() -> Vec<&'static str> {
+    use clap::ValueEnum;
+    LinkTarget::value_variants()
+        .iter()
+        .map(|t| t.as_str())
+        .collect()
+}
+
+/// The sentence every "no/unknown target" message ends with.
+pub fn supported_targets_sentence() -> String {
+    format!("Supported targets: {}", supported_target_names().join(", "))
+}
+
 /// Create a linker for the given target name.
 pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
     match target {
@@ -90,7 +111,8 @@ pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
         "gemini" => Ok(Box::new(GeminiLinker)),
         "opencode" => Ok(Box::new(OpencodeLinker)),
         _ => anyhow::bail!(
-            "Unknown link target: '{target}'. Supported targets: claude, codex, copilot, gemini, opencode"
+            "Unknown link target: '{target}'. {}",
+            supported_targets_sentence()
         ),
     }
 }
@@ -302,6 +324,28 @@ mod tests {
                 sorted(crate::cli::new::WIZARD_PROVIDER_CHOICES.to_vec()),
                 sorted(accepted_provider_names())
             );
+        }
+
+        /// The names the "unknown target" messages advertise must be the
+        /// names `create_linker` can actually build.
+        ///
+        /// `link` and `unlink` print the same sentence from the same helper,
+        /// so this covers all three sites; before, each carried its own copy
+        /// of the five names.
+        #[test]
+        fn every_advertised_link_target_can_actually_be_built() {
+            for name in supported_target_names() {
+                let linker = create_linker(name)
+                    .unwrap_or_else(|e| panic!("target '{name}' is advertised but: {e}"));
+                assert_eq!(linker.name(), name);
+            }
+            let err = match create_linker("kilocode") {
+                Ok(_) => panic!("an unknown target must be refused"),
+                Err(e) => e.to_string(),
+            };
+            for name in supported_target_names() {
+                assert!(err.contains(name), "refusal must advertise '{name}': {err}");
+            }
         }
 
         /// And a fifth: the model-resolution preview shown in the TUI's agent
