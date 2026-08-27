@@ -4,7 +4,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::{
-    ImportedAgent, ImportedConfig, ImportedInstructions, ImportedSkill, ParseIssue,
+    AgentFormat, ImportedAgent, ImportedConfig, ImportedInstructions, ImportedSkill, ParseIssue,
     PartialMetadata, ReverseLinker,
 };
 use armadai_core::parser::frontmatter::extract_frontmatter;
@@ -191,6 +191,7 @@ fn parse_agent_file(path: &Path) -> ImportedAgent {
                 metadata: PartialMetadata::default(),
                 system_prompt: String::new(),
                 issues: vec![issue(path, format!("unreadable file: {e}"))],
+                format: AgentFormat::ClaudeFrontmatter,
             };
         }
     };
@@ -223,6 +224,7 @@ fn parse_agent_file(path: &Path) -> ImportedAgent {
         },
         system_prompt: body.trim().to_string(),
         issues,
+        format: AgentFormat::ClaudeFrontmatter,
     }
 }
 

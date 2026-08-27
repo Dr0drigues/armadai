@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+pub mod armadai;
 pub mod claude;
 
 /// Metadata recovered from a native agent file. Everything is optional:
@@ -41,6 +42,41 @@ pub struct ParseIssue {
     pub message: String,
 }
 
+/// Which on-disk format an agent was read from.
+///
+/// Not decoration: it is what lets a rule ask "could this file have declared
+/// the thing I am about to report as missing?". `A08` reports agents that
+/// inherit every tool, and an ArmadAI-format file has no syntax for a tool
+/// list at all — so an ArmadAI library would score 100% "permissive" on a
+/// property it cannot express, and mixing one native agent into it would flip
+/// that Info into a fleet-wide Warning. That is a finding produced by the
+/// reader, not by the fleet.
+///
+/// Scope is deliberately *not* available to rules (see [`AuditScope`]); format
+/// is, and the two are different questions: scope is where a file was found,
+/// format is what the file can say.
+///
+/// [`AuditScope`]: crate::audit::AuditScope
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentFormat {
+    /// Native Claude Code: YAML frontmatter (`name`, `description`, `tools`…).
+    ClaudeFrontmatter,
+    /// ArmadAI: `# H1` + `## Metadata` + `## System Prompt`.
+    Armadai,
+}
+
+impl AgentFormat {
+    /// Can a file in this format restrict which tools the agent may use?
+    ///
+    /// `AgentMetadata` carries no tool list, and neither does the
+    /// `## Metadata` grammar `parser::metadata` accepts, so the answer for
+    /// ArmadAI is no — and a rule about tool restrictions has nothing to say
+    /// about such a file.
+    pub fn declares_tools(self) -> bool {
+        matches!(self, Self::ClaudeFrontmatter)
+    }
+}
+
 /// An agent imported from a native config.
 #[derive(Debug, Clone)]
 pub struct ImportedAgent {
@@ -49,6 +85,8 @@ pub struct ImportedAgent {
     pub metadata: PartialMetadata,
     pub system_prompt: String,
     pub issues: Vec<ParseIssue>,
+    /// What the file it came from is able to declare — see [`AgentFormat`].
+    pub format: AgentFormat,
 }
 
 /// A skill imported from a native config (Agent Skills standard layout).

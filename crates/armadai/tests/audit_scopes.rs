@@ -344,38 +344,338 @@ mod tests {
         );
     }
 
-    /// `~/.config/armadai/agents` holds ArmadAI-format agents, not native
-    /// Claude Code frontmatter. Measured on a real 77-agent library, reading
-    /// them through this reverse pass yields 77 `A01` criticals and a non-zero
-    /// exit on a healthy library. They are skipped — and *named*, so the
-    /// report never reads as "you have no agents".
+    /// An ArmadAI-format agent: no frontmatter anywhere, `## Metadata` as
+    /// `- key: value` lines. `prompt` becomes the first line of
+    /// `## System Prompt`, which is the description ArmadAI publishes; `extra`
+    /// is appended verbatim so a case can add its own sections.
+    ///
+    /// // Deliberately flat: this fixture predates #394, when a section ended at
+    // the next heading of *any* level. It stays flat so the assertions below
+    // measure the adapter, not the parser fix.
+    fn armadai_agent(title: &str, prompt: &str, extra: &str) -> String {
+        format!(
+            "# {title}\n\n## Metadata\n- provider: claude\n- model: latest:pro\n\n\
+             ## System Prompt\n\n{prompt}\n{extra}"
+        )
+    }
+
+    /// `~/.config/armadai/agents` holds ArmadAI-format agents — `# H1` +
+    /// `## Metadata` + `## System Prompt`, no YAML frontmatter anywhere.
+    /// Measured on a real 77-agent library, reading them through the *Claude
+    /// Code* reverse pass yielded 77 `A01` criticals and a non-zero exit on a
+    /// healthy library, which is why the surface was excluded and merely named.
+    /// Since #391 it is read, through the product's own parser (issue #391).
+    ///
+    /// Four claims in one run, because they are the feature: the agents are
+    /// counted, they produce no `A01`, the `Not read:` line about them is gone,
+    /// and the *other* `Not read:` lines are untouched — removing the note is
+    /// only correct for the surface that stopped being skipped.
     #[test]
-    fn global_names_the_armadai_agent_library_it_skips() {
+    fn global_reads_the_armadai_agent_library_it_used_to_only_name() {
         let s = Sandbox::new();
         for name in ["agent-builder", "dev-lead", "qa"] {
             s.write(
                 &format!("home/.config/armadai/agents/{name}.md"),
-                "# Name\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nHi.",
+                &armadai_agent(name, &format!("You are the {name}."), ""),
             );
         }
         s.write(
-            "home/.claude/skills/mine/SKILL.md",
-            "---\nname: mine\ndescription: d\n---\nB.",
+            "home/.config/armadai/registry/borrowed/SKILL.md",
+            "---\nname: borrowed\ndescription: d\n---\nB.",
         );
 
         let out = s.run(&["--global"]);
         out.ran();
         assert!(
             out.success,
-            "an ArmadAI-format library is not a critical finding:\n{}\n{}",
+            "a healthy ArmadAI library must not fail the command:\n{}\n{}",
             out.stdout, out.stderr
         );
-        let line = out.line_with("Not read:", &["armadai/agents", "3 file(s)"]);
-        assert!(
-            line.contains("native Claude Code"),
-            "the note must say why, got: {line}"
+        out.line_with("Detected:", &["3 agent(s)"]);
+        out.has_no_line_with("A01", &["agent-builder"])
+            .has_no_line_with("A01", &["dev-lead"])
+            .has_no_line_with("A01", &["qa"])
+            .has_no_line_with("Not read:", &["armadai/agents"]);
+        // The control: the notes for the surfaces still skipped must survive.
+        out.line_with("Not read:", &["armadai/registry"]);
+    }
+
+    /// The prose an ArmadAI agent carries is up to four sections, and 60 of the
+    /// 77 measured agents put most of it under `## Instructions`. The prompt
+    /// here is one line; only counting `## Instructions` too crosses `A05`.
+    ///
+    /// This is what makes the wiring visible end to end: the agent is read
+    /// (`Detected: 1 agent(s)`) either way, but the size finding only appears
+    /// if the body the audit measures is the body a linked config would carry.
+    #[test]
+    fn the_prompt_a_global_armadai_agent_is_measured_on_is_its_whole_body() {
+        let s = Sandbox::new();
+        s.write(
+            "home/.config/armadai/agents/fat.md",
+            &armadai_agent(
+                "fat",
+                "You do things.",
+                &format!("\n## Instructions\n\n{}\n", "word ".repeat(5_000)),
+            ),
         );
-        out.has_no_line_with("A01", &["agent-builder"]);
+        s.write(
+            "home/.config/armadai/agents/lean.md",
+            &armadai_agent("lean", "You do fewer things.", ""),
+        );
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["2 agent(s)"]);
+        out.line_with("A05", &["fat"]);
+        out.has_no_line_with("A05", &["lean"]);
+    }
+
+    /// The description an ArmadAI agent is judged on is the one `armadai link`
+    /// publishes for it — the first non-empty line of its system prompt, the
+    /// string that lands in `description:` in the generated
+    /// `.claude/agents/<slug>.md`. `AgentMetadata` has no `description` field,
+    /// so without that derivation `A02` would flag every agent in the library
+    /// (measured: 77 of 77) and `A07` could never fire at all.
+    /// The H1 titles here deliberately differ from the file stems, because the
+    /// report must name the agents the way they are *invoked*:
+    /// `project::resolve_agent` looks up `<dir>/<name>.md`, so the stem is what
+    /// `armadai run <name>` and an `@mention` resolve, and 6 of the 77 measured
+    /// agents have an H1 that slugifies to something else entirely.
+    #[test]
+    fn a_global_armadai_agent_is_judged_on_the_description_link_publishes() {
+        let s = Sandbox::new();
+        let shared = "You audit the Platodin backend for security and observability.";
+        for (stem, title) in [
+            ("platodin-java-lead", "Platodin Java Team Lead"),
+            ("platodin-node-lead", "Platodin Node Team Lead"),
+        ] {
+            s.write(
+                &format!("home/.config/armadai/agents/{stem}.md"),
+                &armadai_agent(title, shared, ""),
+            );
+        }
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["2 agent(s)"]);
+        let line = out.line_with("A07", &["'platodin-java-lead' and 'platodin-node-lead'"]);
+        assert!(
+            !line.contains("Platodin Java Lead"),
+            "the report must name the agent the way it is invoked, not by its \
+             H1 title, got: {line}"
+        );
+        out.has_no_line_with("A02", &["platodin-java-lead"])
+            .has_no_line_with("A02", &["platodin-node-lead"]);
+    }
+
+    /// `A02` and `A06` are the two rules the wiki claims "apply" to this
+    /// format and that nothing exercised on it: silencing either one for
+    /// `AgentFormat::Armadai` left the whole suite green (measured).
+    ///
+    /// `A02` fires on the *derived* description, so the only way an ArmadAI
+    /// file can leave a router nothing to match on is an empty
+    /// `## System Prompt`. The control is the sibling agent, which has one.
+    #[test]
+    fn a02_fires_on_the_one_armadai_shape_that_has_no_description() {
+        let s = Sandbox::new();
+        s.write(
+            "home/.config/armadai/agents/hollow.md",
+            "# Hollow\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\n\
+             ## Instructions\n\nDo things.\n",
+        );
+        s.write(
+            "home/.config/armadai/agents/solid.md",
+            &armadai_agent("solid", "You are the solid one.", ""),
+        );
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["2 agent(s)"]);
+        out.line_with("A02", &["'hollow'"]);
+        out.has_no_line_with("A02", &["'solid'"]);
+        // And it is A02, not A01: the file parses fine, it is just hollow.
+        out.has_no_line_with("A01", &["hollow"]);
+    }
+
+    /// `A06` is the rule the parser fix in #394 actually turns on for this
+    /// format: with `###` sub-sections no longer truncating a `##` section,
+    /// the real 77-agent library goes from 0 to 2 duplication clusters. The
+    /// shared block here sits under `## Instructions`, so this fails both if
+    /// `A06` stops seeing ArmadAI agents and if `prompt_text` stops carrying
+    /// the sections past `## System Prompt`.
+    #[test]
+    fn a06_sees_a_block_two_armadai_agents_share() {
+        let s = Sandbox::new();
+        let block: String = (1..=12)
+            .map(|i| format!("Convention line {i} of the shared team playbook.\n"))
+            .collect();
+        for name in ["twin-a", "twin-b"] {
+            s.write(
+                &format!("home/.config/armadai/agents/{name}.md"),
+                &armadai_agent(
+                    name,
+                    &format!("You are {name}, and you are not the other one."),
+                    &format!("\n## Instructions\n\n{block}"),
+                ),
+            );
+        }
+        s.write(
+            "home/.config/armadai/agents/loner.md",
+            &armadai_agent("loner", "You share nothing with anybody at all.", ""),
+        );
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["3 agent(s)"]);
+        out.line_with("A06", &["twin-a", "twin-b"]);
+        out.has_no_line_with("A06", &["loner"]);
+    }
+
+    /// `A08` reports agents that inherit every tool. An ArmadAI file has no
+    /// syntax for a tool list, so reporting it measures the reader: before the
+    /// format was recorded this printed `76/76 parsed agents inherit all
+    /// tools` on a real library, and one native agent among them would have
+    /// turned that Info into a fleet-wide Warning.
+    ///
+    /// The control is a second run over the same sandbox plus one *native*
+    /// permissive agent, which must produce a `1/1` — so the silence above is
+    /// the format filter and not a dead rule.
+    #[test]
+    fn a08_stays_silent_on_a_library_whose_format_cannot_declare_tools() {
+        let s = Sandbox::new();
+        for name in ["capitaine", "vigie"] {
+            s.write(
+                &format!("home/.config/armadai/agents/{name}.md"),
+                &armadai_agent(name, &format!("You are the {name}."), ""),
+            );
+        }
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["2 agent(s)"]);
+        out.has_no_line_with("A08", &["2/2"]);
+        assert!(
+            !out.stdout.contains("A08"),
+            "an all-ArmadAI library declares no tools at all:\n{}",
+            out.stdout
+        );
+
+        s.write(
+            "home/.claude/agents/open.md",
+            "---\nname: open\ndescription: Inherits everything\n---\nBody.",
+        );
+        let mixed = s.run(&["--global"]);
+        mixed.ran().line_with("A08", &["1/1"]);
+    }
+
+    /// Two rules read fields an ArmadAI `## Metadata` block must never be
+    /// routed into, and the measurement is what settles it:
+    ///
+    /// - `C02`/`C05` read path scopes from Claude Code's non-standard
+    ///   `paths:` frontmatter. ArmadAI's `- scope:` looks like it, but a
+    ///   *global* library holds agents for unrelated repositories — measured
+    ///   on the 77, feeding `scope` in yields 149 overlapping pairs, i.e. one
+    ///   cluster naming 31 agents (`src/main/java/**` for a Java service,
+    ///   `src/tui/` for ArmadAI itself) and no conflict at all.
+    /// - `A12` reports non-standard *frontmatter* keys, so `provider`,
+    ///   `model` and `tags` would be announced across the whole library.
+    ///
+    /// Both fixtures below carry the tokens that would trip those rules; the
+    /// control is the `Detected:` line, which proves the agents were read.
+    #[test]
+    fn armadai_metadata_never_reaches_the_frontmatter_rules() {
+        let s = Sandbox::new();
+        for (stem, scope) in [
+            ("rust-reviewer", "src/**/*.rs, tests/"),
+            ("core-specialist", "src/core/, src/parser/"),
+        ] {
+            s.write(
+                &format!("home/.config/armadai/agents/{stem}.md"),
+                &format!(
+                    "# {stem}\n\n## Metadata\n- provider: claude\n- model: latest:pro\n\
+                     - tags: [review]\n- scope: [{scope}]\n\n## System Prompt\n\n\
+                     You review {stem} things.\n"
+                ),
+            );
+        }
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["2 agent(s)"]);
+        assert!(
+            !out.stdout.contains("C02") && !out.stdout.contains("C05"),
+            "`- scope:` is a per-project routing hint, not a claim of ownership \
+             over one repository's paths:\n{}",
+            out.stdout
+        );
+        assert!(
+            !out.stdout.contains("A12"),
+            "ArmadAI `## Metadata` keys are not non-standard frontmatter:\n{}",
+            out.stdout
+        );
+    }
+
+    /// The critical the old exclusion hid. `my-agent.md` — a real file in the
+    /// measured library — is an `armadai new` stub that was never filled in:
+    /// `armadai run my-agent` cannot load it either, so it is a genuine defect
+    /// and the command must fail on it.
+    ///
+    /// And the advice has to be about *this* format: "fix the YAML
+    /// frontmatter" names a construct an ArmadAI agent does not have, which is
+    /// exactly what the first run of this feature printed.
+    #[test]
+    fn an_unloadable_armadai_agent_is_the_critical_the_exclusion_used_to_hide() {
+        let s = Sandbox::new();
+        s.write("home/.config/armadai/agents/my-agent.md", "# My Agent\n");
+        s.write(
+            "home/.config/armadai/agents/healthy.md",
+            &armadai_agent("healthy", "You work.", ""),
+        );
+
+        let out = s.run(&["--global"]);
+        out.ran();
+        assert!(
+            !out.success,
+            "an unloadable agent is a critical finding:\n{}\n{}",
+            out.stdout, out.stderr
+        );
+        let line = out.line_with("A01", &["my-agent"]);
+        assert!(
+            line.contains("Metadata"),
+            "the message must name what is missing, got: {line}"
+        );
+        // Asserted as a *present* line carrying the right words, never as
+        // "no line mentions frontmatter": a `find(...).unwrap_or("")` here
+        // passed happily when the advice was wrong, because the line it looked
+        // for had stopped existing.
+        out.line_with("->", &["H1 title", "## System Prompt"]);
+        out.has_no_line_with("->", &["frontmatter"]);
+        out.has_no_line_with("A01", &["healthy"]);
+    }
+
+    /// The scope separation has to hold for this surface like every other: the
+    /// user's library is not the repository's business. A project-scope run
+    /// from the same sandbox must not see the global agents, and the control is
+    /// the same fixture reported by `--global`.
+    #[test]
+    fn the_global_armadai_library_stays_out_of_a_project_report() {
+        let s = Sandbox::new();
+        s.write(
+            "home/.config/armadai/agents/capitaine.md",
+            &armadai_agent("capitaine", "You coordinate the fleet.", ""),
+        );
+        // A detectable project, so its own run produces a report at all.
+        s.write(
+            "work/.claude/agents/dev.md",
+            "---\nname: dev\ndescription: Develops\ntools: Read\n---\nShort.",
+        );
+
+        let project = s.run(&[]);
+        project.ran();
+        project.has_no_line_with("Detected:", &["2 agent(s)"]);
+        assert!(
+            !project.stdout.contains("capitaine"),
+            "the user's library is not this repository's business:\n{}",
+            project.stdout
+        );
+
+        s.run(&["--global"])
+            .ran()
+            .line_with("Detected:", &["1 agent(s)"]);
     }
 
     /// The plugin trees under `~/.claude` are the largest thing the pass does
@@ -673,6 +973,13 @@ mod tests {
             "the real home library must be unreachable from a sandboxed run:\n{}",
             out.stdout
         );
+        assert!(
+            !out.stdout.contains("agent(s)"),
+            "and since #391 the pass reads `~/.config/armadai/agents` too — the \
+             developer's own 77 agents must not appear here:\n{}",
+            out.stdout
+        );
         assert!(!Path::new(&s.home().join(".claude")).exists());
+        assert!(!Path::new(&s.home().join(".config/armadai/agents")).exists());
     }
 }

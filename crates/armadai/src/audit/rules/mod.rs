@@ -289,6 +289,26 @@ pub(crate) mod test_support {
             },
             system_prompt: prompt.to_string(),
             issues: Vec::new(),
+            format: AgentFormat::ClaudeFrontmatter,
+        }
+    }
+
+    /// The same shape read from an ArmadAI-format file: a description derived
+    /// from the prompt (the format has no `description` field), and no tool
+    /// list, because the format cannot express one.
+    pub fn armadai_agent(name: &str, prompt: &str) -> ImportedAgent {
+        ImportedAgent {
+            name: name.to_string(),
+            source_path: PathBuf::from(format!(".config/armadai/agents/{name}.md")),
+            metadata: PartialMetadata {
+                description: prompt.lines().next().map(str::to_string),
+                model: Some("latest:pro".to_string()),
+                tools: None,
+                extra: BTreeMap::new(),
+            },
+            system_prompt: prompt.to_string(),
+            issues: Vec::new(),
+            format: AgentFormat::Armadai,
         }
     }
 

@@ -25,7 +25,7 @@ Two scopes, because they answer different questions, have different owners, and 
 
 | | project scope (default) | global scope (`--global`) |
 |---|---|---|
-| reads | `<root>/.claude/agents/`, `<root>/.claude/skills/`, `<root>/CLAUDE.md` | `~/.claude/agents/`, `~/.claude/skills/`, `~/.claude/CLAUDE.md`, `~/.config/armadai/skills/` — **not** the plugin trees, see [What neither scope reads](#what-neither-scope-reads-and-why) |
+| reads | `<root>/.claude/agents/`, `<root>/.claude/skills/`, `<root>/CLAUDE.md` | `~/.claude/agents/`, `~/.claude/skills/`, `~/.claude/CLAUDE.md`, `~/.config/armadai/skills/`, `~/.config/armadai/agents/` — **not** the plugin trees, see [What neither scope reads](#what-neither-scope-reads-and-why) |
 | settings | `<root>/armadai.yaml` or `<root>/.armadai/config.yaml` | `~/.config/armadai/config.yaml` |
 | answers | what does *this repository* declare — what a team shares and a reviewer reads | what does *this user* carry into every session, wherever they work |
 | rules | every family, `U01`–`U04` included | every family **except** `U01`–`U04` |
@@ -40,7 +40,7 @@ Two scopes, because they answer different questions, have different owners, and 
 
 ### What neither scope reads, and why
 
-Six directories are left unread. Five of them get a `Not read:` line in the report — an asset pile the audit skips has to be a *stated* omission, or the report reads as "you have none". The sixth (`plugins/data/`) gets none, because it holds no asset at all; the reason is below. So the counts a global report prints are a **floor**, and the `Not read:` lines are what tell you by how much.
+Six directories are left unread. Five of them get a `Not read:` line in the report — an asset pile the audit skips has to be a *stated* omission, or the report reads as "you have none". The sixth (`plugins/data/`) gets none, because it holds no asset at all; the reason is below. (This arithmetic was one short until #391: a seventh, `~/.config/armadai/agents/`, was on the list. It is read now.) So the counts a global report prints are a **floor**, and the `Not read:` lines are what tell you by how much.
 
 Under `~/.claude`:
 
@@ -52,9 +52,48 @@ Under `~/.config/armadai`:
 
 - **`~/.config/armadai/registry/`** — a synced catalogue of *other people's* skills. Flagging them would be noise, and this directory is also what skewed `R01`'s original calibration: of the 461 `SKILL.md` files the threshold was derived from, **407 (88%)** came from here. Excluding it is a correctness fix, not an optimisation.
 - **`~/.config/armadai/starters/`** and **`~/.config/armadai/skills-registry/`** — starter packs and a second synced catalogue. Neither holds an asset that is installed, so neither is in anyone's context.
-- **`~/.config/armadai/agents/`** — ArmadAI-format agents (H1 + `## Metadata` + `## System Prompt`), not native Claude Code frontmatter. Measured on a real 77-agent library, reading them through this reverse pass produced **77 `A01` criticals** ("missing YAML frontmatter") and a non-zero exit on a perfectly healthy library. Reading them properly needs an ArmadAI-format reverse importer, which does not exist yet; until it does, the report says how many files it left alone rather than reporting zero agents.
+The exclusions are **structural**, not a blacklist: only `<config>/skills` and `<config>/agents` are ever read, so a redirected `$ARMADAI_CONFIG_DIR` moves them with it and a skill of your own that happens to be *named* `registry` is read normally.
 
-The exclusions are **structural**, not a blacklist: only `<config>/skills` is ever read, so a redirected `$ARMADAI_CONFIG_DIR` moves them with it and a skill of your own that happens to be *named* `registry` is read normally.
+`~/.config/armadai/agents/` used to be on this list, and is not any more — it is read, through a second reader. See [Two agent formats](#two-agent-formats).
+
+### Two agent formats
+
+Global scope reads agents from two roots that hold two different formats, and each gets the reader that belongs to it:
+
+| root | format | reader |
+|---|---|---|
+| `~/.claude/agents/` | native Claude Code: YAML frontmatter (`name`, `description`, `tools`) | `audit::reverse::claude` |
+| `~/.config/armadai/agents/` | ArmadAI: `# H1` + `## Metadata` + `## System Prompt`, no frontmatter at all | `audit::reverse::armadai`, which calls the product's own `parse_agent_file` |
+
+The second reader is an **adapter, not a parser**. `armadai_core::parser::parse_agent_file` is what `run`, `link` and `list` already go through, so the audit sees exactly what the product sees, and whatever that parser refuses is a file `armadai run` cannot load either — a real `A01`, not an artefact of the reader. (Measured: pointing the *Claude Code* reader at a healthy 77-agent library produced **77 `A01` criticals** and a non-zero exit, which is why the directory was excluded before #391.)
+
+Three mappings are decisions rather than plumbing:
+
+- **The agent's name is its file stem**, not its H1. `resolve_agent` looks up `<dir>/<name>.md`, so the stem is what `armadai run <name>` accepts and what an `@mention` resolves against. Measured: on 6 of the 77 agents the H1 slugifies to something else (`gravitee-am-app-manager.md` is titled *Gravitee AM Application Manager*), so the two are not interchangeable.
+- **The description is the one `armadai link` publishes.** `AgentMetadata` has no `description` field; what ArmadAI publishes as one is the first non-empty line of the system prompt, because that is what `LinkAgent` derives and what `link` writes as `description:` into the generated `.claude/agents/<slug>.md`. The audit reuses that derivation rather than inventing a second one, so it judges the description a router will actually see. Adding a `description` field to the domain type was rejected: on day one it would be absent from all 77 files, and `A02` would flag every one of them — the exact noise the exclusion existed to avoid.
+- **The prompt measured is the whole body**, in the order a linked config lays it out: `## System Prompt`, then `## Instructions`, `## Output Format`, `## Context`. Measured: 60 of the 77 agents carry `## Instructions` and 44 carry `## Output Format`, so counting only the first section understates most of the library. It sees exactly what `link` and `run` see — the point of reusing the product parser rather than writing a second one. Until [#392](https://github.com/Dr0drigues/armadai/issues/392) was fixed, that was less than the files held: a `###` sub-heading truncated the rest of its section. These rules now read **3.01x** more text than when this adapter was written (16 205 -> 48 778 estimated tokens across the 76 parsable agents).
+
+And two rules are **not applicable** to this format, because the format cannot express what they measure:
+
+| rule | verdict on an ArmadAI agent |
+|---|---|
+| `A01` unparsable | **applies** — via the product parser, so the message names the real defect (a missing `## Metadata`, not a missing frontmatter), and so does the suggestion |
+| `A02` missing fields | **applies**, on the derived description. It fires when `## System Prompt` is empty, which is the only way this format can leave a router nothing to match on |
+| `A03`/`A04` model | **apply** — `## Metadata` carries `model:` |
+| `A05` oversized prompt | **applies**, on the whole body |
+| `A06`/`A07` duplication, redundancy | **apply**. `A07` compares descriptions, so it only works *because* of the derivation above |
+| `A08` permissive tools | **not applicable** — no tool list exists in this format. Reporting it anyway printed `76/76 parsed agents inherit all tools` on a real library, and one native agent among them would have turned that Info into a fleet-wide Warning: a finding about the reader, not the fleet |
+| `A11` plaintext secret | **applies**, over the whole body |
+| `A12` non-standard frontmatter | **not applicable** — `extra` holds Claude Code frontmatter keys, and routing `## Metadata` keys into it would announce `provider`, `model` and `tags` across the whole library |
+| `C01` name collision | **applies**, on the stem |
+| `C02`/`C05` path scopes | **not applicable**. They read Claude Code's non-standard `paths:` frontmatter; ArmadAI's `- scope:` looks similar but is a per-project routing hint, and a global library holds agents for unrelated repositories. Measured: feeding `scope` in yields 149 overlapping pairs across the 77 — one cluster naming 31 agents, and no conflict at all |
+| `C03` activation overlap | **applies** (agent↔skill only; agent↔agent is `A07`'s turf) |
+| `C04` double ownership | **applies** — it reads the instructions file against the known agent names |
+| `R01`/`R02`/`R04` | unaffected: they measure skills and the instructions file |
+
+Measured end to end on the 77-agent library that motivated this: **1 `A01`** (a real `armadai new` stub that was never filled in and that `armadai run` cannot load), **2 `A06`** Warning findings on genuinely shared blocks, and **3 `A07`** Info findings on Java/Node twin agents. Nothing else — which is the point: a rule that fires 77 times on a healthy library is not a finding, it is a reader bug.
+
+**Project scope does not read ArmadAI agents yet.** It has no `Not read:` line to break — project scope states no omissions at all — and the surface is three sub-surfaces rather than one: `.armadai/agents/*.md`, the legacy bare `agents/*.md` (a directory name generic enough that pointing an agent parser at it would produce `A01`s in repositories that have nothing to do with ArmadAI), and the declarative `.armadai/agents.yaml`, whose loader needs the project config and the prompt fragments. Each needs its own decision.
 
 ### Which rules apply to which scope
 
