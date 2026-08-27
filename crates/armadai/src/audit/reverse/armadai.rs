@@ -140,15 +140,15 @@ fn imported(path: &Path, agent: &Agent) -> ImportedAgent {
 /// insensitive to that difference.
 ///
 /// It is however bounded by what the shared parser exposes, and that is
-/// currently less than the files hold: `parse_agent_content` ends an H2
-/// section at the next heading of *any* level, so everything after a `###`
-/// sub-heading is dropped before the audit ever sees it (issue #392 —
-/// measured: `agent-builder.md` is 3777 chars, its parsed sections total
-/// 1468, and `armadai link` writes the same truncated body). Reusing the
-/// product's parser is still right: the audit must see what the product sees.
-/// When #392 lands, `A05` and `A06` sharpen here with no change to this
-/// module — measured on the same 77 agents, `A06` finds 2 real duplication
-/// clusters on the untruncated text and 0 on the truncated one.
+/// what `link` and `run` see — which is the point of reusing the product
+/// parser instead of writing a second one.
+///
+/// Until #392 was fixed (by #394), that was less than the files hold:
+/// `parse_agent_content` ended an H2 section at the next heading of *any*
+/// level, so everything after a `###` was dropped before the audit saw it.
+/// Measured after the fix, on the same 77 agents: the rules read 3.01x more
+/// text (16205 -> 48778 estimated tokens), and `A06` goes from 0 to 2 real
+/// duplication clusters — the number predicted here before the fix landed.
 fn prompt_text(agent: &Agent) -> String {
     let mut out = agent.system_prompt.clone();
     for (heading, section) in [

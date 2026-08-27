@@ -349,9 +349,9 @@ mod tests {
     /// `## System Prompt`, which is the description ArmadAI publishes; `extra`
     /// is appended verbatim so a case can add its own sections.
     ///
-    /// No `###` sub-heading anywhere on purpose: `parse_agent_file` ends a
-    /// section at the *next heading of any level*, so an H3 would silently
-    /// truncate the fixture and any size assertion built on it.
+    /// // Deliberately flat: this fixture predates #394, when a section ended at
+    // the next heading of *any* level. It stays flat so the assertions below
+    // measure the adapter, not the parser fix.
     fn armadai_agent(title: &str, prompt: &str, extra: &str) -> String {
         format!(
             "# {title}\n\n## Metadata\n- provider: claude\n- model: latest:pro\n\n\
@@ -445,8 +445,8 @@ mod tests {
         let s = Sandbox::new();
         let shared = "You audit the Platodin backend for security and observability.";
         for (stem, title) in [
-            ("platodin-java-lead", "Platodin Java Lead"),
-            ("platodin-node-lead", "Platodin Node Lead"),
+            ("platodin-java-lead", "Platodin Java Team Lead"),
+            ("platodin-node-lead", "Platodin Node Team Lead"),
         ] {
             s.write(
                 &format!("home/.config/armadai/agents/{stem}.md"),
@@ -464,6 +464,67 @@ mod tests {
         );
         out.has_no_line_with("A02", &["platodin-java-lead"])
             .has_no_line_with("A02", &["platodin-node-lead"]);
+    }
+
+    /// `A02` and `A06` are the two rules the wiki claims "apply" to this
+    /// format and that nothing exercised on it: silencing either one for
+    /// `AgentFormat::Armadai` left the whole suite green (measured).
+    ///
+    /// `A02` fires on the *derived* description, so the only way an ArmadAI
+    /// file can leave a router nothing to match on is an empty
+    /// `## System Prompt`. The control is the sibling agent, which has one.
+    #[test]
+    fn a02_fires_on_the_one_armadai_shape_that_has_no_description() {
+        let s = Sandbox::new();
+        s.write(
+            "home/.config/armadai/agents/hollow.md",
+            "# Hollow\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\n\
+             ## Instructions\n\nDo things.\n",
+        );
+        s.write(
+            "home/.config/armadai/agents/solid.md",
+            &armadai_agent("solid", "You are the solid one.", ""),
+        );
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["2 agent(s)"]);
+        out.line_with("A02", &["'hollow'"]);
+        out.has_no_line_with("A02", &["'solid'"]);
+        // And it is A02, not A01: the file parses fine, it is just hollow.
+        out.has_no_line_with("A01", &["hollow"]);
+    }
+
+    /// `A06` is the rule the parser fix in #394 actually turns on for this
+    /// format: with `###` sub-sections no longer truncating a `##` section,
+    /// the real 77-agent library goes from 0 to 2 duplication clusters. The
+    /// shared block here sits under `## Instructions`, so this fails both if
+    /// `A06` stops seeing ArmadAI agents and if `prompt_text` stops carrying
+    /// the sections past `## System Prompt`.
+    #[test]
+    fn a06_sees_a_block_two_armadai_agents_share() {
+        let s = Sandbox::new();
+        let block: String = (1..=12)
+            .map(|i| format!("Convention line {i} of the shared team playbook.\n"))
+            .collect();
+        for name in ["twin-a", "twin-b"] {
+            s.write(
+                &format!("home/.config/armadai/agents/{name}.md"),
+                &armadai_agent(
+                    name,
+                    &format!("You are {name}, and you are not the other one."),
+                    &format!("\n## Instructions\n\n{block}"),
+                ),
+            );
+        }
+        s.write(
+            "home/.config/armadai/agents/loner.md",
+            &armadai_agent("loner", "You share nothing with anybody at all.", ""),
+        );
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["3 agent(s)"]);
+        out.line_with("A06", &["twin-a", "twin-b"]);
+        out.has_no_line_with("A06", &["loner"]);
     }
 
     /// `A08` reports agents that inherit every tool. An ArmadAI file has no
