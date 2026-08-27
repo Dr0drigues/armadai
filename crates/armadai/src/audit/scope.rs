@@ -13,12 +13,19 @@
 //! [`parse_instructions`]), pointed at explicit directories. Same reader, same
 //! findings, no fake root.
 //!
+//! One location needs a different reader rather than a different root:
+//! `~/.config/armadai/agents` holds ArmadAI-format agents (`# H1` +
+//! `## Metadata` + `## System Prompt`), which carry no YAML frontmatter at all.
+//! [`armadai::parse_agents`] reads those through the product's own
+//! `parse_agent_file`, and the assembly shape is what makes adding it a
+//! one-line change here.
+//!
 //! [`ReverseLinker`]: crate::audit::reverse::ReverseLinker
 
 use std::path::{Path, PathBuf};
 
 use super::reverse::{
-    ImportedConfig,
+    ImportedConfig, armadai,
     claude::{parse_agents, parse_instructions, parse_skills},
 };
 
@@ -88,12 +95,16 @@ pub struct GlobalImport {
 
 /// Read every native Claude Code surface the user carries globally.
 ///
-/// Two roots, one reader:
+/// Two roots:
 /// - `~/.claude` — `agents/`, `skills/` and `CLAUDE.md`, the same three
 ///   surfaces a repository exposes, at user level;
-/// - `~/.config/armadai/skills` — installed skills. These follow the Agent
-///   Skills standard (`SKILL.md` + frontmatter), the same format
-///   `~/.claude/skills` uses, so the same parser reads them.
+/// - `~/.config/armadai` — installed `skills/` and the user's own `agents/`.
+///   The skills follow the Agent Skills standard (`SKILL.md` + frontmatter),
+///   the same format `~/.claude/skills` uses, so the same parser reads them;
+///   the agents are ArmadAI-format Markdown and go through
+///   [`armadai::parse_agents`] instead (issue #391 — measured on one real
+///   library, that directory was the largest pile of agentic assets on the
+///   machine and the only one no pass could see).
 ///
 /// What it does not read, and why, is in [`skipped_locations`].
 pub fn import_global_surfaces(layout: &GlobalLayout) -> GlobalImport {
@@ -111,12 +122,14 @@ pub fn import_global_surfaces(layout: &GlobalLayout) -> GlobalImport {
     }
 
     let armadai_skills = layout.armadai_config.join("skills");
-    if armadai_skills.is_dir() {
+    let armadai_agents = layout.armadai_config.join("agents");
+    if armadai_skills.is_dir() || armadai_agents.is_dir() {
         detected.push(format!(
             "armadai ({})",
             tildify(layout, &layout.armadai_config)
         ));
         config.skills.extend(parse_skills(&armadai_skills));
+        config.agents.extend(armadai::parse_agents(&armadai_agents));
     }
 
     config.agents.sort_by(|a, b| a.name.cmp(&b.name));
@@ -166,12 +179,12 @@ pub fn import_global_surfaces(layout: &GlobalLayout) -> GlobalImport {
 ///   them would be noise, and having measured them was a mistake.
 /// - **`starters/`** holds starter packs — assets not installed, so not in
 ///   anyone's context. Same category as the catalogue.
-/// - **`agents/`** holds ArmadAI-format agents (H1 + `## Metadata` +
-///   `## System Prompt`), not native Claude Code frontmatter. Measured on the
-///   77 agents of one real library: read through this reverse pass, every one
-///   of them yields an `A01` critical ("missing YAML frontmatter") and the
-///   command exits non-zero on a healthy library. Reading them needs an
-///   ArmadAI-format reverse importer, which is a separate piece of work.
+///
+/// `agents/` used to have a line here, and no longer does: since #391 it is
+/// *read*, through the product's own parser rather than the Claude Code one
+/// (see [`import_global_surfaces`]). A `Not read:` note is a promise about
+/// what the report leaves out, so it has to disappear the moment the surface
+/// stops being left out — a stale one is worse than none.
 fn skipped_locations(layout: &GlobalLayout) -> Vec<String> {
     let mut out = Vec::new();
 
@@ -192,15 +205,6 @@ fn skipped_locations(layout: &GlobalLayout) -> Vec<String> {
         ));
     }
 
-    let agents = layout.armadai_config.join("agents");
-    if agents.is_dir() {
-        out.push(format!(
-            "{} ({} file(s)) — ArmadAI-format agents; this pass reads native Claude Code \
-             frontmatter only",
-            tildify(layout, &agents),
-            md_file_count(&agents)
-        ));
-    }
     for (dir, why) in [
         ("registry", "synced catalogue of other people's assets"),
         ("starters", "starter packs, not installed assets"),
@@ -217,25 +221,10 @@ fn skipped_locations(layout: &GlobalLayout) -> Vec<String> {
     out
 }
 
-/// Top-level `*.md` files in `dir` — how many assets the skipped note is
-/// about. `0` when the directory is unreadable, which is also what the
-/// caller would want to print.
-fn md_file_count(dir: &Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| e.path().is_file())
-                .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
-                .count()
-        })
-        .unwrap_or(0)
-}
-
 /// `SKILL.md` files anywhere under `dir`, to a bounded depth — how many skills
 /// the plugin-cache note is about.
 ///
-/// Recursive, unlike [`md_file_count`], because plugin skills sit five levels
+/// Recursive, because plugin skills sit five levels
 /// down (`<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md`) and the
 /// layout is Claude Code's, not ours, so hard-coding that shape would go stale
 /// silently. Three bounds keep the walk from becoming a liability on a tree we
@@ -437,12 +426,13 @@ mod tests {
         );
     }
 
-    /// Reading the 77 ArmadAI-format agents of a real library through this
-    /// (Claude Code frontmatter) reverse pass produced 77 `A01` criticals and
-    /// a non-zero exit on a healthy library. They are skipped — and named,
-    /// with their count, so the report never reads as "you have no agents".
+    /// The 77 ArmadAI-format agents of one real library were the largest pile
+    /// of agentic assets on the machine and the only one no pass could see
+    /// (#391). They are read now — through the product's own parser, not the
+    /// Claude Code one, which is what stops each of them from yielding an
+    /// `A01` "missing YAML frontmatter".
     #[test]
-    fn armadai_format_agents_are_skipped_and_counted() {
+    fn armadai_format_agents_are_read_through_their_own_parser() {
         let fake = Fake::new();
         fake.write(
             ".config/armadai/agents/agent-builder.md",
@@ -456,20 +446,98 @@ mod tests {
 
         let imported = import_global_surfaces(&fake.layout());
 
-        assert!(
-            imported.config.agents.is_empty(),
-            "ArmadAI-format agents are not native frontmatter and must not be \
-             parsed as such: {:?}",
-            imported.config.agents
-        );
-        let note = imported
-            .skipped
+        let names: Vec<&str> = imported
+            .config
+            .agents
             .iter()
-            .find(|l| l.contains("~/.config/armadai/agents"))
-            .unwrap_or_else(|| panic!("the skipped pile must be named: {:?}", imported.skipped));
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["agent-builder", "dev-lead"]);
         assert!(
-            note.contains("2 file(s)"),
-            "the note must carry how much was skipped, got: {note}"
+            imported.config.agents.iter().all(|a| a.issues.is_empty()),
+            "read through the Claude Code parser every one of these yields an \
+             A01 critical; through their own, none do: {:?}",
+            imported
+                .config
+                .agents
+                .iter()
+                .flat_map(|a| a.issues.iter())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !imported
+                .skipped
+                .iter()
+                .any(|l| l.contains("armadai/agents")),
+            "a `Not read:` note is a promise about what is left out, and this \
+             surface is no longer left out: {:?}",
+            imported.skipped
+        );
+    }
+
+    /// The `armadai` root must be detected on its `agents/` alone. A library
+    /// with agents and no installed skills is an ordinary shape (measured: the
+    /// same machine had 77 agents and would still have them with zero skills),
+    /// and gating detection on `skills/` would read them into a report that
+    /// never names where they came from.
+    #[test]
+    fn an_armadai_root_holding_only_agents_is_still_detected() {
+        let fake = Fake::new();
+        fake.write(
+            ".config/armadai/agents/capitaine.md",
+            "# Capitaine\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nHi.",
+        );
+
+        let imported = import_global_surfaces(&fake.layout());
+
+        assert_eq!(
+            imported.detected,
+            vec!["armadai (~/.config/armadai)".to_string()]
+        );
+        assert_eq!(imported.config.agents.len(), 1);
+    }
+
+    /// `~/.claude/agents` and `~/.config/armadai/agents` are two formats in one
+    /// report, and each needs its own reader: the native file must keep its
+    /// declared `tools`, the ArmadAI one must not be judged on a field it
+    /// cannot carry.
+    #[test]
+    fn the_two_agent_roots_keep_their_own_formats() {
+        let fake = Fake::new();
+        fake.write(
+            ".claude/agents/reviewer.md",
+            "---\nname: reviewer\ndescription: Reviews\ntools: Read\n---\nYou review.",
+        );
+        fake.write(
+            ".config/armadai/agents/capitaine.md",
+            "# Capitaine\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\n\
+             You coordinate the fleet.",
+        );
+
+        let imported = import_global_surfaces(&fake.layout());
+
+        let native = imported
+            .config
+            .agents
+            .iter()
+            .find(|a| a.name == "reviewer")
+            .expect("the native agent must still be read");
+        assert!(native.format.declares_tools());
+        assert_eq!(
+            native.metadata.tools.as_deref(),
+            Some(&["Read".to_string()][..])
+        );
+        let mine = imported
+            .config
+            .agents
+            .iter()
+            .find(|a| a.name == "capitaine")
+            .expect("the ArmadAI agent must be read");
+        assert!(!mine.format.declares_tools());
+        assert_eq!(
+            mine.metadata.description.as_deref(),
+            Some("You coordinate the fleet."),
+            "the description ArmadAI publishes for it, as `link` writes it"
         );
     }
 

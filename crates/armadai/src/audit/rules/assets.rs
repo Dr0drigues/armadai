@@ -1,19 +1,45 @@
 use super::{AuditContext, Finding, Severity};
-use crate::audit::reverse::ImportedAgent;
+use crate::audit::reverse::{AgentFormat, ImportedAgent};
+
+/// What to tell the user to fix, per format. A01 fires on files in two
+/// different formats, and a single sentence cannot be true of both: telling
+/// the owner of an ArmadAI agent to "fix the YAML frontmatter" names a
+/// construct that format does not have — measured on one real library, that
+/// was the advice printed for `my-agent.md`, whose actual defect is a missing
+/// `## Metadata` section.
+fn parse_fix_hint(format: AgentFormat) -> &'static str {
+    match format {
+        AgentFormat::ClaudeFrontmatter => "fix the YAML frontmatter so tools can read this file",
+        AgentFormat::Armadai => {
+            "restore the sections an ArmadAI agent needs: an H1 title, `## Metadata` \
+             carrying a `provider:`, and `## System Prompt`"
+        }
+    }
+}
 
 /// A01 — a native file could not be fully parsed.
 pub(super) fn a01_unparsable(ctx: &AuditContext) -> Vec<Finding> {
-    let agent_issues = ctx.config.agents.iter().flat_map(|a| a.issues.iter());
-    let skill_issues = ctx.config.skills.iter().flat_map(|s| s.issues.iter());
+    let agent_issues = ctx
+        .config
+        .agents
+        .iter()
+        .flat_map(|a| a.issues.iter().map(move |i| (i, a.format)));
+    // A skill is a `SKILL.md` with YAML frontmatter whatever installed it, so
+    // there is only one shape of advice to give about one that fails to parse.
+    let skill_issues = ctx
+        .config
+        .skills
+        .iter()
+        .flat_map(|s| s.issues.iter().map(|i| (i, AgentFormat::ClaudeFrontmatter)));
     agent_issues
         .chain(skill_issues)
-        .map(|i| Finding {
+        .map(|(i, format)| Finding {
             rule: "A01",
             severity: Severity::Critical,
             file: i.file.clone(),
             related: Vec::new(),
             message: i.message.clone(),
-            suggestion: Some("fix the YAML frontmatter so tools can read this file".to_string()),
+            suggestion: Some(parse_fix_hint(format).to_string()),
         })
         .collect()
 }
@@ -70,6 +96,15 @@ pub(super) fn a05_oversized_prompt(ctx: &AuditContext) -> Vec<Finding> {
 /// A08 — agents without any tool restriction, aggregated fleet-level.
 /// A uniform fleet is an assumed team choice (Info); a mixed fleet is a
 /// real inconsistency (Warning).
+///
+/// Only agents whose format *can* carry a tool list are considered, on both
+/// sides of the ratio. An ArmadAI-format file has no syntax for one
+/// (`AgentMetadata` has no such field, and neither does the `## Metadata`
+/// grammar), so counting it as permissive measures the reader rather than the
+/// fleet: measured on a real 76-agent ArmadAI library it produced
+/// `76/76 inherit all tools`, and adding a single tool-restricted native
+/// agent to the same library would have turned that Info into a fleet-wide
+/// Warning. Neither statement is about anything the user can act on.
 pub(super) fn a08_permissive_tools(ctx: &AuditContext) -> Vec<Finding> {
     // Anti-cascade: parse-broken agents are A01's job.
     let agents: Vec<&ImportedAgent> = ctx
@@ -77,6 +112,7 @@ pub(super) fn a08_permissive_tools(ctx: &AuditContext) -> Vec<Finding> {
         .agents
         .iter()
         .filter(|a| a.issues.is_empty())
+        .filter(|a| a.format.declares_tools())
         .collect();
     let offenders: Vec<&ImportedAgent> = agents
         .iter()
@@ -247,8 +283,19 @@ pub(super) fn a12_nonstandard_fields(ctx: &AuditContext) -> Vec<Finding> {
 mod tests {
     use super::*;
     use crate::audit::reverse::ParseIssue;
-    use crate::audit::rules::test_support::{agent, config_with};
+    use crate::audit::rules::test_support::{agent, armadai_agent, config_with};
     use crate::audit::rules::{AuditContext, AuditSettings, Severity};
+
+    fn ctx<'a>(
+        config: &'a crate::audit::reverse::ImportedConfig,
+        settings: &'a AuditSettings,
+    ) -> AuditContext<'a> {
+        AuditContext {
+            config,
+            settings,
+            usage: None,
+        }
+    }
 
     #[test]
     fn a01_reports_each_parse_issue_as_critical() {
@@ -335,6 +382,105 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].severity, Severity::Info);
         assert!(f[0].message.contains("2/2"));
+    }
+
+    /// A08 asks whether an agent restricts its tools. An ArmadAI-format file
+    /// cannot answer: the format has no tool list. Measured on a real
+    /// 76-agent library, reporting them anyway printed
+    /// `76/76 parsed agents inherit all tools` — a fact about the reader.
+    #[test]
+    fn a08_never_reports_a_format_that_cannot_declare_tools() {
+        let config = config_with(vec![
+            armadai_agent("capitaine", "You coordinate."),
+            armadai_agent("vigie", "You watch."),
+        ]);
+        let settings = AuditSettings::default();
+
+        assert!(
+            a08_permissive_tools(&ctx(&config, &settings)).is_empty(),
+            "an all-ArmadAI fleet declares no tools and must produce no A08"
+        );
+    }
+
+    /// And the ratio: one native agent alongside them must not become
+    /// `1/3 permissive` — nor, worse, flip the whole fleet's Info into a
+    /// Warning by looking "mixed". The denominator counts only the files that
+    /// could have declared a tool list.
+    #[test]
+    fn a08_counts_only_the_agents_whose_format_declares_tools() {
+        let mut open = agent("native-open", "Body");
+        open.metadata.tools = None;
+        let config = config_with(vec![
+            open,
+            agent("native-locked", "Body"), // tools: [Read]
+            armadai_agent("capitaine", "You coordinate."),
+            armadai_agent("vigie", "You watch."),
+        ]);
+        let settings = AuditSettings::default();
+
+        let f = a08_permissive_tools(&ctx(&config, &settings));
+
+        assert_eq!(f.len(), 1);
+        assert!(
+            f[0].message.contains("1/2"),
+            "only the two native agents count, got: {}",
+            f[0].message
+        );
+        assert!(
+            !f[0].message.contains("1/4") && !f[0].message.contains("3/4"),
+            "the ArmadAI files must be out of both sides of the ratio, got: {}",
+            f[0].message
+        );
+    }
+
+    /// A01 fires on two formats, and "fix the YAML frontmatter" is false for
+    /// one of them: an ArmadAI agent has none. Measured on a real library, the
+    /// only critical it produced (`my-agent.md`, missing `## Metadata`) came
+    /// with exactly that unusable advice.
+    #[test]
+    fn a01_advises_the_format_the_broken_file_is_actually_in() {
+        let mut native = agent("native-broken", "Body");
+        native.issues.push(ParseIssue {
+            file: native.source_path.clone(),
+            message: "missing YAML frontmatter".to_string(),
+        });
+        let mut mine = armadai_agent("my-agent", "");
+        mine.issues.push(ParseIssue {
+            file: mine.source_path.clone(),
+            message: "Missing ## Metadata section".to_string(),
+        });
+        let config = config_with(vec![mine, native]);
+        let settings = AuditSettings::default();
+
+        let f = a01_unparsable(&ctx(&config, &settings));
+
+        assert_eq!(f.len(), 2, "{f:?}");
+        let armadai = f
+            .iter()
+            .find(|f| f.file.ends_with("my-agent.md"))
+            .expect("the ArmadAI file must be reported");
+        let hint = armadai.suggestion.as_deref().unwrap_or("");
+        assert!(
+            hint.contains("## Metadata") && hint.contains("H1"),
+            "an ArmadAI agent must be told about its own sections, got: {hint}"
+        );
+        assert!(
+            !hint.contains("frontmatter"),
+            "this format has no frontmatter to fix, got: {hint}"
+        );
+        let native = f
+            .iter()
+            .find(|f| f.file.ends_with("native-broken.md"))
+            .expect("the native file must be reported");
+        assert!(
+            native
+                .suggestion
+                .as_deref()
+                .unwrap_or("")
+                .contains("frontmatter"),
+            "and the native advice must be unchanged, got: {:?}",
+            native.suggestion
+        );
     }
 
     #[test]
