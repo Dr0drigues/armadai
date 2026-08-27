@@ -280,6 +280,11 @@ OUTPUTFORMAT_SUBSECTION_MARKER — one sentence.
         let mut cmd = Command::cargo_bin("armadai").unwrap();
         cmd.current_dir(&root)
             .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+            // `run` records into SQLite, and `db.rs`'s `#[cfg(test)]` guard does
+            // not protect a *spawned* binary. Without this the test writes into
+            // the developer's real ~/.local/share/armadai/armadai.sqlite —
+            // measured: the `runs` table went from 6 rows to 7, prompt included.
+            .env("XDG_DATA_HOME", dir.path().join("data"))
             .args(["run", "probe", "TASK", "--headless"]);
         let output = cmd.output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);

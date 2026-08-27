@@ -76,10 +76,26 @@ An agent file has these required sections:
 
 Two consequences worth knowing:
 
-- **Use sub-headings freely.** Long prompts read better with them, and nothing is lost.
+- **Use sub-headings freely — in prose sections.** Long prompts read better with them, and
+  nothing is lost.
   (Before [#392](https://github.com/Dr0drigues/armadai/issues/392), a section ended at the
   next heading of *any* level, so everything from the first `###` onwards was silently
   dropped from the prompt `link` wrote and `run` sent.)
+- **But not in the configuration sections.** `## Metadata`, `## Pipeline`, `## Triggers` and
+  `## Ring Config` are read **line by line**, so a `###` block inside them no longer hides its
+  contents — it configures the agent. Measured on a fixture whose `## Metadata` carried an
+  `### Alternative setup (not in use)` block: the agent switched provider from `anthropic` to
+  `openai` and temperature from `0.2` to `1.0`, with no warning (last value wins). The same
+  applies to `requires`/`priority` in `## Triggers`, to `role`/`vote_weight` in
+  `## Ring Config`, and to `## Pipeline`, where an agent listed under a `###` heading now runs.
+  Worse, an unparsable value there is fatal: `link` reports `warn: failed to parse …`, skips
+  that agent, and still **exits 0** — so it disappears from the generated config silently.
+  Keep commented-out alternatives out of these four sections, or in a fenced code block.
+- **`---` and `===` under a line are headings too.** A paragraph followed by a line of dashes
+  or equals signs is a setext H2/H1 in CommonMark, so it ends the section exactly as `##`
+  would — and the text after it is lost from the prompt. This predates #392 and is unchanged
+  by it, but a `---` separator inside a long prompt is a natural thing to write. Use a fenced
+  block, or a different separator.
 - **A literal `##` line inside a section still ends it.** If your prompt needs to *show*
   an H2 (documenting this very format, for instance), put it in a fenced code block —
   fenced content is never read as a heading — or write it as bold text.
