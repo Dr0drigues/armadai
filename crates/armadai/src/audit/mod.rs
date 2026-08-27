@@ -41,18 +41,42 @@ pub fn import_surfaces(root: &Path) -> (Vec<String>, reverse::ImportedConfig) {
 /// The two scopes differ only in how this is filled — one repository root, or
 /// the user's own library — so keeping the assembly separate from the analysis
 /// is what lets both share every rule, every renderer and every exit path.
+///
+/// Every field is private, and the two factories below are the only way to
+/// build one. `root` and `scope` are not independent: `Global` means "paths are
+/// shown relative to `$HOME`", and a literal `AuditInput { root: <a project>,
+/// scope: Global, .. }` compiled happily while producing a report titled
+/// `armadai audit (global)` anchored on a repository. Nothing in the type
+/// stopped it; now the constructor is the only door and it does.
 #[derive(Debug, Clone)]
 pub struct AuditInput {
     /// What findings paths are displayed relative to: the repository root, or
     /// `$HOME` in global scope.
-    pub root: std::path::PathBuf,
-    pub scope: AuditScope,
-    pub detected: Vec<String>,
-    pub skipped: Vec<String>,
-    pub config: reverse::ImportedConfig,
+    root: std::path::PathBuf,
+    scope: AuditScope,
+    detected: Vec<String>,
+    skipped: Vec<String>,
+    config: reverse::ImportedConfig,
 }
 
 impl AuditInput {
+    /// Which surface this input covers.
+    pub fn scope(&self) -> AuditScope {
+        self.scope
+    }
+
+    /// Labels of the roots that held at least one readable surface. Empty
+    /// means "nothing to audit", which the CLI reports as such.
+    pub fn detected(&self) -> &[String] {
+        &self.detected
+    }
+
+    /// The imported surfaces, shared with `--propose` and `--deep` so neither
+    /// re-reads the same files.
+    pub fn config(&self) -> &reverse::ImportedConfig {
+        &self.config
+    }
+
     /// Project scope: the native surfaces under one repository root.
     pub fn for_project(root: &Path) -> Self {
         let (detected, config) = import_surfaces(root);

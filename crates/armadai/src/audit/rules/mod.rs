@@ -97,7 +97,47 @@ impl Default for AuditSettings {
 impl AuditSettings {
     /// Read the optional `audit:` section of the project config, if any.
     /// Missing file, missing section or unreadable YAML all yield defaults.
+    ///
+    /// Project scope only. The global library has its own source — see
+    /// [`AuditSettings::from_global`] — because thresholds must follow the
+    /// surface being audited, not the folder the command was typed in.
     pub fn from_project(root: &std::path::Path) -> Self {
+        let mut settings = Self::default();
+        for candidate in ["armadai.yaml", ".armadai/config.yaml"] {
+            // The first of the two that *exists* wins, whether or not it
+            // carries an `audit:` section — the second is a fallback for a
+            // missing file, not for a missing key.
+            if settings.apply_audit_section(&root.join(candidate)) {
+                break;
+            }
+        }
+        settings
+    }
+
+    /// Read the optional `audit:` section of the *user-level* config,
+    /// `~/.config/armadai/config.yaml` (or wherever `$ARMADAI_CONFIG_DIR` /
+    /// `$XDG_CONFIG_HOME` puts it).
+    ///
+    /// A global audit reads one fixed set of assets, so it must reach one
+    /// fixed verdict. Sourcing its thresholds from `<cwd>/armadai.yaml` made
+    /// that false: measured on one machine, the same global library produced
+    /// 2 `R01` warnings from a directory carrying `skill_token_threshold: 5`
+    /// and 0 from a neutral one. The library's settings belong next to the
+    /// library.
+    pub fn from_global() -> Self {
+        let mut settings = Self::default();
+        settings.apply_audit_section(&armadai_core::config::config_dir().join("config.yaml"));
+        settings
+    }
+
+    /// Overlay the `audit:` section of one YAML file onto `self`. Returns
+    /// whether the file was *readable* — the caller's "first candidate that
+    /// exists wins" is about the file, not about the section, so a config with
+    /// no `audit:` key still stops the search.
+    ///
+    /// Unparsable YAML leaves the defaults in place: the audit never refuses
+    /// to run over its own configuration.
+    fn apply_audit_section(&mut self, path: &std::path::Path) -> bool {
         #[derive(serde::Deserialize, Default)]
         #[serde(default)]
         struct AuditYaml {
@@ -112,33 +152,29 @@ impl AuditSettings {
             deep_prompt_truncation: Option<usize>,
             usage: Option<bool>,
         }
-        let mut settings = Self::default();
-        for candidate in ["armadai.yaml", ".armadai/config.yaml"] {
-            let Ok(raw) = std::fs::read_to_string(root.join(candidate)) else {
-                continue;
-            };
-            if let Ok(parsed) = serde_yaml_ng::from_str::<AuditYaml>(&raw)
-                && let Some(section) = parsed.audit
-            {
-                if let Some(t) = section.prompt_token_threshold {
-                    settings.prompt_token_threshold = t;
-                }
-                if let Some(t) = section.skill_token_threshold {
-                    settings.skill_token_threshold = t;
-                }
-                if let Some(s) = section.activation_similarity {
-                    settings.activation_similarity = s;
-                }
-                if let Some(t) = section.deep_prompt_truncation {
-                    settings.deep_prompt_truncation = t;
-                }
-                if let Some(u) = section.usage {
-                    settings.usage = u;
-                }
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        if let Ok(parsed) = serde_yaml_ng::from_str::<AuditYaml>(&raw)
+            && let Some(section) = parsed.audit
+        {
+            if let Some(t) = section.prompt_token_threshold {
+                self.prompt_token_threshold = t;
             }
-            break;
+            if let Some(t) = section.skill_token_threshold {
+                self.skill_token_threshold = t;
+            }
+            if let Some(s) = section.activation_similarity {
+                self.activation_similarity = s;
+            }
+            if let Some(t) = section.deep_prompt_truncation {
+                self.deep_prompt_truncation = t;
+            }
+            if let Some(u) = section.usage {
+                self.usage = u;
+            }
         }
-        settings
+        true
     }
 }
 
@@ -324,6 +360,43 @@ mod tests {
         assert!(!s.usage, "usage: false in config must be honoured");
     }
 
+    /// `.armadai/config.yaml` is the documented second candidate, and the
+    /// refactor that split this loop out into `apply_audit_section` could have
+    /// dropped it in silence — nothing covered it before.
+    #[test]
+    fn from_project_falls_back_to_the_dot_armadai_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/config.yaml"),
+            "audit:\n  skill_token_threshold: 777\n",
+        )
+        .unwrap();
+        let s = AuditSettings::from_project(dir.path());
+        assert_eq!(s.skill_token_threshold, 777);
+    }
+
+    /// The first candidate that *exists* wins — even when it carries no
+    /// `audit:` section at all. The second is a fallback for a missing file,
+    /// not for a missing key, so a project that deliberately empties its
+    /// `armadai.yaml` gets the defaults rather than a stale `.armadai/` value.
+    #[test]
+    fn the_first_existing_candidate_wins_even_with_no_audit_section() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("armadai.yaml"), "name: demo\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/config.yaml"),
+            "audit:\n  skill_token_threshold: 777\n",
+        )
+        .unwrap();
+        let s = AuditSettings::from_project(dir.path());
+        assert_eq!(
+            s.skill_token_threshold, 4000,
+            "armadai.yaml exists and says nothing about audit: that is the answer"
+        );
+    }
+
     #[test]
     fn from_project_defaults_without_config() {
         let dir = tempfile::tempdir().unwrap();
@@ -385,7 +458,8 @@ mod tests {
         assert_eq!(
             project,
             vec!["U01", "U02"],
-            "project scope must run the usage rules: a declared-but-unused              agent (U01) and an undeclared one that ran (U02)"
+            "project scope must run the usage rules: a declared-but-unused \
+             agent (U01) and an undeclared one that ran (U02)"
         );
 
         let global: Vec<&str> = run_rules(&ctx, AuditScope::Global)
@@ -395,7 +469,8 @@ mod tests {
             .collect();
         assert!(
             global.is_empty(),
-            "usage rules correlate one project's transcripts and must not be              registered for the global library, got: {global:?}"
+            "usage rules correlate one project's transcripts and must not be \
+             registered for the global library, got: {global:?}"
         );
     }
 

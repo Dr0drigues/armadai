@@ -102,6 +102,36 @@ mod tests {
                 stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
             }
         }
+
+        /// Same run with `HOME` *removed* from the child's environment.
+        ///
+        /// A spawned binary is the only honest way to test this: `$HOME` is
+        /// process-global, and unsetting it in-process means holding
+        /// `env_lock()`, which is not reentrant and which several tests in
+        /// this crate already take.
+        fn run_without_home(&self, args: &[&str]) -> Output {
+            let out = Command::cargo_bin("armadai")
+                .unwrap()
+                .current_dir(self.work())
+                .arg("audit")
+                .args(args)
+                .env("NO_COLOR", "1")
+                .env_remove("HOME")
+                .env("ARMADAI_CONFIG_DIR", self.home().join(".config/armadai"))
+                .env("XDG_CONFIG_HOME", self.home().join(".config"))
+                .env("XDG_DATA_HOME", self.dir.path().join("data"))
+                .env(
+                    "ARMADAI_CLAUDE_PROJECTS_DIR",
+                    self.dir.path().join("transcripts"),
+                )
+                .output()
+                .unwrap();
+            Output {
+                success: out.status.success(),
+                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            }
+        }
     }
 
     struct Output {
@@ -348,6 +378,59 @@ mod tests {
         out.has_no_line_with("A01", &["agent-builder"]);
     }
 
+    /// The plugin trees under `~/.claude` are the largest thing the pass does
+    /// not read, and the one it was silent about. Measured on one real machine:
+    /// the report announced "48 skills, ~49967 tokens" while
+    /// `~/.claude/plugins/cache` held 17 further installed `SKILL.md` worth
+    /// ~39177 tokens — the stated total 44% short — two of which cross `R01`.
+    ///
+    /// Two lines, not one, and the distinction is the point: `cache/` is what
+    /// is *installed* and live in the session, `marketplaces/` is the
+    /// catalogue it was installed from. Folding them together would erase the
+    /// installed-vs-catalogue distinction this pass makes everywhere else
+    /// (`~/.config/armadai/skills` read, `registry/` excluded).
+    #[test]
+    fn global_names_the_plugin_skills_it_does_not_read() {
+        let s = Sandbox::new();
+        s.write(
+            "home/.claude/skills/mine/SKILL.md",
+            "---\nname: mine\ndescription: d\n---\nB.",
+        );
+        for name in ["writing-skills", "brainstorming"] {
+            s.write(
+                &format!(
+                    "home/.claude/plugins/cache/official/superpowers/6.3.0/skills/{name}/SKILL.md"
+                ),
+                &heavy_skill(name),
+            );
+        }
+        s.write(
+            "home/.claude/plugins/marketplaces/official/plugins/receipts/skills/receipts/SKILL.md",
+            &heavy_skill("receipts"),
+        );
+
+        let out = s.run(&["--global"]);
+        out.ran();
+
+        let installed = out.line_with("Not read:", &["plugins/cache", "2 skill(s)"]);
+        assert!(
+            installed.contains("installed"),
+            "the installed set must be named as installed, got: {installed}"
+        );
+        let catalogue = out.line_with("Not read:", &["plugins/marketplaces"]);
+        assert!(
+            catalogue.contains("catalogue"),
+            "the catalogue must be named as a catalogue, got: {catalogue}"
+        );
+        assert_ne!(
+            installed, catalogue,
+            "the two must be separate lines, not one note about ~/.claude/plugins"
+        );
+        // Named, not read: the heavy plugin skills must not become findings.
+        out.has_no_line_with("R01", &["writing-skills"])
+            .has_no_line_with("R01", &["receipts"]);
+    }
+
     /// A report file that does not say which scope it covers is a trap: the
     /// two carry identical rule codes over different assets.
     #[test]
@@ -401,11 +484,16 @@ mod tests {
         );
     }
 
-    /// `--propose` in global scope has no project root to write into, and
-    /// writing into `$HOME` unasked would be rude. It writes where the user
-    /// stands.
+    /// `--propose` in global scope has no project root to write into, so it
+    /// writes into the **current directory, whatever that is** — the same place
+    /// project scope would.
+    ///
+    /// Not "never into `$HOME`": if the user stands *in* `$HOME`, that is where
+    /// the pack lands, and correctly so. The invariant is the cwd, and the
+    /// sandbox below stands in `work/`, which is why nothing appears under the
+    /// fake home.
     #[test]
-    fn global_propose_writes_into_the_working_directory_not_home() {
+    fn global_propose_writes_into_the_current_directory() {
         let s = Sandbox::new();
         s.write(
             "home/.claude/agents/reviewer.md",
@@ -426,7 +514,7 @@ mod tests {
         );
         assert!(
             !s.home().join(".armadai-proposal").exists(),
-            "nothing may be written into $HOME"
+            "the pack follows the cwd, and the cwd here is work/, not the home"
         );
     }
 
@@ -442,6 +530,133 @@ mod tests {
                 .contains("No native agentic configuration detected in your global library"),
             "got:\n{}",
             out.stdout
+        );
+    }
+
+    /// With no `$HOME` there is no `~`, so there is nothing global to audit.
+    ///
+    /// The fallback that used to stand there (`unwrap_or_else(|_| ".")`) made
+    /// `--global` report the *current repository's* `.claude/` as the user's
+    /// library, labelled `~/.claude` — a wrong answer indistinguishable from a
+    /// right one on stdout. `usage::discovery::projects_root` refuses in the
+    /// same situation; this is the guard that keeps the two consistent.
+    #[test]
+    fn global_refuses_to_run_without_a_home_rather_than_auditing_the_repository() {
+        let s = Sandbox::new();
+        // A project that would be picked up by the `.` fallback, and a global
+        // library that is *not* it, so the two cannot be confused.
+        s.write(
+            "work/.claude/skills/repo-heavy/SKILL.md",
+            &heavy_skill("repo-heavy"),
+        );
+        s.write(
+            "home/.claude/skills/mine-heavy/SKILL.md",
+            &heavy_skill("mine-heavy"),
+        );
+
+        let out = s.run_without_home(&["--global"]);
+
+        assert!(
+            !out.success,
+            "a global audit with no $HOME must refuse, not improvise:\n{}\n{}",
+            out.stdout, out.stderr
+        );
+        assert!(
+            out.stderr.contains("$HOME"),
+            "the refusal must name the cause, got:\n{}",
+            out.stderr
+        );
+        assert!(
+            !out.stdout.contains("repo-heavy"),
+            "the working repository is not the user's global library:\n{}",
+            out.stdout
+        );
+        assert!(
+            !out.stdout.contains("~/.claude"),
+            "and nothing may be labelled ~/.claude when there is no ~:\n{}",
+            out.stdout
+        );
+        // The control: the very same fixture audits fine with a $HOME, so the
+        // refusal above is about $HOME and not about the fixture.
+        s.run(&["--global"]).ran().line_with("R01", &["mine-heavy"]);
+    }
+
+    /// A global audit reads one fixed set of assets, so it must reach one
+    /// fixed verdict. Its thresholds come from the *global* config
+    /// (`~/.config/armadai/config.yaml`), not from `<cwd>/armadai.yaml`:
+    /// measured before this fix, the same library reported 2 `R01` warnings
+    /// from a directory carrying `skill_token_threshold: 5` and 0 from a
+    /// neutral one.
+    #[test]
+    fn global_thresholds_come_from_the_global_config_not_the_working_directory() {
+        let s = Sandbox::new();
+        // Small enough that the 4000 default never flags it.
+        s.write(
+            "home/.claude/skills/small/SKILL.md",
+            "---\nname: small\ndescription: d\n---\nB.",
+        );
+        s.write(
+            "home/.config/armadai/config.yaml",
+            "audit:\n  skill_token_threshold: 1\n",
+        );
+        // The cwd says the opposite, loudly. It must not be consulted.
+        s.write(
+            "work/armadai.yaml",
+            "audit:\n  skill_token_threshold: 100000\n",
+        );
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("R01", &["small"]);
+    }
+
+    /// The mirror: a project audit keeps reading the project's own config, and
+    /// the global one must not override it. Without this, "settings follow the
+    /// audited surface" could be satisfied by making *both* scopes read the
+    /// global file.
+    #[test]
+    fn a_project_audit_still_reads_the_project_config_not_the_global_one() {
+        let s = Sandbox::new();
+        s.write(
+            "work/.claude/skills/small/SKILL.md",
+            "---\nname: small\ndescription: d\n---\nB.",
+        );
+        s.write(
+            "work/armadai.yaml",
+            "audit:\n  skill_token_threshold: 1\n  usage: false\n",
+        );
+        // A global config that would silence the finding if it were read.
+        s.write(
+            "home/.config/armadai/config.yaml",
+            "audit:\n  skill_token_threshold: 100000\n",
+        );
+
+        let out = s.run(&[]);
+        out.ran().line_with("R01", &["small"]);
+    }
+
+    /// Findings in a global report are shown relative to `$HOME`, which is what
+    /// makes them readable as `.claude/skills/x/SKILL.md` rather than as a
+    /// twelve-segment absolute path. The anchor is not free-standing: it is
+    /// `AuditScope::Global`'s other half, and swapping it for any other
+    /// directory turns every path in the report absolute.
+    #[test]
+    fn global_findings_are_anchored_on_the_home_directory() {
+        let s = Sandbox::new();
+        s.write(
+            "home/.claude/skills/mine-heavy/SKILL.md",
+            &heavy_skill("mine-heavy"),
+        );
+
+        let out = s.run(&["--global"]);
+        let line = out.ran().line_with("R01", &["mine-heavy"]);
+        assert!(
+            line.contains(".claude/skills/mine-heavy/SKILL.md"),
+            "expected a home-relative path, got: {line}"
+        );
+        let home = s.home().display().to_string();
+        assert!(
+            !line.contains(&home),
+            "the path must be relative to $HOME ({home}), not absolute: {line}"
         );
     }
 

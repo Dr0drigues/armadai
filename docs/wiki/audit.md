@@ -25,23 +25,36 @@ Two scopes, because they answer different questions, have different owners, and 
 
 | | project scope (default) | global scope (`--global`) |
 |---|---|---|
-| reads | `<root>/.claude/agents/`, `<root>/.claude/skills/`, `<root>/CLAUDE.md` | `~/.claude/agents/`, `~/.claude/skills/`, `~/.claude/CLAUDE.md`, `~/.config/armadai/skills/` |
+| reads | `<root>/.claude/agents/`, `<root>/.claude/skills/`, `<root>/CLAUDE.md` | `~/.claude/agents/`, `~/.claude/skills/`, `~/.claude/CLAUDE.md`, `~/.config/armadai/skills/` — **not** the plugin trees, see [What neither scope reads](#what-neither-scope-reads-and-why) |
+| settings | `<root>/armadai.yaml` or `<root>/.armadai/config.yaml` | `~/.config/armadai/config.yaml` |
 | answers | what does *this repository* declare — what a team shares and a reviewer reads | what does *this user* carry into every session, wherever they work |
 | rules | every family, `U01`–`U04` included | every family **except** `U01`–`U04` |
 
 `--global` rather than a separate `doctor` command: the flag already exists on `list`, `tui` and `web`, so this is the repository's own convention rather than a new surface to learn. It cannot be combined with a path — one says "this repository", the other "no repository at all" — and the parser refuses the combination instead of silently picking one.
 
+`--global` needs `$HOME`, and **refuses** to run without it rather than falling back to the current directory: a global audit *is* "what lives under `~`", so with no `~` there is nothing to audit. The fallback that used to stand there reported the current repository's `.claude/` as the user's library, labelled `~/.claude` — a wrong answer indistinguishable from a right one.
+
 ### Why global scope exists
 
-**Skills do not live in repositories.** Measured on three real projects on one machine — `armadai`, `refonte-front`, `ci-engine` — all three declare **zero** local skills, against **48** installed globally (`~/.claude/skills` = 7, `~/.config/armadai/skills` = 41). Before `--global`, `R01` and the skill half of `R04` measured a location nobody populates: they could not fire in real use. The same holds for `~/.claude/CLAUDE.md`, which is loaded on every invocation of every project and was unreachable.
+**Skills do not live in repositories.** Measured on three real projects on one machine — `armadai`, `refonte-front`, `ci-engine` — all three declare **zero** local skills, against **48** installed globally and read by this pass (`~/.claude/skills` = 7, `~/.config/armadai/skills` = 41), plus **17 more** in installed plugins that it names but does not read (see below). Before `--global`, `R01` and the skill half of `R04` measured a location nobody populates: they could not fire in real use. The same holds for `~/.claude/CLAUDE.md`, which is loaded on every invocation of every project and was unreachable.
 
 ### What neither scope reads, and why
 
-Three exclusions, three different reasons. Each is printed as a `Not read:` line in the report — an asset pile the audit skips has to be a *stated* omission, or the report reads as "you have none".
+Five exclusions, and each is printed as a `Not read:` line in the report — an asset pile the audit skips has to be a *stated* omission, or the report reads as "you have none". The counts a global report prints are therefore a **floor**, and the `Not read:` lines are what tell you by how much.
+
+Under `~/.claude`:
+
+- **`~/.claude/plugins/cache/`** — the skills of the plugins you have **installed**. These are live in the session, exactly like `~/.claude/skills`, and this is the largest omission of the two scopes: measured on one real machine, the report announced 48 skills and ~49967 tokens of front-loaded context while this directory held **17 further `SKILL.md` worth ~39177 tokens** — the stated total 44% short of what is actually loaded — and **2 of those 17 cross `R01`**. Reading them means knowing which plugins are *enabled*, which lives in Claude Code's own `installed_plugins.json` and per-plugin manifests: a plugin-aware importer, and a separate piece of work. Until it exists, the note carries the skill count so the total is visibly a floor.
+- **`~/.claude/plugins/marketplaces/`** — the **catalogue** each plugin was installed *from*: every plugin on offer, not the ones in use. Same category as `registry/` below, and it gets its own line rather than being folded into one `~/.claude/plugins` note, because installed-versus-catalogue is exactly the distinction this pass draws under `~/.config/armadai` (`skills/` read, `registry/` excluded). It carries no count: it holds git checkouts, and counting it would mean walking their object stores.
+- **`~/.claude/plugins/data/`** gets no line at all. It is Claude Code's per-plugin *writable state* — measured on the same machine: 5 directories, 0 files, 0 `SKILL.md`. Nothing there is an agentic asset, and a note about a directory that holds none would be a lecture, not a fact.
+
+Under `~/.config/armadai`:
 
 - **`~/.config/armadai/registry/`** — a synced catalogue of *other people's* skills. Flagging them would be noise, and this directory is also what skewed `R01`'s original calibration: of the 461 `SKILL.md` files the threshold was derived from, **407 (88%)** came from here. Excluding it is a correctness fix, not an optimisation.
 - **`~/.config/armadai/starters/`** and **`~/.config/armadai/skills-registry/`** — starter packs and a second synced catalogue. Neither holds an asset that is installed, so neither is in anyone's context.
 - **`~/.config/armadai/agents/`** — ArmadAI-format agents (H1 + `## Metadata` + `## System Prompt`), not native Claude Code frontmatter. Measured on a real 77-agent library, reading them through this reverse pass produced **77 `A01` criticals** ("missing YAML frontmatter") and a non-zero exit on a perfectly healthy library. Reading them properly needs an ArmadAI-format reverse importer, which does not exist yet; until it does, the report says how many files it left alone rather than reporting zero agents.
+
+The exclusions are **structural**, not a blacklist: only `<config>/skills` is ever read, so a redirected `$ARMADAI_CONFIG_DIR` moves them with it and a skill of your own that happens to be *named* `registry` is read normally.
 
 ### Which rules apply to which scope
 
@@ -49,7 +62,9 @@ Three exclusions, three different reasons. Each is printed as a `Not read:` line
 
 This is deliberately a whitelist of one exclusion rather than a per-rule opt-in, and it is enforced in the rule *registry* rather than inside any rule: a rule that only ever sees `ctx.config` cannot tell which scope filled it, so the default has to be "applies".
 
-`--propose` and `--deep` both work in global scope. In global scope `--propose` writes its pack into the **working directory** — there is no project root to write into, and writing into `$HOME` unasked would be rude.
+`--propose` and `--deep` both work in global scope. In global scope `--propose` writes its pack into the **current directory, whatever that is** — there is no project root to write into, so the pack follows where you stand, exactly as it does in project scope. If you stand in `$HOME`, that is where it lands.
+
+`--deep` in global scope widens what leaves the machine: the excerpts it sends are your own `~/.claude/CLAUDE.md` and the prompts of your global agents — personal material rather than a repository's shared config. It is the same privacy boundary that kept `R03` out of the rule set, and the command's `--deep` warning names the scope for that reason.
 
 ## What gets checked
 
@@ -59,7 +74,7 @@ Most of the rule surface predates this page's focus and is only summarized here 
 - **`C0x` — collision rules.** Checks across declared assets: name collisions, overlapping scopes, overlapping activation surfaces, double ownership of the same module, inconsistent tool restrictions.
 - **`R0x` — context rightsizing.** Checks what gets front-loaded into context rather than what is declared: an oversized skill with no progressive disclosure, a path cited in the instructions file that no longer exists, and the total weight of the context loaded up front. Detailed below. `R01` and the skill half of `R04` only have real material to work on in **global** scope — see [Scopes](#scopes).
 - **`D0x` — optional deep pass (`--deep`).** Sends secret-redacted prompt excerpts to an installed CLI (`claude` or `gemini`) for an LLM-driven review, layered on top of the static findings.
-- **`--propose`.** Generates an installable ArmadAI pack (`.armadai-proposal/`) from the audited native configuration. In global scope it writes into the working directory rather than into `$HOME`.
+- **`--propose`.** Generates an installable ArmadAI pack (`.armadai-proposal/`) from the audited native configuration. In global scope it writes into the current directory, there being no project root to write into.
 
 The rest of this page covers the two newer halves: **context rightsizing**, rules `R01`, `R02` and `R04`, and **observed usage**, rules `U01`–`U04`.
 
@@ -89,7 +104,9 @@ Only the root instructions file is loaded unconditionally, on every invocation. 
 
 So `R01` does not say "this skill is too big". It says "this skill is big *and* has nothing at level 3" — and `armadai` already installs `references/` (`crates/armadai-core/src/skill.rs`), so the fix asks the author to use a mechanism that exists rather than invent one.
 
-One known limit of the total, in both scopes: `R04` counts the instructions file as it is on disk and does not follow Claude Code's `@file` imports. Measured on one real `~/.claude/CLAUDE.md`, that is 59 tokens counted against a 241-token `@`-imported file left out — so the figure is a floor, not the whole bill. It is a pre-existing limit, not one the global scope introduced, but the global instructions file is where it bites hardest, because that one is loaded on every invocation of every project.
+`R04`'s total is a **floor**, for two reasons, and both are stated in the report rather than hidden. In global scope, the skills of installed plugins are counted by no one: measured on one machine, `~/.claude/plugins/cache` held 17 further `SKILL.md` worth ~39177 tokens against a reported total of ~49967 — 44% short — which is why that directory gets a `Not read:` line carrying its skill count (see [What neither scope reads](#what-neither-scope-reads-and-why)).
+
+The second limit holds in both scopes: `R04` counts the instructions file as it is on disk and does not follow Claude Code's `@file` imports. Measured on one real `~/.claude/CLAUDE.md`, that is 59 tokens counted against a 241-token `@`-imported file left out — so the figure is a floor, not the whole bill. It is a pre-existing limit, not one the global scope introduced, but the global instructions file is where it bites hardest, because that one is loaded on every invocation of every project.
 
 ### Where the default threshold comes from
 
@@ -109,7 +126,7 @@ So 4000 sits *above* the p90 of what will really be audited. But recalibrating t
 
 So the honest reporting is **1 of 48 installed skills (2%)**. An earlier version of this page claimed 4.3%, derived from that 88%-catalogue corpus — a documented number the code does not deliver, which is precisely the class of defect this project has had to fix before.
 
-`skill_token_threshold` stays configurable, so a user whose skills genuinely run large can lower it.
+`skill_token_threshold` stays configurable, so a user whose skills genuinely run large can lower it — in global scope, where `R01` actually has material to work on, that means `audit.skill_token_threshold` in `~/.config/armadai/config.yaml` (see [Settings](#settings)).
 
 ### Why `references/` is the second condition
 
@@ -135,7 +152,7 @@ Limits are known, and documented rather than hidden — a rule whose blind spots
 
 ## Settings
 
-Every threshold the static rules use is tunable per project, in an optional `audit:` section of `armadai.yaml` (or `.armadai/config.yaml`; the first of the two that exists wins). A missing file, a missing section, or YAML that fails to parse all leave the defaults in place — the audit never refuses to run over its own configuration.
+Every threshold the static rules use is tunable, in an optional `audit:` section:
 
 ```yaml
 audit:
@@ -145,6 +162,17 @@ audit:
   deep_prompt_truncation: 2000   # --deep: max characters kept per excerpt sent to the LLM
   usage: true                    # scan this project's transcripts (--no-usage always wins)
 ```
+
+**The settings follow the audited surface, not the directory you typed the command in.**
+
+| scope | reads |
+|---|---|
+| project (default) | `<root>/armadai.yaml`, else `<root>/.armadai/config.yaml` — the first of the two that *exists* wins, whether or not it carries an `audit:` section |
+| global (`--global`) | `~/.config/armadai/config.yaml` — the user-level config, next to the library it configures |
+
+A global audit reads one fixed set of assets, so it has to reach one fixed verdict. Sourcing its thresholds from the working directory made that false: measured on one machine, the same global library reported **2 `R01` warnings** from a folder carrying `skill_token_threshold: 5` and **0** from a neutral one. `~/.config/armadai/config.yaml` already exists and holds the rest of the user-level configuration, so `audit:` simply joins it there.
+
+A missing file, a missing section, or YAML that fails to parse all leave the defaults in place — the audit never refuses to run over its own configuration.
 
 ## Observed usage
 
