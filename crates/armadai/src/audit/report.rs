@@ -1113,6 +1113,62 @@ mod tests {
         );
     }
 
+    /// `skipped` claims, in its own doc comment, to be "rendered in all three
+    /// output formats". Only the terminal was guarded: cutting the markdown
+    /// loop (`.take(0)`) or the HTML one left 752 tests green, and a
+    /// `--global --report audit.md` would then have announced "48 skills, 0
+    /// agents" without a word about the 77 agents it never read — the report
+    /// reading as "you have none", which is the exact failure the field
+    /// exists to prevent.
+    #[test]
+    fn both_file_formats_state_what_was_not_read() {
+        let mut r = report_with(vec![]);
+        r.skipped = vec![
+            "~/.config/armadai/agents (77 file(s)) — ArmadAI-format agents".to_string(),
+            "~/.claude/plugins/cache (17 skill(s)) — installed plugin skills".to_string(),
+        ];
+
+        let md = r.to_markdown();
+        for line in &r.skipped {
+            assert!(
+                md.contains(&format!("Not read: {line}")),
+                "the markdown report must state every omission, missing {line:?}:\n{md}"
+            );
+        }
+
+        let html = r.to_html();
+        for line in &r.skipped {
+            // `—` and `~` survive escaping; the `(` does not need it either,
+            // so the line appears verbatim.
+            assert!(
+                html.contains(&format!("Not read: {line}")),
+                "the HTML report must state every omission, missing {line:?}:\n{html}"
+            );
+        }
+    }
+
+    /// The HTML renderer resolves the title independently of the markdown one,
+    /// so a scope label that is right in one and wrong in the other is a
+    /// single-line mistake. A report that misnames its scope is a trap: the
+    /// two scopes carry identical rule codes over different assets.
+    #[test]
+    fn the_html_report_names_its_scope() {
+        let mut r = report_with(vec![]);
+        r.scope = crate::audit::AuditScope::Global;
+        let html = r.to_html();
+        assert!(
+            html.contains("armadai audit (global)"),
+            "a global HTML report must say so:\n{html}"
+        );
+
+        r.scope = crate::audit::AuditScope::Project;
+        let html = r.to_html();
+        assert!(
+            !html.contains("(global)"),
+            "and a project one must not claim it:\n{html}"
+        );
+    }
+
     #[test]
     fn deep_raw_with_backtick_fence_uses_longer_outer_fence() {
         let mut r = report_with(vec![]);
