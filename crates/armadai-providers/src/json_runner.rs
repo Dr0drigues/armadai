@@ -26,58 +26,92 @@ pub struct CliResponse {
     pub from_json: bool,
 }
 
+/// One CLI this module knows how to drive in JSON mode.
+///
+/// A single table rather than one `match` per accessor: `supports_json`
+/// gates how a stream is *parsed* while `json_mode_args` decides how the
+/// process is *spawned*, and two independent matches can silently disagree
+/// — a CLI spawned in JSON mode but parsed as text, or the reverse.
+struct JsonCli {
+    /// Command name, as it appears on `PATH` and in `command:`.
+    name: &'static str,
+    /// Flags that make the CLI answer in one JSON document.
+    output_flags: &'static [&'static str],
+    /// Full leading argv for streaming JSONL mode. The caller appends the
+    /// prompt as the last argument, so any flag that *takes* the prompt as
+    /// its value (`-p`) must come last here.
+    mode_args: &'static [&'static str],
+}
+
+const JSON_CLIS: &[JsonCli] = &[
+    JsonCli {
+        name: "claude",
+        output_flags: &["--output-format", "json"],
+        mode_args: &["-p", "--output-format", "stream-json", "--verbose"],
+    },
+    // NOTE: For Gemini, -p must be followed immediately by the prompt value,
+    // so -o comes BEFORE -p.
+    JsonCli {
+        name: "gemini",
+        output_flags: &["-o", "json"],
+        mode_args: &["-o", "stream-json", "-p"],
+    },
+    // `codex` with a bare positional forwards to its interactive UI; `exec`
+    // is the non-interactive subcommand.
+    JsonCli {
+        name: "codex",
+        output_flags: &["--json"],
+        mode_args: &["exec", "--json"],
+    },
+    // Copilot: -p takes a value, so put other flags before -p.
+    JsonCli {
+        name: "copilot",
+        output_flags: &["--output-format", "json"],
+        mode_args: &["--output-format", "json", "-p"],
+    },
+    // `opencode` with a bare positional reads it as a *project path*, not a
+    // prompt; `run` is the non-interactive subcommand.
+    JsonCli {
+        name: "opencode",
+        output_flags: &["--format", "json"],
+        mode_args: &["run", "--format", "json"],
+    },
+];
+
+/// Aider speaks no JSON: it is driven in text mode and its stdout is parsed
+/// as prose. Kept out of [`JSON_CLIS`] on purpose — being in that table is
+/// exactly what `supports_json` means.
+const AIDER_TEXT_MODE_ARGS: &[&str] = &["--yes", "--message"];
+
+fn json_cli(name: &str) -> Option<&'static JsonCli> {
+    JSON_CLIS.iter().find(|c| c.name == name)
+}
+
+/// Every CLI this module can drive in JSON mode.
+pub fn json_capable_clis() -> Vec<&'static str> {
+    JSON_CLIS.iter().map(|c| c.name).collect()
+}
+
 /// Get the JSON output flags for a provider.
 /// Returns None if the provider doesn't support JSON output.
 pub fn json_output_flags(provider: &str) -> Option<Vec<String>> {
-    match provider {
-        "claude" => Some(vec!["--output-format".to_string(), "json".to_string()]),
-        "gemini" => Some(vec!["-o".to_string(), "json".to_string()]),
-        "codex" => Some(vec!["--json".to_string()]),
-        "copilot" => Some(vec!["--output-format".to_string(), "json".to_string()]),
-        "opencode" => Some(vec!["--format".to_string(), "json".to_string()]),
-        // Aider and unknown CLIs: no JSON support
-        _ => None,
-    }
+    json_cli(provider).map(|c| c.output_flags.iter().map(|s| (*s).to_string()).collect())
 }
 
 /// Get the base CLI args for a provider in stream-JSON mode.
 /// Uses stream-json when available for real-time JSONL event streaming.
 pub fn json_mode_args(provider: &str) -> Vec<String> {
-    match provider {
-        "claude" => vec![
-            "-p".to_string(),
-            "--output-format".to_string(),
-            "stream-json".to_string(),
-            "--verbose".to_string(),
-        ],
-        // NOTE: For Gemini, -p must be followed immediately by the prompt value.
-        // The prompt is appended as the last arg by the caller, so we put -o BEFORE -p.
-        "gemini" => vec![
-            "-o".to_string(),
-            "stream-json".to_string(),
-            "-p".to_string(),
-        ],
-        "codex" => vec!["exec".to_string(), "--json".to_string()],
-        // Copilot: -p takes a value, so put other flags before -p
-        "copilot" => vec![
-            "--output-format".to_string(),
-            "json".to_string(),
-            "-p".to_string(),
-        ],
-        "opencode" => vec![
-            "run".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-        ],
-        // Aider: text mode fallback
-        "aider" => vec!["--yes".to_string(), "--message".to_string()],
-        _ => vec![],
-    }
+    let args: &[&str] = match json_cli(provider) {
+        Some(cli) => cli.mode_args,
+        None if provider == "aider" => AIDER_TEXT_MODE_ARGS,
+        None => &[],
+    };
+    args.iter().map(|s| (*s).to_string()).collect()
 }
 
 /// Check if a provider supports JSON output.
 pub fn supports_json(provider: &str) -> bool {
-    json_output_flags(provider).is_some()
+    json_cli(provider).is_some()
 }
 
 /// Extract the visible text from a CLI's raw JSONL stdout.
@@ -758,6 +792,31 @@ mod tests {
         assert_eq!(resp.content, "Just some text response");
         assert!(resp.tokens_in.is_none());
         assert!(!resp.from_json);
+    }
+
+    /// `json_capable_clis` is the inventory the rest of the workspace reads
+    /// to know which CLIs speak JSON; it must not disagree with the two
+    /// accessors built on the same table.
+    #[test]
+    fn the_json_inventory_agrees_with_both_accessors() {
+        let clis = json_capable_clis();
+        assert!(!clis.is_empty());
+        for name in &clis {
+            assert!(supports_json(name), "{name} listed but not supported");
+            assert!(
+                json_output_flags(name).is_some_and(|f| !f.is_empty()),
+                "{name} listed with no output flags"
+            );
+            assert!(
+                !json_mode_args(name).is_empty(),
+                "{name} listed with no stream-mode argv"
+            );
+        }
+        // Aider is driven in text mode: it has argv but no JSON support, so
+        // it must stay out of the inventory.
+        assert!(!clis.contains(&"aider"));
+        assert!(!json_mode_args("aider").is_empty());
+        assert!(!supports_json("aider"));
     }
 
     #[test]
