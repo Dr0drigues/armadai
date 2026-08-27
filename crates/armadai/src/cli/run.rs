@@ -1122,7 +1122,18 @@ async fn run_single_agent(
         });
         armadai_core::model_resolution::resolve_model_for_tier(&agent.metadata.provider, tier)
     } else {
-        raw_model
+        // The static tier placeholders (`latest`, `latest:fast`,
+        // `latest:pro`, `latest:max`) resolve here — this is the last gate
+        // before the string becomes a provider's model name on the ONLY
+        // path that does not go through an event-sourced effect runner
+        // (`--pipe`'s sequential loop). Until #376 they were passed through
+        // verbatim and an API provider was asked for a model literally
+        // called `latest:pro`.
+        armadai_core::model_resolution::resolve_tier_placeholder(
+            &raw_model,
+            &agent.metadata.provider,
+        )
+        .unwrap_or(raw_model)
     };
 
     let request = CompletionRequest {
@@ -1150,6 +1161,17 @@ async fn run_single_agent(
             let mut last_err = err;
             let mut fallback_resp = None;
             for fallback_model in &agent.metadata.model_fallback {
+                // A fallback entry is a model string like any other, so it
+                // gets the same tier resolution as the primary one (#376) —
+                // all the more so since `resolve_model_deprecations` above
+                // can itself rewrite a deprecated id INTO `latest:pro` (see
+                // `model_aliases`), which would otherwise reach the provider
+                // verbatim on the retry.
+                let fallback_model = armadai_core::model_resolution::resolve_tier_placeholder(
+                    fallback_model,
+                    &agent.metadata.provider,
+                )
+                .unwrap_or_else(|| fallback_model.clone());
                 let w = crate::cli::style::warn();
                 anstream::eprintln!(
                     "{w}[{agent_name}] Model unavailable, falling back to {fallback_model}...{w:#}"

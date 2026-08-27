@@ -28,7 +28,7 @@ use super::state::{ExecutionState, RunStatus, VoteRec};
 use crate::agent::Agent;
 #[cfg(test)]
 use crate::model_resolution::fallback_model_for_tier;
-use crate::model_resolution::{ModelTier, resolve_model_for_tier};
+use crate::model_resolution::{ModelTier, resolve_model_for_tier, resolve_tier_placeholder};
 use crate::orchestration::llm_agents::{
     RING_ACTION_INSTRUCTIONS, parse_ring_action, parse_vote_confidence,
 };
@@ -818,7 +818,13 @@ impl EffectRunner for RingEffectRunner {
             };
             resolve_model_for_tier(&agent_def.metadata.provider, tier)
         } else {
-            raw_model
+            // Every OTHER `latest:*` placeholder (`latest`, `latest:fast`,
+            // `latest:pro`, `latest:max`, …) has a tier that is known
+            // statically, so it is resolved right here — the last gate
+            // before the string becomes a provider's model name. Until #376
+            // this branch passed them through verbatim, and an API provider
+            // was asked for a model literally called `latest:pro`.
+            resolve_tier_placeholder(&raw_model, &agent_def.metadata.provider).unwrap_or(raw_model)
         };
 
         match ring_phase(state, &self.config) {
@@ -2133,6 +2139,34 @@ mod tests {
                 msg.contains("provider") && msg.contains("'a'"),
                 "expected a distinctive missing-provider message, got: {msg}"
             );
+        }
+
+        // A STATIC tier placeholder resolves to a concrete model too
+        // (#376). No `ModelRouted` is involved — its tier is known from the
+        // string alone — so the folded state below records no routing at
+        // all, exactly as on the real path. Uncached provider name for the
+        // same hermeticity reason as the `latest:auto` test below.
+        #[tokio::test]
+        async fn run_invoke_resolves_static_latest_tier_to_concrete_model() {
+            let mut agent = test_agent("a", "latest");
+            agent.metadata.provider = "test-only-uncached-provider".to_string();
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), agent);
+            let capturing = Arc::new(CapturingProvider::new("ACTION: PROPOSE\nCONTENT: x"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), capturing.clone() as Arc<dyn Provider>);
+            let runner =
+                RingEffectRunner::new(agents, providers, RingConfig::default(), BTreeMap::new());
+
+            let state = fold(&[run_started(&["a"]), E::LapStarted { lap: 0 }]);
+            runner.run_invoke("a", "task", &state, 1).await.unwrap();
+
+            // The bare `latest` placeholder means the Pro tier.
+            let expected =
+                fallback_model_for_tier("test-only-uncached-provider", ModelTier::Pro).to_string();
+            let sent = capturing.requests();
+            assert_eq!(sent[0].model, expected);
+            assert_ne!(sent[0].model, "latest");
         }
 
         // `"latest:auto"` resolves to a concrete model via `state.routed_tiers`,

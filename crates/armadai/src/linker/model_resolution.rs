@@ -24,18 +24,10 @@ pub fn classify_target(target: &str) -> TargetKind {
 
 /// Parse a `latest` placeholder into a tier.
 ///
-/// Returns `Some(tier)` if the model string is a `latest` placeholder,
-/// `None` if it is a concrete model name.
-///
-/// Syntax: `latest` (defaults to Pro), `latest:fast`, `latest:pro`, `latest:max`.
-pub fn parse_latest_placeholder(model: &str) -> Option<ModelTier> {
-    match model.trim() {
-        "latest" | "latest:pro" | "latest:medium" => Some(ModelTier::Pro),
-        "latest:fast" | "latest:low" => Some(ModelTier::Fast),
-        "latest:max" | "latest:high" => Some(ModelTier::Max),
-        _ => None,
-    }
-}
+/// Re-exported from core, where it moved in #376 so the `armadai run` path
+/// resolves the exact same tier table this linker does — an alias that
+/// `link` honours and `run` sends verbatim to the provider was that issue.
+pub use armadai_core::model_resolution::parse_latest_placeholder;
 
 /// Check whether a model string is a `latest:*` placeholder.
 pub fn is_latest_placeholder(model: &str) -> bool {
@@ -356,20 +348,6 @@ mod tests {
     }
 
     // ── Latest placeholder parsing ───────────────────────────────
-
-    #[test]
-    fn test_parse_latest_placeholder() {
-        assert_eq!(parse_latest_placeholder("latest"), Some(ModelTier::Pro));
-        assert_eq!(
-            parse_latest_placeholder("latest:fast"),
-            Some(ModelTier::Fast)
-        );
-        assert_eq!(parse_latest_placeholder("latest:pro"), Some(ModelTier::Pro));
-        assert_eq!(parse_latest_placeholder("latest:max"), Some(ModelTier::Max));
-        assert_eq!(parse_latest_placeholder("claude-sonnet-4-5-20250929"), None);
-        assert_eq!(parse_latest_placeholder("gemini-2.5-pro"), None);
-        assert_eq!(parse_latest_placeholder(""), None);
-    }
 
     #[test]
     fn test_is_latest_placeholder() {

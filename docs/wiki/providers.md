@@ -100,16 +100,23 @@ When using `armadai new -i` (interactive wizard), the model selection step fetch
 
 Direct HTTP calls to LLM APIs. Use these when you want explicit API control.
 
-> **Write a concrete model id for an API provider.** The tier placeholders
-> `latest:fast` / `latest:pro` / `latest:max` are resolved when ArmadAI
-> *generates a native CLI config* (`armadai link`) and by `armadai shell` — not
-> on the `armadai run` path, where only `latest:auto` is resolved (by the
-> router). A literal `latest:pro` on `provider: anthropic|openai|google|proxy`
-> — or on a unified name (`claude`, `gpt`, …) that has fallen back to the API
-> because its CLI is not installed — is sent to the server verbatim as the
-> model name, and the server rejects it. Measured on the current code, not a
-> hypothetical. Keeping `latest:pro` in an agent you link into a native CLI
-> config is fine and intended; it is the API path that takes it literally.
+> **Tier placeholders work on every path.** `latest` / `latest:fast` /
+> `latest:pro` / `latest:max` are resolved to a concrete model id everywhere
+> a model is needed: when ArmadAI *generates a native CLI config*
+> (`armadai link`), in `armadai shell`, and on the `armadai run` path — for a
+> single agent, for a `--pipe` chain, for `--orchestrate`, and for `--resume`
+> alike. The resolution uses the agent's own provider and the cached
+> [models.dev](https://models.dev) catalog, falling back to a built-in table
+> when the cache is absent, so no `latest:*` string is ever sent to a server
+> as a model name.
+>
+> `latest:auto` is the one placeholder resolved *per call* rather than up
+> front: its tier is chosen from the run's own input by the router
+> (configured under `routing:` in `armadai.yaml`).
+>
+> This was not always true — until #376 the `run` path sent the static tiers
+> verbatim, so a placeholder that worked under `armadai link` produced a
+> "model not found" under `armadai run`.
 
 ### Anthropic
 

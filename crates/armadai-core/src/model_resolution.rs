@@ -63,6 +63,47 @@ pub fn classify_model_tier(id: &str, provider: &str) -> Option<ModelTier> {
     }
 }
 
+/// Parse a **static** `latest` tier placeholder into its tier.
+///
+/// Syntax: `latest` (defaults to Pro), `latest:fast`/`latest:low`,
+/// `latest:pro`/`latest:medium`, `latest:max`/`latest:high`.
+///
+/// Returns `None` for a concrete model id — and, deliberately, for
+/// `latest:auto`: that placeholder's tier is not knowable statically. It
+/// depends on the run's own input and is resolved per call by
+/// [`crate::routing::route`], which is why every caller here treats it
+/// separately rather than folding it into this table.
+///
+/// Lives in core (rather than beside the linker, which was its only user
+/// until #376) because the run path needs the exact same table: a tier
+/// placeholder that `armadai link` resolves but `armadai run` sends
+/// verbatim to the provider is the defect #376 closed, and two tables would
+/// have let that divergence come back.
+pub fn parse_latest_placeholder(model: &str) -> Option<ModelTier> {
+    match model.trim() {
+        "latest" | "latest:pro" | "latest:medium" => Some(ModelTier::Pro),
+        "latest:fast" | "latest:low" => Some(ModelTier::Fast),
+        "latest:max" | "latest:high" => Some(ModelTier::Max),
+        _ => None,
+    }
+}
+
+/// Resolve a static `latest:*` tier placeholder into a concrete model id for
+/// `provider`.
+///
+/// Returns `None` when `model` is not a static placeholder — a concrete
+/// model id, or `latest:auto` — so a caller can keep its own handling for
+/// those two cases (`.unwrap_or(raw_model)` for the former, the router for
+/// the latter).
+///
+/// This is the last gate before a model string reaches a provider: every
+/// site that builds a `CompletionRequest` from an agent's declared model
+/// goes through it, so no `latest:*` placeholder other than `latest:auto`
+/// can be sent over the wire as a model name (#376).
+pub fn resolve_tier_placeholder(model: &str, provider: &str) -> Option<String> {
+    parse_latest_placeholder(model).map(|tier| resolve_model_for_tier(provider, tier))
+}
+
 /// Hardcoded fallback model for a given provider and tier.
 ///
 /// Used when the model registry cache is unavailable.
@@ -194,6 +235,57 @@ mod tests {
             "gpt-4o-mini"
         );
         assert_eq!(fallback_model_for_tier("openai", ModelTier::Max), "o3-pro");
+    }
+
+    // ── `latest:*` placeholders ──────────────────────────────────
+
+    #[test]
+    fn test_parse_latest_placeholder() {
+        assert_eq!(parse_latest_placeholder("latest"), Some(ModelTier::Pro));
+        assert_eq!(
+            parse_latest_placeholder("latest:fast"),
+            Some(ModelTier::Fast)
+        );
+        assert_eq!(parse_latest_placeholder("latest:pro"), Some(ModelTier::Pro));
+        assert_eq!(parse_latest_placeholder("latest:max"), Some(ModelTier::Max));
+        assert_eq!(parse_latest_placeholder("claude-sonnet-4-5-20250929"), None);
+        assert_eq!(parse_latest_placeholder("gemini-2.5-pro"), None);
+        assert_eq!(parse_latest_placeholder(""), None);
+    }
+
+    // `latest:auto` is NOT a static placeholder: its tier depends on the
+    // run's input, so it must fall through to the caller's router rather
+    // than silently resolving to Pro here.
+    #[test]
+    fn latest_auto_is_not_a_static_placeholder() {
+        assert_eq!(parse_latest_placeholder("latest:auto"), None);
+        assert_eq!(
+            resolve_tier_placeholder("latest:auto", "test-only-uncached-provider"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_tier_placeholder_maps_each_tier_and_passes_concrete_ids_through() {
+        // Uncached provider name so the hardcoded `fallback_model_for_tier`
+        // table is the deterministic answer, whatever the machine's
+        // models.dev cache holds.
+        let prov = "test-only-uncached-provider";
+        assert_eq!(
+            resolve_tier_placeholder("latest:fast", prov).as_deref(),
+            Some(fallback_model_for_tier(prov, ModelTier::Fast))
+        );
+        assert_eq!(
+            resolve_tier_placeholder("latest", prov).as_deref(),
+            Some(fallback_model_for_tier(prov, ModelTier::Pro))
+        );
+        assert_eq!(
+            resolve_tier_placeholder("latest:max", prov).as_deref(),
+            Some(fallback_model_for_tier(prov, ModelTier::Max))
+        );
+        // A concrete id is not a placeholder: `None` tells the caller to
+        // keep the string it already has.
+        assert_eq!(resolve_tier_placeholder("gpt-4o-mini", prov), None);
     }
 
     // ── Model tier classification ────────────────────────────────
