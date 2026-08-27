@@ -53,7 +53,7 @@ pub async fn execute(
         return execute_replay(&run_id, json, quiet, headless).await;
     }
     if let Some(run_id) = resume {
-        return execute_resume(&run_id, json, quiet, headless, max_content, no_tui).await;
+        return execute_resume(&run_id, json, quiet, headless, max_content, no_tui, dry_run).await;
     }
     let agent_name =
         agent_name.expect("clap ArgGroup guarantees agent is present when resume/replay are not");
@@ -245,10 +245,14 @@ async fn execute_resume(
     headless: bool,
     max_content: Option<usize>,
     no_tui: bool,
+    // `--dry-run` was silently dropped here until #378: the flag never
+    // reached this entry point at all, so `armadai run --resume <id>
+    // --dry-run` resumed for real and billed every remaining step.
+    dry_run: bool,
 ) -> anyhow::Result<()> {
     #[cfg(not(feature = "storage"))]
     {
-        let _ = (run_id, json, quiet, headless, max_content, no_tui);
+        let _ = (run_id, json, quiet, headless, max_content, no_tui, dry_run);
         anyhow::bail!("--resume requires the 'storage' feature (event log persistence)")
     }
 
@@ -279,6 +283,7 @@ async fn execute_resume(
             && !json
             && !quiet
             && !no_tui
+            && !dry_run
             && std::io::IsTerminal::is_terminal(&std::io::stdout());
 
         #[cfg(feature = "tui")]
@@ -294,7 +299,16 @@ async fn execute_resume(
                     // `false, false` for json/quiet: guaranteed by the
                     // `use_tui` gate above (mirrors `execute`'s own TUI
                     // closure, which hardcodes the same for `run_inner`).
-                    resume_run(&run_id_owned, &sink, false, false, max_content, false).await
+                    resume_run(
+                        &run_id_owned,
+                        &sink,
+                        false,
+                        false,
+                        max_content,
+                        false,
+                        false,
+                    )
+                    .await
                 },
                 None,
                 explicit_pattern,
@@ -319,7 +333,7 @@ async fn execute_resume(
         // `human_output` here means "not the TUI's alternate screen", not
         // "not machine output" (see `run_orchestrated_inner`'s identical
         // convention).
-        let result = resume_run(run_id, &sink, json, quiet, max_content, true).await;
+        let result = resume_run(run_id, &sink, json, quiet, max_content, true, dry_run).await;
 
         if let Err(e) = result {
             if headless {
@@ -362,6 +376,7 @@ async fn resume_run(
     quiet: bool,
     max_content: Option<usize>,
     human_output: bool,
+    dry_run: bool,
 ) -> anyhow::Result<()> {
     use crate::es_log::SqliteLog;
     use armadai_core::orchestration::es::bridge::synthetic_run_start;
@@ -488,6 +503,57 @@ async fn resume_run(
         let provider = create_provider(&agent)?;
         providers_map.insert(name.clone(), Arc::from(provider));
         agents_map.insert(name.clone(), agent);
+    }
+
+    // `--dry-run` (#378): everything a resume can check without spending is
+    // done by this point — the run exists, it is resumable, and the whole
+    // roster has been reloaded from the current project with each agent's
+    // provider actually built. Report it and stop before the engine gets a
+    // chance to dispatch anything.
+    if dry_run {
+        // `state.agents` — the roster exactly as the run recorded it in its
+        // own `RunStarted` — not `agents_map.keys()`, which is a
+        // `BTreeMap`'s alphabetical order. For `ring` the recorded order IS
+        // the circulation order (`run_ring_es` stores `agent_order`
+        // verbatim), so sorting it would preview an execution that is not
+        // the one that would happen. (`hierarchical` records its roster
+        // alphabetically already, from `agents.keys()`, and carries its
+        // coordinator separately — reading the record is right there too,
+        // it just changes nothing.)
+        let names: Vec<String> = state.agents.clone();
+        eprintln!(
+            "[dry-run] resume {run_id} — pattern '{pattern}', {} agent(s) reloaded: {}",
+            names.len(),
+            names.join(", ")
+        );
+        for name in &names {
+            let mut meta = agents_map[name].metadata.clone();
+            armadai_core::model_aliases::resolve_model_deprecations(
+                &mut meta.model,
+                &mut meta.model_fallback,
+            );
+            let model = match meta.model.as_deref() {
+                None => "(none declared)".to_string(),
+                Some("latest:auto") => "latest:auto (tier chosen per call)".to_string(),
+                Some(m) => {
+                    armadai_core::model_resolution::resolve_tier_placeholder(m, &meta.provider)
+                        .unwrap_or_else(|| m.to_string())
+                }
+            };
+            eprintln!(
+                "[dry-run]   {name} — provider={}, model={model}",
+                meta.provider
+            );
+        }
+        eprintln!(
+            "[dry-run] the remaining steps are decided by the engine as it runs, \
+             so they cannot be listed without executing them"
+        );
+        eprintln!("[dry-run] no provider was called; nothing was recorded or billed");
+        if !json {
+            println!("{}", names.join("\n"));
+        }
+        return Ok(());
     }
 
     let filtered_sink = quiet_max_content_sink(sink, quiet, max_content);
@@ -756,6 +822,27 @@ async fn run_inner(
         anstream::println!("{m}run {run_id}{m:#}");
     }
 
+    // `--dry-run` on the sequential path (#378). Placed AFTER the whole
+    // chain has been resolved — agent *and* provider, via the same
+    // [`load_chain`] pre-pass #366 gave the real run — and BEFORE the
+    // single-agent branch below, so it covers `armadai run <a>` as well as
+    // `--pipe`: the flag's own help text promises "0 tokens" without
+    // qualification, and until #378 that promise held only under
+    // `--orchestrate`. Everything else emitted `agent_start`/`agent_end`/
+    // `result` for every link, i.e. made and paid for every provider call
+    // the command claimed it would not make.
+    //
+    // Refusing exactly like the real pass is the point (#348's lesson from
+    // `unlink --dry-run`): a preview that cannot fail pre-checks nothing.
+    // Routing through `load_chain` is what buys that — an unresolvable
+    // agent, or one whose provider cannot be built, exits non-zero here
+    // with the same message and the same code the real run would give.
+    if dry_run {
+        let links = load_chain(&resolution, &chain)?;
+        report_dry_run_chain(&chain, &links, json);
+        return Ok(());
+    }
+
     // Single-agent direct execution (OH1 Lot 5, T5a): switched onto the
     // event-sourced `direct` engine (`run_direct_es`), wrapped in a
     // `SinkProjectingLog` so `AgentStart`/`AgentEnd`/`Route` observability
@@ -1013,12 +1100,28 @@ fn load_chain(resolution: &AgentResolution, chain: &[String]) -> anyhow::Result<
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            let position = format!("chain link {}/{} ('{name}')", i + 1, chain.len());
-            let (agent, warning) = load_agent_reporting_warning(resolution, name).map_err(|e| {
-                anyhow::anyhow!("{position} could not be resolved, so no agent was run: {e:#}")
-            })?;
-            let provider = create_provider(&agent).map_err(|e| {
-                anyhow::anyhow!("{position} has no usable provider, so no agent was run: {e:#}")
+            // The positional prefix exists so a failure on one of SEVERAL
+            // names on the command line says which one. With a single name
+            // there is nothing to count, and the prefix would make
+            // `armadai run <x> --dry-run` — which routes through here too
+            // since #378 — refuse in different words than the real
+            // single-agent pass it is previewing. So: no name to
+            // disambiguate, no prefix, and the resolver's own error is
+            // returned untouched.
+            let position = (chain.len() > 1)
+                .then(|| format!("chain link {}/{} ('{name}')", i + 1, chain.len()));
+            let (agent, warning) =
+                load_agent_reporting_warning(resolution, name).map_err(|e| match &position {
+                    Some(p) => {
+                        anyhow::anyhow!("{p} could not be resolved, so no agent was run: {e:#}")
+                    }
+                    None => e,
+                })?;
+            let provider = create_provider(&agent).map_err(|e| match &position {
+                Some(p) => {
+                    anyhow::anyhow!("{p} has no usable provider, so no agent was run: {e:#}")
+                }
+                None => e,
             })?;
             let warning = warning.and_then(|w| match w {
                 armadai_core::agent_source::LoadWarning::DeclarationsUnreadable(m) => {
@@ -1033,6 +1136,56 @@ fn load_chain(resolution: &AgentResolution, chain: &[String]) -> anyhow::Result<
             })
         })
         .collect()
+}
+
+/// Render a `--dry-run` preview of an already-resolved sequential chain: the
+/// links in execution order, each with the provider that would be used and
+/// the model string that would actually be sent.
+///
+/// Mirrors the orchestrated preview's shape (`run_orchestrated_inner`): a
+/// `[dry-run] …` summary plus the details on **stderr**, and the agent names
+/// one per line on **stdout** when not emitting JSON — so a script consuming
+/// either preview reads the same thing on stdout.
+///
+/// The model shown is the one the run would send, not the one written in the
+/// agent file: deprecated aliases are resolved (`model_aliases`) and so are
+/// the static tier placeholders (#376). `latest:auto` is the one that cannot
+/// be previewed — its tier is chosen from each link's own input, which for
+/// every link but the first is the previous link's output, i.e. exactly what
+/// a dry run refuses to compute — so it is reported as such rather than
+/// guessed.
+fn report_dry_run_chain(chain: &[String], links: &[ChainLink], json: bool) {
+    let n = chain.len();
+    eprintln!(
+        "[dry-run] sequential chain ({n} agent(s)): {}",
+        chain.join(", ")
+    );
+    for (i, (name, link)) in chain.iter().zip(links).enumerate() {
+        let mut meta = link.agent.metadata.clone();
+        armadai_core::model_aliases::resolve_model_deprecations(
+            &mut meta.model,
+            &mut meta.model_fallback,
+        );
+        let model = match meta.model.as_deref() {
+            None => "(none declared)".to_string(),
+            Some("latest:auto") => "latest:auto (tier chosen per call)".to_string(),
+            Some(m) => armadai_core::model_resolution::resolve_tier_placeholder(m, &meta.provider)
+                .unwrap_or_else(|| m.to_string()),
+        };
+        eprintln!(
+            "[dry-run]   {}/{n} {name} — provider={}, model={model}",
+            i + 1,
+            meta.provider
+        );
+        if let Some(w) = &link.warning {
+            let s = crate::cli::style::warn();
+            anstream::eprintln!("{s}[dry-run]   warn: {w}{s:#}");
+        }
+    }
+    eprintln!("[dry-run] no provider was called; nothing was recorded or billed");
+    if !json {
+        println!("{}", chain.join("\n"));
+    }
 }
 
 /// Execute a single agent with given input and configuration. Parameters represent

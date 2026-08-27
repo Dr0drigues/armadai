@@ -209,6 +209,25 @@ What stays where it was is *running*. A link that resolves and builds fine and t
 its call still fails part-way through the chain, and the earlier links' calls are already spent —
 that is inherent to running them.
 
+`--dry-run` stops right after this pass. It prints the links in execution order with the provider
+and the model each would use, and calls nothing:
+
+```
+[dry-run] sequential chain (3 agent(s)): reader, summariser, reviewer
+[dry-run]   1/3 reader — provider=cli, model=(none declared)
+[dry-run]   2/3 summariser — provider=anthropic, model=claude-sonnet-4-5-20250929
+[dry-run]   3/3 reviewer — provider=anthropic, model=latest:auto (tier chosen per call)
+[dry-run] no provider was called; nothing was recorded or billed
+```
+
+Because it is the same pass, the preview **refuses whatever the real run refuses**, with the same
+message and the same non-zero exit — an unresolvable link, a colliding name, a provider that
+cannot be built. A preview that cannot fail would pre-check nothing. This holds for a single agent
+(`armadai run <name> --dry-run`) and for `--resume` too, which previews the roster it reloaded and
+leaves the run resumable. `latest:auto` is the one thing a dry run cannot resolve: its tier is
+chosen from each link's own input, and for every link but the first that input is the previous
+link's output — precisely what a dry run declines to compute.
+
 ## Long compositions still get audited
 
 Composing several fragments is easy to do without noticing how long the result got. `armadai

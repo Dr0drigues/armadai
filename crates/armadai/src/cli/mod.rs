@@ -99,7 +99,10 @@ pub enum Command {
         /// C8: select agents whose tags/stacks intersect these (comma-separated)
         #[arg(long, value_name = "TAGS", value_delimiter = ',')]
         tags: Option<Vec<String>>,
-        /// C8: resolve and print the agent selection without executing (0 tokens)
+        /// Resolve agents, providers and models and print what would run,
+        /// without calling any provider (0 tokens). Refuses whatever the real
+        /// run refuses, with the same exit code. Works on every path: a single
+        /// agent, --pipe, --orchestrate and --resume.
         #[arg(long)]
         dry_run: bool,
         /// Disable the live orchestration TUI (force plain headless output)
