@@ -157,8 +157,9 @@ arguments.
 ```
 
 See [`docs/wiki/providers.md`](providers.md) for the complete list of
-unified names (`claude`, `gemini`, `gpt`, `aider`) and their CLI/API
-mapping.
+unified names and their CLI/API mapping. It has grown since this migration
+was written: `codex`, `copilot` and `opencode` are unified names too, and
+they are CLI-only (no API fallback).
 
 ### Migration steps
 
