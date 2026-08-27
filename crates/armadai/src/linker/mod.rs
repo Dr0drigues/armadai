@@ -346,6 +346,24 @@ mod tests {
             for name in supported_target_names() {
                 assert!(err.contains(name), "refusal must advertise '{name}': {err}");
             }
+
+            // And the converse. The loops above only prove advertised is a
+            // subset of buildable; *under*-advertising is the exact defect this
+            // derivation exists to prevent — `proxy` had silently dropped out
+            // of the provider message the same way. Measured before this
+            // existed: filtering `gemini` out of `supported_target_names()`
+            // left 746 tests green. This half iterates the enum, not the
+            // helper, so the helper cannot vouch for itself.
+            use clap::ValueEnum;
+            let sentence = supported_targets_sentence();
+            for target in LinkTarget::value_variants() {
+                let name = target.as_str();
+                assert!(
+                    supported_target_names().contains(&name),
+                    "link target '{name}' exists but is not advertised"
+                );
+                assert!(sentence.contains(name), "'{name}' missing from: {sentence}");
+            }
         }
 
         /// And a fifth: the model-resolution preview shown in the TUI's agent
@@ -567,7 +585,10 @@ mod tests {
     /// Run against **every** target, not just claude: a divergence that only
     /// shows in the codex projection is still a divergence.
     fn assert_projections_equal_across_targets(declared: &Agent, written: &Agent) {
-        for target in ["claude", "codex", "copilot", "gemini", "opencode"] {
+        for target in {
+            use clap::ValueEnum;
+            LinkTarget::value_variants().iter().map(|t| t.as_str())
+        } {
             let linker = create_linker(target).unwrap();
             let a = linker.generate(&[LinkAgent::from(declared)], None, &[]);
             let b = linker.generate(&[LinkAgent::from(written)], None, &[]);
