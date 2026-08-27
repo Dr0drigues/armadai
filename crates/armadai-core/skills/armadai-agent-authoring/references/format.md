@@ -47,7 +47,7 @@ Instead of hardcoding model names, use `latest:*` placeholders that resolve to t
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `provider` | string | **yes** | — | Provider backend: `anthropic`, `openai`, `google`, `gemini`, `cli`, `proxy`, `aider` |
+| `provider` | string | **yes** | — | Provider backend: an API (`anthropic`, `openai`, `google`, `proxy`), a unified tool name (`claude`, `gemini`, `codex`, `copilot`, `opencode`, `gpt`, `aider`), or `cli` for any other binary |
 | `model` | string | for API providers | — | Model identifier or `latest:*` placeholder (e.g., `latest:pro`, `latest:fast`) |
 | `command` | string | for `cli` provider | — | CLI command to execute |
 | `args` | string[] | no | — | Arguments for CLI command: `[--flag, value]` |

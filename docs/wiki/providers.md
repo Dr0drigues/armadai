@@ -6,12 +6,54 @@ ArmadAI supports three types of providers for executing agents — **API** (dire
 
 Use a tool name directly as the provider. ArmadAI auto-detects whether the CLI tool is installed and falls back to the API if not.
 
-| Provider | CLI tool | API fallback | Default CLI args |
+| Provider | Command `armadai run` spawns | API fallback when the CLI is missing | `armadai link --target` |
 |---|---|---|---|
-| `claude` | `claude` | Anthropic API | `-p --output-format text` |
-| `gemini` | `gemini` | Google API | `-p` |
-| `gpt` | `gpt` | OpenAI API | (none) |
-| `aider` | `aider` | OpenAI API | `--message` |
+| `claude` | `claude -p --output-format stream-json --verbose` | Anthropic API | yes |
+| `gemini` | `gemini -o stream-json -p` | Google API | yes |
+| `codex` | `codex exec --json` | none — CLI only | yes |
+| `copilot` | `copilot --output-format json -p` | none — CLI only | yes |
+| `opencode` | `opencode run --format json` | none — CLI only | yes |
+| `gpt` | `gpt` | OpenAI API | no |
+| `aider` | `aider --message` | OpenAI API | no |
+
+The prompt is always appended as the last argument, which is why any flag that
+*takes* the prompt as its value (`-p`) comes last.
+
+### Runnable and linkable are two different things
+
+They are easy to confuse, and confusing them is what produced
+[#369](https://github.com/Dr0drigues/armadai/issues/369):
+
+- **runnable** — `armadai run` accepts the name in an agent's `provider:` and
+  spawns (or calls) something for it. That is the first column above.
+- **linkable** — `armadai link --target <name>` generates that tool's *own*
+  native config from your ArmadAI agents, so the tool sees them as its own
+  sub-agents. That is the last column.
+
+Every link target is runnable. The reverse does not hold: `gpt` and `aider`
+run but have no linker, because neither has an ArmadAI-shaped agent config to
+generate.
+
+### CLI-only providers
+
+`codex`, `copilot` and `opencode` are **CLI-only**: their vendors expose the
+agent behind the command-line tool, not behind an API an ArmadAI agent's
+plain-text exchange could call. When the binary is not on `PATH`, ArmadAI says
+so instead of falling back to an unrelated API:
+
+```
+Error: Provider 'codex' runs the `codex` CLI, which was not found on PATH, and
+it has no API backend to fall back to. Install it, or point this agent at the
+executable with `command: /full/path/to/codex`.
+```
+
+### Any other tool
+
+A provider name only has to be known for ArmadAI to supply defaults. Any other
+command-line tool runs through `provider: cli` (see [CLI
+Provider](#cli-provider)), which spawns exactly what `command:` and `args:`
+say and nothing else — so a tool that needs a subcommand or a flag to answer
+non-interactively needs that flag written out in `args:`.
 
 ### Example
 
@@ -176,7 +218,14 @@ eventually.
 - timeout: 60
 ```
 
-> **Note:** For standard tools (claude, gemini, gpt, aider), prefer using the unified tool name (`provider: claude`) instead of `provider: cli` + `command: claude`. The unified names auto-detect CLI availability and provide sensible defaults.
+> **Note:** For the tools listed under [Unified Tool Names](#unified-tool-names-recommended)
+> — claude, gemini, codex, copilot, opencode, gpt, aider — prefer the unified
+> name (`provider: codex`) over `provider: cli` + `command: codex`. They are not
+> equivalent: the unified name auto-detects CLI availability, falls back to the
+> API where one exists, and supplies the tool's non-interactive argv, whereas
+> `provider: cli` with no `args:` passes the prompt alone — and `codex` with a
+> bare positional opens its interactive UI, while `opencode` reads it as a
+> project path.
 
 ## OpenAI-compatible servers
 

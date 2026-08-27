@@ -27,9 +27,9 @@ An ArmadAI agent file is a Markdown document with these required sections:
 
 ### Metadata Fields
 Required:
-- `provider:` — Unified tool name (`claude`, `gemini`, `gpt`, `aider`) OR explicit API (`anthropic`, `openai`, `google`) OR explicit CLI (`cli` + `command:` field).
+- `provider:` — Unified tool name (`claude`, `gemini`, `codex`, `copilot`, `opencode`, `gpt`, `aider`) OR explicit API (`anthropic`, `openai`, `google`, `proxy`) OR explicit CLI (`cli` + `command:` field).
 
-  Unified names auto-detect: if the CLI tool is installed on the user's system, it is used; otherwise ArmadAI falls back to the API. **Prefer unified names** — it's the most portable choice.
+  Unified names auto-detect: if the CLI tool is installed on the user's system, it is used; otherwise ArmadAI falls back to the API. `codex`, `copilot` and `opencode` are CLI-only — they have no API fallback, and ArmadAI says so when their binary is missing. **Prefer unified names** — it's the most portable choice.
 
   Don't use legacy syntax like `cli claude` — it is NOT supported. Use `provider: claude` instead.
 

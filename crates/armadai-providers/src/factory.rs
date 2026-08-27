@@ -3,23 +3,30 @@ use armadai_core::agent::Agent;
 use armadai_core::provider::Provider;
 
 /// Known tool definitions for unified provider names.
-/// Each entry maps a user-friendly name to its CLI command and API backend.
+/// Each entry maps a user-friendly name to its CLI command and, when one
+/// exists, the API backend to fall back to.
 struct ToolDef {
     /// CLI command name (e.g. "claude", "gemini")
     cli_command: &'static str,
-    /// Default CLI args for this tool
+    /// Default CLI args for this tool, used only when the CLI has no JSON
+    /// mode (`json_runner::supports_json`) and the agent declares no `args:`.
     cli_args: &'static [&'static str],
-    /// Corresponding API provider name (e.g. "anthropic")
-    api_backend: &'static str,
-    /// Environment variable for API key.
-    // Populated for every entry but never read anywhere today (API key
-    // resolution goes through `get_api_key` with the env var name inlined
-    // per-provider in `api/*.rs`). Previously silent under the bin's blanket
-    // `#[allow(dead_code)] mod providers;`; scoped here rather than adding an
-    // allow at the crate root (OH7 #252 Lot 4, pure refactor, no behavior
-    // change).
-    #[allow(dead_code)]
-    api_key_env: &'static str,
+    /// API provider to fall back to when the CLI is not installed, or `None`
+    /// for a CLI-only tool.
+    ///
+    /// `Option` rather than a required string because three of these tools
+    /// (`codex`, `copilot`, `opencode`) have no API ArmadAI can reach with an
+    /// agent's plain-text exchange: their vendors expose the agent behind the
+    /// CLI itself. Naming an arbitrary backend for them would turn "the
+    /// binary is missing" into "no API key found for openai", which sends the
+    /// user looking for the wrong thing (issue #369).
+    ///
+    /// The struct previously also carried an `api_key_env` field, never read
+    /// anywhere and silenced with `#[allow(dead_code)]`: API keys are
+    /// resolved by `get_api_key` with the variable name inlined per provider
+    /// in `create_api_provider`. Widening it to `Option` alongside this field
+    /// would have added three more never-read `None`s, so it was dropped.
+    api_backend: Option<&'static str>,
 }
 
 const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
@@ -28,8 +35,7 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
         ToolDef {
             cli_command: "claude",
             cli_args: &["-p", "--output-format", "text"],
-            api_backend: "anthropic",
-            api_key_env: "ANTHROPIC_API_KEY",
+            api_backend: Some("anthropic"),
         },
     ),
     (
@@ -37,8 +43,7 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
         ToolDef {
             cli_command: "gemini",
             cli_args: &["-p"],
-            api_backend: "google",
-            api_key_env: "GOOGLE_API_KEY",
+            api_backend: Some("google"),
         },
     ),
     (
@@ -46,8 +51,7 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
         ToolDef {
             cli_command: "gpt",
             cli_args: &[],
-            api_backend: "openai",
-            api_key_env: "OPENAI_API_KEY",
+            api_backend: Some("openai"),
         },
     ),
     (
@@ -55,8 +59,37 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
         ToolDef {
             cli_command: "aider",
             cli_args: &["--message"],
-            api_backend: "openai",
-            api_key_env: "OPENAI_API_KEY",
+            api_backend: Some("openai"),
+        },
+    ),
+    // CLI-only from here on: `armadai link` already writes a native config
+    // for each of these, and `armadai shell` already relays them in JSON
+    // mode, but `armadai run` used to refuse them as unknown (issue #369).
+    // Their `cli_args` are the non-interactive form each tool needs; in
+    // practice `create_unified_provider` uses `json_runner::json_mode_args`
+    // for all three, since they do speak JSON.
+    (
+        "codex",
+        ToolDef {
+            cli_command: "codex",
+            cli_args: &["exec"],
+            api_backend: None,
+        },
+    ),
+    (
+        "copilot",
+        ToolDef {
+            cli_command: "copilot",
+            cli_args: &["-p"],
+            api_backend: None,
+        },
+    ),
+    (
+        "opencode",
+        ToolDef {
+            cli_command: "opencode",
+            cli_args: &["run"],
+            api_backend: None,
         },
     ),
 ];
@@ -106,6 +139,22 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
 /// closing it.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
+/// Providers served over HTTP rather than by spawning a command.
+pub const API_PROVIDER_NAMES: &[&str] = &["anthropic", "openai", "google", "proxy"];
+
+/// The unified tool names `KNOWN_TOOLS` declares, in declaration order.
+pub fn known_tool_names() -> Vec<&'static str> {
+    KNOWN_TOOLS.iter().map(|(name, _)| *name).collect()
+}
+
+/// Every value `provider:` accepts.
+pub fn accepted_provider_names() -> Vec<&'static str> {
+    let mut names = vec!["cli"];
+    names.extend_from_slice(API_PROVIDER_NAMES);
+    names.extend(known_tool_names());
+    names
+}
+
 fn find_tool(name: &str) -> Option<&'static ToolDef> {
     KNOWN_TOOLS
         .iter()
@@ -117,13 +166,11 @@ fn find_tool(name: &str) -> Option<&'static ToolDef> {
 /// Returns the backend directly for explicit API providers.
 /// e.g. "claude" → "anthropic", "gemini" → "google", "anthropic" → "anthropic"
 pub fn api_backend_for_tool(name: &str) -> Option<&'static str> {
-    match name {
-        "anthropic" => Some("anthropic"),
-        "openai" => Some("openai"),
-        "google" => Some("google"),
-        "proxy" => Some("proxy"),
-        _ => find_tool(name).map(|t| t.api_backend),
-    }
+    API_PROVIDER_NAMES
+        .iter()
+        .find(|n| **n == name)
+        .copied()
+        .or_else(|| find_tool(name).and_then(|t| t.api_backend))
 }
 
 /// Check if a CLI command is available on the system.
@@ -140,10 +187,10 @@ fn cli_available(command: &str) -> bool {
 ///
 /// Provider resolution order:
 /// 1. `provider: cli` — explicit CLI mode, requires `command` field
-/// 2. `provider: anthropic|openai|google` — explicit API mode
-/// 3. `provider: claude|gemini|gpt|aider` — unified name, auto-detects:
+/// 2. A name from [`API_PROVIDER_NAMES`] — explicit API mode
+/// 3. A unified tool name from [`known_tool_names`] — auto-detects:
 ///    a. If the CLI tool is installed → use CLI provider
-///    b. Otherwise → fall back to API provider
+///    b. Otherwise → its API backend, or a report of the missing binary
 pub fn create_provider(agent: &Agent) -> anyhow::Result<Box<dyn Provider>> {
     let provider = agent.metadata.provider.as_str();
 
@@ -152,33 +199,46 @@ pub fn create_provider(agent: &Agent) -> anyhow::Result<Box<dyn Provider>> {
         "cli" => create_cli_provider(agent)?,
 
         // Explicit API providers
-        "anthropic" | "openai" | "google" | "proxy" => create_api_provider(provider, agent)?,
+        p if API_PROVIDER_NAMES.contains(&p) => create_api_provider(p, agent)?,
 
         // Unified tool names — auto-detect CLI vs API
-        _ => {
-            if let Some(tool) = find_tool(provider) {
-                create_unified_provider(provider, tool, agent)?
-            } else {
-                anyhow::bail!(
-                    "Unknown provider: '{provider}'. \
-                     Known providers: cli, anthropic, openai, google, claude, gemini, gpt, aider"
-                )
-            }
-        }
+        _ => match find_tool(provider) {
+            Some(tool) => create_unified_provider(provider, tool, agent)?,
+            None => anyhow::bail!("{}", unknown_provider_message(provider)),
+        },
     };
     Ok(wrap_rate_limited(agent, inner))
+}
+
+/// What to answer for a `provider:` value nothing recognises.
+///
+/// The list is derived from the inventories `create_provider` actually
+/// branches on, not typed out: the hand-written version drifted, advertising
+/// neither `proxy` (accepted since the gateway provider landed) nor `codex`,
+/// `copilot`, `opencode`.
+///
+/// It also names the generic escape hatch. `provider: cli` runs *any*
+/// binary, which is what a user with an unlisted tool needs to hear —
+/// listing only the known names left them believing the tool was
+/// unsupported.
+fn unknown_provider_message(provider: &str) -> String {
+    format!(
+        "Unknown provider: '{provider}'. Known providers: {}. \
+         Any other command-line tool can still be run as an agent with \
+         `provider: cli` plus `command: <binary>` (and `args:` if it needs \
+         flags to answer non-interactively).",
+        accepted_provider_names().join(", ")
+    )
 }
 
 /// Map an agent's `provider` string to the `config.rate_limits` key, or `None`
 /// for providers with no per-account API quota (pure CLI).
 fn rate_limit_key(provider: &str) -> Option<String> {
-    match provider {
-        "anthropic" | "openai" | "google" | "proxy" => Some(provider.to_string()),
-        "claude" => Some("anthropic".to_string()),
-        "gemini" => Some("google".to_string()),
-        "gpt" => Some("openai".to_string()),
-        _ => None, // "cli", unknown, or unified-resolving-to-cli
-    }
+    // The unified-name -> backend mapping already lives in `ToolDef`; a
+    // second copy here is how `codex` would silently acquire an OpenAI quota
+    // it never spends. `None` for "cli", for an unknown name, and for a
+    // CLI-only tool — none of them consume a per-account API quota.
+    api_backend_for_tool(provider).map(str::to_string)
 }
 
 /// Wrap `inner` with the shared per-provider limiter (from `config.rate_limits`)
@@ -243,12 +303,21 @@ fn create_unified_provider(
             args,
             timeout,
         )))
-    } else {
+    } else if let Some(backend) = tool.api_backend {
         tracing::info!(
-            "Provider '{name}': CLI '{command}' not found, falling back to API ({})",
-            tool.api_backend
+            "Provider '{name}': CLI '{command}' not found, falling back to API ({backend})"
         );
-        create_api_provider(tool.api_backend, agent)
+        create_api_provider(backend, agent)
+    } else {
+        // No API to fall back to. Say which binary was looked for and how to
+        // point at it — an arbitrary backend here would answer a missing
+        // binary with "no API key found", which is the wrong hunt.
+        anyhow::bail!(
+            "Provider '{name}' runs the `{command}` CLI, which was not found on PATH, \
+             and it has no API backend to fall back to. Install it, or point this \
+             agent at the executable with `command: /full/path/to/{}`.",
+            tool.cli_command
+        )
     }
 }
 
@@ -388,6 +457,41 @@ fn get_api_key(env_var: &str, provider_name: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use armadai_core::agent::AgentMetadata;
+
+    /// An agent carrying nothing but the two fields provider resolution
+    /// reads: `provider:` and (optionally) `command:`.
+    fn agent_with(provider: &str, command: Option<&str>) -> Agent {
+        Agent {
+            name: "t".into(),
+            source: std::path::PathBuf::from("t.md"),
+            metadata: AgentMetadata {
+                provider: provider.into(),
+                model: None,
+                command: command.map(str::to_string),
+                args: None,
+                temperature: 0.7,
+                max_tokens: None,
+                timeout: None,
+                tags: vec![],
+                stacks: vec![],
+                scope: vec![],
+                model_fallback: vec![],
+                cost_limit: None,
+                rate_limit: None,
+                context_window: None,
+                mode: None,
+                orchestration: None,
+                triggers: None,
+                ring_config: None,
+            },
+            system_prompt: String::new(),
+            instructions: None,
+            output_format: None,
+            pipeline: None,
+            context: None,
+        }
+    }
 
     #[test]
     fn find_known_tools() {
@@ -396,6 +500,152 @@ mod tests {
         assert!(find_tool("gpt").is_some());
         assert!(find_tool("aider").is_some());
         assert!(find_tool("unknown").is_none());
+    }
+
+    /// The three CLIs `armadai link` already writes a config for and the
+    /// shell already relays in JSON mode were absent from `KNOWN_TOOLS`, so
+    /// `armadai run` answered `Unknown provider: 'codex'` (issue #369).
+    ///
+    /// `command: echo` pins the CLI branch without depending on whether the
+    /// real tool happens to be installed on the machine running the suite.
+    #[test]
+    fn the_cli_only_tools_are_providers_run_accepts() {
+        for tool in ["codex", "copilot", "opencode"] {
+            let provider = create_provider(&agent_with(tool, Some("echo")))
+                .unwrap_or_else(|e| panic!("provider '{tool}' must build: {e}"));
+            assert_eq!(
+                provider.metadata().name,
+                "cli:echo",
+                "provider '{tool}' must resolve to the CLI branch"
+            );
+        }
+    }
+
+    /// Their canonical argv is the one `json_runner` already carries — the
+    /// whole reason `provider: cli` + `command: codex` is not an equivalent
+    /// workaround, since that path passes no flags at all and `codex` with a
+    /// bare positional opens its interactive UI.
+    #[test]
+    fn a_cli_only_tool_gets_its_canonical_json_argv() {
+        for (tool, expected) in [
+            ("codex", vec!["exec", "--json"]),
+            ("copilot", vec!["--output-format", "json", "-p"]),
+            ("opencode", vec!["run", "--format", "json"]),
+        ] {
+            let def = find_tool(tool).unwrap_or_else(|| panic!("{tool} must be a known tool"));
+            assert_eq!(
+                crate::json_runner::json_mode_args(def.cli_command),
+                expected,
+                "{tool} must be spawned with the argv the shell relay already uses"
+            );
+        }
+    }
+
+    /// A CLI-only tool has no API equivalent ArmadAI can reach. With the
+    /// binary missing the answer must name the binary and say so — not
+    /// dead-end in an API fallback that can only fail on a missing key.
+    #[test]
+    fn a_missing_cli_only_binary_is_reported_as_such() {
+        let missing = "this_command_does_not_exist_xyz";
+        assert!(!cli_available(missing));
+
+        for tool in ["codex", "copilot", "opencode"] {
+            let err = match create_provider(&agent_with(tool, Some(missing))) {
+                Ok(_) => panic!("'{tool}' built a provider with no binary present"),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                err.contains(missing),
+                "must name the binary looked for: {err}"
+            );
+            assert!(
+                err.contains("command:"),
+                "must say how to point at the binary: {err}"
+            );
+            assert!(
+                !err.contains("Unknown provider"),
+                "'{tool}' is a known provider: {err}"
+            );
+            assert!(
+                !err.contains("API_KEY"),
+                "'{tool}' has no API fallback, so no key is the answer: {err}"
+            );
+        }
+    }
+
+    /// The list `create_provider` advertises must be the list it accepts.
+    ///
+    /// Held as a literal on purpose: deriving the expectation from
+    /// `accepted_provider_names()` would make the test agree with any drift
+    /// of that function, which is the defect (`proxy` was accepted by
+    /// `create_provider` and missing from the message for as long as the
+    /// message was a hand-typed string).
+    #[test]
+    fn the_advertised_provider_names_are_exactly_the_accepted_ones() {
+        let expected = [
+            "cli",
+            "anthropic",
+            "openai",
+            "google",
+            "proxy",
+            "claude",
+            "gemini",
+            "gpt",
+            "aider",
+            "codex",
+            "copilot",
+            "opencode",
+        ];
+        let mut advertised = accepted_provider_names();
+        advertised.sort_unstable();
+        let mut want = expected.to_vec();
+        want.sort_unstable();
+        assert_eq!(advertised, want);
+
+        let message = match create_provider(&agent_with("nope-not-a-provider", None)) {
+            Ok(_) => panic!("a bogus provider name must be refused"),
+            Err(e) => e.to_string(),
+        };
+        for name in expected {
+            assert!(
+                message.contains(name),
+                "the refusal must advertise '{name}': {message}"
+            );
+        }
+    }
+
+    /// Every advertised name must reach its own branch: none of them may
+    /// come back as `Unknown provider`. The API ones legitimately fail on a
+    /// missing key here; that is a different, actionable answer.
+    #[test]
+    fn no_advertised_provider_name_falls_through_to_unknown() {
+        for name in accepted_provider_names() {
+            if let Err(e) = create_provider(&agent_with(name, Some("echo"))) {
+                let msg = e.to_string();
+                assert!(
+                    !msg.contains("Unknown provider"),
+                    "'{name}' is advertised but not accepted: {msg}"
+                );
+            }
+        }
+    }
+
+    /// The refusal must teach the escape hatch: any binary at all is
+    /// runnable through `provider: cli`, which the old message never said.
+    #[test]
+    fn the_refusal_teaches_the_generic_cli_escape_hatch() {
+        let message = match create_provider(&agent_with("some-other-tool", None)) {
+            Ok(_) => panic!("a bogus provider name must be refused"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            message.contains("provider: cli"),
+            "must name the escape hatch: {message}"
+        );
+        assert!(
+            message.contains("command:"),
+            "must name the field it needs: {message}"
+        );
     }
 
     #[test]
@@ -418,6 +668,13 @@ mod tests {
         // pure CLI: no per-provider quota key
         assert_eq!(rate_limit_key("cli"), None);
         assert_eq!(rate_limit_key("unknown-tool"), None);
+        // CLI-only tools bill through their own subscription, not through an
+        // ArmadAI-held API key: giving them a backend would also give them a
+        // shared quota bucket they never draw on.
+        for tool in ["codex", "copilot", "opencode"] {
+            assert_eq!(rate_limit_key(tool), None, "{tool}");
+            assert_eq!(api_backend_for_tool(tool), None, "{tool}");
+        }
     }
 
     /// `wrap_rate_limited` with an agent-level `rate_limit` throttles even
@@ -535,7 +792,6 @@ mod tests {
     #[cfg(feature = "api")]
     mod api_wiring {
         use super::*;
-        use armadai_core::agent::AgentMetadata;
         use armadai_core::test_support::IsolatedConfigDir;
 
         /// Redirect the config dir (so no real `providers.yaml`/secrets are
@@ -552,38 +808,6 @@ mod tests {
                 .fold(IsolatedConfigDir::enter(), |scope, (name, value)| {
                     scope.with_var(name, *value)
                 })
-        }
-
-        fn agent_with(provider: &str, command: Option<&str>) -> Agent {
-            Agent {
-                name: "t".into(),
-                source: std::path::PathBuf::from("t.md"),
-                metadata: AgentMetadata {
-                    provider: provider.into(),
-                    model: None,
-                    command: command.map(str::to_string),
-                    args: None,
-                    temperature: 0.7,
-                    max_tokens: None,
-                    timeout: None,
-                    tags: vec![],
-                    stacks: vec![],
-                    scope: vec![],
-                    model_fallback: vec![],
-                    cost_limit: None,
-                    rate_limit: None,
-                    context_window: None,
-                    mode: None,
-                    orchestration: None,
-                    triggers: None,
-                    ring_config: None,
-                },
-                system_prompt: String::new(),
-                instructions: None,
-                output_format: None,
-                pipeline: None,
-                context: None,
-            }
         }
 
         #[test]

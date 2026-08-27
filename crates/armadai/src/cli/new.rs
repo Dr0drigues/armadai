@@ -145,23 +145,12 @@ async fn interactive_create() -> anyhow::Result<()> {
     };
 
     // 3. Provider
-    let providers = [
-        "claude",
-        "gemini",
-        "gpt",
-        "aider",
-        "anthropic",
-        "openai",
-        "google",
-        "cli",
-        "proxy",
-    ];
     let provider_idx = Select::new()
         .with_prompt("Provider")
-        .items(providers)
+        .items(WIZARD_PROVIDER_CHOICES)
         .default(0)
         .interact()?;
-    let provider = providers[provider_idx];
+    let provider = WIZARD_PROVIDER_CHOICES[provider_idx];
 
     // 4. Model (filtered by provider)
     let model = prompt_model(provider).await?;
@@ -316,6 +305,30 @@ async fn interactive_create() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// The `provider:` values `armadai new -i` offers.
+///
+/// This is the same set `providers::factory::create_provider` accepts, and a
+/// test pins that: a name missing here is a provider the wizard cannot author
+/// an agent for, which is how `codex`, `copilot` and `opencode` stayed
+/// unreachable from the wizard after they became runnable (issue #369).
+///
+/// Order is UX, not inventory: the CLI-backed tools first (`claude` is the
+/// default), then the explicit API providers, then the generic escape hatch.
+pub(crate) const WIZARD_PROVIDER_CHOICES: &[&str] = &[
+    "claude",
+    "gemini",
+    "codex",
+    "copilot",
+    "opencode",
+    "gpt",
+    "aider",
+    "anthropic",
+    "openai",
+    "google",
+    "proxy",
+    "cli",
+];
 
 /// Prompt for model based on provider.
 /// Tries models.dev registry first (with cache), falls back to providers.yaml.

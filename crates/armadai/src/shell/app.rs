@@ -1176,7 +1176,10 @@ fn resolve_project_agent_from(start: &std::path::Path, name: &str) -> AgentLooku
 /// list of relayable names: the relay spawns whatever `command:` names, so a
 /// project is free to point a step at a CLI neither `json_runner` nor
 /// `factory` has heard of, and an allow-list would silently refuse those.
-const API_ONLY_PROVIDERS: [&str; 4] = ["anthropic", "openai", "google", "proxy"];
+///
+/// Read from `factory` rather than restated: a private copy here is one more
+/// provider inventory to keep in step with the others (issue #369).
+const API_ONLY_PROVIDERS: &[&str] = armadai_providers::factory::API_PROVIDER_NAMES;
 
 /// What this session can do with a loaded agent — data, not a spawn attempt.
 ///

@@ -81,6 +81,27 @@ pub trait Linker: Send + Sync {
     ) -> Vec<OutputFile>;
 }
 
+/// Every target `create_linker` can build, as a comma-separated list for an
+/// error message.
+///
+/// Derived from `LinkTarget` rather than typed out. Three separate messages
+/// (`create_linker`, `link`, `unlink`) each carried their own copy of the
+/// five names — the same shape as the `Unknown provider` message that had
+/// silently stopped advertising `proxy` (issue #369). A target added to the
+/// enum now reaches all three at once.
+pub fn supported_target_names() -> Vec<&'static str> {
+    use clap::ValueEnum;
+    LinkTarget::value_variants()
+        .iter()
+        .map(|t| t.as_str())
+        .collect()
+}
+
+/// The sentence every "no/unknown target" message ends with.
+pub fn supported_targets_sentence() -> String {
+    format!("Supported targets: {}", supported_target_names().join(", "))
+}
+
 /// Create a linker for the given target name.
 pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
     match target {
@@ -90,7 +111,8 @@ pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
         "gemini" => Ok(Box::new(GeminiLinker)),
         "opencode" => Ok(Box::new(OpencodeLinker)),
         _ => anyhow::bail!(
-            "Unknown link target: '{target}'. Supported targets: claude, codex, copilot, gemini, opencode"
+            "Unknown link target: '{target}'. {}",
+            supported_targets_sentence()
         ),
     }
 }
@@ -159,6 +181,207 @@ Follow this protocol for all responses:
 mod tests {
     use super::*;
     use armadai_core::agent::AgentMetadata;
+
+    /// The three provider inventories, checked against each other.
+    ///
+    /// They live in three crates and drifted apart unnoticed until a user hit
+    /// it (issue #369): `armadai link --target codex` wrote a config, the
+    /// shell relayed `codex` in JSON, and `armadai run` answered
+    /// `Unknown provider: 'codex'`. A comment saying "keep these in sync"
+    /// is what was there before; this is the same statement, executable.
+    mod provider_inventories {
+        use super::*;
+        use armadai_core::test_support::IsolatedConfigDir;
+        use armadai_providers::factory::{accepted_provider_names, create_provider};
+        use armadai_providers::json_runner::json_capable_clis;
+        use clap::ValueEnum;
+
+        /// An agent whose `provider:` is under test and whose `command:`
+        /// exists everywhere, so the CLI branch is reached regardless of
+        /// which tools happen to be installed on the machine.
+        fn agent_with_provider(provider: &str) -> Agent {
+            Agent {
+                name: "inventory-probe".into(),
+                source: std::path::PathBuf::from("probe.md"),
+                metadata: AgentMetadata {
+                    provider: provider.into(),
+                    model: None,
+                    command: Some("echo".into()),
+                    args: None,
+                    temperature: 0.7,
+                    max_tokens: None,
+                    timeout: None,
+                    tags: vec![],
+                    stacks: vec![],
+                    scope: vec![],
+                    model_fallback: vec![],
+                    cost_limit: None,
+                    rate_limit: None,
+                    context_window: None,
+                    mode: None,
+                    orchestration: None,
+                    triggers: None,
+                    ring_config: None,
+                },
+                system_prompt: String::new(),
+                instructions: None,
+                output_format: None,
+                pipeline: None,
+                context: None,
+            }
+        }
+
+        fn sorted(mut v: Vec<&str>) -> Vec<&str> {
+            v.sort_unstable();
+            v
+        }
+
+        /// Inventory 1 (`linker::LinkTarget`) vs inventory 2
+        /// (`factory::KNOWN_TOOLS`): writing a native config for a CLI is
+        /// worth nothing if `armadai run` then refuses the same name.
+        ///
+        /// `value_variants()` comes from the `ValueEnum` derive, so a target
+        /// added to the enum is in this loop without anyone remembering to
+        /// add it.
+        #[test]
+        fn every_link_target_is_a_provider_run_can_execute() {
+            // `create_provider` reads the user config for rate limits; keep
+            // it off the developer's real one.
+            let _cfg = IsolatedConfigDir::enter();
+            for target in LinkTarget::value_variants() {
+                let name = target.as_str();
+                let provider = create_provider(&agent_with_provider(name)).unwrap_or_else(|e| {
+                    panic!(
+                        "`armadai link --target {name}` writes a config for a CLI that \
+                         `armadai run` refuses: {e}"
+                    )
+                });
+                assert_eq!(
+                    provider.metadata().name,
+                    "cli:echo",
+                    "link target '{name}' must resolve to the CLI branch"
+                );
+            }
+        }
+
+        /// Inventory 3 (`json_runner`, the shell relay) vs inventory 2: a CLI
+        /// the shell can drive in JSON must be a name `armadai run` accepts,
+        /// or the same agent works in `armadai shell` and fails in
+        /// `armadai run`.
+        #[test]
+        fn every_json_relayable_cli_is_a_provider_run_can_execute() {
+            let _cfg = IsolatedConfigDir::enter();
+            for name in json_capable_clis() {
+                let provider = create_provider(&agent_with_provider(name)).unwrap_or_else(|e| {
+                    panic!("the shell relays '{name}' in JSON but `armadai run` refuses it: {e}")
+                });
+                assert_eq!(provider.metadata().name, "cli:echo", "'{name}'");
+            }
+        }
+
+        /// Inventory 1 vs inventory 3, both directions. These two sets being
+        /// equal is not a coincidence: a linker exists to configure a CLI
+        /// ArmadAI will then drive, and the shell drives it in JSON.
+        #[test]
+        fn the_link_targets_and_the_json_relayable_clis_are_the_same_set() {
+            let targets = sorted(
+                LinkTarget::value_variants()
+                    .iter()
+                    .map(|t| t.as_str())
+                    .collect(),
+            );
+            assert_eq!(targets, sorted(json_capable_clis()));
+        }
+
+        /// The remaining gap, pinned so widening it is a decision.
+        ///
+        /// `gpt` and `aider` are runnable but have no linker: neither writes
+        /// an ArmadAI-shaped agent config, so there is nothing to generate.
+        /// That is legitimate — unlike the codex/copilot/opencode gap, which
+        /// was not.
+        #[test]
+        fn the_only_runnable_tools_without_a_link_target_are_gpt_and_aider() {
+            let targets: Vec<&str> = LinkTarget::value_variants()
+                .iter()
+                .map(|t| t.as_str())
+                .collect();
+            let api_or_generic = ["cli", "anthropic", "openai", "google", "proxy"];
+            let orphans = sorted(
+                accepted_provider_names()
+                    .into_iter()
+                    .filter(|n| !targets.contains(n) && !api_or_generic.contains(n))
+                    .collect(),
+            );
+            assert_eq!(orphans, vec!["aider", "gpt"]);
+        }
+
+        /// The `armadai new -i` wizard is a fourth inventory: a provider the
+        /// wizard does not offer is one no interactive author can produce an
+        /// agent for, even though `run` accepts it.
+        #[test]
+        fn the_new_wizard_offers_exactly_the_providers_run_accepts() {
+            assert_eq!(
+                sorted(crate::cli::new::WIZARD_PROVIDER_CHOICES.to_vec()),
+                sorted(accepted_provider_names())
+            );
+        }
+
+        /// The names the "unknown target" messages advertise must be the
+        /// names `create_linker` can actually build.
+        ///
+        /// `link` and `unlink` print the same sentence from the same helper,
+        /// so this covers all three sites; before, each carried its own copy
+        /// of the five names.
+        #[test]
+        fn every_advertised_link_target_can_actually_be_built() {
+            for name in supported_target_names() {
+                let linker = create_linker(name)
+                    .unwrap_or_else(|e| panic!("target '{name}' is advertised but: {e}"));
+                assert_eq!(linker.name(), name);
+            }
+            let err = match create_linker("kilocode") {
+                Ok(_) => panic!("an unknown target must be refused"),
+                Err(e) => e.to_string(),
+            };
+            for name in supported_target_names() {
+                assert!(err.contains(name), "refusal must advertise '{name}': {err}");
+            }
+
+            // And the converse. The loops above only prove advertised is a
+            // subset of buildable; *under*-advertising is the exact defect this
+            // derivation exists to prevent — `proxy` had silently dropped out
+            // of the provider message the same way. Measured before this
+            // existed: filtering `gemini` out of `supported_target_names()`
+            // left 746 tests green. This half iterates the enum, not the
+            // helper, so the helper cannot vouch for itself.
+            use clap::ValueEnum;
+            let sentence = supported_targets_sentence();
+            for target in LinkTarget::value_variants() {
+                let name = target.as_str();
+                assert!(
+                    supported_target_names().contains(&name),
+                    "link target '{name}' exists but is not advertised"
+                );
+                assert!(sentence.contains(name), "'{name}' missing from: {sentence}");
+            }
+        }
+
+        /// And a fifth: the model-resolution preview shown in the TUI's agent
+        /// detail view must cover every target `link` can write, or it shows
+        /// the user a preview of something other than what will happen.
+        #[test]
+        fn the_model_resolution_preview_covers_every_link_target() {
+            let previewed: Vec<&str> = model_resolution::preview_model_resolution(Some("m"))
+                .into_iter()
+                .map(|(target, _)| target)
+                .collect();
+            let targets: Vec<&str> = LinkTarget::value_variants()
+                .iter()
+                .map(|t| t.as_str())
+                .collect();
+            assert_eq!(sorted(previewed), sorted(targets));
+        }
+    }
 
     #[test]
     fn test_slugify_simple() {
@@ -362,7 +585,10 @@ mod tests {
     /// Run against **every** target, not just claude: a divergence that only
     /// shows in the codex projection is still a divergence.
     fn assert_projections_equal_across_targets(declared: &Agent, written: &Agent) {
-        for target in ["claude", "codex", "copilot", "gemini", "opencode"] {
+        for target in {
+            use clap::ValueEnum;
+            LinkTarget::value_variants().iter().map(|t| t.as_str())
+        } {
             let linker = create_linker(target).unwrap();
             let a = linker.generate(&[LinkAgent::from(declared)], None, &[]);
             let b = linker.generate(&[LinkAgent::from(written)], None, &[]);
