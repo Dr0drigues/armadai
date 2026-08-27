@@ -52,6 +52,38 @@ Extra context injected at execution time.
 
 ## Sections Reference
 
+### Section boundaries
+
+A `##` section runs until the next heading of level **H1 or H2** — so it *owns* its
+sub-headings. `###`, `####` and deeper are structure **inside** the section and stay
+part of it:
+
+```markdown
+## System Prompt
+
+An agent file has these required sections:
+
+### Required Structure          ← part of System Prompt
+
+- `# Name`, `## Metadata`, `## System Prompt`
+
+### Optional Sections          ← still part of System Prompt
+
+- `## Instructions`, `## Output Format`
+
+## Instructions                 ← ends System Prompt
+```
+
+Two consequences worth knowing:
+
+- **Use sub-headings freely.** Long prompts read better with them, and nothing is lost.
+  (Before [#392](https://github.com/Dr0drigues/armadai/issues/392), a section ended at the
+  next heading of *any* level, so everything from the first `###` onwards was silently
+  dropped from the prompt `link` wrote and `run` sent.)
+- **A literal `##` line inside a section still ends it.** If your prompt needs to *show*
+  an H2 (documenting this very format, for instance), put it in a fenced code block —
+  fenced content is never read as a heading — or write it as bold text.
+
 ### Metadata (required)
 
 Key-value pairs configuring the agent's technical behavior.
