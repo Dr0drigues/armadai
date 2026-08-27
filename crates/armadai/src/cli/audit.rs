@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use crate::audit::{
+    AuditInput, AuditScope, GlobalLayout,
     deep::{DeepOutcome, available_cli, run_deep},
-    import_surfaces,
     proposal::generate_proposal,
+    reverse::ImportedConfig,
     rules::{AuditSettings, Severity},
-    run_audit,
 };
 use armadai_core::agent::{Agent, AgentMetadata};
 use armadai_core::provider::{ChatMessage, CompletionRequest};
@@ -83,31 +83,57 @@ fn call_deep_auditor(agent: &Agent, prompt: &str) -> anyhow::Result<String> {
     Ok(response.content)
 }
 
+/// What `--deep` is about to send, and — in global scope — whose material it
+/// is.
+///
+/// Returned as a `String` rather than printed inline so the wording is
+/// assertable: the two scopes cross a different privacy boundary, and a single
+/// shared sentence silently understated the wider one. In project scope the
+/// excerpts come from a repository's shared config; in global scope they are
+/// the user's own `~/.claude/CLAUDE.md` and the prompts of their global
+/// agents. That is the same boundary that kept `R03` out of the rule set, so
+/// the warning has to name it.
+fn deep_privacy_note(scope: AuditScope, cli: &str) -> String {
+    let mut note = format!(
+        "Note: --deep sends (secret-redacted) prompt excerpts, and any observed-usage \
+         finding message (U01-U04), to the '{cli}' CLI."
+    );
+    if scope == AuditScope::Global {
+        note.push_str(
+            " In global scope those excerpts are your own material: \
+             ~/.claude/CLAUDE.md and the prompts of your global agents, not a \
+             repository's shared config.",
+        );
+    }
+    note
+}
+
 /// Run the `--deep` LLM analysis pass and merge its outcome into `audit`.
 ///
 /// `cli` is the already-detected CLI name (or `None` if no supported LLM CLI
 /// was found in `PATH`); it is passed in rather than re-detected here so
 /// callers (and tests) can inject the detection result instead of mutating
 /// the process environment.
+///
+/// `config` is the surfaces the caller already imported, rather than a root
+/// to import again: the global scope has no single root to re-derive them
+/// from, and re-reading them was a third full pass over the same files.
 async fn apply_deep_pass(
     audit: &mut crate::audit::report::AuditReport,
-    root: &std::path::Path,
+    config: &ImportedConfig,
     settings: &AuditSettings,
     cli: Option<&str>,
 ) -> anyhow::Result<()> {
     let Some(cli) = cli else {
         anyhow::bail!("--deep requires an LLM CLI (claude, gemini); none found in PATH");
     };
-    let (_, config) = import_surfaces(root);
     let agent = build_deep_auditor(cli);
     let run = |prompt: &str| call_deep_auditor(&agent, prompt);
     let w = crate::cli::style::warn();
-    anstream::eprintln!(
-        "{w}  Note: --deep sends (secret-redacted) prompt excerpts, and any observed-usage \
-         finding message (U01-U04), to the '{cli}' CLI.{w:#}"
-    );
+    let note = deep_privacy_note(audit.scope, cli);
+    anstream::eprintln!("{w}  {note}{w:#}");
     match run_deep(
-        &config,
+        config,
         &audit.findings,
         settings.deep_prompt_truncation,
         run,
@@ -125,8 +151,14 @@ async fn apply_deep_pass(
     Ok(())
 }
 
+// One parameter per CLI flag, as every other command in this module does
+// (`run`, `link`, `unlink`): the dispatcher in `cli/mod.rs` destructures the
+// clap variant and forwards it, so an args struct here would only move the
+// arity one level up.
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
     path: Option<PathBuf>,
+    global: bool,
     report: Option<PathBuf>,
     min_severity: String,
     quiet: bool,
@@ -134,6 +166,9 @@ pub async fn execute(
     deep: bool,
     no_usage: bool,
 ) -> anyhow::Result<()> {
+    // The working root. In global scope it is not what gets audited, and no
+    // longer what tunes the thresholds either (see `settings` below) — it is
+    // only where `--propose` writes its pack, i.e. wherever the user stands.
     let root = match path {
         Some(p) => p,
         None => std::env::current_dir()?,
@@ -141,33 +176,61 @@ pub async fn execute(
     if !root.is_dir() {
         anyhow::bail!("not a directory: {}", root.display());
     }
-    let settings = AuditSettings::from_project(&root);
-    // Detect first: on the "nothing here" path, there is nothing to audit
+    // Thresholds follow the audited surface, not the working directory: a
+    // global audit read from `<cwd>/armadai.yaml` gave a different verdict on
+    // the same library depending on which folder it was launched from
+    // (measured: 2 `R01` warnings from a directory carrying
+    // `skill_token_threshold: 5`, 0 from a neutral one). The global library's
+    // own settings live with it, in `~/.config/armadai/config.yaml`.
+    let settings = if global {
+        AuditSettings::from_global()
+    } else {
+        AuditSettings::from_project(&root)
+    };
+    // Import first: on the "nothing here" path, there is nothing to audit
     // and nothing to propose, so the (potentially hundreds-of-megabytes)
-    // transcript scan below must never run for it. `config` is kept around
-    // so `--propose` can reuse it instead of importing the surfaces a
-    // second time.
-    let (detected, config) = import_surfaces(&root);
-    if detected.is_empty() {
+    // transcript scan below must never run for it. The imported surfaces are
+    // kept around so `--propose` and `--deep` reuse them instead of reading
+    // the same files a second and third time.
+    let input = if global {
+        // No `$HOME`, no `~`, nothing global to audit. Falling back to `.`
+        // reported the current repository's `.claude/` as the user's library,
+        // labelled `~/.claude` — a wrong answer indistinguishable from a right
+        // one, which is worse than a refusal.
+        let Some(layout) = GlobalLayout::from_env() else {
+            anyhow::bail!(
+                "--global audits what lives under ~, and $HOME is not set; \
+                 set it, or audit a path instead"
+            );
+        };
+        AuditInput::for_global(&layout)
+    } else {
+        AuditInput::for_project(&root)
+    };
+    if input.detected().is_empty() {
         let o = crate::cli::style::ok();
         let m = crate::cli::style::muted();
-        anstream::println!(
-            "{o}No native agentic configuration detected in{o:#} {m}{}.{m:#}",
-            root.display()
-        );
+        let where_ = match input.scope() {
+            AuditScope::Global => "your global library".to_string(),
+            AuditScope::Project => format!("{}", root.display()),
+        };
+        anstream::println!("{o}No native agentic configuration detected in{o:#} {m}{where_}.{m:#}");
         return Ok(());
     }
     // The flag always wins over the config key (`audit.usage`); the config
-    // key only takes effect when the flag is absent.
-    let usage_enabled = !no_usage && settings.usage;
+    // key only takes effect when the flag is absent. Global scope never
+    // scans: U01-U04 correlate *one project's* transcripts, and the global
+    // library belongs to no project — so the (potentially very large) scan is
+    // skipped outright rather than run and then ignored.
+    let usage_enabled = !global && !no_usage && settings.usage;
     // Scanned at most once here (only when something was detected and usage
     // measurement is enabled) and bound for the rest of the command —
     // transcripts can run into the hundreds of megabytes.
     let usage = usage_enabled.then(|| crate::audit::usage::scan(&root));
     let usage = usage.filter(|o| !o.is_empty());
-    let mut audit = run_audit(&root, &settings, usage.as_ref());
+    let mut audit = input.analyse(&settings, usage.as_ref());
     if deep {
-        apply_deep_pass(&mut audit, &root, &settings, available_cli()).await?;
+        apply_deep_pass(&mut audit, input.config(), &settings, available_cli()).await?;
     }
     audit.print_terminal(min_severity_from(&min_severity, quiet));
     if let Some(out) = report {
@@ -195,7 +258,7 @@ pub async fn execute(
         }
     }
     if propose {
-        let summary = generate_proposal(&root, &config)?;
+        let summary = generate_proposal(&root, input.config())?;
         anstream::println!();
         let o = crate::cli::style::ok();
         let m = crate::cli::style::muted();
@@ -331,6 +394,7 @@ mod tests {
     async fn execute_fails_on_missing_path() {
         let result = execute(
             Some(PathBuf::from("/nonexistent/xyz")),
+            false,
             None,
             "info".to_string(),
             false,
@@ -351,6 +415,7 @@ mod tests {
         std::fs::write(agents.join("bad.md"), "---\nname: [broken\n---\nBody").unwrap();
         let result = execute(
             Some(dir.path().to_path_buf()),
+            false,
             None,
             "info".to_string(),
             false,
@@ -376,6 +441,7 @@ mod tests {
         let report_path = dir.path().join("audit.md");
         let result = execute(
             Some(dir.path().to_path_buf()),
+            false,
             Some(report_path.clone()),
             "info".to_string(),
             false,
@@ -403,6 +469,7 @@ mod tests {
         let report_path = dir.path().join("audit.html");
         let result = execute(
             Some(dir.path().to_path_buf()),
+            false,
             Some(report_path.clone()),
             "info".to_string(),
             false,
@@ -429,6 +496,7 @@ mod tests {
         .unwrap();
         let result = execute(
             Some(dir.path().to_path_buf()),
+            false,
             None,
             "info".to_string(),
             false,
@@ -453,6 +521,7 @@ mod tests {
         let report_path = project.path().join("audit.md");
         let result = execute(
             Some(project.path().to_path_buf()),
+            false,
             Some(report_path.clone()),
             "info".to_string(),
             false,
@@ -475,6 +544,7 @@ mod tests {
         let report_path = project.path().join("audit.md");
         let result = execute(
             Some(project.path().to_path_buf()),
+            false,
             Some(report_path.clone()),
             "info".to_string(),
             false,
@@ -503,6 +573,7 @@ mod tests {
         let report_path = project.path().join("audit.md");
         let result = execute(
             Some(project.path().to_path_buf()),
+            false,
             Some(report_path.clone()),
             "info".to_string(),
             false,
@@ -531,6 +602,7 @@ mod tests {
         let report_path = project.path().join("audit.md");
         let result = execute(
             Some(project.path().to_path_buf()),
+            false,
             Some(report_path.clone()),
             "info".to_string(),
             false,
@@ -545,6 +617,33 @@ mod tests {
         assert!(!md.contains("U01") && !md.contains("U02"), "{md}");
     }
 
+    /// The two scopes cross a different privacy boundary, and the warning has
+    /// to say which one. A single shared sentence understated the global case:
+    /// it named "prompt excerpts" while what actually leaves the machine is
+    /// the user's own instructions file and their personal agents' prompts.
+    #[test]
+    fn the_deep_warning_names_whose_material_leaves_the_machine() {
+        let project = deep_privacy_note(AuditScope::Project, "claude");
+        assert!(
+            project.contains("'claude' CLI"),
+            "the target CLI must be named: {project}"
+        );
+        assert!(
+            !project.contains("global"),
+            "a project run must not claim to send the user's own library: {project}"
+        );
+
+        let global = deep_privacy_note(AuditScope::Global, "claude");
+        assert!(
+            global.contains("~/.claude/CLAUDE.md"),
+            "a global run must name the user's own instructions file: {global}"
+        );
+        assert!(
+            global.contains("global agents"),
+            "and the prompts of their global agents: {global}"
+        );
+    }
+
     #[tokio::test]
     async fn deep_pass_without_cli_errors_explicitly() {
         let dir = tempfile::tempdir().unwrap();
@@ -552,8 +651,9 @@ mod tests {
         std::fs::create_dir_all(&agents).unwrap();
         std::fs::write(agents.join("a.md"), "---\nname: a\ndescription: d\n---\nP.").unwrap();
         let settings = AuditSettings::from_project(dir.path());
-        let mut audit = run_audit(dir.path(), &settings, None);
-        let err = apply_deep_pass(&mut audit, dir.path(), &settings, None)
+        let input = AuditInput::for_project(dir.path());
+        let mut audit = input.analyse(&settings, None);
+        let err = apply_deep_pass(&mut audit, input.config(), &settings, None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("--deep requires an LLM CLI"));

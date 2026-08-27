@@ -17,11 +17,21 @@ use super::{AuditContext, Finding, Severity};
 /// R01 — a `SKILL.md` past the token threshold whose skill directory has no
 /// `references/` at all.
 ///
-/// Size alone is a bad signal, measured: across 460 real skills, 52% of those
-/// above the p90 have a `references/` directory against 32% below it — large
-/// skills are *more* often split, not less. So both conditions are required,
-/// which is also what keeps a correctly-structured 41795-word skill out of
-/// the report.
+/// Both conditions are required, for a definitional reason rather than a
+/// statistical one: a skill that already has a `references/` directory has
+/// used the mechanism this rule's suggestion would recommend, so flagging it
+/// would be advice with no action attached. That also keeps a
+/// correctly-structured 10087-token skill out of the report.
+///
+/// An earlier version of this comment justified the second condition
+/// statistically — "52% of skills above the p90 carry a `references/` against
+/// 32% below it, so large skills are *more* often split". That was measured on
+/// a 461-file corpus that was 88% synced catalogue. Re-measured on the corpus
+/// that is actually auditable — the 48 skills installed on the same machine —
+/// the contrast disappears: 75% above the p90 have `references/` against 77%
+/// at or below it, on 4 samples and 44. There is no signal there, and a
+/// 4-sample rate was never one. The rule is right; that argument for it was
+/// not.
 ///
 /// Counterpart of `A05` for skills (`A05` covers agents' `system_prompt`).
 /// `A09` validates a skill's structure but never its size.
@@ -615,13 +625,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = config_of(vec![skill_on_disk(dir.path(), "heavy", 5000)]);
         let settings = AuditSettings::default();
-        let findings = crate::audit::rules::run_rules(&ctx_for(&config, &settings));
-        let r01: Vec<_> = findings.iter().filter(|f| f.rule == "R01").collect();
-        assert_eq!(
-            r01.len(),
-            1,
-            "run_rules must emit R01; all findings: {findings:?}"
-        );
+        // Both scopes: an `R` rule reads the assets themselves, so it must be
+        // registered for the global library exactly as for a project — the
+        // global scope is the *only* one where real skills are found (measured:
+        // three real projects declare zero local skills against 48 installed
+        // globally), so a rule registered for `Project` alone would be inert
+        // where it matters most.
+        for scope in [
+            crate::audit::AuditScope::Project,
+            crate::audit::AuditScope::Global,
+        ] {
+            let findings = crate::audit::rules::run_rules(&ctx_for(&config, &settings), scope);
+            let r01: Vec<_> = findings.iter().filter(|f| f.rule == "R01").collect();
+            assert_eq!(
+                r01.len(),
+                1,
+                "run_rules must emit R01 in {scope:?} scope; all findings: {findings:?}"
+            );
+        }
     }
 
     // ---- R02 -------------------------------------------------------------
@@ -964,13 +985,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = instructions_saying(dir.path(), "See `src/gone/mod.rs`.");
         let settings = AuditSettings::default();
-        let findings = crate::audit::rules::run_rules(&ctx_for(&config, &settings));
-        let r02: Vec<_> = findings.iter().filter(|f| f.rule == "R02").collect();
-        assert_eq!(
-            r02.len(),
-            1,
-            "run_rules must emit R02; all findings: {findings:?}"
-        );
+        // Both scopes: an `R` rule reads the assets themselves, so it must be
+        // registered for the global library exactly as for a project — the
+        // global scope is the *only* one where real skills are found (measured:
+        // three real projects declare zero local skills against 48 installed
+        // globally), so a rule registered for `Project` alone would be inert
+        // where it matters most.
+        for scope in [
+            crate::audit::AuditScope::Project,
+            crate::audit::AuditScope::Global,
+        ] {
+            let findings = crate::audit::rules::run_rules(&ctx_for(&config, &settings), scope);
+            let r02: Vec<_> = findings.iter().filter(|f| f.rule == "R02").collect();
+            assert_eq!(
+                r02.len(),
+                1,
+                "run_rules must emit R02 in {scope:?} scope; all findings: {findings:?}"
+            );
+        }
     }
 
     // ---- R04 -------------------------------------------------------------
@@ -1061,12 +1093,23 @@ mod tests {
         // so this assertion depends on the registry alone.
         let config = instructions_saying(dir.path(), &"x".repeat(400));
         let settings = AuditSettings::default();
-        let findings = crate::audit::rules::run_rules(&ctx_for(&config, &settings));
-        let r04: Vec<_> = findings.iter().filter(|f| f.rule == "R04").collect();
-        assert_eq!(
-            r04.len(),
-            1,
-            "run_rules must emit R04; all findings: {findings:?}"
-        );
+        // Both scopes: an `R` rule reads the assets themselves, so it must be
+        // registered for the global library exactly as for a project — the
+        // global scope is the *only* one where real skills are found (measured:
+        // three real projects declare zero local skills against 48 installed
+        // globally), so a rule registered for `Project` alone would be inert
+        // where it matters most.
+        for scope in [
+            crate::audit::AuditScope::Project,
+            crate::audit::AuditScope::Global,
+        ] {
+            let findings = crate::audit::rules::run_rules(&ctx_for(&config, &settings), scope);
+            let r04: Vec<_> = findings.iter().filter(|f| f.rule == "R04").collect();
+            assert_eq!(
+                r04.len(),
+                1,
+                "run_rules must emit R04 in {scope:?} scope; all findings: {findings:?}"
+            );
+        }
     }
 }

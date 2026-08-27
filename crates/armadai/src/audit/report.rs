@@ -6,6 +6,10 @@ use super::rules::{Finding, Severity};
 /// Assembled result of one audit run.
 pub struct AuditReport {
     pub root: PathBuf,
+    /// Which surface this report describes. A report file that does not say
+    /// whether it covers a repository or the user's whole library is a trap:
+    /// the two carry the same rule codes over different assets.
+    pub scope: crate::audit::AuditScope,
     pub detected: Vec<String>,
     pub agent_count: usize,
     pub skill_count: usize,
@@ -15,6 +19,10 @@ pub struct AuditReport {
     pub deep_raw: Option<String>,
     /// Observed usage, when transcripts were found for this project.
     pub usage: Option<crate::audit::usage::UsageFacts>,
+    /// Locations this run deliberately did not read, each with its reason.
+    /// Rendered in all three output formats: an asset pile the audit skips
+    /// has to be a stated omission, or the report reads as "you have none".
+    pub skipped: Vec<String>,
 }
 
 /// Sorted, truncated view data shared by `AuditReport::usage_markdown` and
@@ -60,6 +68,15 @@ impl AuditReport {
 
     fn count(&self, s: Severity) -> usize {
         self.findings.iter().filter(|f| f.severity == s).count()
+    }
+
+    /// `armadai audit` for a project, `armadai audit (global)` for the user
+    /// library — the one word that tells the two reports apart.
+    fn title(&self) -> &'static str {
+        match self.scope {
+            crate::audit::AuditScope::Project => "armadai audit",
+            crate::audit::AuditScope::Global => "armadai audit (global)",
+        }
     }
 
     fn summary_line(&self) -> String {
@@ -323,7 +340,7 @@ impl AuditReport {
     /// stderr, so this only ever writes to stdout.
     pub fn print_terminal(&self, min_severity: Severity) {
         let h = crate::cli::style::header();
-        anstream::println!("{h}armadai audit - {}{h:#}", self.root.display());
+        anstream::println!("{h}{} - {}{h:#}", self.title(), self.root.display());
         let m = crate::cli::style::muted();
         let a = crate::cli::style::accent();
         anstream::println!(
@@ -332,6 +349,9 @@ impl AuditReport {
             self.agent_count,
             self.skill_count
         );
+        for line in &self.skipped {
+            anstream::println!("  {m}Not read:{m:#} {m}{line}{m:#}");
+        }
         self.print_usage();
         for severity in [Severity::Critical, Severity::Warning, Severity::Info] {
             if severity > min_severity {
@@ -413,7 +433,7 @@ impl AuditReport {
 
     pub fn to_markdown(&self) -> String {
         let mut md = String::new();
-        let _ = writeln!(md, "# armadai audit — {}\n", self.root.display());
+        let _ = writeln!(md, "# {} — {}\n", self.title(), self.root.display());
         let _ = writeln!(
             md,
             "Detected: {} ({} agents, {} skills)\n",
@@ -421,6 +441,9 @@ impl AuditReport {
             self.agent_count,
             self.skill_count
         );
+        for line in &self.skipped {
+            let _ = writeln!(md, "Not read: {line}\n");
+        }
         let _ = writeln!(md, "**Summary: {}**\n", self.summary_line());
         md.push_str(&self.usage_markdown());
         if !self.findings.is_empty() {
@@ -519,6 +542,7 @@ impl AuditReport {
     pub fn to_html(&self) -> String {
         let root = html_escape(&self.root.display().to_string());
         let detected = html_escape(&self.detected.join(", "));
+        let title = self.title();
         let mut html = String::new();
         let _ = write!(
             html,
@@ -527,19 +551,24 @@ impl AuditReport {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>armadai audit — {root}</title>
+<title>{title} — {root}</title>
 <style>
 {css}
 </style>
 </head>
 <body>
 <header>
-<h1>armadai audit — <code>{root}</code></h1>
+<h1>{title} — <code>{root}</code></h1>
 <p class="detected">Detected: {detected} ({agent_count} agent(s), {skill_count} skill(s))</p>
-</header>
+{skipped}</header>
 <p class="summary"><strong>Summary: {summary}</strong></p>
 "#,
             css = HTML_CSS,
+            skipped = self
+                .skipped
+                .iter()
+                .map(|l| format!("<p class=\"detected\">Not read: {}</p>\n", html_escape(l)))
+                .collect::<String>(),
             agent_count = self.agent_count,
             skill_count = self.skill_count,
             summary = html_escape(&self.summary_line()),
@@ -821,12 +850,14 @@ mod tests {
     fn report_with(findings: Vec<Finding>) -> AuditReport {
         AuditReport {
             root: ".".into(),
+            scope: crate::audit::AuditScope::Project,
             detected: vec!["claude".into()],
             agent_count: 2,
             skill_count: 1,
             findings,
             deep_raw: None,
             usage: None,
+            skipped: Vec::new(),
         }
     }
 
@@ -1001,12 +1032,14 @@ mod tests {
 
         let report = AuditReport {
             root: std::path::PathBuf::from("/p"),
+            scope: crate::audit::AuditScope::Project,
             detected: vec!["claude".to_string()],
             agent_count: 1,
             skill_count: 0,
             findings: vec![],
             deep_raw: None,
             usage: Some(usage),
+            skipped: Vec::new(),
         };
         let md = report.to_markdown();
         assert!(md.contains("Observed usage"), "{md}");
@@ -1026,12 +1059,14 @@ mod tests {
 
         let report = AuditReport {
             root: std::path::PathBuf::from("/p"),
+            scope: crate::audit::AuditScope::Project,
             detected: vec!["claude".to_string()],
             agent_count: 1,
             skill_count: 0,
             findings: vec![],
             deep_raw: None,
             usage: Some(usage),
+            skipped: Vec::new(),
         };
         let html = report.to_html();
         assert!(html.contains("Observed usage"), "{html}");
@@ -1057,12 +1092,14 @@ mod tests {
         }
         let report = AuditReport {
             root: std::path::PathBuf::from("/p"),
+            scope: crate::audit::AuditScope::Project,
             detected: vec!["claude".to_string()],
             agent_count: 12,
             skill_count: 0,
             findings: vec![],
             deep_raw: None,
             usage: Some(usage),
+            skipped: Vec::new(),
         };
         let md = report.to_markdown();
         assert!(
@@ -1073,6 +1110,62 @@ mod tests {
         assert!(
             html.contains("+2 others"),
             "the HTML section must carry the same indication: {html}"
+        );
+    }
+
+    /// `skipped` claims, in its own doc comment, to be "rendered in all three
+    /// output formats". Only the terminal was guarded: cutting the markdown
+    /// loop (`.take(0)`) or the HTML one left 752 tests green, and a
+    /// `--global --report audit.md` would then have announced "48 skills, 0
+    /// agents" without a word about the 77 agents it never read — the report
+    /// reading as "you have none", which is the exact failure the field
+    /// exists to prevent.
+    #[test]
+    fn both_file_formats_state_what_was_not_read() {
+        let mut r = report_with(vec![]);
+        r.skipped = vec![
+            "~/.config/armadai/agents (77 file(s)) — ArmadAI-format agents".to_string(),
+            "~/.claude/plugins/cache (17 skill(s)) — installed plugin skills".to_string(),
+        ];
+
+        let md = r.to_markdown();
+        for line in &r.skipped {
+            assert!(
+                md.contains(&format!("Not read: {line}")),
+                "the markdown report must state every omission, missing {line:?}:\n{md}"
+            );
+        }
+
+        let html = r.to_html();
+        for line in &r.skipped {
+            // `—` and `~` survive escaping; the `(` does not need it either,
+            // so the line appears verbatim.
+            assert!(
+                html.contains(&format!("Not read: {line}")),
+                "the HTML report must state every omission, missing {line:?}:\n{html}"
+            );
+        }
+    }
+
+    /// The HTML renderer resolves the title independently of the markdown one,
+    /// so a scope label that is right in one and wrong in the other is a
+    /// single-line mistake. A report that misnames its scope is a trap: the
+    /// two scopes carry identical rule codes over different assets.
+    #[test]
+    fn the_html_report_names_its_scope() {
+        let mut r = report_with(vec![]);
+        r.scope = crate::audit::AuditScope::Global;
+        let html = r.to_html();
+        assert!(
+            html.contains("armadai audit (global)"),
+            "a global HTML report must say so:\n{html}"
+        );
+
+        r.scope = crate::audit::AuditScope::Project;
+        let html = r.to_html();
+        assert!(
+            !html.contains("(global)"),
+            "and a project one must not claim it:\n{html}"
         );
     }
 

@@ -181,17 +181,31 @@ pub enum Command {
         path: Option<std::path::PathBuf>,
     },
     /// Audit native agentic configs (Claude Code) and report issues
-    #[command(long_about = "Audit native agentic configs and report issues.\n\n\
+    #[command(
+        long_about = "Audit native agentic configs and report issues.\n\n\
             Scans .claude/agents/, .claude/skills/ and CLAUDE.md (no ArmadAI setup \
             required), runs static rules (deprecated models, oversized prompts, \
             duplicated blocks, broken references, plaintext secrets...) and prints \
             an actionable report. It also reads this project's Claude Code transcripts \
             under ~/.claude/projects/ to measure observed usage (rules U01-U04) — that \
             data never leaves this machine; pass --no-usage or set `audit.usage: false` \
-            in the project config to skip it. Exits non-zero if critical findings exist.")]
+            in the project config to skip it. Exits non-zero if critical findings exist.\n\n\
+            With --global, audits what you carry into every session instead: \
+            ~/.claude/agents/, ~/.claude/skills/, ~/.claude/CLAUDE.md and \
+            ~/.config/armadai/skills/. Every rule family applies except U01-U04, which \
+            correlate one project's transcripts. The synced catalogue \
+            (~/.config/armadai/registry) is never read, in either scope.",
+        after_help = "Examples:\n  \
+            armadai audit\n  \
+            armadai audit --global\n  \
+            armadai audit --report report.html"
+    )]
     Audit {
         /// Project directory to audit (defaults to current directory)
         path: Option<std::path::PathBuf>,
+        /// Audit the user's global library instead of a project
+        #[arg(long, conflicts_with = "path")]
+        global: bool,
         /// Write a report to this file (markdown, or HTML if the extension is .html)
         #[arg(long)]
         report: Option<std::path::PathBuf>,
@@ -643,13 +657,26 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Validate { path } => validate::execute(path).await,
         Command::Audit {
             path,
+            global,
             report,
             min_severity,
             quiet,
             propose,
             deep,
             no_usage,
-        } => audit::execute(path, report, min_severity, quiet, propose, deep, no_usage).await,
+        } => {
+            audit::execute(
+                path,
+                global,
+                report,
+                min_severity,
+                quiet,
+                propose,
+                deep,
+                no_usage,
+            )
+            .await
+        }
         Command::History { agent } => history::execute(agent).await,
         Command::Costs { agent, from } => costs::execute(agent, from).await,
         Command::Projections(action) => projections::execute(action).await,
