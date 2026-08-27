@@ -40,7 +40,7 @@ Two scopes, because they answer different questions, have different owners, and 
 
 ### What neither scope reads, and why
 
-Five exclusions, and each is printed as a `Not read:` line in the report — an asset pile the audit skips has to be a *stated* omission, or the report reads as "you have none". The counts a global report prints are therefore a **floor**, and the `Not read:` lines are what tell you by how much.
+Six directories are left unread. Five of them get a `Not read:` line in the report — an asset pile the audit skips has to be a *stated* omission, or the report reads as "you have none". The sixth (`plugins/data/`) gets none, because it holds no asset at all; the reason is below. So the counts a global report prints are a **floor**, and the `Not read:` lines are what tell you by how much.
 
 Under `~/.claude`:
 
