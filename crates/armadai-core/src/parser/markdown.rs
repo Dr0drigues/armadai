@@ -67,8 +67,8 @@ fn parse_agent_content(content: &str, path: &Path) -> anyhow::Result<Agent> {
         bail!("Agent file {} is missing an H1 title", path.display());
     }
 
-    // Build section map: for each H2, extract raw markdown from after its heading
-    // to the start of the next heading (any level).
+    // Build section map: for each H2, extract raw markdown from after its
+    // heading to the start of the next heading of level <= H2 (#392).
     let mut sections: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for (i, (level, heading_text, _heading_start, content_start)) in boundaries.iter().enumerate() {
@@ -76,9 +76,23 @@ fn parse_agent_content(content: &str, path: &Path) -> anyhow::Result<Agent> {
             continue;
         }
 
-        // Section content ends at the start of the next heading (any level)
-        let section_end = boundaries
-            .get(i + 1)
+        // A `##` section OWNS its sub-sections: it ends at the next heading
+        // of level <= H2 (another `##`, or a new `#`), not at the next
+        // heading of any level. An `###`/`####`/... is a sub-heading INSIDE
+        // the section, so everything from it up to the next `#`/`##` stays
+        // part of the section.
+        //
+        // Ending at "the next heading of any level" (the behaviour up to
+        // #392) truncated every agent whose prompt used sub-headings: on the
+        // shipped `debug.md` template, `## Instructions` parsed as the empty
+        // string because all four `### Phase N` blocks were cut off; on a
+        // 3833-byte `agent-builder.md`, `## System Prompt` parsed to 211
+        // characters. `link` writes these fields verbatim and `run` sends
+        // `system_prompt` to the provider, so the truncation reached the
+        // model, silently and with no parse error.
+        let section_end = boundaries[i + 1..]
+            .iter()
+            .find(|(lvl, ..)| *lvl <= HeadingLevel::H2)
             .map(|(_, _, hs, _)| *hs)
             .unwrap_or(content.len());
 
@@ -105,7 +119,12 @@ fn parse_agent_content(content: &str, path: &Path) -> anyhow::Result<Agent> {
             .lines()
             .filter_map(|l| {
                 let trimmed = l.trim().trim_start_matches('-').trim();
-                if trimmed.is_empty() {
+                // Heading lines are structure, not agent names. A `##`
+                // section now keeps its sub-headings (#392), so a stray
+                // `### Phase two` inside a `## Pipeline` block would
+                // otherwise be handed downstream as an agent name and fail
+                // to resolve.
+                if trimmed.is_empty() || trimmed.starts_with('#') {
                     None
                 } else {
                     Some(trimmed.to_string())
@@ -397,6 +416,401 @@ Use `grep` to search and **bold** for emphasis.
         assert!(instructions.contains("1. Read"));
         assert!(instructions.contains("2. Classify"));
         assert!(instructions.contains("3. Propose"));
+    }
+
+    // ── #392: an H2 section owns its H3+ sub-sections ────────────────────
+    //
+    // `parse_agent_content` used to end an H2 section at the *next heading
+    // of any level*, so the first `###` inside `## System Prompt` truncated
+    // the prompt. Measured before the fix on the shipped `debug.md` template:
+    // `## Instructions` came out empty, and `agent-builder.md` went from
+    // 3833 source bytes to 1717 linked bytes. The tests below pin the
+    // boundary at "next heading of level <= H2".
+
+    #[test]
+    fn h2_section_keeps_its_h3_subsections() {
+        let f = write_temp_agent(
+            r#"# Nested Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## System Prompt
+
+An agent file has these required sections:
+
+### Required Structure
+
+- `# Name` — the H1
+- `## Metadata` — the fields
+
+### Optional Sections
+
+- `## Instructions`
+- `## Output Format`
+
+## Instructions
+
+Do the thing.
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+
+        // The intro survives (it always did).
+        assert!(
+            agent
+                .system_prompt
+                .contains("An agent file has these required sections:"),
+            "intro missing from system_prompt: {:?}",
+            agent.system_prompt
+        );
+        // The sub-sections the intro announces survive too (they did not).
+        assert!(
+            agent.system_prompt.contains("### Required Structure"),
+            "H3 sub-heading truncated away: {:?}",
+            agent.system_prompt
+        );
+        assert!(
+            agent.system_prompt.contains("`# Name` — the H1"),
+            "H3 body truncated away: {:?}",
+            agent.system_prompt
+        );
+        assert!(
+            agent.system_prompt.contains("### Optional Sections"),
+            "second H3 sub-heading truncated away: {:?}",
+            agent.system_prompt
+        );
+        assert!(
+            agent.system_prompt.contains("- `## Output Format`"),
+            "last line of the last sub-section truncated away: {:?}",
+            agent.system_prompt
+        );
+
+        // And the section still STOPS at the next H2: no leak downwards.
+        assert!(
+            !agent.system_prompt.contains("Do the thing."),
+            "next H2's content leaked into system_prompt: {:?}",
+            agent.system_prompt
+        );
+        assert_eq!(agent.instructions.as_deref(), Some("Do the thing."));
+    }
+
+    /// The same defect hit every `##` section, not just System Prompt. The
+    /// shipped `debug.md` template puts all of its content under
+    /// `### Phase N` sub-headings, so `## Instructions` parsed as the empty
+    /// string; `planning.md`/`tech-debt.md`/`security-review.md` do the same.
+    #[test]
+    fn h3_subsections_survive_in_instructions_and_output_format() {
+        let f = write_temp_agent(
+            r#"# Phased Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## System Prompt
+
+You debug systematically.
+
+## Instructions
+
+### Phase 1: Assessment
+1. Read the error message
+2. Reproduce the mental model
+
+### Phase 2: Investigation
+1. Trace the execution path
+
+## Output Format
+
+### Root Cause
+<One sentence>
+
+### Evidence
+- Expected: <what should happen>
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+
+        let instructions = agent.instructions.expect("## Instructions section");
+        assert!(
+            instructions.contains("### Phase 1: Assessment"),
+            "Phase 1 heading lost: {instructions:?}"
+        );
+        assert!(
+            instructions.contains("1. Read the error message"),
+            "Phase 1 body lost: {instructions:?}"
+        );
+        assert!(
+            instructions.contains("### Phase 2: Investigation"),
+            "Phase 2 heading lost: {instructions:?}"
+        );
+        assert!(
+            instructions.contains("1. Trace the execution path"),
+            "Phase 2 body lost: {instructions:?}"
+        );
+        // Instructions still stop at the next H2.
+        assert!(
+            !instructions.contains("### Root Cause"),
+            "Output Format leaked into Instructions: {instructions:?}"
+        );
+
+        let output_format = agent.output_format.expect("## Output Format section");
+        assert!(
+            output_format.contains("### Root Cause"),
+            "Root Cause heading lost: {output_format:?}"
+        );
+        assert!(
+            output_format.contains("### Evidence"),
+            "Evidence heading lost: {output_format:?}"
+        );
+        assert!(
+            output_format.contains("- Expected: <what should happen>"),
+            "last line of the last sub-section lost: {output_format:?}"
+        );
+    }
+
+    /// `## Metadata` is parsed field-by-field, so the truncation silently
+    /// dropped every field declared after a sub-heading — the agent then ran
+    /// with default temperature, no tags, no model. The new boundary keeps
+    /// them, and `parse_metadata` skips the `###` line itself (no colon).
+    #[test]
+    fn metadata_fields_after_an_h3_subsection_are_parsed() {
+        let f = write_temp_agent(
+            r#"# Grouped Metadata Agent
+
+## Metadata
+
+### Provider
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+
+### Tuning
+- temperature: 0.9
+- max_tokens: 4096
+- tags: [dev, deep]
+
+## System Prompt
+
+test
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        assert_eq!(agent.metadata.provider, "anthropic");
+        assert_eq!(
+            agent.metadata.model.as_deref(),
+            Some("claude-sonnet-4-5-20250929")
+        );
+        assert!(
+            (agent.metadata.temperature - 0.9).abs() < f32::EPSILON,
+            "temperature declared under a second H3 was dropped: {}",
+            agent.metadata.temperature
+        );
+        assert_eq!(agent.metadata.max_tokens, Some(4096));
+        assert_eq!(agent.metadata.tags, vec!["dev", "deep"]);
+    }
+
+    /// The boundary is "level <= H2", so H4/H5/H6 stay inside their section
+    /// exactly like H3 — a nested outline is not a section terminator.
+    #[test]
+    fn h4_and_deeper_headings_stay_inside_their_h2_section() {
+        let f = write_temp_agent(
+            r#"# Deep Outline Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## System Prompt
+
+Top level text.
+
+### Level three
+
+Three body.
+
+#### Level four
+
+Four body.
+
+##### Level five
+
+Five body.
+
+###### Level six
+
+Six body.
+
+## Instructions
+
+Next section.
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        for needle in [
+            "### Level three",
+            "Three body.",
+            "#### Level four",
+            "Four body.",
+            "##### Level five",
+            "Five body.",
+            "###### Level six",
+            "Six body.",
+        ] {
+            assert!(
+                agent.system_prompt.contains(needle),
+                "{needle:?} lost from system_prompt: {:?}",
+                agent.system_prompt
+            );
+        }
+        assert!(
+            !agent.system_prompt.contains("Next section."),
+            "next H2 leaked in: {:?}",
+            agent.system_prompt
+        );
+    }
+
+    /// A later H1 is level 1, so it IS <= H2 and must still close the
+    /// section — a document that starts a second top-level part must not
+    /// have that part swallowed into the previous `##`.
+    #[test]
+    fn an_h2_section_ends_at_a_later_h1() {
+        let f = write_temp_agent(
+            r#"# First Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## System Prompt
+
+Owned by the first H1.
+
+### A sub-section
+
+Still owned by the first H1.
+
+# Appendix
+
+Not part of the system prompt.
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        assert!(
+            agent.system_prompt.contains("### A sub-section"),
+            "sub-section lost: {:?}",
+            agent.system_prompt
+        );
+        assert!(
+            agent.system_prompt.contains("Still owned by the first H1."),
+            "sub-section body lost: {:?}",
+            agent.system_prompt
+        );
+        assert!(
+            !agent
+                .system_prompt
+                .contains("Not part of the system prompt."),
+            "content after a later H1 leaked into system_prompt: {:?}",
+            agent.system_prompt
+        );
+        assert!(
+            !agent.system_prompt.contains("Appendix"),
+            "a later H1 heading leaked into system_prompt: {:?}",
+            agent.system_prompt
+        );
+    }
+
+    /// Degenerate shapes the new boundary must survive: an `###` before the
+    /// first `##` (owned by no section), an `###` as the very last thing in
+    /// the file (no following boundary at all), and two `##` in a row with
+    /// nothing between them (empty section, not a panic or a slice inversion).
+    #[test]
+    fn degenerate_heading_shapes_parse_sanely() {
+        let f = write_temp_agent(
+            r#"# Edge Agent
+
+### Orphan sub-section before any H2
+
+Orphan body.
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## Context
+## System Prompt
+
+Prompt intro.
+
+### Trailing sub-section at end of file
+
+Trailing body.
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+
+        // The orphan `###` belongs to no `##` section: it must not be
+        // adopted by Metadata (which comes after it) nor by System Prompt.
+        assert!(
+            !agent.system_prompt.contains("Orphan body."),
+            "orphan pre-H2 content leaked into system_prompt: {:?}",
+            agent.system_prompt
+        );
+
+        // Two consecutive H2 with nothing between: empty, not missing.
+        assert_eq!(
+            agent.context.as_deref(),
+            Some(""),
+            "an empty `## Context` must parse as an empty string"
+        );
+
+        // Trailing `###` with no following boundary: runs to end of file.
+        assert!(
+            agent
+                .system_prompt
+                .contains("### Trailing sub-section at end of file"),
+            "trailing sub-heading lost: {:?}",
+            agent.system_prompt
+        );
+        assert!(
+            agent.system_prompt.contains("Trailing body."),
+            "trailing sub-section body lost: {:?}",
+            agent.system_prompt
+        );
+    }
+
+    /// `## Pipeline` reads every non-empty line as an agent name. Now that a
+    /// `###` no longer terminates the section, a stray sub-heading inside a
+    /// Pipeline block would otherwise be handed downstream as an agent named
+    /// `### Phase two` and fail to resolve. Heading lines are skipped.
+    #[test]
+    fn pipeline_section_ignores_heading_lines() {
+        let f = write_temp_agent(
+            r#"# Pipeline Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## System Prompt
+
+test
+
+## Pipeline
+- agent-b
+
+### Phase two
+- agent-c
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        let pipeline = agent.pipeline.unwrap();
+        assert_eq!(
+            pipeline.next,
+            vec!["agent-b", "agent-c"],
+            "a heading line must not be read as an agent name"
+        );
     }
 
     #[test]

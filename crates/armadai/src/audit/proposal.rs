@@ -37,12 +37,19 @@ fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The ArmadAI agent format terminates a section at every markdown heading,
-/// so a system prompt cannot contain headings. Native Claude Code prompts are
+/// The ArmadAI agent format terminates a `##` section at the next heading of
+/// level <= H2, so a system prompt cannot contain an `#`/`##` heading (before
+/// #392 it could contain no heading at all). Native Claude Code prompts are
 /// often full markdown documents with headings (including literal `## Metadata`
 /// / `## System Prompt` lines that would otherwise clobber the agent's real
 /// sections on re-parse). Demote ATX headings to bold text: content and visual
 /// emphasis are preserved, and no heading survives to break section parsing.
+///
+/// All six levels are still demoted, not just `#`/`##`: keeping `###`+ as real
+/// headings is now *safe* for the parser (#392), but it would change the
+/// rendering of every generated proposal, which is a separate change with its
+/// own before/after to measure. Demoting more than strictly necessary loses
+/// visual hierarchy in the proposal; it never loses content.
 ///
 /// Fenced code blocks (``` or ~~~) are left completely untouched — a line
 /// starting with `#` inside a fence is code, not a heading. Setext headings
