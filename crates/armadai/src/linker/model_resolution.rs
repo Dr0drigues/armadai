@@ -121,11 +121,14 @@ pub fn resolve_latest_placeholders(agents: &mut [LinkAgent]) {
 /// Returns a list of (target_name, resolved_model) tuples showing what model
 /// would be used when linking to each target.
 pub fn preview_model_resolution(agent_model: Option<&str>) -> Vec<(&'static str, String)> {
+    use clap::ValueEnum;
     let tier = agent_model.and_then(parse_latest_placeholder);
-    let targets = ["claude", "codex", "gemini", "copilot", "opencode"];
-    targets
+    // Derived from the enum rather than restated: a preview that silently
+    // omits a link target is a UI that lies about what `link` will do.
+    super::LinkTarget::value_variants()
         .iter()
-        .map(|&target| {
+        .map(|t| t.as_str())
+        .map(|target| {
             let resolved = match classify_target(target) {
                 TargetKind::LlmEditor { provider } => {
                     resolve_model_for_tier(provider, tier.unwrap_or(ModelTier::Pro))
