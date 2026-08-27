@@ -160,6 +160,167 @@ mod tests {
     use super::*;
     use armadai_core::agent::AgentMetadata;
 
+    /// The three provider inventories, checked against each other.
+    ///
+    /// They live in three crates and drifted apart unnoticed until a user hit
+    /// it (issue #369): `armadai link --target codex` wrote a config, the
+    /// shell relayed `codex` in JSON, and `armadai run` answered
+    /// `Unknown provider: 'codex'`. A comment saying "keep these in sync"
+    /// is what was there before; this is the same statement, executable.
+    mod provider_inventories {
+        use super::*;
+        use armadai_core::test_support::IsolatedConfigDir;
+        use armadai_providers::factory::{accepted_provider_names, create_provider};
+        use armadai_providers::json_runner::json_capable_clis;
+        use clap::ValueEnum;
+
+        /// An agent whose `provider:` is under test and whose `command:`
+        /// exists everywhere, so the CLI branch is reached regardless of
+        /// which tools happen to be installed on the machine.
+        fn agent_with_provider(provider: &str) -> Agent {
+            Agent {
+                name: "inventory-probe".into(),
+                source: std::path::PathBuf::from("probe.md"),
+                metadata: AgentMetadata {
+                    provider: provider.into(),
+                    model: None,
+                    command: Some("echo".into()),
+                    args: None,
+                    temperature: 0.7,
+                    max_tokens: None,
+                    timeout: None,
+                    tags: vec![],
+                    stacks: vec![],
+                    scope: vec![],
+                    model_fallback: vec![],
+                    cost_limit: None,
+                    rate_limit: None,
+                    context_window: None,
+                    mode: None,
+                    orchestration: None,
+                    triggers: None,
+                    ring_config: None,
+                },
+                system_prompt: String::new(),
+                instructions: None,
+                output_format: None,
+                pipeline: None,
+                context: None,
+            }
+        }
+
+        fn sorted(mut v: Vec<&str>) -> Vec<&str> {
+            v.sort_unstable();
+            v
+        }
+
+        /// Inventory 1 (`linker::LinkTarget`) vs inventory 2
+        /// (`factory::KNOWN_TOOLS`): writing a native config for a CLI is
+        /// worth nothing if `armadai run` then refuses the same name.
+        ///
+        /// `value_variants()` comes from the `ValueEnum` derive, so a target
+        /// added to the enum is in this loop without anyone remembering to
+        /// add it.
+        #[test]
+        fn every_link_target_is_a_provider_run_can_execute() {
+            // `create_provider` reads the user config for rate limits; keep
+            // it off the developer's real one.
+            let _cfg = IsolatedConfigDir::enter();
+            for target in LinkTarget::value_variants() {
+                let name = target.as_str();
+                let provider = create_provider(&agent_with_provider(name)).unwrap_or_else(|e| {
+                    panic!(
+                        "`armadai link --target {name}` writes a config for a CLI that \
+                         `armadai run` refuses: {e}"
+                    )
+                });
+                assert_eq!(
+                    provider.metadata().name,
+                    "cli:echo",
+                    "link target '{name}' must resolve to the CLI branch"
+                );
+            }
+        }
+
+        /// Inventory 3 (`json_runner`, the shell relay) vs inventory 2: a CLI
+        /// the shell can drive in JSON must be a name `armadai run` accepts,
+        /// or the same agent works in `armadai shell` and fails in
+        /// `armadai run`.
+        #[test]
+        fn every_json_relayable_cli_is_a_provider_run_can_execute() {
+            let _cfg = IsolatedConfigDir::enter();
+            for name in json_capable_clis() {
+                let provider = create_provider(&agent_with_provider(name)).unwrap_or_else(|e| {
+                    panic!("the shell relays '{name}' in JSON but `armadai run` refuses it: {e}")
+                });
+                assert_eq!(provider.metadata().name, "cli:echo", "'{name}'");
+            }
+        }
+
+        /// Inventory 1 vs inventory 3, both directions. These two sets being
+        /// equal is not a coincidence: a linker exists to configure a CLI
+        /// ArmadAI will then drive, and the shell drives it in JSON.
+        #[test]
+        fn the_link_targets_and_the_json_relayable_clis_are_the_same_set() {
+            let targets = sorted(
+                LinkTarget::value_variants()
+                    .iter()
+                    .map(|t| t.as_str())
+                    .collect(),
+            );
+            assert_eq!(targets, sorted(json_capable_clis()));
+        }
+
+        /// The remaining gap, pinned so widening it is a decision.
+        ///
+        /// `gpt` and `aider` are runnable but have no linker: neither writes
+        /// an ArmadAI-shaped agent config, so there is nothing to generate.
+        /// That is legitimate — unlike the codex/copilot/opencode gap, which
+        /// was not.
+        #[test]
+        fn the_only_runnable_tools_without_a_link_target_are_gpt_and_aider() {
+            let targets: Vec<&str> = LinkTarget::value_variants()
+                .iter()
+                .map(|t| t.as_str())
+                .collect();
+            let api_or_generic = ["cli", "anthropic", "openai", "google", "proxy"];
+            let orphans = sorted(
+                accepted_provider_names()
+                    .into_iter()
+                    .filter(|n| !targets.contains(n) && !api_or_generic.contains(n))
+                    .collect(),
+            );
+            assert_eq!(orphans, vec!["aider", "gpt"]);
+        }
+
+        /// The `armadai new -i` wizard is a fourth inventory: a provider the
+        /// wizard does not offer is one no interactive author can produce an
+        /// agent for, even though `run` accepts it.
+        #[test]
+        fn the_new_wizard_offers_exactly_the_providers_run_accepts() {
+            assert_eq!(
+                sorted(crate::cli::new::WIZARD_PROVIDER_CHOICES.to_vec()),
+                sorted(accepted_provider_names())
+            );
+        }
+
+        /// And a fifth: the model-resolution preview shown in the TUI's agent
+        /// detail view must cover every target `link` can write, or it shows
+        /// the user a preview of something other than what will happen.
+        #[test]
+        fn the_model_resolution_preview_covers_every_link_target() {
+            let previewed: Vec<&str> = model_resolution::preview_model_resolution(Some("m"))
+                .into_iter()
+                .map(|(target, _)| target)
+                .collect();
+            let targets: Vec<&str> = LinkTarget::value_variants()
+                .iter()
+                .map(|t| t.as_str())
+                .collect();
+            assert_eq!(sorted(previewed), sorted(targets));
+        }
+    }
+
     #[test]
     fn test_slugify_simple() {
         assert_eq!(slugify("Code Reviewer"), "code-reviewer");
