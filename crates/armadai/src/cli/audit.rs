@@ -37,11 +37,16 @@ const DEEP_AUDITOR_TIER: &str = "latest:pro";
 /// on the five `run` paths, and (measured over every
 /// `Provider::complete`/`stream` call site) the last one left (issue #401).
 ///
-/// Latent, not active: `--deep` is only reached after `which claude|gemini`
-/// succeeds, so `create_provider` returns the CLI relay, which reads
-/// `request.model` nowhere. It arms the day that unified name resolves to an
-/// API instead, which is what `create_provider` does when the binary is
-/// absent.
+/// Latent on Unix, **active on Windows**. On Unix the two probes are the same
+/// program: `--deep` is only reached after `deep::cli_is_available` runs
+/// `which claude|gemini`, so `create_provider`'s own `which` agrees and returns
+/// the CLI relay, which reads `request.model` nowhere. Under `#[cfg(windows)]`
+/// `deep::cli_is_available` runs `where` while `factory::cli_available` still
+/// runs `which` on every platform, so an installed CLI passes the first probe
+/// and fails the second: `create_provider` falls back to the API, which
+/// *honors* `request.model`, and the placeholder would become the model name.
+/// That asymmetry is pre-existing and tracked separately (issue #420); this
+/// function is correct either way.
 ///
 /// When no vendor catalog names the CLI's models the placeholder is kept, not
 /// replaced by a guess: that is the case `resolve_tier_placeholder` answers
@@ -682,13 +687,13 @@ mod tests {
     /// the five `run` paths: a `latest:*` tier placeholder must never become a
     /// provider's model name.
     ///
-    /// Latent today — `--deep` is only reached after `which claude|gemini`
-    /// succeeds, so `create_provider` returns the CLI relay, which reads
+    /// Latent on Unix, active on Windows (see [`deep_auditor_model`]): there
+    /// `--deep`'s `where` probe and `create_provider`'s `which` probe disagree,
+    /// so an installed CLI still routes to the API — which *does* honor
+    /// `request.model`. On Unix both probes agree and the CLI relay reads
     /// `request.model` nowhere (`CliProvider::honors_request_model` is
-    /// `false`). That is also why there is no output surface to assert on: the
-    /// constructor is the whole of it. It arms the moment that unified name
-    /// resolves to an API instead, which is exactly what `create_provider`
-    /// does when the binary is absent.
+    /// `false`). Either way the constructor is the whole surface there is to
+    /// assert on, which is why this test asserts on it.
     ///
     /// Two claims, and the second is what makes the first non-tautological:
     /// no placeholder survives, and the two CLIs resolve to *different*
