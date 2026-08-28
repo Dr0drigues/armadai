@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use armadai_core::agent::{Agent, AgentMode};
 use armadai_core::config::AppPaths;
-use armadai_core::events::{EventSink, RunEvent};
+use armadai_core::events::{DryRunAgent, EventSink, RunEvent};
 use armadai_core::orchestration::es::bridge::{SinkProjectingLog, to_orchestration_result};
 use armadai_core::orchestration::es::event::ExecutionEvent;
 use armadai_core::orchestration::es::log::{EventLog, InMemoryLog};
@@ -541,18 +541,30 @@ async fn resume_run(
             names.len(),
             names.join(", ")
         );
+        let mut roster = Vec::with_capacity(names.len());
         for name in &names {
             let (prov, model) = preview_provider_and_model(
                 &agents_map[name].metadata,
                 providers_map[name].as_ref(),
             );
             eprintln!("[dry-run]   {name} — provider={prov}, model={model}");
+            roster.push(DryRunAgent {
+                agent: name.clone(),
+                prov,
+                model,
+            });
         }
         eprintln!(
             "[dry-run] the remaining steps are decided by the engine as it runs, \
              so they cannot be listed without executing them"
         );
         eprintln!("{DRY_RUN_NO_EFFECTS}");
+        sink.emit(&RunEvent::DryRun {
+            mode: "resume".to_string(),
+            pattern: pattern.clone(),
+            agents: roster,
+            reason: format!("roster reloaded from run {run_id}"),
+        });
         if !json {
             println!("{}", names.join("\n"));
         }
@@ -842,7 +854,7 @@ async fn run_inner(
     // with the same message and the same code the real run would give.
     if dry_run {
         let links = load_chain(&resolution, &chain)?;
-        report_dry_run_chain(&chain, &links, json);
+        report_dry_run_chain(&chain, &links, json, sink);
         return Ok(());
     }
 
@@ -1152,12 +1164,18 @@ fn load_chain(resolution: &AgentResolution, chain: &[String]) -> anyhow::Result<
 ///
 /// What the provider/model column says, and why it is not just a copy of the
 /// agent file, is [`preview_provider_and_model`]'s job.
-fn report_dry_run_chain(chain: &[String], links: &[ChainLink], json: bool) {
+fn report_dry_run_chain(
+    chain: &[String],
+    links: &[ChainLink],
+    json: bool,
+    sink: &Arc<dyn EventSink>,
+) {
     let n = chain.len();
     eprintln!(
         "[dry-run] sequential chain ({n} agent(s)): {}",
         chain.join(", ")
     );
+    let mut roster = Vec::with_capacity(n);
     for (i, (name, link)) in chain.iter().zip(links).enumerate() {
         let (prov, model) =
             preview_provider_and_model(&link.agent.metadata, link.provider.as_ref());
@@ -1169,8 +1187,26 @@ fn report_dry_run_chain(chain: &[String], links: &[ChainLink], json: bool) {
             let s = crate::cli::style::warn();
             anstream::eprintln!("{s}[dry-run]   warn: {w}{s:#}");
         }
+        // Pushed from the same `(prov, model)` the line above printed, not
+        // recomputed: the machine stream and the human one cannot drift.
+        roster.push(DryRunAgent {
+            agent: name.clone(),
+            prov,
+            model,
+        });
     }
     eprintln!("{DRY_RUN_NO_EFFECTS}");
+    sink.emit(&RunEvent::DryRun {
+        mode: "sequential".to_string(),
+        pattern: String::new(),
+        agents: roster,
+        reason: if n == 1 {
+            "single agent"
+        } else {
+            "explicit chain"
+        }
+        .to_string(),
+    });
     if !json {
         println!("{}", chain.join("\n"));
     }
@@ -2267,6 +2303,7 @@ async fn run_orchestrated_inner(
         // `agents`/`providers` are aligned with `effective_names` in both
         // branches above: the C8 selection reassigns all three together, and
         // when it does not run they are the untouched load-loop order.
+        let mut roster = Vec::with_capacity(effective_names.len());
         for ((name, agent), provider) in effective_names
             .iter()
             .zip(agents.iter())
@@ -2274,12 +2311,23 @@ async fn run_orchestrated_inner(
         {
             let (prov, model) = preview_provider_and_model(&agent.metadata, provider.as_ref());
             eprintln!("[dry-run]   {name} — provider={prov}, model={model}");
+            roster.push(DryRunAgent {
+                agent: name.clone(),
+                prov,
+                model,
+            });
         }
         eprintln!(
             "[dry-run] which agent speaks when, and how often, is decided by the \
              engine as it runs, so it cannot be listed without executing it"
         );
         eprintln!("{DRY_RUN_NO_EFFECTS}");
+        sink.emit(&RunEvent::DryRun {
+            mode: "orchestrated".to_string(),
+            pattern: pattern.to_string(),
+            agents: roster,
+            reason: reason.to_string(),
+        });
         if !json {
             println!("{}", effective_names.join("\n"));
         }

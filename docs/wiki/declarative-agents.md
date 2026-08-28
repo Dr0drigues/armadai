@@ -240,6 +240,25 @@ roster member, then says plainly that who speaks when is the engine's to decide)
 chosen from each link's own input, and for every link but the first that input is the previous
 link's output — precisely what a dry run declines to compute.
 
+With `--json`, the preview closes its JSONL stream on a `dry_run` event. It used to emit
+`run_start` and then nothing at all — the preview itself goes to stderr, and the agent names to
+stdout only when *not* emitting JSON — so a consumer could not tell "the preview is over" from
+"the process died at startup":
+
+```
+{"t":"run_start","run_id":"…","v":1,"agents":["alpha","beta"],"prov":"","model":"ring","in_chars":5}
+{"t":"dry_run","mode":"orchestrated","pattern":"ring","agents":[{"agent":"alpha","prov":"cli","model":"(not sent — cli:echo chooses)"},{"agent":"beta","prov":"cli","model":"(not sent — cli:echo chooses)"}],"reason":"no routing (full roster)"}
+```
+
+`mode` is `sequential` (a single agent or a `--pipe` chain), `orchestrated`, or `resume`;
+`pattern` is the orchestration pattern, empty on the sequential path; `agents` is the roster in
+execution order with the same provider and model the stderr lines show; `reason` says why this
+roster and not another. It is deliberately **not** a `result` with zeroed tokens — those zeroes
+would be the truth and still the wrong shape, since a real run that cost nothing looks exactly the
+same, and a consumer that bills or records on `result` would count a preview as a run. Nothing
+else in the stream changed, so a consumer that only reads `result` still sees exactly what it saw
+before: nothing.
+
 ## Long compositions still get audited
 
 Composing several fragments is easy to do without noticing how long the result got. `armadai

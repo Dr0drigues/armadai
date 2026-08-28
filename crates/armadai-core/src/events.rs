@@ -72,6 +72,45 @@ pub enum RunEvent {
         selected: Vec<String>,
         reason: String,
     },
+    /// Terminal event of a `--dry-run` (#405).
+    ///
+    /// A preview emitted `run_start` and then nothing at all, so a consumer
+    /// of the JSONL stream could not tell "the preview is over" from "the
+    /// process died at startup" — the preview's own content (roster,
+    /// providers, models) goes to stderr, and the agent names to stdout only
+    /// when NOT emitting JSON.
+    ///
+    /// Deliberately **not** a `Result` with `tin`/`tout`/`cost` at zero,
+    /// which would have been the truth and still the wrong shape: zeroes are
+    /// exactly what a real run that happened to cost nothing looks like (a
+    /// cached answer, a relay that reports no tokens), so a consumer that
+    /// bills, records or reports on `result` would have counted a preview as
+    /// a run. A distinct `t` is the only form a consumer cannot mistake.
+    DryRun {
+        /// How the run would have been carried out: `sequential` (a single
+        /// agent or a `--pipe` chain), `orchestrated`, or `resume`.
+        mode: String,
+        /// Orchestration pattern (`ring`, `blackboard`, `hierarchical`,
+        /// `direct`); empty on the `sequential` path, which has none.
+        pattern: String,
+        /// The roster in the order it would execute, each entry carrying the
+        /// provider that would be used and the model string that would
+        /// actually be sent.
+        agents: Vec<DryRunAgent>,
+        /// Why this roster and not another — a C8 route/tag selection, an
+        /// explicit chain, a roster reloaded from a recorded run.
+        reason: String,
+    },
+}
+
+/// One roster entry of a [`RunEvent::DryRun`]. Keyed like `AgentStart`
+/// (`agent`/`prov`/`model`) so a consumer reads the same three fields
+/// whether the run happened or was only previewed.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DryRunAgent {
+    pub agent: String,
+    pub prov: String,
+    pub model: String,
 }
 
 /// Sink for run events. `NullSink` is a zero-cost no-op; `JsonlSink` writes JSONL to a writer.
@@ -327,6 +366,48 @@ mod tests {
             s,
             r#"{"t":"agent_select","selected":["rust-security","qa-specialist"],"reason":"route 'security-audit' → 2 agents"}"#
         );
+    }
+
+    #[test]
+    fn dry_run_serializes_with_short_keys() {
+        let ev = RunEvent::DryRun {
+            mode: "orchestrated".into(),
+            pattern: "ring".into(),
+            agents: vec![DryRunAgent {
+                agent: "alpha".into(),
+                prov: "cli".into(),
+                model: "(not sent — cli:echo chooses)".into(),
+            }],
+            reason: "no routing (full roster)".into(),
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(
+            s,
+            r#"{"t":"dry_run","mode":"orchestrated","pattern":"ring","agents":[{"agent":"alpha","prov":"cli","model":"(not sent — cli:echo chooses)"}],"reason":"no routing (full roster)"}"#
+        );
+    }
+
+    #[test]
+    fn dry_run_is_not_a_zeroed_result() {
+        // The shape is the contract (#405): a consumer that bills, records
+        // or reports on `result` must not see one for a preview, and a
+        // `result` whose tokens are zero is indistinguishable from a real
+        // run that cost nothing.
+        let ev = RunEvent::DryRun {
+            mode: "sequential".into(),
+            pattern: String::new(),
+            agents: Vec::new(),
+            reason: "single agent".into(),
+        };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&ev).unwrap())
+            .expect("dry_run must serialize to valid JSON");
+        assert_ne!(v["t"], "result");
+        for absent in ["tin", "tout", "cost", "content"] {
+            assert!(
+                v.get(absent).is_none(),
+                "dry_run carries `{absent}`, which invites being read as a run: {v}"
+            );
+        }
     }
 
     // Test helper: a Write that appends to a shared buffer.

@@ -893,3 +893,234 @@ fn a_dry_run_on_a_terminal_never_rewrites_an_agent_file() {
         "the preview stopped reporting the deprecation it would fix:\n{out}"
     );
 }
+
+// ── The --json stream of a preview terminates (#405) ─────────────────
+
+/// The last line of stdout that parses as JSON.
+///
+/// `--dry-run --json` emitted `run_start` and then nothing at all, so a
+/// consumer could not tell "the preview is over" from "the process died at
+/// startup". Reading the LAST line — rather than searching the stream for a
+/// `dry_run` anywhere in it — is the whole point: the event has to be
+/// terminal to answer that question.
+fn terminal_event(out: &Output) -> serde_json::Value {
+    out.stdout()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .next_back()
+        .unwrap_or_else(|| panic!("no JSON on stdout at all:\n{}", out.stdout()))
+}
+
+/// `[(agent, prov, model), …]` of a `dry_run` event, in emission order.
+fn roster(ev: &serde_json::Value) -> Vec<(String, String, String)> {
+    ev["agents"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no agents array in {ev}"))
+        .iter()
+        .map(|a| {
+            (
+                a["agent"].as_str().unwrap_or_default().to_string(),
+                a["prov"].as_str().unwrap_or_default().to_string(),
+                a["model"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// One test per preview site, deliberately: an assertion on the whole
+/// stream's concatenation would stay green with a single site wired, and
+/// there are three (#398 found five sites of that same class, not one of
+/// which was covered by any of the others).
+#[test]
+fn a_pipe_chain_dry_run_ends_its_json_stream_with_a_dry_run_event() {
+    let sb = Sandbox::new(&[("alpha", ECHO), ("beta", ECHO)]);
+
+    let out = sb.run(&[
+        "run",
+        "alpha",
+        "hello",
+        "--pipe",
+        "beta",
+        "--dry-run",
+        "--json",
+    ]);
+    assert!(out.succeeded(), "dry-run failed: {}", out.stderr());
+
+    let ev = terminal_event(&out);
+    assert_eq!(
+        ev["t"],
+        "dry_run",
+        "the sequential preview's stream does not end on a terminal event:\n{}",
+        out.stdout()
+    );
+    assert_eq!(ev["mode"], "sequential", "in {ev}");
+    assert_eq!(
+        roster(&ev)
+            .iter()
+            .map(|(a, _, _)| a.clone())
+            .collect::<Vec<_>>(),
+        vec!["alpha".to_string(), "beta".to_string()],
+        "roster missing or out of execution order in {ev}"
+    );
+    for (agent, prov, model) in roster(&ev) {
+        assert_eq!(prov, "cli", "no provider for {agent} in {ev}");
+        assert!(
+            model.contains("echo"),
+            "no model for {agent} in {ev} (got {model})"
+        );
+    }
+    assert!(
+        !ev["reason"].as_str().unwrap_or_default().is_empty(),
+        "no selection reason in {ev}"
+    );
+}
+
+#[test]
+fn an_orchestrated_dry_run_ends_its_json_stream_with_a_dry_run_event() {
+    let sb = Sandbox::new(&[("alpha", ECHO), ("beta", ECHO)]);
+
+    let out = sb.run(&[
+        "run",
+        "alpha",
+        "hello",
+        "--pipe",
+        "beta",
+        "--orchestrate",
+        "ring",
+        "--dry-run",
+        "--json",
+        "--no-tui",
+    ]);
+    assert!(out.succeeded(), "dry-run failed: {}", out.stderr());
+
+    let ev = terminal_event(&out);
+    assert_eq!(
+        ev["t"],
+        "dry_run",
+        "the orchestrated preview's stream does not end on a terminal event:\n{}",
+        out.stdout()
+    );
+    assert_eq!(ev["mode"], "orchestrated", "in {ev}");
+    assert_eq!(ev["pattern"], "ring", "in {ev}");
+    assert_eq!(
+        roster(&ev)
+            .iter()
+            .map(|(a, _, _)| a.clone())
+            .collect::<Vec<_>>(),
+        vec!["alpha".to_string(), "beta".to_string()],
+        "roster missing or out of order in {ev}"
+    );
+    for (agent, prov, model) in roster(&ev) {
+        assert_eq!(prov, "cli", "no provider for {agent} in {ev}");
+        assert!(
+            model.contains("echo"),
+            "no model for {agent} in {ev} (got {model})"
+        );
+    }
+    assert!(
+        !ev["reason"].as_str().unwrap_or_default().is_empty(),
+        "no selection reason in {ev}"
+    );
+}
+
+#[cfg(feature = "storage")]
+#[test]
+fn a_resume_dry_run_ends_its_json_stream_with_a_dry_run_event() {
+    let sb = Sandbox::new(&[(
+        "alpha",
+        "- provider: cli\n- command: /nonexistent-armadai-cmd\n",
+    )]);
+
+    let setup = sb.run(&["run", "alpha", "hello", "--json"]);
+    assert!(!setup.succeeded(), "the setup run was supposed to fail");
+    let run_id = setup
+        .stdout()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["t"] == "run_start")
+        .and_then(|v| v["run_id"].as_str().map(str::to_string))
+        .expect("no run_start to take a run id from");
+
+    write_agent(&sb.root, "alpha", ECHO);
+
+    let out = sb.run(&[
+        "run",
+        "--resume",
+        &run_id,
+        "--dry-run",
+        "--json",
+        "--no-tui",
+    ]);
+    assert!(out.succeeded(), "resume dry-run failed: {}", out.stderr());
+
+    let ev = terminal_event(&out);
+    assert_eq!(
+        ev["t"],
+        "dry_run",
+        "the resume preview's stream does not end on a terminal event:\n{}",
+        out.stdout()
+    );
+    assert_eq!(ev["mode"], "resume", "in {ev}");
+    assert_eq!(ev["pattern"], "direct", "in {ev}");
+    assert_eq!(
+        roster(&ev),
+        vec![(
+            "alpha".to_string(),
+            "cli".to_string(),
+            "(not sent — cli:echo chooses)".to_string()
+        )],
+        "in {ev}"
+    );
+    assert!(
+        !ev["reason"].as_str().unwrap_or_default().is_empty(),
+        "no selection reason in {ev}"
+    );
+}
+
+/// A preview must not be mistakable for a run. `result` is what a consumer
+/// bills, records and reports on, and a `result` with zeroed tokens is
+/// exactly what a real run that cost nothing looks like — a cached answer,
+/// a zero-token relay. So the preview gets its own event and emits no
+/// `result` at all.
+#[test]
+fn a_dry_run_never_emits_a_result_event() {
+    let sb = Sandbox::new(&[("alpha", ECHO), ("beta", ECHO)]);
+
+    for args in [
+        vec![
+            "run",
+            "alpha",
+            "hello",
+            "--pipe",
+            "beta",
+            "--dry-run",
+            "--json",
+        ],
+        vec![
+            "run",
+            "alpha",
+            "hello",
+            "--pipe",
+            "beta",
+            "--orchestrate",
+            "ring",
+            "--dry-run",
+            "--json",
+            "--no-tui",
+        ],
+    ] {
+        let out = sb.run(&args);
+        assert!(out.succeeded(), "dry-run failed: {}", out.stderr());
+        let kinds: Vec<String> = out
+            .stdout()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .map(|v| v["t"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(
+            !kinds.iter().any(|k| k == "result"),
+            "a preview emitted a `result` a consumer would count as a run \
+             ({args:?}): {kinds:?}"
+        );
+    }
+}
