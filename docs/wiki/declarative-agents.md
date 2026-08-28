@@ -231,12 +231,28 @@ looked at one), and the deprecated-model auto-check runs non-interactively: it s
 deprecated model it finds — a real run would offer to rewrite them, which is worth knowing before
 you launch it — but it never offers, and therefore never touches an agent file.
 
+It says those two things, and not "writes nothing", because that stronger claim would be false on
+one path. A single agent, a `--pipe` chain and `--orchestrate` leave the disk entirely alone.
+`--resume` cannot: to preview the roster of a recorded run it has to read the run journal, and
+opening the journal creates it — so a `--resume --dry-run` on a machine that has never run
+`armadai` leaves an empty SQLite database behind. That is the record it was asked to look at, not
+a side effect of the preview, but it is a write, and the promise is worded to say only what it
+keeps.
+
 Because it is the same pass, the preview **refuses whatever the real run refuses**, with the same
 message and the same non-zero exit — an unresolvable link, a colliding name, a provider that
 cannot be built. A preview that cannot fail would pre-check nothing. This holds for a single agent
 (`armadai run <name> --dry-run`), for `--orchestrate` (which previews provider and model per
 roster member, then says plainly that who speaks when is the engine's to decide), and for
-`--resume` too, which previews the roster it reloaded and leaves the run resumable. `latest:auto` is the one thing a dry run cannot resolve: its tier is
+`--resume` too, which previews the roster it reloaded and leaves the run resumable.
+
+`--replay` is the one mode `--dry-run` refuses outright, as a usage error (exit 2). A replay
+re-emits a recorded run from the event log and calls no provider at all, so previewing one would
+describe something cheaper than simply doing it. Until it was refused, `--replay --dry-run` was
+accepted and the flag silently dropped: the caller asked for a preview and got the full replay,
+ending on the zeroed `result` the `dry_run` event exists to keep out of a consumer's hands.
+
+`latest:auto` is the one thing a dry run cannot resolve: its tier is
 chosen from each link's own input, and for every link but the first that input is the previous
 link's output — precisely what a dry run declines to compute.
 
