@@ -33,6 +33,23 @@ accurate, relevant output.";
 /// files it was previewing. Both are gone (see [`resolve_agents_dir`]), so
 /// the line now states what it actually guarantees instead of a subset of
 /// it.
+///
+/// These three clauses are also, verbatim in substance, `--dry-run`'s help
+/// text — and the help says no more than they do. It briefly claimed the
+/// preview wrote "nothing", which measurement did not support: on a machine
+/// with no journal yet, `--resume`/`--replay` still call `db::init_db()`
+/// before they can read a roster back, and `armadai_storage::open` does
+/// `create_dir_all` + `Connection::open` + `schema::apply` — an 88 KB
+/// SQLite file with the full schema, created by a command that had just
+/// promised to write nothing. The three preview paths that own the promise
+/// (single agent, `--pipe`, `--orchestrate`) write nothing at all; the two
+/// journal paths cannot preview a recorded run without opening the record.
+/// So the wording was narrowed to the three guarantees actually kept rather
+/// than the journal being opened read-only — that second remedy is a change
+/// to `armadai-storage` (a read-only `open`, plus a missing-file fallback so
+/// a fresh machine still says "no run found for id …" instead of "unable to
+/// open database file"), and it is what would earn the stronger "writes
+/// nothing" wording back.
 const DRY_RUN_NO_EFFECTS: &str = "[dry-run] no provider called, no project registered, \
      no agent file rewritten; nothing was recorded or billed";
 
