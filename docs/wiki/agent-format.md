@@ -145,11 +145,28 @@ heading and separated by a blank line:
 An absent section contributes nothing at all — no empty heading.
 
 `armadai run` (including `--pipe`, `--orchestrate` and `--resume`), `armadai
-shell` and `armadai link` all compose the prompt this same way, from one
-definition in the core (`armadai_core::agent::compose_agent_prompt`). Before
-issue #395 was fixed, `run` sent `## System Prompt` alone, so an agent that
-put its output rules in `## Output Format` obeyed them once linked into a
-native CLI and ignored them when run directly.
+shell` and `armadai link`'s per-agent files all compose the prompt this same
+way, from one definition in the core
+(`armadai_core::agent::compose_agent_prompt`). Before issue #395 was fixed,
+`run` sent `## System Prompt` alone, so an agent that put its output rules in
+`## Output Format` obeyed them once linked into a native CLI and ignored them
+when run directly.
+
+Two things still fall outside that sentence:
+
+- **The coordinator's root instructions file.** `armadai link --coordinator
+  <name>` also writes `CLAUDE.md` (and its equivalent per target), and that
+  file is *not* composed this way: it carries the system prompt and the
+  `## Instructions` body — the body alone, without its heading — and drops
+  `## Output Format` and `## Context` entirely. Put anything a coordinator
+  must obey in its system prompt until issue #409 is fixed.
+- **`##` headings the parser does not know.** The parser keys sections by
+  their exact heading, case-insensitively, and knows eight: `Metadata`,
+  `System Prompt`, `Instructions`, `Output Format`, `Pipeline`, `Context`,
+  `Triggers`, `Ring Config`. Any other `##` is dropped in silence, in every
+  consumer, `link` included — nothing warns, the content simply never
+  reaches a model. Put prose under one of the eight, or demote its heading
+  to `###` so it stays inside the section above it.
 
 `## Metadata`, `## Pipeline`, `## Triggers` and `## Ring Config` are
 configuration, not prompt text: they are parsed into fields and never sent.

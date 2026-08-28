@@ -152,14 +152,6 @@ pub struct PipelineConfig {
     pub next: Vec<String>,
 }
 
-/// The optional sections [`compose_agent_prompt`] appends, each with the
-/// heading it is reintroduced under — the declaration order of an agent file.
-///
-/// Kept as one list so "which sections make up a prompt, in which order" is
-/// stated once. Adding a fifth section to [`Agent`] means adding one line
-/// here, and both `run` and `link` gain it in the same gesture.
-const OPTIONAL_SECTION_HEADINGS: [&str; 3] = ["## Instructions", "## Output Format", "## Context"];
-
 /// Compose an agent's declared sections into the single prompt body that IS
 /// "the prompt of an agent".
 ///
@@ -178,6 +170,14 @@ const OPTIONAL_SECTION_HEADINGS: [&str; 3] = ["## Instructions", "## Output Form
 /// the surrounding wrapper (YAML frontmatter, TOML quoting) differed, which
 /// is why the shareable part is exactly this function and not more.
 ///
+/// They agreed on every four-section agent, not on every input: an *empty*
+/// `## System Prompt` made codex and copilot open the body with two blank
+/// lines and the other three with none. A single definition has to pick one,
+/// and picks "no leading blank line" — see
+/// `an_empty_system_prompt_does_not_open_the_prompt_with_a_blank_line`. On
+/// the 77-agent library this repository links against, every generated file
+/// is byte-identical to what the per-linker copies produced.
+///
 /// A section present but empty still contributes its heading: that is what
 /// the linkers did before, and `run`/`link` staying byte-identical matters
 /// more than trimming a stray heading.
@@ -191,14 +191,19 @@ pub fn compose_agent_prompt(
     context: Option<&str>,
 ) -> String {
     let mut out = String::from(system_prompt);
-    for (heading, body) in
-        OPTIONAL_SECTION_HEADINGS
-            .iter()
-            .zip([instructions, output_format, context])
-    {
+    // Which sections make up a prompt, and in which order, is stated once —
+    // here. A heading cannot be added without its body: the tuple demands
+    // both, where a second array zipped against a list of headings let one
+    // be added alone and silently dropped.
+    for (heading, body) in [
+        ("## Instructions", instructions),
+        ("## Output Format", output_format),
+        ("## Context", context),
+    ] {
         let Some(body) = body else { continue };
-        // Blank line before the heading, exactly as every linker did.
-        if !out.ends_with("\n\n") {
+        // One blank line before the heading — but never open the prompt with
+        // one, which is where the five linkers disagreed (see above).
+        if !out.is_empty() && !out.ends_with("\n\n") {
             if !out.ends_with('\n') {
                 out.push('\n');
             }
@@ -418,6 +423,10 @@ mod tests {
     /// `set_composed_prompt` must make `composed_prompt` idempotent: it is
     /// what stops `run`'s guided mode from having its sections composed a
     /// second time inside the engine.
+    ///
+    /// The fixture carries all three optional sections deliberately. With
+    /// only `instructions` set it exercised one of the three fields the
+    /// method has to clear, and clearing just that one kept it green.
     #[test]
     fn set_composed_prompt_makes_composition_idempotent() {
         let mut agent = Agent {
@@ -445,12 +454,35 @@ mod tests {
             },
             system_prompt: "SYS".to_string(),
             instructions: Some("INST".to_string()),
-            output_format: None,
+            output_format: Some("OUT".to_string()),
             pipeline: None,
-            context: None,
+            context: Some("CTX".to_string()),
         };
         let once = agent.composed_prompt();
         agent.set_composed_prompt(once.clone());
         assert_eq!(agent.composed_prompt(), once);
+    }
+
+    /// An agent may declare `## System Prompt` and leave its body empty — the
+    /// parser accepts it. The five linkers disagreed on that input: codex and
+    /// copilot opened the composed body with two blank lines, claude, gemini
+    /// and opencode with none. Folding them into one definition forces a
+    /// choice, and this pins it: no leading blank line, because a prompt that
+    /// opens on whitespace spends the model's first tokens on nothing.
+    ///
+    /// Nothing else pins it. No agent in the 77-agent library exercises an
+    /// empty system prompt, so both forms passed the whole suite — which is
+    /// precisely why the chosen one has to be stated here rather than left to
+    /// whichever linker's copy happened to be hoisted.
+    #[test]
+    fn an_empty_system_prompt_does_not_open_the_prompt_with_a_blank_line() {
+        assert_eq!(
+            compose_agent_prompt("", Some("INST"), None, None),
+            "## Instructions\n\nINST"
+        );
+        assert_eq!(
+            compose_agent_prompt("", None, Some("OUT"), Some("CTX")),
+            "## Output Format\n\nOUT\n\n## Context\n\nCTX"
+        );
     }
 }
