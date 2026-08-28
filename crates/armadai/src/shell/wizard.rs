@@ -397,18 +397,26 @@ async fn run_link(target: &str) -> Result<()> {
 /// looking for the coordinator where `link` would have put it, left that
 /// per-agent file behind.
 ///
-/// What it still does **not** honour, each a config-driven behaviour of
-/// `link` that this function has no equivalent for (tracked as #411):
+/// What it still does **not** do that `link` does — all four measured
+/// during #375 and tracked as #411, which is an extraction rather than a
+/// fix (the shareable piece is "what `link` publishes", the way
+/// `linker::manifest::write_files` already is for "how it writes"):
 ///
 /// - **`skills:` / `prompts:`** — `link` assembles the project's skills
 ///   and prompts into the generated config; the wizard passes agents
-///   alone, so a wizard-linked project ships without them.
-/// - **`orchestration:`** — `link` validates the orchestration config and
-///   refuses on error before writing anything; the wizard writes
-///   regardless.
-/// - **the project registry** — `link` calls
-///   `project_registry::register_project`, so the project shows up in
-///   `armadai projects`; a wizard-driven link never registers it.
+///   alone. Measured on a one-agent/one-skill/one-prompt project: `link`
+///   writes 4 files, the wizard 2. A wizard-linked project therefore
+///   ships a fleet amputated of both, and nothing says so.
+/// - **`orchestration:`** — `link` validates the orchestration config
+///   (its step 1b) and refuses on error before writing anything; the
+///   wizard writes regardless. Defensible — a broken config must not lock
+///   the user out of the shell they need to fix it — but undocumented as
+///   a choice until now.
+/// - **`project_registry::register_project`** — `link`, `run` and `init`
+///   all register the project, so it shows up in `armadai projects`; a
+///   wizard-driven link never does.
+/// - **`model_updater::auto_check_and_prompt`** — same three commands run
+///   the deprecated-model check; the wizard never offers it.
 ///
 /// `warnings` is where the user-facing warnings go. In production it is
 /// `anstream::stderr()` (see [`run_link`]); tests pass a buffer, which is
