@@ -105,10 +105,22 @@ Direct HTTP calls to LLM APIs. Use these when you want explicit API control.
 > a model is needed: when ArmadAI *generates a native CLI config*
 > (`armadai link`), in `armadai shell`, and on the `armadai run` path — for a
 > single agent, for a `--pipe` chain, for `--orchestrate`, and for `--resume`
-> alike. The resolution uses the agent's own provider and the cached
-> [models.dev](https://models.dev) catalog, falling back to a built-in table
-> when the cache is absent, so no `latest:*` string is ever sent to a server
-> as a model name.
+> alike.
+>
+> **Which vendor's catalog is read** comes from the agent's own `provider:`,
+> mapped to the vendor that names its models: `gemini` → Google, `claude` →
+> Anthropic, `gpt`/`aider`/`codex` → OpenAI. The concrete id is then the best
+> match for the tier in the cached [models.dev](https://models.dev) catalog,
+> or a built-in table when the cache is absent. All three commands read the
+> same mapping — until #398 `shell` was the only one that had it, and `run`
+> resolved a `provider: gemini` agent's `latest:pro` to a *Claude* model.
+>
+> A provider with no vendor of its own — `provider: cli`, the CLI-only tools
+> (`copilot`, `opencode`), and `provider: proxy` — keeps the placeholder
+> instead. For a relayed CLI the model is not sent at all (the tool picks its
+> own), and for a gateway the placeholder is the more useful string: an
+> administrator can route `latest:max` through a house alias, which a
+> concrete id chosen here would override with no way to opt out.
 >
 > `latest:auto` is the one placeholder resolved *per call* rather than up
 > front: its tier is chosen from the run's own input by the router
