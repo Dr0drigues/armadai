@@ -100,9 +100,11 @@ pub enum Command {
         #[arg(long, value_name = "TAGS", value_delimiter = ',')]
         tags: Option<Vec<String>>,
         /// Resolve agents, providers and models and print what would run,
-        /// without calling any provider (0 tokens). Refuses whatever the real
-        /// run refuses, with the same exit code. Works on every path: a single
-        /// agent, --pipe, --orchestrate and --resume.
+        /// without calling any provider (0 tokens) and without writing
+        /// anything: the project is not registered and agent files are never
+        /// rewritten. Refuses whatever the real run refuses, with the same
+        /// exit code. Works on every path: a single agent, --pipe,
+        /// --orchestrate and --resume.
         #[arg(long)]
         dry_run: bool,
         /// Disable the live orchestration TUI (force plain headless output)

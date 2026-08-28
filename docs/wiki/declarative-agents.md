@@ -217,13 +217,19 @@ and the model each would use, and calls nothing:
 [dry-run]   1/3 reader — provider=cli, model=(not sent — cli:jq chooses)
 [dry-run]   2/3 summariser — provider=anthropic, model=claude-sonnet-4-5-20250929
 [dry-run]   3/3 reviewer — provider=anthropic, model=latest:auto (tier chosen per call)
-[dry-run] no provider was called; nothing was recorded or billed
+[dry-run] no provider called, no project registered, no agent file rewritten; nothing was recorded or billed
 ```
 
 The model column is the string the run would really send, not the one written in the agent
 file: deprecated aliases and tier placeholders are already resolved. An agent relayed by a
 command-line tool is the exception — the relay never receives `model`, it picks its own — so the
 preview says so rather than naming an id that would never be asked for.
+
+The sign-off line is about the **disk**, not only the bill. A preview does not add the project to
+`projects.json` (being registered is a consequence of having run in a project, not of having
+looked at one), and the deprecated-model auto-check runs non-interactively: it still reports every
+deprecated model it finds — a real run would offer to rewrite them, which is worth knowing before
+you launch it — but it never offers, and therefore never touches an agent file.
 
 Because it is the same pass, the preview **refuses whatever the real run refuses**, with the same
 message and the same non-zero exit — an unresolvable link, a colliding name, a provider that

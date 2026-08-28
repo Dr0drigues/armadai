@@ -23,6 +23,19 @@ significantly change your approach, ask 2-3 targeted clarifying questions first.
 Only proceed with your complete response once you have enough context to deliver \
 accurate, relevant output.";
 
+/// The line every `--dry-run` preview signs off with, in one place because
+/// there are three preview sites and a promise made in three wordings is
+/// three promises to keep.
+///
+/// It used to say only "no provider was called; nothing was recorded or
+/// billed" — true of the provider, false of the disk (#403): the preview
+/// registered the project and, on a terminal, offered to rewrite the agent
+/// files it was previewing. Both are gone (see [`resolve_agents_dir`]), so
+/// the line now states what it actually guarantees instead of a subset of
+/// it.
+const DRY_RUN_NO_EFFECTS: &str = "[dry-run] no provider called, no project registered, \
+     no agent file rewritten; nothing was recorded or billed";
+
 /// Execute a run command. Parameters are independent CLI options that map directly to
 /// configuration flags; grouping into a struct would obscure the caller's argument binding.
 #[allow(clippy::too_many_arguments)]
@@ -453,7 +466,7 @@ async fn resume_run(
     // pattern's config (`ConfigSnapshot`). `headless = true` here: a resume
     // is a non-interactive continuation, so it must never block on the
     // model-updater's interactive prompt the way a fresh `armadai run` might.
-    let resolution = resolve_agents_dir(true);
+    let resolution = resolve_agents_dir(true, dry_run);
     let routing_rules = match &resolution {
         AgentResolution::Project { config, .. } => config.routing.clone().unwrap_or_default(),
         _ => armadai_core::routing::RoutingRules::default(),
@@ -539,7 +552,7 @@ async fn resume_run(
             "[dry-run] the remaining steps are decided by the engine as it runs, \
              so they cannot be listed without executing them"
         );
-        eprintln!("[dry-run] no provider was called; nothing was recorded or billed");
+        eprintln!("{DRY_RUN_NO_EFFECTS}");
         if !json {
             println!("{}", names.join("\n"));
         }
@@ -703,7 +716,7 @@ async fn run_inner(
     sink: &Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     let _ = (&resume, &replay);
-    let resolution = resolve_agents_dir(headless);
+    let resolution = resolve_agents_dir(headless, dry_run);
     let tags = tags.unwrap_or_default();
 
     // Build the execution chain: primary agent + piped agents
@@ -1157,7 +1170,7 @@ fn report_dry_run_chain(chain: &[String], links: &[ChainLink], json: bool) {
             anstream::eprintln!("{s}[dry-run]   warn: {w}{s:#}");
         }
     }
-    eprintln!("[dry-run] no provider was called; nothing was recorded or billed");
+    eprintln!("{DRY_RUN_NO_EFFECTS}");
     if !json {
         println!("{}", chain.join("\n"));
     }
@@ -1816,7 +1829,26 @@ fn atty_is_pipe() -> bool {
 
 /// Resolve agent source: walk up for `armadai.yaml`, detect format,
 /// and return the appropriate resolution strategy.
-fn resolve_agents_dir(headless: bool) -> AgentResolution {
+///
+/// `dry_run` is not a display concern here, it is an *effects* one (#403).
+/// Resolving the project is the first thing every `run` entry point does —
+/// before it knows, or cares, whether the run is a preview — and on the way
+/// through it used to perform the only two disk writes a `--dry-run` could
+/// possibly make:
+///
+/// - `register_project` writes `projects.json`. Being registered is a
+///   consequence of having *run* in a project, not of having previewed one.
+/// - `auto_check_and_prompt`, on a real terminal, offers to fix deprecated
+///   models — and on confirmation `apply_findings` rewrites the agent files
+///   themselves. A preview that edits the very files it is previewing is not
+///   a preview.
+///
+/// So under `dry_run` the registration is skipped outright and the
+/// auto-check is forced **non-interactive**: it still reports every
+/// deprecated model it finds (that a real run would rewrite them is exactly
+/// the kind of thing a preview exists to say), it just never offers, and
+/// therefore never writes.
+fn resolve_agents_dir(headless: bool, dry_run: bool) -> AgentResolution {
     // 1. Walk-up search for project config (new or legacy format).
     //
     // A project counts as having agents when `agents:` lists any, OR
@@ -1833,10 +1865,10 @@ fn resolve_agents_dir(headless: bool) -> AgentResolution {
             root.display(),
             config.agents.len()
         );
-        if let Err(e) = armadai_core::project_registry::register_project(&root) {
+        if !dry_run && let Err(e) = armadai_core::project_registry::register_project(&root) {
             tracing::warn!("Failed to register project in registry: {:?}", e);
         }
-        let interactive = !headless && !atty_is_pipe();
+        let interactive = !dry_run && !headless && !atty_is_pipe();
         armadai_core::model_updater::auto_check_and_prompt(&root, interactive);
         return AgentResolution::Project {
             root,
@@ -2247,7 +2279,7 @@ async fn run_orchestrated_inner(
             "[dry-run] which agent speaks when, and how often, is decided by the \
              engine as it runs, so it cannot be listed without executing it"
         );
-        eprintln!("[dry-run] no provider was called; nothing was recorded or billed");
+        eprintln!("{DRY_RUN_NO_EFFECTS}");
         if !json {
             println!("{}", effective_names.join("\n"));
         }
@@ -3088,8 +3120,16 @@ mod tests {
 
     #[test]
     fn test_resolve_agents_dir_returns_valid_resolution() {
-        // resolve_agents_dir should not panic regardless of cwd state
-        let resolution = resolve_agents_dir(false);
+        // resolve_agents_dir should not panic regardless of cwd state.
+        //
+        // `dry_run = true` (#403): this runs in the developer's own checkout,
+        // where the cwd walk-up can land on a real project — and the
+        // non-dry-run branch writes `projects.json` in the REAL config dir
+        // (no `ARMADAI_CONFIG_DIR` redirection reaches a unit test). The
+        // preview flag makes the call effect-free by construction; the
+        // registering branch is covered where it belongs, by the spawned
+        // binary in `tests/run_dry_run_spends_nothing.rs`.
+        let resolution = resolve_agents_dir(false, true);
         match resolution {
             AgentResolution::Project { root, config, .. } => {
                 assert!(!root.to_string_lossy().is_empty());

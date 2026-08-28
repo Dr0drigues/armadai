@@ -606,34 +606,115 @@ fn an_orchestrated_preview_names_each_agents_provider_and_model() {
     }
 }
 
-// ── The preview must not enter the live Workroom (#398 review) ───────
+// ── The preview writes nothing to disk (#403) ────────────────────────
 
-/// `--dry-run` on a **real terminal**.
+/// `--dry-run` promises "0 tokens" and signs off with "nothing was recorded
+/// or billed". That was true of the provider and false of the disk:
+/// `resolve_agents_dir` ran BEFORE the `dry_run` branch on every path, and
+/// registered the project in `projects.json` on the way through.
 ///
-/// Everything above runs with stdout on a pipe, where `IsTerminal` is false
-/// and the live Workroom is out of reach whatever the flags say. That makes
-/// the `&& !dry_run` term in [`use_live_workroom`](../src/cli/run.rs)
-/// invisible to the whole suite: remove it and every test stays green.
-///
-/// What it guards is not cosmetic. The Workroom drives its own event loop
-/// until the run produces a terminal event, and a dry run produces none — it
-/// never dispatches anything. On a terminal, without the term, the preview
-/// enters the alternate screen and stays there: the process does not exit.
-///
-/// So this test gives the binary an actual TTY (`openpty`, no fork — the
-/// child simply gets the slave side as its stdio) and asserts it *finishes*,
-/// having printed the preview. The timeout is the assertion: a hang is the
-/// failure mode, and a hang is what a plain `output()` would turn into a
-/// stuck test run rather than a red one.
-#[cfg(unix)]
+/// The control run is the point of the test. An assertion that a file is
+/// absent is worth nothing against a fixture that would never have written
+/// it, so the same sandbox is run for real straight after: the registry
+/// must appear then, and only then.
 #[test]
-fn a_dry_run_on_a_terminal_prints_a_preview_and_exits() {
-    use std::io::Read;
+fn a_sequential_dry_run_does_not_register_the_project() {
+    let sb = Sandbox::new(&[("alpha", ECHO)]);
+    let registry = sb.config.join("projects.json");
+
+    let dry = sb.run(&["run", "alpha", "hello", "--dry-run", "--json"]);
+    assert!(dry.succeeded(), "dry-run failed: {}", dry.stderr());
+    assert!(
+        !registry.exists(),
+        "--dry-run registered the project:\n{}",
+        std::fs::read_to_string(&registry).unwrap_or_default()
+    );
+
+    let real = sb.run(&["run", "alpha", "hello", "--json"]);
+    assert!(real.succeeded(), "run failed: {}", real.stderr());
+    assert!(
+        registry.exists(),
+        "the fixture never registers a project at all — the assertion above \
+         proves nothing"
+    );
+}
+
+/// `--resume` builds its roster through its own `resolve_agents_dir` call,
+/// so the sequential fix does not reach it: it needs its own measurement.
+///
+/// The setup run registers the project (it is a real run), so the registry
+/// is deleted before the preview — otherwise "the file exists" would be
+/// true whatever the preview does.
+#[cfg(feature = "storage")]
+#[test]
+fn a_resume_dry_run_does_not_register_the_project() {
+    let sb = Sandbox::new(&[(
+        "alpha",
+        "- provider: cli\n- command: /nonexistent-armadai-cmd\n",
+    )]);
+    let registry = sb.config.join("projects.json");
+
+    // A run whose provider cannot execute dies mid-flight, leaving the
+    // event log in `Running` — i.e. resumable.
+    let setup = sb.run(&["run", "alpha", "hello", "--json"]);
+    assert!(!setup.succeeded(), "the setup run was supposed to fail");
+    let run_id = setup
+        .stdout()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["t"] == "run_start")
+        .and_then(|v| v["run_id"].as_str().map(str::to_string))
+        .expect("no run_start to take a run id from");
+
+    write_agent(&sb.root, "alpha", ECHO);
+    std::fs::remove_file(&registry).expect("the setup run should have registered the project");
+
+    let dry = sb.run(&[
+        "run",
+        "--resume",
+        &run_id,
+        "--dry-run",
+        "--json",
+        "--no-tui",
+    ]);
+    assert!(dry.succeeded(), "resume dry-run failed: {}", dry.stderr());
+    assert!(
+        !registry.exists(),
+        "--resume --dry-run registered the project:\n{}",
+        std::fs::read_to_string(&registry).unwrap_or_default()
+    );
+
+    // Control: a real resume does register it.
+    let real = sb.run(&["run", "--resume", &run_id, "--json", "--no-tui"]);
+    assert!(real.succeeded(), "resume failed: {}", real.stderr());
+    assert!(
+        registry.exists(),
+        "a real resume does not register either — the assertion above proves \
+         nothing"
+    );
+}
+
+// ── The preview on a real terminal (#398 review, #403) ───────────────
+
+/// Spawn the binary with an actual TTY on all three stdio ends, feed it
+/// `stdin`, and return `(status, everything the terminal saw)`.
+///
+/// `openpty`, no fork — the child simply gets the slave side as its stdio.
+/// Two behaviours under test in this file are unreachable without it, and
+/// both fail as *hangs*: the live Workroom's `IsTerminal` gate, and
+/// `dialoguer`'s confirmation prompt, which only prompts on a terminal. The
+/// deadline below is therefore part of the assertion — it turns a hang into
+/// a red test instead of a stuck run.
+///
+/// The master is drained continuously by a thread: a pty buffer is a few KB,
+/// and a child blocked on a full one would look exactly like the hang under
+/// test.
+#[cfg(unix)]
+fn run_on_a_pty(sb: &Sandbox, args: &[&str], stdin: &str) -> (std::process::ExitStatus, String) {
+    use std::io::{Read, Write};
     use std::os::fd::{FromRawFd, OwnedFd};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
-
-    let sb = Sandbox::new(&[("alpha", ECHO), ("beta", ECHO)]);
 
     let (master, slave) = {
         let (mut m, mut s) = (0, 0);
@@ -660,16 +741,7 @@ fn a_dry_run_on_a_terminal_prints_a_preview_and_exits() {
         .env("ARMADAI_CONFIG_DIR", &sb.config)
         .env("XDG_DATA_HOME", &sb.data)
         .env("NO_COLOR", "1")
-        .args([
-            "run",
-            "alpha",
-            "hello",
-            "--pipe",
-            "beta",
-            "--orchestrate",
-            "ring",
-            "--dry-run",
-        ])
+        .args(args)
         .stdin(std::process::Stdio::from(slave.try_clone().unwrap()))
         .stdout(std::process::Stdio::from(slave.try_clone().unwrap()))
         .stderr(std::process::Stdio::from(slave.try_clone().unwrap()));
@@ -677,16 +749,22 @@ fn a_dry_run_on_a_terminal_prints_a_preview_and_exits() {
     // The parent must not keep the slave open, or the master never sees EOF.
     drop(slave);
 
-    // Drain the master continuously: a pty buffer is a few KB, and a child
-    // blocked on a full one would look exactly like the hang under test.
+    let mut master = std::fs::File::from(master);
+    if !stdin.is_empty() {
+        master
+            .write_all(stdin.as_bytes())
+            .expect("write to the pty");
+        master.flush().unwrap();
+    }
+
     let seen: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
+    let mut drain = master.try_clone().expect("clone the pty master");
     std::thread::spawn(move || {
-        let mut f = std::fs::File::from(master);
         let mut buf = [0u8; 4096];
         // Linux reports EIO (not EOF) once the last slave closes; any error
         // is the end as far as this drain is concerned.
-        while let Ok(n) = f.read(&mut buf) {
+        while let Ok(n) = drain.read(&mut buf) {
             if n == 0 {
                 break;
             }
@@ -702,9 +780,9 @@ fn a_dry_run_on_a_terminal_prints_a_preview_and_exits() {
                 let _ = child.kill();
                 let _ = child.wait();
                 panic!(
-                    "--dry-run never returned on a terminal — it entered the live \
-                     Workroom, which waits for a run that will never dispatch. \
-                     Output so far:\n{}",
+                    "armadai never returned on a terminal — a preview that enters \
+                     the live Workroom, and a prompt nobody answers, both hang \
+                     exactly here. Output so far:\n{}",
                     String::from_utf8_lossy(&seen.lock().unwrap())
                 );
             }
@@ -714,6 +792,39 @@ fn a_dry_run_on_a_terminal_prints_a_preview_and_exits() {
     // Let the drain thread pick up whatever was still in the pty buffer.
     std::thread::sleep(Duration::from_millis(100));
     let out = String::from_utf8_lossy(&seen.lock().unwrap()).into_owned();
+    (status, out)
+}
+
+/// `--dry-run` on a **real terminal**.
+///
+/// Everything above runs with stdout on a pipe, where `IsTerminal` is false
+/// and the live Workroom is out of reach whatever the flags say. That makes
+/// the `&& !dry_run` term in [`use_live_workroom`](../src/cli/run.rs)
+/// invisible to the whole suite: remove it and every test stays green.
+///
+/// What it guards is not cosmetic. The Workroom drives its own event loop
+/// until the run produces a terminal event, and a dry run produces none — it
+/// never dispatches anything. On a terminal, without the term, the preview
+/// enters the alternate screen and stays there: the process does not exit.
+#[cfg(unix)]
+#[test]
+fn a_dry_run_on_a_terminal_prints_a_preview_and_exits() {
+    let sb = Sandbox::new(&[("alpha", ECHO), ("beta", ECHO)]);
+
+    let (status, out) = run_on_a_pty(
+        &sb,
+        &[
+            "run",
+            "alpha",
+            "hello",
+            "--pipe",
+            "beta",
+            "--orchestrate",
+            "ring",
+            "--dry-run",
+        ],
+        "",
+    );
 
     assert!(status.success(), "--dry-run on a terminal failed:\n{out}");
     assert!(
@@ -723,5 +834,62 @@ fn a_dry_run_on_a_terminal_prints_a_preview_and_exits() {
     assert!(
         !out.contains("\u{1b}[?1049h"),
         "--dry-run entered the alternate screen (the live Workroom):\n{out}"
+    );
+}
+
+/// The second half of #403, and the one no piped test can reach.
+///
+/// `resolve_agents_dir` calls `model_updater::auto_check_and_prompt` with
+/// `interactive = !headless && !atty_is_pipe()`. On a pipe that is always
+/// false, so the whole suite above only ever saw the "hint:" branch. On a
+/// terminal it prompts, and on confirmation `apply_findings` REWRITES the
+/// agent files — under `--dry-run`, on a command whose last line claims
+/// nothing was recorded.
+///
+/// The control run is what makes the dry-run assertion mean anything: the
+/// same fixture, the same terminal, the same answer, without `--dry-run`.
+/// It must rewrite the file. If it does not, the fixture never reached the
+/// prompt and "the file is unchanged" would be true for the wrong reason.
+///
+/// `gpt-3.5-turbo` is an embedded deprecation in `model_aliases`
+/// (→ `gpt-4o-mini`), so nothing here depends on the network or on the
+/// user's `model-aliases.json` — `ARMADAI_CONFIG_DIR` points at an empty
+/// sandbox, so no local override can be loaded.
+#[cfg(unix)]
+#[test]
+fn a_dry_run_on_a_terminal_never_rewrites_an_agent_file() {
+    const DEPRECATED: &str = "- provider: cli\n- command: echo\n- model: gpt-3.5-turbo\n";
+
+    let control = Sandbox::new(&[("alpha", DEPRECATED)]);
+    let file = control.root.join("agents").join("alpha.md");
+    let before = std::fs::read_to_string(&file).unwrap();
+
+    let (status, out) = run_on_a_pty(&control, &["run", "alpha", "hello"], "y\n");
+    assert!(status.success(), "the control run failed:\n{out}");
+    let rewritten = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        rewritten.contains("gpt-4o-mini") && rewritten != before,
+        "the control run never reached the interactive prompt, so the \
+         dry-run assertion below would prove nothing. Terminal saw:\n{out}"
+    );
+
+    let sb = Sandbox::new(&[("alpha", DEPRECATED)]);
+    let file = sb.root.join("agents").join("alpha.md");
+    let (status, out) = run_on_a_pty(&sb, &["run", "alpha", "hello", "--dry-run"], "y\n");
+
+    assert!(status.success(), "--dry-run on a terminal failed:\n{out}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        before,
+        "--dry-run rewrote an agent file. Terminal saw:\n{out}"
+    );
+    assert!(
+        !out.contains("Update deprecated models now?"),
+        "--dry-run offered to write:\n{out}"
+    );
+    // Reporting the finding is the part that belongs in a preview.
+    assert!(
+        out.contains("gpt-3.5-turbo -> gpt-4o-mini"),
+        "the preview stopped reporting the deprecation it would fix:\n{out}"
     );
 }
