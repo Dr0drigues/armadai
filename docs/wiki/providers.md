@@ -140,6 +140,31 @@ Direct HTTP calls to LLM APIs. Use these when you want explicit API control.
 > administrator can route `latest:max` through a house alias, which a
 > concrete id chosen here would override with no way to opt out.
 >
+> **Which model in the tier** is decided by two keys, in order. First the
+> **generation** — the numbers in the id, compared as numbers: `latest:pro`
+> asks for the *latest* model of the Pro tier, and generation `10` is above
+> generation `4.6` even though the string `gpt-10` sorts below `gpt-9`. Then
+> the **price**, in the direction the tier promises: `latest:fast` ("cheap
+> and fast") and `latest:pro` ("balanced") take the cheapest of that
+> generation, `latest:max` ("maximum capability") the dearest. A model the
+> catalog does not price never wins over one it does.
+>
+> Until [#404](https://github.com/Dr0drigues/armadai/issues/404) there was
+> one key and it was the alphabet, described in the code as "the highest
+> version". It is not the same thing: `latest:fast` on OpenAI answered
+> `o4-mini` — a reasoning model at $1.10/$4.40 per Mtok against the tier's
+> own example `gpt-4o-mini` at $0.15/$0.60 — because `o` sorts after `g`.
+>
+> **A vendor may not distinguish every tier.** Google publishes no line above
+> `pro`, so `latest:max` on Google *is* `latest:pro`, deliberately and
+> explicitly — and it now resolves through the catalog like any other tier
+> rather than freezing on a built-in id.
+>
+> **OpenAI's o-series** (`o1`, `o3`, `o4-mini`, …) is a reasoning line rather
+> than a rung on the chat price ladder these three tiers describe, so it
+> claims no tier — except `o3-pro`/`o1-pro`, which are Max like the rest of
+> the `-pro` line.
+>
 > `latest:auto` is the one placeholder resolved *per call* rather than up
 > front: its tier is chosen from the run's own input by the router
 > (configured under `routing:` in `armadai.yaml`).

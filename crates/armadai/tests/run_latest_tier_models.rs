@@ -201,6 +201,18 @@ impl Sandbox {
         cmd.output().unwrap()
     }
 
+    /// Plant a models.dev cache in the isolated config dir, so tier
+    /// resolution reads a catalog this test controls instead of falling
+    /// through to the hardcoded table. `entries` is the JSON array for one
+    /// provider, written verbatim.
+    fn seed_models_cache(&self, provider: &str, entries: &str) {
+        std::fs::write(
+            self.config.join("models-cache.json"),
+            format!(r#"{{"providers":{{"{provider}":{entries}}}}}"#),
+        )
+        .unwrap();
+    }
+
     /// Same, pointed at a Gemini-shaped server instead, and with a PATH that
     /// holds no `gemini` binary — so `provider: gemini` takes the API
     /// fallback (`create_unified_provider`) rather than relaying a CLI that
@@ -616,4 +628,38 @@ fn only_latest_auto_is_routed_per_call() {
     );
 
     assert_no_placeholder_reached_the_wire(&api.models_seen());
+}
+
+// -- The tier read from the catalog, at the wire (issue #404) ---------
+
+/// With a models.dev cache present, the id that reaches the server is the
+/// one the catalog names for the tier -- and "the catalog's newest" is read
+/// numerically, not off the alphabet.
+///
+/// The fixture is the case that separates the two: generation `10` is above
+/// generation `4.6`, while the *string* `"claude-sonnet-10"` is below
+/// `"claude-sonnet-4-6"`. The old `candidates.iter().max()` therefore sent
+/// `claude-sonnet-4-6`. It also prices the newer model *higher*, so
+/// "cheapest wins" alone answers `claude-sonnet-4-6` too: the assertion is
+/// satisfied only by ordering on the generation first.
+///
+/// Wire-level rather than unit-level for the reason this whole file exists:
+/// on three of the four run paths nothing ArmadAI prints names the model it
+/// billed, so the bytes are the only witness.
+#[test]
+fn the_model_on_the_wire_is_the_catalogs_newest_read_as_a_number() {
+    let api = FakeApi::start();
+    let sb = Sandbox::new(&[("alpha", "latest:pro")]);
+    sb.seed_models_cache(
+        "anthropic",
+        r#"[{"id":"claude-sonnet-4-6","cost":{"input":2.0,"output":10.0}},
+            {"id":"claude-sonnet-10","cost":{"input":3.0,"output":15.0}}]"#,
+    );
+
+    let out = sb.run(&api, &["run", "alpha", "hello", "--json"]);
+    assert!(out.status.success(), "run failed: {out:?}");
+
+    let seen = api.models_seen();
+    assert_no_placeholder_reached_the_wire(&seen);
+    assert_eq!(seen, vec!["claude-sonnet-10".to_string()]);
 }
