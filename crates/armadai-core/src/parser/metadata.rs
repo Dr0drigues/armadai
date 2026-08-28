@@ -85,6 +85,22 @@ pub(super) fn duplicate_keys(
 /// block silently reconfigures the agent, and an unparsable value in one makes
 /// the whole file fail to load. The warning is emitted before the values are
 /// parsed, so it reaches the user in that second case too.
+///
+/// One line per override, and the wording does not count: a key set three
+/// times yields two lines, and each said "twice" until it was measured — two
+/// lines both claiming "twice" for the same key. "again" is true of every
+/// link in the chain, which is what `duplicate_keys` actually reports.
+///
+/// The channel is `tracing::warn!` rather than the `LoadWarning` the core
+/// normally returns for the CLI to render (`agent_source.rs` documents that
+/// convention). The reason is the fatal case, which is this warning's whole
+/// point: when the duplicate makes the file unloadable, `parse_agent_file`
+/// returns `Err`, and a returned-warning channel has nowhere to put the
+/// explanation without widening the error type through every caller. The
+/// costs are real and measured — `link` parses each file twice (#419) and
+/// `tracing` does not deduplicate the way `load_all_agents` does, and
+/// `tracing::fmt` colours by `NO_COLOR` alone where `anstream` also detects a
+/// non-TTY, so a redirected stderr keeps its escape sequences.
 pub(super) fn warn_duplicate_keys(
     raw: &str,
     source: &Path,
@@ -93,7 +109,7 @@ pub(super) fn warn_duplicate_keys(
 ) {
     for (key, replaced, winner) in duplicate_keys(raw, field) {
         tracing::warn!(
-            "{}: ## {section} sets '{key}' twice: '{replaced}' is overridden by \
+            "{}: ## {section} sets '{key}' again: '{replaced}' is overridden by \
              '{winner}' (the last value wins)",
             source.display()
         );
