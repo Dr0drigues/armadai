@@ -152,6 +152,13 @@ impl Provider for RateLimitedProvider {
     fn metadata(&self) -> ProviderMetadata {
         self.inner.metadata()
     }
+
+    /// Delegated, like `metadata`: this decorator only throttles, and every
+    /// provider `create_provider` builds is wrapped in one — a default `true`
+    /// here would hide `CliProvider`'s `false` from every caller.
+    fn honors_request_model(&self) -> bool {
+        self.inner.honors_request_model()
+    }
 }
 
 static PROVIDER_LIMITERS: OnceLock<Mutex<HashMap<String, Arc<RateLimiter>>>> = OnceLock::new();

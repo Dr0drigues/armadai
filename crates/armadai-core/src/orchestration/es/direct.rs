@@ -27,7 +27,7 @@ use super::event::ExecutionEvent;
 use super::log::EventLog;
 use super::state::ExecutionState;
 use crate::agent::Agent;
-use crate::model_resolution::{ModelTier, resolve_model_for_tier};
+use crate::model_resolution::{ModelTier, resolve_routed_tier, resolve_tier_placeholder};
 use crate::provider::{ChatMessage, CompletionRequest, Provider};
 use crate::routing::{RoutingRules, route};
 
@@ -213,9 +213,15 @@ impl EffectRunner for DirectEffectRunner {
                     ModelTier::Pro
                 }
             };
-            resolve_model_for_tier(&agent_def.metadata.provider, tier)
+            resolve_routed_tier(&agent_def.metadata.provider, tier)
         } else {
-            raw_model
+            // Every OTHER `latest:*` placeholder (`latest`, `latest:fast`,
+            // `latest:pro`, `latest:max`, …) has a tier that is known
+            // statically, so it is resolved right here — the last gate
+            // before the string becomes a provider's model name. Until #376
+            // this branch passed them through verbatim, and an API provider
+            // was asked for a model literally called `latest:pro`.
+            resolve_tier_placeholder(&raw_model, &agent_def.metadata.provider).unwrap_or(raw_model)
         };
 
         let request = CompletionRequest {
@@ -740,6 +746,43 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].model, expected);
         assert_ne!(sent[0].model, "latest:auto");
+    }
+
+    // A STATIC tier placeholder (`latest:pro` here, but equally `latest`,
+    // `latest:fast`, `latest:max`) must be resolved to a concrete model too
+    // (#376). Unlike `latest:auto` it needs no `ModelRouted` event — its
+    // tier is known from the string alone — so this drives `run_invoke`
+    // against a bare `ExecutionState` with no routing recorded at all, which
+    // is exactly the state a static placeholder produces on the real path.
+    //
+    // Uncached provider name for the same hermeticity reason as the
+    // `latest:auto` test above.
+    #[tokio::test]
+    async fn run_invoke_resolves_static_latest_tier_to_concrete_model() {
+        // Hermetic against the machine's models.dev cache. The `latest:auto`
+        // test above gets that for free from a provider name no catalog
+        // knows; a STATIC placeholder cannot use the same trick, because a
+        // provider with no named vendor is precisely the case
+        // `resolve_tier_placeholder` leaves alone (#398 review, F1). So the
+        // vendor is real and the cache is emptied instead.
+        let _iso = crate::test_support::IsolatedConfigDir::enter();
+
+        let mut agent = test_agent("solo", "latest:pro");
+        agent.metadata.provider = "anthropic".to_string();
+        let mut agents = BTreeMap::new();
+        agents.insert("solo".to_string(), agent);
+        let capturing = Arc::new(CapturingProvider::new("resp"));
+        let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+        providers.insert("solo".to_string(), capturing.clone() as Arc<dyn Provider>);
+        let runner = DirectEffectRunner::new(agents, providers);
+
+        let state = ExecutionState::default();
+        runner.run_invoke("solo", "go", &state, 1).await.unwrap();
+
+        let expected = fallback_model_for_tier("anthropic", ModelTier::Pro).to_string();
+        let sent = capturing.requests();
+        assert_eq!(sent[0].model, expected);
+        assert_ne!(sent[0].model, "latest:pro");
     }
 
     #[tokio::test]

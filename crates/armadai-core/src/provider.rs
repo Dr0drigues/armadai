@@ -53,4 +53,23 @@ pub trait Provider: Send + Sync {
 
     /// Return provider metadata.
     fn metadata(&self) -> ProviderMetadata;
+
+    /// Whether [`CompletionRequest::model`] actually selects the model this
+    /// provider answers with.
+    ///
+    /// `true` for everything that speaks an HTTP API: the field is the model
+    /// name in the request body or URL. `false` for a provider that relays a
+    /// command-line tool, which owns its own model choice — `CliProvider`
+    /// spawns the binary and never passes the field on, and reports back the
+    /// command name (or whatever the tool's own JSON says it used).
+    ///
+    /// Only a preview needs to ask. `armadai run --dry-run` was answering
+    /// "which model will I pay for" with the agent's resolved model id for
+    /// every agent, including CLI-relayed ones where that id is never sent
+    /// and never billed (#398 review, F2) — and a CLI-relayed agent is
+    /// ArmadAI's reference configuration. Defaulted to `true` so an API
+    /// provider states nothing, and the one exception is where it belongs.
+    fn honors_request_model(&self) -> bool {
+        true
+    }
 }

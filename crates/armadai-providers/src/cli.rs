@@ -501,6 +501,13 @@ impl Provider for CliProvider {
             supports_streaming: true,
         }
     }
+
+    /// `false`: `complete`/`stream` build the command from `self.command`
+    /// and `self.args` and hand the composed prompt to it — `request.model`
+    /// is read nowhere in this file. The tool picks its own model.
+    fn honors_request_model(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

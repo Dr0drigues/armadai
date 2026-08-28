@@ -209,6 +209,31 @@ What stays where it was is *running*. A link that resolves and builds fine and t
 its call still fails part-way through the chain, and the earlier links' calls are already spent —
 that is inherent to running them.
 
+`--dry-run` stops right after this pass. It prints the links in execution order with the provider
+and the model each would use, and calls nothing:
+
+```
+[dry-run] sequential chain (3 agent(s)): reader, summariser, reviewer
+[dry-run]   1/3 reader — provider=cli, model=(not sent — cli:jq chooses)
+[dry-run]   2/3 summariser — provider=anthropic, model=claude-sonnet-4-5-20250929
+[dry-run]   3/3 reviewer — provider=anthropic, model=latest:auto (tier chosen per call)
+[dry-run] no provider was called; nothing was recorded or billed
+```
+
+The model column is the string the run would really send, not the one written in the agent
+file: deprecated aliases and tier placeholders are already resolved. An agent relayed by a
+command-line tool is the exception — the relay never receives `model`, it picks its own — so the
+preview says so rather than naming an id that would never be asked for.
+
+Because it is the same pass, the preview **refuses whatever the real run refuses**, with the same
+message and the same non-zero exit — an unresolvable link, a colliding name, a provider that
+cannot be built. A preview that cannot fail would pre-check nothing. This holds for a single agent
+(`armadai run <name> --dry-run`), for `--orchestrate` (which previews provider and model per
+roster member, then says plainly that who speaks when is the engine's to decide), and for
+`--resume` too, which previews the roster it reloaded and leaves the run resumable. `latest:auto` is the one thing a dry run cannot resolve: its tier is
+chosen from each link's own input, and for every link but the first that input is the previous
+link's output — precisely what a dry run declines to compute.
+
 ## Long compositions still get audited
 
 Composing several fragments is easy to do without noticing how long the result got. `armadai

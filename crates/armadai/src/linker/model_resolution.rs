@@ -1,5 +1,7 @@
 use super::LinkAgent;
-use armadai_core::model_resolution::{ModelTier, fallback_model_for_tier, resolve_model_for_tier};
+use armadai_core::model_resolution::{
+    ModelTier, fallback_model_for_tier, resolve_model_for_tier, resolve_routed_tier,
+};
 
 /// Classification of link targets.
 pub enum TargetKind {
@@ -24,18 +26,10 @@ pub fn classify_target(target: &str) -> TargetKind {
 
 /// Parse a `latest` placeholder into a tier.
 ///
-/// Returns `Some(tier)` if the model string is a `latest` placeholder,
-/// `None` if it is a concrete model name.
-///
-/// Syntax: `latest` (defaults to Pro), `latest:fast`, `latest:pro`, `latest:max`.
-pub fn parse_latest_placeholder(model: &str) -> Option<ModelTier> {
-    match model.trim() {
-        "latest" | "latest:pro" | "latest:medium" => Some(ModelTier::Pro),
-        "latest:fast" | "latest:low" => Some(ModelTier::Fast),
-        "latest:max" | "latest:high" => Some(ModelTier::Max),
-        _ => None,
-    }
-}
+/// Re-exported from core, where it moved in #376 so the `armadai run` path
+/// resolves the exact same tier table this linker does — an alias that
+/// `link` honours and `run` sends verbatim to the provider was that issue.
+pub use armadai_core::model_resolution::parse_latest_placeholder;
 
 /// Check whether a model string is a `latest:*` placeholder.
 pub fn is_latest_placeholder(model: &str) -> bool {
@@ -110,8 +104,14 @@ pub fn resolve_latest_placeholders(agents: &mut [LinkAgent]) {
         if let Some(ref model) = agent.model
             && let Some(tier) = parse_latest_placeholder(model)
         {
+            // `resolve_routed_tier`, not `resolve_model_for_tier`: the value
+            // here is an agent's own `provider:` — a *tool* name (`gemini`,
+            // `aider`, …), which the vendor-keyed catalog does not know. Fed
+            // in raw it missed the cache and fell through to the Anthropic
+            // catch-all, so a `provider: gemini` agent was written into a
+            // native config with a Claude model id (#398 review, F1).
             let provider = agent.provider.as_deref().unwrap_or("anthropic");
-            agent.model = Some(resolve_model_for_tier(provider, tier));
+            agent.model = Some(resolve_routed_tier(provider, tier));
         }
     }
 }
@@ -358,20 +358,6 @@ mod tests {
     // ── Latest placeholder parsing ───────────────────────────────
 
     #[test]
-    fn test_parse_latest_placeholder() {
-        assert_eq!(parse_latest_placeholder("latest"), Some(ModelTier::Pro));
-        assert_eq!(
-            parse_latest_placeholder("latest:fast"),
-            Some(ModelTier::Fast)
-        );
-        assert_eq!(parse_latest_placeholder("latest:pro"), Some(ModelTier::Pro));
-        assert_eq!(parse_latest_placeholder("latest:max"), Some(ModelTier::Max));
-        assert_eq!(parse_latest_placeholder("claude-sonnet-4-5-20250929"), None);
-        assert_eq!(parse_latest_placeholder("gemini-2.5-pro"), None);
-        assert_eq!(parse_latest_placeholder(""), None);
-    }
-
-    #[test]
     fn test_is_latest_placeholder() {
         assert!(is_latest_placeholder("latest"));
         assert!(is_latest_placeholder("latest:fast"));
@@ -424,6 +410,39 @@ mod tests {
         );
         // D: latest without provider → defaults to anthropic pro
         assert!(agents[3].model.as_ref().unwrap().contains("sonnet"));
+    }
+
+    /// An agent's `provider:` may be a *tool* name, which the vendor-keyed
+    /// catalog does not know: `link` wrote a Claude model id into a native
+    /// config for a `provider: gemini` agent (#398 review, F1).
+    ///
+    /// Hermetic for the same reason `test_preview_resolution_with_latest`
+    /// is: with no models.dev cache reachable, resolution is the hardcoded
+    /// fallback table and the expectation is derived from it rather than
+    /// restated.
+    #[test]
+    fn resolve_latest_placeholders_uses_each_agents_own_vendor() {
+        let _iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        let mut agents = vec![
+            make_agent_with_provider("A", Some("latest:pro"), Some("gemini")),
+            make_agent_with_provider("B", Some("latest:fast"), Some("aider")),
+            make_agent_with_provider("C", Some("latest:max"), Some("claude")),
+        ];
+
+        resolve_latest_placeholders(&mut agents);
+
+        for (agent, vendor, tier) in [
+            (&agents[0], "google", ModelTier::Pro),
+            (&agents[1], "openai", ModelTier::Fast),
+            (&agents[2], "anthropic", ModelTier::Max),
+        ] {
+            assert_eq!(
+                agent.model.as_deref(),
+                Some(fallback_model_for_tier(vendor, tier)),
+                "{} should resolve against {vendor}",
+                agent.name
+            );
+        }
     }
 
     #[test]

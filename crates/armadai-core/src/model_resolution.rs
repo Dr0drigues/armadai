@@ -63,6 +63,103 @@ pub fn classify_model_tier(id: &str, provider: &str) -> Option<ModelTier> {
     }
 }
 
+/// Parse a **static** `latest` tier placeholder into its tier.
+///
+/// Syntax: `latest` (defaults to Pro), `latest:fast`/`latest:low`,
+/// `latest:pro`/`latest:medium`, `latest:max`/`latest:high`.
+///
+/// Returns `None` for a concrete model id — and, deliberately, for
+/// `latest:auto`: that placeholder's tier is not knowable statically. It
+/// depends on the run's own input and is resolved per call by
+/// [`crate::routing::route`], which is why every caller here treats it
+/// separately rather than folding it into this table.
+///
+/// Lives in core (rather than beside the linker, which was its only user
+/// until #376) because the run path needs the exact same table: a tier
+/// placeholder that `armadai link` resolves but `armadai run` sends
+/// verbatim to the provider is the defect #376 closed, and two tables would
+/// have let that divergence come back.
+pub fn parse_latest_placeholder(model: &str) -> Option<ModelTier> {
+    match model.trim() {
+        "latest" | "latest:pro" | "latest:medium" => Some(ModelTier::Pro),
+        "latest:fast" | "latest:low" => Some(ModelTier::Fast),
+        "latest:max" | "latest:high" => Some(ModelTier::Max),
+        _ => None,
+    }
+}
+
+/// The model catalog whose ids name `provider`'s models, or `None` when
+/// nothing here knows.
+///
+/// An agent's `provider:` is a *tool* name (`gemini`, `aider`, `claude`, …)
+/// while the models.dev catalog — and [`fallback_model_for_tier`] — are
+/// keyed by *vendor* (`google`, `openai`, `anthropic`). Handing the tool
+/// name straight to either lookup misses the cache and then falls through
+/// the vendor table's catch-all, which answers with an **Anthropic** model:
+/// `provider: gemini` + `model: latest:pro` used to send
+/// `claude-sonnet-4-5-20250929` to `generativelanguage.googleapis.com`
+/// (#398 review, F1). `armadai shell` already carried this table privately
+/// (`shell::config::shell_provider_to_linker`), which is exactly how two
+/// subcommands of one binary came to disagree on one agent file.
+///
+/// Deliberately NOT `armadai_providers::factory::api_backend_for_tool`,
+/// which answers a different question — "if this CLI is missing, which API
+/// can I call instead?". `codex` has no such backend (issue #369) yet its
+/// models are named by OpenAI, so the two mappings differ on purpose. (Core
+/// could not depend on `armadai-providers` anyway: the dependency runs the
+/// other way.)
+///
+/// `None` — for `cli`, `proxy`, `copilot`, `opencode` and anything unknown
+/// — means "no vendor catalog names these models", not "use Anthropic's".
+/// See [`resolve_tier_placeholder`] for what callers do with it.
+pub fn model_catalog_provider(provider: &str) -> Option<&'static str> {
+    match provider {
+        "anthropic" | "claude" => Some("anthropic"),
+        "google" | "gemini" => Some("google"),
+        "openai" | "gpt" | "aider" | "codex" => Some("openai"),
+        _ => None,
+    }
+}
+
+/// Resolve a static `latest:*` tier placeholder into a concrete model id for
+/// `provider`.
+///
+/// Returns `None` when the string is not a static placeholder — a concrete
+/// model id, or `latest:auto` — so a caller can keep its own handling for
+/// those two cases (`.unwrap_or(raw_model)` for the former, the router for
+/// the latter).
+///
+/// Also returns `None` when [`model_catalog_provider`] does not name a
+/// vendor for `provider`. That covers `provider: cli` and the CLI-only tools
+/// (whose relay ignores `request.model` outright) and `provider: proxy`,
+/// where the placeholder is the more useful string of the two: a gateway
+/// administrator can route `latest:max` through a house alias, whereas a
+/// concrete `claude-opus-4-6` picked here is a vendor this side of the wire
+/// chose on its own, with no opt-out (#398 review, F1).
+///
+/// For every provider that *does* name a vendor, this is the last gate
+/// before a model string reaches the wire: every site that builds a
+/// `CompletionRequest` from an agent's declared model goes through it, so no
+/// `latest:*` placeholder other than `latest:auto` can be sent to an API as
+/// a model name (#376).
+pub fn resolve_tier_placeholder(model: &str, provider: &str) -> Option<String> {
+    let catalog = model_catalog_provider(provider)?;
+    parse_latest_placeholder(model).map(|tier| resolve_model_for_tier(catalog, tier))
+}
+
+/// Resolve `tier` to a concrete model id for `provider`, naming its vendor
+/// catalog first.
+///
+/// The counterpart of [`resolve_tier_placeholder`] for `latest:auto`, whose
+/// tier the router picks per call: there is no placeholder left to pass
+/// through by then, so an unnamed vendor keeps the old behaviour (the
+/// provider name is handed to the catalog lookup as-is, which misses and
+/// lands on [`fallback_model_for_tier`]'s catch-all) rather than answering
+/// `None`.
+pub fn resolve_routed_tier(provider: &str, tier: ModelTier) -> String {
+    resolve_model_for_tier(model_catalog_provider(provider).unwrap_or(provider), tier)
+}
+
 /// Hardcoded fallback model for a given provider and tier.
 ///
 /// Used when the model registry cache is unavailable.
@@ -194,6 +291,128 @@ mod tests {
             "gpt-4o-mini"
         );
         assert_eq!(fallback_model_for_tier("openai", ModelTier::Max), "o3-pro");
+    }
+
+    // ── `latest:*` placeholders ──────────────────────────────────
+
+    #[test]
+    fn test_parse_latest_placeholder() {
+        assert_eq!(parse_latest_placeholder("latest"), Some(ModelTier::Pro));
+        assert_eq!(
+            parse_latest_placeholder("latest:fast"),
+            Some(ModelTier::Fast)
+        );
+        assert_eq!(parse_latest_placeholder("latest:pro"), Some(ModelTier::Pro));
+        assert_eq!(parse_latest_placeholder("latest:max"), Some(ModelTier::Max));
+        assert_eq!(parse_latest_placeholder("claude-sonnet-4-5-20250929"), None);
+        assert_eq!(parse_latest_placeholder("gemini-2.5-pro"), None);
+        assert_eq!(parse_latest_placeholder(""), None);
+    }
+
+    // `latest:auto` is NOT a static placeholder: its tier depends on the
+    // run's input, so it must fall through to the caller's router rather
+    // than silently resolving to Pro here.
+    #[test]
+    fn latest_auto_is_not_a_static_placeholder() {
+        assert_eq!(parse_latest_placeholder("latest:auto"), None);
+        // A named vendor, so the `None` can only come from the parse — not
+        // from `model_catalog_provider` declining to name one.
+        assert_eq!(resolve_tier_placeholder("latest:auto", "anthropic"), None);
+    }
+
+    #[test]
+    fn resolve_tier_placeholder_maps_each_tier_and_passes_concrete_ids_through() {
+        // Hermetic: an empty `ARMADAI_CONFIG_DIR` means no models.dev cache
+        // is reachable, so `fallback_model_for_tier`'s hardcoded table is
+        // the deterministic answer whatever the machine holds.
+        let _iso = crate::test_support::IsolatedConfigDir::enter();
+        let prov = "anthropic";
+        assert_eq!(
+            resolve_tier_placeholder("latest:fast", prov).as_deref(),
+            Some(fallback_model_for_tier(prov, ModelTier::Fast))
+        );
+        assert_eq!(
+            resolve_tier_placeholder("latest", prov).as_deref(),
+            Some(fallback_model_for_tier(prov, ModelTier::Pro))
+        );
+        assert_eq!(
+            resolve_tier_placeholder("latest:max", prov).as_deref(),
+            Some(fallback_model_for_tier(prov, ModelTier::Max))
+        );
+        // A concrete id is not a placeholder: `None` tells the caller to
+        // keep the string it already has.
+        assert_eq!(resolve_tier_placeholder("gpt-4o-mini", prov), None);
+    }
+
+    // ── Which vendor names a provider's models (#398 review, F1) ─────
+
+    /// The defect this closes, measured at the real binary before the fix:
+    /// an agent declaring `provider: gemini` + `model: latest:pro` sent
+    /// `POST /v1beta/models/claude-sonnet-4-5-20250929:generateContent` to
+    /// Google. The tool name missed the vendor-keyed lookup and fell through
+    /// `fallback_model_for_tier`'s catch-all, which answers with Anthropic.
+    #[test]
+    fn a_tool_name_resolves_against_its_own_vendor_not_anthropic() {
+        let _iso = crate::test_support::IsolatedConfigDir::enter();
+        for (tool, vendor) in [
+            ("gemini", "google"),
+            ("claude", "anthropic"),
+            ("aider", "openai"),
+            ("codex", "openai"),
+            ("gpt", "openai"),
+        ] {
+            for tier in [ModelTier::Fast, ModelTier::Pro, ModelTier::Max] {
+                let placeholder = match tier {
+                    ModelTier::Fast => "latest:fast",
+                    ModelTier::Pro => "latest:pro",
+                    ModelTier::Max => "latest:max",
+                };
+                assert_eq!(
+                    resolve_tier_placeholder(placeholder, tool).as_deref(),
+                    Some(fallback_model_for_tier(vendor, tier)),
+                    "{tool} + {placeholder} must resolve against {vendor}"
+                );
+                assert_eq!(
+                    resolve_routed_tier(tool, tier),
+                    fallback_model_for_tier(vendor, tier),
+                    "{tool} + routed {tier:?} must resolve against {vendor}"
+                );
+            }
+        }
+    }
+
+    /// A provider no vendor names keeps its placeholder rather than being
+    /// handed a model some other vendor sells. `cli` and the CLI-only tools
+    /// ignore `request.model` outright; a `proxy` gateway can route
+    /// `latest:max` through a house alias, which a concrete
+    /// `claude-opus-4-6` chosen here would silently override.
+    #[test]
+    fn a_provider_with_no_named_vendor_keeps_the_placeholder() {
+        let _iso = crate::test_support::IsolatedConfigDir::enter();
+        for prov in ["cli", "proxy", "copilot", "opencode", "some-local-thing"] {
+            assert_eq!(model_catalog_provider(prov), None, "{prov}");
+            for placeholder in ["latest", "latest:fast", "latest:pro", "latest:max"] {
+                assert_eq!(
+                    resolve_tier_placeholder(placeholder, prov),
+                    None,
+                    "{prov} + {placeholder} must be left to the caller"
+                );
+            }
+        }
+    }
+
+    /// `latest:auto` has no placeholder left to pass through once the router
+    /// has named a tier, so `resolve_routed_tier` always answers — including
+    /// for a provider with no named vendor, where it keeps the pre-existing
+    /// catch-all rather than leaking `latest:auto` to a server.
+    #[test]
+    fn a_routed_tier_always_answers_even_with_no_named_vendor() {
+        let _iso = crate::test_support::IsolatedConfigDir::enter();
+        for prov in ["cli", "proxy", "some-local-thing"] {
+            let got = resolve_routed_tier(prov, ModelTier::Pro);
+            assert!(!got.contains("latest"), "{prov} got {got}");
+            assert_eq!(got, fallback_model_for_tier(prov, ModelTier::Pro));
+        }
     }
 
     // ── Model tier classification ────────────────────────────────

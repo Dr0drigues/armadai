@@ -72,10 +72,26 @@ pub fn roster_from_agents(agents: &BTreeMap<String, Agent>) -> BTreeMap<String, 
 ///   `agent`/`input`, so the metadata is threaded in from the run's roster via
 ///   `agent_meta`. **Model choice**: `agent_meta` carries the agent's
 ///   *configured* model (`agent.metadata.model`), matching what the legacy
-///   `AgentStart` emitted — NOT the effectively-resolved model when the agent
-///   uses `latest:auto` (resolved later, per turn). The resolved tier is
-///   already carried separately by `Route`/`ModelRouted`, so `AgentStart`
-///   deliberately keeps the configured value for start/end symmetry.
+///   `AgentStart` emitted — NOT the effectively-resolved model. For
+///   `latest:auto` that is defensible: the resolved tier is carried
+///   separately by `Route`/`ModelRouted`, so a consumer can still reconstruct
+///   what ran, and `AgentStart` keeps the configured value for start/end
+///   symmetry.
+///
+///   **That argument does not extend to the static tiers.** Since #376
+///   `latest`/`latest:fast`/`latest:pro`/`latest:max` are resolved before the
+///   call too, but their tier is known from the string alone, so **no**
+///   `ModelRouted` (and no `Route`) event is emitted for them — measured, and
+///   asserted by `run_invoke_resolves_static_latest_tier_to_concrete_model`
+///   in each effect runner, which drives a state with no routing recorded at
+///   all. The consequence, also measured at the binary: an agent on
+///   `model: latest:pro` produces `agent_start{model:"latest:pro"}` and
+///   nothing else, so the concrete id actually billed appears in **no** event
+///   of the `--json` stream — nor on stderr, where the `[name] model=…`
+///   summary lives only in `run_single_agent`, i.e. on `--pipe` alone. The
+///   convention is kept here (changing it is an event-schema decision, not a
+///   side effect of a model-resolution fix) but it is a gap, not a
+///   consequence of the `Route`/`ModelRouted` argument above.
 /// - `Completed` → `[]` (not `Result`): `RunEvent::Result` also needs
 ///   aggregate `tin`/`tout`/`cost`/`agents` totals that only `ExecutionState`
 ///   has (via [`to_orchestration_result`]). Building the terminal `Result`

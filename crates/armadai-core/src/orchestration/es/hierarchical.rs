@@ -25,7 +25,7 @@ use super::state::ExecutionState;
 use crate::agent::Agent;
 #[cfg(test)]
 use crate::model_resolution::fallback_model_for_tier;
-use crate::model_resolution::{ModelTier, resolve_model_for_tier};
+use crate::model_resolution::{ModelTier, resolve_routed_tier, resolve_tier_placeholder};
 use crate::orchestration::blackboard::BlackboardConfig;
 use crate::orchestration::context_injection::{AgentInfo, build_orchestration_prompt};
 use crate::orchestration::protocol::{DelegationAction, extract_narrative, parse_delegations};
@@ -1407,9 +1407,8 @@ impl EffectRunner for HierarchicalEffectRunner {
         // `crate::model_resolution::resolve_model_for_tier` — this
         // is the only place in the event-sourced hierarchical engine that
         // does so, keeping the pure `Decider` free of that effectful lookup.
-        // Every other model string (a concrete id, or another `latest:*`
-        // placeholder such as `latest:pro`) is sent as-is, unchanged from
-        // before.
+        // Every other `latest:*` placeholder resolves in the `else`
+        // branch below (#376); a concrete model id is sent as-is.
         let raw_model = agent_def
             .metadata
             .model
@@ -1438,9 +1437,15 @@ impl EffectRunner for HierarchicalEffectRunner {
                     ModelTier::Pro
                 }
             };
-            resolve_model_for_tier(&agent_def.metadata.provider, tier)
+            resolve_routed_tier(&agent_def.metadata.provider, tier)
         } else {
-            raw_model
+            // Every OTHER `latest:*` placeholder (`latest`, `latest:fast`,
+            // `latest:pro`, `latest:max`, …) has a tier that is known
+            // statically, so it is resolved right here — the last gate
+            // before the string becomes a provider's model name. Until #376
+            // this branch passed them through verbatim, and an API provider
+            // was asked for a model literally called `latest:pro`.
+            resolve_tier_placeholder(&raw_model, &agent_def.metadata.provider).unwrap_or(raw_model)
         };
 
         let request = CompletionRequest {
@@ -3279,11 +3284,13 @@ mod tests {
             assert!(sent[0].system_prompt.contains("core-specialist"));
         }
 
-        // Model is passed through as-is when it isn't the exact
-        // `"latest:auto"` placeholder — a concrete model, or any other
-        // `latest:*` placeholder (e.g. `latest:pro`), reaches the provider
-        // unchanged. `"latest:auto"` itself is special-cased — covered by
-        // `run_invoke_resolves_latest_auto_to_concrete_model` below.
+        // A CONCRETE model id is passed through as-is. The `latest:*`
+        // placeholders are not: `latest:auto` routes per turn
+        // (`run_invoke_resolves_latest_auto_to_concrete_model`) and the
+        // static tiers resolve from the string alone
+        // (`run_invoke_resolves_static_latest_tier_to_concrete_model`).
+        // Until #376 this test pinned `latest:pro` here and asserted the
+        // provider received that literal string — it was pinning the defect.
         //
         // Also asserts `temperature`/`max_tokens` from the agent's metadata
         // reach the `CompletionRequest` unchanged (`test_agent` sets
@@ -3291,7 +3298,7 @@ mod tests {
         #[tokio::test]
         async fn run_invoke_passes_agent_model_through_verbatim() {
             let mut agents = BTreeMap::new();
-            agents.insert("a".to_string(), test_agent("a", "latest:pro"));
+            agents.insert("a".to_string(), test_agent("a", "some-concrete-model-id"));
             let capturing = Arc::new(CapturingProvider::new("resp"));
             let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
             providers.insert("a".to_string(), capturing.clone() as Arc<dyn Provider>);
@@ -3302,9 +3309,47 @@ mod tests {
             runner.run_invoke("a", "go", &state, 1).await.unwrap();
 
             let sent = capturing.requests();
-            assert_eq!(sent[0].model, "latest:pro");
+            assert_eq!(sent[0].model, "some-concrete-model-id");
             assert_eq!(sent[0].temperature, 0.5);
             assert_eq!(sent[0].max_tokens, Some(256));
+        }
+
+        // A STATIC tier placeholder resolves to a concrete model too (#376),
+        // with no `ModelRouted` event needed — its tier is known from the
+        // string alone, so the state carries no routing at all here, exactly
+        // as on the real path. Uncached provider name for the same
+        // hermeticity reason as the `latest:auto` test below.
+        #[tokio::test]
+        async fn run_invoke_resolves_static_latest_tier_to_concrete_model() {
+            // Hermetic against the machine's models.dev cache. The `latest:auto`
+            // test above gets that for free from a provider name no catalog
+            // knows; a STATIC placeholder cannot use the same trick, because a
+            // provider with no named vendor is precisely the case
+            // `resolve_tier_placeholder` leaves alone (#398 review, F1). So the
+            // vendor is real and the cache is emptied instead.
+            let _iso = crate::test_support::IsolatedConfigDir::enter();
+
+            let mut agent = test_agent("a", "latest:max");
+            agent.metadata.provider = "anthropic".to_string();
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), agent);
+            let capturing = Arc::new(CapturingProvider::new("resp"));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), capturing.clone() as Arc<dyn Provider>);
+            let runner =
+                HierarchicalEffectRunner::new(agents, providers, OrchestrationConfig::default());
+
+            let state = fold(&[run_started(&["a"], "go")]);
+            let event = runner.run_invoke("a", "go", &state, 1).await.unwrap();
+
+            let expected = fallback_model_for_tier("anthropic", ModelTier::Max).to_string();
+            let sent = capturing.requests();
+            assert_eq!(sent[0].model, expected);
+            assert_ne!(sent[0].model, "latest:max");
+            match event {
+                ExecutionEvent::AgentObserved { model, .. } => assert_eq!(model, expected),
+                other => panic!("expected AgentObserved, got {other:?}"),
+            }
         }
 
         // `"latest:auto"` is the one placeholder the effect runner resolves

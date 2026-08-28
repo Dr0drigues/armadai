@@ -23,7 +23,7 @@ use super::state::{BoardEntryRec, ExecutionState};
 use crate::agent::Agent;
 #[cfg(test)]
 use crate::model_resolution::fallback_model_for_tier;
-use crate::model_resolution::{ModelTier, resolve_model_for_tier};
+use crate::model_resolution::{ModelTier, resolve_routed_tier, resolve_tier_placeholder};
 use crate::orchestration::blackboard::{BlackboardConfig, EntryKind, entry_kind_name};
 use crate::orchestration::llm_agents::{BOARD_ACTION_INSTRUCTIONS, parse_board_action};
 use crate::provider::{ChatMessage, CompletionRequest, Provider};
@@ -634,9 +634,15 @@ impl EffectRunner for BlackboardEffectRunner {
                     ModelTier::Pro
                 }
             };
-            resolve_model_for_tier(&agent_def.metadata.provider, tier)
+            resolve_routed_tier(&agent_def.metadata.provider, tier)
         } else {
-            raw_model
+            // Every OTHER `latest:*` placeholder (`latest`, `latest:fast`,
+            // `latest:pro`, `latest:max`, …) has a tier that is known
+            // statically, so it is resolved right here — the last gate
+            // before the string becomes a provider's model name. Until #376
+            // this branch passed them through verbatim, and an API provider
+            // was asked for a model literally called `latest:pro`.
+            resolve_tier_placeholder(&raw_model, &agent_def.metadata.provider).unwrap_or(raw_model)
         };
 
         let request = CompletionRequest {
@@ -1783,6 +1789,45 @@ mod tests {
                 }
                 other => panic!("expected a degraded BoardEntryAdded, got {other:?}"),
             }
+        }
+
+        // A STATIC tier placeholder resolves to a concrete model too
+        // (#376). No `ModelRouted` is involved — its tier is known from the
+        // string alone — so the folded state below records no routing at
+        // all, exactly as on the real path. Uncached provider name for the
+        // same hermeticity reason as the `latest:auto` test below.
+        #[tokio::test]
+        async fn run_invoke_resolves_static_latest_tier_to_concrete_model() {
+            // Hermetic against the machine's models.dev cache. The `latest:auto`
+            // test above gets that for free from a provider name no catalog
+            // knows; a STATIC placeholder cannot use the same trick, because a
+            // provider with no named vendor is precisely the case
+            // `resolve_tier_placeholder` leaves alone (#398 review, F1). So the
+            // vendor is real and the cache is emptied instead.
+            let _iso = crate::test_support::IsolatedConfigDir::enter();
+
+            let mut agent = test_agent("a", "latest:fast");
+            agent.metadata.provider = "anthropic".to_string();
+            let mut agents = BTreeMap::new();
+            agents.insert("a".to_string(), agent);
+            let capturing = Arc::new(CapturingProvider::new(
+                "ACTION:FINDING\nCONFIDENCE:0.5\nCONTENT:noted",
+            ));
+            let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+            providers.insert("a".to_string(), capturing.clone() as Arc<dyn Provider>);
+            let runner =
+                BlackboardEffectRunner::new(agents, providers, BlackboardConfig::default());
+
+            let state = fold(&[
+                board_run_started(&["a"]),
+                ExecutionEvent::RoundStarted { round: 0 },
+            ]);
+            runner.run_invoke("a", "task", &state, 1).await.unwrap();
+
+            let expected = fallback_model_for_tier("anthropic", ModelTier::Fast).to_string();
+            let sent = capturing.requests();
+            assert_eq!(sent[0].model, expected);
+            assert_ne!(sent[0].model, "latest:fast");
         }
 
         // `"latest:auto"` is resolved the same way as
