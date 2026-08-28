@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::{Context, bail};
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 
+use super::metadata::{config_line, warn_duplicate_keys};
 use crate::agent::{Agent, PipelineConfig};
 use crate::orchestration::{AgentRingConfig, TriggerConfig};
 
@@ -103,7 +104,7 @@ fn parse_agent_content(content: &str, path: &Path) -> anyhow::Result<Agent> {
     let metadata_raw = sections
         .get("metadata")
         .context("Missing ## Metadata section")?;
-    let mut metadata = super::metadata::parse_metadata(metadata_raw)?;
+    let mut metadata = super::metadata::parse_metadata(metadata_raw, path)?;
 
     let system_prompt = sections
         .get("system prompt")
@@ -136,12 +137,12 @@ fn parse_agent_content(content: &str, path: &Path) -> anyhow::Result<Agent> {
 
     // Parse ## Triggers section (for Blackboard agents)
     if let Some(raw) = sections.get("triggers") {
-        metadata.triggers = Some(parse_trigger_config(raw));
+        metadata.triggers = Some(parse_trigger_config(raw, path));
     }
 
     // Parse ## Ring Config section (for Ring agents)
     if let Some(raw) = sections.get("ring config") {
-        metadata.ring_config = Some(parse_ring_config(raw));
+        metadata.ring_config = Some(parse_ring_config(raw, path));
     }
 
     Ok(Agent {
@@ -156,8 +157,28 @@ fn parse_agent_content(content: &str, path: &Path) -> anyhow::Result<Agent> {
     })
 }
 
+/// The canonical field a `## Triggers` key sets, or `None` when the parser
+/// ignores it. Mirrors the `match` below — see [`metadata_field`] for why the
+/// list is kept next to the parser that owns it.
+///
+/// [`metadata_field`]: super::metadata
+fn trigger_field(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "requires" => "requires",
+        "excludes" => "excludes",
+        "min_round" => "min_round",
+        "max_round" => "max_round",
+        "priority" => "priority",
+        _ => return None,
+    })
+}
+
 /// Parse a ## Triggers section into TriggerConfig.
-fn parse_trigger_config(raw: &str) -> TriggerConfig {
+///
+/// `source` only names the file in the duplicate-key warning (#396).
+fn parse_trigger_config(raw: &str, source: &Path) -> TriggerConfig {
+    warn_duplicate_keys(raw, source, "Triggers", trigger_field);
+
     let mut requires = Vec::new();
     let mut excludes = Vec::new();
     let mut min_round = 0u32;
@@ -165,15 +186,9 @@ fn parse_trigger_config(raw: &str) -> TriggerConfig {
     let mut priority = 50u8;
 
     for line in raw.lines() {
-        let line = line.trim().trim_start_matches('-').trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Some((key, value)) = line.split_once(':') else {
+        let Some((key, value)) = config_line(line) else {
             continue;
         };
-        let key = key.trim().to_lowercase();
-        let value = value.trim();
 
         match key.as_str() {
             "requires" => requires = parse_string_list_inline(value),
@@ -194,22 +209,31 @@ fn parse_trigger_config(raw: &str) -> TriggerConfig {
     }
 }
 
+/// The canonical field a `## Ring Config` key sets, or `None` when the parser
+/// ignores it.
+fn ring_field(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "role" => "role",
+        "position" => "position",
+        "vote_weight" => "vote_weight",
+        _ => return None,
+    })
+}
+
 /// Parse a ## Ring Config section into AgentRingConfig.
-fn parse_ring_config(raw: &str) -> AgentRingConfig {
+///
+/// `source` only names the file in the duplicate-key warning (#396).
+fn parse_ring_config(raw: &str, source: &Path) -> AgentRingConfig {
+    warn_duplicate_keys(raw, source, "Ring Config", ring_field);
+
     let mut role = "specialist".to_string();
     let mut position = None;
     let mut vote_weight = 1.0f32;
 
     for line in raw.lines() {
-        let line = line.trim().trim_start_matches('-').trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Some((key, value)) = line.split_once(':') else {
+        let Some((key, value)) = config_line(line) else {
             continue;
         };
-        let key = key.trim().to_lowercase();
-        let value = value.trim();
 
         match key.as_str() {
             "role" => role = value.to_string(),
@@ -886,6 +910,92 @@ test
         assert_eq!(triggers.min_round, 0);
         assert!(triggers.max_round.is_none());
         assert_eq!(triggers.priority, 50);
+    }
+
+    /// #396: `## Triggers` and `## Ring Config` overwrite in silence exactly
+    /// like `## Metadata`, and a `###` sub-block inside them is read since
+    /// #392 — so a "not in use" alternative changes Blackboard activation and
+    /// Ring vote weights. The printing of these warnings is measured on the
+    /// binary in `crates/armadai/tests/duplicate_metadata_key_warns.rs`.
+    #[test]
+    fn duplicate_trigger_keys_are_reported_with_their_values() {
+        let raw = "\
+- requires: [alpha]
+- priority: 10
+
+### Alternative triggers (not in use)
+- requires: [beta]
+- priority: 99
+- unrelated: repeated
+- unrelated: again
+";
+        assert_eq!(
+            super::super::metadata::duplicate_keys(raw, trigger_field),
+            vec![
+                ("requires", "[alpha]".to_string(), "[beta]".to_string()),
+                ("priority", "10".to_string(), "99".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_ring_keys_are_reported_with_their_values() {
+        let raw = "\
+- role: specialist
+- vote_weight: 1.0
+
+### Alternative ring (not in use)
+- role: coordinator
+- vote_weight: 9.0
+";
+        assert_eq!(
+            super::super::metadata::duplicate_keys(raw, ring_field),
+            vec![
+                ("role", "specialist".to_string(), "coordinator".to_string()),
+                ("vote_weight", "1.0".to_string(), "9.0".to_string()),
+            ]
+        );
+    }
+
+    /// The precedence in both sections is untouched: the last value still wins,
+    /// through the real `parse_agent_file` path.
+    #[test]
+    fn a_duplicated_trigger_and_ring_key_still_lets_the_last_value_win() {
+        let f = write_temp_agent(
+            r#"# Dup Agent
+
+## Metadata
+- provider: anthropic
+- model: test
+
+## System Prompt
+
+test
+
+## Triggers
+- requires: [alpha]
+- priority: 10
+
+### Alternative triggers (not in use)
+- requires: [beta]
+- priority: 99
+
+## Ring Config
+- role: specialist
+- vote_weight: 1.0
+
+### Alternative ring (not in use)
+- role: coordinator
+- vote_weight: 9.0
+"#,
+        );
+        let agent = parse_agent_file(f.path()).unwrap();
+        let triggers = agent.metadata.triggers.unwrap();
+        assert_eq!(triggers.requires, vec!["beta"]);
+        assert_eq!(triggers.priority, 99);
+        let ring = agent.metadata.ring_config.unwrap();
+        assert_eq!(ring.role, "coordinator");
+        assert!((ring.vote_weight - 9.0).abs() < f32::EPSILON);
     }
 
     #[test]

@@ -85,12 +85,25 @@ Two consequences worth knowing:
   `## Ring Config` are read **line by line**, so a `###` block inside them no longer hides its
   contents — it configures the agent. Measured on a fixture whose `## Metadata` carried an
   `### Alternative setup (not in use)` block: the agent switched provider from `anthropic` to
-  `openai` and temperature from `0.2` to `1.0`, with no warning (last value wins). The same
+  `openai` and temperature from `0.2` to `1.0` (last value wins). The same
   applies to `requires`/`priority` in `## Triggers`, to `role`/`vote_weight` in
   `## Ring Config`, and to `## Pipeline`, where an agent listed under a `###` heading now runs.
   Worse, an unparsable value there is fatal: `link` reports `warn: failed to parse …`, skips
   that agent, and still **exits 0** — so it disappears from the generated config silently.
   Keep commented-out alternatives out of these four sections, or in a fenced code block.
+
+  Since [#396](https://github.com/Dr0drigues/armadai/issues/396) this is no longer silent.
+  `## Metadata`, `## Triggers` and `## Ring Config` warn on stderr for every key they set
+  twice, naming the file, the losing value and the winning one:
+
+  ```text
+  agents/dup.md: ## Metadata sets 'provider' twice: 'anthropic' is overridden by 'openai' (the last value wins)
+  ```
+
+  Which value wins is unchanged — it is still the last. The warning is emitted before the
+  values are parsed, so it also appears for the fatal case above, where it says *why* the file
+  stopped loading. `## Pipeline` has no such warning: it is a list, not a set of keys, and
+  repeating an entry there is not a conflict.
 - **`---` and `===` under a line are headings too.** A paragraph followed by a line of dashes
   or equals signs is a setext H2/H1 in CommonMark, so it ends the section exactly as `##`
   would — and the text after it is lost from the prompt. This predates #392 and is unchanged
