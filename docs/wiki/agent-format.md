@@ -97,8 +97,12 @@ Two consequences worth knowing:
   twice, naming the file, the losing value and the winning one:
 
   ```text
-  agents/dup.md: ## Metadata sets 'provider' twice: 'anthropic' is overridden by 'openai' (the last value wins)
+  2026-08-28T05:56:43.104399Z  WARN armadai_core::parser::metadata: /abs/path/to/agents/dup.md: ## Metadata sets 'provider' again: 'anthropic' is overridden by 'openai' (the last value wins)
   ```
+
+  It goes through `tracing`, so it carries a timestamp, a level and a target,
+  and names the file by its absolute path — unlike the CLI's own indented
+  `warn:` lines. `RUST_LOG=off` silences it along with every other log line.
 
   Which value wins is unchanged — it is still the last. The warning is emitted before the
   values are parsed, so it also appears for the fatal case above, where it says *why* the file
@@ -135,8 +139,10 @@ Key-value pairs configuring the agent's technical behavior.
 
 `orchestration` documents the pattern an agent is designed for; it does **not**
 select the pattern a run uses. That comes from `armadai.yaml`'s `orchestration:`
-block or from `armadai run --orchestrate`. The value is surfaced in the TUI's
-agent detail view and in the web API, and is otherwise inert.
+block, or from `armadai run --orchestrate` — which accepts only `blackboard`
+and `ring`, so `hierarchical` and `auto` are selectable from `armadai.yaml`
+alone. The value is surfaced in the TUI's agent detail view and in the web API,
+and is otherwise inert.
 
 All five values are accepted. Until
 [#415](https://github.com/Dr0drigues/armadai/issues/415), only the first three
