@@ -391,15 +391,25 @@ mod tests {
     /// given (the shortcut remedy) leaves stderr empty; answering on the
     /// filtered roster still warns but lists `Titles in this roster:
     /// Worker.` and fails the verbatim assertion.
+    ///
+    /// **Both surfaces, separately.** The sibling test above happens to
+    /// exercise `link` and `unlink` together, so a mutation applied to both
+    /// at once looks covered while either half alone may not be. Measured:
+    /// applying the shortcut remedy to `unlink` *only* left the whole suite
+    /// green — this half of the fix had no test at all. It does now, and the
+    /// `.armadai/` removal is what forces `unlink` down the fallback path
+    /// where `link.coordinator` is consulted; with the manifest present it
+    /// answers from the manifest and proves nothing.
     #[test]
     fn a_filter_does_not_silence_a_genuinely_unmatched_coordinator() {
         let dir = project_with("dev-led");
         let root = dir.path().join("project");
+        let config = isolated_config(dir.path());
 
         let output = Command::cargo_bin("armadai")
             .unwrap()
             .current_dir(&root)
-            .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+            .env("ARMADAI_CONFIG_DIR", &config)
             .args(["link", "--target", "claude", "--agents", "Worker"])
             .output()
             .unwrap();
@@ -407,6 +417,20 @@ mod tests {
 
         assert!(output.status.success(), "still a warning, not a refusal");
         assert_says_it_all(&stderr, CLI_WARNING, "link --agents");
+
+        std::fs::remove_dir_all(root.join(".armadai")).unwrap();
+
+        let unlink = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(&root)
+            .env("ARMADAI_CONFIG_DIR", &config)
+            .args(["unlink", "--target", "claude", "--agents", "Worker"])
+            .output()
+            .unwrap();
+        let unlink_err = String::from_utf8_lossy(&unlink.stderr);
+
+        assert!(unlink.status.success(), "still a warning, not a refusal");
+        assert_says_it_all(&unlink_err, CLI_WARNING, "unlink --agents");
     }
 
     /// R7's own guard: when part of the roster failed to load, the titles
