@@ -13,7 +13,7 @@ Use a tool name directly as the provider. ArmadAI auto-detects whether the CLI t
 | `codex` | `codex exec --json` | none — CLI only | yes |
 | `copilot` | `copilot --output-format json -p` | none — CLI only | yes |
 | `opencode` | `opencode run --format json` | none — CLI only | yes |
-| `gpt` | `gpt` | OpenAI API | no |
+| `gpt` | none — API only | OpenAI API | no |
 | `aider` | `aider --message` | OpenAI API | no |
 
 The prompt is always appended as the last argument, which is why any flag that
@@ -45,6 +45,24 @@ so instead of falling back to an unrelated API:
 Error: Provider 'codex' runs the `codex` CLI, which was not found on PATH, and
 it has no API backend to fall back to. Install it, or point this agent at the
 executable with `command: /full/path/to/codex`.
+```
+
+### API-only providers
+
+`gpt` is the mirror image: it names **no** CLI, and goes straight to the
+OpenAI API. It used to probe `PATH` for a binary called `gpt` — and on macOS
+it always found one, because `/usr/sbin/gpt` is the system GUID-partition-table
+tool that ships with the OS. Every `provider: gpt` agent on macOS therefore
+ran a disk utility and failed with `gpt: unknown command: …`, never reaching
+the OpenAI fallback ([#402](https://github.com/Dr0drigues/armadai/issues/402)).
+
+If you do have a CLI you want `provider: gpt` to spawn, say so explicitly —
+an agent's own `command:` still wins over the API for every unified name:
+
+```markdown
+- provider: gpt
+- command: /opt/homebrew/bin/my-gpt-cli
+- args: ["--prompt"]
 ```
 
 ### Any other tool
@@ -240,8 +258,9 @@ eventually.
 > **Note:** For the tools listed under [Unified Tool Names](#unified-tool-names-recommended)
 > — claude, gemini, codex, copilot, opencode, gpt, aider — prefer the unified
 > name (`provider: codex`) over `provider: cli` + `command: codex`. They are not
-> equivalent: the unified name auto-detects CLI availability, falls back to the
-> API where one exists, and supplies the tool's non-interactive argv, whereas
+> equivalent: the unified name auto-detects CLI availability (for the six that
+> have a CLI), falls back to the API where one exists, and supplies the tool's
+> non-interactive argv, whereas
 > `provider: cli` with no `args:` passes the prompt alone — and `codex` with a
 > bare positional opens its interactive UI, while `opencode` reads it as a
 > project path.

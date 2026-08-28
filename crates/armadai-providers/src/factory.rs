@@ -3,13 +3,38 @@ use armadai_core::agent::Agent;
 use armadai_core::provider::Provider;
 
 /// Known tool definitions for unified provider names.
-/// Each entry maps a user-friendly name to its CLI command and, when one
-/// exists, the API backend to fall back to.
+/// Each entry maps a user-friendly name to the CLI command it spawns, when
+/// it has one, and to the API backend it calls, when it has one. At least
+/// one of the two is always present — enforced by
+/// `every_known_tool_declares_at_least_one_backing`.
 struct ToolDef {
-    /// CLI command name (e.g. "claude", "gemini")
-    cli_command: &'static str,
+    /// CLI command name (e.g. "claude", "gemini"), or `None` for an
+    /// API-only tool.
+    ///
+    /// `Option`, symmetrically with [`ToolDef::api_backend`], because a
+    /// unified name does not always own a binary. `gpt` is the case that
+    /// forced it (issue #402): `/usr/sbin/gpt` is the GUID-partition-table
+    /// tool macOS ships on **every** machine, so the `which gpt` probe
+    /// always succeeded, the OpenAI fallback was never reached, and
+    /// `armadai run` on a `provider: gpt` agent answered `gpt: unknown
+    /// command: <system>…` — from a disk-partitioning utility.
+    ///
+    /// The alternative would have been to validate what the probe finds
+    /// (a `--version` on an unknown binary is itself a risk) or to
+    /// special-case the string `"gpt"` in `create_unified_provider`. Saying
+    /// it in the type is what makes it a property of the entry rather than
+    /// of one branch, and mirrors what #369 established in the other
+    /// direction for `codex`/`copilot`/`opencode`.
+    ///
+    /// `None` does **not** disable `command:`: an agent that names a binary
+    /// explicitly still gets the CLI path (see `create_unified_provider`),
+    /// which is the escape hatch for anyone who does have a real `gpt` CLI.
+    cli_command: Option<&'static str>,
     /// Default CLI args for this tool, used only when the CLI has no JSON
     /// mode (`json_runner::supports_json`) and the agent declares no `args:`.
+    ///
+    /// Empty for an API-only tool: it has no argv of its own, and an agent
+    /// pointing one at a binary with `command:` supplies its own `args:`.
     cli_args: &'static [&'static str],
     /// API provider to fall back to when the CLI is not installed, or `None`
     /// for a CLI-only tool.
@@ -33,7 +58,7 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
     (
         "claude",
         ToolDef {
-            cli_command: "claude",
+            cli_command: Some("claude"),
             cli_args: &["-p", "--output-format", "text"],
             api_backend: Some("anthropic"),
         },
@@ -41,23 +66,30 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
     (
         "gemini",
         ToolDef {
-            cli_command: "gemini",
+            cli_command: Some("gemini"),
             cli_args: &["-p"],
             api_backend: Some("google"),
         },
     ),
+    // API-only: `gpt` names no LLM CLI anyone ships, but it *does* name the
+    // GUID-partition-table tool macOS installs at `/usr/sbin/gpt` (issue
+    // #402). Probing `PATH` for it can only find the wrong binary, so it
+    // goes straight to OpenAI.
     (
         "gpt",
         ToolDef {
-            cli_command: "gpt",
+            cli_command: None,
             cli_args: &[],
             api_backend: Some("openai"),
         },
     ),
+    // Not API-only: `aider` is a real CLI, and — measured against
+    // `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` on macOS 25.5 and against
+    // `debian:stable-slim` — nothing else on either system claims the name.
     (
         "aider",
         ToolDef {
-            cli_command: "aider",
+            cli_command: Some("aider"),
             cli_args: &["--message"],
             api_backend: Some("openai"),
         },
@@ -71,7 +103,7 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
     (
         "codex",
         ToolDef {
-            cli_command: "codex",
+            cli_command: Some("codex"),
             cli_args: &["exec"],
             api_backend: None,
         },
@@ -79,7 +111,7 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
     (
         "copilot",
         ToolDef {
-            cli_command: "copilot",
+            cli_command: Some("copilot"),
             cli_args: &["-p"],
             api_backend: None,
         },
@@ -87,7 +119,7 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
     (
         "opencode",
         ToolDef {
-            cli_command: "opencode",
+            cli_command: Some("opencode"),
             cli_args: &["run"],
             api_backend: None,
         },
@@ -271,20 +303,22 @@ fn wrap_rate_limited(agent: &Agent, inner: Box<dyn Provider>) -> Box<dyn Provide
 }
 
 /// Create a provider from a unified tool name, preferring CLI if available.
+///
+/// The binary to probe for is the agent's own `command:` when it names one,
+/// otherwise the tool's declared `cli_command` — and an API-only tool
+/// declares none, so nothing is probed at all and the API backend is reached
+/// directly (issue #402). An explicit `command:` still wins in every case:
+/// it is the user pointing at a binary they know is the right one.
 fn create_unified_provider(
     name: &str,
     tool: &ToolDef,
     agent: &Agent,
 ) -> anyhow::Result<Box<dyn Provider>> {
     // Use explicit command/args from agent metadata if provided
-    let command = agent
-        .metadata
-        .command
-        .as_deref()
-        .unwrap_or(tool.cli_command);
+    let command = agent.metadata.command.as_deref().or(tool.cli_command);
     let has_custom_args = agent.metadata.args.is_some();
 
-    if cli_available(command) {
+    if let Some(command) = command.filter(|c| cli_available(c)) {
         let args = if has_custom_args {
             // Respect the agent's explicit args verbatim (never override them).
             agent.metadata.args.clone().unwrap_or_default()
@@ -304,19 +338,29 @@ fn create_unified_provider(
             timeout,
         )))
     } else if let Some(backend) = tool.api_backend {
-        tracing::info!(
-            "Provider '{name}': CLI '{command}' not found, falling back to API ({backend})"
-        );
+        match command {
+            Some(c) => tracing::info!(
+                "Provider '{name}': CLI '{c}' not found, falling back to API ({backend})"
+            ),
+            None => tracing::info!("Provider '{name}': API-only, calling {backend}"),
+        }
         create_api_provider(backend, agent)
     } else {
         // No API to fall back to. Say which binary was looked for and how to
         // point at it — an arbitrary backend here would answer a missing
         // binary with "no API key found", which is the wrong hunt.
+        //
+        // `expect`: a `ToolDef` with neither a CLI command nor an API
+        // backend could only ever fail, and the table declares none — see
+        // `every_known_tool_declares_at_least_one_backing`.
+        let declared = tool
+            .cli_command
+            .expect("a tool with no API backend must declare a CLI command");
+        let command = command.unwrap_or(declared);
         anyhow::bail!(
             "Provider '{name}' runs the `{command}` CLI, which was not found on PATH, \
              and it has no API backend to fall back to. Install it, or point this \
-             agent at the executable with `command: /full/path/to/{}`.",
-            tool.cli_command
+             agent at the executable with `command: /full/path/to/{declared}`."
         )
     }
 }
@@ -533,8 +577,11 @@ mod tests {
             ("opencode", vec!["run", "--format", "json"]),
         ] {
             let def = find_tool(tool).unwrap_or_else(|| panic!("{tool} must be a known tool"));
+            let cli = def
+                .cli_command
+                .unwrap_or_else(|| panic!("{tool} must declare a CLI command"));
             assert_eq!(
-                crate::json_runner::json_mode_args(def.cli_command),
+                crate::json_runner::json_mode_args(cli),
                 expected,
                 "{tool} must be spawned with the argv the shell relay already uses"
             );
@@ -653,6 +700,101 @@ mod tests {
         // echo should be available on all systems
         assert!(cli_available("echo"));
         assert!(!cli_available("this_command_does_not_exist_xyz"));
+    }
+
+    // ── API-only tools never probe `PATH` (issue #402) ───────────────
+
+    /// Plant an executable named `name` in `dir` that answers nothing —
+    /// enough for `which` to find it, which is all `cli_available` asks.
+    #[cfg(feature = "api")]
+    fn plant_stub_binary(dir: &std::path::Path, name: &str) {
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    /// A `PATH` holding only `dir` plus the system directories `which`
+    /// itself lives in.
+    #[cfg(feature = "api")]
+    fn path_with(dir: &std::path::Path) -> String {
+        format!("{}:/usr/bin:/bin", dir.display())
+    }
+
+    /// `provider: gpt` must reach OpenAI even when some unrelated binary
+    /// named `gpt` sits on `PATH`.
+    ///
+    /// Measured on macOS 25.5 (issue #402): `/usr/sbin/gpt` is the system
+    /// GUID-partition-table tool, present on **every** macOS machine, so
+    /// `cli_available("gpt")` was unconditionally true, the OpenAI fallback
+    /// was never reached, and `armadai run` on a `provider: gpt` agent
+    /// answered `Error: CLI command failed (exit status: 1): gpt: unknown
+    /// command: <system>…` — a message from a disk-partitioning utility.
+    ///
+    /// The stub binary is what makes this a test rather than a platform
+    /// observation: it reproduces the collision on Linux CI too, where no
+    /// `gpt` exists and the defect is invisible.
+    #[cfg(feature = "api")]
+    #[test]
+    fn gpt_reaches_its_api_even_with_a_same_named_binary_on_path() {
+        let bin = tempfile::tempdir().unwrap();
+        plant_stub_binary(bin.path(), "gpt");
+        let _iso = armadai_core::test_support::IsolatedConfigDir::enter()
+            .with_var("PATH", Some(&path_with(bin.path())))
+            .with_var("OPENAI_API_KEY", Some("sk-not-a-real-key"))
+            .with_var("OPENAI_BASE_URL", None);
+
+        assert!(
+            cli_available("gpt"),
+            "fixture is degenerate: the stub must be visible to the PATH probe"
+        );
+        let provider = create_provider(&agent_with("gpt", None))
+            .unwrap_or_else(|e| panic!("provider 'gpt' must build: {e}"));
+        assert_eq!(
+            provider.metadata().name,
+            "openai",
+            "'gpt' must resolve to the OpenAI API, not to whatever `gpt` PATH happens to hold"
+        );
+    }
+
+    /// The escape hatch survives: an agent that really does have a CLI it
+    /// wants to call under `provider: gpt` says so with `command:`, and that
+    /// still wins over the API. Guards the fix against over-reaching into
+    /// "API-only means the agent's own `command:` is ignored".
+    #[test]
+    fn an_explicit_command_still_runs_a_cli_for_an_api_only_tool() {
+        let provider = create_provider(&agent_with("gpt", Some("echo")))
+            .unwrap_or_else(|e| panic!("provider 'gpt' with an explicit command must build: {e}"));
+        assert_eq!(provider.metadata().name, "cli:echo");
+    }
+
+    /// A tool with neither a CLI command nor an API backend can only ever
+    /// fail, so the table must not be able to declare one.
+    #[test]
+    fn every_known_tool_declares_at_least_one_backing() {
+        for (name, def) in KNOWN_TOOLS {
+            assert!(
+                def.cli_command.is_some() || def.api_backend.is_some(),
+                "'{name}' declares neither a CLI command nor an API backend"
+            );
+        }
+    }
+
+    /// The inventory itself, pinned. `gpt` is API-only *because* its name
+    /// collides with a system binary; the other six own their names (checked
+    /// against `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` on macOS 25.5 and
+    /// against `debian:stable-slim`: only `gpt` collides).
+    #[test]
+    fn only_gpt_is_api_only() {
+        let api_only: Vec<&str> = KNOWN_TOOLS
+            .iter()
+            .filter(|(_, def)| def.cli_command.is_none())
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(api_only, vec!["gpt"]);
     }
 
     #[test]
