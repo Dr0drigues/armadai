@@ -544,6 +544,13 @@ impl Workroom {
                 }
             }
             RunEvent::Warning { .. } => {}
+            // A preview never reaches a Workroom: `use_live_workroom` has an
+            // explicit `&& !dry_run` term precisely because a dry run
+            // dispatches nothing and would leave the live view waiting for a
+            // terminal event forever (#398 review). Spelled out rather than
+            // folded into a wildcard so the next variant added to `RunEvent`
+            // is a compile error here, not a silently ignored event.
+            RunEvent::DryRun { .. } => {}
         }
     }
 

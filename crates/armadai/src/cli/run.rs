@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use armadai_core::agent::{Agent, AgentMode};
 use armadai_core::config::AppPaths;
-use armadai_core::events::{EventSink, RunEvent};
+use armadai_core::events::{DryRunAgent, EventSink, RunEvent};
 use armadai_core::orchestration::es::bridge::{SinkProjectingLog, to_orchestration_result};
 use armadai_core::orchestration::es::event::ExecutionEvent;
 use armadai_core::orchestration::es::log::{EventLog, InMemoryLog};
@@ -22,6 +22,36 @@ is clear and complete. If critical details are missing, ambiguous, or could \
 significantly change your approach, ask 2-3 targeted clarifying questions first. \
 Only proceed with your complete response once you have enough context to deliver \
 accurate, relevant output.";
+
+/// The line every `--dry-run` preview signs off with, in one place because
+/// there are three preview sites and a promise made in three wordings is
+/// three promises to keep.
+///
+/// It used to say only "no provider was called; nothing was recorded or
+/// billed" — true of the provider, false of the disk (#403): the preview
+/// registered the project and, on a terminal, offered to rewrite the agent
+/// files it was previewing. Both are gone (see [`resolve_agents_dir`]), so
+/// the line now states what it actually guarantees instead of a subset of
+/// it.
+///
+/// These three clauses are also, verbatim in substance, `--dry-run`'s help
+/// text — and the help says no more than they do. It briefly claimed the
+/// preview wrote "nothing", which measurement did not support: on a machine
+/// with no journal yet, `--resume`/`--replay` still call `db::init_db()`
+/// before they can read a roster back, and `armadai_storage::open` does
+/// `create_dir_all` + `Connection::open` + `schema::apply` — an 88 KB
+/// SQLite file with the full schema, created by a command that had just
+/// promised to write nothing. The three preview paths that own the promise
+/// (single agent, `--pipe`, `--orchestrate`) write nothing at all; the two
+/// journal paths cannot preview a recorded run without opening the record.
+/// So the wording was narrowed to the three guarantees actually kept rather
+/// than the journal being opened read-only — that second remedy is a change
+/// to `armadai-storage` (a read-only `open`, plus a missing-file fallback so
+/// a fresh machine still says "no run found for id …" instead of "unable to
+/// open database file"), and it is what would earn the stronger "writes
+/// nothing" wording back.
+const DRY_RUN_NO_EFFECTS: &str = "[dry-run] no provider called, no project registered, \
+     no agent file rewritten; nothing was recorded or billed";
 
 /// Execute a run command. Parameters are independent CLI options that map directly to
 /// configuration flags; grouping into a struct would obscure the caller's argument binding.
@@ -453,7 +483,7 @@ async fn resume_run(
     // pattern's config (`ConfigSnapshot`). `headless = true` here: a resume
     // is a non-interactive continuation, so it must never block on the
     // model-updater's interactive prompt the way a fresh `armadai run` might.
-    let resolution = resolve_agents_dir(true);
+    let resolution = resolve_agents_dir(true, dry_run);
     let routing_rules = match &resolution {
         AgentResolution::Project { config, .. } => config.routing.clone().unwrap_or_default(),
         _ => armadai_core::routing::RoutingRules::default(),
@@ -528,18 +558,30 @@ async fn resume_run(
             names.len(),
             names.join(", ")
         );
+        let mut roster = Vec::with_capacity(names.len());
         for name in &names {
             let (prov, model) = preview_provider_and_model(
                 &agents_map[name].metadata,
                 providers_map[name].as_ref(),
             );
             eprintln!("[dry-run]   {name} — provider={prov}, model={model}");
+            roster.push(DryRunAgent {
+                agent: name.clone(),
+                prov,
+                model,
+            });
         }
         eprintln!(
             "[dry-run] the remaining steps are decided by the engine as it runs, \
              so they cannot be listed without executing them"
         );
-        eprintln!("[dry-run] no provider was called; nothing was recorded or billed");
+        eprintln!("{DRY_RUN_NO_EFFECTS}");
+        sink.emit(&RunEvent::DryRun {
+            mode: "resume".to_string(),
+            pattern: pattern.clone(),
+            agents: roster,
+            reason: format!("roster reloaded from run {run_id}"),
+        });
         if !json {
             println!("{}", names.join("\n"));
         }
@@ -703,7 +745,7 @@ async fn run_inner(
     sink: &Arc<dyn EventSink>,
 ) -> anyhow::Result<()> {
     let _ = (&resume, &replay);
-    let resolution = resolve_agents_dir(headless);
+    let resolution = resolve_agents_dir(headless, dry_run);
     let tags = tags.unwrap_or_default();
 
     // Build the execution chain: primary agent + piped agents
@@ -829,7 +871,7 @@ async fn run_inner(
     // with the same message and the same code the real run would give.
     if dry_run {
         let links = load_chain(&resolution, &chain)?;
-        report_dry_run_chain(&chain, &links, json);
+        report_dry_run_chain(&chain, &links, json, sink);
         return Ok(());
     }
 
@@ -1139,12 +1181,18 @@ fn load_chain(resolution: &AgentResolution, chain: &[String]) -> anyhow::Result<
 ///
 /// What the provider/model column says, and why it is not just a copy of the
 /// agent file, is [`preview_provider_and_model`]'s job.
-fn report_dry_run_chain(chain: &[String], links: &[ChainLink], json: bool) {
+fn report_dry_run_chain(
+    chain: &[String],
+    links: &[ChainLink],
+    json: bool,
+    sink: &Arc<dyn EventSink>,
+) {
     let n = chain.len();
     eprintln!(
         "[dry-run] sequential chain ({n} agent(s)): {}",
         chain.join(", ")
     );
+    let mut roster = Vec::with_capacity(n);
     for (i, (name, link)) in chain.iter().zip(links).enumerate() {
         let (prov, model) =
             preview_provider_and_model(&link.agent.metadata, link.provider.as_ref());
@@ -1156,8 +1204,26 @@ fn report_dry_run_chain(chain: &[String], links: &[ChainLink], json: bool) {
             let s = crate::cli::style::warn();
             anstream::eprintln!("{s}[dry-run]   warn: {w}{s:#}");
         }
+        // Pushed from the same `(prov, model)` the line above printed, not
+        // recomputed: the machine stream and the human one cannot drift.
+        roster.push(DryRunAgent {
+            agent: name.clone(),
+            prov,
+            model,
+        });
     }
-    eprintln!("[dry-run] no provider was called; nothing was recorded or billed");
+    eprintln!("{DRY_RUN_NO_EFFECTS}");
+    sink.emit(&RunEvent::DryRun {
+        mode: "sequential".to_string(),
+        pattern: String::new(),
+        agents: roster,
+        reason: if n == 1 {
+            "single agent"
+        } else {
+            "explicit chain"
+        }
+        .to_string(),
+    });
     if !json {
         println!("{}", chain.join("\n"));
     }
@@ -1816,7 +1882,26 @@ fn atty_is_pipe() -> bool {
 
 /// Resolve agent source: walk up for `armadai.yaml`, detect format,
 /// and return the appropriate resolution strategy.
-fn resolve_agents_dir(headless: bool) -> AgentResolution {
+///
+/// `dry_run` is not a display concern here, it is an *effects* one (#403).
+/// Resolving the project is the first thing every `run` entry point does —
+/// before it knows, or cares, whether the run is a preview — and on the way
+/// through it used to perform the only two disk writes a `--dry-run` could
+/// possibly make:
+///
+/// - `register_project` writes `projects.json`. Being registered is a
+///   consequence of having *run* in a project, not of having previewed one.
+/// - `auto_check_and_prompt`, on a real terminal, offers to fix deprecated
+///   models — and on confirmation `apply_findings` rewrites the agent files
+///   themselves. A preview that edits the very files it is previewing is not
+///   a preview.
+///
+/// So under `dry_run` the registration is skipped outright and the
+/// auto-check is forced **non-interactive**: it still reports every
+/// deprecated model it finds (that a real run would rewrite them is exactly
+/// the kind of thing a preview exists to say), it just never offers, and
+/// therefore never writes.
+fn resolve_agents_dir(headless: bool, dry_run: bool) -> AgentResolution {
     // 1. Walk-up search for project config (new or legacy format).
     //
     // A project counts as having agents when `agents:` lists any, OR
@@ -1833,10 +1918,10 @@ fn resolve_agents_dir(headless: bool) -> AgentResolution {
             root.display(),
             config.agents.len()
         );
-        if let Err(e) = armadai_core::project_registry::register_project(&root) {
+        if !dry_run && let Err(e) = armadai_core::project_registry::register_project(&root) {
             tracing::warn!("Failed to register project in registry: {:?}", e);
         }
-        let interactive = !headless && !atty_is_pipe();
+        let interactive = !dry_run && !headless && !atty_is_pipe();
         armadai_core::model_updater::auto_check_and_prompt(&root, interactive);
         return AgentResolution::Project {
             root,
@@ -2235,6 +2320,7 @@ async fn run_orchestrated_inner(
         // `agents`/`providers` are aligned with `effective_names` in both
         // branches above: the C8 selection reassigns all three together, and
         // when it does not run they are the untouched load-loop order.
+        let mut roster = Vec::with_capacity(effective_names.len());
         for ((name, agent), provider) in effective_names
             .iter()
             .zip(agents.iter())
@@ -2242,12 +2328,23 @@ async fn run_orchestrated_inner(
         {
             let (prov, model) = preview_provider_and_model(&agent.metadata, provider.as_ref());
             eprintln!("[dry-run]   {name} — provider={prov}, model={model}");
+            roster.push(DryRunAgent {
+                agent: name.clone(),
+                prov,
+                model,
+            });
         }
         eprintln!(
             "[dry-run] which agent speaks when, and how often, is decided by the \
              engine as it runs, so it cannot be listed without executing it"
         );
-        eprintln!("[dry-run] no provider was called; nothing was recorded or billed");
+        eprintln!("{DRY_RUN_NO_EFFECTS}");
+        sink.emit(&RunEvent::DryRun {
+            mode: "orchestrated".to_string(),
+            pattern: pattern.to_string(),
+            agents: roster,
+            reason: reason.to_string(),
+        });
         if !json {
             println!("{}", effective_names.join("\n"));
         }
@@ -3088,8 +3185,16 @@ mod tests {
 
     #[test]
     fn test_resolve_agents_dir_returns_valid_resolution() {
-        // resolve_agents_dir should not panic regardless of cwd state
-        let resolution = resolve_agents_dir(false);
+        // resolve_agents_dir should not panic regardless of cwd state.
+        //
+        // `dry_run = true` (#403): this runs in the developer's own checkout,
+        // where the cwd walk-up can land on a real project — and the
+        // non-dry-run branch writes `projects.json` in the REAL config dir
+        // (no `ARMADAI_CONFIG_DIR` redirection reaches a unit test). The
+        // preview flag makes the call effect-free by construction; the
+        // registering branch is covered where it belongs, by the spawned
+        // binary in `tests/run_dry_run_spends_nothing.rs`.
+        let resolution = resolve_agents_dir(false, true);
         match resolution {
             AgentResolution::Project { root, config, .. } => {
                 assert!(!root.to_string_lossy().is_empty());

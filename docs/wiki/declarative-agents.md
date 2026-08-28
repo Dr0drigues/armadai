@@ -217,7 +217,7 @@ and the model each would use, and calls nothing:
 [dry-run]   1/3 reader — provider=cli, model=(not sent — cli:jq chooses)
 [dry-run]   2/3 summariser — provider=anthropic, model=claude-sonnet-4-5-20250929
 [dry-run]   3/3 reviewer — provider=anthropic, model=latest:auto (tier chosen per call)
-[dry-run] no provider was called; nothing was recorded or billed
+[dry-run] no provider called, no project registered, no agent file rewritten; nothing was recorded or billed
 ```
 
 The model column is the string the run would really send, not the one written in the agent
@@ -225,14 +225,55 @@ file: deprecated aliases and tier placeholders are already resolved. An agent re
 command-line tool is the exception — the relay never receives `model`, it picks its own — so the
 preview says so rather than naming an id that would never be asked for.
 
+The sign-off line is about the **disk**, not only the bill. A preview does not add the project to
+`projects.json` (being registered is a consequence of having run in a project, not of having
+looked at one), and the deprecated-model auto-check runs non-interactively: it still reports every
+deprecated model it finds — a real run would offer to rewrite them, which is worth knowing before
+you launch it — but it never offers, and therefore never touches an agent file.
+
+It says those two things, and not "writes nothing", because that stronger claim would be false on
+one path. A single agent, a `--pipe` chain and `--orchestrate` leave the disk entirely alone.
+`--resume` cannot: to preview the roster of a recorded run it has to read the run journal, and
+opening the journal creates it — so a `--resume --dry-run` on a machine that has never run
+`armadai` leaves an empty SQLite database behind. That is the record it was asked to look at, not
+a side effect of the preview, but it is a write, and the promise is worded to say only what it
+keeps.
+
 Because it is the same pass, the preview **refuses whatever the real run refuses**, with the same
 message and the same non-zero exit — an unresolvable link, a colliding name, a provider that
 cannot be built. A preview that cannot fail would pre-check nothing. This holds for a single agent
 (`armadai run <name> --dry-run`), for `--orchestrate` (which previews provider and model per
 roster member, then says plainly that who speaks when is the engine's to decide), and for
-`--resume` too, which previews the roster it reloaded and leaves the run resumable. `latest:auto` is the one thing a dry run cannot resolve: its tier is
+`--resume` too, which previews the roster it reloaded and leaves the run resumable.
+
+`--replay` is the one mode `--dry-run` refuses outright, as a usage error (exit 2). A replay
+re-emits a recorded run from the event log and calls no provider at all, so previewing one would
+describe something cheaper than simply doing it. Until it was refused, `--replay --dry-run` was
+accepted and the flag silently dropped: the caller asked for a preview and got the full replay,
+ending on the zeroed `result` the `dry_run` event exists to keep out of a consumer's hands.
+
+`latest:auto` is the one thing a dry run cannot resolve: its tier is
 chosen from each link's own input, and for every link but the first that input is the previous
 link's output — precisely what a dry run declines to compute.
+
+With `--json`, the preview closes its JSONL stream on a `dry_run` event. It used to emit
+`run_start` and then nothing at all — the preview itself goes to stderr, and the agent names to
+stdout only when *not* emitting JSON — so a consumer could not tell "the preview is over" from
+"the process died at startup":
+
+```
+{"t":"run_start","run_id":"…","v":1,"agents":["alpha","beta"],"prov":"","model":"ring","in_chars":5}
+{"t":"dry_run","mode":"orchestrated","pattern":"ring","agents":[{"agent":"alpha","prov":"cli","model":"(not sent — cli:echo chooses)"},{"agent":"beta","prov":"cli","model":"(not sent — cli:echo chooses)"}],"reason":"no routing (full roster)"}
+```
+
+`mode` is `sequential` (a single agent or a `--pipe` chain), `orchestrated`, or `resume`;
+`pattern` is the orchestration pattern, empty on the sequential path; `agents` is the roster in
+execution order with the same provider and model the stderr lines show; `reason` says why this
+roster and not another. It is deliberately **not** a `result` with zeroed tokens — those zeroes
+would be the truth and still the wrong shape, since a real run that cost nothing looks exactly the
+same, and a consumer that bills or records on `result` would count a preview as a run. Nothing
+else in the stream changed, so a consumer that only reads `result` still sees exactly what it saw
+before: nothing.
 
 ## Long compositions still get audited
 
