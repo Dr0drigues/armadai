@@ -1253,7 +1253,8 @@ fn step_from_agent(agent_name: &str, agent: &Agent) -> StepPlan {
     StepPlan::Relay {
         cmd,
         args,
-        system_prompt: agent.system_prompt.clone(),
+        // Every declared section, not just `## System Prompt` (#395).
+        system_prompt: agent.composed_prompt(),
         label,
     }
 }
@@ -2023,6 +2024,58 @@ mod tests {
         match lookup_agent_in_config(&config, root, name) {
             AgentLookup::Loaded { agent, .. } => *agent,
             AgentLookup::Failed(reason) => panic!("fixture must load, got: {reason}"),
+        }
+    }
+
+    /// #395: the shell relay is a fifth consumer of "the prompt of an
+    /// agent", and it too used to forward `system_prompt` alone. Measured
+    /// through `step_from_agent`, which is the only thing the relay ever
+    /// sees.
+    #[test]
+    fn a_relayed_step_carries_every_declared_section() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+        std::fs::write(
+            dir.path().join("agents/shell-pipeline-fixture-sections.md"),
+            concat!(
+                "# shell-pipeline-fixture-sections\n\n",
+                "## Metadata\n- provider: cli\n- command: echo\n\n",
+                "## System Prompt\nSYS body.\n\n",
+                "## Instructions\nINST body.\n\n",
+                "## Output Format\nOUT body.\n\n",
+                "## Context\nCTX body.\n",
+            ),
+        )
+        .unwrap();
+        let config = armadai_core::project::ProjectConfig::default();
+        let agent =
+            match lookup_agent_in_config(&config, dir.path(), "shell-pipeline-fixture-sections") {
+                AgentLookup::Loaded { agent, .. } => *agent,
+                AgentLookup::Failed(reason) => panic!("fixture must load, got: {reason}"),
+            };
+
+        let StepPlan::Relay { system_prompt, .. } =
+            step_from_agent("shell-pipeline-fixture-sections", &agent)
+        else {
+            panic!("a cli-backed agent must be relayable");
+        };
+        // Byte for byte against the core composition — the same string
+        // `run` and `link` build, not merely a superset containing the
+        // bodies somewhere.
+        assert_eq!(system_prompt, agent.composed_prompt());
+        for needle in [
+            "SYS body.",
+            "## Instructions",
+            "INST body.",
+            "## Output Format",
+            "OUT body.",
+            "## Context",
+            "CTX body.",
+        ] {
+            assert!(
+                system_prompt.contains(needle),
+                "{needle:?} never reached the relayed step:\n{system_prompt}"
+            );
         }
     }
 

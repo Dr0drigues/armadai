@@ -149,21 +149,14 @@ fn imported(path: &Path, agent: &Agent) -> ImportedAgent {
 /// Measured after the fix, on the same 77 agents: the rules read 3.01x more
 /// text (16205 -> 48778 estimated tokens), and `A06` goes from 0 to 2 real
 /// duplication clusters — the number predicted here before the fix landed.
+///
+/// Delegates to `Agent::composed_prompt` (#395): this was a seventh private
+/// copy of that loop — subtly divergent, since it pushed a raw `\n\n` where
+/// the linkers normalise, so a section already ending in a newline gained a
+/// third one here and nowhere else. The audit must read exactly the text a
+/// model gets, which is now one function away rather than a re-derivation.
 fn prompt_text(agent: &Agent) -> String {
-    let mut out = agent.system_prompt.clone();
-    for (heading, section) in [
-        ("## Instructions", &agent.instructions),
-        ("## Output Format", &agent.output_format),
-        ("## Context", &agent.context),
-    ] {
-        if let Some(body) = section {
-            out.push_str("\n\n");
-            out.push_str(heading);
-            out.push_str("\n\n");
-            out.push_str(body);
-        }
-    }
-    out
+    agent.composed_prompt()
 }
 
 #[cfg(test)]

@@ -53,27 +53,9 @@ fn generate_agent_file(agent: &LinkAgent) -> OutputFile {
 
     let model = agent.model.as_deref().unwrap_or("o3-mini");
 
-    // Build developer_instructions from all sections
-    let mut instructions = String::new();
-    instructions.push_str(&agent.system_prompt);
-
-    if let Some(ref inst) = agent.instructions {
-        ensure_blank_line(&mut instructions);
-        instructions.push_str("## Instructions\n\n");
-        instructions.push_str(inst);
-    }
-
-    if let Some(ref output_format) = agent.output_format {
-        ensure_blank_line(&mut instructions);
-        instructions.push_str("## Output Format\n\n");
-        instructions.push_str(output_format);
-    }
-
-    if let Some(ref context) = agent.context {
-        ensure_blank_line(&mut instructions);
-        instructions.push_str("## Context\n\n");
-        instructions.push_str(context);
-    }
+    // developer_instructions carries the agent's whole prompt — the four
+    // sections composed exactly as every other target composes them.
+    let instructions = agent.composed_prompt();
 
     let mut content = String::new();
     content.push_str(&format!("model = \"{model}\"\n"));

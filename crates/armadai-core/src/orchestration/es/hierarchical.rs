@@ -1325,22 +1325,26 @@ impl HierarchicalEffectRunner {
             .collect()
     }
 
-    /// Build the enriched system prompt for `agent_name`: its own
-    /// `system_prompt`, plus the orchestration-protocol block from
-    /// `context_injection::build_orchestration_prompt` when one applies
+    /// Build the enriched system prompt for `agent_name`: its whole composed
+    /// prompt (every declared section, per `Agent::composed_prompt` — #395,
+    /// not just `## System Prompt`), plus the orchestration-protocol block
+    /// from `context_injection::build_orchestration_prompt` when one applies
     /// (hierarchical pattern enabled, per `self.config`). Falls back to a
     /// generic default if `agent_name` isn't in `self.agents` — should not
     /// happen once the caller (`run_invoke`) has already resolved the agent,
     /// but keeps this helper total.
+    ///
+    /// The protocol block goes *after* the agent's own sections: it describes
+    /// how to answer, and must be the last word on it.
     fn enriched_system_prompt(&self, agent_name: &str) -> String {
         let base = self
             .agents
             .get(agent_name)
-            .map(|a| a.system_prompt.as_str())
-            .unwrap_or("You are a helpful assistant.");
+            .map(|a| a.composed_prompt())
+            .unwrap_or_else(|| "You are a helpful assistant.".to_string());
         match build_orchestration_prompt(agent_name, &self.config, &self.agents_info()) {
             Some(block) => format!("{base}{block}"),
-            None => base.to_string(),
+            None => base,
         }
     }
 }

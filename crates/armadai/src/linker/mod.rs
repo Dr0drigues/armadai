@@ -158,6 +158,25 @@ impl From<&Agent> for LinkAgent {
     }
 }
 
+impl LinkAgent {
+    /// This agent's sections composed into one prompt body, through the same
+    /// core definition `run` uses (`armadai_core::agent::compose_agent_prompt`).
+    ///
+    /// The five linkers each carried their own copy of this loop until #395,
+    /// and `run` carried none — which is how the same agent came to behave
+    /// differently depending on the path that executed it. Sharing the
+    /// composition is what makes "same order, same separators" a fact rather
+    /// than a convention.
+    pub fn composed_prompt(&self) -> String {
+        armadai_core::agent::compose_agent_prompt(
+            &self.system_prompt,
+            self.instructions.as_deref(),
+            self.output_format.as_deref(),
+            self.context.as_deref(),
+        )
+    }
+}
+
 /// Protocol block appended to linked config files for ArmadAI shell parsing.
 pub fn armadai_protocol_block() -> &'static str {
     r"
