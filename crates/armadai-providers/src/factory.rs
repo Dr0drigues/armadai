@@ -83,9 +83,11 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
             api_backend: Some("openai"),
         },
     ),
-    // Not API-only: `aider` is a real CLI, and — measured against
-    // `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` on macOS 25.5 and against
-    // `debian:stable-slim` — nothing else on either system claims the name.
+    // Not API-only: `aider` is a real CLI, and no *system* binary claims the
+    // name — measured against `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` on
+    // macOS 25.5 and against `debian:stable-slim`. That is the whole test:
+    // `gpt` is special because its namesake is installed by the OS itself,
+    // not because nothing anywhere else is called `gpt`.
     (
         "aider",
         ToolDef {
@@ -784,9 +786,21 @@ mod tests {
     }
 
     /// The inventory itself, pinned. `gpt` is API-only *because* its name
-    /// collides with a system binary; the other six own their names (checked
-    /// against `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` on macOS 25.5 and
-    /// against `debian:stable-slim`: only `gpt` collides).
+    /// collides with a binary **the operating system installs on its own**:
+    /// `/usr/sbin/gpt` ships with macOS 25.5, and Debian stable's archive
+    /// carries a `gpt` package that puts `/usr/bin/gpt` — while none of the
+    /// other six names exists in either place.
+    ///
+    /// Not the same claim as "nothing else is ever called that", which is
+    /// false and was worth checking: Homebrew's **core formula** `copilot`
+    /// is the AWS ECS/Fargate CLI and links `/opt/homebrew/bin/copilot`,
+    /// the very path the `copilot-cli` cask (GitHub Copilot CLI) uses; npm
+    /// carries a `gemini` (a screenshot utility) and a `codex` (a doc
+    /// generator), each with the homonymous bin. Those are installs a user
+    /// chose, so a probe finding them is arguably right — and `copilot` has
+    /// no API backend to fall back to anyway, so an API-only entry could not
+    /// rescue it. What made `gpt` a defect is that *every* macOS machine hit
+    /// it without installing anything (issue #402).
     #[test]
     fn only_gpt_is_api_only() {
         let api_only: Vec<&str> = KNOWN_TOOLS

@@ -313,8 +313,10 @@ async fn interactive_create() -> anyhow::Result<()> {
 /// an agent for, which is how `codex`, `copilot` and `opencode` stayed
 /// unreachable from the wizard after they became runnable (issue #369).
 ///
-/// Order is UX, not inventory: the CLI-backed tools first (`claude` is the
+/// Order is UX, not inventory: the unified tool names first (`claude` is the
 /// default), then the explicit API providers, then the generic escape hatch.
+/// Six of the seven unified names spawn a CLI; `gpt` sits with them because
+/// it is a unified name, but it is API-only (issue #402).
 pub(crate) const WIZARD_PROVIDER_CHOICES: &[&str] = &[
     "claude",
     "gemini",

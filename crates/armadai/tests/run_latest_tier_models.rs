@@ -646,6 +646,16 @@ fn only_latest_auto_is_routed_per_call() {
 /// Wire-level rather than unit-level for the reason this whole file exists:
 /// on three of the four run paths nothing ArmadAI prints names the model it
 /// billed, so the bytes are the only witness.
+///
+/// Anthropic rather than OpenAI, deliberately, even though every answer
+/// issue #404 changed on a real catalog is an OpenAI one. What this test
+/// measures is the *wiring* — that `resolve_model_for_tier`'s answer, and
+/// not the placeholder, is what `run` puts in the request body — and that
+/// wiring is vendor-agnostic. The vendor-specific half (which id wins, and
+/// why) is measured against both catalog snapshots in
+/// `model_resolution.rs`'s own tests, where a fixture costs two lines
+/// instead of a whole fake server. Naming OpenAI here would need an
+/// OpenAI-shaped `FakeApi` for no added coverage of what this file is for.
 #[test]
 fn the_model_on_the_wire_is_the_catalogs_newest_read_as_a_number() {
     let api = FakeApi::start();
