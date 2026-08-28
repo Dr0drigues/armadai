@@ -13,7 +13,7 @@ Use a tool name directly as the provider. ArmadAI auto-detects whether the CLI t
 | `codex` | `codex exec --json` | none — CLI only | yes |
 | `copilot` | `copilot --output-format json -p` | none — CLI only | yes |
 | `opencode` | `opencode run --format json` | none — CLI only | yes |
-| `gpt` | `gpt` | OpenAI API | no |
+| `gpt` | none — API only | OpenAI API | no |
 | `aider` | `aider --message` | OpenAI API | no |
 
 The prompt is always appended as the last argument, which is why any flag that
@@ -45,6 +45,24 @@ so instead of falling back to an unrelated API:
 Error: Provider 'codex' runs the `codex` CLI, which was not found on PATH, and
 it has no API backend to fall back to. Install it, or point this agent at the
 executable with `command: /full/path/to/codex`.
+```
+
+### API-only providers
+
+`gpt` is the mirror image: it names **no** CLI, and goes straight to the
+OpenAI API. It used to probe `PATH` for a binary called `gpt` — and on macOS
+it always found one, because `/usr/sbin/gpt` is the system GUID-partition-table
+tool that ships with the OS. Every `provider: gpt` agent on macOS therefore
+ran a disk utility and failed with `gpt: unknown command: …`, never reaching
+the OpenAI fallback ([#402](https://github.com/Dr0drigues/armadai/issues/402)).
+
+If you do have a CLI you want `provider: gpt` to spawn, say so explicitly —
+an agent's own `command:` still wins over the API for every unified name:
+
+```markdown
+- provider: gpt
+- command: /opt/homebrew/bin/my-gpt-cli
+- args: ["--prompt"]
 ```
 
 ### Any other tool
@@ -121,6 +139,52 @@ Direct HTTP calls to LLM APIs. Use these when you want explicit API control.
 > own), and for a gateway the placeholder is the more useful string: an
 > administrator can route `latest:max` through a house alias, which a
 > concrete id chosen here would override with no way to opt out.
+>
+> **Which model in the tier** is decided by four keys, then a tie-break.
+> First the **generation** — the numbers in the id, compared as numbers:
+> `latest:pro` asks for the *latest* model of the Pro tier, and generation
+> `10` is above generation `4.6` even though the string `gpt-10` sorts below
+> `gpt-9`. Then whether the catalog **prices** the model at all: an unpriced
+> entry never wins over a priced one. Then the **generation's own name**:
+> within one generation a vendor ships a base model and named points of its
+> range around it (`gpt-5.6` alongside `gpt-5.6-luna`, `gpt-5.6-sol`,
+> `gpt-5.6-terra`), and the unsuffixed — shorter — id is taken as the base of
+> the generation. Only then the **price**, in the direction the tier promises:
+> `latest:fast` ("cheap and fast") and `latest:pro` ("balanced") take the
+> cheapest of what is left, `latest:max` ("maximum capability") the dearest.
+> The id itself is the final tie-break. A dated snapshot or a `preview` id
+> never wins while a released one exists.
+>
+> One known limit of the third key, measured on the shipped catalogs: the
+> shorter id is the *base* of a generation, which is not always the model a
+> vendor treats as its default. `gpt-4` is shorter than `gpt-4o` and 12×
+> dearer, yet `gpt-4o` is the one OpenAI made the generation's workhorse — so
+> a successor named by appending a letter inside one generation defeats the
+> rule. It changes no answer today, because generation 4 is not the newest;
+> it would the day a `gpt-6o` follows a `gpt-6`. Use an explicit model id
+> rather than a tier if that matters to you.
+>
+> The middle key is what keeps the three tiers **ordered by price**: without
+> it, "cheapest of the newest generation" hands `latest:pro` the range's entry
+> model, and on the catalog models.dev served on 2026-08-28 `latest:pro` came
+> out at $0.20/$1.20 against `latest:fast`'s $0.20/$1.25 — the balanced tier
+> cheaper than the cheap one.
+>
+> Until [#404](https://github.com/Dr0drigues/armadai/issues/404) there was
+> one key and it was the alphabet, described in the code as "the highest
+> version". It is not the same thing: `latest:fast` on OpenAI answered
+> `o4-mini` — a reasoning model at $1.10/$4.40 per Mtok against the tier's
+> own example `gpt-4o-mini` at $0.15/$0.60 — because `o` sorts after `g`.
+>
+> **A vendor may not distinguish every tier.** Google publishes no line above
+> `pro`, so `latest:max` on Google *is* `latest:pro`, deliberately and
+> explicitly — and it now resolves through the catalog like any other tier
+> rather than freezing on a built-in id.
+>
+> **OpenAI's o-series** (`o1`, `o3`, `o4-mini`, …) is a reasoning line rather
+> than a rung on the chat price ladder these three tiers describe, so it
+> claims no tier — except `o3-pro`/`o1-pro`, which are Max like the rest of
+> the `-pro` line.
 >
 > `latest:auto` is the one placeholder resolved *per call* rather than up
 > front: its tier is chosen from the run's own input by the router
@@ -240,8 +304,9 @@ eventually.
 > **Note:** For the tools listed under [Unified Tool Names](#unified-tool-names-recommended)
 > — claude, gemini, codex, copilot, opencode, gpt, aider — prefer the unified
 > name (`provider: codex`) over `provider: cli` + `command: codex`. They are not
-> equivalent: the unified name auto-detects CLI availability, falls back to the
-> API where one exists, and supplies the tool's non-interactive argv, whereas
+> equivalent: the unified name auto-detects CLI availability (for the six that
+> have a CLI), falls back to the API where one exists, and supplies the tool's
+> non-interactive argv, whereas
 > `provider: cli` with no `args:` passes the prompt alone — and `codex` with a
 > bare positional opens its interactive UI, while `opencode` reads it as a
 > project path.

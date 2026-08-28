@@ -201,6 +201,18 @@ impl Sandbox {
         cmd.output().unwrap()
     }
 
+    /// Plant a models.dev cache in the isolated config dir, so tier
+    /// resolution reads a catalog this test controls instead of falling
+    /// through to the hardcoded table. `entries` is the JSON array for one
+    /// provider, written verbatim.
+    fn seed_models_cache(&self, provider: &str, entries: &str) {
+        std::fs::write(
+            self.config.join("models-cache.json"),
+            format!(r#"{{"providers":{{"{provider}":{entries}}}}}"#),
+        )
+        .unwrap();
+    }
+
     /// Same, pointed at a Gemini-shaped server instead, and with a PATH that
     /// holds no `gemini` binary — so `provider: gemini` takes the API
     /// fallback (`create_unified_provider`) rather than relaying a CLI that
@@ -616,4 +628,58 @@ fn only_latest_auto_is_routed_per_call() {
     );
 
     assert_no_placeholder_reached_the_wire(&api.models_seen());
+}
+
+// -- The tier read from the catalog, at the wire (issue #404) ---------
+
+/// With a models.dev cache present, the id that reaches the server is the
+/// one the catalog names for the tier -- and "the catalog's newest" is read
+/// numerically, not off the alphabet.
+///
+/// The fixture separates the generation key from every other key that could
+/// answer for it, which takes three properties, not two:
+///
+/// - **alphabet**: generation `10` is above generation `4`, while the
+///   *string* `"claude-sonnet-10"` is below `"claude-sonnet-4"`. The old
+///   `candidates.iter().max()` therefore sent the older one.
+/// - **price**: the newer model is priced *higher*, so "cheapest wins" alone
+///   answers the older one too.
+/// - **length**: `claude-sonnet-4` is 15 characters, `claude-sonnet-10` is
+///   16, so the shortest-id key also points at the older one. This one was
+///   missed at first: the fixture read `claude-sonnet-4-6` (17 characters),
+///   and the shortest-id key — added by the very commit this test guards —
+///   happened to agree with the generation key. Measured: with that fixture,
+///   neutralising the generation key left this test green, so the property
+///   in its own name was unpinned. All three keys now point *away* from the
+///   expected answer, and only the generation key reaches it.
+///
+/// Wire-level rather than unit-level for the reason this whole file exists:
+/// on three of the four run paths nothing ArmadAI prints names the model it
+/// billed, so the bytes are the only witness.
+///
+/// Anthropic rather than OpenAI, deliberately, even though every answer
+/// issue #404 changed on a real catalog is an OpenAI one. What this test
+/// measures is the *wiring* — that `resolve_model_for_tier`'s answer, and
+/// not the placeholder, is what `run` puts in the request body — and that
+/// wiring is vendor-agnostic. The vendor-specific half (which id wins, and
+/// why) is measured against both catalog snapshots in
+/// `model_resolution.rs`'s own tests, where a fixture costs two lines
+/// instead of a whole fake server. Naming OpenAI here would need an
+/// OpenAI-shaped `FakeApi` for no added coverage of what this file is for.
+#[test]
+fn the_model_on_the_wire_is_the_catalogs_newest_read_as_a_number() {
+    let api = FakeApi::start();
+    let sb = Sandbox::new(&[("alpha", "latest:pro")]);
+    sb.seed_models_cache(
+        "anthropic",
+        r#"[{"id":"claude-sonnet-4","cost":{"input":2.0,"output":10.0}},
+            {"id":"claude-sonnet-10","cost":{"input":3.0,"output":15.0}}]"#,
+    );
+
+    let out = sb.run(&api, &["run", "alpha", "hello", "--json"]);
+    assert!(out.status.success(), "run failed: {out:?}");
+
+    let seen = api.models_seen();
+    assert_no_placeholder_reached_the_wire(&seen);
+    assert_eq!(seen, vec!["claude-sonnet-10".to_string()]);
 }

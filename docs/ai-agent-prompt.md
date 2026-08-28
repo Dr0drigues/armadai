@@ -39,7 +39,7 @@ An ArmadAI agent is a Markdown file (`.md`) that defines an AI-powered specialis
 |----------|------|----------|
 | `claude` | Unified (CLI or API) | Auto-detects Claude CLI or falls back to Anthropic API |
 | `gemini` | Unified (CLI or API) | Auto-detects Gemini CLI or falls back to Google API |
-| `gpt` | Unified (CLI or API) | Auto-detects GPT CLI or falls back to OpenAI API |
+| `gpt` | API only (unified name) | OpenAI API — never probes `PATH`, see wiki `providers.md` |
 | `aider` | Unified (CLI or API) | Auto-detects aider CLI or falls back to OpenAI API |
 | `anthropic` | API only | `model` field, `ANTHROPIC_API_KEY` env var |
 | `openai` | API only | `model` field, `OPENAI_API_KEY` env var |

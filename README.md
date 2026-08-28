@@ -24,7 +24,7 @@ armadai tui
 ### Key Features
 
 - **Markdown-based agents** — one `.md` file = one agent. Human-readable, git-friendly.
-- **Multi-provider** — unified tool names (`claude`, `gemini`, `codex`, `copilot`, `opencode`, `gpt`, `aider`) auto-detect CLI vs API; explicit API/CLI/proxy modes also supported
+- **Multi-provider** — unified tool names (`claude`, `gemini`, `codex`, `copilot`, `opencode`, `aider`) auto-detect CLI vs API, and `gpt` goes straight to the OpenAI API; explicit API/CLI/proxy modes also supported
 - **Multi-pattern orchestration** — Direct (single-shot), Blackboard (parallel shared-state), Ring (sequential consensus), Hierarchical (coordinator → leads → agents)
 - **Pipeline mode** — chain agents sequentially (output A becomes input B)
 - **TUI & Web dashboards** — agent library management with browser, detail view, history, costs, and command palette
