@@ -385,10 +385,16 @@ async fn run_link(target: &str) -> Result<()> {
 /// so the manifest write and the exists-guard come from the same place
 /// `link` gets them, rather than a third copy that could drift from both.
 ///
-/// Deliberately narrower than `link`'s own CLI surface: no coordinator, no
-/// skills/prompts, no `--agents` filter, no `--model`/interactive model
-/// prompt, no `--force` — the wizard flow never had any of those, and none
-/// of them are part of what issue #347 asks to fix.
+/// Deliberately narrower than `link`'s own CLI *flags*: no `--coordinator`
+/// override, no skills/prompts, no `--agents` filter, no
+/// `--model`/interactive model prompt, no `--force` — the wizard flow has
+/// no way to express any of those. What it does honour is the project
+/// **config**: `link.coordinator` reaches `generate` here exactly as it
+/// does in `link` (issue #375). It used to be hardcoded to `None`, so the
+/// wizard wrote a per-agent file for every agent and never the target's
+/// root instructions file — and a later manifest-less `unlink`, looking
+/// for the coordinator where `link` would have put it, left that
+/// per-agent file behind.
 async fn run_link_at(
     root: &Path,
     config: &armadai_core::project::ProjectConfig,
@@ -447,6 +453,31 @@ async fn run_link_at(
         ));
     }
 
+    // The configured coordinator, resolved against the roster through the
+    // same `name_matches_reference` `link` and `unlink` both use (issue
+    // #341/#370): `coordinator: dev-lead` designates the agent titled
+    // `Dev Lead`. Removing it from `link_agents` is what makes it the
+    // target's root instructions file instead of one more per-agent file
+    // — `link`'s own step 3b, verbatim. The wizard has no
+    // `--coordinator` flag to override the config with.
+    //
+    // The model-resolution step below runs on the coordinator too, the
+    // same way `link` and `unlink` both do. Measured: no linker
+    // serialises a coordinator's `model:` into its root instructions
+    // document today (checked in all five of claude/codex/copilot/
+    // gemini/opencode), so that arm makes no observable difference to
+    // the bytes written — it is kept aligned so a linker that starts
+    // emitting one is correct by construction rather than by accident,
+    // and so this function stays a mirror of `link` rather than a fourth
+    // variant of it.
+    let coordinator_name = config.link.as_ref().and_then(|l| l.coordinator.clone());
+    let mut coordinator = coordinator_name.and_then(|name| {
+        let idx = link_agents
+            .iter()
+            .position(|a| crate::linker::name_matches_reference(&a.name, &name))?;
+        Some(link_agents.remove(idx))
+    });
+
     // The same model resolution `link`'s own step 4b performs (issue I1 on
     // #347's review): without this, a `latest:*` placeholder reaches
     // `generate()` completely unresolved, so the wizard writes a literal
@@ -466,21 +497,37 @@ async fn run_link_at(
             #[cfg(feature = "providers-api")]
             {
                 model_resolution::remap_models_for_llm_editor(&mut link_agents, provider).await;
+                if let Some(ref mut coord) = coordinator {
+                    model_resolution::remap_models_for_llm_editor(
+                        std::slice::from_mut(coord),
+                        provider,
+                    )
+                    .await;
+                }
             }
             #[cfg(not(feature = "providers-api"))]
             {
                 model_resolution::remap_models_for_llm_editor(&mut link_agents, provider);
+                if let Some(ref mut coord) = coordinator {
+                    model_resolution::remap_models_for_llm_editor(
+                        std::slice::from_mut(coord),
+                        provider,
+                    );
+                }
             }
         }
         TargetKind::Orchestrator => {
             model_resolution::resolve_latest_placeholders(&mut link_agents);
+            if let Some(ref mut coord) = coordinator {
+                model_resolution::resolve_latest_placeholders(std::slice::from_mut(coord));
+            }
         }
     }
 
     let linker = crate::linker::create_linker(target)?;
 
     let sources = &config.sources;
-    let files = linker.generate(&link_agents, None, sources);
+    let files = linker.generate(&link_agents, coordinator.as_ref(), sources);
 
     if files.is_empty() {
         return Err(anyhow::anyhow!("No files to generate"));
@@ -517,10 +564,17 @@ async fn run_link_at(
             let produced_by = if idx < agent_count {
                 crate::linker::manifest::ProducedBy::agent(link_agents[idx].name.clone())
             } else {
-                // No coordinator in the wizard flow — same convention
-                // `link` uses for a target that still emits a
-                // team-roster document with none configured.
-                crate::linker::manifest::ProducedBy::coordinator(target.to_string())
+                // Past the per-agent prefix: the target's root
+                // instructions document, attributed to the configured
+                // coordinator — or, for the targets that emit a
+                // team-roster document with none configured, to the
+                // target itself. `link`'s step 8, verbatim.
+                crate::linker::manifest::ProducedBy::coordinator(
+                    coordinator
+                        .as_ref()
+                        .map(|c| c.name.clone())
+                        .unwrap_or_else(|| target.to_string()),
+                )
             };
             (final_path, f.content, produced_by)
         })
@@ -672,6 +726,155 @@ mod run_link_tests {
             "# drop\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nLeave.\n",
         )
         .unwrap();
+    }
+
+    /// A project whose roster's **second** agent is the configured
+    /// `link.coordinator`, spelled as a slug (`dev-lead`) against an H1
+    /// title that is not the slug (`Dev Lead`). Both details are load
+    /// bearing:
+    ///
+    /// - **Not position 0.** A fixture with the coordinator first stays
+    ///   green under an always-true match predicate, because the agent
+    ///   picked out is the right one by accident — the exact fixture trap
+    ///   measured on #370.
+    /// - **Title ≠ reference.** `link.coordinator` is matched against the
+    ///   agent's H1 title *or that title's slug*, never against the
+    ///   `agents:` key (a separate namespace — see `docs/wiki/link.md`).
+    ///   A `Dev Lead`/`dev-lead` pair fails under a plain `==` on names
+    ///   and passes only through `name_matches_reference`.
+    fn write_coordinator_project(root: &Path) {
+        std::fs::create_dir_all(root.join("agents")).unwrap();
+        std::fs::write(
+            root.join("armadai.yaml"),
+            "agents:\n  - name: worker\n  - name: dev-lead\nlink:\n  target: claude\n  \
+             coordinator: dev-lead\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("agents/worker.md"),
+            "# Worker\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nDo the work.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("agents/dev-lead.md"),
+            "# Dev Lead\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nLead.\n",
+        )
+        .unwrap();
+    }
+
+    /// Issue #375: the wizard must honour `link.coordinator` exactly as
+    /// `link` does — the configured coordinator becomes the target's root
+    /// instructions file (`.claude/CLAUDE.md`) and gets **no** per-agent
+    /// file, because `link` removes it from the roster before generating.
+    ///
+    /// Before the fix, `run_link_at` passed a hardcoded `None` as
+    /// `generate`'s coordinator argument, so the wizard wrote a per-agent
+    /// file for every agent and never the root instructions file, whatever
+    /// the config said.
+    ///
+    /// Mutation this catches: reverting the `generate` call to
+    /// `linker.generate(&link_agents, None, sources)` (the pre-fix line)
+    /// leaves no `.claude/CLAUDE.md` and writes `.claude/agents/dev-lead.md`
+    /// instead — both assertions below fail.
+    #[tokio::test]
+    async fn wizard_link_honours_the_configured_link_coordinator() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        write_coordinator_project(&root);
+
+        let (found_root, config) = project::find_project_config_from(&root).unwrap();
+        run_link_at(&found_root, &config, "claude").await.unwrap();
+
+        assert!(
+            root.join(".claude/CLAUDE.md").is_file(),
+            "the wizard must write the coordinator's root instructions file, the way \
+             `link` does"
+        );
+        assert!(
+            !root.join(".claude/agents/dev-lead.md").exists(),
+            "the coordinator is removed from the roster before generating, so it must \
+             get no per-agent file"
+        );
+        assert!(
+            root.join(".claude/agents/worker.md").is_file(),
+            "every non-coordinator agent still gets its per-agent file"
+        );
+    }
+
+    /// Issue #375's measured symptom, end to end: what the wizard writes
+    /// must be exactly what `unlink` reclaims — including on the
+    /// **fallback** path, the one that recomputes what `link` would write
+    /// rather than reading the manifest. `.armadai/` is removed between
+    /// the two halves precisely to force that path; without that removal
+    /// the manifest answers, and this test would prove nothing about the
+    /// name-based matching it exists to pin (the trap already recorded in
+    /// `tests/unlink_content_guard.rs`).
+    ///
+    /// Measured before the fix, on the real binary:
+    ///
+    /// ```text
+    /// 1 deleted, 0 kept, 1 already absent   survivor: .claude/agents/dev-lead.md
+    /// ```
+    ///
+    /// `unlink` looked for the coordinator where `link` would have put it
+    /// (`.claude/CLAUDE.md`), did not find it, and left behind the
+    /// per-agent file the wizard had written instead.
+    ///
+    /// Mutation this catches: the same `None` revert as the test above
+    /// leaves `.claude/agents/dev-lead.md` on disk after the unlink.
+    #[tokio::test]
+    async fn wizard_link_then_unlink_without_a_manifest_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        write_coordinator_project(&root);
+
+        let _isolated = IsolatedProjectDir::enter(&root);
+
+        let (found_root, config) = project::find_project_config_from(&root).unwrap();
+        run_link_at(&found_root, &config, "claude").await.unwrap();
+
+        // Force `unlink`'s fallback path: with the manifest present it
+        // would reclaim by record, never exercising the name matching
+        // this test is about.
+        std::fs::remove_dir_all(root.join(".armadai")).unwrap();
+
+        crate::cli::unlink::execute(
+            Some(crate::linker::LinkTarget::Claude),
+            None,
+            false,
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let survivors: Vec<PathBuf> = walk_files(&root.join(".claude"));
+        assert!(
+            survivors.is_empty(),
+            "a manifest-less unlink must reclaim everything a wizard-driven link wrote; \
+             survivors: {survivors:?}"
+        );
+    }
+
+    /// Every file under `dir`, recursively — `.claude/` itself is left in
+    /// place by `unlink` by design (issue #338 case 1), so the assertion
+    /// above is about files, not the directory.
+    fn walk_files(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(walk_files(&path));
+            } else {
+                out.push(path);
+            }
+        }
+        out.sort();
+        out
     }
 
     /// A wizard-driven link must write the same `.armadai/link-manifest.yaml`

@@ -40,6 +40,8 @@ That target matters: `link.coordinator` is matched against the **title**, *not* 
 
 `unlink` applies that identical rule whenever it has to regenerate (the no-manifest fallback below); a narrower match there would leave the root instructions file on disk as a silent orphan. Through the manifest the question never arises: `link`'s own attribution is what `unlink` reads back.
 
+The link step `armadai shell`'s setup wizard runs applies the same rule: it honours `link.coordinator` from the project config exactly as `armadai link` does, and writes the same files. (Before v1.0.0 it ignored the setting entirely, writing a per-agent file for the coordinator and no root instructions file — which a later manifest-less `unlink` then left behind.)
+
 A `link.coordinator` matching no agent is not an error — the target simply gets no root instructions file, and `unlink` removes none. It is also not reported, so a typo or a title/key mismatch is silent on both sides: `link` writes the per-agent files and announces success. Check that the root instructions file exists if you expected a coordinator.
 
 ## Examples
