@@ -273,9 +273,17 @@ pub fn fallback_model_for_tier(provider: &str, tier: ModelTier) -> &'static str 
 struct CachedModel {
     id: String,
     /// `(input, output)` per million tokens, or `None` when the catalog
-    /// carries no price — which happens for real entries
-    /// (`gemma-4-26b-a4b-it`, `chatgpt-image-latest`, …), so it is a case to
-    /// order, not a case to reject.
+    /// carries no price.
+    ///
+    /// Unpriced entries are real — 399 of the 5694 the catalog held on
+    /// 2026-07-20, 433 of the 7429 it held on 2026-08-28 — but **none of
+    /// them reaches [`compare_candidates`]**: on both snapshots, every entry
+    /// without a usable price is one [`classify_model_tier`] answers `None`
+    /// for, either because it belongs to a vendor this module does not
+    /// classify (`gemma-4-26b-a4b-it`) or because it is not a chat model
+    /// (`chatgpt-image-latest`). So this is `Option` to keep the type
+    /// honest about the schema, and the ordering below treats it as a
+    /// guard, not as a case seen in the field.
     cost: Option<(f64, f64)>,
 }
 
@@ -325,10 +333,11 @@ fn load_cached_models(provider: &str) -> Option<Vec<CachedModel>> {
                 // A half-quoted price is no price: an entry missing either
                 // side cannot be compared against a fully quoted one
                 // without inventing the missing half. Both fields are
-                // optional in the catalog's schema; measured on the live
-                // catalog (5694 entries, 2026-08-28) 399 carry no cost at
-                // all and none carries only half of one, so this arm guards
-                // the schema rather than a case seen in the wild.
+                // optional in the catalog's schema, and no entry has ever
+                // used only one of them — 0 half-quoted prices out of 5694
+                // entries on 2026-07-20 and out of 7429 on 2026-08-28. Like
+                // the `None` arm above, this guards the schema rather than
+                // a case seen in the wild.
                 cost: e.cost.as_ref().and_then(|c| Some((c.input?, c.output?))),
             })
             .collect(),
@@ -338,7 +347,7 @@ fn load_cached_models(provider: &str) -> Option<Vec<CachedModel>> {
 /// Order two candidates of one tier, worst first, so `max_by` yields the one
 /// to use.
 ///
-/// Three keys, in order:
+/// Four keys, in order:
 ///
 /// 1. **Generation** ([`generation_key`]) — `latest:pro` asks for the latest
 ///    model of the Pro tier, and the old `max()` read "latest" off the
@@ -351,8 +360,25 @@ fn load_cached_models(provider: &str) -> Option<Vec<CachedModel>> {
 /// 2. **Priced beats unpriced** — a model the catalog does not price cannot
 ///    be checked against the tier's price promise, so it never wins over one
 ///    that is priced. Reading a missing price as `+∞` would have handed the
-///    `Max` tier (dearest wins) to every unpriced model.
-/// 3. **Price**, in the direction the tier's own doc-comment states: `Fast`
+///    `Max` tier (dearest wins) to every unpriced model. A guard rather than
+///    a field case: no unpriced entry in either catalog snapshot gets past
+///    [`classify_model_tier`] to be compared here (see [`CachedModel::cost`]).
+/// 3. **The generation's own name beats a variant of it** — the shorter id
+///    wins. Within one generation a vendor ships a base model and named
+///    points of its range around it: `gpt-5.6` alongside `gpt-5.6-luna`,
+///    `gpt-5.6-sol`, `gpt-5.6-terra`. Those are not versions of one model,
+///    so *neither* price extreme names the one a tier should answer with,
+///    and the base id is the vendor's own default for the generation.
+///
+///    Length rather than "is a prefix of", which is what the rule means:
+///    combined with a price key, the prefix relation is intransitive. With
+///    `x` a prefix of `xy`, and `z` unrelated and priced between them, the
+///    cheapest-wins tier gives `x > xy` (prefix), `xy > z` and `z > x`
+///    (price) — a cycle, and `max_by` over a cyclic comparator has no
+///    defined answer. Length is a total preorder, and a prefix is always
+///    the shorter string, so it agrees with the intent wherever the intent
+///    is defined.
+/// 4. **Price**, in the direction the tier's own doc-comment states: `Fast`
 ///    ("cheap and fast") and `Pro` ("balanced performance") take the
 ///    cheapest of the generation, `Max` ("maximum capability") the dearest.
 ///    Input price decides, output price breaks its ties.
@@ -360,6 +386,15 @@ fn load_cached_models(provider: &str) -> Option<Vec<CachedModel>> {
 /// The id is the final tie-break, ascending — the same order the previous
 /// implementation used, kept so a catalog where every key above ties resolves
 /// exactly as it did before.
+///
+/// Key 3 is what keeps the three tiers *ordered by price* on both catalog
+/// snapshots this module is tested against — see
+/// `the_tier_ladder_does_not_invert_on_the_august_catalog`. Without it,
+/// "cheapest of the newest generation" hands `latest:pro` the range's entry
+/// model: on the catalog models.dev served on 2026-08-28, `latest:pro`
+/// answered `gpt-5.6-luna` at $0.20/$1.20 against `latest:fast`'s
+/// `gpt-5.4-nano` at $0.20/$1.25 — the balanced tier strictly cheaper than
+/// the cheap one (PR #412 review).
 fn compare_candidates(a: &CachedModel, b: &CachedModel, tier: ModelTier) -> std::cmp::Ordering {
     use std::cmp::Ordering;
 
@@ -371,6 +406,13 @@ fn compare_candidates(a: &CachedModel, b: &CachedModel, tier: ModelTier) -> std:
     let priced = a.cost.is_some().cmp(&b.cost.is_some());
     if priced != Ordering::Equal {
         return priced;
+    }
+
+    // Shorter wins, so the comparison is reversed: `b`'s length against
+    // `a`'s.
+    let unsuffixed = b.id.len().cmp(&a.id.len());
+    if unsuffixed != Ordering::Equal {
+        return unsuffixed;
     }
 
     if let (Some((ai, ao)), Some((bi, bo))) = (a.cost, b.cost) {
@@ -400,11 +442,22 @@ fn compare_candidates(a: &CachedModel, b: &CachedModel, tier: ModelTier) -> std:
 ///    substring `latest` — so these are excluded at every stage below, not
 ///    just from the "clean" preference pass.
 /// 4. Exclude dated variants (IDs containing `-20` date suffixes) and
-///    preview models from the preferred ("clean") candidate set.
+///    preview models from the preferred ("clean") candidate set. Ordering
+///    by generation made this step load-bearing where it used to be merely
+///    tidy: a date's own digits enter [`generation_key`], so
+///    `claude-haiku-4-5-20251001` reads as generation `[4, 5, 20251001]` and
+///    outranks the alias it is a snapshot of. Pinned by
+///    `a_dated_snapshot_never_wins_over_its_undated_alias` and
+///    `a_preview_model_never_wins_over_a_released_one`, one per half of the
+///    filter — before those, neutralising it changed three of the nine
+///    answers the binary gives and no test anywhere failed (PR #412 review).
 /// 5. Among the remaining, pick the best by [`compare_candidates`]: newest
-///    generation first, then price in the direction the tier promises.
+///    generation first, then the generation's own unsuffixed id, then price
+///    in the direction the tier promises.
 /// 6. If no "clean" candidate survives, fall back to any non-`latest`
-///    candidate, ordered the same way.
+///    candidate, ordered the same way — a preference, not an exclusion, so a
+///    vendor shipping a whole tier as `preview` still answers from the
+///    catalog rather than freezing on step 7's built-in id.
 /// 7. If no candidate survives filtering at all, fall back to hardcoded
 ///    defaults.
 ///
@@ -804,12 +857,19 @@ mod tests {
         );
     }
 
-    /// The cost key, isolated: four models of one generation, where the
-    /// alphabetically last (`…-terra`, $2.50) is not the cheapest
-    /// (`…-luna`, $1.00). Real ids and real models.dev prices, so the
-    /// fixture is not built to make the point.
+    /// The unsuffixed-id key, isolated: four models of one generation, where
+    /// `gpt-5.6` is neither the cheapest (`…-luna`), nor the dearest
+    /// (`…-sol`, tied), nor the alphabetically last (`…-terra`). Real ids
+    /// and real models.dev prices, so the fixture is not built to make the
+    /// point.
+    ///
+    /// The four are points of one range, not versions of one model, so no
+    /// price extreme names the model a tier should answer with — and taking
+    /// the cheapest is what inverted the ladder in
+    /// `the_tier_ladder_does_not_invert_on_the_august_catalog` (PR #412
+    /// review).
     #[test]
-    fn within_one_generation_the_cheapest_wins_not_the_last_alphabetically() {
+    fn within_one_generation_the_unsuffixed_id_wins_over_its_named_variants() {
         let iso = crate::test_support::IsolatedConfigDir::enter();
         seed_cache(
             &iso,
@@ -821,16 +881,34 @@ mod tests {
                 ("gpt-5.6-terra", Some((2.5, 15.0))),
             ],
         );
+        assert_eq!(resolve_model_for_tier("openai", ModelTier::Pro), "gpt-5.6");
+    }
+
+    /// The same key on the tier whose price direction points the other way:
+    /// the generation's own `-pro` id wins over a dearer named variant of
+    /// it, so key 3 is not a disguised "cheapest wins".
+    #[test]
+    fn the_unsuffixed_id_also_wins_where_the_tier_takes_the_dearest() {
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        seed_cache(
+            &iso,
+            "openai",
+            &[
+                ("gpt-5.6-pro", Some((30.0, 180.0))),
+                ("gpt-5.6-omega-pro", Some((60.0, 360.0))),
+            ],
+        );
         assert_eq!(
-            resolve_model_for_tier("openai", ModelTier::Pro),
-            "gpt-5.6-luna"
+            resolve_model_for_tier("openai", ModelTier::Max),
+            "gpt-5.6-pro"
         );
     }
 
     /// `Max` reads its own doc-comment ("maximum capability") and takes the
     /// dearest of its generation, where `Fast`/`Pro` take the cheapest. The
     /// fixture puts the dearest first alphabetically so neither the old
-    /// order nor a uniform "cheapest" rule can pass it.
+    /// order nor a uniform "cheapest" rule can pass it, and the two ids are
+    /// the same length so key 3 has nothing to say about them.
     #[test]
     fn the_max_tier_takes_the_dearest_of_its_generation() {
         let iso = crate::test_support::IsolatedConfigDir::enter();
@@ -904,17 +982,165 @@ mod tests {
 
     /// Two unpriced models still have to resolve to *something* stable:
     /// the id order is the last tie-break, and it is total.
+    ///
+    /// The fixture seeds the expected answer **first** on purpose.
+    /// `Iterator::max_by` returns the *last* maximum, so a fixture listing
+    /// `zulu` last would answer `zulu` even with the id comparison replaced
+    /// by `Ordering::Equal` — which is what the previous version of this
+    /// test did, and why removing the tie-break left every mode green (PR
+    /// #412 review, N13). The two ids are also the same length, so key 3
+    /// cannot stand in for the one being measured.
     #[test]
     fn unpriced_models_still_resolve_deterministically() {
         let iso = crate::test_support::IsolatedConfigDir::enter();
         seed_cache(
             &iso,
             "openai",
-            &[("gpt-5.6-alpha", None), ("gpt-5.6-zeta", None)],
+            &[("gpt-5.6-zulu", None), ("gpt-5.6-alfa", None)],
         );
         assert_eq!(
             resolve_model_for_tier("openai", ModelTier::Pro),
-            "gpt-5.6-zeta"
+            "gpt-5.6-zulu"
+        );
+    }
+
+    /// Key 4 — the price, in the tier's own direction — is what decides once
+    /// two ids of one generation are equally named. Both directions in one
+    /// fixture, so dropping either the key or its `reverse()` fails here.
+    #[test]
+    fn among_equally_named_ids_the_price_decides_in_the_tiers_direction() {
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        seed_cache(
+            &iso,
+            "openai",
+            &[
+                ("gpt-5.6-alfa", Some((1.0, 6.0))),
+                ("gpt-5.6-zulu", Some((5.0, 30.0))),
+                ("gpt-5.6-alfa-pro", Some((10.0, 60.0))),
+                ("gpt-5.6-zulu-pro", Some((50.0, 300.0))),
+            ],
+        );
+        assert_eq!(
+            resolve_model_for_tier("openai", ModelTier::Pro),
+            "gpt-5.6-alfa",
+            "Pro takes the cheapest — and it is not the id that sorts last"
+        );
+        assert_eq!(
+            resolve_model_for_tier("openai", ModelTier::Max),
+            "gpt-5.6-zulu-pro",
+            "Max takes the dearest"
+        );
+    }
+
+    /// The output price breaks a tie on the input price — the second half of
+    /// key 4, which nothing pinned until PR #412's review measured that
+    /// deleting it left all four gate modes green (N8).
+    ///
+    /// Both halves put the expected answer *against* the id order, so with
+    /// the output comparison gone the price key falls silent and the id
+    /// tie-break answers the other model.
+    #[test]
+    fn the_output_price_breaks_a_tie_on_the_input_price() {
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        seed_cache(
+            &iso,
+            "openai",
+            &[
+                ("gpt-5.6-alfa", Some((2.0, 12.0))),
+                ("gpt-5.6-zulu", Some((2.0, 20.0))),
+                ("gpt-5.6-alfa-pro", Some((2.0, 20.0))),
+                ("gpt-5.6-zulu-pro", Some((2.0, 12.0))),
+            ],
+        );
+        assert_eq!(
+            resolve_model_for_tier("openai", ModelTier::Pro),
+            "gpt-5.6-alfa",
+            "same input price: the cheaper output wins the cheapest-wins tier"
+        );
+        assert_eq!(
+            resolve_model_for_tier("openai", ModelTier::Max),
+            "gpt-5.6-alfa-pro",
+            "same input price: the dearer output wins the dearest-wins tier"
+        );
+    }
+
+    // ── The "clean" candidate set (step 4) ───────────────────────────
+
+    /// A dated snapshot never wins over the undated alias of the same model.
+    ///
+    /// Real ids and real prices: models.dev lists
+    /// `claude-haiku-4-5-20251001` beside `claude-haiku-4-5` at the same
+    /// price. The filter is preexisting, but ordering by generation made it
+    /// *load-bearing* — the date's own digits enter [`generation_key`], so
+    /// `[4, 5, 20251001]` outranks `[4, 5]` and the dated snapshot wins
+    /// outright without it. Measured at the real binary during PR #412's
+    /// review: with the filter neutralised, `latest:fast` on Anthropic
+    /// answered `claude-haiku-4-5-20251001`, and no test anywhere noticed.
+    #[test]
+    fn a_dated_snapshot_never_wins_over_its_undated_alias() {
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        seed_cache(
+            &iso,
+            "anthropic",
+            &[
+                ("claude-haiku-4-5", Some((1.0, 5.0))),
+                ("claude-haiku-4-5-20251001", Some((1.0, 5.0))),
+            ],
+        );
+        assert_eq!(
+            resolve_model_for_tier("anthropic", ModelTier::Fast),
+            "claude-haiku-4-5"
+        );
+    }
+
+    /// A preview model never goes on the wire while a released one exists —
+    /// not even a newer one.
+    ///
+    /// Real ids and real prices from the catalog on this machine. Same
+    /// measurement as above: neutralising the filter sent
+    /// `gemini-3.1-pro-preview-customtools` for both `latest:pro` and
+    /// `latest:max` on Google, silently. The two tiers are asserted
+    /// separately because Google's Max resolves *through* Pro
+    /// ([`effective_tier`]).
+    #[test]
+    fn a_preview_model_never_wins_over_a_released_one() {
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        seed_cache(
+            &iso,
+            "google",
+            &[
+                ("gemini-2.5-pro", Some((1.25, 10.0))),
+                ("gemini-3.1-pro-preview", Some((2.0, 12.0))),
+            ],
+        );
+        assert_eq!(
+            resolve_model_for_tier("google", ModelTier::Pro),
+            "gemini-2.5-pro"
+        );
+        assert_eq!(
+            resolve_model_for_tier("google", ModelTier::Max),
+            "gemini-2.5-pro"
+        );
+    }
+
+    /// …and the filter is a *preference*, not an exclusion: when every
+    /// candidate is dated or preview, the tier still answers with one
+    /// rather than falling through to the hardcoded table (step 6).
+    #[test]
+    fn a_tier_made_only_of_preview_models_still_answers_from_the_catalog() {
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        seed_cache(
+            &iso,
+            "google",
+            &[
+                ("gemini-3-pro-preview", Some((2.0, 12.0))),
+                ("gemini-3.1-pro-preview", Some((2.0, 12.0))),
+            ],
+        );
+        assert_eq!(
+            resolve_model_for_tier("google", ModelTier::Pro),
+            "gemini-3.1-pro-preview",
+            "with no clean candidate the newest preview is better than a frozen default"
         );
     }
 
@@ -1079,5 +1305,105 @@ mod tests {
             ],
         );
         assert_eq!(resolve_model_for_tier("openai", ModelTier::Pro), "gpt-4o");
+    }
+
+    // ── The tier ladder must not invert (PR #412 review) ─────────────
+
+    /// Two snapshots of the models.dev catalog, trimmed to the three vendors
+    /// [`classify_model_tier`] knows, ids and prices verbatim.
+    ///
+    /// Two dates rather than one because neither alone shows what the rule
+    /// does. The July snapshot is what this machine's own cache holds; the
+    /// August one is what `https://models.dev/api.json` answered while this
+    /// was written, and OpenAI had repriced `gpt-5.6-luna` from $1.00/$6.00
+    /// down to $0.20/$1.20 between the two — which is exactly the move that
+    /// tipped a rule that looked fine on the older catalog.
+    const CATALOG_2026_07_20: &str = include_str!("model_resolution/catalog-2026-07-20.json");
+    const CATALOG_2026_08_28: &str = include_str!("model_resolution/catalog-2026-08-28.json");
+
+    /// Every vendor whose models this module classifies. A vendor absent
+    /// from this list resolves to [`fallback_model_for_tier`]'s hardcoded
+    /// table, which carries no catalog prices to compare.
+    const CLASSIFIED_VENDORS: &[&str] = &["anthropic", "google", "openai"];
+
+    /// The per-Mtok price the seeded catalog quotes for `id`.
+    fn cached_price(vendor: &str, id: &str) -> Option<(f64, f64)> {
+        load_cached_models(vendor)?
+            .into_iter()
+            .find(|m| m.id == id)?
+            .cost
+    }
+
+    /// Is `lo` strictly cheaper than `hi` — no dearer on either half of the
+    /// price, and cheaper on at least one?
+    ///
+    /// Pareto rather than a scalar or a lexicographic `(input, output)`
+    /// compare, because the two halves genuinely cross between tiers and a
+    /// crossing is not an inversion. Measured: on the July catalog Google's
+    /// `latest:fast` answers `gemini-3.5-flash` ($1.50/$9.00) against
+    /// `latest:pro`'s `gemini-2.5-pro` ($1.25/$10.00) — dearer input,
+    /// cheaper output. A lexicographic reading calls that an inversion; it
+    /// is one on `master` too, and under every ordering rule tried against
+    /// this catalog, so it cannot discriminate between them. What it
+    /// actually shows is Google shipping its whole Pro line as `preview`
+    /// (excluded at step 4 of [`resolve_model_for_tier`]) while its Fast
+    /// line ships without the suffix — a separate matter, and not one this
+    /// module's ordering can fix.
+    fn strictly_cheaper(lo: (f64, f64), hi: (f64, f64)) -> bool {
+        lo.0 <= hi.0 && lo.1 <= hi.1 && lo != hi
+    }
+
+    /// The ladder the three tiers promise: `latest:fast` never costs more
+    /// than `latest:pro`, which never costs more than `latest:max` — for
+    /// every vendor, on one catalog.
+    ///
+    /// This is the property, not the rule. Any ordering that keeps it is
+    /// admissible; the one the module ships is the one measured to keep it
+    /// on both snapshots (see [`compare_candidates`]).
+    fn assert_the_tier_ladder_does_not_invert(catalog: &str, date: &str) {
+        let iso = crate::test_support::IsolatedConfigDir::enter();
+        std::fs::write(
+            iso.config_dir().join(crate::config::MODELS_CACHE_FILE),
+            catalog,
+        )
+        .expect("write models cache");
+
+        for vendor in CLASSIFIED_VENDORS {
+            for (lower, upper) in [
+                (ModelTier::Fast, ModelTier::Pro),
+                (ModelTier::Pro, ModelTier::Max),
+            ] {
+                let lo_id = resolve_model_for_tier(vendor, lower);
+                let hi_id = resolve_model_for_tier(vendor, upper);
+                // `expect` rather than a skip: an id the catalog does not
+                // price would let this assertion pass by having nothing to
+                // compare, which is the one way a ladder test can go quiet.
+                let lo = cached_price(vendor, &lo_id).unwrap_or_else(|| {
+                    panic!("{date}/{vendor}: {lower:?} answered {lo_id}, which the catalog does not price")
+                });
+                let hi = cached_price(vendor, &hi_id).unwrap_or_else(|| {
+                    panic!("{date}/{vendor}: {upper:?} answered {hi_id}, which the catalog does not price")
+                });
+                assert!(
+                    !strictly_cheaper(hi, lo),
+                    "{date}/{vendor}: {upper:?} answered {hi_id} (${}/${}), strictly cheaper than \
+                     {lower:?}'s {lo_id} (${}/${}) — the tier ladder is inverted",
+                    hi.0,
+                    hi.1,
+                    lo.0,
+                    lo.1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_tier_ladder_does_not_invert_on_the_july_catalog() {
+        assert_the_tier_ladder_does_not_invert(CATALOG_2026_07_20, "2026-07-20");
+    }
+
+    #[test]
+    fn the_tier_ladder_does_not_invert_on_the_august_catalog() {
+        assert_the_tier_ladder_does_not_invert(CATALOG_2026_08_28, "2026-08-28");
     }
 }

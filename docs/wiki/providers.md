@@ -140,14 +140,25 @@ Direct HTTP calls to LLM APIs. Use these when you want explicit API control.
 > administrator can route `latest:max` through a house alias, which a
 > concrete id chosen here would override with no way to opt out.
 >
-> **Which model in the tier** is decided by two keys, in order. First the
+> **Which model in the tier** is decided by three keys, in order. First the
 > **generation** — the numbers in the id, compared as numbers: `latest:pro`
 > asks for the *latest* model of the Pro tier, and generation `10` is above
 > generation `4.6` even though the string `gpt-10` sorts below `gpt-9`. Then
-> the **price**, in the direction the tier promises: `latest:fast` ("cheap
-> and fast") and `latest:pro` ("balanced") take the cheapest of that
-> generation, `latest:max` ("maximum capability") the dearest. A model the
-> catalog does not price never wins over one it does.
+> the **generation's own name**: within one generation a vendor ships a base
+> model and named points of its range around it (`gpt-5.6` alongside
+> `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`), and the unsuffixed id — the
+> shorter one — is the vendor's default for that generation. Only then the
+> **price**, in the direction the tier promises: `latest:fast` ("cheap and
+> fast") and `latest:pro` ("balanced") take the cheapest of what is left,
+> `latest:max` ("maximum capability") the dearest. A model the catalog does
+> not price never wins over one it does, and neither does a dated snapshot or
+> a `preview` id while a released one exists.
+>
+> The middle key is what keeps the three tiers **ordered by price**: without
+> it, "cheapest of the newest generation" hands `latest:pro` the range's entry
+> model, and on the catalog models.dev served on 2026-08-28 `latest:pro` came
+> out at $0.20/$1.20 against `latest:fast`'s $0.20/$1.25 — the balanced tier
+> cheaper than the cheap one.
 >
 > Until [#404](https://github.com/Dr0drigues/armadai/issues/404) there was
 > one key and it was the alphabet, described in the code as "the highest
