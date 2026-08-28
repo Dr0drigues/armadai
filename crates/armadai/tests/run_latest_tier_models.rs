@@ -9,14 +9,21 @@
 //! work on one command and not the other.
 //!
 //! These are wire-level tests on purpose. The defect is not observable from
-//! any of ArmadAI's own output: `agent_start` reports the agent's *declared*
-//! model (`latest:pro`, by design, exactly as it does for `latest:auto`),
-//! and the CLI provider ignores `request.model` entirely. The only place the
-//! bug exists is in the bytes sent to the server, so the test reads the
-//! bytes: a scripted HTTP server on `127.0.0.1:0` records the `model` field
-//! of every request body the real `armadai` binary sends it, with
-//! `ANTHROPIC_BASE_URL` pointed at it. No key, no network, no fake-provider
-//! feature.
+//! any of ArmadAI's own output, and that is a measurement rather than a
+//! design claim: `agent_start` reports the agent's *declared* model
+//! (`latest:pro`), and for a static tier there is no `Route`/`ModelRouted`
+//! event carrying the resolved one either — unlike `latest:auto`, whose
+//! resolved tier the stream does carry. The stderr summary that does print a
+//! concrete id (`[name] model=…`) lives only in `run_single_agent`, i.e. on
+//! `--pipe` and nowhere else. So on three of the four run paths nothing
+//! ArmadAI emits names the model that was billed (see `es::bridge`'s
+//! `execution_event_to_run_events` doc for the open gap).
+//!
+//! The only place the bug exists is therefore in the bytes sent to the
+//! server, so the test reads the bytes: a scripted HTTP server on
+//! `127.0.0.1:0` records the `model` field of every request body the real
+//! `armadai` binary sends it, with `ANTHROPIC_BASE_URL` pointed at it. No
+//! key, no network, no fake-provider feature.
 //!
 //! Spawning the real binary is also what makes these *wiring* tests: the fix
 //! spans one CLI loop (`--pipe`) and four event-sourced effect runners, each
@@ -570,4 +577,43 @@ fn a_model_fallback_entry_resolves_its_tier_before_the_retry() {
         ],
         "each link should try its declared model, then its resolved fallback"
     );
+}
+
+// ── Which placeholder is routed per call (#398 review, F5) ───────────
+
+/// `run_single_agent`'s guard is `raw_model == "latest:auto"`, exactly: a
+/// static tier is resolved from the string alone and must NOT be handed to
+/// the router.
+///
+/// This replaces a unit test that compared two string literals to each other
+/// (`assert_ne!("latest:pro", "latest:auto")`) — true at compile time, and
+/// exercising no line of production code. It had also become half wrong:
+/// `latest:pro` *is* resolved now, just not routed.
+///
+/// The observable difference is the `route` event, so that is what is
+/// asserted — together with both models reaching the wire concrete, so a
+/// guard widened to `starts_with("latest")` cannot pass by resolving
+/// everything through the router instead.
+#[test]
+fn only_latest_auto_is_routed_per_call() {
+    let api = FakeApi::start();
+    let sb = Sandbox::new(&[("alpha", "latest:pro"), ("beta", "latest:auto")]);
+
+    let out = sb.run(&api, &["run", "alpha", "hello", "--pipe", "beta", "--json"]);
+    assert!(out.status.success(), "run failed: {out:?}");
+
+    let routed: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["t"] == "route")
+        .map(|v| v["agent"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(
+        routed,
+        vec!["beta".to_string()],
+        "only the `latest:auto` link should be routed per call; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    assert_no_placeholder_reached_the_wire(&api.models_seen());
 }

@@ -2148,8 +2148,16 @@ mod tests {
         // same hermeticity reason as the `latest:auto` test below.
         #[tokio::test]
         async fn run_invoke_resolves_static_latest_tier_to_concrete_model() {
+            // Hermetic against the machine's models.dev cache. The `latest:auto`
+            // test above gets that for free from a provider name no catalog
+            // knows; a STATIC placeholder cannot use the same trick, because a
+            // provider with no named vendor is precisely the case
+            // `resolve_tier_placeholder` leaves alone (#398 review, F1). So the
+            // vendor is real and the cache is emptied instead.
+            let _iso = crate::test_support::IsolatedConfigDir::enter();
+
             let mut agent = test_agent("a", "latest");
-            agent.metadata.provider = "test-only-uncached-provider".to_string();
+            agent.metadata.provider = "anthropic".to_string();
             let mut agents = BTreeMap::new();
             agents.insert("a".to_string(), agent);
             let capturing = Arc::new(CapturingProvider::new("ACTION: PROPOSE\nCONTENT: x"));
@@ -2162,8 +2170,7 @@ mod tests {
             runner.run_invoke("a", "task", &state, 1).await.unwrap();
 
             // The bare `latest` placeholder means the Pro tier.
-            let expected =
-                fallback_model_for_tier("test-only-uncached-provider", ModelTier::Pro).to_string();
+            let expected = fallback_model_for_tier("anthropic", ModelTier::Pro).to_string();
             let sent = capturing.requests();
             assert_eq!(sent[0].model, expected);
             assert_ne!(sent[0].model, "latest");

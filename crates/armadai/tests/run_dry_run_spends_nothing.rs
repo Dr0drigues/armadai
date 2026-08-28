@@ -605,3 +605,123 @@ fn an_orchestrated_preview_names_each_agents_provider_and_model() {
         );
     }
 }
+
+// ── The preview must not enter the live Workroom (#398 review) ───────
+
+/// `--dry-run` on a **real terminal**.
+///
+/// Everything above runs with stdout on a pipe, where `IsTerminal` is false
+/// and the live Workroom is out of reach whatever the flags say. That makes
+/// the `&& !dry_run` term in [`use_live_workroom`](../src/cli/run.rs)
+/// invisible to the whole suite: remove it and every test stays green.
+///
+/// What it guards is not cosmetic. The Workroom drives its own event loop
+/// until the run produces a terminal event, and a dry run produces none — it
+/// never dispatches anything. On a terminal, without the term, the preview
+/// enters the alternate screen and stays there: the process does not exit.
+///
+/// So this test gives the binary an actual TTY (`openpty`, no fork — the
+/// child simply gets the slave side as its stdio) and asserts it *finishes*,
+/// having printed the preview. The timeout is the assertion: a hang is the
+/// failure mode, and a hang is what a plain `output()` would turn into a
+/// stuck test run rather than a red one.
+#[cfg(unix)]
+#[test]
+fn a_dry_run_on_a_terminal_prints_a_preview_and_exits() {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    let sb = Sandbox::new(&[("alpha", ECHO), ("beta", ECHO)]);
+
+    let (master, slave) = {
+        let (mut m, mut s) = (0, 0);
+        // SAFETY: `openpty` writes two fresh fds through the out-params and
+        // returns 0 on success; all other args are the documented "defaults"
+        // null pointers.
+        let rc = unsafe {
+            libc::openpty(
+                &mut m,
+                &mut s,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, 0, "openpty failed: {}", std::io::Error::last_os_error());
+        // SAFETY: both fds are owned by this process and handed over exactly
+        // once each.
+        unsafe { (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(s)) }
+    };
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("armadai"));
+    cmd.current_dir(&sb.root)
+        .env("ARMADAI_CONFIG_DIR", &sb.config)
+        .env("XDG_DATA_HOME", &sb.data)
+        .env("NO_COLOR", "1")
+        .args([
+            "run",
+            "alpha",
+            "hello",
+            "--pipe",
+            "beta",
+            "--orchestrate",
+            "ring",
+            "--dry-run",
+        ])
+        .stdin(std::process::Stdio::from(slave.try_clone().unwrap()))
+        .stdout(std::process::Stdio::from(slave.try_clone().unwrap()))
+        .stderr(std::process::Stdio::from(slave.try_clone().unwrap()));
+    let mut child = cmd.spawn().expect("spawn armadai on a pty");
+    // The parent must not keep the slave open, or the master never sees EOF.
+    drop(slave);
+
+    // Drain the master continuously: a pty buffer is a few KB, and a child
+    // blocked on a full one would look exactly like the hang under test.
+    let seen: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    std::thread::spawn(move || {
+        let mut f = std::fs::File::from(master);
+        let mut buf = [0u8; 4096];
+        // Linux reports EIO (not EOF) once the last slave closes; any error
+        // is the end as far as this drain is concerned.
+        while let Ok(n) = f.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            sink.lock().unwrap().extend_from_slice(&buf[..n]);
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        match child.try_wait().unwrap() {
+            Some(st) => break st,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "--dry-run never returned on a terminal — it entered the live \
+                     Workroom, which waits for a run that will never dispatch. \
+                     Output so far:\n{}",
+                    String::from_utf8_lossy(&seen.lock().unwrap())
+                );
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    // Let the drain thread pick up whatever was still in the pty buffer.
+    std::thread::sleep(Duration::from_millis(100));
+    let out = String::from_utf8_lossy(&seen.lock().unwrap()).into_owned();
+
+    assert!(status.success(), "--dry-run on a terminal failed:\n{out}");
+    assert!(
+        out.contains("[dry-run] pattern 'ring'"),
+        "expected the plain preview on a terminal, got:\n{out}"
+    );
+    assert!(
+        !out.contains("\u{1b}[?1049h"),
+        "--dry-run entered the alternate screen (the live Workroom):\n{out}"
+    );
+}

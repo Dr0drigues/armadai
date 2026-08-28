@@ -116,6 +116,7 @@ dependencies = [
  "gaveldrop-conformance",
  "gaveldrop-fake",
  "include_dir",
+ "libc",
  "portable-pty",
  "pulldown-cmark",
  "ratatui",

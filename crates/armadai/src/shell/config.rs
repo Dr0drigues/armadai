@@ -102,6 +102,32 @@ mod tests {
         assert_eq!(high, max);
     }
 
+    /// `armadai shell` and `armadai run` must resolve one agent file's
+    /// placeholder to one model.
+    ///
+    /// They did not: shell carried the tool → vendor table (privately) and
+    /// run did not, so `provider: gemini` + `latest:pro` gave
+    /// `gemini-2.5-pro` under `shell` and `claude-sonnet-4-5-20250929` under
+    /// `run` (#398 review, F1). Both now read
+    /// `model_catalog_provider`; this pins the two together so a future
+    /// second table cannot re-open the gap silently.
+    #[test]
+    fn shell_and_run_resolve_a_placeholder_to_the_same_model() {
+        let _iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        for provider in ["claude", "gemini", "aider", "codex", "gpt", "anthropic"] {
+            for placeholder in ["latest", "latest:fast", "latest:pro", "latest:max"] {
+                let via_run =
+                    armadai_core::model_resolution::resolve_tier_placeholder(placeholder, provider)
+                        .unwrap_or_else(|| panic!("{provider} should name a vendor"));
+                assert_eq!(
+                    resolve_shell_model(provider, placeholder),
+                    via_run,
+                    "{provider} + {placeholder}: shell and run disagree"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_model_cli_args_claude() {
         let args = model_cli_args("claude", "claude-sonnet-4-5");

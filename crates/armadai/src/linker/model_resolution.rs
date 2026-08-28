@@ -412,6 +412,39 @@ mod tests {
         assert!(agents[3].model.as_ref().unwrap().contains("sonnet"));
     }
 
+    /// An agent's `provider:` may be a *tool* name, which the vendor-keyed
+    /// catalog does not know: `link` wrote a Claude model id into a native
+    /// config for a `provider: gemini` agent (#398 review, F1).
+    ///
+    /// Hermetic for the same reason `test_preview_resolution_with_latest`
+    /// is: with no models.dev cache reachable, resolution is the hardcoded
+    /// fallback table and the expectation is derived from it rather than
+    /// restated.
+    #[test]
+    fn resolve_latest_placeholders_uses_each_agents_own_vendor() {
+        let _iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        let mut agents = vec![
+            make_agent_with_provider("A", Some("latest:pro"), Some("gemini")),
+            make_agent_with_provider("B", Some("latest:fast"), Some("aider")),
+            make_agent_with_provider("C", Some("latest:max"), Some("claude")),
+        ];
+
+        resolve_latest_placeholders(&mut agents);
+
+        for (agent, vendor, tier) in [
+            (&agents[0], "google", ModelTier::Pro),
+            (&agents[1], "openai", ModelTier::Fast),
+            (&agents[2], "anthropic", ModelTier::Max),
+        ] {
+            assert_eq!(
+                agent.model.as_deref(),
+                Some(fallback_model_for_tier(vendor, tier)),
+                "{} should resolve against {vendor}",
+                agent.name
+            );
+        }
+    }
+
     #[test]
     fn test_preview_resolution_fallbacks() {
         // Without cache, preview should return fallback models for LLM editors

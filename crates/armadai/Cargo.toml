@@ -102,3 +102,9 @@ gaveldrop = { git = "https://github.com/Dr0drigues/gaveldrop.git", tag = "v0.1.1
 gaveldrop-fake = { git = "https://github.com/Dr0drigues/gaveldrop.git", tag = "v0.1.16" }
 gaveldrop-conformance = { git = "https://github.com/Dr0drigues/gaveldrop.git", tag = "v0.1.16" }
 tempfile = { workspace = true }
+# `openpty` only, for the one test that must give the binary a real terminal
+# (`run_dry_run_spends_nothing.rs`) — the `--dry-run` guard on the live
+# Workroom is unobservable without one. Already in the tree transitively
+# (crossterm), so this adds no crate to the dependency graph.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

@@ -75,12 +75,13 @@ pub async fn execute(
     // or config-driven auto-detect), only when nothing else demands
     // plain/machine output, and only when attached to a real terminal. Falls
     // through to the unchanged headless path otherwise.
-    let use_tui = (orchestrate.is_some() || config_orchestrated)
-        && !json
-        && !quiet
-        && !no_tui
-        && !dry_run
-        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let use_tui = use_live_workroom(
+        orchestrate.is_some() || config_orchestrated,
+        json,
+        quiet,
+        no_tui,
+        dry_run,
+    );
 
     #[cfg(feature = "tui")]
     if use_tui {
@@ -279,12 +280,13 @@ async fn execute_resume(
             anyhow::bail!("run {run_id} is not resumable (status: {:?})", peek.status);
         }
 
-        let use_tui = is_orchestrated_pattern(&peek.pattern)
-            && !json
-            && !quiet
-            && !no_tui
-            && !dry_run
-            && std::io::IsTerminal::is_terminal(&std::io::stdout());
+        let use_tui = use_live_workroom(
+            is_orchestrated_pattern(&peek.pattern),
+            json,
+            quiet,
+            no_tui,
+            dry_run,
+        );
 
         #[cfg(feature = "tui")]
         if use_tui {
@@ -2022,6 +2024,33 @@ async fn run_orchestrated(
 /// provider/model (via [`agent_meta_from_roster`]) and real per-turn content.
 /// Only `--pipe`/legacy sequential runs (`run_single_agent`) still emit their
 /// own inline `AgentStart`/`AgentEnd`; those paths never reach this fn.
+/// Whether a run should take over the terminal with the live Workroom TUI.
+///
+/// One decision, two call sites (`execute` and `execute_resume`), each of
+/// which used to spell out the same five-term conjunction.
+///
+/// `!dry_run` is the term with no other guard behind it. The Workroom drives
+/// its own event loop until the run it is watching produces a terminal
+/// event; a `--dry-run` produces none, because by design it never dispatches
+/// anything — so on a real terminal the preview would enter the alternate
+/// screen and **stay there indefinitely**, showing an empty roster. Measured
+/// under a PTY (`a_dry_run_on_a_terminal_prints_a_preview_and_exits`): with
+/// the term removed the process never exits.
+fn use_live_workroom(
+    orchestrated: bool,
+    json: bool,
+    quiet: bool,
+    no_tui: bool,
+    dry_run: bool,
+) -> bool {
+    orchestrated
+        && !json
+        && !quiet
+        && !no_tui
+        && !dry_run
+        && std::io::IsTerminal::is_terminal(&std::io::stdout())
+}
+
 /// Style for a terminal orchestration status line: `Completed` reads as
 /// success, anything else (`Halted`, or the in-flight `Running` default,
 /// which should not appear at a terminal print site) as a warning — factual,
@@ -3045,14 +3074,6 @@ mod tests {
             4
         );
         assert_eq!(exit_code_for(&anyhow::anyhow!("boom")), 1);
-    }
-
-    #[test]
-    fn latest_auto_is_the_only_routed_value() {
-        // concrete + latest:pro must NOT be treated as auto
-        assert_ne!("claude-3", "latest:auto");
-        assert_ne!("latest:pro", "latest:auto");
-        // routing only triggers on the exact "latest:auto" string (guard documented)
     }
 
     #[test]
