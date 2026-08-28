@@ -137,7 +137,7 @@ You are clean.
     /// won; a warning naming them the wrong way round must fail here.
     fn expected(source: &Path, section: &str, key: &str, loser: &str, winner: &str) -> String {
         format!(
-            "{}: ## {section} sets '{key}' twice: '{loser}' is overridden by \
+            "{}: ## {section} sets '{key}' again: '{loser}' is overridden by \
              '{winner}' (the last value wins)",
             source.display()
         )
@@ -180,6 +180,18 @@ You are clean.
                 stderr.contains(&line),
                 "missing warning:\n  {line}\ngot stderr:\n{stderr}"
             );
+            // One line per override, not two. Nothing else pins the count:
+            // measured, emitting every warning twice left the whole suite
+            // green. `inspect` is the surface to assert it on — it parses
+            // each file once, where `link` parses twice (#419) and so prints
+            // each of these lines twice today. Pinning the count here says
+            // "one warning per override" without rusting the moment #419 is
+            // fixed.
+            assert_eq!(
+                stderr.matches(&line).count(),
+                1,
+                "warning repeated:\n  {line}\ngot stderr:\n{stderr}"
+            );
         }
 
         // Which value wins is deliberately unchanged: this issue is about the
@@ -209,7 +221,7 @@ You are clean.
         assert!(output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            !stderr.contains("twice"),
+            !stderr.contains("is overridden by"),
             "no key is set twice in this agent, yet: {stderr}"
         );
     }

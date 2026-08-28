@@ -6,8 +6,9 @@
 //! `armadai-core::parser::metadata`) prove the five values map to the five
 //! variants; they cannot prove the consequence, which is what actually hurt:
 //! `parse_agent_file` propagates the error, so the **whole file** became
-//! unloadable and the agent disappeared from every surface at once — silently
-//! for `list`, which drops it and still exits 0.
+//! unloadable and the agent disappeared from every surface at once. `list`
+//! does warn on stderr, but drops the agent from stdout and still exits 0 —
+//! so a script reading stdout sees a shorter fleet and a success code.
 //!
 //! Measured on `master` before the fix, on a library holding one agent per
 //! pattern:

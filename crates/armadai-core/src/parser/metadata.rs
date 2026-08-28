@@ -87,9 +87,9 @@ pub(super) fn duplicate_keys(
 /// parsed, so it reaches the user in that second case too.
 ///
 /// One line per override, and the wording does not count: a key set three
-/// times yields two lines, and each said "twice" until it was measured — two
-/// lines both claiming "twice" for the same key. "again" is true of every
-/// link in the chain, which is what `duplicate_keys` actually reports.
+/// times yields two lines, and each said "twice" until the review measured it
+/// — two lines both claiming "twice" for the same key. "again" is true of
+/// every link in the chain, which is what `duplicate_keys` actually reports.
 ///
 /// The channel is `tracing::warn!` rather than the `LoadWarning` the core
 /// normally returns for the CLI to render (`agent_source.rs` documents that
@@ -460,6 +460,72 @@ mod tests {
                 "[gemini-2.5-pro]".to_string()
             )]
         );
+    }
+
+    /// Every spelling the table recognises must actually be reported.
+    ///
+    /// The doc-comment on [`metadata_field`] promises the table "lists exactly
+    /// the keys the `match` recognises", and until this test that promise was
+    /// prose: measured, dropping `orchestration` from the table left the whole
+    /// suite green, and so did dropping `cost_limit`, `rate_limit`, `scope`,
+    /// `tags` and `mode` in one go. Only 5 of the 17 spellings were exercised
+    /// by any fixture.
+    ///
+    /// This closes the table-to-warning direction for all of them. The other
+    /// direction — the parser reading a key the table omits — still has no
+    /// test: catching it needs a valid value per key and an assertion on the
+    /// parsed field, which is a fixture per key rather than a loop.
+    #[test]
+    fn every_metadata_key_the_table_knows_is_reported_when_set_twice() {
+        // Not `metadata_field`'s own output: a list written here on purpose,
+        // so deleting an arm from the table breaks this test instead of
+        // quietly shrinking both sides together.
+        for key in [
+            "provider",
+            "model",
+            "command",
+            "args",
+            "temperature",
+            "max_tokens",
+            "timeout",
+            "tags",
+            "stacks",
+            "scope",
+            "model_fallback",
+            "model_fallbacks",
+            "cost_limit",
+            "rate_limit",
+            "context_window",
+            "mode",
+            "orchestration",
+        ] {
+            let raw = format!("- {key}: first\n- {key}: second\n");
+            let found = duplicate_keys(&raw, metadata_field);
+            assert_eq!(
+                found.len(),
+                1,
+                "'{key}' is in the table but setting it twice reported {found:?}"
+            );
+            assert_eq!(
+                (found[0].1.as_str(), found[0].2.as_str()),
+                ("first", "second"),
+                "'{key}' reported the wrong pair: {found:?}"
+            );
+        }
+    }
+
+    /// A key the table does not know must stay silent — the pre-#396
+    /// behaviour, and the control that stops the loop above from being
+    /// satisfied by a table that says yes to everything.
+    #[test]
+    fn a_key_the_table_does_not_know_is_never_reported() {
+        for key in ["reviewer", "owner", "notes", "provider_hint"] {
+            let raw = format!("- {key}: first\n- {key}: second\n");
+            assert!(
+                duplicate_keys(&raw, metadata_field).is_empty(),
+                "'{key}' is not a parsed field, so a repeat changes nothing"
+            );
+        }
     }
 
     /// The case that hurts most: an unparsable value in the losing block makes

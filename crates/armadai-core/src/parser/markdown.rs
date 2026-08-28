@@ -912,6 +912,57 @@ test
         assert_eq!(triggers.priority, 50);
     }
 
+    /// The same table-completeness check `## Metadata` gets, for the two
+    /// sections whose tables live here.
+    ///
+    /// Measured before this existed: dropping `excludes`, `min_round` and
+    /// `max_round` from `trigger_field` left the whole suite green, and so did
+    /// dropping `position` from `ring_field`. Three of five trigger spellings
+    /// and two of three ring spellings were exercised by any fixture; the rest
+    /// were promised only by a comment.
+    #[test]
+    fn every_trigger_and_ring_key_the_tables_know_is_reported_when_set_twice() {
+        for (section, keys, field) in [
+            (
+                "Triggers",
+                ["requires", "excludes", "min_round", "max_round", "priority"].as_slice(),
+                trigger_field as fn(&str) -> Option<&'static str>,
+            ),
+            (
+                "Ring Config",
+                ["role", "position", "vote_weight"].as_slice(),
+                ring_field as fn(&str) -> Option<&'static str>,
+            ),
+        ] {
+            for key in keys {
+                let raw = format!("- {key}: first\n- {key}: second\n");
+                let found = super::super::metadata::duplicate_keys(&raw, field);
+                assert_eq!(
+                    found.len(),
+                    1,
+                    "## {section} knows '{key}' but setting it twice reported {found:?}"
+                );
+            }
+        }
+    }
+
+    /// Control for the loop above: a key neither table knows must stay silent,
+    /// so the loop cannot be satisfied by a table that says yes to everything.
+    #[test]
+    fn a_key_neither_table_knows_is_never_reported() {
+        for key in ["unrelated", "note", "owner"] {
+            let raw = format!("- {key}: first\n- {key}: second\n");
+            assert!(
+                super::super::metadata::duplicate_keys(&raw, trigger_field).is_empty(),
+                "## Triggers does not read '{key}'"
+            );
+            assert!(
+                super::super::metadata::duplicate_keys(&raw, ring_field).is_empty(),
+                "## Ring Config does not read '{key}'"
+            );
+        }
+    }
+
     /// #396: `## Triggers` and `## Ring Config` overwrite in silence exactly
     /// like `## Metadata`, and a `###` sub-block inside them is read since
     /// #392 — so a "not in use" alternative changes Blackboard activation and
