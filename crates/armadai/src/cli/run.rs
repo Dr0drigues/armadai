@@ -527,23 +527,11 @@ async fn resume_run(
             names.join(", ")
         );
         for name in &names {
-            let mut meta = agents_map[name].metadata.clone();
-            armadai_core::model_aliases::resolve_model_deprecations(
-                &mut meta.model,
-                &mut meta.model_fallback,
+            let (prov, model) = preview_provider_and_model(
+                &agents_map[name].metadata,
+                providers_map[name].as_ref(),
             );
-            let model = match meta.model.as_deref() {
-                None => "(none declared)".to_string(),
-                Some("latest:auto") => "latest:auto (tier chosen per call)".to_string(),
-                Some(m) => {
-                    armadai_core::model_resolution::resolve_tier_placeholder(m, &meta.provider)
-                        .unwrap_or_else(|| m.to_string())
-                }
-            };
-            eprintln!(
-                "[dry-run]   {name} — provider={}, model={model}",
-                meta.provider
-            );
+            eprintln!("[dry-run]   {name} — provider={prov}, model={model}");
         }
         eprintln!(
             "[dry-run] the remaining steps are decided by the engine as it runs, \
@@ -1147,13 +1135,8 @@ fn load_chain(resolution: &AgentResolution, chain: &[String]) -> anyhow::Result<
 /// one per line on **stdout** when not emitting JSON — so a script consuming
 /// either preview reads the same thing on stdout.
 ///
-/// The model shown is the one the run would send, not the one written in the
-/// agent file: deprecated aliases are resolved (`model_aliases`) and so are
-/// the static tier placeholders (#376). `latest:auto` is the one that cannot
-/// be previewed — its tier is chosen from each link's own input, which for
-/// every link but the first is the previous link's output, i.e. exactly what
-/// a dry run refuses to compute — so it is reported as such rather than
-/// guessed.
+/// What the provider/model column says, and why it is not just a copy of the
+/// agent file, is [`preview_provider_and_model`]'s job.
 fn report_dry_run_chain(chain: &[String], links: &[ChainLink], json: bool) {
     let n = chain.len();
     eprintln!(
@@ -1161,21 +1144,11 @@ fn report_dry_run_chain(chain: &[String], links: &[ChainLink], json: bool) {
         chain.join(", ")
     );
     for (i, (name, link)) in chain.iter().zip(links).enumerate() {
-        let mut meta = link.agent.metadata.clone();
-        armadai_core::model_aliases::resolve_model_deprecations(
-            &mut meta.model,
-            &mut meta.model_fallback,
-        );
-        let model = match meta.model.as_deref() {
-            None => "(none declared)".to_string(),
-            Some("latest:auto") => "latest:auto (tier chosen per call)".to_string(),
-            Some(m) => armadai_core::model_resolution::resolve_tier_placeholder(m, &meta.provider)
-                .unwrap_or_else(|| m.to_string()),
-        };
+        let (prov, model) =
+            preview_provider_and_model(&link.agent.metadata, link.provider.as_ref());
         eprintln!(
-            "[dry-run]   {}/{n} {name} — provider={}, model={model}",
-            i + 1,
-            meta.provider
+            "[dry-run]   {}/{n} {name} — provider={prov}, model={model}",
+            i + 1
         );
         if let Some(w) = &link.warning {
             let s = crate::cli::style::warn();
@@ -1392,6 +1365,53 @@ async fn run_single_agent(
     record_run(&metrics, input, &response.content, project);
 
     Ok((response.content, metrics))
+}
+
+/// What a `--dry-run` preview should say an agent's run would use, as
+/// `("<provider>", "<model>")`.
+///
+/// The single answer to "how does a declared model become the effective
+/// one", for all three previews (`--pipe`/single, `--resume`,
+/// `--orchestrate`). It was written out three times, word for word, which is
+/// how a preview could be right on one path and wrong on another.
+///
+/// Two things the agent file alone does not say:
+///
+/// - **Deprecated aliases and static tier placeholders resolve** the way the
+///   run resolves them (`model_aliases`, then `resolve_tier_placeholder` —
+///   #376), so the preview names the string that would actually be sent.
+///   `latest:auto` is the one that cannot be previewed: its tier is chosen
+///   from each call's own input, which is exactly what a dry run declines to
+///   compute, so it is reported as such rather than guessed.
+/// - **A provider that ignores `request.model`** gets told so. `CliProvider`
+///   spawns the tool and never passes the field on; previewing a resolved
+///   `claude-sonnet-4-5-20250929` for a `provider: cli` agent answered "which
+///   model will I pay for" with an id that is never sent and never billed
+///   (#398 review, F2) — and CLI-relayed agents are ArmadAI's reference
+///   configuration. Hence the built provider, not just the metadata:
+///   `create_provider` is what decides between an API client and a relay
+///   (`provider: claude` becomes either, depending on the binary being on
+///   PATH), so nothing read off the agent file could tell the two apart.
+fn preview_provider_and_model(
+    meta: &armadai_core::agent::AgentMetadata,
+    provider: &dyn armadai_core::provider::Provider,
+) -> (String, String) {
+    if !provider.honors_request_model() {
+        return (
+            meta.provider.clone(),
+            format!("(not sent — {} chooses)", provider.metadata().name),
+        );
+    }
+    let mut model = meta.model.clone();
+    let mut fallbacks = meta.model_fallback.clone();
+    armadai_core::model_aliases::resolve_model_deprecations(&mut model, &mut fallbacks);
+    let model = match model.as_deref() {
+        None => "(none declared)".to_string(),
+        Some("latest:auto") => "latest:auto (tier chosen per call)".to_string(),
+        Some(m) => armadai_core::model_resolution::resolve_tier_placeholder(m, &meta.provider)
+            .unwrap_or_else(|| m.to_string()),
+    };
+    (meta.provider.clone(), model)
 }
 
 /// Result of driving the event-sourced `direct` engine for one agent
@@ -2169,6 +2189,26 @@ async fn run_orchestrated_inner(
             effective_names.len(),
             effective_names.join(", ")
         );
+        // Provider and model per agent, like the sequential preview. The
+        // roster alone was all this printed, while `--dry-run`'s help
+        // promised "agents, providers and models … on every path" — the
+        // orchestrated paths made two words of that false (#398 review, F3).
+        // `agents`/`providers` are aligned with `effective_names` in both
+        // branches above: the C8 selection reassigns all three together, and
+        // when it does not run they are the untouched load-loop order.
+        for ((name, agent), provider) in effective_names
+            .iter()
+            .zip(agents.iter())
+            .zip(providers.iter())
+        {
+            let (prov, model) = preview_provider_and_model(&agent.metadata, provider.as_ref());
+            eprintln!("[dry-run]   {name} — provider={prov}, model={model}");
+        }
+        eprintln!(
+            "[dry-run] which agent speaks when, and how often, is decided by the \
+             engine as it runs, so it cannot be listed without executing it"
+        );
+        eprintln!("[dry-run] no provider was called; nothing was recorded or billed");
         if !json {
             println!("{}", effective_names.join("\n"));
         }

@@ -48,6 +48,14 @@ struct FakeApi {
 
 impl FakeApi {
     fn start() -> Self {
+        Self::rejecting(&[])
+    }
+
+    /// Same server, except every request naming a model in `rejected` is
+    /// answered with the 404 an API returns for a model it does not serve —
+    /// the trigger for the `model_fallback` retry path.
+    fn rejecting(rejected: &[&str]) -> Self {
+        let rejected: Vec<String> = rejected.iter().map(|s| (*s).to_string()).collect();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let models: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -86,15 +94,30 @@ impl FakeApi {
                     .unwrap_or_else(|| "<unparseable>".to_string());
                 sink.lock().unwrap().push(model.clone());
 
-                let payload = serde_json::json!({
-                    "content": [{"type": "text", "text": "ok"}],
-                    "model": model,
-                    "usage": {"input_tokens": 1, "output_tokens": 1},
-                })
-                .to_string();
+                let (status, payload) = if rejected.contains(&model) {
+                    (
+                        "404 Not Found",
+                        serde_json::json!({
+                            "type": "error",
+                            "error": {"type": "not_found_error",
+                                      "message": format!("model: {model} not found")},
+                        })
+                        .to_string(),
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        serde_json::json!({
+                            "content": [{"type": "text", "text": "ok"}],
+                            "model": model,
+                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                        })
+                        .to_string(),
+                    )
+                };
                 let _ = write!(
                     stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
                      Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
                     payload.len()
                 );
@@ -170,18 +193,122 @@ impl Sandbox {
             .args(args);
         cmd.output().unwrap()
     }
+
+    /// Same, pointed at a Gemini-shaped server instead, and with a PATH that
+    /// holds no `gemini` binary — so `provider: gemini` takes the API
+    /// fallback (`create_unified_provider`) rather than relaying a CLI that
+    /// would ignore the model entirely. `/usr/bin:/bin` still carries
+    /// `which`, which is what the availability probe shells out to.
+    fn run_gemini(&self, api: &FakeGoogleApi, args: &[&str]) -> std::process::Output {
+        let mut cmd = Command::cargo_bin("armadai").unwrap();
+        cmd.current_dir(&self.root)
+            .env("ARMADAI_CONFIG_DIR", &self.config)
+            .env("XDG_DATA_HOME", &self.data)
+            .env("PATH", "/usr/bin:/bin")
+            .env("GOOGLE_BASE_URL", api.base_url())
+            .env("GOOGLE_API_KEY", "not-a-real-key")
+            .env("NO_COLOR", "1")
+            .args(args);
+        cmd.output().unwrap()
+    }
+}
+
+// ── Scripted Gemini-shaped server ────────────────────────────────────
+
+/// Google names the model in the **URL**
+/// (`/v1beta/models/<model>:generateContent`), not the body — which is how
+/// the F1 defect was legible at a glance: a Claude id in a Google path.
+struct FakeGoogleApi {
+    port: u16,
+    paths: Arc<Mutex<Vec<String>>>,
+}
+
+impl FakeGoogleApi {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let paths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&paths);
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let mut len = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if line == "\r\n" || line == "\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; len];
+                if reader.read_exact(&mut body).is_err() {
+                    continue;
+                }
+                let path = request_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("<no path>")
+                    .to_string();
+                sink.lock().unwrap().push(path);
+
+                let payload = serde_json::json!({
+                    "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+                    "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+                })
+                .to_string();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = stream.flush();
+            }
+        });
+
+        Self { port, paths }
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}/v1beta", self.port)
+    }
+
+    /// Every request path the binary asked for, in request order.
+    fn paths_seen(&self) -> Vec<String> {
+        self.paths.lock().unwrap().clone()
+    }
 }
 
 /// An agent on the HTTP Anthropic provider — the path that takes the model
 /// string literally.
 fn write_api_agent(root: &Path, name: &str, model: &str) {
+    write_agent(
+        root,
+        name,
+        &format!("- provider: anthropic\n- model: {model}\n"),
+    );
+}
+
+/// An agent with arbitrary `## Metadata` lines.
+fn write_agent(root: &Path, name: &str, metadata: &str) {
     std::fs::write(
         root.join("agents").join(format!("{name}.md")),
         format!(
             "# {name}\n\n\
              ## Metadata\n\
-             - provider: anthropic\n\
-             - model: {model}\n\n\
+             {metadata}\n\
              ## System Prompt\n\
              You are {name}.\n"
         ),
@@ -324,4 +451,123 @@ fn a_resumed_run_resolves_the_reloaded_rosters_tier() {
     let seen = api.models_seen();
     assert_no_placeholder_reached_the_wire(&seen);
     assert_eq!(seen, vec![expected(ModelTier::Max)]);
+}
+
+// ── The vendor a tier resolves against (#398 review, F1) ─────────────
+
+/// An agent's `provider:` is a *tool* name; the model catalog is keyed by
+/// *vendor*. Handing the tool name to the catalog missed it and fell through
+/// to a table whose catch-all answers with Anthropic, so this exact fixture
+/// — `provider: gemini`, `model: latest:pro`, no `gemini` binary on PATH —
+/// sent `POST /v1beta/models/claude-sonnet-4-5-20250929:generateContent` to
+/// Google.
+///
+/// The assertion is on the URL because that is where the answer is
+/// unambiguous: a Claude id inside a `generativelanguage` path cannot be
+/// read as anything but the wrong vendor.
+#[test]
+fn a_tools_tier_resolves_against_its_own_vendor_not_anthropic() {
+    let api = FakeGoogleApi::start();
+    let sb = Sandbox::new(&[("alpha", "unused")]);
+    write_agent(
+        &sb.root,
+        "alpha",
+        "- provider: gemini\n- model: latest:pro\n",
+    );
+
+    let out = sb.run_gemini(&api, &["run", "alpha", "hello", "--json"]);
+    assert!(out.status.success(), "run failed: {out:?}");
+
+    let seen = api.paths_seen();
+    assert!(
+        !seen.is_empty(),
+        "the binary never called the provider — the test proves nothing"
+    );
+    let want = fallback_model_for_tier("google", ModelTier::Pro);
+    for path in &seen {
+        assert!(
+            path.contains(want),
+            "expected the Google catalog's Pro model ({want}) in the request path, got: {seen:?}"
+        );
+        assert!(
+            !path.contains("claude"),
+            "an Anthropic model id reached a Google endpoint: {seen:?}"
+        );
+    }
+}
+
+/// `latest:auto` had the same defect one line above the one #376 fixed: the
+/// router names a tier, and the tier was resolved against the raw tool name
+/// too. Measured before the fix, this fixture sent
+/// `.../models/claude-haiku-4-5-20251001:generateContent` to Google.
+#[test]
+fn a_routed_tier_resolves_against_its_own_vendor_too() {
+    let api = FakeGoogleApi::start();
+    let sb = Sandbox::new(&[("alpha", "unused")]);
+    write_agent(
+        &sb.root,
+        "alpha",
+        "- provider: gemini\n- model: latest:auto\n",
+    );
+
+    let out = sb.run_gemini(&api, &["run", "alpha", "hello", "--json"]);
+    assert!(out.status.success(), "run failed: {out:?}");
+
+    let seen = api.paths_seen();
+    assert!(
+        !seen.is_empty(),
+        "the binary never called the provider — the test proves nothing"
+    );
+    for path in &seen {
+        assert!(
+            path.contains("gemini-"),
+            "expected a Google model id in the request path, got: {seen:?}"
+        );
+        assert!(
+            !path.contains("claude"),
+            "an Anthropic model id reached a Google endpoint: {seen:?}"
+        );
+    }
+}
+
+// ── model_fallback entries get the same resolution (#398 review, F4) ──
+
+/// A `model_fallback:` entry is a model string like any other, so the retry
+/// that uses it resolves its tier too. Nothing covered this: deleting the
+/// resolution at that site left the whole suite green.
+///
+/// The server rejects the primary model with the 404 an API returns for a
+/// model it does not serve, which is what arms the fallback loop; the
+/// fallback is a placeholder, and the assertion is that the *second* request
+/// named a concrete id and not `latest:fast`.
+#[test]
+fn a_model_fallback_entry_resolves_its_tier_before_the_retry() {
+    let api = FakeApi::rejecting(&["definitely-not-a-model"]);
+    let sb = Sandbox::new(&[("alpha", "unused")]);
+    write_agent(
+        &sb.root,
+        "alpha",
+        "- provider: anthropic\n\
+         - model: definitely-not-a-model\n\
+         - model_fallback: [latest:fast]\n",
+    );
+
+    let out = sb.run(
+        &api,
+        &["run", "alpha", "hello", "--pipe", "alpha", "--json"],
+    );
+    assert!(out.status.success(), "run failed: {out:?}");
+
+    let seen = api.models_seen();
+    assert_no_placeholder_reached_the_wire(&seen);
+    assert_eq!(
+        seen,
+        vec![
+            "definitely-not-a-model".to_string(),
+            expected(ModelTier::Fast),
+            "definitely-not-a-model".to_string(),
+            expected(ModelTier::Fast),
+        ],
+        "each link should try its declared model, then its resolved fallback"
+    );
 }

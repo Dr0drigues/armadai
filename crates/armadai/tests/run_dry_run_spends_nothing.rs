@@ -81,12 +81,22 @@ impl Sandbox {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_env(args, &[])
+    }
+
+    /// [`Sandbox::run`] plus extra environment variables — an API key, for a
+    /// test whose agent is on an HTTP provider (`create_provider` builds it
+    /// even on the preview, and refuses without one).
+    fn run_env(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let mut cmd = Command::cargo_bin("armadai").unwrap();
         cmd.current_dir(&self.root)
             .env("ARMADAI_CONFIG_DIR", &self.config)
             .env("XDG_DATA_HOME", &self.data)
             .env("NO_COLOR", "1")
             .args(args);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         Output(cmd.output().unwrap())
     }
 }
@@ -473,4 +483,125 @@ fn a_resume_dry_run_lists_the_roster_in_run_order_not_sorted() {
         at("zeta") < at("mid") && at("mid") < at("alpha"),
         "roster previewed sorted instead of in the order the run recorded:\n{err}"
     );
+}
+
+// ── What the preview says the run would use (#398 review, F2/F3) ─────
+
+/// The preview line for a link, e.g. `1/2 alpha — provider=…, model=…`.
+fn preview_line(out: &Output, name: &str) -> String {
+    out.stderr()
+        .lines()
+        .find(|l| l.contains(&format!(" {name} — ")))
+        .unwrap_or_else(|| panic!("no preview line for {name}:\n{}", out.stderr()))
+        .to_string()
+}
+
+/// Just the `model=…` half of a preview line. The provider half can legally
+/// contain a vendor's name (`provider: claude`), so a naive substring check
+/// over the whole line would answer about the wrong column.
+fn previewed_model(out: &Output, name: &str) -> String {
+    let line = preview_line(out, name);
+    let at = line
+        .find("model=")
+        .unwrap_or_else(|| panic!("no model column in: {line}"));
+    line[at + "model=".len()..].to_string()
+}
+
+/// A CLI-relayed agent's declared model is never sent: `CliProvider` spawns
+/// the command and reads `request.model` nowhere, reporting the command name
+/// back instead. The preview used to resolve the placeholder anyway and
+/// announce an Anthropic id — the most misleading possible answer to "which
+/// model will I pay for", on ArmadAI's own reference configuration.
+///
+/// The real run is executed straight after, so the two are compared rather
+/// than the preview being asserted against a hardcoded expectation. It is a
+/// `--pipe` run because `run_single_agent`'s `[name] model=…` summary is the
+/// only place ArmadAI prints the model a run actually used, and `--pipe` is
+/// the only path that reaches it.
+#[test]
+fn the_preview_does_not_name_a_model_a_cli_relay_would_ignore() {
+    // `provider: claude` + `command: echo`: a unified tool name whose CLI is
+    // present, so `create_provider` builds a relay — while the metadata
+    // still names a vendor, so the model column has something concrete to
+    // get wrong. This is the residual case: for `provider: cli` the tier no
+    // longer resolves at all (no vendor is named), but a unified name does
+    // name one, and the run still never sends it.
+    let sb = Sandbox::new(&[
+        (
+            "alpha",
+            "- provider: claude\n- command: echo\n- model: latest:pro\n",
+        ),
+        ("beta", ECHO),
+    ]);
+
+    let dry = sb.run(&["run", "alpha", "hello", "--pipe", "beta", "--dry-run"]);
+    assert!(dry.succeeded(), "dry-run failed: {}", dry.stderr());
+    let previewed = previewed_model(&dry, "alpha");
+    assert!(
+        !previewed.contains("claude-"),
+        "the preview named a model the CLI relay never sends: model={previewed}"
+    );
+    assert!(
+        previewed.contains("echo"),
+        "the preview should name the relay that actually chooses: model={previewed}"
+    );
+
+    let real = sb.run(&["run", "alpha", "hello", "--pipe", "beta"]);
+    assert!(real.succeeded(), "run failed: {}", real.stderr());
+    assert!(
+        real.stderr().contains("model=echo"),
+        "expected the relay to report its own command as the model:\n{}",
+        real.stderr()
+    );
+}
+
+/// An API-backed agent still gets its resolved id — the guard above must not
+/// have turned the model column into a blanket "unknown".
+#[cfg(feature = "providers-api")]
+#[test]
+fn the_preview_names_the_resolved_model_for_an_api_agent() {
+    let sb = Sandbox::new(&[("alpha", "- provider: anthropic\n- model: latest:pro\n")]);
+
+    let dry = sb.run_env(
+        &["run", "alpha", "hello", "--dry-run"],
+        &[("ANTHROPIC_API_KEY", "sk-not-a-real-key")],
+    );
+    assert!(dry.succeeded(), "dry-run failed: {}", dry.stderr());
+    assert_nothing_ran(&dry);
+    let previewed = previewed_model(&dry, "alpha");
+    assert!(
+        previewed.starts_with("claude-") && !previewed.contains("latest:pro"),
+        "expected the resolved Anthropic id, got: model={previewed}"
+    );
+}
+
+/// `--dry-run`'s help promises "agents, providers and models … on every
+/// path". The orchestrated preview printed the roster and nothing else, so
+/// two of those words were false on two paths out of four (#398 review, F3).
+#[test]
+fn an_orchestrated_preview_names_each_agents_provider_and_model() {
+    let sb = Sandbox::new(&[("alpha", ECHO), ("beta", ECHO)]);
+
+    let dry = sb.run(&[
+        "run",
+        "alpha",
+        "hello",
+        "--pipe",
+        "beta",
+        "--orchestrate",
+        "ring",
+        "--dry-run",
+        "--json",
+        "--no-tui",
+    ]);
+    assert!(dry.succeeded(), "dry-run failed: {}", dry.stderr());
+    assert_nothing_ran(&dry);
+
+    for name in ["alpha", "beta"] {
+        let line = preview_line(&dry, name);
+        assert!(
+            line.contains("provider=cli") && line.contains("model="),
+            "orchestrated preview should name provider and model for {name}: {line}"
+        );
+    }
 }
