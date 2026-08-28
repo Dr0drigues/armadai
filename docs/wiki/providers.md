@@ -140,19 +140,29 @@ Direct HTTP calls to LLM APIs. Use these when you want explicit API control.
 > administrator can route `latest:max` through a house alias, which a
 > concrete id chosen here would override with no way to opt out.
 >
-> **Which model in the tier** is decided by three keys, in order. First the
-> **generation** — the numbers in the id, compared as numbers: `latest:pro`
-> asks for the *latest* model of the Pro tier, and generation `10` is above
-> generation `4.6` even though the string `gpt-10` sorts below `gpt-9`. Then
-> the **generation's own name**: within one generation a vendor ships a base
-> model and named points of its range around it (`gpt-5.6` alongside
-> `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`), and the unsuffixed id — the
-> shorter one — is the vendor's default for that generation. Only then the
-> **price**, in the direction the tier promises: `latest:fast` ("cheap and
-> fast") and `latest:pro` ("balanced") take the cheapest of what is left,
-> `latest:max` ("maximum capability") the dearest. A model the catalog does
-> not price never wins over one it does, and neither does a dated snapshot or
-> a `preview` id while a released one exists.
+> **Which model in the tier** is decided by four keys, then a tie-break.
+> First the **generation** — the numbers in the id, compared as numbers:
+> `latest:pro` asks for the *latest* model of the Pro tier, and generation
+> `10` is above generation `4.6` even though the string `gpt-10` sorts below
+> `gpt-9`. Then whether the catalog **prices** the model at all: an unpriced
+> entry never wins over a priced one. Then the **generation's own name**:
+> within one generation a vendor ships a base model and named points of its
+> range around it (`gpt-5.6` alongside `gpt-5.6-luna`, `gpt-5.6-sol`,
+> `gpt-5.6-terra`), and the unsuffixed — shorter — id is taken as the base of
+> the generation. Only then the **price**, in the direction the tier promises:
+> `latest:fast` ("cheap and fast") and `latest:pro` ("balanced") take the
+> cheapest of what is left, `latest:max` ("maximum capability") the dearest.
+> The id itself is the final tie-break. A dated snapshot or a `preview` id
+> never wins while a released one exists.
+>
+> One known limit of the third key, measured on the shipped catalogs: the
+> shorter id is the *base* of a generation, which is not always the model a
+> vendor treats as its default. `gpt-4` is shorter than `gpt-4o` and 12×
+> dearer, yet `gpt-4o` is the one OpenAI made the generation's workhorse — so
+> a successor named by appending a letter inside one generation defeats the
+> rule. It changes no answer today, because generation 4 is not the newest;
+> it would the day a `gpt-6o` follows a `gpt-6`. Use an explicit model id
+> rather than a tier if that matters to you.
 >
 > The middle key is what keeps the three tiers **ordered by price**: without
 > it, "cheapest of the newest generation" hands `latest:pro` the range's entry

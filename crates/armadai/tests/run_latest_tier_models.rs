@@ -636,12 +636,22 @@ fn only_latest_auto_is_routed_per_call() {
 /// one the catalog names for the tier -- and "the catalog's newest" is read
 /// numerically, not off the alphabet.
 ///
-/// The fixture is the case that separates the two: generation `10` is above
-/// generation `4.6`, while the *string* `"claude-sonnet-10"` is below
-/// `"claude-sonnet-4-6"`. The old `candidates.iter().max()` therefore sent
-/// `claude-sonnet-4-6`. It also prices the newer model *higher*, so
-/// "cheapest wins" alone answers `claude-sonnet-4-6` too: the assertion is
-/// satisfied only by ordering on the generation first.
+/// The fixture separates the generation key from every other key that could
+/// answer for it, which takes three properties, not two:
+///
+/// - **alphabet**: generation `10` is above generation `4`, while the
+///   *string* `"claude-sonnet-10"` is below `"claude-sonnet-4"`. The old
+///   `candidates.iter().max()` therefore sent the older one.
+/// - **price**: the newer model is priced *higher*, so "cheapest wins" alone
+///   answers the older one too.
+/// - **length**: `claude-sonnet-4` is 15 characters, `claude-sonnet-10` is
+///   16, so the shortest-id key also points at the older one. This one was
+///   missed at first: the fixture read `claude-sonnet-4-6` (17 characters),
+///   and the shortest-id key — added by the very commit this test guards —
+///   happened to agree with the generation key. Measured: with that fixture,
+///   neutralising the generation key left this test green, so the property
+///   in its own name was unpinned. All three keys now point *away* from the
+///   expected answer, and only the generation key reaches it.
 ///
 /// Wire-level rather than unit-level for the reason this whole file exists:
 /// on three of the four run paths nothing ArmadAI prints names the model it
@@ -662,7 +672,7 @@ fn the_model_on_the_wire_is_the_catalogs_newest_read_as_a_number() {
     let sb = Sandbox::new(&[("alpha", "latest:pro")]);
     sb.seed_models_cache(
         "anthropic",
-        r#"[{"id":"claude-sonnet-4-6","cost":{"input":2.0,"output":10.0}},
+        r#"[{"id":"claude-sonnet-4","cost":{"input":2.0,"output":10.0}},
             {"id":"claude-sonnet-10","cost":{"input":3.0,"output":15.0}}]"#,
     );
 

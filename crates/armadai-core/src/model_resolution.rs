@@ -1310,7 +1310,16 @@ mod tests {
     // ── The tier ladder must not invert (PR #412 review) ─────────────
 
     /// Two snapshots of the models.dev catalog, trimmed to the three vendors
-    /// [`classify_model_tier`] knows, ids and prices verbatim.
+    /// [`classify_model_tier`] knows, ids and prices verbatim — including the
+    /// non-chat, `preview`, dated and unpriced entries, so the filters are
+    /// exercised on real shapes rather than on a curated list. An independent
+    /// review diffed both against their sources: zero id missing, zero id
+    /// added, zero price divergent.
+    ///
+    /// `fetched_at` is the one field not taken from the source: the July value
+    /// is the cache's own timestamp, the August one is approximate. Nothing
+    /// reads it — `load_cached_models` ignores it — and it is kept only so the
+    /// files stay shaped like a real cache.
     ///
     /// Two dates rather than one because neither alone shows what the rule
     /// does. The July snapshot is what this machine's own cache holds; the
@@ -1339,7 +1348,14 @@ mod tests {
     ///
     /// Pareto rather than a scalar or a lexicographic `(input, output)`
     /// compare, because the two halves genuinely cross between tiers and a
-    /// crossing is not an inversion. Measured: on the July catalog Google's
+    /// crossing is not *discriminating* here — it says nothing about the
+    /// ordering rule under test. It can still be an inversion for a given
+    /// token mix: measured, the Google pair below has `latest:pro` come out
+    /// cheaper than `latest:fast` in blended cost once input outweighs output
+    /// about four to one, which is a normal agent run. Pareto is the right
+    /// criterion for a *regression* test all the same, being the only one that
+    /// reddens on the rule this module changed without also reddening on
+    /// `master`. Measured: on the July catalog Google's
     /// `latest:fast` answers `gemini-3.5-flash` ($1.50/$9.00) against
     /// `latest:pro`'s `gemini-2.5-pro` ($1.25/$10.00) — dearer input,
     /// cheaper output. A lexicographic reading calls that an inversion; it
