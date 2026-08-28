@@ -89,6 +89,12 @@ impl Sandbox {
     /// Empty before any command runs (`with_config` creates the directory
     /// and nothing else), so a non-empty result is always something the
     /// command under test wrote.
+    ///
+    /// Gated with its only caller: without `storage` a real run writes no
+    /// journal either, so the test that uses this is gated too — and an
+    /// ungated helper is dead code under `--features tui` alone, which CI
+    /// lints as an error.
+    #[cfg(feature = "storage")]
     fn data_files(&self) -> Vec<String> {
         fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
             let Ok(entries) = std::fs::read_dir(dir) else {
