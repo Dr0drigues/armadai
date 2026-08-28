@@ -146,6 +146,51 @@ pub fn name_matches_reference(agent_name: &str, reference: &str) -> bool {
         || slugify(agent_name).eq_ignore_ascii_case(reference)
 }
 
+/// The project-config key that names the linker's coordinator. Spelled
+/// once, here, so the three surfaces that report on it (`link`, `unlink`,
+/// `validate`) cannot drift into naming three different keys — and so a
+/// user reading any of them is sent to the field that actually exists.
+pub const LINK_COORDINATOR_KEY: &str = "link.coordinator";
+
+/// What to tell the user when a configured coordinator reference
+/// designates no agent of the roster (issue #371).
+///
+/// The failure is silent by construction: [`name_matches_reference`]
+/// simply finds nothing, so `link` writes no root instructions file and
+/// `unlink` looks for none. Nothing is left on disk — the defect is
+/// symmetric, unlike #341 — so this message is the *only* observable, and
+/// every command that resolves the reference emits this one text rather
+/// than its own.
+///
+/// It names the H1-title namespace on purpose. `link.coordinator` is
+/// matched against an agent's title (or that title's slug), never against
+/// the key used in `agents:` or in `orchestration.coordinator`, which are
+/// a separate namespace (`docs/wiki/link.md`); a message that sent the
+/// user to the roster key would have them correct the wrong field. Listing
+/// the titles actually available is what turns "no match" into something
+/// they can act on without opening every `.md`.
+///
+/// `origin` is the field the reference came from — [`LINK_COORDINATOR_KEY`]
+/// for the config, `--coordinator` for the CLI flag that overrides it.
+pub fn coordinator_no_match_message(
+    origin: &str,
+    reference: &str,
+    roster_titles: &[String],
+) -> String {
+    let titles = if roster_titles.is_empty() {
+        "(none)".to_string()
+    } else {
+        roster_titles.join(", ")
+    };
+    format!(
+        "{origin} '{reference}' matches no agent — no root instructions file \
+         (.claude/CLAUDE.md and its equivalents) is written or removed for it.\n\
+         It is matched against an agent's H1 title, or that title's slug — not the \
+         `agents:` key, which is a separate namespace.\n\
+         Titles in this roster: {titles}."
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
     /// Agents to chain after this one

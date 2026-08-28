@@ -104,15 +104,26 @@ pub async fn execute(
         );
     }
 
-    // 3b. Extract coordinator if configured (CLI flag takes priority over config)
-    let coordinator_name =
-        coordinator_flag.or_else(|| config.link.as_ref().and_then(|l| l.coordinator.clone()));
-    let mut coordinator = coordinator_name.and_then(|name| {
-        let idx = link_agents
-            .iter()
-            .position(|a| crate::linker::name_matches_reference(&a.name, &name))?;
-        Some(link_agents.remove(idx))
-    });
+    // 3b. Extract coordinator if configured (CLI flag takes priority over
+    // config), through the one resolver `unlink` and the shell wizard also
+    // use. A reference that matches nothing is reported rather than
+    // silently ignored (issue #371): the link stays valid — it is the
+    // configuration that is not what the user meant — but until this
+    // warning existed, `link` announced success having written no root
+    // instructions file at all, and `unlink` looked for none either, so a
+    // typo left no trace anywhere.
+    let (mut coordinator, coordinator_warning) = linker::take_coordinator(
+        &mut link_agents,
+        coordinator_flag,
+        config.link.as_ref().and_then(|l| l.coordinator.clone()),
+    );
+    if let Some(message) = coordinator_warning {
+        let s = crate::cli::style::warn();
+        anstream::eprintln!(
+            "{s}  warn: {}{s:#}",
+            crate::cli::style::indent_continuation(&message, "        ")
+        );
+    }
 
     // 4. Determine target
     let target_name = target

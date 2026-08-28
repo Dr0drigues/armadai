@@ -9,6 +9,15 @@
 
 use anstyle::{AnsiColor, Color, RgbColor, Style};
 
+/// Indent a multi-line message's continuation lines by `indent`, so they
+/// read as part of the same sentence rather than as unrelated output.
+/// Shared by every surface that prints one — `link`, `unlink` and the
+/// shell's setup wizard align theirs under the `  warn: ` prefix,
+/// `validate` under its own `WARN  location:` one.
+pub(crate) fn indent_continuation(message: &str, indent: &str) -> String {
+    message.replace('\n', &format!("\n{indent}"))
+}
+
 // Design-system accents (assets/terminal-palette.json).
 // `#[allow(dead_code)]` on the remaining unwired items below: CLI-1 wired
 // `cli/run.rs`, CLI-2 (this lot) wires the discovery/read commands (`err()`

@@ -470,13 +470,17 @@ async fn run_link_at(
     // emitting one is correct by construction rather than by accident,
     // and so this function stays a mirror of `link` rather than a fourth
     // variant of it.
-    let coordinator_name = config.link.as_ref().and_then(|l| l.coordinator.clone());
-    let mut coordinator = coordinator_name.and_then(|name| {
-        let idx = link_agents
-            .iter()
-            .position(|a| crate::linker::name_matches_reference(&a.name, &name))?;
-        Some(link_agents.remove(idx))
-    });
+    let (mut coordinator, coordinator_warning) = crate::linker::take_coordinator(
+        &mut link_agents,
+        None,
+        config.link.as_ref().and_then(|l| l.coordinator.clone()),
+    );
+    if let Some(message) = coordinator_warning {
+        eprintln!(
+            "  warn: {}",
+            crate::cli::style::indent_continuation(&message, "        ")
+        );
+    }
 
     // The same model resolution `link`'s own step 4b performs (issue I1 on
     // #347's review): without this, a `latest:*` placeholder reaches

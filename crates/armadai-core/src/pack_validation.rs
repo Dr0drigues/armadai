@@ -342,6 +342,53 @@ pub fn validate_project_config(project_root: &Path) -> Vec<ValidationIssue> {
         }
     }
 
+    // R7: Validate `link.coordinator` (issue #371). Deliberately NOT
+    // checked against `agent_names` above: that set holds the *config
+    // keys* (`agents:` entries, declaration names), while
+    // `link.coordinator` is matched against each agent's **H1 title** or
+    // that title's slug — a separate namespace, and the very split that
+    // made #341 possible. Checking it against the keys would report a
+    // working config as broken and vice versa, so the roster is loaded
+    // for its titles and compared with the one criterion `link` and
+    // `unlink` both use.
+    //
+    // Two deliberate restrictions:
+    //
+    // - **Warning, not error.** R2's `orchestration.coordinator` check is
+    //   a pure config lookup; this one needs every agent file to load, so
+    //   its answer depends on what resolves on this machine. Reporting is
+    //   worth it; failing a build on a check that can degrade is not.
+    // - **Skipped when the roster is incomplete.** If any agent failed to
+    //   load (an unresolvable ref, an unparseable `.md`, a library that
+    //   isn't there), the titles we have are not the titles `link` would
+    //   see, and "matches nothing" would be a guess. Those failures are
+    //   already reported on their own terms elsewhere.
+    if let Some(reference) = config.link.as_ref().and_then(|l| l.coordinator.as_deref()) {
+        let fragments = super::agent_source::project_fragments(project_root);
+        let (roster, load_warnings) =
+            super::agent_source::load_all_agents(&config, project_root, &fragments);
+        if load_warnings.is_empty()
+            && !roster.is_empty()
+            && !roster
+                .iter()
+                .any(|a| super::agent::name_matches_reference(&a.name, reference))
+        {
+            let titles: Vec<String> = roster.iter().map(|a| a.name.clone()).collect();
+            issues.push(ValidationIssue::warning(
+                format!(
+                    "{}:{}",
+                    config_path.file_name().unwrap().to_string_lossy(),
+                    super::agent::LINK_COORDINATOR_KEY
+                ),
+                super::agent::coordinator_no_match_message(
+                    super::agent::LINK_COORDINATOR_KEY,
+                    reference,
+                    &titles,
+                ),
+            ));
+        }
+    }
+
     // R6: Validate agent Triggers sections
     for agent_ref in &config.agents {
         if let Ok(agent_path) = super::project::resolve_agent(agent_ref, project_root) {

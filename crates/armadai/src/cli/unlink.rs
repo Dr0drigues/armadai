@@ -852,21 +852,30 @@ async fn unlink_via_fallback(
         }
     }
 
-    // Extract coordinator if configured (CLI flag takes priority over config)
-    let coordinator_name =
-        coordinator_flag.or_else(|| config.link.as_ref().and_then(|l| l.coordinator.clone()));
-    // Matched by name *or* slug, through the same
-    // `name_matches_reference` `link` uses — never by name alone. `link`
-    // resolves `coordinator: dev-lead` to the agent titled `Dev Lead` and
-    // writes its root context file; a narrower criterion here would not
-    // even make that file a candidate for removal, leaving it on disk with
-    // no message naming it (issue #341).
-    let mut coordinator = coordinator_name.and_then(|name| {
-        let idx = link_agents
-            .iter()
-            .position(|a| crate::linker::name_matches_reference(&a.name, &name))?;
-        Some(link_agents.remove(idx))
-    });
+    // Extract coordinator if configured (CLI flag takes priority over
+    // config), through `linker::take_coordinator` — the same resolver
+    // `link` uses, so both match by name *or* slug and never by name
+    // alone. `link` resolves `coordinator: dev-lead` to the agent titled
+    // `Dev Lead` and writes its root context file; a narrower criterion
+    // here would not even make that file a candidate for removal, leaving
+    // it on disk with no message naming it (issue #341).
+    //
+    // The same resolver is also what reports a reference matching nothing
+    // (issue #371). Emitting that only from `link` would recreate exactly
+    // the asymmetry #341/#370 closed — one command speaking, the other
+    // silent about the same configuration.
+    let (mut coordinator, coordinator_warning) = linker::take_coordinator(
+        &mut link_agents,
+        coordinator_flag,
+        config.link.as_ref().and_then(|l| l.coordinator.clone()),
+    );
+    if let Some(message) = coordinator_warning {
+        let w = crate::cli::style::warn();
+        anstream::eprintln!(
+            "{w}  warn: {}{w:#}",
+            crate::cli::style::indent_continuation(&message, "        ")
+        );
+    }
 
     // Model resolution — mirror what `link` computes for this target, so
     // the regenerated content used by the guard below matches what `link`

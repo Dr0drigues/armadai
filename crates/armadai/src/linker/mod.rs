@@ -126,11 +126,57 @@ pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
 /// crate has to change.
 pub use armadai_core::agent::slugify;
 
-/// Re-exported for the same reason as [`slugify`], which it is built on:
-/// resolving a configured agent reference (`link.coordinator`) against a
-/// loaded roster is one decision, and `link` and `unlink` must not each
-/// keep their own copy of it (issue #341).
-pub use armadai_core::agent::name_matches_reference;
+/// Take the configured coordinator out of `link_agents`, and say so when
+/// the reference designates nobody.
+///
+/// This replaced a re-export of [`armadai_core::agent::name_matches_reference`]
+/// that each caller then used to write its own three-line resolution. Two
+/// of those copies had already drifted apart once (issue #341: `link`
+/// matched by name or slug, `unlink` by name alone, and the root context
+/// file stayed on disk unnamed); a third appeared in the shell wizard.
+/// Removing the primitive they were all reaching for is what stops a
+/// fourth.
+///
+/// The single place `link`, `unlink` and `armadai shell`'s setup wizard
+/// all resolve `link.coordinator` from — including the CLI flag's
+/// priority over the config, which used to be spelled out twice. Removing
+/// the matched agent from the roster is what turns it into the target's
+/// root instructions file instead of one more per-agent file, so a
+/// caller that skipped this would write both.
+///
+/// Returns the coordinator (if any) and, when a reference *was* given but
+/// matched nothing, the message to show the user — see
+/// [`armadai_core::agent::coordinator_no_match_message`] for why that case
+/// must never stay silent (issue #371). The two outcomes are deliberately
+/// distinct: no reference at all is the normal case for most projects and
+/// warrants nothing.
+pub fn take_coordinator(
+    link_agents: &mut Vec<LinkAgent>,
+    coordinator_flag: Option<String>,
+    configured: Option<String>,
+) -> (Option<LinkAgent>, Option<String>) {
+    let (origin, reference) = match (coordinator_flag, configured) {
+        (Some(flag), _) => ("--coordinator", flag),
+        (None, Some(from_config)) => (armadai_core::agent::LINK_COORDINATOR_KEY, from_config),
+        (None, None) => return (None, None),
+    };
+
+    match link_agents
+        .iter()
+        .position(|a| armadai_core::agent::name_matches_reference(&a.name, &reference))
+    {
+        Some(idx) => (Some(link_agents.remove(idx)), None),
+        None => {
+            let titles: Vec<String> = link_agents.iter().map(|a| a.name.clone()).collect();
+            (
+                None,
+                Some(armadai_core::agent::coordinator_no_match_message(
+                    origin, &reference, &titles,
+                )),
+            )
+        }
+    }
+}
 
 impl From<&Agent> for LinkAgent {
     fn from(agent: &Agent) -> Self {
@@ -200,6 +246,132 @@ Follow this protocol for all responses:
 mod tests {
     use super::*;
     use armadai_core::agent::AgentMetadata;
+
+    /// [`take_coordinator`]'s own branches, including the two the
+    /// black-box suite (`tests/link_coordinator_no_match.rs`) cannot
+    /// reach: the `--coordinator` flag's priority over the config, and
+    /// the origin label that flag puts in the message.
+    mod take_coordinator_tests {
+        use super::*;
+
+        fn roster() -> Vec<LinkAgent> {
+            ["Worker", "Dev Lead", "QA"]
+                .iter()
+                .map(|name| LinkAgent {
+                    name: (*name).to_string(),
+                    system_prompt: format!("I am {name}."),
+                    instructions: None,
+                    output_format: None,
+                    context: None,
+                    description: None,
+                    tags: Vec::new(),
+                    stacks: Vec::new(),
+                    scope: Vec::new(),
+                    model: None,
+                    model_fallback: Vec::new(),
+                    temperature: 0.7,
+                    provider: None,
+                })
+                .collect()
+        }
+
+        /// The match is by title *or* slug, and the matched agent leaves
+        /// the roster — that removal is what makes it the root
+        /// instructions file instead of one more per-agent file.
+        ///
+        /// `Dev Lead` sits at index 1 on purpose: with the coordinator at
+        /// index 0 this assertion also holds under a predicate that
+        /// always matches, which is exactly the fixture defect measured
+        /// on #370.
+        ///
+        /// Mutation: replacing `name_matches_reference` with `==` (the
+        /// `Dev Lead`/`dev-lead` pair fails it) or with an always-true
+        /// closure (which takes `Worker`) fails this test.
+        #[test]
+        fn a_slug_reference_resolves_the_titled_agent_and_removes_it() {
+            let mut agents = roster();
+            let (coord, warning) =
+                take_coordinator(&mut agents, None, Some("dev-lead".to_string()));
+
+            assert_eq!(coord.map(|c| c.name), Some("Dev Lead".to_string()));
+            assert_eq!(warning, None, "a resolved coordinator warrants no message");
+            assert_eq!(
+                agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+                vec!["Worker", "QA"],
+                "the coordinator must leave the roster"
+            );
+        }
+
+        /// No reference at all is the normal case for most projects: no
+        /// coordinator, and nothing to say about it.
+        ///
+        /// Mutation: warning whenever the result is `None` (rather than
+        /// only when a reference was given and failed) fails this test.
+        #[test]
+        fn no_reference_at_all_is_silent() {
+            let mut agents = roster();
+            let (coord, warning) = take_coordinator(&mut agents, None, None);
+
+            assert!(coord.is_none());
+            assert_eq!(warning, None);
+            assert_eq!(agents.len(), 3, "the roster is untouched");
+        }
+
+        /// Issue #371: a reference that designates nobody must produce a
+        /// message naming the key at fault, the H1-title namespace it is
+        /// matched in, and the titles actually available.
+        ///
+        /// Mutation: returning `(None, None)` here — the pre-fix
+        /// behaviour — fails every assertion below.
+        #[test]
+        fn an_unmatched_config_reference_reports_the_config_key() {
+            let mut agents = roster();
+            let (coord, warning) = take_coordinator(&mut agents, None, Some("dev-led".to_string()));
+
+            assert!(coord.is_none());
+            let message = warning.expect("an unmatched reference must be reported");
+            assert!(
+                message.starts_with("link.coordinator 'dev-led' matches no agent"),
+                "must name the config key and the value: {message}"
+            );
+            assert!(
+                message.contains("H1 title"),
+                "must send the user to the title namespace, not the `agents:` key: {message}"
+            );
+            assert!(
+                message.contains("Titles in this roster: Worker, Dev Lead, QA."),
+                "must list what was actually available: {message}"
+            );
+            assert_eq!(agents.len(), 3, "nothing is removed when nothing matched");
+        }
+
+        /// The flag wins over the config — one priority rule, in one
+        /// place, for all three callers — and the message must then name
+        /// the flag, not the config key the user did not get wrong.
+        ///
+        /// Mutation: reversing the priority resolves `Dev Lead` (the
+        /// config value matches) and returns no warning at all, failing
+        /// both assertions.
+        #[test]
+        fn the_flag_wins_over_the_config_and_names_itself() {
+            let mut agents = roster();
+            let (coord, warning) = take_coordinator(
+                &mut agents,
+                Some("nobody".to_string()),
+                Some("dev-lead".to_string()),
+            );
+
+            assert!(
+                coord.is_none(),
+                "the flag's value is what gets resolved, and it matches nothing"
+            );
+            let message = warning.expect("an unmatched flag must be reported too");
+            assert!(
+                message.starts_with("--coordinator 'nobody' matches no agent"),
+                "must name the flag, not the config key: {message}"
+            );
+        }
+    }
 
     /// The three provider inventories, checked against each other.
     ///

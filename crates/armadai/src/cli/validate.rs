@@ -63,7 +63,10 @@ pub async fn execute(path: Option<PathBuf>) -> anyhow::Result<()> {
             "{style}{}{style:#} {}: {}",
             prefix,
             issue.location,
-            issue.message
+            // A multi-line message (R7's `link.coordinator` report) must
+            // still read as one entry rather than as three unrelated
+            // lines.
+            crate::cli::style::indent_continuation(&issue.message, "  ")
         );
     }
 

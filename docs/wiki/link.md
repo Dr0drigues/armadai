@@ -36,13 +36,21 @@ More targets (Cursor, Aider, Windsurf, Cline) may be added later.
 
 `link.coordinator` in the project config names one agent of the roster: the one whose prompt becomes the target's root instructions file (`.claude/CLAUDE.md`, `.opencode/instructions.md`, …) instead of a per-agent file. It is matched against each agent's **H1 title** — the `# Name` heading of its Markdown file — or that title's slug, case-insensitively. So `coordinator: dev-lead` resolves an agent titled `Dev Lead`, the same folding the linker uses to name files on disk.
 
-That target matters: `link.coordinator` is matched against the **title**, *not* against the key used in `agents:` or in `orchestration.coordinator`, which are a separate namespace. When the two differ — a roster entry `- name: lead` on a file titled `# Dev Lead` — `coordinator: lead` matches nothing, and nothing says so.
+That target matters: `link.coordinator` is matched against the **title**, *not* against the key used in `agents:` or in `orchestration.coordinator`, which are a separate namespace. When the two differ — a roster entry `- name: lead` on a file titled `# Dev Lead` — `coordinator: lead` matches nothing; that is reported (see below), and the field to correct is the title, not the key.
 
 `unlink` applies that identical rule whenever it has to regenerate (the no-manifest fallback below); a narrower match there would leave the root instructions file on disk as a silent orphan. Through the manifest the question never arises: `link`'s own attribution is what `unlink` reads back.
 
 The link step `armadai shell`'s setup wizard runs applies the same rule: it honours `link.coordinator` from the project config exactly as `armadai link` does, and writes the same files. (Before v1.0.0 it ignored the setting entirely, writing a per-agent file for the coordinator and no root instructions file — which a later manifest-less `unlink` then left behind.)
 
-A `link.coordinator` matching no agent is not an error — the target simply gets no root instructions file, and `unlink` removes none. It is also not reported, so a typo or a title/key mismatch is silent on both sides: `link` writes the per-agent files and announces success. Check that the root instructions file exists if you expected a coordinator.
+A `link.coordinator` matching no agent is not an error — the target simply gets no root instructions file, and `unlink` removes none. It is reported, though, on every surface that resolves it (`link`, `unlink`, the shell's setup wizard, and `armadai validate`):
+
+```text
+  warn: link.coordinator 'dev-led' matches no agent — no root instructions file (.claude/CLAUDE.md and its equivalents) is written or removed for it.
+        It is matched against an agent's H1 title, or that title's slug — not the `agents:` key, which is a separate namespace.
+        Titles in this roster: Worker, Dev Lead.
+```
+
+It stays a warning rather than a refusal: the link itself is valid, it is the configuration that is not what you meant. `armadai validate` reports the same thing as a warning too — with one restriction: if any agent of the roster failed to load, the titles it can see are not the titles `link` would see, so the check stands down instead of guessing. (Before v1.0.0 none of this was reported at all: a typo, or a title/key mismatch, was silent on both sides.)
 
 ## Examples
 
