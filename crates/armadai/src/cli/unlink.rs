@@ -833,6 +833,20 @@ async fn unlink_via_fallback(
         anyhow::bail!("No agents could be resolved. Check your project config.");
     }
 
+    // Whether `link.coordinator` names an agent this project declares is a
+    // statement about the configuration, so — exactly as in `link`'s step
+    // 2a-bis — it is answered here, against the roster as declared, before
+    // `--agents` narrows it below. Asking it after the filter had `unlink
+    // --agents Worker` report a correct `coordinator: dev-lead` as
+    // matching nothing.
+    let coordinator_ref = linker::coordinator_reference(
+        coordinator_flag,
+        config.link.as_ref().and_then(|l| l.coordinator.clone()),
+    );
+    let coordinator_warning = coordinator_ref
+        .as_ref()
+        .and_then(|r| r.no_match_warning(&link_agents));
+
     // Resolve deprecated model aliases — `link` does this before
     // generating, so the content guard below must reproduce it too, or
     // every agent still using a since-renamed model would never match.
@@ -852,21 +866,28 @@ async fn unlink_via_fallback(
         }
     }
 
-    // Extract coordinator if configured (CLI flag takes priority over config)
-    let coordinator_name =
-        coordinator_flag.or_else(|| config.link.as_ref().and_then(|l| l.coordinator.clone()));
-    // Matched by name *or* slug, through the same
-    // `name_matches_reference` `link` uses — never by name alone. `link`
-    // resolves `coordinator: dev-lead` to the agent titled `Dev Lead` and
-    // writes its root context file; a narrower criterion here would not
-    // even make that file a candidate for removal, leaving it on disk with
-    // no message naming it (issue #341).
-    let mut coordinator = coordinator_name.and_then(|name| {
-        let idx = link_agents
-            .iter()
-            .position(|a| crate::linker::name_matches_reference(&a.name, &name))?;
-        Some(link_agents.remove(idx))
-    });
+    // Report the configured coordinator if it names no declared agent
+    // (asked above, on the unfiltered roster), then extract it from the
+    // agents actually being reclaimed — through `CoordinatorRef::take_from`,
+    // the same resolver `link` uses, so both match by name *or* slug and
+    // never by name alone. `link` resolves `coordinator: dev-lead` to the
+    // agent titled `Dev Lead` and writes its root context file; a narrower
+    // criterion here would not even make that file a candidate for
+    // removal, leaving it on disk with no message naming it (issue #341).
+    //
+    // Reporting from `unlink` too, and not from `link` alone, is what
+    // avoids recreating the asymmetry #341/#370 closed — one command
+    // speaking, the other silent about the same configuration.
+    if let Some(message) = &coordinator_warning {
+        let w = crate::cli::style::warn();
+        anstream::eprintln!(
+            "{w}  warn: {}{w:#}",
+            crate::cli::style::indent_continuation(message, "        ")
+        );
+    }
+    let mut coordinator = coordinator_ref
+        .as_ref()
+        .and_then(|r| r.take_from(&mut link_agents));
 
     // Model resolution — mirror what `link` computes for this target, so
     // the regenerated content used by the guard below matches what `link`

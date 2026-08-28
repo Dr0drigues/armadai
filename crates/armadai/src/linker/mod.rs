@@ -126,11 +126,109 @@ pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
 /// crate has to change.
 pub use armadai_core::agent::slugify;
 
-/// Re-exported for the same reason as [`slugify`], which it is built on:
-/// resolving a configured agent reference (`link.coordinator`) against a
-/// loaded roster is one decision, and `link` and `unlink` must not each
-/// keep their own copy of it (issue #341).
-pub use armadai_core::agent::name_matches_reference;
+/// The coordinator a command is working from: the reference itself, and
+/// the field that supplied it.
+///
+/// This type exists to keep two questions apart that a single
+/// `take_coordinator` used to answer at once, and wrongly:
+///
+/// - **"Does this reference name an agent the project declares?"** — a
+///   statement about the *configuration*, answered by
+///   [`Self::no_match_warning`] against the declared roster.
+/// - **"Which agent of the roster I am about to write is it?"** — the
+///   resolver's own job, answered by [`Self::take_from`] against whatever
+///   roster the command is writing.
+///
+/// Deriving the first from the second is what shipped
+/// `armadai link --agents Worker` printing
+/// `link.coordinator 'dev-lead' matches no agent` on a project where
+/// `dev-lead` matches `Dev Lead` perfectly — the user's own filter had
+/// removed it from the roster the resolver searched, and the message then
+/// sent them to fix an H1 title that was never wrong. `armadai validate`,
+/// which asks the first question directly, reported no warning at all on
+/// the same project: two surfaces contradicting each other over one
+/// config key.
+///
+/// The write behaviour is not the same question and does not change with
+/// it: with `--agents Worker`, `Dev Lead` is genuinely not among the
+/// agents being written, so no root instructions file is written or
+/// removed for it (pinned by
+/// `tests/link_manifest.rs::unlink_agents_filter_leaves_the_coordinator_and_unmatched_agents_alone`).
+/// Only the message was wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoordinatorRef {
+    /// The field the reference came from — `link.coordinator` for the
+    /// project config, `--coordinator` for the CLI flag that overrides it.
+    /// Reported verbatim, so the user is sent to the field they actually
+    /// wrote.
+    pub origin: &'static str,
+    /// The reference as configured, before any slug folding.
+    pub reference: String,
+}
+
+/// Which coordinator reference is in force — the CLI flag when given,
+/// otherwise the project config, otherwise none.
+///
+/// One priority rule, in one place, for the three callers (`link`,
+/// `unlink`, `armadai shell`'s setup wizard) that used to spell it out
+/// themselves. `None` — no coordinator configured at all — is the normal
+/// case for most projects and warrants nothing.
+pub fn coordinator_reference(
+    coordinator_flag: Option<String>,
+    configured: Option<String>,
+) -> Option<CoordinatorRef> {
+    match (coordinator_flag, configured) {
+        (Some(flag), _) => Some(CoordinatorRef {
+            origin: "--coordinator",
+            reference: flag,
+        }),
+        (None, Some(from_config)) => Some(CoordinatorRef {
+            origin: armadai_core::agent::LINK_COORDINATOR_KEY,
+            reference: from_config,
+        }),
+        (None, None) => None,
+    }
+}
+
+impl CoordinatorRef {
+    /// What to tell the user when this reference designates no agent of
+    /// `declared_roster` (issue #371), or `None` when it designates one.
+    ///
+    /// `declared_roster` must be the project's roster as loaded, **never**
+    /// a `--agents`-filtered subset — see this type's own doc. The
+    /// wording, and the decision of whether there is anything to say at
+    /// all, both live in
+    /// [`armadai_core::agent::coordinator_no_match_warning`], which
+    /// `validate`'s R7 calls directly: one question, one answer, four
+    /// surfaces.
+    pub fn no_match_warning(&self, declared_roster: &[LinkAgent]) -> Option<String> {
+        let titles: Vec<String> = declared_roster.iter().map(|a| a.name.clone()).collect();
+        armadai_core::agent::coordinator_no_match_warning(self.origin, &self.reference, &titles)
+    }
+
+    /// Take the agent this reference designates out of `link_agents`.
+    ///
+    /// Removing it from the roster is what turns it into the target's root
+    /// instructions file instead of one more per-agent file, so a caller
+    /// that skipped this would write both. Matching goes through
+    /// [`armadai_core::agent::name_matches_reference`] — by title *or* by
+    /// that title's slug. This replaced a re-export of that primitive on
+    /// which each caller wrote its own three-line resolution: two of those
+    /// copies had already drifted apart once (issue #341: `link` matched
+    /// by name or slug, `unlink` by name alone, and the root context file
+    /// stayed on disk unnamed), and a third appeared in the shell wizard.
+    ///
+    /// Returning `None` here is **not** a defect to report: a roster that
+    /// legitimately excludes the coordinator (a `--agents` filter that
+    /// does not name it) reaches this exact branch. Reporting is
+    /// [`Self::no_match_warning`]'s job, on the declared roster.
+    pub fn take_from(&self, link_agents: &mut Vec<LinkAgent>) -> Option<LinkAgent> {
+        let idx = link_agents
+            .iter()
+            .position(|a| armadai_core::agent::name_matches_reference(&a.name, &self.reference))?;
+        Some(link_agents.remove(idx))
+    }
+}
 
 impl From<&Agent> for LinkAgent {
     fn from(agent: &Agent) -> Self {
@@ -200,6 +298,196 @@ Follow this protocol for all responses:
 mod tests {
     use super::*;
     use armadai_core::agent::AgentMetadata;
+
+    /// [`CoordinatorRef`]'s own branches, including the two the black-box
+    /// suite (`tests/link_coordinator_no_match.rs`) cannot reach: the
+    /// `--coordinator` flag's priority over the config, and the origin
+    /// label that flag puts in the message.
+    mod coordinator_ref_tests {
+        use super::*;
+
+        fn roster() -> Vec<LinkAgent> {
+            ["Worker", "Dev Lead", "QA"]
+                .iter()
+                .map(|name| LinkAgent {
+                    name: (*name).to_string(),
+                    system_prompt: format!("I am {name}."),
+                    instructions: None,
+                    output_format: None,
+                    context: None,
+                    description: None,
+                    tags: Vec::new(),
+                    stacks: Vec::new(),
+                    scope: Vec::new(),
+                    model: None,
+                    model_fallback: Vec::new(),
+                    temperature: 0.7,
+                    provider: None,
+                })
+                .collect()
+        }
+
+        /// The match is by title *or* slug, and the matched agent leaves
+        /// the roster — that removal is what makes it the root
+        /// instructions file instead of one more per-agent file.
+        ///
+        /// `Dev Lead` sits at index 1 on purpose: with the coordinator at
+        /// index 0 this assertion also holds under a predicate that
+        /// always matches, which is exactly the fixture defect measured
+        /// on #370.
+        ///
+        /// Mutation: replacing `name_matches_reference` with `==` (the
+        /// `Dev Lead`/`dev-lead` pair fails it) or with an always-true
+        /// closure (which takes `Worker`) fails this test.
+        #[test]
+        fn a_slug_reference_resolves_the_titled_agent_and_removes_it() {
+            let mut agents = roster();
+            let coordinator = coordinator_reference(None, Some("dev-lead".to_string()))
+                .expect("a configured reference");
+
+            assert_eq!(
+                coordinator.no_match_warning(&agents),
+                None,
+                "a resolved coordinator warrants no message"
+            );
+            assert_eq!(
+                coordinator.take_from(&mut agents).map(|c| c.name),
+                Some("Dev Lead".to_string())
+            );
+            assert_eq!(
+                agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+                vec!["Worker", "QA"],
+                "the coordinator must leave the roster"
+            );
+        }
+
+        /// No reference at all is the normal case for most projects: no
+        /// coordinator, and nothing to say about it.
+        ///
+        /// Mutation: returning `Some(CoordinatorRef { .. })` for the
+        /// `(None, None)` arm fails this test.
+        #[test]
+        fn no_reference_at_all_is_silent() {
+            assert_eq!(coordinator_reference(None, None), None);
+        }
+
+        /// Issue #371: a reference that designates nobody must produce a
+        /// message naming the key at fault, the H1-title namespace it is
+        /// matched in, and the titles actually available.
+        ///
+        /// Mutation: having `coordinator_no_match_warning` always return
+        /// `None` — the pre-fix behaviour — fails every assertion below.
+        #[test]
+        fn an_unmatched_config_reference_reports_the_config_key() {
+            let mut agents = roster();
+            let coordinator = coordinator_reference(None, Some("dev-led".to_string()))
+                .expect("a configured reference");
+
+            let message = coordinator
+                .no_match_warning(&agents)
+                .expect("an unmatched reference must be reported");
+            assert!(
+                message.starts_with("link.coordinator 'dev-led' matches no agent"),
+                "must name the config key and the value: {message}"
+            );
+            assert!(
+                message.contains("H1 title"),
+                "must send the user to the title namespace, not the `agents:` key: {message}"
+            );
+            assert!(
+                message.contains("Titles in this roster: Worker, Dev Lead, QA."),
+                "must list what was actually available: {message}"
+            );
+            assert!(coordinator.take_from(&mut agents).is_none());
+            assert_eq!(agents.len(), 3, "nothing is removed when nothing matched");
+        }
+
+        /// The flag wins over the config — one priority rule, in one
+        /// place, for all three callers — and the message must then name
+        /// the flag, not the config key the user did not get wrong.
+        ///
+        /// Mutation: reversing the priority resolves `Dev Lead` (the
+        /// config value matches) and returns no warning at all, failing
+        /// both assertions.
+        #[test]
+        fn the_flag_wins_over_the_config_and_names_itself() {
+            let mut agents = roster();
+            let coordinator =
+                coordinator_reference(Some("nobody".to_string()), Some("dev-lead".to_string()))
+                    .expect("a configured reference");
+
+            assert!(
+                coordinator.take_from(&mut agents).is_none(),
+                "the flag's value is what gets resolved, and it matches nothing"
+            );
+            let message = coordinator
+                .no_match_warning(&agents)
+                .expect("an unmatched flag must be reported too");
+            assert!(
+                message.starts_with("--coordinator 'nobody' matches no agent"),
+                "must name the flag, not the config key: {message}"
+            );
+        }
+
+        /// **The D1 defect, at the unit that carries it.** The two
+        /// questions must not answer each other: a roster narrowed by
+        /// `--agents` legitimately excludes the coordinator, and
+        /// `take_from` then finds nothing — but the *configuration* is
+        /// still correct, so `no_match_warning` on the declared roster
+        /// must stay silent. Deriving one from the other is what shipped
+        /// `link --agents Worker` claiming `dev-lead` matched no agent.
+        ///
+        /// Mutation: making `no_match_warning` answer against the roster
+        /// `take_from` is given (the pre-fix coupling) turns this green
+        /// assertion into a `Some(_)`.
+        #[test]
+        fn a_filtered_out_coordinator_is_a_missing_agent_not_a_broken_config() {
+            let declared = roster();
+            // What `link`'s step 3 does to the roster: `--agents Worker`.
+            let mut filtered = roster();
+            filtered.retain(|a| a.name == "Worker");
+            let coordinator = coordinator_reference(None, Some("dev-lead".to_string()))
+                .expect("a configured reference");
+
+            assert_eq!(
+                coordinator.no_match_warning(&declared),
+                None,
+                "the declared roster satisfies the reference, so there is nothing to report"
+            );
+            assert!(
+                coordinator.take_from(&mut filtered).is_none(),
+                "the filtered roster has no coordinator to hand over, and that is not a defect"
+            );
+            assert_eq!(
+                filtered.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+                vec!["Worker"],
+                "a reference that resolves to nobody here removes nobody"
+            );
+        }
+
+        /// The other half of D1: a filter must not *silence* a genuine
+        /// defect either. `dev-led` is a typo whatever `--agents` says, and
+        /// the titles listed are the declared ones — the user is told what
+        /// their project actually offers, not what this invocation kept.
+        ///
+        /// Mutation: answering against the filtered roster still warns
+        /// (the reference matches nothing there either), but lists
+        /// `Titles in this roster: Worker.` and fails the last assertion.
+        #[test]
+        fn a_filter_does_not_silence_a_genuinely_unmatched_reference() {
+            let declared = roster();
+            let coordinator = coordinator_reference(None, Some("dev-led".to_string()))
+                .expect("a configured reference");
+
+            let message = coordinator
+                .no_match_warning(&declared)
+                .expect("a typo stays a typo under any filter");
+            assert!(
+                message.contains("Titles in this roster: Worker, Dev Lead, QA."),
+                "the titles offered must be the declared ones, not the filtered ones: {message}"
+            );
+        }
+    }
 
     /// The three provider inventories, checked against each other.
     ///

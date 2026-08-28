@@ -9,6 +9,15 @@
 
 use anstyle::{AnsiColor, Color, RgbColor, Style};
 
+/// Indent a multi-line message's continuation lines by `indent`, so they
+/// read as part of the same sentence rather than as unrelated output.
+/// Shared by every surface that prints one — `link`, `unlink` and the
+/// shell's setup wizard align theirs under the `  warn: ` prefix,
+/// `validate` under its own `WARN  location:` one.
+pub(crate) fn indent_continuation(message: &str, indent: &str) -> String {
+    message.replace('\n', &format!("\n{indent}"))
+}
+
 // Design-system accents (assets/terminal-palette.json).
 // `#[allow(dead_code)]` on the remaining unwired items below: CLI-1 wired
 // `cli/run.rs`, CLI-2 (this lot) wires the discovery/read commands (`err()`
@@ -94,6 +103,43 @@ mod tests {
         assert!(
             !off.into_inner().contains(&ESC),
             "expected no ANSI codes when forced off"
+        );
+    }
+
+    /// [`indent_continuation`]'s whole contract, asserted verbatim on a
+    /// multi-line input.
+    ///
+    /// It had none: this function shipped with every one of its call
+    /// sites checked by `contains` on single-line fragments, so turning it
+    /// into the identity function left all 28 test targets green — the
+    /// entire presentation of a three-line warning was unfalsifiable. Both
+    /// live indent widths are pinned here (`link`/`unlink`/wizard align
+    /// their continuations under a `  warn: ` prefix, `validate` under its
+    /// own `WARN  ` one), plus the two edges that decide whether the
+    /// function is doing anything at all.
+    #[test]
+    fn indent_continuation_indents_every_line_but_the_first() {
+        let message = "first line.\nsecond line.\nthird line.";
+
+        assert_eq!(
+            indent_continuation(message, "        "),
+            "first line.\n        second line.\n        third line.",
+            "the `  warn: ` alignment used by link, unlink and the shell wizard"
+        );
+        assert_eq!(
+            indent_continuation(message, "  "),
+            "first line.\n  second line.\n  third line.",
+            "the `WARN  ` alignment used by validate"
+        );
+        assert_eq!(
+            indent_continuation("only one line.", "        "),
+            "only one line.",
+            "a single-line message must come out untouched — no trailing indent"
+        );
+        assert_eq!(
+            indent_continuation("a\n\nb", "  "),
+            "a\n  \n  b",
+            "a blank line is a line: it gets the indent too, so the block stays one block"
         );
     }
 }
