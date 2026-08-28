@@ -22,7 +22,11 @@ use super::rules::{Finding, Severity};
 /// `opencode` invoked bare (no subcommand/flags) open an interactive/TUI
 /// mode that hangs until timeout, and `aider` auto-commits edits to the
 /// audited repo, which is unacceptable during a read-only audit.
-const DEEP_CLIS: [&str; 2] = ["claude", "gemini"];
+/// The CLIs `--deep` will drive, in preference order.
+///
+/// `pub(crate)` so `cli::audit` can prove its in-memory auditor agent is
+/// buildable for each of them without restating the list.
+pub(crate) const DEEP_CLIS: [&str; 2] = ["claude", "gemini"];
 
 #[cfg(not(windows))]
 fn cli_is_available(cli: &str) -> bool {

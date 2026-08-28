@@ -22,18 +22,52 @@ pub(crate) fn min_severity_from(flag: &str, quiet: bool) -> Severity {
     }
 }
 
+/// The tier the deep-pass auditor asks for.
+///
+/// Named rather than inlined so the test below pins the same one
+/// [`deep_auditor_model`] uses; the string itself never leaves this module.
+const DEEP_AUDITOR_TIER: &str = "latest:pro";
+
+/// The concrete model id the deep-pass auditor declares, for `cli`'s vendor.
+///
+/// [`DEEP_AUDITOR_TIER`] is resolved here rather than handed to the provider
+/// as-is: `call_deep_auditor` copies `metadata.model` straight into its
+/// `CompletionRequest`, so this is the last gate before the string would
+/// become a provider's model name — the same class #376 named and #398 closed
+/// on the five `run` paths, and (measured over every
+/// `Provider::complete`/`stream` call site) the last one left (issue #401).
+///
+/// Latent, not active: `--deep` is only reached after `which claude|gemini`
+/// succeeds, so `create_provider` returns the CLI relay, which reads
+/// `request.model` nowhere. It arms the day that unified name resolves to an
+/// API instead, which is what `create_provider` does when the binary is
+/// absent.
+///
+/// When no vendor catalog names the CLI's models the placeholder is kept, not
+/// replaced by a guess: that is the case `resolve_tier_placeholder` answers
+/// `None` for, and there the placeholder is the more useful of the two strings
+/// (#398 review, F1). Neither entry of `DEEP_CLIS` is in that case today, so
+/// this branch only matters the day one is added.
+fn deep_auditor_model(cli: &str) -> String {
+    armadai_core::model_resolution::resolve_tier_placeholder(DEEP_AUDITOR_TIER, cli)
+        .unwrap_or_else(|| DEEP_AUDITOR_TIER.to_string())
+}
+
 /// Build the in-memory auditor agent for the given detected CLI.
 ///
 /// Only `claude` and `gemini` are supported (see `deep::DEEP_CLIS`), both
 /// through the standard unified-tool resolution (`provider = cli`, no
 /// explicit `command`), which invokes them non-interactively via `-p`.
+///
+/// The model is a concrete id, never a tier placeholder — see
+/// [`deep_auditor_model`].
 fn build_deep_auditor(cli: &str) -> Agent {
     Agent {
         name: "deep-auditor".to_string(),
         source: PathBuf::from("<in-memory>"),
         metadata: AgentMetadata {
             provider: cli.to_string(),
-            model: Some("latest:pro".to_string()),
+            model: Some(deep_auditor_model(cli)),
             command: None,
             args: None,
             temperature: 0.2,
@@ -642,6 +676,59 @@ mod tests {
             global.contains("global agents"),
             "and the prompts of their global agents: {global}"
         );
+    }
+
+    /// Issue #401, the sixth site of the class #376 named and #398 closed on
+    /// the five `run` paths: a `latest:*` tier placeholder must never become a
+    /// provider's model name.
+    ///
+    /// Latent today — `--deep` is only reached after `which claude|gemini`
+    /// succeeds, so `create_provider` returns the CLI relay, which reads
+    /// `request.model` nowhere (`CliProvider::honors_request_model` is
+    /// `false`). That is also why there is no output surface to assert on: the
+    /// constructor is the whole of it. It arms the moment that unified name
+    /// resolves to an API instead, which is exactly what `create_provider`
+    /// does when the binary is absent.
+    ///
+    /// Two claims, and the second is what makes the first non-tautological:
+    /// no placeholder survives, and the two CLIs resolve to *different*
+    /// models — a tier resolved against a hardcoded vendor would give both the
+    /// same Anthropic id.
+    #[test]
+    fn the_deep_auditor_carries_a_concrete_model_not_a_tier_placeholder() {
+        for cli in crate::audit::deep::DEEP_CLIS {
+            let model = build_deep_auditor(cli)
+                .metadata
+                .model
+                .expect("the auditor always declares a model");
+            assert!(
+                armadai_core::model_resolution::parse_latest_placeholder(&model).is_none(),
+                "'{cli}' would be asked for a model literally called {model:?}"
+            );
+            assert_eq!(
+                model,
+                armadai_core::model_resolution::resolve_tier_placeholder(DEEP_AUDITOR_TIER, cli)
+                    .expect("both deep CLIs name a vendor catalog"),
+                "the auditor must ask for the {DEEP_AUDITOR_TIER} model of '{cli}'s own vendor"
+            );
+        }
+
+        let claude = build_deep_auditor("claude").metadata.model.unwrap();
+        let gemini = build_deep_auditor("gemini").metadata.model.unwrap();
+        assert_ne!(
+            claude, gemini,
+            "the tier must resolve against each CLI's own vendor catalog, not a fixed one"
+        );
+    }
+
+    /// The other half of the contract, and the branch neither `DEEP_CLIS`
+    /// entry reaches today: when no vendor catalog names a tool's models,
+    /// `resolve_tier_placeholder` answers `None` and the placeholder is the
+    /// string to keep — never an empty model, never another vendor's guess.
+    /// `copilot` is such a tool (`model_catalog_provider` returns `None`).
+    #[test]
+    fn a_cli_with_no_vendor_catalog_keeps_the_placeholder() {
+        assert_eq!(deep_auditor_model("copilot"), DEEP_AUDITOR_TIER);
     }
 
     #[tokio::test]
