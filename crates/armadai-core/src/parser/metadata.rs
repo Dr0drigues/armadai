@@ -60,15 +60,30 @@ pub fn parse_metadata(raw: &str) -> anyhow::Result<AgentMetadata> {
                     }
                 })
             }
+            // All five `OrchestrationPattern` variants are accepted (#415).
+            // Rejecting `hierarchical`/`auto` was not "ignoring a field": the
+            // `bail!` propagates out of `parse_agent_file`, so the whole agent
+            // file became unloadable and the agent vanished from `run`, `link`,
+            // `list`, the TUI and the audit at once — while `armadai.yaml`'s
+            // own `orchestration.pattern` accepted all five through serde's
+            // lowercase derive on the same enum.
+            //
+            // Widening cannot change how any run behaves: this per-agent field
+            // is descriptive only. Its sole readers are `tui/views/agent_detail`
+            // and `web/api`, both of which just display it; the pattern an
+            // orchestrated run actually uses comes from `armadai.yaml` or
+            // `--orchestrate`.
             "orchestration" => {
                 orchestration = Some(match value.to_lowercase().as_str() {
                     "direct" => OrchestrationPattern::Direct,
                     "blackboard" => OrchestrationPattern::Blackboard,
                     "ring" => OrchestrationPattern::Ring,
+                    "hierarchical" => OrchestrationPattern::Hierarchical,
+                    "auto" => OrchestrationPattern::Auto,
                     _ => {
                         anyhow::bail!(
-                            "Invalid orchestration: '{value}'. \
-                             Expected 'direct', 'blackboard', or 'ring'"
+                            "Invalid orchestration: '{value}'. Expected 'direct', \
+                             'blackboard', 'ring', 'hierarchical' or 'auto'"
                         )
                     }
                 })
@@ -213,6 +228,74 @@ mod tests {
 - mode: interactive
 ";
         assert!(parse_metadata(raw).is_err());
+    }
+
+    /// #415: every `OrchestrationPattern` variant must be declarable from a
+    /// `## Metadata` section. Before the fix, `hierarchical` and `auto` made
+    /// `parse_metadata` `bail!`, and since `parse_agent_file` propagates that
+    /// error the WHOLE agent file became unloadable — the agent vanished from
+    /// `run`, `link`, `list`, the TUI and the audit at once.
+    ///
+    /// Table-driven on purpose: it doubles as the negative control the
+    /// per-variant assertions need. A fix that maps every value to one variant
+    /// (say `Direct`) satisfies "hierarchical parses" but fails here.
+    #[test]
+    fn test_parse_orchestration_accepts_every_pattern() {
+        let cases = [
+            ("direct", OrchestrationPattern::Direct),
+            ("blackboard", OrchestrationPattern::Blackboard),
+            ("ring", OrchestrationPattern::Ring),
+            ("hierarchical", OrchestrationPattern::Hierarchical),
+            ("auto", OrchestrationPattern::Auto),
+        ];
+        for (value, expected) in cases {
+            let raw = format!(
+                "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- orchestration: {value}
+"
+            );
+            let meta = parse_metadata(&raw)
+                .unwrap_or_else(|e| panic!("`- orchestration: {value}` must parse, got: {e}"));
+            assert_eq!(
+                meta.orchestration,
+                Some(expected),
+                "`- orchestration: {value}` parsed to the wrong variant"
+            );
+        }
+    }
+
+    /// The value is matched case-insensitively, like `mode` above.
+    #[test]
+    fn test_parse_orchestration_is_case_insensitive() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- orchestration: Hierarchical
+";
+        let meta = parse_metadata(raw).unwrap();
+        assert_eq!(meta.orchestration, Some(OrchestrationPattern::Hierarchical));
+    }
+
+    /// An unknown pattern is still rejected — and the message must enumerate
+    /// the five real variants. The old message listed three "as if the list
+    /// were complete" (#415), which is what sent an author down the wrong path.
+    #[test]
+    fn test_parse_orchestration_rejects_unknown_and_lists_all_five() {
+        let raw = "\
+- provider: anthropic
+- model: claude-sonnet-4-5-20250929
+- orchestration: mesh
+";
+        let err = parse_metadata(raw)
+            .expect_err("`- orchestration: mesh` is not a pattern and must be refused")
+            .to_string();
+        assert_eq!(
+            err,
+            "Invalid orchestration: 'mesh'. Expected 'direct', 'blackboard', \
+             'ring', 'hierarchical' or 'auto'"
+        );
     }
 
     #[test]

@@ -118,7 +118,18 @@ Key-value pairs configuring the agent's technical behavior.
 | `cost_limit` | float | No | — | Max cost per execution in USD |
 | `rate_limit` | string | No | — | Rate limit: `"10/min"` |
 | `context_window` | int | No | — | Context window size override |
-| `orchestration` | string | No | — | Orchestration pattern: `blackboard`, `ring` |
+| `orchestration` | string | No | — | Orchestration pattern this agent is written for: `direct`, `blackboard`, `ring`, `hierarchical` or `auto`. Descriptive only — see below |
+
+`orchestration` documents the pattern an agent is designed for; it does **not**
+select the pattern a run uses. That comes from `armadai.yaml`'s `orchestration:`
+block or from `armadai run --orchestrate`. The value is surfaced in the TUI's
+agent detail view and in the web API, and is otherwise inert.
+
+All five values are accepted. Until
+[#415](https://github.com/Dr0drigues/armadai/issues/415), only the first three
+were, and the other two did not merely get ignored: the parse error made the
+**whole file** unloadable, so a `hierarchical` agent disappeared from `run`,
+`link`, `list`, the TUI and the audit at once — with `list` still exiting 0.
 
 ### What reaches the model
 
