@@ -57,8 +57,8 @@ impl ReverseLinker for ClaudeReverseLinker {
 
     fn parse(&self, root: &Path) -> ImportedConfig {
         ImportedConfig {
-            agents: parse_agents(&root.join(".claude/agents")),
-            skills: parse_skills(&root.join(".claude/skills")),
+            agents: parse_agents(&root.join(".claude/agents"), root),
+            skills: parse_skills(&root.join(".claude/skills"), root),
             instructions: parse_instructions(&root.join("CLAUDE.md")),
         }
     }
@@ -70,10 +70,14 @@ const MAX_AGENT_SCAN_DEPTH: u32 = 3;
 
 /// `pub(crate)` so the global scope can point the same parser at
 /// `~/.claude/agents` — see `crate::audit::scope`.
-pub(crate) fn parse_agents(dir: &Path) -> Vec<ImportedAgent> {
+///
+/// `space` is the *tree* `dir` belongs to, not `dir` itself: the caller knows
+/// it (a repository root, or `~/.claude`) and the parser does not. See
+/// [`ResolutionSpace`](super::ResolutionSpace).
+pub(crate) fn parse_agents(dir: &Path, space: &Path) -> Vec<ImportedAgent> {
     let mut files = Vec::new();
     collect_agent_files(dir, MAX_AGENT_SCAN_DEPTH, &mut files);
-    let mut agents: Vec<ImportedAgent> = files.iter().map(|p| parse_agent_file(p)).collect();
+    let mut agents: Vec<ImportedAgent> = files.iter().map(|p| parse_agent_file(p, space)).collect();
     agents.sort_by(|a, b| a.name.cmp(&b.name));
     agents
 }
@@ -107,7 +111,7 @@ struct SkillFm {
 
 /// `pub(crate)` so the global scope can point the same parser at both
 /// `~/.claude/skills` and `~/.config/armadai/skills`.
-pub(crate) fn parse_skills(dir: &Path) -> Vec<ImportedSkill> {
+pub(crate) fn parse_skills(dir: &Path, space: &Path) -> Vec<ImportedSkill> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -115,13 +119,13 @@ pub(crate) fn parse_skills(dir: &Path) -> Vec<ImportedSkill> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.is_dir())
-        .map(|p| parse_skill_dir(&p))
+        .map(|p| parse_skill_dir(&p, space))
         .collect();
     skills.sort_by(|a, b| a.name.cmp(&b.name));
     skills
 }
 
-fn parse_skill_dir(dir: &Path) -> ImportedSkill {
+fn parse_skill_dir(dir: &Path, space: &Path) -> ImportedSkill {
     let dir_name = dir
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -137,6 +141,7 @@ fn parse_skill_dir(dir: &Path) -> ImportedSkill {
             body_tokens: 0,
             issues: Vec::new(),
             extra: BTreeMap::new(),
+            space: space.to_path_buf(),
         };
     };
     let mut issues = Vec::new();
@@ -164,6 +169,7 @@ fn parse_skill_dir(dir: &Path) -> ImportedSkill {
         body_tokens: crate::audit::rules::estimate_tokens(&content),
         issues,
         extra: fm.extra,
+        space: space.to_path_buf(),
     }
 }
 
@@ -177,7 +183,7 @@ pub(crate) fn parse_instructions(path: &Path) -> Option<ImportedInstructions> {
     })
 }
 
-fn parse_agent_file(path: &Path) -> ImportedAgent {
+fn parse_agent_file(path: &Path, space: &Path) -> ImportedAgent {
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -192,6 +198,9 @@ fn parse_agent_file(path: &Path) -> ImportedAgent {
                 system_prompt: String::new(),
                 issues: vec![issue(path, format!("unreadable file: {e}"))],
                 format: AgentFormat::ClaudeFrontmatter,
+                space: space.to_path_buf(),
+                armadai_metadata: None,
+                title: None,
             };
         }
     };
@@ -225,6 +234,10 @@ fn parse_agent_file(path: &Path) -> ImportedAgent {
         system_prompt: body.trim().to_string(),
         issues,
         format: AgentFormat::ClaudeFrontmatter,
+        space: space.to_path_buf(),
+        // A native file has no syntax for most of what this carries.
+        armadai_metadata: None,
+        title: None,
     }
 }
 
@@ -389,7 +402,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bad_path = dir.path().join("agent-dir.md");
         std::fs::create_dir_all(&bad_path).unwrap();
-        let agent = parse_agent_file(&bad_path);
+        let agent = parse_agent_file(&bad_path, dir.path());
         assert_eq!(agent.issues.len(), 1);
         assert!(agent.issues[0].message.contains("unreadable file"));
         assert!(agent.system_prompt.is_empty());
@@ -626,7 +639,7 @@ mod tests {
         )
         .unwrap();
 
-        let parsed = parse_skill_dir(&skills);
+        let parsed = parse_skill_dir(&skills, dir.path());
 
         assert_eq!(
             parsed.body_tokens, 108,

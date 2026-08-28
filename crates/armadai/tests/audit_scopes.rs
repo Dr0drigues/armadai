@@ -784,6 +784,295 @@ mod tests {
         );
     }
 
+    /// A block long enough for `A06`'s 8-line window, shared by both agents
+    /// of the fixture below — so the duplication rule has something real to
+    /// find and its silence cannot be mistaken for an empty corpus.
+    fn shared_block() -> String {
+        (1..=10)
+            .map(|i| format!("Shared convention line {i}.\n"))
+            .collect()
+    }
+
+    /// Issue #399. The global pass assembles two unrelated trees, and
+    /// `armadai link --target claude --output ~/.claude` publishes the ArmadAI
+    /// library into one of them — so the product's own main workflow made the
+    /// user's library collide with itself. Measured on a healthy two-agent
+    /// library: `2 critical, 1 warning` and **exit 1**, one `C01` per agent
+    /// the user had linked, plus `A06 … dev-lead, dev-lead, qa, qa` and two
+    /// `A07 agents 'dev-lead' and 'dev-lead'`.
+    ///
+    /// The fixture is what `link` actually writes: same stem, same `name:`,
+    /// and a `description:` that *is* the first line of the ArmadAI system
+    /// prompt — which is exactly why `A07` fired on every one of them.
+    ///
+    /// Four claims in one run, because a rule silenced too broadly would pass
+    /// three of them: the command succeeds, and none of `C01`, `A06`, `A07`
+    /// names the republished agents. The `Detected:` line is the control that
+    /// all four files were read;
+    /// `two_agents_of_one_name_in_one_root_are_still_a_collision` is the
+    /// control that `C01` did not simply stop working.
+    /// The canonical #399 fixture: a healthy two-agent ArmadAI library, plus
+    /// the copies `armadai link --target claude` publishes into `~/.claude`.
+    /// Same stem, same `name:`, and a `description:` that *is* the first line
+    /// of the ArmadAI system prompt — because that is what `link` writes.
+    /// Both agents carry the same 10-line block, so `A06` and `--propose` have
+    /// something real to work on.
+    fn library_published_by_link(s: &Sandbox) {
+        let block = shared_block();
+        for name in ["dev-lead", "qa"] {
+            let prompt = format!("You are the {name}.");
+            s.write(
+                &format!("home/.config/armadai/agents/{name}.md"),
+                &armadai_agent(name, &prompt, &format!("\n{block}")),
+            );
+            s.write(
+                &format!("home/.claude/agents/{name}.md"),
+                &format!(
+                    "---\nname: {name}\ndescription: \"{prompt}\"\n\
+                     model: claude-sonnet-4-5-20250929\n---\n\n{prompt}\n\n{block}"
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn a_library_published_into_the_native_root_is_not_a_collision() {
+        let s = Sandbox::new();
+        library_published_by_link(&s);
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["4 agent(s)"]);
+        assert!(
+            out.success,
+            "a library the product itself published must not fail the audit:\n{}\n{}",
+            out.stdout, out.stderr
+        );
+        out.has_no_line_with("C01", &["dev-lead"])
+            .has_no_line_with("C01", &["qa"])
+            .has_no_line_with("A07", &["dev-lead"])
+            .has_no_line_with("A07", &["qa"])
+            .has_no_line_with("A06", &["dev-lead, dev-lead"]);
+    }
+
+    /// The same fixture, run through `--propose`, because that is where the
+    /// duplication survives the fix above.
+    ///
+    /// `A06`'s remedy — the line the report prints — is "extract the shared
+    /// block into **one** reusable prompt fragment". Since #399 the clusters
+    /// are per tree, and one fragment per cluster meant a single shared block
+    /// left the pack as `shared-conventions-1` (`apply_to: [dev-lead, qa]`)
+    /// **and** `shared-conventions-2` (`apply_to: [dev-lead-2, qa-2]`), bodies
+    /// byte-identical at 418 bytes. The pack was valid and installable; it just
+    /// shipped the promise twice, on the workflow this PR exists to repair —
+    /// and `master` never got that far, exiting 1 on the same input.
+    ///
+    /// Asserted on the directory and on the file bodies, never on the summary
+    /// count alone: the count is a number the generator prints about itself.
+    #[test]
+    fn a_global_propose_factors_one_shared_block_into_exactly_one_fragment() {
+        let s = Sandbox::new();
+        library_published_by_link(&s);
+
+        let out = s.run(&["--global", "--propose"]);
+        out.ran();
+        let prompts = s.work().join(".armadai-proposal/prompts");
+        let mut files: Vec<String> = std::fs::read_dir(&prompts)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "the pack must carry the shared fragment ({}): {e}\n{}\n{}",
+                    prompts.display(),
+                    out.stdout,
+                    out.stderr
+                )
+            })
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        assert_eq!(
+            files,
+            ["shared-conventions-1.md"],
+            "one shared block, one fragment:\n{}",
+            out.stdout
+        );
+
+        // And the bodies — not just the names — are distinct. Renumbering
+        // alone would satisfy the assertion above while still writing the
+        // same text twice under different names.
+        let bodies: Vec<String> = files
+            .iter()
+            .map(|f| {
+                let text = std::fs::read_to_string(prompts.join(f)).unwrap();
+                // Everything after the closing `---` of the frontmatter: the
+                // duplicate fragments differed only in `name:` and `apply_to:`.
+                text.splitn(3, "---\n").nth(2).unwrap().to_string()
+            })
+            .collect();
+        let mut unique = bodies.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), bodies.len(), "two fragments share a body");
+
+        // Every agent that carries the block is named once by the fragment
+        // that replaces it — the merge must not drop half of them.
+        let fragment = std::fs::read_to_string(prompts.join("shared-conventions-1.md")).unwrap();
+        for slug in ["dev-lead", "qa", "dev-lead-2", "qa-2"] {
+            let named = fragment
+                .lines()
+                .filter(|l| l.trim() == format!("- {slug}"))
+                .count();
+            assert_eq!(named, 1, "`apply_to` must name {slug} once:\n{fragment}");
+        }
+    }
+
+    /// The control the fix must not swallow: inside one tree, two files
+    /// claiming one name really do make routing ambiguous, and the command
+    /// still fails. Claude Code recurses into `~/.claude/agents/`, so the
+    /// second file sits in a subdirectory with the same `name:` — the exact
+    /// shape `C01` exists for.
+    #[test]
+    fn two_agents_of_one_name_in_one_root_are_still_a_collision() {
+        let s = Sandbox::new();
+        for path in [
+            "home/.claude/agents/dev-lead.md",
+            "home/.claude/agents/backend/dev-lead.md",
+        ] {
+            s.write(
+                path,
+                "---\nname: dev-lead\ndescription: Leads the fleet\ntools: Read\n---\nYou lead.",
+            );
+        }
+
+        let out = s.run(&["--global"]);
+        out.ran()
+            .line_with("C01", &["dev-lead", "routing is ambiguous"]);
+        assert!(
+            !out.success,
+            "a real homonym inside one tree must still exit non-zero:\n{}",
+            out.stdout
+        );
+    }
+
+    /// The same control for skills, whose two trees are where the defect was
+    /// already reachable before #393: one name twice in `~/.claude/skills`
+    /// stays Critical.
+    #[test]
+    fn two_skills_of_one_name_in_one_root_are_still_a_collision() {
+        let s = Sandbox::new();
+        for dir in ["graphify", "graphify-copy"] {
+            s.write(
+                &format!("home/.claude/skills/{dir}/SKILL.md"),
+                "---\nname: graphify\ndescription: builds a knowledge graph\n---\nBody.",
+            );
+        }
+
+        let out = s.run(&["--global"]);
+        out.ran()
+            .line_with("C01", &["graphify", "routing is ambiguous"]);
+        assert!(
+            !out.success,
+            "a real skill homonym inside one tree must still exit non-zero:\n{}",
+            out.stdout
+        );
+    }
+
+    /// The skill half of #399, end to end: ArmadAI installs its skills under
+    /// `~/.config/armadai/skills` and Claude Code reads `~/.claude/skills`, so
+    /// one skill present in both used to produce `C01` Critical **and** `C03`
+    /// Warning — the second because a copy's description is, necessarily,
+    /// identical to the original's.
+    #[test]
+    fn a_skill_present_in_both_global_roots_is_not_a_collision() {
+        let s = Sandbox::new();
+        let skill =
+            "---\nname: graphify\ndescription: turns any input into a knowledge graph\n---\nBody.";
+        s.write("home/.claude/skills/graphify/SKILL.md", skill);
+        s.write("home/.config/armadai/skills/graphify/SKILL.md", skill);
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["2 skill(s)"]);
+        assert!(
+            out.success,
+            "one skill installed from the library it lives in must not fail \
+             the audit:\n{}\n{}",
+            out.stdout, out.stderr
+        );
+        out.has_no_line_with("C01", &["graphify"])
+            .has_no_line_with("C03", &["graphify"]);
+    }
+
+    /// The *other* half of `C01`, and the one no test covered: an agent and a
+    /// skill sharing a name. Inside one tree it is a Warning ("confusing to
+    /// someone reading one tree"); across the two global roots it is one asset
+    /// and a neighbour, and must stay silent.
+    ///
+    /// Both directions in one case, because either alone is passed by a rule
+    /// that is simply broken: removing the space guard from that pairing left
+    /// 759 unit tests and 29 cases here green, while turning the silence into a
+    /// warning `master` also emitted.
+    #[test]
+    fn an_agent_and_a_skill_of_one_name_collide_inside_a_tree_only() {
+        let agent_md = "---\nname: graphify\ndescription: Builds a graph of the repo\ntools: Read\n---\n\
+             You build graphs.";
+        let skill_md =
+            "---\nname: graphify\ndescription: turns any input into a knowledge graph\n---\nBody.";
+
+        let across = Sandbox::new();
+        across.write("home/.claude/agents/graphify.md", agent_md);
+        across.write("home/.config/armadai/skills/graphify/SKILL.md", skill_md);
+        let out = across.run(&["--global"]);
+        out.ran()
+            .line_with("Detected:", &["1 agent(s), 1 skill(s)"]);
+        out.has_no_line_with("C01", &["graphify"]);
+
+        let inside = Sandbox::new();
+        inside.write("home/.claude/agents/graphify.md", agent_md);
+        inside.write("home/.claude/skills/graphify/SKILL.md", skill_md);
+        inside
+            .run(&["--global"])
+            .ran()
+            .line_with("C01", &["agent and skill share the name 'graphify'"]);
+    }
+
+    /// The two blind spots #399's fix opens, pinned so that closing them again
+    /// has to be a decision rather than an accident.
+    ///
+    /// Two *different* agents of one name, one per root (and the same for an
+    /// agent/skill pair), used to be reported and now are not. That is the
+    /// intended reading — "two routers, one entry each": `~/.claude/agents` is
+    /// enumerated by Claude Code and `~/.config/armadai/agents` by ArmadAI, and
+    /// neither resolver ever sees both files, so neither has an ambiguous
+    /// name to resolve. Nothing is silently lost either: `armadai link`
+    /// without `--force` refuses to overwrite an existing native file, so the
+    /// user is told at the moment the two would meet.
+    ///
+    /// Measured before the fix: `master` exited 1 on this exact fixture.
+    #[test]
+    fn two_different_agents_of_one_name_in_two_roots_are_not_a_collision() {
+        let s = Sandbox::new();
+        s.write(
+            "home/.claude/agents/dev-lead.md",
+            "---\nname: dev-lead\ndescription: Leads the Claude Code fleet\ntools: Read\n---\n\
+             You lead the native fleet.",
+        );
+        s.write(
+            "home/.config/armadai/agents/dev-lead.md",
+            &armadai_agent(
+                "dev-lead",
+                "You lead an entirely different ArmadAI fleet.",
+                "",
+            ),
+        );
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["2 agent(s)"]);
+        assert!(
+            out.success,
+            "one name per resolver is not an ambiguity:\n{}\n{}",
+            out.stdout, out.stderr
+        );
+        out.has_no_line_with("C01", &["dev-lead"]);
+    }
+
     /// `--propose` in global scope has no project root to write into, so it
     /// writes into the **current directory, whatever that is** — the same place
     /// project scope would.
@@ -815,6 +1104,80 @@ mod tests {
         assert!(
             !s.home().join(".armadai-proposal").exists(),
             "the pack follows the cwd, and the cwd here is work/, not the home"
+        );
+    }
+
+    /// Issue #400. `--propose --global` offers its pack as an installable
+    /// replacement for what it read (`Install it with: armadai init --pack …`),
+    /// and since #393 what it reads can already be an ArmadAI library. Measured
+    /// on one library agent, the pack it produced had dropped `temperature`,
+    /// `max_tokens` and `stacks`, replaced `tags` with `[imported]`, and
+    /// flattened `## Instructions` / `## Output Format` and every `###` into
+    /// bold lines inside a single `## System Prompt`.
+    ///
+    /// Asserted on the file the binary wrote, re-read from disk: the unit
+    /// tests prove `render_agent`, they cannot prove `--propose --global`
+    /// reaches it with the source metadata still attached.
+    #[test]
+    fn a_global_propose_reproduces_an_armadai_library_instead_of_impoverishing_it() {
+        let s = Sandbox::new();
+        s.write(
+            "home/.config/armadai/agents/platodin-java-lead.md",
+            "# Platodin Java Lead\n\n\
+             ## Metadata\n\
+             - provider: claude\n\
+             - model: claude-sonnet-5\n\
+             - temperature: 0.4\n\
+             - max_tokens: 8192\n\
+             - tags: coordinator, lead, analysis\n\
+             - stacks: java, spring-boot, platodin\n\n\
+             ## System Prompt\n\n\
+             You are the Platodin Java Lead.\n\n\
+             ### Scope\n\n\
+             You own the framework surface.\n\n\
+             ## Instructions\n\n\
+             ### Review checklist\n\n\
+             - Check the module layout.\n",
+        );
+
+        let out = s.run(&["--global", "--propose"]);
+        out.ran();
+        let pack_agent = s
+            .work()
+            .join(".armadai-proposal/agents/platodin-java-lead.md");
+        let written = std::fs::read_to_string(&pack_agent).unwrap_or_else(|e| {
+            panic!(
+                "the pack must carry the agent ({}): {e}\n{}\n{}",
+                pack_agent.display(),
+                out.stdout,
+                out.stderr
+            )
+        });
+
+        // Whole trimmed lines, never `contains`: a heading shifted two levels
+        // down still *contains* the shallower one as a substring, so
+        // `contains("### Scope")` stays true for `##### Scope` and the
+        // assertion could not fail (measured — it was the first version of
+        // this test).
+        let lines: Vec<&str> = written.lines().map(str::trim).collect();
+        for expected in [
+            "- model: claude-sonnet-5",
+            "- temperature: 0.4",
+            "- max_tokens: 8192",
+            "- tags: [coordinator, lead, analysis]",
+            "- stacks: [java, spring-boot, platodin]",
+            "## Instructions",
+            "### Scope",
+            "### Review checklist",
+        ] {
+            assert!(
+                lines.contains(&expected),
+                "the pack lost the line {expected:?}:\n{written}"
+            );
+        }
+        assert!(
+            !lines.contains(&"- tags: [imported]"),
+            "the source's own tags must not be overwritten:\n{written}"
         );
     }
 

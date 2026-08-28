@@ -77,6 +77,30 @@ impl AgentFormat {
     }
 }
 
+/// The tree an asset was read from: the repository root in project scope,
+/// `~/.claude` or `~/.config/armadai` in the global one.
+///
+/// Not decoration either, and not [`AuditScope`] in disguise: it is what lets
+/// a rule ask **"are these two files in the same resolution space?"** — the
+/// question every rule that compares two assets is really asking.
+///
+/// `C01` reports two files claiming one name as ambiguous routing, and `A06`
+/// / `A07` report two agents as redundant. All three are only true of assets
+/// something resolves *together*. The global pass assembles two unrelated
+/// trees, and `armadai link` publishes the ArmadAI library into the native one
+/// by design, so a healthy library seen through both roots produced
+/// `2 critical` and a non-zero exit — one per agent the user had linked
+/// (measured, issue #399). A name is ambiguous inside one tree; the same name
+/// in two trees is one asset and its published copy.
+///
+/// Scope stays unavailable to rules: it says which surface the *run* reads, so
+/// branching on it would make one rule behave two ways. A space is a property
+/// of the *file*, like a format, and every rule treats every file the same way
+/// whatever the scope filled it.
+///
+/// [`AuditScope`]: crate::audit::AuditScope
+pub type ResolutionSpace = PathBuf;
+
 /// An agent imported from a native config.
 #[derive(Debug, Clone)]
 pub struct ImportedAgent {
@@ -87,6 +111,36 @@ pub struct ImportedAgent {
     pub issues: Vec<ParseIssue>,
     /// What the file it came from is able to declare — see [`AgentFormat`].
     pub format: AgentFormat,
+    /// The tree this file was read from — see [`ResolutionSpace`].
+    pub space: ResolutionSpace,
+    /// The typed `## Metadata` block an ArmadAI-format source carried, kept
+    /// verbatim for `--propose`. `None` for a native file.
+    ///
+    /// [`PartialMetadata`] is the *shared* view every rule reads, and it is
+    /// deliberately the intersection of what both formats express: a
+    /// description, a model, a tool list. An ArmadAI file says more —
+    /// `temperature`, `max_tokens`, `tags`, `stacks`, `scope` — and `--propose`
+    /// is the one consumer that must not lose it, because since #393 it can
+    /// run on a library that is *already* ArmadAI and its output is offered as
+    /// an installable replacement for it (issue #400).
+    ///
+    /// Kept out of [`PartialMetadata::extra`] on purpose, and the reason is
+    /// measured: `extra` is Claude Code frontmatter the audit does not type, so
+    /// `A12` reports its keys as non-standard and `C02`/`C05` read `paths` out
+    /// of it. Routing ArmadAI's own vocabulary through it announced
+    /// `provider (76), model (76), tags (76)` on a healthy library and turned
+    /// `scope` into 149 phantom overlapping pairs. A separate field is what
+    /// lets the proposal see the fields while the rules keep not seeing them.
+    pub armadai_metadata: Option<armadai_core::agent::AgentMetadata>,
+    /// The human-readable title an ArmadAI-format source declares as its `# H1`,
+    /// when it differs from [`name`](Self::name) (which is the stem, i.e. what
+    /// routes). `None` for a native file, and `None` when title == stem.
+    ///
+    /// The same reasoning as [`armadai_metadata`](Self::armadai_metadata) and
+    /// the same single consumer: no rule reads it — `A02`/`A07`/`C01` all speak
+    /// about the *routable* name — but `--propose` reproducing an ArmadAI
+    /// library must not silently rename its agents.
+    pub title: Option<String>,
 }
 
 /// A skill imported from a native config (Agent Skills standard layout).
@@ -108,6 +162,8 @@ pub struct ImportedSkill {
     /// Frontmatter fields we do not type (kept verbatim for --propose and
     /// custom-field rules). Never populated by salvage.
     pub extra: BTreeMap<String, serde_yaml_ng::Value>,
+    /// The tree this skill was read from — see [`ResolutionSpace`].
+    pub space: ResolutionSpace,
 }
 
 /// Root instructions file (e.g. CLAUDE.md).

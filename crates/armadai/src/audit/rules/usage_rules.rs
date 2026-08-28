@@ -343,6 +343,7 @@ mod tests {
             body_tokens: 0,
             issues: vec![],
             extra: Default::default(),
+            space: ".claude".into(),
         });
         let settings = AuditSettings::default();
         let mut usage = UsageFacts::default();
@@ -588,6 +589,7 @@ mod tests {
             body_tokens: 0,
             issues: vec![],
             extra: Default::default(),
+            space: ".claude".into(),
         });
         let settings = AuditSettings::default();
         let mut usage = UsageFacts {

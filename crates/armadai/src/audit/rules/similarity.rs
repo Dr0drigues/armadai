@@ -44,6 +44,20 @@ pub(super) fn jaccard(a: &str, b: &str) -> f64 {
 /// window, computed via union-find over pairwise window-hash intersections.
 /// Only components with 2+ members are kept; components are sorted by their
 /// lowest member index. Shared by A06 and `--propose`'s fragment extraction.
+///
+/// Clusters never cross a
+/// [`ResolutionSpace`](crate::audit::reverse::ResolutionSpace). The remedy
+/// this rule proposes — "extract the shared block into one reusable prompt
+/// fragment" — is a change to *one* library, and `armadai link` republishes
+/// every library agent into `~/.claude`, so a global run folded the source
+/// and its published copies into a single cluster naming each agent twice
+/// (issue #399). One cluster per tree names each agent once.
+///
+/// That is the right *report* and not yet the right *pack*: one shared block
+/// seen through two trees is two clusters, and building one fragment per
+/// cluster shipped two byte-identical fragments — measured on the #399 fixture.
+/// Collapsing them is `proposal::dedupe_fragments`' job, not this function's:
+/// A06's finding is per library, the pack is one artifact.
 pub(crate) fn duplication_clusters(agents: &[ImportedAgent]) -> Vec<Vec<usize>> {
     let hashes: Vec<HashSet<u64>> = agents
         .iter()
@@ -52,6 +66,9 @@ pub(crate) fn duplication_clusters(agents: &[ImportedAgent]) -> Vec<Vec<usize>> 
     let mut uf = UnionFind::new(agents.len());
     for i in 0..agents.len() {
         for j in (i + 1)..agents.len() {
+            if agents[i].space != agents[j].space {
+                continue;
+            }
             if hashes[i].intersection(&hashes[j]).next().is_some() {
                 uf.union(i, j);
             }
@@ -108,11 +125,20 @@ pub(super) fn a06_duplicated_blocks(ctx: &AuditContext) -> Vec<Finding> {
 }
 
 /// A07 — two agents look interchangeable (near-identical descriptions).
+///
+/// Within one [`ResolutionSpace`](crate::audit::reverse::ResolutionSpace)
+/// only: the description an ArmadAI agent is judged on is exactly the one
+/// `armadai link` writes into the copy it publishes, so across the two global
+/// trees every linked agent was reported near-identical to itself — `agents
+/// 'dev-lead' and 'dev-lead'` (issue #399).
 pub(super) fn a07_redundant_agents(ctx: &AuditContext) -> Vec<Finding> {
     let agents = &ctx.config.agents;
     let mut findings = Vec::new();
     for i in 0..agents.len() {
         for j in (i + 1)..agents.len() {
+            if agents[i].space != agents[j].space {
+                continue;
+            }
             let (Some(da), Some(db)) = (
                 &agents[i].metadata.description,
                 &agents[j].metadata.description,
@@ -222,6 +248,69 @@ mod tests {
         });
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "A07");
+    }
+
+    /// Issue #399. `armadai link` republishes every library agent into
+    /// `~/.claude`, so in global scope `A06` saw each of them twice and folded
+    /// the two trees into a single cluster: measured on a two-agent library,
+    /// `4 agents share duplicated content: dev-lead, dev-lead, qa-specialist,
+    /// qa-specialist`. The block is real and worth extracting — once per tree,
+    /// naming each agent once.
+    #[test]
+    fn a06_clusters_within_a_tree_not_across_two() {
+        use crate::audit::rules::test_support::armadai_agent;
+        let block = shared_block();
+        let config = config_with(vec![
+            armadai_agent("dev-lead", &format!("{block}Specific to dev-lead.")),
+            armadai_agent("qa", &format!("{block}Specific to qa.")),
+            agent("dev-lead", &format!("{block}Specific to dev-lead.")),
+            agent("qa", &format!("{block}Specific to qa.")),
+        ]);
+        let settings = AuditSettings::default();
+        let f = a06_duplicated_blocks(&AuditContext {
+            config: &config,
+            settings: &settings,
+            usage: None,
+        });
+        assert_eq!(
+            f.len(),
+            2,
+            "one cluster per tree, got {:?}",
+            f.iter().map(|x| &x.message).collect::<Vec<_>>()
+        );
+        for finding in &f {
+            assert!(
+                finding.message.contains("2 agents"),
+                "a cluster must name each agent once, got {:?}",
+                finding.message
+            );
+        }
+    }
+
+    /// `A07`'s share of #399: the description an ArmadAI agent is judged on is
+    /// exactly the one `link` writes into the published copy, so every linked
+    /// agent was reported near-identical to itself — `agents 'dev-lead' and
+    /// 'dev-lead' have near-identical descriptions`.
+    /// `a07_flags_near_identical_descriptions` above is the control.
+    #[test]
+    fn a07_ignores_an_agent_published_into_a_second_root() {
+        use crate::audit::rules::test_support::armadai_agent;
+        let mut library = armadai_agent("dev-lead", "You are the Dev Lead.");
+        let mut published = agent("dev-lead", "You are the Dev Lead.");
+        library.metadata.description = Some("you are the dev lead".to_string());
+        published.metadata.description = Some("you are the dev lead".to_string());
+        let config = config_with(vec![library, published]);
+        let settings = AuditSettings::default();
+        let f = a07_redundant_agents(&AuditContext {
+            config: &config,
+            settings: &settings,
+            usage: None,
+        });
+        assert!(
+            f.is_empty(),
+            "an agent is not redundant with its own published copy, got {:?}",
+            f.iter().map(|x| &x.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]

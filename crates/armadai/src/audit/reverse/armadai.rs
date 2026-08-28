@@ -46,7 +46,10 @@ use super::{AgentFormat, ImportedAgent, ParseIssue, PartialMetadata};
 /// (`armadai_core::project::resolve_agent`), so a file in a subdirectory is
 /// not an agent this library can run, and reporting findings against it would
 /// be reporting on something unreachable.
-pub(crate) fn parse_agents(dir: &Path) -> Vec<ImportedAgent> {
+///
+/// `space` is the tree `dir` belongs to (`~/.config/armadai`), not `dir`
+/// itself — see [`ResolutionSpace`](super::ResolutionSpace).
+pub(crate) fn parse_agents(dir: &Path, space: &Path) -> Vec<ImportedAgent> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -56,7 +59,7 @@ pub(crate) fn parse_agents(dir: &Path) -> Vec<ImportedAgent> {
         .filter(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "md"))
         .collect();
     files.sort();
-    let mut agents: Vec<ImportedAgent> = files.iter().map(|p| parse_one(p)).collect();
+    let mut agents: Vec<ImportedAgent> = files.iter().map(|p| parse_one(p, space)).collect();
     agents.sort_by(|a, b| a.name.cmp(&b.name));
     agents
 }
@@ -68,9 +71,9 @@ fn stem(path: &Path) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn parse_one(path: &Path) -> ImportedAgent {
+fn parse_one(path: &Path, space: &Path) -> ImportedAgent {
     match parse_agent_file(path) {
-        Ok(agent) => imported(path, &agent),
+        Ok(agent) => imported(path, &agent, space),
         // Every refusal of the product parser is a real defect in the file:
         // it means `armadai run` cannot load it either. `{e:#}` keeps the
         // anyhow context chain ("reading <path>", "Missing ## Metadata
@@ -85,17 +88,22 @@ fn parse_one(path: &Path) -> ImportedAgent {
                 message: format!("{e:#}"),
             }],
             format: AgentFormat::Armadai,
+            space: space.to_path_buf(),
+            // Nothing was parsed, so there is nothing to reproduce.
+            armadai_metadata: None,
+            title: None,
         },
     }
 }
 
-fn imported(path: &Path, agent: &Agent) -> ImportedAgent {
+fn imported(path: &Path, agent: &Agent, space: &Path) -> ImportedAgent {
     // The single existing implementation of "what description does ArmadAI
     // publish for this agent", reused rather than restated: `link` writes
     // this exact string into the native config a router then reads.
     let description = crate::linker::LinkAgent::from(agent).description;
+    let stem = stem(path);
     ImportedAgent {
-        name: stem(path),
+        name: stem.clone(),
         source_path: path.to_path_buf(),
         metadata: PartialMetadata {
             description,
@@ -120,6 +128,13 @@ fn imported(path: &Path, agent: &Agent) -> ImportedAgent {
         system_prompt: prompt_text(agent),
         issues: Vec::new(),
         format: AgentFormat::Armadai,
+        space: space.to_path_buf(),
+        // Everything `PartialMetadata` cannot hold, for `--propose` only.
+        armadai_metadata: Some(agent.metadata.clone()),
+        // What routes is the stem, so that is `name`; the `# H1` is the
+        // display title and is kept only when it says something the stem
+        // does not.
+        title: (agent.name != stem).then(|| agent.name.clone()),
     }
 }
 
@@ -155,7 +170,11 @@ fn imported(path: &Path, agent: &Agent) -> ImportedAgent {
 /// the linkers normalise, so a section already ending in a newline gained a
 /// third one here and nowhere else. The audit must read exactly the text a
 /// model gets, which is now one function away rather than a re-derivation.
-fn prompt_text(agent: &Agent) -> String {
+///
+/// `pub(crate)` because `--propose` reproduces this same body when the source
+/// is already an ArmadAI agent (#400) — the pack must carry the text the
+/// audit measured, not a second rendering of it.
+pub(crate) fn prompt_text(agent: &Agent) -> String {
     agent.composed_prompt()
 }
 
@@ -202,7 +221,7 @@ A code block, ready to save.
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "agents/agent-builder.md", FULL);
 
-        let agents = parse_agents(&dir.path().join("agents"));
+        let agents = parse_agents(&dir.path().join("agents"), dir.path());
 
         assert_eq!(agents.len(), 1, "{agents:?}");
         let a = &agents[0];
@@ -231,7 +250,7 @@ A code block, ready to save.
              ## System Prompt\n\nYou manage applications.",
         );
 
-        let agents = parse_agents(&dir.path().join("agents"));
+        let agents = parse_agents(&dir.path().join("agents"), dir.path());
 
         assert_eq!(
             agents[0].name, "gravitee-am-app-manager",
@@ -250,7 +269,7 @@ A code block, ready to save.
         let dir = tempfile::tempdir().unwrap();
         let path = write(dir.path(), "agents/agent-builder.md", FULL);
 
-        let agents = parse_agents(&dir.path().join("agents"));
+        let agents = parse_agents(&dir.path().join("agents"), dir.path());
 
         let published =
             crate::linker::LinkAgent::from(&armadai_core::parser::parse_agent_file(&path).unwrap())
@@ -274,7 +293,7 @@ A code block, ready to save.
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "agents/agent-builder.md", FULL);
 
-        let agents = parse_agents(&dir.path().join("agents"));
+        let agents = parse_agents(&dir.path().join("agents"), dir.path());
 
         let prompt = &agents[0].system_prompt;
         for needle in [
@@ -297,7 +316,7 @@ A code block, ready to save.
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "agents/my-agent.md", "# My Agent\n");
 
-        let agents = parse_agents(&dir.path().join("agents"));
+        let agents = parse_agents(&dir.path().join("agents"), dir.path());
 
         assert_eq!(agents.len(), 1);
         let a = &agents[0];
@@ -321,7 +340,7 @@ A code block, ready to save.
         write(dir.path(), "agents/team/nested.md", FULL);
         write(dir.path(), "agents/notes.txt", FULL);
 
-        let agents = parse_agents(&dir.path().join("agents"));
+        let agents = parse_agents(&dir.path().join("agents"), dir.path());
         let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
 
         assert_eq!(names, vec!["top"]);
@@ -343,7 +362,7 @@ A code block, ready to save.
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "agents/agent-builder.md", FULL);
 
-        let a = parse_agents(&dir.path().join("agents")).remove(0);
+        let a = parse_agents(&dir.path().join("agents"), dir.path()).remove(0);
 
         assert!(a.metadata.tools.is_none());
         assert!(!a.format.declares_tools());
@@ -371,7 +390,7 @@ A code block, ready to save.
              ## Instructions\n\nDo things.",
         );
 
-        let a = parse_agents(&dir.path().join("agents")).remove(0);
+        let a = parse_agents(&dir.path().join("agents"), dir.path()).remove(0);
 
         assert!(a.issues.is_empty(), "{:?}", a.issues);
         assert!(
@@ -384,6 +403,6 @@ A code block, ready to save.
     #[test]
     fn an_absent_directory_yields_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(parse_agents(&dir.path().join("nope")).is_empty());
+        assert!(parse_agents(&dir.path().join("nope"), dir.path()).is_empty());
     }
 }
