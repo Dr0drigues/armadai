@@ -955,6 +955,80 @@ mod tests {
         );
     }
 
+    /// Issue #400. `--propose --global` offers its pack as an installable
+    /// replacement for what it read (`Install it with: armadai init --pack …`),
+    /// and since #393 what it reads can already be an ArmadAI library. Measured
+    /// on one library agent, the pack it produced had dropped `temperature`,
+    /// `max_tokens` and `stacks`, replaced `tags` with `[imported]`, and
+    /// flattened `## Instructions` / `## Output Format` and every `###` into
+    /// bold lines inside a single `## System Prompt`.
+    ///
+    /// Asserted on the file the binary wrote, re-read from disk: the unit
+    /// tests prove `render_agent`, they cannot prove `--propose --global`
+    /// reaches it with the source metadata still attached.
+    #[test]
+    fn a_global_propose_reproduces_an_armadai_library_instead_of_impoverishing_it() {
+        let s = Sandbox::new();
+        s.write(
+            "home/.config/armadai/agents/platodin-java-lead.md",
+            "# Platodin Java Lead\n\n\
+             ## Metadata\n\
+             - provider: claude\n\
+             - model: claude-sonnet-5\n\
+             - temperature: 0.4\n\
+             - max_tokens: 8192\n\
+             - tags: coordinator, lead, analysis\n\
+             - stacks: java, spring-boot, platodin\n\n\
+             ## System Prompt\n\n\
+             You are the Platodin Java Lead.\n\n\
+             ### Scope\n\n\
+             You own the framework surface.\n\n\
+             ## Instructions\n\n\
+             ### Review checklist\n\n\
+             - Check the module layout.\n",
+        );
+
+        let out = s.run(&["--global", "--propose"]);
+        out.ran();
+        let pack_agent = s
+            .work()
+            .join(".armadai-proposal/agents/platodin-java-lead.md");
+        let written = std::fs::read_to_string(&pack_agent).unwrap_or_else(|e| {
+            panic!(
+                "the pack must carry the agent ({}): {e}\n{}\n{}",
+                pack_agent.display(),
+                out.stdout,
+                out.stderr
+            )
+        });
+
+        // Whole trimmed lines, never `contains`: a heading shifted two levels
+        // down still *contains* the shallower one as a substring, so
+        // `contains("### Scope")` stays true for `##### Scope` and the
+        // assertion could not fail (measured — it was the first version of
+        // this test).
+        let lines: Vec<&str> = written.lines().map(str::trim).collect();
+        for expected in [
+            "- model: claude-sonnet-5",
+            "- temperature: 0.4",
+            "- max_tokens: 8192",
+            "- tags: [coordinator, lead, analysis]",
+            "- stacks: [java, spring-boot, platodin]",
+            "## Instructions",
+            "### Scope",
+            "### Review checklist",
+        ] {
+            assert!(
+                lines.contains(&expected),
+                "the pack lost the line {expected:?}:\n{written}"
+            );
+        }
+        assert!(
+            !lines.contains(&"- tags: [imported]"),
+            "the source's own tags must not be overwritten:\n{written}"
+        );
+    }
+
     /// An empty library is not an error, and must not be reported as a
     /// project path the user never named.
     #[test]

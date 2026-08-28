@@ -199,6 +199,7 @@ fn parse_agent_file(path: &Path, space: &Path) -> ImportedAgent {
                 issues: vec![issue(path, format!("unreadable file: {e}"))],
                 format: AgentFormat::ClaudeFrontmatter,
                 space: space.to_path_buf(),
+                armadai_metadata: None,
             };
         }
     };
@@ -233,6 +234,8 @@ fn parse_agent_file(path: &Path, space: &Path) -> ImportedAgent {
         issues,
         format: AgentFormat::ClaudeFrontmatter,
         space: space.to_path_buf(),
+        // A native file has no syntax for most of what this carries.
+        armadai_metadata: None,
     }
 }
 

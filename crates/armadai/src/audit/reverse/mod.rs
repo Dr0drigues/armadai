@@ -113,6 +113,25 @@ pub struct ImportedAgent {
     pub format: AgentFormat,
     /// The tree this file was read from — see [`ResolutionSpace`].
     pub space: ResolutionSpace,
+    /// The typed `## Metadata` block an ArmadAI-format source carried, kept
+    /// verbatim for `--propose`. `None` for a native file.
+    ///
+    /// [`PartialMetadata`] is the *shared* view every rule reads, and it is
+    /// deliberately the intersection of what both formats express: a
+    /// description, a model, a tool list. An ArmadAI file says more —
+    /// `temperature`, `max_tokens`, `tags`, `stacks`, `scope` — and `--propose`
+    /// is the one consumer that must not lose it, because since #393 it can
+    /// run on a library that is *already* ArmadAI and its output is offered as
+    /// an installable replacement for it (issue #400).
+    ///
+    /// Kept out of [`PartialMetadata::extra`] on purpose, and the reason is
+    /// measured: `extra` is Claude Code frontmatter the audit does not type, so
+    /// `A12` reports its keys as non-standard and `C02`/`C05` read `paths` out
+    /// of it. Routing ArmadAI's own vocabulary through it announced
+    /// `provider (76), model (76), tags (76)` on a healthy library and turned
+    /// `scope` into 149 phantom overlapping pairs. A separate field is what
+    /// lets the proposal see the fields while the rules keep not seeing them.
+    pub armadai_metadata: Option<armadai_core::agent::AgentMetadata>,
 }
 
 /// A skill imported from a native config (Agent Skills standard layout).

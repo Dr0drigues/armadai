@@ -89,6 +89,8 @@ fn parse_one(path: &Path, space: &Path) -> ImportedAgent {
             }],
             format: AgentFormat::Armadai,
             space: space.to_path_buf(),
+            // Nothing was parsed, so there is nothing to reproduce.
+            armadai_metadata: None,
         },
     }
 }
@@ -125,6 +127,8 @@ fn imported(path: &Path, agent: &Agent, space: &Path) -> ImportedAgent {
         issues: Vec::new(),
         format: AgentFormat::Armadai,
         space: space.to_path_buf(),
+        // Everything `PartialMetadata` cannot hold, for `--propose` only.
+        armadai_metadata: Some(agent.metadata.clone()),
     }
 }
 
@@ -160,7 +164,11 @@ fn imported(path: &Path, agent: &Agent, space: &Path) -> ImportedAgent {
 /// the linkers normalise, so a section already ending in a newline gained a
 /// third one here and nowhere else. The audit must read exactly the text a
 /// model gets, which is now one function away rather than a re-derivation.
-fn prompt_text(agent: &Agent) -> String {
+///
+/// `pub(crate)` because `--propose` reproduces this same body when the source
+/// is already an ArmadAI agent (#400) — the pack must carry the text the
+/// audit measured, not a second rendering of it.
+pub(crate) fn prompt_text(agent: &Agent) -> String {
     agent.composed_prompt()
 }
 

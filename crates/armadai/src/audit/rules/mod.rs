@@ -291,6 +291,7 @@ pub(crate) mod test_support {
             issues: Vec::new(),
             format: AgentFormat::ClaudeFrontmatter,
             space: PathBuf::from(".claude"),
+            armadai_metadata: None,
         }
     }
 
@@ -311,6 +312,7 @@ pub(crate) mod test_support {
             issues: Vec::new(),
             format: AgentFormat::Armadai,
             space: PathBuf::from(".config/armadai"),
+            armadai_metadata: None,
         }
     }
 

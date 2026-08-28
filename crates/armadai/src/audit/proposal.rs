@@ -37,30 +37,45 @@ fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// How many levels every heading in an imported prompt is pushed down.
+///
+/// Two, and not one: the shift has to clear both `#` and `##`, so the shallower
+/// of the two must land on `###`.
+const HEADING_SHIFT: usize = 2;
+
+/// The deepest ATX level markdown has. Headings already at or near it are
+/// capped rather than promoted, which is the one place the shift is lossy: two
+/// distinct source levels can end up equal. It never loses content.
+const MAX_HEADING_LEVEL: usize = 6;
+
 /// The ArmadAI agent format terminates a `##` section at the next heading of
 /// level <= H2, so a system prompt cannot contain an `#`/`##` heading (before
 /// #392 it could contain no heading at all). Native Claude Code prompts are
 /// often full markdown documents with headings (including literal `## Metadata`
 /// / `## System Prompt` lines that would otherwise clobber the agent's real
-/// sections on re-parse). Demote ATX headings to bold text: content and visual
-/// emphasis are preserved, and no heading survives to break section parsing.
+/// sections on re-parse). Push every heading down [`HEADING_SHIFT`] levels:
+/// no `#`/`##` survives to break section parsing, and the document keeps its
+/// structure.
 ///
-/// All six levels are still demoted, not just `#`/`##`: keeping `###`+ as real
-/// headings is now *safe* for the parser (#392), but it would change the
-/// rendering of every generated proposal, which is a separate change with its
-/// own before/after to measure. Demoting more than strictly necessary loses
-/// visual hierarchy in the proposal; it never loses content.
+/// Bolding every heading instead was *forced* before #392 (fixed by #394),
+/// when a section ended at a heading of any level and a `###` truncated the
+/// file. Keeping `###`+ became safe then, and this function's own doc comment
+/// asked for the change "with its own before/after to measure" — issue #400 is
+/// that measurement. The shift is uniform because demoting `#`/`##` alone would
+/// land them on `###`, colliding with the `###` already in the document and
+/// inverting the hierarchy it is supposed to preserve.
 ///
 /// Fenced code blocks (``` or ~~~) are left completely untouched — a line
 /// starting with `#` inside a fence is code, not a heading. Setext headings
 /// (`Title` followed by a line of only `=` or only `-`) are handled too:
 /// they truncate the ArmadAI parser's System Prompt section just as ATX
-/// headings do, so the underline is dropped and the title line is bolded in
-/// place, unless the previous line doesn't look like a plain paragraph (e.g.
+/// headings do, so the underline is dropped and the title line becomes an ATX
+/// heading of the shifted level in place (`=` is H1, `-` is H2), unless the
+/// previous line doesn't look like a plain paragraph (e.g.
 /// it is blank, a list/quote/table line, or already a heading/underline) —
 /// in that case the `---`/`===` line is kept, but CommonMark doesn't only
 /// treat "plain paragraphs" as valid setext-underline targets: list items,
-/// blockquotes, table rows, and even the `**bold**` lines this function
+/// blockquotes, table rows, and even the heading lines this function
 /// itself emits can all still form a setext heading with a `=`/`-` line
 /// directly below them. So whenever such a line is kept verbatim (not
 /// demoted), a blank line is inserted first if the previously emitted line
@@ -100,8 +115,10 @@ fn demote_headings(prompt: &str) -> String {
                     && !prev.chars().all(|c| c == '-');
                 if is_plain_paragraph {
                     let title = prev.trim().to_string();
+                    // `===` is a setext H1, `---` a setext H2.
+                    let level = if is_all_eq { 1 } else { 2 };
                     if let Some(last) = out.last_mut() {
-                        *last = format!("**{title}**");
+                        *last = shifted_heading(level, &title);
                     }
                     continue; // drop the underline line
                 }
@@ -121,10 +138,10 @@ fn demote_headings(prompt: &str) -> String {
         if let Some(rest) = trimmed_start.strip_prefix('#') {
             let hashes = 1 + rest.chars().take_while(|&c| c == '#').count();
             let after = &trimmed_start[hashes..];
-            if hashes <= 6 && after.starts_with(' ') {
+            if hashes <= MAX_HEADING_LEVEL && after.starts_with(' ') {
                 let title = after.trim().trim_end_matches('#').trim();
                 if !title.is_empty() {
-                    out.push(format!("**{title}**"));
+                    out.push(shifted_heading(hashes, title));
                     continue;
                 }
             }
@@ -135,8 +152,53 @@ fn demote_headings(prompt: &str) -> String {
     out.join("\n")
 }
 
+/// One ATX heading, [`HEADING_SHIFT`] levels deeper than `level` and never
+/// past [`MAX_HEADING_LEVEL`].
+fn shifted_heading(level: usize, title: &str) -> String {
+    let depth = (level + HEADING_SHIFT).min(MAX_HEADING_LEVEL);
+    format!("{} {title}", "#".repeat(depth))
+}
+
+/// The exact prose written under `## System Prompt`, for one imported agent.
+///
+/// A native prompt is an arbitrary markdown document and gets its headings
+/// shifted out of the way ([`demote_headings`]). An ArmadAI body is already in
+/// this format: `armadai::prompt_text` builds it from sections the product
+/// parser produced, so its only `#`/`##` lines are the `## Instructions` /
+/// `## Output Format` / `## Context` headings that function re-inserted, and
+/// those must stay real sections. Shifting them turned the pack's whole
+/// structure into bold text (issue #400).
+///
+/// Shared with `generate_proposal`, which needs the *written* text to compute
+/// its truncation sentinel — a sentinel taken from a differently-rendered
+/// string would police nothing.
+fn rendered_prompt(agent: &ImportedAgent) -> String {
+    match agent.armadai_metadata {
+        Some(_) => agent.system_prompt.clone(),
+        None => demote_headings(&agent.system_prompt),
+    }
+}
+
 /// Render an imported agent in the ArmadAI agent format
 /// (H1 + `## Metadata` list + `## System Prompt`).
+///
+/// A function of the *origin format*, following the shape #393 introduced for
+/// `A08`: a native config is **converted** (model mapped to a portable tier,
+/// provenance tag, headings shifted), an ArmadAI source is **reproduced**.
+/// Since #393 the global pass reads `~/.config/armadai/agents`, so
+/// `--propose --global` runs this on a library that is already in the target
+/// format, and converting it a second time only removed things — measured on
+/// one agent: `temperature`, `max_tokens`, `stacks` dropped, `tags`
+/// overwritten, sections flattened (issue #400).
+///
+/// The H1 stays the slug in **both** paths, and that is not an oversight: the
+/// runtime matches a prompt's `apply_to` against the agent's H1 name
+/// (`armadai_core::prompt::prompts_for_agent`) while `pack_validation`'s R5
+/// matches it against the pack's slug list, so the two agree only when H1 ==
+/// slug. An ArmadAI file's routable name is its stem anyway
+/// (`project::resolve_agent` looks up `<dir>/<name>.md`), which is what the
+/// slug is derived from; the human-readable title is the one thing this path
+/// cannot carry back.
 pub(crate) fn render_agent(agent: &ImportedAgent) -> String {
     let mut md = String::new();
     let _ = writeln!(md, "# {}\n", agent.name);
@@ -150,6 +212,17 @@ pub(crate) fn render_agent(agent: &ImportedAgent) -> String {
     let description = one_line(description);
     let _ = writeln!(md, "> {description}\n");
     let _ = writeln!(md, "## Metadata");
+    match &agent.armadai_metadata {
+        Some(source) => write_source_metadata(&mut md, source, &description),
+        None => write_converted_metadata(&mut md, agent, &description),
+    }
+    let _ = writeln!(md, "\n## System Prompt\n");
+    let _ = writeln!(md, "{}", rendered_prompt(agent));
+    md
+}
+
+/// `## Metadata` for a native config: one portable tier, one provenance tag.
+fn write_converted_metadata(md: &mut String, agent: &ImportedAgent, description: &str) {
     let _ = writeln!(md, "- provider: claude");
     let _ = writeln!(
         md,
@@ -168,9 +241,82 @@ pub(crate) fn render_agent(agent: &ImportedAgent) -> String {
     if !globs.is_empty() {
         let _ = writeln!(md, "- scope: [{}]", globs.join(", "));
     }
-    let _ = writeln!(md, "\n## System Prompt\n");
-    let _ = writeln!(md, "{}", demote_headings(&agent.system_prompt));
-    md
+}
+
+/// `## Metadata` reproduced from an ArmadAI source.
+///
+/// Every key here is one `parser::metadata::parse_metadata` reads back, so the
+/// pack round-trips — which is what the tests assert, on a re-parse rather than
+/// on this string.
+///
+/// Two fields are deliberately not reproduced, for the same reason
+/// `## Pipeline` is not: they are not scalars this list can carry back.
+/// `orchestration` is worse than absent — `parse_metadata` accepts only
+/// `direct`, `blackboard` and `ring`, so writing back a `Hierarchical` or
+/// `Auto` agent would produce a pack the product's own parser refuses.
+/// `triggers` and `ring_config` are whole `##` sections of their own.
+fn write_source_metadata(
+    md: &mut String,
+    source: &armadai_core::agent::AgentMetadata,
+    description: &str,
+) {
+    let _ = writeln!(md, "- provider: {}", source.provider);
+    if let Some(model) = &source.model {
+        // Not `portable_model`: the author of an ArmadAI library already chose
+        // how portable they wanted to be, and re-mapping it is the "convert"
+        // path this branch exists to avoid.
+        let _ = writeln!(md, "- model: {model}");
+    }
+    if let Some(command) = &source.command {
+        let _ = writeln!(md, "- command: {command}");
+    }
+    write_list(md, "args", source.args.as_deref().unwrap_or(&[]));
+    let _ = writeln!(md, "- description: {description}");
+    // A source with no tags still gets the provenance marker: the pack is an
+    // import either way, and an empty `- tags: []` says less than nothing.
+    if source.tags.is_empty() {
+        let _ = writeln!(md, "- tags: [imported]");
+    } else {
+        write_list(md, "tags", &source.tags);
+    }
+    if (source.temperature - armadai_core::agent::default_temperature()).abs() > f32::EPSILON {
+        let _ = writeln!(md, "- temperature: {}", source.temperature);
+    }
+    if let Some(max_tokens) = source.max_tokens {
+        let _ = writeln!(md, "- max_tokens: {max_tokens}");
+    }
+    if let Some(timeout) = source.timeout {
+        let _ = writeln!(md, "- timeout: {timeout}");
+    }
+    write_list(md, "stacks", &source.stacks);
+    write_list(md, "scope", &source.scope);
+    write_list(md, "model_fallback", &source.model_fallback);
+    if let Some(cost_limit) = source.cost_limit {
+        let _ = writeln!(md, "- cost_limit: {cost_limit}");
+    }
+    if let Some(rate_limit) = &source.rate_limit {
+        let _ = writeln!(md, "- rate_limit: {rate_limit}");
+    }
+    if let Some(context_window) = source.context_window {
+        let _ = writeln!(md, "- context_window: {context_window}");
+    }
+    if let Some(mode) = source.mode {
+        let _ = writeln!(
+            md,
+            "- mode: {}",
+            match mode {
+                armadai_core::agent::AgentMode::Guided => "guided",
+                armadai_core::agent::AgentMode::Autonomous => "autonomous",
+            }
+        );
+    }
+}
+
+/// `- key: [a, b]`, or nothing at all when the list is empty.
+fn write_list(md: &mut String, key: &str, values: &[String]) {
+    if !values.is_empty() {
+        let _ = writeln!(md, "- {key}: [{}]", values.join(", "));
+    }
 }
 
 /// A prompt fragment shared by several agents, extracted from a duplication cluster.
@@ -549,7 +695,7 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
                     agent.system_prompt = strip_fragment(&agent.system_prompt, &f.body);
                 }
             }
-            let written_prompt = demote_headings(&agent.system_prompt);
+            let written_prompt = rendered_prompt(&agent);
             if let Some(tail) = written_prompt.lines().rev().find(|l| !l.trim().is_empty()) {
                 prompt_tails.insert(slug.clone(), tail.trim().to_string());
             }
@@ -644,14 +790,20 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
             let file = out_dir.join("agents").join(format!("{slug}.md"));
             match armadai_core::parser::parse_agent_file(&file) {
                 Ok(parsed) => {
-                    if parsed.system_prompt.trim().is_empty() && !a.system_prompt.trim().is_empty()
-                    {
+                    // The whole prose, not just `## System Prompt`: an ArmadAI
+                    // source is written back with its `## Instructions` /
+                    // `## Output Format` / `## Context` sections intact, so its
+                    // last line lands in one of those. Identical to reading
+                    // `system_prompt` for a converted native agent, which has
+                    // no other section.
+                    let body = crate::audit::reverse::armadai::prompt_text(&parsed);
+                    if body.trim().is_empty() && !a.system_prompt.trim().is_empty() {
                         errors.push(format!(
                             "agents/{slug}.md: system prompt became empty on re-parse"
                         ));
                     } else if let Some(tail) = prompt_tails.get(slug)
                         && !tail.is_empty()
-                        && !parsed.system_prompt.contains(tail.as_str())
+                        && !body.contains(tail.as_str())
                     {
                         errors.push(format!(
                             "agents/{slug}.md: system prompt lost its final line on re-parse \
@@ -715,32 +867,40 @@ mod tests {
     fn demote_headings_handles_setext_and_skips_fences() {
         let input = "Workflow\n---\nkeep me\n\n```bash\n# not a heading\n```\n\nTitle\n===";
         let out = demote_headings(input);
-        assert!(out.contains("**Workflow**"));
+        // `---` is a setext H2, `===` a setext H1: shifted to H4 and H3.
+        assert!(out.contains("#### Workflow"), "got:\n{out}");
         assert!(!out.lines().any(|l| l.trim() == "---")); // setext underline dropped
         assert!(out.contains("keep me"));
         assert!(out.contains("# not a heading")); // untouched inside fence
-        assert!(out.contains("**Title**"));
+        assert!(out.contains("### Title"), "got:\n{out}");
     }
 
     #[test]
     fn demote_headings_neutralizes_atx_headings() {
         let input = "# Title\n\nsome text\n\n## Metadata\n- provider: x\n\n### Deep\nmore";
         let out = demote_headings(input);
-        assert!(!out.contains("# Title"));
-        assert!(out.contains("**Title**"));
-        assert!(out.contains("**Metadata**"));
-        assert!(out.contains("**Deep**"));
+        // Nothing that ends an ArmadAI section survives, at any level.
+        for line in out.lines() {
+            let t = line.trim_start();
+            assert!(
+                !(t.starts_with("# ") || t.starts_with("## ")),
+                "an H1/H2 survived: {line:?}"
+            );
+        }
+        assert!(out.contains("### Title"), "got:\n{out}");
+        assert!(out.contains("#### Metadata"), "got:\n{out}");
+        assert!(out.contains("##### Deep"), "got:\n{out}");
         assert!(out.contains("some text"));
         assert!(out.contains("- provider: x")); // list items untouched
     }
 
     #[test]
     fn demote_headings_defuses_setext_after_bold_and_atx_rule() {
-        // ATX heading immediately followed by a rule: after ATX->bold, the `---`
-        // must NOT become a setext underline of the bold line.
+        // ATX heading immediately followed by a rule: after the shift, the `---`
+        // must NOT become a setext underline of the heading line.
         let out = demote_headings("# Setup\n---\nTAIL_MUST_SURVIVE");
         // No line pair forms a setext heading: the `---` is preceded by a blank line.
-        assert!(out.contains("**Setup**"));
+        assert!(out.contains("### Setup"), "got:\n{out}");
         assert!(out.contains("TAIL_MUST_SURVIVE"));
         // Round-trip: the tail survives re-parsing as an ArmadAI agent.
         use crate::audit::rules::test_support::agent;
@@ -768,7 +928,15 @@ mod tests {
         let parsed = armadai_core::parser::parse_agent_file(&file).unwrap();
         assert_eq!(parsed.metadata.provider, "claude");
         assert!(parsed.system_prompt.contains("Does things."));
-        assert!(parsed.system_prompt.contains("**Overview**"));
+        assert!(
+            parsed.system_prompt.contains("### Overview"),
+            "got:\n{}",
+            parsed.system_prompt
+        );
+        // The literal `## Metadata` / `## System Prompt` lines the native
+        // prompt carried must not have clobbered the agent's real sections.
+        assert!(parsed.system_prompt.contains("#### Metadata"));
+        assert!(parsed.system_prompt.contains("nested"));
     }
 
     #[test]
@@ -787,6 +955,164 @@ mod tests {
         assert!(md.contains("- scope: [src/**]"));
         assert!(md.contains("## System Prompt"));
         assert!(md.contains("You review code."));
+    }
+
+    /// Issue #400. Flattening every heading to bold was *forced* before #394,
+    /// when a section ended at the next heading of any level: a `###` in a
+    /// prompt truncated the file. Since #394 only `#`/`##` end a section, so a
+    /// native document's hierarchy can be kept by shifting it down two levels
+    /// instead of erasing it. `demote_headings`' own doc comment asked for
+    /// exactly this change, "with its own before/after to measure".
+    ///
+    /// The shift must be uniform: demoting `#`/`##` alone would land them on
+    /// `###`, colliding with the `###` already there and inverting the very
+    /// hierarchy this preserves.
+    #[test]
+    fn demote_headings_shifts_the_hierarchy_down_instead_of_erasing_it() {
+        let out = demote_headings("# Title\n\ntext\n\n## Part\n\n### Detail\n\n###### Deep");
+        assert!(out.contains("### Title"), "got:\n{out}");
+        assert!(out.contains("#### Part"), "got:\n{out}");
+        assert!(out.contains("##### Detail"), "got:\n{out}");
+        // Level 6 has nowhere to go: it is capped, never promoted.
+        assert!(out.contains("###### Deep"), "got:\n{out}");
+        // The invariant that made this function exist: nothing that ends an
+        // ArmadAI section may survive.
+        for line in out.lines() {
+            let t = line.trim_start();
+            assert!(
+                !(t.starts_with("# ") || t.starts_with("## ")),
+                "an H1/H2 survived and would truncate the section: {line:?}"
+            );
+        }
+    }
+
+    /// One real-shaped ArmadAI agent: a title that does not equal its stem,
+    /// every scalar `## Metadata` field the format can express, and `###`
+    /// sub-headings inside two different `##` sections.
+    const ARMADAI_SOURCE: &str = "\
+# Platodin Java Lead
+
+## Metadata
+- provider: claude
+- model: claude-sonnet-5
+- temperature: 0.4
+- max_tokens: 8192
+- tags: coordinator, lead, analysis
+- stacks: java, spring-boot, platodin
+- scope: src/main/java/**, pom.xml
+
+## System Prompt
+
+You are the Platodin Java Lead.
+
+### Scope
+
+You own the Platodin framework surface.
+
+## Instructions
+
+### Review checklist
+
+- Check the module layout.
+
+## Output Format
+
+A table of findings.
+";
+
+    /// Import one ArmadAI-format file through the product's own parser, the
+    /// way `--global` does.
+    fn imported_armadai_agent(dir: &Path, stem: &str, content: &str) -> ImportedAgent {
+        let agents = dir.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join(format!("{stem}.md")), content).unwrap();
+        crate::audit::reverse::armadai::parse_agents(&agents, dir).remove(0)
+    }
+
+    /// Write a rendered agent out and read it back through the product parser
+    /// — the only check that says the pack is what a user would install.
+    fn reparse(md: &str) -> armadai_core::agent::Agent {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("x.md");
+        std::fs::write(&file, md).unwrap();
+        armadai_core::parser::parse_agent_file(&file).unwrap()
+    }
+
+    /// Issue #400. `render_agent` converts native → ArmadAI, and since #393
+    /// `--propose --global` runs it on a source that is *already* ArmadAI.
+    /// Measured on one library agent: `temperature: 0.4`, `max_tokens: 8192`
+    /// and `stacks:` were dropped, `tags:` was overwritten with `[imported]`,
+    /// and `## Instructions` / `## Output Format` / their `###` sub-headings
+    /// were flattened into bold text inside one `## System Prompt`.
+    ///
+    /// Everything is asserted through a real re-parse rather than on the
+    /// rendered string: a `- temperature: 0.4` line the parser rejects would
+    /// pass a `contains` check and still lose the field.
+    #[test]
+    fn render_agent_reproduces_an_armadai_source_instead_of_reconverting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = imported_armadai_agent(dir.path(), "platodin-java-lead", ARMADAI_SOURCE);
+        let parsed = reparse(&render_agent(&a));
+
+        assert_eq!(parsed.metadata.provider, "claude");
+        assert_eq!(parsed.metadata.model.as_deref(), Some("claude-sonnet-5"));
+        assert!((parsed.metadata.temperature - 0.4).abs() < f32::EPSILON);
+        assert_eq!(parsed.metadata.max_tokens, Some(8192));
+        assert_eq!(parsed.metadata.tags, ["coordinator", "lead", "analysis"]);
+        assert_eq!(parsed.metadata.stacks, ["java", "spring-boot", "platodin"]);
+        assert_eq!(parsed.metadata.scope, ["src/main/java/**", "pom.xml"]);
+
+        // The prose sections come back as sections, not as bold lines inside
+        // one prompt, and their `###` sub-headings survive (#394 made that
+        // safe; before it a `###` truncated the section).
+        assert_eq!(
+            parsed.instructions.as_deref().map(str::trim),
+            Some("### Review checklist\n\n- Check the module layout.")
+        );
+        assert_eq!(
+            parsed.output_format.as_deref().map(str::trim),
+            Some("A table of findings.")
+        );
+        assert!(
+            parsed.system_prompt.contains("### Scope"),
+            "a `###` inside the system prompt must stay a heading, got:\n{}",
+            parsed.system_prompt
+        );
+    }
+
+    /// The control: a *native* source is still converted, not reproduced.
+    /// Without it, "reproduce the source" could be implemented as "never
+    /// convert anything" and every assertion above would still pass.
+    #[test]
+    fn render_agent_still_converts_a_native_source() {
+        let mut a = agent("reviewer", "You review code.");
+        a.metadata.model = Some("opus".to_string());
+        let parsed = reparse(&render_agent(&a));
+        assert_eq!(parsed.metadata.provider, "claude");
+        assert_eq!(
+            parsed.metadata.model.as_deref(),
+            Some("latest:max"),
+            "a native model must still be mapped to a portable tier"
+        );
+        assert_eq!(
+            parsed.metadata.tags,
+            ["imported"],
+            "a native file carries no tags, so the pack marks the provenance"
+        );
+    }
+
+    /// An ArmadAI source with no `tags:` still gets the provenance marker —
+    /// reproducing the source must not mean emitting an empty tag list.
+    #[test]
+    fn an_armadai_source_without_tags_keeps_the_imported_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = imported_armadai_agent(
+            dir.path(),
+            "bare",
+            "# Bare\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nBody.\n",
+        );
+        let parsed = reparse(&render_agent(&a));
+        assert_eq!(parsed.metadata.tags, ["imported"]);
     }
 
     fn block() -> String {
