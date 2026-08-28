@@ -85,12 +85,29 @@ Two consequences worth knowing:
   `## Ring Config` are read **line by line**, so a `###` block inside them no longer hides its
   contents — it configures the agent. Measured on a fixture whose `## Metadata` carried an
   `### Alternative setup (not in use)` block: the agent switched provider from `anthropic` to
-  `openai` and temperature from `0.2` to `1.0`, with no warning (last value wins). The same
+  `openai` and temperature from `0.2` to `1.0` (last value wins). The same
   applies to `requires`/`priority` in `## Triggers`, to `role`/`vote_weight` in
   `## Ring Config`, and to `## Pipeline`, where an agent listed under a `###` heading now runs.
   Worse, an unparsable value there is fatal: `link` reports `warn: failed to parse …`, skips
   that agent, and still **exits 0** — so it disappears from the generated config silently.
   Keep commented-out alternatives out of these four sections, or in a fenced code block.
+
+  Since [#396](https://github.com/Dr0drigues/armadai/issues/396) this is no longer silent.
+  `## Metadata`, `## Triggers` and `## Ring Config` warn on stderr for every key they set
+  twice, naming the file, the losing value and the winning one:
+
+  ```text
+  2026-08-28T05:56:43.104399Z  WARN armadai_core::parser::metadata: /abs/path/to/agents/dup.md: ## Metadata sets 'provider' again: 'anthropic' is overridden by 'openai' (the last value wins)
+  ```
+
+  It goes through `tracing`, so it carries a timestamp, a level and a target,
+  and names the file by its absolute path — unlike the CLI's own indented
+  `warn:` lines. `RUST_LOG=off` silences it along with every other log line.
+
+  Which value wins is unchanged — it is still the last. The warning is emitted before the
+  values are parsed, so it also appears for the fatal case above, where it says *why* the file
+  stopped loading. `## Pipeline` has no such warning: it is a list, not a set of keys, and
+  repeating an entry there is not a conflict.
 - **`---` and `===` under a line are headings too.** A paragraph followed by a line of dashes
   or equals signs is a setext H2/H1 in CommonMark, so it ends the section exactly as `##`
   would — and the text after it is lost from the prompt. This predates #392 and is unchanged
@@ -118,7 +135,20 @@ Key-value pairs configuring the agent's technical behavior.
 | `cost_limit` | float | No | — | Max cost per execution in USD |
 | `rate_limit` | string | No | — | Rate limit: `"10/min"` |
 | `context_window` | int | No | — | Context window size override |
-| `orchestration` | string | No | — | Orchestration pattern: `blackboard`, `ring` |
+| `orchestration` | string | No | — | Orchestration pattern this agent is written for: `direct`, `blackboard`, `ring`, `hierarchical` or `auto`. Descriptive only — see below |
+
+`orchestration` documents the pattern an agent is designed for; it does **not**
+select the pattern a run uses. That comes from `armadai.yaml`'s `orchestration:`
+block, or from `armadai run --orchestrate` — which accepts only `blackboard`
+and `ring`, so `hierarchical` and `auto` are selectable from `armadai.yaml`
+alone. The value is surfaced in the TUI's agent detail view and in the web API,
+and is otherwise inert.
+
+All five values are accepted. Until
+[#415](https://github.com/Dr0drigues/armadai/issues/415), only the first three
+were, and the other two did not merely get ignored: the parse error made the
+**whole file** unloadable, so a `hierarchical` agent disappeared from `run`,
+`link`, `list`, the TUI and the audit at once — with `list` still exiting 0.
 
 ### What reaches the model
 
