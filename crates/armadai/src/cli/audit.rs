@@ -701,6 +701,12 @@ mod tests {
     /// same Anthropic id.
     #[test]
     fn the_deep_auditor_carries_a_concrete_model_not_a_tier_placeholder() {
+        // `resolve_tier_placeholder` reads `<ARMADAI_CONFIG_DIR>/models-cache.json`
+        // before falling back to the static table, so without this guard the
+        // test reads whatever catalogue the developer last synced. The static
+        // fallback made it pass either way; an undeclared environment read is
+        // still an environment read.
+        let _config = armadai_core::test_support::IsolatedConfigDir::enter();
         for cli in crate::audit::deep::DEEP_CLIS {
             let model = build_deep_auditor(cli)
                 .metadata
@@ -733,6 +739,7 @@ mod tests {
     /// `copilot` is such a tool (`model_catalog_provider` returns `None`).
     #[test]
     fn a_cli_with_no_vendor_catalog_keeps_the_placeholder() {
+        let _config = armadai_core::test_support::IsolatedConfigDir::enter();
         assert_eq!(deep_auditor_model("copilot"), DEEP_AUDITOR_TIER);
     }
 

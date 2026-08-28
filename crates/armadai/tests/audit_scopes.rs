@@ -811,9 +811,13 @@ mod tests {
     /// all four files were read;
     /// `two_agents_of_one_name_in_one_root_are_still_a_collision` is the
     /// control that `C01` did not simply stop working.
-    #[test]
-    fn a_library_published_into_the_native_root_is_not_a_collision() {
-        let s = Sandbox::new();
+    /// The canonical #399 fixture: a healthy two-agent ArmadAI library, plus
+    /// the copies `armadai link --target claude` publishes into `~/.claude`.
+    /// Same stem, same `name:`, and a `description:` that *is* the first line
+    /// of the ArmadAI system prompt — because that is what `link` writes.
+    /// Both agents carry the same 10-line block, so `A06` and `--propose` have
+    /// something real to work on.
+    fn library_published_by_link(s: &Sandbox) {
         let block = shared_block();
         for name in ["dev-lead", "qa"] {
             let prompt = format!("You are the {name}.");
@@ -821,7 +825,6 @@ mod tests {
                 &format!("home/.config/armadai/agents/{name}.md"),
                 &armadai_agent(name, &prompt, &format!("\n{block}")),
             );
-            // What `armadai link --target claude` writes for that agent.
             s.write(
                 &format!("home/.claude/agents/{name}.md"),
                 &format!(
@@ -830,6 +833,12 @@ mod tests {
                 ),
             );
         }
+    }
+
+    #[test]
+    fn a_library_published_into_the_native_root_is_not_a_collision() {
+        let s = Sandbox::new();
+        library_published_by_link(&s);
 
         let out = s.run(&["--global"]);
         out.ran().line_with("Detected:", &["4 agent(s)"]);
@@ -843,6 +852,76 @@ mod tests {
             .has_no_line_with("A07", &["dev-lead"])
             .has_no_line_with("A07", &["qa"])
             .has_no_line_with("A06", &["dev-lead, dev-lead"]);
+    }
+
+    /// The same fixture, run through `--propose`, because that is where the
+    /// duplication survives the fix above.
+    ///
+    /// `A06`'s remedy — the line the report prints — is "extract the shared
+    /// block into **one** reusable prompt fragment". Since #399 the clusters
+    /// are per tree, and one fragment per cluster meant a single shared block
+    /// left the pack as `shared-conventions-1` (`apply_to: [dev-lead, qa]`)
+    /// **and** `shared-conventions-2` (`apply_to: [dev-lead-2, qa-2]`), bodies
+    /// byte-identical at 418 bytes. The pack was valid and installable; it just
+    /// shipped the promise twice, on the workflow this PR exists to repair —
+    /// and `master` never got that far, exiting 1 on the same input.
+    ///
+    /// Asserted on the directory and on the file bodies, never on the summary
+    /// count alone: the count is a number the generator prints about itself.
+    #[test]
+    fn a_global_propose_factors_one_shared_block_into_exactly_one_fragment() {
+        let s = Sandbox::new();
+        library_published_by_link(&s);
+
+        let out = s.run(&["--global", "--propose"]);
+        out.ran();
+        let prompts = s.work().join(".armadai-proposal/prompts");
+        let mut files: Vec<String> = std::fs::read_dir(&prompts)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "the pack must carry the shared fragment ({}): {e}\n{}\n{}",
+                    prompts.display(),
+                    out.stdout,
+                    out.stderr
+                )
+            })
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        assert_eq!(
+            files,
+            ["shared-conventions-1.md"],
+            "one shared block, one fragment:\n{}",
+            out.stdout
+        );
+
+        // And the bodies — not just the names — are distinct. Renumbering
+        // alone would satisfy the assertion above while still writing the
+        // same text twice under different names.
+        let bodies: Vec<String> = files
+            .iter()
+            .map(|f| {
+                let text = std::fs::read_to_string(prompts.join(f)).unwrap();
+                // Everything after the closing `---` of the frontmatter: the
+                // duplicate fragments differed only in `name:` and `apply_to:`.
+                text.splitn(3, "---\n").nth(2).unwrap().to_string()
+            })
+            .collect();
+        let mut unique = bodies.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), bodies.len(), "two fragments share a body");
+
+        // Every agent that carries the block is named once by the fragment
+        // that replaces it — the merge must not drop half of them.
+        let fragment = std::fs::read_to_string(prompts.join("shared-conventions-1.md")).unwrap();
+        for slug in ["dev-lead", "qa", "dev-lead-2", "qa-2"] {
+            let named = fragment
+                .lines()
+                .filter(|l| l.trim() == format!("- {slug}"))
+                .count();
+            assert_eq!(named, 1, "`apply_to` must name {slug} once:\n{fragment}");
+        }
     }
 
     /// The control the fix must not swallow: inside one tree, two files
@@ -919,6 +998,79 @@ mod tests {
         );
         out.has_no_line_with("C01", &["graphify"])
             .has_no_line_with("C03", &["graphify"]);
+    }
+
+    /// The *other* half of `C01`, and the one no test covered: an agent and a
+    /// skill sharing a name. Inside one tree it is a Warning ("confusing to
+    /// someone reading one tree"); across the two global roots it is one asset
+    /// and a neighbour, and must stay silent.
+    ///
+    /// Both directions in one case, because either alone is passed by a rule
+    /// that is simply broken: removing the space guard from that pairing left
+    /// 759 unit tests and 29 cases here green, while turning the silence into a
+    /// warning `master` also emitted.
+    #[test]
+    fn an_agent_and_a_skill_of_one_name_collide_inside_a_tree_only() {
+        let agent_md = "---\nname: graphify\ndescription: Builds a graph of the repo\ntools: Read\n---\n\
+             You build graphs.";
+        let skill_md =
+            "---\nname: graphify\ndescription: turns any input into a knowledge graph\n---\nBody.";
+
+        let across = Sandbox::new();
+        across.write("home/.claude/agents/graphify.md", agent_md);
+        across.write("home/.config/armadai/skills/graphify/SKILL.md", skill_md);
+        let out = across.run(&["--global"]);
+        out.ran()
+            .line_with("Detected:", &["1 agent(s), 1 skill(s)"]);
+        out.has_no_line_with("C01", &["graphify"]);
+
+        let inside = Sandbox::new();
+        inside.write("home/.claude/agents/graphify.md", agent_md);
+        inside.write("home/.claude/skills/graphify/SKILL.md", skill_md);
+        inside
+            .run(&["--global"])
+            .ran()
+            .line_with("C01", &["agent and skill share the name 'graphify'"]);
+    }
+
+    /// The two blind spots #399's fix opens, pinned so that closing them again
+    /// has to be a decision rather than an accident.
+    ///
+    /// Two *different* agents of one name, one per root (and the same for an
+    /// agent/skill pair), used to be reported and now are not. That is the
+    /// intended reading — "two routers, one entry each": `~/.claude/agents` is
+    /// enumerated by Claude Code and `~/.config/armadai/agents` by ArmadAI, and
+    /// neither resolver ever sees both files, so neither has an ambiguous
+    /// name to resolve. Nothing is silently lost either: `armadai link`
+    /// without `--force` refuses to overwrite an existing native file, so the
+    /// user is told at the moment the two would meet.
+    ///
+    /// Measured before the fix: `master` exited 1 on this exact fixture.
+    #[test]
+    fn two_different_agents_of_one_name_in_two_roots_are_not_a_collision() {
+        let s = Sandbox::new();
+        s.write(
+            "home/.claude/agents/dev-lead.md",
+            "---\nname: dev-lead\ndescription: Leads the Claude Code fleet\ntools: Read\n---\n\
+             You lead the native fleet.",
+        );
+        s.write(
+            "home/.config/armadai/agents/dev-lead.md",
+            &armadai_agent(
+                "dev-lead",
+                "You lead an entirely different ArmadAI fleet.",
+                "",
+            ),
+        );
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["2 agent(s)"]);
+        assert!(
+            out.success,
+            "one name per resolver is not an ambiguity:\n{}\n{}",
+            out.stdout, out.stderr
+        );
+        out.has_no_line_with("C01", &["dev-lead"]);
     }
 
     /// `--propose` in global scope has no project root to write into, so it
