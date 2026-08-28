@@ -77,6 +77,30 @@ impl AgentFormat {
     }
 }
 
+/// The tree an asset was read from: the repository root in project scope,
+/// `~/.claude` or `~/.config/armadai` in the global one.
+///
+/// Not decoration either, and not [`AuditScope`] in disguise: it is what lets
+/// a rule ask **"are these two files in the same resolution space?"** — the
+/// question every rule that compares two assets is really asking.
+///
+/// `C01` reports two files claiming one name as ambiguous routing, and `A06`
+/// / `A07` report two agents as redundant. All three are only true of assets
+/// something resolves *together*. The global pass assembles two unrelated
+/// trees, and `armadai link` publishes the ArmadAI library into the native one
+/// by design, so a healthy library seen through both roots produced
+/// `2 critical` and a non-zero exit — one per agent the user had linked
+/// (measured, issue #399). A name is ambiguous inside one tree; the same name
+/// in two trees is one asset and its published copy.
+///
+/// Scope stays unavailable to rules: it says which surface the *run* reads, so
+/// branching on it would make one rule behave two ways. A space is a property
+/// of the *file*, like a format, and every rule treats every file the same way
+/// whatever the scope filled it.
+///
+/// [`AuditScope`]: crate::audit::AuditScope
+pub type ResolutionSpace = PathBuf;
+
 /// An agent imported from a native config.
 #[derive(Debug, Clone)]
 pub struct ImportedAgent {
@@ -87,6 +111,8 @@ pub struct ImportedAgent {
     pub issues: Vec<ParseIssue>,
     /// What the file it came from is able to declare — see [`AgentFormat`].
     pub format: AgentFormat,
+    /// The tree this file was read from — see [`ResolutionSpace`].
+    pub space: ResolutionSpace,
 }
 
 /// A skill imported from a native config (Agent Skills standard layout).
@@ -108,6 +134,8 @@ pub struct ImportedSkill {
     /// Frontmatter fields we do not type (kept verbatim for --propose and
     /// custom-field rules). Never populated by salvage.
     pub extra: BTreeMap<String, serde_yaml_ng::Value>,
+    /// The tree this skill was read from — see [`ResolutionSpace`].
+    pub space: ResolutionSpace,
 }
 
 /// Root instructions file (e.g. CLAUDE.md).

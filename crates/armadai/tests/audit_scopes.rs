@@ -784,6 +784,143 @@ mod tests {
         );
     }
 
+    /// A block long enough for `A06`'s 8-line window, shared by both agents
+    /// of the fixture below — so the duplication rule has something real to
+    /// find and its silence cannot be mistaken for an empty corpus.
+    fn shared_block() -> String {
+        (1..=10)
+            .map(|i| format!("Shared convention line {i}.\n"))
+            .collect()
+    }
+
+    /// Issue #399. The global pass assembles two unrelated trees, and
+    /// `armadai link --target claude --output ~/.claude` publishes the ArmadAI
+    /// library into one of them — so the product's own main workflow made the
+    /// user's library collide with itself. Measured on a healthy two-agent
+    /// library: `2 critical, 1 warning` and **exit 1**, one `C01` per agent
+    /// the user had linked, plus `A06 … dev-lead, dev-lead, qa, qa` and two
+    /// `A07 agents 'dev-lead' and 'dev-lead'`.
+    ///
+    /// The fixture is what `link` actually writes: same stem, same `name:`,
+    /// and a `description:` that *is* the first line of the ArmadAI system
+    /// prompt — which is exactly why `A07` fired on every one of them.
+    ///
+    /// Four claims in one run, because a rule silenced too broadly would pass
+    /// three of them: the command succeeds, and none of `C01`, `A06`, `A07`
+    /// names the republished agents. The `Detected:` line is the control that
+    /// all four files were read;
+    /// `two_agents_of_one_name_in_one_root_are_still_a_collision` is the
+    /// control that `C01` did not simply stop working.
+    #[test]
+    fn a_library_published_into_the_native_root_is_not_a_collision() {
+        let s = Sandbox::new();
+        let block = shared_block();
+        for name in ["dev-lead", "qa"] {
+            let prompt = format!("You are the {name}.");
+            s.write(
+                &format!("home/.config/armadai/agents/{name}.md"),
+                &armadai_agent(name, &prompt, &format!("\n{block}")),
+            );
+            // What `armadai link --target claude` writes for that agent.
+            s.write(
+                &format!("home/.claude/agents/{name}.md"),
+                &format!(
+                    "---\nname: {name}\ndescription: \"{prompt}\"\n\
+                     model: claude-sonnet-4-5-20250929\n---\n\n{prompt}\n\n{block}"
+                ),
+            );
+        }
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["4 agent(s)"]);
+        assert!(
+            out.success,
+            "a library the product itself published must not fail the audit:\n{}\n{}",
+            out.stdout, out.stderr
+        );
+        out.has_no_line_with("C01", &["dev-lead"])
+            .has_no_line_with("C01", &["qa"])
+            .has_no_line_with("A07", &["dev-lead"])
+            .has_no_line_with("A07", &["qa"])
+            .has_no_line_with("A06", &["dev-lead, dev-lead"]);
+    }
+
+    /// The control the fix must not swallow: inside one tree, two files
+    /// claiming one name really do make routing ambiguous, and the command
+    /// still fails. Claude Code recurses into `~/.claude/agents/`, so the
+    /// second file sits in a subdirectory with the same `name:` — the exact
+    /// shape `C01` exists for.
+    #[test]
+    fn two_agents_of_one_name_in_one_root_are_still_a_collision() {
+        let s = Sandbox::new();
+        for path in [
+            "home/.claude/agents/dev-lead.md",
+            "home/.claude/agents/backend/dev-lead.md",
+        ] {
+            s.write(
+                path,
+                "---\nname: dev-lead\ndescription: Leads the fleet\ntools: Read\n---\nYou lead.",
+            );
+        }
+
+        let out = s.run(&["--global"]);
+        out.ran()
+            .line_with("C01", &["dev-lead", "routing is ambiguous"]);
+        assert!(
+            !out.success,
+            "a real homonym inside one tree must still exit non-zero:\n{}",
+            out.stdout
+        );
+    }
+
+    /// The same control for skills, whose two trees are where the defect was
+    /// already reachable before #393: one name twice in `~/.claude/skills`
+    /// stays Critical.
+    #[test]
+    fn two_skills_of_one_name_in_one_root_are_still_a_collision() {
+        let s = Sandbox::new();
+        for dir in ["graphify", "graphify-copy"] {
+            s.write(
+                &format!("home/.claude/skills/{dir}/SKILL.md"),
+                "---\nname: graphify\ndescription: builds a knowledge graph\n---\nBody.",
+            );
+        }
+
+        let out = s.run(&["--global"]);
+        out.ran()
+            .line_with("C01", &["graphify", "routing is ambiguous"]);
+        assert!(
+            !out.success,
+            "a real skill homonym inside one tree must still exit non-zero:\n{}",
+            out.stdout
+        );
+    }
+
+    /// The skill half of #399, end to end: ArmadAI installs its skills under
+    /// `~/.config/armadai/skills` and Claude Code reads `~/.claude/skills`, so
+    /// one skill present in both used to produce `C01` Critical **and** `C03`
+    /// Warning — the second because a copy's description is, necessarily,
+    /// identical to the original's.
+    #[test]
+    fn a_skill_present_in_both_global_roots_is_not_a_collision() {
+        let s = Sandbox::new();
+        let skill =
+            "---\nname: graphify\ndescription: turns any input into a knowledge graph\n---\nBody.";
+        s.write("home/.claude/skills/graphify/SKILL.md", skill);
+        s.write("home/.config/armadai/skills/graphify/SKILL.md", skill);
+
+        let out = s.run(&["--global"]);
+        out.ran().line_with("Detected:", &["2 skill(s)"]);
+        assert!(
+            out.success,
+            "one skill installed from the library it lives in must not fail \
+             the audit:\n{}\n{}",
+            out.stdout, out.stderr
+        );
+        out.has_no_line_with("C01", &["graphify"])
+            .has_no_line_with("C03", &["graphify"]);
+    }
+
     /// `--propose` in global scope has no project root to write into, so it
     /// writes into the **current directory, whatever that is** — the same place
     /// project scope would.

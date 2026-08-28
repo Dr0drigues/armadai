@@ -116,8 +116,12 @@ pub fn import_global_surfaces(layout: &GlobalLayout) -> GlobalImport {
     let claude_md = layout.claude_home.join("CLAUDE.md");
     if claude_agents.is_dir() || claude_skills.is_dir() || claude_md.is_file() {
         detected.push(format!("claude ({})", tildify(layout, &layout.claude_home)));
-        config.agents.extend(parse_agents(&claude_agents));
-        config.skills.extend(parse_skills(&claude_skills));
+        config
+            .agents
+            .extend(parse_agents(&claude_agents, &layout.claude_home));
+        config
+            .skills
+            .extend(parse_skills(&claude_skills, &layout.claude_home));
         config.instructions = parse_instructions(&claude_md);
     }
 
@@ -128,8 +132,13 @@ pub fn import_global_surfaces(layout: &GlobalLayout) -> GlobalImport {
             "armadai ({})",
             tildify(layout, &layout.armadai_config)
         ));
-        config.skills.extend(parse_skills(&armadai_skills));
-        config.agents.extend(armadai::parse_agents(&armadai_agents));
+        config
+            .skills
+            .extend(parse_skills(&armadai_skills, &layout.armadai_config));
+        config.agents.extend(armadai::parse_agents(
+            &armadai_agents,
+            &layout.armadai_config,
+        ));
     }
 
     config.agents.sort_by(|a, b| a.name.cmp(&b.name));

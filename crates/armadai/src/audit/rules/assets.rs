@@ -498,6 +498,7 @@ mod tests {
                     body_tokens: 0,
                     issues: Vec::new(),
                     extra: BTreeMap::new(),
+                    space: ".claude".into(),
                 },
                 ImportedSkill {
                     name: "fine".into(),
@@ -508,6 +509,7 @@ mod tests {
                     body_tokens: 0,
                     issues: Vec::new(),
                     extra: BTreeMap::new(),
+                    space: ".claude".into(),
                 },
             ],
             ..Default::default()
@@ -536,6 +538,7 @@ mod tests {
                 body_tokens: 0,
                 issues: Vec::new(),
                 extra: BTreeMap::new(),
+                space: ".claude".into(),
             }],
             ..Default::default()
         };
@@ -567,6 +570,7 @@ mod tests {
                     message: "unquoted value".into(),
                 }],
                 extra: BTreeMap::new(),
+                space: ".claude".into(),
             }],
             ..Default::default()
         };
@@ -599,6 +603,7 @@ mod tests {
                         message: "bad".into(),
                     }],
                     extra: BTreeMap::new(),
+                    space: ".claude".into(),
                 },
                 // No frontmatter at all: A09 Warning.
                 ImportedSkill {
@@ -610,6 +615,7 @@ mod tests {
                     body_tokens: 0,
                     issues: Vec::new(),
                     extra: BTreeMap::new(),
+                    space: ".claude".into(),
                 },
             ],
             ..Default::default()

@@ -4,27 +4,36 @@ use std::collections::BTreeMap;
 use super::similarity::jaccard;
 use super::{AuditContext, Finding, Severity};
 
-/// C01 — two assets claim the same name.
+/// The key every name-based grouping is built on: a name is only ambiguous
+/// against the other names **one resolver** enumerates.
+///
+/// See [`ResolutionSpace`](crate::audit::reverse::ResolutionSpace): the global
+/// pass assembles two unrelated trees, so grouping by name alone made every
+/// agent `armadai link` had published collide with the library file it was
+/// generated from (issue #399).
+type NameKey<'a> = (&'a std::path::Path, &'a str);
+
+/// C01 — two assets claim the same name **inside one resolution space**.
 /// Same-kind duplicates are Critical (routing is ambiguous); an agent/skill
 /// homonym is Warning (different namespaces, but confusing).
 pub(super) fn c01_name_collisions(ctx: &AuditContext) -> Vec<Finding> {
     let mut findings = Vec::new();
-    let mut agents_by_name: BTreeMap<&str, Vec<&std::path::Path>> = BTreeMap::new();
+    let mut agents_by_name: BTreeMap<NameKey, Vec<&std::path::Path>> = BTreeMap::new();
     for a in ctx.config.agents.iter().filter(|a| a.issues.is_empty()) {
         agents_by_name
-            .entry(a.name.as_str())
+            .entry((a.space.as_path(), a.name.as_str()))
             .or_default()
             .push(&a.source_path);
     }
-    let mut skills_by_name: BTreeMap<&str, Vec<&std::path::Path>> = BTreeMap::new();
+    let mut skills_by_name: BTreeMap<NameKey, Vec<&std::path::Path>> = BTreeMap::new();
     for s in ctx.config.skills.iter().filter(|s| s.issues.is_empty()) {
         skills_by_name
-            .entry(s.name.as_str())
+            .entry((s.space.as_path(), s.name.as_str()))
             .or_default()
             .push(&s.source_path);
     }
     for (kind, by_name) in [("agent", &agents_by_name), ("skill", &skills_by_name)] {
-        for (name, paths) in by_name {
+        for (&(_, name), paths) in by_name {
             if paths.len() > 1 {
                 findings.push(Finding {
                     rule: "C01",
@@ -40,8 +49,10 @@ pub(super) fn c01_name_collisions(ctx: &AuditContext) -> Vec<Finding> {
             }
         }
     }
-    for (name, agent_paths) in &agents_by_name {
-        if let Some(skill_paths) = skills_by_name.get(name) {
+    // Agent↔skill homonyms are cross-*namespace* but still same-space: the
+    // two are confusing only to someone reading one tree.
+    for (&(space, name), agent_paths) in &agents_by_name {
+        if let Some(skill_paths) = skills_by_name.get(&(space, name)) {
             findings.push(Finding {
                 rule: "C01",
                 severity: Severity::Warning,
@@ -62,16 +73,16 @@ pub(super) fn c01_name_collisions(ctx: &AuditContext) -> Vec<Finding> {
 /// Findings are aggregated into clusters (like A06/C02) to avoid N² noise.
 pub(super) fn c03_activation_overlap(ctx: &AuditContext) -> Vec<Finding> {
     let threshold = ctx.settings.activation_similarity;
-    // (kind, name, path, description)
-    let mut surfaces: Vec<(&str, &str, &std::path::Path, &str)> = Vec::new();
+    // (kind, name, path, description, space)
+    let mut surfaces: Vec<(&str, &str, &std::path::Path, &str, &std::path::Path)> = Vec::new();
     for s in ctx.config.skills.iter().filter(|s| s.issues.is_empty()) {
         if let Some(d) = &s.description {
-            surfaces.push(("skill", &s.name, &s.source_path, d));
+            surfaces.push(("skill", &s.name, &s.source_path, d, &s.space));
         }
     }
     for a in ctx.config.agents.iter().filter(|a| a.issues.is_empty()) {
         if let Some(d) = &a.metadata.description {
-            surfaces.push(("agent", &a.name, &a.source_path, d));
+            surfaces.push(("agent", &a.name, &a.source_path, d, &a.space));
         }
     }
 
@@ -79,10 +90,15 @@ pub(super) fn c03_activation_overlap(ctx: &AuditContext) -> Vec<Finding> {
     let mut uf = super::UnionFind::new(surfaces.len());
     for i in 0..surfaces.len() {
         for j in (i + 1)..surfaces.len() {
-            let (ka, _, _, da) = surfaces[i];
-            let (kb, _, _, db) = surfaces[j];
+            let (ka, _, _, da, sa) = surfaces[i];
+            let (kb, _, _, db, sb) = surfaces[j];
             if ka == "agent" && kb == "agent" {
                 continue; // A07's turf
+            }
+            // Two routers, one entry each: an installed copy cannot make the
+            // description it was copied from ambiguous (issue #399).
+            if sa != sb {
+                continue;
             }
             if jaccard(da, db) >= threshold {
                 uf.union(i, j);
@@ -101,7 +117,7 @@ pub(super) fn c03_activation_overlap(ctx: &AuditContext) -> Vec<Finding> {
         .into_values()
         .filter(|members| members.len() >= 2)
         .map(|members| {
-            let (_, _, first_path, _) = surfaces[members[0]];
+            let (_, _, first_path, _, _) = surfaces[members[0]];
             let related: Vec<_> = members[1..]
                 .iter()
                 .map(|&i| surfaces[i].2.to_path_buf())
@@ -109,7 +125,7 @@ pub(super) fn c03_activation_overlap(ctx: &AuditContext) -> Vec<Finding> {
             let names: Vec<String> = members
                 .iter()
                 .map(|&i| {
-                    let (kind, name, _, _) = surfaces[i];
+                    let (kind, name, _, _, _) = surfaces[i];
                     format!("{kind} '{name}'")
                 })
                 .collect();
@@ -390,6 +406,87 @@ mod tests {
         assert_eq!(f[0].related.len(), 1);
     }
 
+    /// Issue #399. `armadai link --target claude` publishes the ArmadAI
+    /// library into `~/.claude`, so the global pass reads the very same agent
+    /// from two trees. Nothing resolves those two together — `~/.claude` is
+    /// the native config, `~/.config/armadai` the source library — so the name
+    /// is not ambiguous, and a healthy library must not exit 1.
+    ///
+    /// `armadai_agent` and `agent` carry different spaces by construction;
+    /// `c01_flags_duplicate_agent_names` above is the control that a homonym
+    /// *within* one tree stays Critical.
+    #[test]
+    fn c01_ignores_an_agent_published_into_a_second_root() {
+        use crate::audit::rules::test_support::armadai_agent;
+        let config = config_with(vec![
+            armadai_agent("dev-lead", "You are the Dev Lead."),
+            agent("dev-lead", "You are the Dev Lead."),
+        ]);
+        let settings = AuditSettings::default();
+        let f = c01_name_collisions(&AuditContext {
+            config: &config,
+            settings: &settings,
+            usage: None,
+        });
+        assert!(
+            f.is_empty(),
+            "one agent seen through two roots is not a collision, got {:?}",
+            f.iter().map(|x| &x.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Same shape for skills, which is where the defect was already reachable
+    /// before #393: `~/.claude/skills/<x>` and `~/.config/armadai/skills/<x>`
+    /// are the installed copy and the library it came from.
+    #[test]
+    fn c01_ignores_a_skill_installed_in_two_roots() {
+        use crate::audit::reverse::ImportedConfig;
+        let mut installed = skill("graphify", "turns any input into a knowledge graph");
+        installed.space = ".claude".into();
+        let mut library = skill("graphify", "turns any input into a knowledge graph");
+        library.space = ".config/armadai".into();
+        library.source_path = ".config/armadai/skills/graphify/SKILL.md".into();
+        let config = ImportedConfig {
+            skills: vec![installed, library],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = c01_name_collisions(&AuditContext {
+            config: &config,
+            settings: &settings,
+            usage: None,
+        });
+        assert!(
+            f.is_empty(),
+            "one skill seen through two roots is not a collision, got {:?}",
+            f.iter().map(|x| &x.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// The control for the skill case: two skills of one name *inside* one
+    /// tree stay Critical. Without it, gating C01 on the space could be
+    /// implemented as "never report skills" and stay green.
+    #[test]
+    fn c01_still_flags_two_skills_of_one_name_in_one_root() {
+        use crate::audit::reverse::ImportedConfig;
+        let a = skill("graphify", "turns any input into a knowledge graph");
+        let mut b = skill("graphify", "turns any input into a knowledge graph");
+        b.source_path = ".claude/skills/graphify-2/SKILL.md".into();
+        let config = ImportedConfig {
+            skills: vec![a, b],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = c01_name_collisions(&AuditContext {
+            config: &config,
+            settings: &settings,
+            usage: None,
+        });
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].severity, Severity::Critical);
+        assert!(f[0].message.contains("graphify"));
+    }
+
     #[test]
     fn c01_flags_agent_skill_homonym_as_warning() {
         use crate::audit::reverse::{ImportedConfig, ImportedSkill};
@@ -405,6 +502,7 @@ mod tests {
                 body_tokens: 0,
                 issues: Vec::new(),
                 extra: BTreeMap::new(),
+                space: ".claude".into(),
             }],
             ..Default::default()
         };
@@ -428,6 +526,7 @@ mod tests {
             body_tokens: 0,
             issues: Vec::new(),
             extra: std::collections::BTreeMap::new(),
+            space: ".claude".into(),
         }
     }
 
@@ -470,6 +569,35 @@ mod tests {
             usage: None,
         });
         assert_eq!(f.len(), 1);
+    }
+
+    /// Issue #399, `C03`'s share of it: one skill installed in two trees has
+    /// the *same* description by construction, which is a perfect activation
+    /// overlap and a Warning about nothing. Two routers, one entry each.
+    /// `c03_flags_ambiguous_skill_descriptions` above is the control.
+    #[test]
+    fn c03_ignores_a_skill_installed_in_two_roots() {
+        use crate::audit::reverse::ImportedConfig;
+        let installed = skill("graphify", "turns any input into a knowledge graph");
+        let mut library = skill("graphify", "turns any input into a knowledge graph");
+        library.space = ".config/armadai".into();
+        library.source_path = ".config/armadai/skills/graphify/SKILL.md".into();
+        let config = ImportedConfig {
+            skills: vec![installed, library],
+            ..Default::default()
+        };
+        let settings = AuditSettings::default();
+        let f = c03_activation_overlap(&AuditContext {
+            config: &config,
+            settings: &settings,
+            usage: None,
+        });
+        assert!(
+            f.is_empty(),
+            "one skill seen through two roots cannot make its own routing \
+             ambiguous, got {:?}",
+            f.iter().map(|x| &x.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]

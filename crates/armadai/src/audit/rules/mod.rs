@@ -290,6 +290,7 @@ pub(crate) mod test_support {
             system_prompt: prompt.to_string(),
             issues: Vec::new(),
             format: AgentFormat::ClaudeFrontmatter,
+            space: PathBuf::from(".claude"),
         }
     }
 
@@ -309,6 +310,7 @@ pub(crate) mod test_support {
             system_prompt: prompt.to_string(),
             issues: Vec::new(),
             format: AgentFormat::Armadai,
+            space: PathBuf::from(".config/armadai"),
         }
     }
 
@@ -325,6 +327,7 @@ pub(crate) mod test_support {
             body_tokens,
             issues: Vec::new(),
             extra: BTreeMap::new(),
+            space: PathBuf::from(".claude"),
         }
     }
 
