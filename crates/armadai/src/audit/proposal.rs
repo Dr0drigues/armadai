@@ -191,17 +191,25 @@ fn rendered_prompt(agent: &ImportedAgent) -> String {
 /// one agent: `temperature`, `max_tokens`, `stacks` dropped, `tags`
 /// overwritten, sections flattened (issue #400).
 ///
-/// The H1 stays the slug in **both** paths, and that is not an oversight: the
-/// runtime matches a prompt's `apply_to` against the agent's H1 name
-/// (`armadai_core::prompt::prompts_for_agent`) while `pack_validation`'s R5
-/// matches it against the pack's slug list, so the two agree only when H1 ==
-/// slug. An ArmadAI file's routable name is its stem anyway
-/// (`project::resolve_agent` looks up `<dir>/<name>.md`), which is what the
-/// slug is derived from; the human-readable title is the one thing this path
-/// cannot carry back.
+/// The H1 is the source's own title when it had one
+/// ([`ImportedAgent::title`]), and the slug otherwise. Nothing in the product
+/// requires H1 == slug, and the claim that it did — made by an earlier version
+/// of this comment — was measured false:
+/// `armadai_core::prompt::prompts_for_agent` does not exist, and the function
+/// that does, `prompt::matching_prompts`, is called by its only production
+/// caller (`dependency_resolver::resolve_dependencies`) with the agent's *file
+/// stem*, explicitly and by comment. `pack_validation`'s R1 and R5 read the
+/// pack's slug list, and the pack writes `agents/<slug>.md`, so that stem is
+/// the slug. Both sides agree whatever the H1 says, and the display title
+/// becomes one more thing #400's "reproduce, don't convert" carries back
+/// instead of dropping.
+///
+/// A native config keeps the slug as its H1: there the `name:` frontmatter *is*
+/// the routing key a router enumerates, and the human-readable form stays on
+/// the `- description:` line the caller synthesizes.
 pub(crate) fn render_agent(agent: &ImportedAgent) -> String {
     let mut md = String::new();
-    let _ = writeln!(md, "# {}\n", agent.name);
+    let _ = writeln!(md, "# {}\n", agent.title.as_deref().unwrap_or(&agent.name));
     let description = agent
         .metadata
         .description
@@ -458,6 +466,49 @@ pub(crate) fn strip_fragment(prompt: &str, fragment_body: &str) -> String {
     out
 }
 
+/// Merge fragments whose body is byte-identical into one, then renumber the
+/// survivors `shared-conventions-1..n` so the names stay contiguous.
+///
+/// A duplication cluster never crosses a
+/// [`ResolutionSpace`](crate::audit::reverse::ResolutionSpace) since #399, and
+/// `armadai link` republishes the whole ArmadAI library into `~/.claude` — so
+/// `--propose --global` sees *one* shared block as one cluster per tree and
+/// built one fragment per cluster. Measured on the canonical #399 fixture (a
+/// two-agent library plus the copies `link` publishes): the pack shipped
+/// `shared-conventions-1` (`apply_to: [dev-lead, qa]`) and
+/// `shared-conventions-2` (`apply_to: [dev-lead-2, qa-2]`) with byte-identical
+/// 418-byte bodies, for a single shared block — the exact opposite of A06's
+/// own remedy, "extract the shared block into **one** reusable prompt
+/// fragment".
+///
+/// Two clusters is the right *report*: the change A06 asks for is a change to
+/// one library, and a finding per tree is what names each agent once. The pack
+/// is one artifact, though, so the two clusters are one fragment there.
+///
+/// The merge is behaviour-preserving and that is why equality is on the raw
+/// body, not on a similarity score: an identical body applied to the union of
+/// the `apply_to` lists injects exactly the same text into exactly the same
+/// agents, and two *different* shared blocks stay two fragments.
+fn dedupe_fragments(fragments: Vec<SharedFragment>) -> Vec<SharedFragment> {
+    let mut merged: Vec<SharedFragment> = Vec::new();
+    for f in fragments {
+        match merged.iter_mut().find(|m| m.body == f.body) {
+            Some(existing) => {
+                for slug in f.apply_to {
+                    if !existing.apply_to.contains(&slug) {
+                        existing.apply_to.push(slug);
+                    }
+                }
+            }
+            None => merged.push(f),
+        }
+    }
+    for (i, f) in merged.iter_mut().enumerate() {
+        f.name = format!("shared-conventions-{}", i + 1);
+    }
+    merged
+}
+
 /// Render a shared fragment in the ArmadAI prompt-fragment format
 /// (YAML frontmatter + body).
 pub(crate) fn render_prompt(f: &SharedFragment) -> String {
@@ -634,11 +685,12 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
         // Compute each agent's final slug once, disambiguating collisions (e.g. a
         // `name:` frontmatter and a filename-stem fallback both slugifying to the
         // same value). Both the fragment `apply_to` lists and the agent-write
-        // loop reuse this exact pairing: the generated agent's H1/name is set to
-        // its slug (not its raw display name), because runtime prompt matching
-        // (`armadai_core::prompt`) matches `apply_to` against the H1 name while pack.yaml
-        // validation (R5) matches it against the pack's slug list — the two can
-        // only agree if H1 == slug.
+        // loop reuse this exact pairing: the fragment `apply_to` lists, the
+        // `agents/<slug>.md` filenames and pack.yaml's `agents:` list are the
+        // same strings, which is what makes `pack_validation`'s R1/R5 and
+        // `dependency_resolver` (which matches `apply_to` against the *file
+        // stem*) agree. The H1 is free of that constraint — see
+        // [`render_agent`].
         let mut used_agent_slugs = std::collections::HashSet::new();
         let agent_slugs: Vec<String> = owned
             .iter()
@@ -667,12 +719,16 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
                 fragments.push(f);
             }
         }
+        // One fragment per *distinct* shared block, not per cluster — see
+        // `dedupe_fragments`.
+        let fragments = dedupe_fragments(fragments);
 
         std::fs::create_dir_all(out_dir.join("agents"))?;
         // Agents: render with their shared fragments stripped out. The clone's
         // name is set to its slug BEFORE the strip loop so `apply_to` (slugs)
-        // matches, and BEFORE `render_agent` so the H1 is the slug too. The
-        // original display name stays visible via `metadata.description`.
+        // matches. The H1 is `title` when the source declared one and the slug
+        // otherwise (see `render_agent`); either way the original display name
+        // stays visible on the `- description:` line.
         //
         // `prompt_tails` records, per slug, the last non-empty line of the
         // exact text written to that agent's System Prompt section (after
@@ -683,7 +739,7 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
         for (a, slug) in owned.iter().zip(agent_slugs.iter()) {
             let mut agent = a.clone();
             if agent.metadata.description.is_none() {
-                // The H1 is about to become the slug: synthesize a
+                // `name` is about to become the slug: synthesize a
                 // description from the original human-readable name so it
                 // stays discoverable in the file (render_agent always emits
                 // the `- description:` metadata line).
@@ -846,6 +902,21 @@ mod tests {
     use super::*;
     use crate::audit::rules::test_support::{agent, config_with};
 
+    /// Does `text` carry `expected` as a **whole trimmed line**?
+    ///
+    /// Never `contains` for a heading: `"#### Title".contains("### Title")` is
+    /// `true`, so every `contains("### …")` assertion in this module was
+    /// insensitive to the one constant that decides them all. Measured on this
+    /// branch — setting `HEADING_SHIFT` to 3 left 759 unit tests and 29
+    /// `audit_scopes` cases green while every heading in the pack moved a level
+    /// down and `##### Deep` collided with the capped `###### Deep`. The
+    /// integration test written for the same issue already compared whole
+    /// trimmed lines for exactly this reason; this brings the unit tests to the
+    /// same standard.
+    fn has_line(text: &str, expected: &str) -> bool {
+        text.lines().any(|l| l.trim() == expected)
+    }
+
     #[test]
     fn portable_model_maps_concrete_models_to_tiers() {
         assert_eq!(portable_model(Some("opus")), "latest:max");
@@ -868,11 +939,11 @@ mod tests {
         let input = "Workflow\n---\nkeep me\n\n```bash\n# not a heading\n```\n\nTitle\n===";
         let out = demote_headings(input);
         // `---` is a setext H2, `===` a setext H1: shifted to H4 and H3.
-        assert!(out.contains("#### Workflow"), "got:\n{out}");
+        assert!(has_line(&out, "#### Workflow"), "got:\n{out}");
         assert!(!out.lines().any(|l| l.trim() == "---")); // setext underline dropped
         assert!(out.contains("keep me"));
-        assert!(out.contains("# not a heading")); // untouched inside fence
-        assert!(out.contains("### Title"), "got:\n{out}");
+        assert!(has_line(&out, "# not a heading")); // untouched inside fence
+        assert!(has_line(&out, "### Title"), "got:\n{out}");
     }
 
     #[test]
@@ -887,9 +958,9 @@ mod tests {
                 "an H1/H2 survived: {line:?}"
             );
         }
-        assert!(out.contains("### Title"), "got:\n{out}");
-        assert!(out.contains("#### Metadata"), "got:\n{out}");
-        assert!(out.contains("##### Deep"), "got:\n{out}");
+        assert!(has_line(&out, "### Title"), "got:\n{out}");
+        assert!(has_line(&out, "#### Metadata"), "got:\n{out}");
+        assert!(has_line(&out, "##### Deep"), "got:\n{out}");
         assert!(out.contains("some text"));
         assert!(out.contains("- provider: x")); // list items untouched
     }
@@ -900,7 +971,7 @@ mod tests {
         // must NOT become a setext underline of the heading line.
         let out = demote_headings("# Setup\n---\nTAIL_MUST_SURVIVE");
         // No line pair forms a setext heading: the `---` is preceded by a blank line.
-        assert!(out.contains("### Setup"), "got:\n{out}");
+        assert!(has_line(&out, "### Setup"), "got:\n{out}");
         assert!(out.contains("TAIL_MUST_SURVIVE"));
         // Round-trip: the tail survives re-parsing as an ArmadAI agent.
         use crate::audit::rules::test_support::agent;
@@ -929,13 +1000,13 @@ mod tests {
         assert_eq!(parsed.metadata.provider, "claude");
         assert!(parsed.system_prompt.contains("Does things."));
         assert!(
-            parsed.system_prompt.contains("### Overview"),
+            has_line(&parsed.system_prompt, "### Overview"),
             "got:\n{}",
             parsed.system_prompt
         );
         // The literal `## Metadata` / `## System Prompt` lines the native
         // prompt carried must not have clobbered the agent's real sections.
-        assert!(parsed.system_prompt.contains("#### Metadata"));
+        assert!(has_line(&parsed.system_prompt, "#### Metadata"));
         assert!(parsed.system_prompt.contains("nested"));
     }
 
@@ -949,11 +1020,11 @@ mod tests {
         );
         let md = render_agent(&a);
         assert!(md.starts_with("# reviewer\n"));
-        assert!(md.contains("## Metadata"));
+        assert!(has_line(&md, "## Metadata"));
         assert!(md.contains("- provider: claude"));
         assert!(md.contains("- model: latest:max"));
         assert!(md.contains("- scope: [src/**]"));
-        assert!(md.contains("## System Prompt"));
+        assert!(has_line(&md, "## System Prompt"));
         assert!(md.contains("You review code."));
     }
 
@@ -970,11 +1041,11 @@ mod tests {
     #[test]
     fn demote_headings_shifts_the_hierarchy_down_instead_of_erasing_it() {
         let out = demote_headings("# Title\n\ntext\n\n## Part\n\n### Detail\n\n###### Deep");
-        assert!(out.contains("### Title"), "got:\n{out}");
-        assert!(out.contains("#### Part"), "got:\n{out}");
-        assert!(out.contains("##### Detail"), "got:\n{out}");
+        assert!(has_line(&out, "### Title"), "got:\n{out}");
+        assert!(has_line(&out, "#### Part"), "got:\n{out}");
+        assert!(has_line(&out, "##### Detail"), "got:\n{out}");
         // Level 6 has nowhere to go: it is capped, never promoted.
-        assert!(out.contains("###### Deep"), "got:\n{out}");
+        assert!(has_line(&out, "###### Deep"), "got:\n{out}");
         // The invariant that made this function exist: nothing that ends an
         // ArmadAI section may survive.
         for line in out.lines() {
@@ -987,19 +1058,39 @@ mod tests {
     }
 
     /// One real-shaped ArmadAI agent: a title that does not equal its stem,
-    /// every scalar `## Metadata` field the format can express, and `###`
-    /// sub-headings inside two different `##` sections.
+    /// **every** scalar `## Metadata` field `write_source_metadata` emits, and
+    /// `###` sub-headings inside two different `##` sections.
+    ///
+    /// All fifteen keys, not the four the first version carried: eight of them
+    /// (`command`, `args`, `timeout`, `model_fallback`, `cost_limit`,
+    /// `rate_limit`, `context_window`, `mode`) were emitted by code no test
+    /// read back, and deleting their writers left the whole suite green
+    /// (measured). `provider: cli` + `command:` is the shape that made the
+    /// omission concrete: an agent whose command is dropped no longer runs.
+    ///
+    /// `orchestration` is deliberately absent — `write_source_metadata`
+    /// refuses to write it back (a `Hierarchical`/`Auto` value would produce a
+    /// pack the product's own parser rejects), so the round-trip below would
+    /// rightly fail on it.
     const ARMADAI_SOURCE: &str = "\
 # Platodin Java Lead
 
 ## Metadata
-- provider: claude
+- provider: cli
 - model: claude-sonnet-5
+- command: my-java-tool
+- args: --json, --quiet
 - temperature: 0.4
 - max_tokens: 8192
+- timeout: 900
 - tags: coordinator, lead, analysis
 - stacks: java, spring-boot, platodin
 - scope: src/main/java/**, pom.xml
+- model_fallback: claude-haiku-5, latest:fast
+- cost_limit: 2.5
+- rate_limit: 10/min
+- context_window: 200000
+- mode: autonomous
 
 ## System Prompt
 
@@ -1054,7 +1145,7 @@ A table of findings.
         let a = imported_armadai_agent(dir.path(), "platodin-java-lead", ARMADAI_SOURCE);
         let parsed = reparse(&render_agent(&a));
 
-        assert_eq!(parsed.metadata.provider, "claude");
+        assert_eq!(parsed.metadata.provider, "cli");
         assert_eq!(parsed.metadata.model.as_deref(), Some("claude-sonnet-5"));
         assert!((parsed.metadata.temperature - 0.4).abs() < f32::EPSILON);
         assert_eq!(parsed.metadata.max_tokens, Some(8192));
@@ -1074,9 +1165,50 @@ A table of findings.
             Some("A table of findings.")
         );
         assert!(
-            parsed.system_prompt.contains("### Scope"),
+            has_line(&parsed.system_prompt, "### Scope"),
             "a `###` inside the system prompt must stay a heading, got:\n{}",
             parsed.system_prompt
+        );
+    }
+
+    /// The whole `## Metadata` block, compared field by field through serde
+    /// rather than key by key by hand.
+    ///
+    /// The test above names seven fields; `write_source_metadata` emits
+    /// fifteen. Deleting the writers of the other eight (`command`, `args`,
+    /// `timeout`, `model_fallback`, `cost_limit`, `rate_limit`,
+    /// `context_window`, `mode`) left 759 unit tests and 29 `audit_scopes`
+    /// cases green — `command` among them, so an agent that runs a tool came
+    /// out of the pack with no tool to run, which is the same impoverishment
+    /// #400 is about.
+    ///
+    /// Structural equality rather than a longer list of `assert_eq!`: a key
+    /// added to `AgentMetadata` and to the writer, but never read back,
+    /// fails here without anyone remembering to extend the test. The one
+    /// deliberate exclusion is `orchestration`, and the fixture leaves it
+    /// unset so the two sides agree on `None`.
+    #[test]
+    fn every_metadata_field_the_pack_writes_is_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = imported_armadai_agent(dir.path(), "platodin-java-lead", ARMADAI_SOURCE);
+        let source = armadai_core::parser::parse_agent_file(
+            &dir.path().join("agents/platodin-java-lead.md"),
+        )
+        .unwrap();
+        let round_tripped = reparse(&render_agent(&a));
+
+        // Sanity: the fixture really does declare the fields, so an equality
+        // between two empty metadata blocks cannot pass for a round trip.
+        assert_eq!(source.metadata.command.as_deref(), Some("my-java-tool"));
+        assert_eq!(
+            source.metadata.mode,
+            Some(armadai_core::agent::AgentMode::Autonomous)
+        );
+
+        assert_eq!(
+            serde_yaml_ng::to_value(&round_tripped.metadata).unwrap(),
+            serde_yaml_ng::to_value(&source.metadata).unwrap(),
+            "the pack must read back the same `## Metadata` the source declared"
         );
     }
 
@@ -1102,17 +1234,35 @@ A table of findings.
     }
 
     /// An ArmadAI source with no `tags:` still gets the provenance marker —
-    /// reproducing the source must not mean emitting an empty tag list.
+    /// reproducing the source must not mean emitting an empty tag list — and
+    /// it is still **reproduced**, not converted.
+    ///
+    /// The second half is what makes the test a control. `tags == ["imported"]`
+    /// alone is produced by *both* branches, so the first version of this test
+    /// could not tell them apart: making `render_agent` fall back to the
+    /// convert path whenever `tags` is empty — a very common shape — left 759
+    /// unit tests and 29 `audit_scopes` cases green while re-introducing #400
+    /// itself (`model` back to `latest:pro`, `temperature`/`max_tokens`/
+    /// `stacks`/`scope` gone). So the fixture declares fields only the
+    /// reproduce path keeps, and they are asserted here.
     #[test]
     fn an_armadai_source_without_tags_keeps_the_imported_marker() {
         let dir = tempfile::tempdir().unwrap();
         let a = imported_armadai_agent(
             dir.path(),
             "bare",
-            "# Bare\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nBody.\n",
+            "# Bare\n\n## Metadata\n- provider: claude\n- model: claude-sonnet-5\n\
+             - temperature: 0.2\n- stacks: rust\n\n## System Prompt\n\nBody.\n",
         );
         let parsed = reparse(&render_agent(&a));
         assert_eq!(parsed.metadata.tags, ["imported"]);
+        assert_eq!(
+            parsed.metadata.model.as_deref(),
+            Some("claude-sonnet-5"),
+            "an empty `tags:` must not send the source back through `portable_model`"
+        );
+        assert!((parsed.metadata.temperature - 0.2).abs() < f32::EPSILON);
+        assert_eq!(parsed.metadata.stacks, ["rust"]);
     }
 
     fn block() -> String {
@@ -1168,6 +1318,128 @@ A table of findings.
         let prompt = std::fs::read_to_string(out.join("prompts/shared-conventions-1.md")).unwrap();
         assert!(prompt.contains("  - nested detail one"));
         assert!(prompt.contains("  - nested detail two"));
+    }
+
+    /// Issue #399's shape at the pack level: the same shared block seen
+    /// through two trees is two clusters, and the pack must still ship **one**
+    /// fragment.
+    ///
+    /// Measured on the canonical fixture before this: `--propose --global`
+    /// wrote `shared-conventions-1` (`apply_to: [dev-lead, qa]`) and
+    /// `shared-conventions-2` (`apply_to: [dev-lead-2, qa-2]`) with
+    /// byte-identical 418-byte bodies, for one shared block — while announcing
+    /// A06's own remedy, "extract the shared block into one reusable prompt
+    /// fragment".
+    ///
+    /// Two claims, and the second is what stops "always return one fragment"
+    /// from passing: a *different* block stays its own fragment.
+    #[test]
+    fn dedupe_fragments_merges_identical_bodies_and_keeps_distinct_ones() {
+        let same = |name: &str, apply: &[&str]| SharedFragment {
+            name: name.into(),
+            apply_to: apply.iter().map(|s| s.to_string()).collect(),
+            body: "Shared block.".into(),
+        };
+        let merged = dedupe_fragments(vec![
+            same("shared-conventions-1", &["dev-lead", "qa"]),
+            same("shared-conventions-2", &["dev-lead-2", "qa-2"]),
+            SharedFragment {
+                name: "shared-conventions-3".into(),
+                apply_to: vec!["other".into()],
+                body: "A different block.".into(),
+            },
+        ]);
+
+        assert_eq!(merged.len(), 2, "got {merged:#?}");
+        assert_eq!(merged[0].apply_to, ["dev-lead", "qa", "dev-lead-2", "qa-2"]);
+        assert_eq!(merged[0].body, "Shared block.");
+        // Renumbered, not left with the gap the merge would otherwise open:
+        // the file names and pack.yaml's `prompts:` list are this string.
+        assert_eq!(merged[0].name, "shared-conventions-1");
+        assert_eq!(merged[1].name, "shared-conventions-2");
+        assert_eq!(merged[1].body, "A different block.");
+    }
+
+    /// The same claim on the file the generator writes, since `--propose` is
+    /// where the duplicate was observed: one shared block, two clusters (two
+    /// resolution spaces), one fragment on disk, every agent listed once.
+    #[test]
+    fn generate_proposal_ships_one_fragment_per_distinct_shared_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = block();
+        // Two trees, each with two agents sharing the *same* block — what
+        // `armadai link` produces by republishing a library into `~/.claude`.
+        let mut agents = Vec::new();
+        for (i, space) in [".claude", ".config/armadai"].into_iter().enumerate() {
+            for name in ["dev-lead", "qa"] {
+                // Distinct prose around the block, or the "shared" block would
+                // swallow the whole prompt and leave nothing behind.
+                let slug = format!("{name}-{i}");
+                let mut a = agent(&slug, &format!("Intro {slug}.\n\n{b}Outro {slug}."));
+                a.space = std::path::PathBuf::from(space);
+                agents.push(a);
+            }
+        }
+        let config = config_with(agents);
+
+        let summary = generate_proposal(dir.path(), &config).unwrap();
+        assert_eq!(summary.agents, 4);
+        assert_eq!(
+            summary.prompts, 1,
+            "one shared block must yield one fragment, whatever the tree count"
+        );
+
+        let prompts = dir.path().join(".armadai-proposal/prompts");
+        let written: Vec<String> = std::fs::read_dir(&prompts)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(written, ["shared-conventions-1.md"], "got {written:?}");
+
+        let fragment = std::fs::read_to_string(prompts.join("shared-conventions-1.md")).unwrap();
+        for slug in ["dev-lead-0", "qa-0", "dev-lead-1", "qa-1"] {
+            assert!(
+                has_line(&fragment, &format!("- {slug}")),
+                "every agent sharing the block must be in `apply_to`:\n{fragment}"
+            );
+        }
+    }
+
+    /// Issue #400, the field the earlier fix left behind: an ArmadAI library
+    /// agent titled `# Platodin Java Lead` must not come out of the pack
+    /// renamed `# platodin-java-lead`.
+    ///
+    /// The renaming was justified by a constraint that does not exist — the
+    /// comment named `armadai_core::prompt::prompts_for_agent`, a function no
+    /// crate defines. What does exist, `prompt::matching_prompts`, is called by
+    /// `dependency_resolver` with the agent's *file stem*, and the pack writes
+    /// `agents/<slug>.md`, so `apply_to`, pack.yaml and R5 agree on the slug
+    /// whatever the H1 says. Asserted here rather than argued: the fragment's
+    /// `apply_to` still names the slug, and the file still re-parses.
+    #[test]
+    fn the_pack_keeps_an_armadai_source_title_and_still_routes_on_the_slug() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = imported_armadai_agent(dir.path(), "platodin-java-lead", ARMADAI_SOURCE);
+        assert_eq!(a.name, "platodin-java-lead", "`name` is what routes");
+        assert_eq!(a.title.as_deref(), Some("Platodin Java Lead"));
+
+        let md = render_agent(&a);
+        assert!(has_line(&md, "# Platodin Java Lead"), "got:\n{md}");
+        assert_eq!(reparse(&md).name, "Platodin Java Lead");
+
+        // The control, through the generator so the slug is real: a native
+        // config keeps the slug as its H1, because there the `name:` a router
+        // enumerates *is* the routing key. Without it, "keep the title" could
+        // be implemented as "never slugify" and the assertions above would
+        // still pass.
+        let out = tempfile::tempdir().unwrap();
+        let native = agent("Code Reviewer", "You review code.");
+        assert_eq!(native.title, None, "a native file declares no title");
+        generate_proposal(out.path(), &config_with(vec![native])).unwrap();
+        let written =
+            std::fs::read_to_string(out.path().join(".armadai-proposal/agents/code-reviewer.md"))
+                .unwrap();
+        assert!(has_line(&written, "# code-reviewer"), "got:\n{written}");
     }
 
     #[test]

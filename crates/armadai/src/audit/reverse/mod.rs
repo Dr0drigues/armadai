@@ -132,6 +132,15 @@ pub struct ImportedAgent {
     /// `scope` into 149 phantom overlapping pairs. A separate field is what
     /// lets the proposal see the fields while the rules keep not seeing them.
     pub armadai_metadata: Option<armadai_core::agent::AgentMetadata>,
+    /// The human-readable title an ArmadAI-format source declares as its `# H1`,
+    /// when it differs from [`name`](Self::name) (which is the stem, i.e. what
+    /// routes). `None` for a native file, and `None` when title == stem.
+    ///
+    /// The same reasoning as [`armadai_metadata`](Self::armadai_metadata) and
+    /// the same single consumer: no rule reads it — `A02`/`A07`/`C01` all speak
+    /// about the *routable* name — but `--propose` reproducing an ArmadAI
+    /// library must not silently rename its agents.
+    pub title: Option<String>,
 }
 
 /// A skill imported from a native config (Agent Skills standard layout).

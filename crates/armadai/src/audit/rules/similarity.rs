@@ -51,8 +51,13 @@ pub(super) fn jaccard(a: &str, b: &str) -> f64 {
 /// fragment" — is a change to *one* library, and `armadai link` republishes
 /// every library agent into `~/.claude`, so a global run folded the source
 /// and its published copies into a single cluster naming each agent twice
-/// (issue #399). One cluster per tree names each agent once, and `--propose`
-/// gets fragments a single pack can actually carry.
+/// (issue #399). One cluster per tree names each agent once.
+///
+/// That is the right *report* and not yet the right *pack*: one shared block
+/// seen through two trees is two clusters, and building one fragment per
+/// cluster shipped two byte-identical fragments — measured on the #399 fixture.
+/// Collapsing them is `proposal::dedupe_fragments`' job, not this function's:
+/// A06's finding is per library, the pack is one artifact.
 pub(crate) fn duplication_clusters(agents: &[ImportedAgent]) -> Vec<Vec<usize>> {
     let hashes: Vec<HashSet<u64>> = agents
         .iter()

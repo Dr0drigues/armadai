@@ -91,6 +91,7 @@ fn parse_one(path: &Path, space: &Path) -> ImportedAgent {
             space: space.to_path_buf(),
             // Nothing was parsed, so there is nothing to reproduce.
             armadai_metadata: None,
+            title: None,
         },
     }
 }
@@ -100,8 +101,9 @@ fn imported(path: &Path, agent: &Agent, space: &Path) -> ImportedAgent {
     // publish for this agent", reused rather than restated: `link` writes
     // this exact string into the native config a router then reads.
     let description = crate::linker::LinkAgent::from(agent).description;
+    let stem = stem(path);
     ImportedAgent {
-        name: stem(path),
+        name: stem.clone(),
         source_path: path.to_path_buf(),
         metadata: PartialMetadata {
             description,
@@ -129,6 +131,10 @@ fn imported(path: &Path, agent: &Agent, space: &Path) -> ImportedAgent {
         space: space.to_path_buf(),
         // Everything `PartialMetadata` cannot hold, for `--propose` only.
         armadai_metadata: Some(agent.metadata.clone()),
+        // What routes is the stem, so that is `name`; the `# H1` is the
+        // display title and is kept only when it says something the stem
+        // does not.
+        title: (agent.name != stem).then(|| agent.name.clone()),
     }
 }
 

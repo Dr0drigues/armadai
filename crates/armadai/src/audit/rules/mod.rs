@@ -292,12 +292,21 @@ pub(crate) mod test_support {
             format: AgentFormat::ClaudeFrontmatter,
             space: PathBuf::from(".claude"),
             armadai_metadata: None,
+            title: None,
         }
     }
 
     /// The same shape read from an ArmadAI-format file: a description derived
     /// from the prompt (the format has no `description` field), and no tool
     /// list, because the format cannot express one.
+    ///
+    /// `armadai_metadata` is `Some`, never `None`: `armadai::imported` always
+    /// fills it, and the pair (`space = .config/armadai`, `armadai_metadata =
+    /// None`) does not exist in production. It was inert for the rules — none
+    /// of them reads the field — but it is the input on which `render_agent`
+    /// takes the *convert* branch, i.e. exactly the #400 defect this PR fixes,
+    /// so a fixture shaped that way is a trap for the next test written
+    /// against it.
     pub fn armadai_agent(name: &str, prompt: &str) -> ImportedAgent {
         ImportedAgent {
             name: name.to_string(),
@@ -312,7 +321,27 @@ pub(crate) mod test_support {
             issues: Vec::new(),
             format: AgentFormat::Armadai,
             space: PathBuf::from(".config/armadai"),
-            armadai_metadata: None,
+            armadai_metadata: Some(armadai_core::agent::AgentMetadata {
+                provider: "claude".to_string(),
+                model: Some("latest:pro".to_string()),
+                command: None,
+                args: None,
+                temperature: armadai_core::agent::default_temperature(),
+                max_tokens: None,
+                timeout: None,
+                tags: Vec::new(),
+                stacks: Vec::new(),
+                scope: Vec::new(),
+                model_fallback: Vec::new(),
+                cost_limit: None,
+                rate_limit: None,
+                context_window: None,
+                mode: None,
+                orchestration: None,
+                triggers: None,
+                ring_config: None,
+            }),
+            title: None,
         }
     }
 

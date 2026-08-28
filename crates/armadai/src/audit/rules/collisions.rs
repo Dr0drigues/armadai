@@ -184,12 +184,27 @@ fn scoped_agents<'a>(
         .collect()
 }
 
+/// Pairs of scoped agents whose globs overlap, **inside one resolution
+/// space** — `C02` and `C05` both build on this.
+///
+/// The space guard is the same one `C01`/`A06`/`A07` carry, for the same
+/// reason: two agents claiming `src/**` are only in conflict if one resolver
+/// enumerates both. It is unreachable today and stays here on purpose — the
+/// glob source is `PartialMetadata::extra["paths"]`, Claude Code frontmatter
+/// the ArmadAI reverse pass deliberately leaves empty, so every scoped agent
+/// currently comes from a single native tree. The day a second native root is
+/// assembled, the alternative is not "a latent bug" but "the same false
+/// positive #399 measured", and a rule that compares two assets without asking
+/// which tree they came from is exactly what that issue was.
 fn overlapping_pairs(
     scoped: &[(&crate::audit::reverse::ImportedAgent, Vec<String>)],
 ) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
     for i in 0..scoped.len() {
         for j in (i + 1)..scoped.len() {
+            if scoped[i].0.space != scoped[j].0.space {
+                continue;
+            }
             let overlap = scoped[i]
                 .1
                 .iter()
@@ -733,6 +748,56 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert!(f[0].message.contains("wide") && f[0].message.contains("narrow"));
         assert!(!f[0].message.contains("docs"));
+    }
+
+    /// `C02` and `C05` are the two rules built on `overlapping_pairs`, and
+    /// they compare two assets exactly as `C01`/`A06`/`A07` do — so they ask
+    /// the same question those three learned to ask in #399: are these files
+    /// in one resolution space? Two agents claiming `src/**` in two unrelated
+    /// trees are not competing for anything.
+    ///
+    /// Unreachable through today's importers (the glob source is Claude Code
+    /// frontmatter, and every scoped agent therefore comes from one native
+    /// tree), which is why it is pinned here at the rule's own level rather
+    /// than through the binary.
+    #[test]
+    fn c02_and_c05_do_not_compare_agents_from_two_trees() {
+        use serde_yaml_ng::Value;
+        let scoped = |name: &str, globs: &str, space: &str, tools: Option<Vec<String>>| {
+            let mut a = agent(name, "Body");
+            a.metadata
+                .extra
+                .insert("paths".into(), Value::String(globs.into()));
+            a.metadata.tools = tools;
+            a.space = std::path::PathBuf::from(space);
+            a
+        };
+        let settings = AuditSettings::default();
+        let run = |config: &crate::audit::reverse::ImportedConfig| {
+            let ctx = AuditContext {
+                config,
+                settings: &settings,
+                usage: None,
+            };
+            (
+                c02_scope_overlap(&ctx).len(),
+                c05_inconsistent_tools(&ctx).len(),
+            )
+        };
+
+        let across = config_with(vec![
+            scoped("wide", "src/**", ".claude", Some(vec!["Read".into()])),
+            scoped("narrow", "src/cli/**", ".config/armadai", None),
+        ]);
+        assert_eq!(run(&across), (0, 0), "two trees, two independent scopes");
+
+        // The control: the same pair inside one tree is what both rules exist
+        // to report, so the silence above is a guard and not a broken rule.
+        let inside = config_with(vec![
+            scoped("wide", "src/**", ".claude", Some(vec!["Read".into()])),
+            scoped("narrow", "src/cli/**", ".claude", None),
+        ]);
+        assert_eq!(run(&inside), (1, 1));
     }
 
     #[test]

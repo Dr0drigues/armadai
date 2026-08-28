@@ -200,6 +200,7 @@ fn parse_agent_file(path: &Path, space: &Path) -> ImportedAgent {
                 format: AgentFormat::ClaudeFrontmatter,
                 space: space.to_path_buf(),
                 armadai_metadata: None,
+                title: None,
             };
         }
     };
@@ -236,6 +237,7 @@ fn parse_agent_file(path: &Path, space: &Path) -> ImportedAgent {
         space: space.to_path_buf(),
         // A native file has no syntax for most of what this carries.
         armadai_metadata: None,
+        title: None,
     }
 }
 
