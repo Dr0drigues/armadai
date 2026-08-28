@@ -42,7 +42,7 @@ That target matters: `link.coordinator` is matched against the **title**, *not* 
 
 The link step `armadai shell`'s setup wizard runs applies the same rule: it honours `link.coordinator` from the project config exactly as `armadai link` does, and writes the same files. (Before v1.0.0 it ignored the setting entirely, writing a per-agent file for the coordinator and no root instructions file — which a later manifest-less `unlink` then left behind.)
 
-A `link.coordinator` matching no agent is not an error — the target simply gets no root instructions file, and `unlink` removes none. It is reported, though, on every surface that resolves it (`link`, `unlink`, the shell's setup wizard, and `armadai validate`):
+A `link.coordinator` matching no agent is not an error — the target simply gets no root instructions file, and `unlink` removes none. It is reported, though, on every surface that reads it (`link`, `unlink`, the shell's setup wizard, and `armadai validate`):
 
 ```text
   warn: link.coordinator 'dev-led' matches no agent — no root instructions file (.claude/CLAUDE.md and its equivalents) is written or removed for it.
@@ -50,7 +50,19 @@ A `link.coordinator` matching no agent is not an error — the target simply get
         Titles in this roster: Worker, Dev Lead.
 ```
 
-It stays a warning rather than a refusal: the link itself is valid, it is the configuration that is not what you meant. `armadai validate` reports the same thing as a warning too — with one restriction: if any agent of the roster failed to load, the titles it can see are not the titles `link` would see, so the check stands down instead of guessing. (Before v1.0.0 none of this was reported at all: a typo, or a title/key mismatch, was silent on both sides.)
+It stays a warning rather than a refusal: the link itself is valid, it is the configuration that is not what you meant.
+
+The question asked is always *"does this reference name an agent the project declares?"* — never *"did this particular command find it?"*. `--agents` narrows what gets written, so `armadai link --agents Worker` writes no root instructions file for a coordinator it was not asked for; but the configuration is untouched by your filter, so nothing is reported. A genuine typo is still reported under any filter, and the titles listed are the ones the project declares, not the ones the filter kept.
+
+`armadai validate` answers the same question, on the same criterion — with one restriction: if any agent of the roster failed to load, the titles it can see are not the titles `link` would see, so the check stands down instead of guessing. It says so, and lists what stopped it:
+
+```text
+WARN  armadai.yaml:link.coordinator: link.coordinator 'ghost' was not checked: part of the roster failed to load, so the titles available here are not the titles `link` would see and "matches no agent" would be a guess.
+  Resolve these first, then re-run `armadai validate`:
+  - Agent 'ghost' not found in …
+```
+
+(Before v1.0.0 none of this was reported at all: a typo, or a title/key mismatch, was silent on both sides.)
 
 ## Examples
 

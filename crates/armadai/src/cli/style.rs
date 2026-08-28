@@ -105,4 +105,41 @@ mod tests {
             "expected no ANSI codes when forced off"
         );
     }
+
+    /// [`indent_continuation`]'s whole contract, asserted verbatim on a
+    /// multi-line input.
+    ///
+    /// It had none: this function shipped with every one of its call
+    /// sites checked by `contains` on single-line fragments, so turning it
+    /// into the identity function left all 28 test targets green — the
+    /// entire presentation of a three-line warning was unfalsifiable. Both
+    /// live indent widths are pinned here (`link`/`unlink`/wizard align
+    /// their continuations under a `  warn: ` prefix, `validate` under its
+    /// own `WARN  ` one), plus the two edges that decide whether the
+    /// function is doing anything at all.
+    #[test]
+    fn indent_continuation_indents_every_line_but_the_first() {
+        let message = "first line.\nsecond line.\nthird line.";
+
+        assert_eq!(
+            indent_continuation(message, "        "),
+            "first line.\n        second line.\n        third line.",
+            "the `  warn: ` alignment used by link, unlink and the shell wizard"
+        );
+        assert_eq!(
+            indent_continuation(message, "  "),
+            "first line.\n  second line.\n  third line.",
+            "the `WARN  ` alignment used by validate"
+        );
+        assert_eq!(
+            indent_continuation("only one line.", "        "),
+            "only one line.",
+            "a single-line message must come out untouched — no trailing indent"
+        );
+        assert_eq!(
+            indent_continuation("a\n\nb", "  "),
+            "a\n  \n  b",
+            "a blank line is a line: it gets the indent too, so the block stays one block"
+        );
+    }
 }

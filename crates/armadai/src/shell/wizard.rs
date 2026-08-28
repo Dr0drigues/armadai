@@ -386,19 +386,60 @@ async fn run_link(target: &str) -> Result<()> {
 /// `link` gets them, rather than a third copy that could drift from both.
 ///
 /// Deliberately narrower than `link`'s own CLI *flags*: no `--coordinator`
-/// override, no skills/prompts, no `--agents` filter, no
-/// `--model`/interactive model prompt, no `--force` — the wizard flow has
-/// no way to express any of those. What it does honour is the project
-/// **config**: `link.coordinator` reaches `generate` here exactly as it
-/// does in `link` (issue #375). It used to be hardcoded to `None`, so the
-/// wizard wrote a per-agent file for every agent and never the target's
-/// root instructions file — and a later manifest-less `unlink`, looking
-/// for the coordinator where `link` would have put it, left that
+/// override, no `--agents` filter, no `--model`/interactive model prompt,
+/// no `--force` — the wizard flow has no way to express any of those.
+///
+/// It honours **part** of the project config, not all of it. What it does
+/// honour is `link.coordinator`, which reaches `generate` here exactly as
+/// it does in `link` (issue #375); it used to be hardcoded to `None`, so
+/// the wizard wrote a per-agent file for every agent and never the
+/// target's root instructions file — and a later manifest-less `unlink`,
+/// looking for the coordinator where `link` would have put it, left that
 /// per-agent file behind.
+///
+/// What it still does **not** honour, each a config-driven behaviour of
+/// `link` that this function has no equivalent for (tracked as #411):
+///
+/// - **`skills:` / `prompts:`** — `link` assembles the project's skills
+///   and prompts into the generated config; the wizard passes agents
+///   alone, so a wizard-linked project ships without them.
+/// - **`orchestration:`** — `link` validates the orchestration config and
+///   refuses on error before writing anything; the wizard writes
+///   regardless.
+/// - **the project registry** — `link` calls
+///   `project_registry::register_project`, so the project shows up in
+///   `armadai projects`; a wizard-driven link never registers it.
+///
+/// `warnings` is where the user-facing warnings go. In production it is
+/// `anstream::stderr()` (see [`run_link`]); tests pass a buffer, which is
+/// the only way to assert that this surface actually *prints* what the
+/// documentation says it prints — `docs/wiki/link.md` names the wizard as
+/// one of the four surfaces reporting an unmatched `link.coordinator`, and
+/// deleting the write below used to leave the whole suite green.
 async fn run_link_at(
     root: &Path,
     config: &armadai_core::project::ProjectConfig,
     target: &str,
+) -> Result<()> {
+    run_link_at_reporting(root, config, target, &mut anstream::stderr()).await
+}
+
+/// One `  warn: ` line, styled the way `link` and `unlink` style theirs
+/// (`cli::style::warn()` rather than a bare `eprintln!`) so the wizard is
+/// not the one surface printing an uncoloured warning.
+///
+/// A write failure on the warning channel is deliberately swallowed: a
+/// closed stderr must not turn a successful link into an error.
+fn emit_warning(out: &mut dyn std::io::Write, message: &str) {
+    let s = crate::cli::style::warn();
+    let _ = writeln!(out, "{s}  warn: {message}{s:#}");
+}
+
+async fn run_link_at_reporting(
+    root: &Path,
+    config: &armadai_core::project::ProjectConfig,
+    target: &str,
+    warnings_out: &mut dyn std::io::Write,
 ) -> Result<()> {
     println!("\nLinking to '{}'...", target);
 
@@ -417,7 +458,7 @@ async fn run_link_at(
     let fragments = armadai_core::agent_source::project_fragments(root);
     let (agents, warnings) = armadai_core::agent_source::load_all_agents(config, root, &fragments);
     for w in &warnings {
-        eprintln!("  warn: {}", w.message());
+        emit_warning(warnings_out, w.message());
     }
 
     let mut link_agents: Vec<crate::linker::LinkAgent> =
@@ -470,17 +511,29 @@ async fn run_link_at(
     // emitting one is correct by construction rather than by accident,
     // and so this function stays a mirror of `link` rather than a fourth
     // variant of it.
-    let (mut coordinator, coordinator_warning) = crate::linker::take_coordinator(
-        &mut link_agents,
+    //
+    // The wizard has no `--agents` filter, so the roster it asks the
+    // question on and the roster it extracts from are the same one — but
+    // it goes through the same two-step API `link` and `unlink` use, so
+    // "is this configured reference satisfiable?" stays a statement about
+    // the config on every surface rather than a by-product of whichever
+    // roster a command happens to hold.
+    let coordinator_ref = crate::linker::coordinator_reference(
         None,
         config.link.as_ref().and_then(|l| l.coordinator.clone()),
     );
-    if let Some(message) = coordinator_warning {
-        eprintln!(
-            "  warn: {}",
-            crate::cli::style::indent_continuation(&message, "        ")
+    if let Some(message) = coordinator_ref
+        .as_ref()
+        .and_then(|r| r.no_match_warning(&link_agents))
+    {
+        emit_warning(
+            warnings_out,
+            &crate::cli::style::indent_continuation(&message, "        "),
         );
     }
+    let mut coordinator = coordinator_ref
+        .as_ref()
+        .and_then(|r| r.take_from(&mut link_agents));
 
     // The same model resolution `link`'s own step 4b performs (issue I1 on
     // #347's review): without this, a `latest:*` placeholder reaches
@@ -824,8 +877,24 @@ mod run_link_tests {
     /// (`.claude/CLAUDE.md`), did not find it, and left behind the
     /// per-agent file the wizard had written instead.
     ///
-    /// Mutation this catches: the same `None` revert as the test above
-    /// leaves `.claude/agents/dev-lead.md` on disk after the unlink.
+    /// **What this catches, measured, and what it does not.** The full
+    /// pre-fix revert — no `CoordinatorRef` at all *and*
+    /// `generate(&link_agents, None, sources)` — leaves
+    /// `.claude/agents/dev-lead.md` on disk after the unlink, and this
+    /// assertion fails. Reverting the `generate` argument **alone** does
+    /// not: `take_from` still pulls `Dev Lead` out of the roster, so the
+    /// wizard writes no file for it at all, and an unlink that removes
+    /// `worker.md` leaves nothing behind. Measured: that half-revert is
+    /// **one** red test (`wizard_link_honours_the_configured_link_coordinator`),
+    /// not two.
+    ///
+    /// It also cannot catch a mutation of the shared matching criterion.
+    /// `name_matches_reference` is what *both* halves resolve through, so
+    /// breaking it moves link and unlink together: under
+    /// `name_matches_reference` → `==` this test stays **green** (measured,
+    /// 7 other tests red). What pins that criterion is the asymmetric
+    /// fixtures — a title (`Dev Lead`) that differs from its slug
+    /// (`dev-lead`) — in the *single*-sided tests.
     #[tokio::test]
     async fn wizard_link_then_unlink_without_a_manifest_leaves_nothing_behind() {
         let dir = tempfile::tempdir().unwrap();
@@ -858,6 +927,96 @@ mod run_link_tests {
             survivors.is_empty(),
             "a manifest-less unlink must reclaim everything a wizard-driven link wrote; \
              survivors: {survivors:?}"
+        );
+    }
+
+    /// The wizard is the fourth surface `docs/wiki/link.md` names as
+    /// reporting an unmatched `link.coordinator` — and it was the one that
+    /// existed only in prose. Measured on this branch's first draft:
+    /// deleting the whole warning block from `run_link_at` left **all 28
+    /// test targets green**. `link`, `unlink` and `validate` are pinned by
+    /// `tests/link_coordinator_no_match.rs`; nothing pinned this one.
+    ///
+    /// It is asserted verbatim, indentation included, for the reason the
+    /// black-box file records: turning `cli::style::indent_continuation`
+    /// into the identity function was also green everywhere, so the
+    /// eight-space continuation is only real if a test spells it.
+    ///
+    /// The seam this needs is `run_link_at_reporting`'s writer argument —
+    /// an in-process `eprintln!` cannot be captured. What that leaves
+    /// unpinned is the one-line `run_link_at` wrapper that supplies
+    /// `anstream::stderr()`; swapping it for a sink would stay green. That
+    /// is a deliberate trade: the mutation this *does* kill is the one
+    /// that was actually live.
+    #[tokio::test]
+    async fn wizard_link_reports_a_coordinator_that_matches_no_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        write_coordinator_project(&root);
+        // Break the reference the fixture writes correctly: one letter.
+        let config_path = root.join("armadai.yaml");
+        let broken = std::fs::read_to_string(&config_path)
+            .unwrap()
+            .replace("coordinator: dev-lead", "coordinator: dev-led");
+        std::fs::write(&config_path, broken).unwrap();
+
+        let (found_root, config) = project::find_project_config_from(&root).unwrap();
+        let mut warnings: Vec<u8> = Vec::new();
+        run_link_at_reporting(
+            &found_root,
+            &config,
+            "claude",
+            &mut anstream::StripStream::new(&mut warnings),
+        )
+        .await
+        .unwrap();
+
+        let reported = String::from_utf8(warnings).unwrap();
+        let expected = concat!(
+            "  warn: link.coordinator 'dev-led' matches no agent — no root instructions file ",
+            "(.claude/CLAUDE.md and its equivalents) is written or removed for it.\n",
+            "        It is matched against an agent's H1 title, or that title's slug — not the ",
+            "`agents:` key, which is a separate namespace.\n",
+            "        Titles in this roster: Worker, Dev Lead.\n",
+        );
+        assert_eq!(
+            reported, expected,
+            "the wizard must report an unmatched coordinator, in the same words and the \
+             same shape as `link` and `unlink`"
+        );
+    }
+
+    /// The wizard's own negative control: a coordinator that resolves must
+    /// leave its warning channel completely empty, or the assertion above
+    /// is satisfied by a surface that warns unconditionally.
+    ///
+    /// Mutation this catches: emitting the report whatever
+    /// `no_match_warning` answers.
+    #[tokio::test]
+    async fn wizard_link_says_nothing_when_the_coordinator_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        write_coordinator_project(&root);
+
+        let (found_root, config) = project::find_project_config_from(&root).unwrap();
+        let mut warnings: Vec<u8> = Vec::new();
+        run_link_at_reporting(
+            &found_root,
+            &config,
+            "claude",
+            &mut anstream::StripStream::new(&mut warnings),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            String::from_utf8(warnings).unwrap(),
+            "",
+            "a resolved coordinator warrants no message at all"
+        );
+        assert!(
+            root.join(".claude/CLAUDE.md").is_file(),
+            "control: it really did resolve — silence here is not silence over a failure"
         );
     }
 

@@ -147,20 +147,32 @@ pub fn name_matches_reference(agent_name: &str, reference: &str) -> bool {
 }
 
 /// The project-config key that names the linker's coordinator. Spelled
-/// once, here, so the three surfaces that report on it (`link`, `unlink`,
-/// `validate`) cannot drift into naming three different keys — and so a
-/// user reading any of them is sent to the field that actually exists.
+/// once, here, so the four surfaces that report on it (`link`, `unlink`,
+/// the shell's setup wizard, `validate`) cannot drift into naming four
+/// different keys — and so a user reading any of them is sent to the
+/// field that actually exists.
 pub const LINK_COORDINATOR_KEY: &str = "link.coordinator";
 
-/// What to tell the user when a configured coordinator reference
-/// designates no agent of the roster (issue #371).
+/// Does `reference` designate an agent of `roster_titles`, and if not,
+/// what should the user be told (issue #371)?
 ///
-/// The failure is silent by construction: [`name_matches_reference`]
-/// simply finds nothing, so `link` writes no root instructions file and
-/// `unlink` looks for none. Nothing is left on disk — the defect is
-/// symmetric, unlike #341 — so this message is the *only* observable, and
-/// every command that resolves the reference emits this one text rather
-/// than its own.
+/// **This is a statement about the configuration, not about an
+/// invocation.** `link.coordinator` either names an agent the project
+/// declares or it does not; that answer cannot depend on which subset of
+/// the roster a given command happens to be writing. Computing it as a
+/// side effect of the resolver — "did *this* call find the agent?" — is
+/// what made `armadai link --agents Worker` announce that a perfectly
+/// correct `coordinator: dev-lead` matched nothing, on the very same
+/// project where `armadai validate` reported no warning at all. So every
+/// caller passes the **declared** roster here, and passes whatever roster
+/// it is actually writing to the resolver, separately.
+///
+/// The failure this reports is silent by construction:
+/// [`name_matches_reference`] simply finds nothing, so `link` writes no
+/// root instructions file and `unlink` looks for none. Nothing is left on
+/// disk — the defect is symmetric, unlike #341 — so this message is the
+/// *only* observable, and every command emits this one text rather than
+/// its own.
 ///
 /// It names the H1-title namespace on purpose. `link.coordinator` is
 /// matched against an agent's title (or that title's slug), never against
@@ -172,11 +184,30 @@ pub const LINK_COORDINATOR_KEY: &str = "link.coordinator";
 ///
 /// `origin` is the field the reference came from — [`LINK_COORDINATOR_KEY`]
 /// for the config, `--coordinator` for the CLI flag that overrides it.
-pub fn coordinator_no_match_message(
+pub fn coordinator_no_match_warning(
     origin: &str,
     reference: &str,
     roster_titles: &[String],
-) -> String {
+) -> Option<String> {
+    if roster_titles
+        .iter()
+        .any(|title| name_matches_reference(title, reference))
+    {
+        return None;
+    }
+    Some(coordinator_no_match_message(
+        origin,
+        reference,
+        roster_titles,
+    ))
+}
+
+/// The wording of [`coordinator_no_match_warning`]'s report, kept private
+/// on purpose: a caller holding the formatter without the predicate is
+/// exactly how the "did this call resolve it?" coupling got written in the
+/// first place. There is no way to emit this text without first having
+/// asked the question against a roster.
+fn coordinator_no_match_message(origin: &str, reference: &str, roster_titles: &[String]) -> String {
     let titles = if roster_titles.is_empty() {
         "(none)".to_string()
     } else {

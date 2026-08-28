@@ -67,6 +67,23 @@ pub async fn execute(
         anyhow::bail!("No agents could be resolved. Check your project config.");
     }
 
+    // 2a-bis. Whether `link.coordinator` names an agent this project
+    // declares is a statement about the **configuration**, so it is
+    // answered here, against the roster as declared — before `--agents`
+    // narrows it below. Deriving it from the resolver instead ("did this
+    // call find the agent?") is what made `armadai link --agents Worker`
+    // report a perfectly correct `coordinator: dev-lead` as matching
+    // nothing, on a project where `armadai validate` reported no warning
+    // at all. The message is printed at step 3b, where it belongs in the
+    // output, but the question is asked here.
+    let coordinator_ref = linker::coordinator_reference(
+        coordinator_flag,
+        config.link.as_ref().and_then(|l| l.coordinator.clone()),
+    );
+    let coordinator_warning = coordinator_ref
+        .as_ref()
+        .and_then(|r| r.no_match_warning(&link_agents));
+
     // 2b. Resolve deprecated model aliases before remapping
     for agent in &mut link_agents {
         armadai_core::model_aliases::resolve_model_deprecations(
@@ -104,26 +121,31 @@ pub async fn execute(
         );
     }
 
-    // 3b. Extract coordinator if configured (CLI flag takes priority over
-    // config), through the one resolver `unlink` and the shell wizard also
-    // use. A reference that matches nothing is reported rather than
-    // silently ignored (issue #371): the link stays valid — it is the
-    // configuration that is not what the user meant — but until this
-    // warning existed, `link` announced success having written no root
-    // instructions file at all, and `unlink` looked for none either, so a
-    // typo left no trace anywhere.
-    let (mut coordinator, coordinator_warning) = linker::take_coordinator(
-        &mut link_agents,
-        coordinator_flag,
-        config.link.as_ref().and_then(|l| l.coordinator.clone()),
-    );
-    if let Some(message) = coordinator_warning {
+    // 3b. Report the configured coordinator if it names no declared agent
+    // (the question was asked at step 2a-bis, against the unfiltered
+    // roster), then extract it from the agents actually being written.
+    //
+    // Reporting matters because the failure is otherwise invisible: until
+    // this warning existed, `link` announced success having written no
+    // root instructions file at all, and `unlink` looked for none either,
+    // so a typo left no trace anywhere (issue #371). It stays a warning:
+    // the link itself is valid, it is the configuration that is not what
+    // the user meant.
+    //
+    // Extraction runs on the post-filter roster on purpose: `--agents
+    // Worker` writes exactly Worker, so no root instructions file is
+    // written for a coordinator the user did not request. That is the
+    // pinned behaviour, and it is not what the warning is about.
+    if let Some(message) = &coordinator_warning {
         let s = crate::cli::style::warn();
         anstream::eprintln!(
             "{s}  warn: {}{s:#}",
-            crate::cli::style::indent_continuation(&message, "        ")
+            crate::cli::style::indent_continuation(message, "        ")
         );
     }
+    let mut coordinator = coordinator_ref
+        .as_ref()
+        .and_then(|r| r.take_from(&mut link_agents));
 
     // 4. Determine target
     let target_name = target
