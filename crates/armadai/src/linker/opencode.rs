@@ -71,25 +71,7 @@ fn generate_agent_file(agent: &LinkAgent) -> OutputFile {
     content.push_str("---\n\n");
 
     // Body: system prompt
-    content.push_str(&agent.system_prompt);
-
-    if let Some(ref instructions) = agent.instructions {
-        ensure_blank_line(&mut content);
-        content.push_str("## Instructions\n\n");
-        content.push_str(instructions);
-    }
-
-    if let Some(ref output_format) = agent.output_format {
-        ensure_blank_line(&mut content);
-        content.push_str("## Output Format\n\n");
-        content.push_str(output_format);
-    }
-
-    if let Some(ref context) = agent.context {
-        ensure_blank_line(&mut content);
-        content.push_str("## Context\n\n");
-        content.push_str(context);
-    }
+    content.push_str(&agent.composed_prompt());
 
     if !content.ends_with('\n') {
         content.push('\n');

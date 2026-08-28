@@ -1253,7 +1253,8 @@ fn step_from_agent(agent_name: &str, agent: &Agent) -> StepPlan {
     StepPlan::Relay {
         cmd,
         args,
-        system_prompt: agent.system_prompt.clone(),
+        // Every declared section, not just `## System Prompt` (#395).
+        system_prompt: agent.composed_prompt(),
         label,
     }
 }

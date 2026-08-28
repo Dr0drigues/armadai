@@ -1226,10 +1226,15 @@ async fn run_single_agent(
         .or(project_defaults.and_then(|d| d.mode))
         .unwrap_or_default();
 
+    // Every declared section, not just `## System Prompt` (#395) — composed
+    // through the one core definition `link` also uses. The guided-mode
+    // instruction is appended *after* the whole prompt, so it stays the last
+    // word on how to answer.
+    let composed = agent.composed_prompt();
     let system_prompt = if effective_mode == AgentMode::Guided {
-        format!("{}{GUIDED_MODE_INSTRUCTION}", agent.system_prompt)
+        format!("{composed}{GUIDED_MODE_INSTRUCTION}")
     } else {
-        agent.system_prompt.clone()
+        composed
     };
 
     // 5. Build request
@@ -1677,7 +1682,12 @@ async fn run_single_agent_es(
         .or(project_defaults.and_then(|d| d.mode))
         .unwrap_or_default();
     if effective_mode == AgentMode::Guided {
-        agent.system_prompt = format!("{}{GUIDED_MODE_INSTRUCTION}", agent.system_prompt);
+        // The engine composes the sections itself (#395), so fold them here
+        // and append the guided instruction after the lot — same order as the
+        // legacy path above. `set_composed_prompt` clears the folded sections
+        // so the engine cannot compose them twice.
+        let guided = format!("{}{GUIDED_MODE_INSTRUCTION}", agent.composed_prompt());
+        agent.set_composed_prompt(guided);
     }
 
     // 5-7. Drive the event-sourced engine (model routing, request building,

@@ -120,6 +120,40 @@ Key-value pairs configuring the agent's technical behavior.
 | `context_window` | int | No | — | Context window size override |
 | `orchestration` | string | No | — | Orchestration pattern: `blackboard`, `ring` |
 
+### What reaches the model
+
+`## System Prompt`, `## Instructions`, `## Output Format` and `## Context` are
+**all** sent to the model, in that order, each reintroduced under its own `##`
+heading and separated by a blank line:
+
+```
+<System Prompt body>
+
+## Instructions
+
+<Instructions body>
+
+## Output Format
+
+<Output Format body>
+
+## Context
+
+<Context body>
+```
+
+An absent section contributes nothing at all — no empty heading.
+
+`armadai run` (including `--pipe`, `--orchestrate` and `--resume`), `armadai
+shell` and `armadai link` all compose the prompt this same way, from one
+definition in the core (`armadai_core::agent::compose_agent_prompt`). Before
+issue #395 was fixed, `run` sent `## System Prompt` alone, so an agent that
+put its output rules in `## Output Format` obeyed them once linked into a
+native CLI and ignored them when run directly.
+
+`## Metadata`, `## Pipeline`, `## Triggers` and `## Ring Config` are
+configuration, not prompt text: they are parsed into fields and never sent.
+
 ### System Prompt (required)
 
 The system prompt sent to the model. This defines the agent's identity, role, and behavioral boundaries.

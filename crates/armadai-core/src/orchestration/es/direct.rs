@@ -226,7 +226,8 @@ impl EffectRunner for DirectEffectRunner {
 
         let request = CompletionRequest {
             model,
-            system_prompt: agent_def.system_prompt.clone(),
+            // Every declared section, not just `## System Prompt` (#395).
+            system_prompt: agent_def.composed_prompt(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: input.to_string(),
