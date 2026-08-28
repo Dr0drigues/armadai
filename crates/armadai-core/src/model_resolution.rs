@@ -88,20 +88,76 @@ pub fn parse_latest_placeholder(model: &str) -> Option<ModelTier> {
     }
 }
 
+/// The model catalog whose ids name `provider`'s models, or `None` when
+/// nothing here knows.
+///
+/// An agent's `provider:` is a *tool* name (`gemini`, `aider`, `claude`, …)
+/// while the models.dev catalog — and [`fallback_model_for_tier`] — are
+/// keyed by *vendor* (`google`, `openai`, `anthropic`). Handing the tool
+/// name straight to either lookup misses the cache and then falls through
+/// the vendor table's catch-all, which answers with an **Anthropic** model:
+/// `provider: gemini` + `model: latest:pro` used to send
+/// `claude-sonnet-4-5-20250929` to `generativelanguage.googleapis.com`
+/// (#398 review, F1). `armadai shell` already carried this table privately
+/// (`shell::config::shell_provider_to_linker`), which is exactly how two
+/// subcommands of one binary came to disagree on one agent file.
+///
+/// Deliberately NOT `armadai_providers::factory::api_backend_for_tool`,
+/// which answers a different question — "if this CLI is missing, which API
+/// can I call instead?". `codex` has no such backend (issue #369) yet its
+/// models are named by OpenAI, so the two mappings differ on purpose. (Core
+/// could not depend on `armadai-providers` anyway: the dependency runs the
+/// other way.)
+///
+/// `None` — for `cli`, `proxy`, `copilot`, `opencode` and anything unknown
+/// — means "no vendor catalog names these models", not "use Anthropic's".
+/// See [`resolve_tier_placeholder`] for what callers do with it.
+pub fn model_catalog_provider(provider: &str) -> Option<&'static str> {
+    match provider {
+        "anthropic" | "claude" => Some("anthropic"),
+        "google" | "gemini" => Some("google"),
+        "openai" | "gpt" | "aider" | "codex" => Some("openai"),
+        _ => None,
+    }
+}
+
 /// Resolve a static `latest:*` tier placeholder into a concrete model id for
 /// `provider`.
 ///
-/// Returns `None` when `model` is not a static placeholder — a concrete
+/// Returns `None` when the string is not a static placeholder — a concrete
 /// model id, or `latest:auto` — so a caller can keep its own handling for
 /// those two cases (`.unwrap_or(raw_model)` for the former, the router for
 /// the latter).
 ///
-/// This is the last gate before a model string reaches a provider: every
-/// site that builds a `CompletionRequest` from an agent's declared model
-/// goes through it, so no `latest:*` placeholder other than `latest:auto`
-/// can be sent over the wire as a model name (#376).
+/// Also returns `None` when [`model_catalog_provider`] does not name a
+/// vendor for `provider`. That covers `provider: cli` and the CLI-only tools
+/// (whose relay ignores `request.model` outright) and `provider: proxy`,
+/// where the placeholder is the more useful string of the two: a gateway
+/// administrator can route `latest:max` through a house alias, whereas a
+/// concrete `claude-opus-4-6` picked here is a vendor this side of the wire
+/// chose on its own, with no opt-out (#398 review, F1).
+///
+/// For every provider that *does* name a vendor, this is the last gate
+/// before a model string reaches the wire: every site that builds a
+/// `CompletionRequest` from an agent's declared model goes through it, so no
+/// `latest:*` placeholder other than `latest:auto` can be sent to an API as
+/// a model name (#376).
 pub fn resolve_tier_placeholder(model: &str, provider: &str) -> Option<String> {
-    parse_latest_placeholder(model).map(|tier| resolve_model_for_tier(provider, tier))
+    let catalog = model_catalog_provider(provider)?;
+    parse_latest_placeholder(model).map(|tier| resolve_model_for_tier(catalog, tier))
+}
+
+/// Resolve `tier` to a concrete model id for `provider`, naming its vendor
+/// catalog first.
+///
+/// The counterpart of [`resolve_tier_placeholder`] for `latest:auto`, whose
+/// tier the router picks per call: there is no placeholder left to pass
+/// through by then, so an unnamed vendor keeps the old behaviour (the
+/// provider name is handed to the catalog lookup as-is, which misses and
+/// lands on [`fallback_model_for_tier`]'s catch-all) rather than answering
+/// `None`.
+pub fn resolve_routed_tier(provider: &str, tier: ModelTier) -> String {
+    resolve_model_for_tier(model_catalog_provider(provider).unwrap_or(provider), tier)
 }
 
 /// Hardcoded fallback model for a given provider and tier.

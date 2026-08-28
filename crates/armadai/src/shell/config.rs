@@ -6,35 +6,33 @@
 //! reach into `crate::linker` and so cannot live in core.
 
 use crate::linker::model_resolution::parse_latest_placeholder;
-use armadai_core::model_resolution::{ModelTier, fallback_model_for_tier, resolve_model_for_tier};
+use armadai_core::model_resolution::{
+    ModelTier, fallback_model_for_tier, model_catalog_provider, resolve_routed_tier,
+};
 pub use armadai_core::project::{PipelineStep, ShellConfig, ShellProviderEntry};
 
 // ── Model resolution for shell providers ────────────────────────
 
-/// Map a shell provider name to the linker provider identifier.
-fn shell_provider_to_linker(provider: &str) -> &str {
-    match provider {
-        "gemini" => "google",
-        "claude" => "anthropic",
-        "aider" | "codex" => "openai",
-        _ => "anthropic",
-    }
-}
-
 /// Resolve a model string (which may be a `latest:*` placeholder) for a shell provider.
+///
+/// The tool-name → vendor-catalog mapping this used to carry privately
+/// (`shell_provider_to_linker`) now lives in
+/// [`armadai_core::model_resolution::model_catalog_provider`], shared with
+/// `armadai run` and `armadai link`. It was the only correct copy of it in
+/// the tree, which is how `armadai shell` and `armadai run` came to resolve
+/// the same agent file's `latest:pro` to two different vendors' models
+/// (#398 review, F1).
 pub fn resolve_shell_model(provider: &str, model: &str) -> String {
-    let linker_provider = shell_provider_to_linker(provider);
-    if let Some(tier) = parse_latest_placeholder(model) {
-        resolve_model_for_tier(linker_provider, tier)
-    } else {
-        model.to_string()
+    match parse_latest_placeholder(model) {
+        Some(tier) => resolve_routed_tier(provider, tier),
+        None => model.to_string(),
     }
 }
 
 /// Get the default model for a provider (Pro tier).
 pub fn default_model_for_provider(provider: &str) -> String {
-    let linker_provider = shell_provider_to_linker(provider);
-    fallback_model_for_tier(linker_provider, ModelTier::Pro).to_string()
+    let catalog = model_catalog_provider(provider).unwrap_or(provider);
+    fallback_model_for_tier(catalog, ModelTier::Pro).to_string()
 }
 
 /// Build CLI model flags for a provider, if the CLI supports it.

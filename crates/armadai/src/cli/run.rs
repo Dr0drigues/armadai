@@ -1273,7 +1273,7 @@ async fn run_single_agent(
             tier: format!("{tier:?}"),
             reason: format!("{reason:?}"),
         });
-        armadai_core::model_resolution::resolve_model_for_tier(&agent.metadata.provider, tier)
+        armadai_core::model_resolution::resolve_routed_tier(&agent.metadata.provider, tier)
     } else {
         // The static tier placeholders (`latest`, `latest:fast`,
         // `latest:pro`, `latest:max`) resolve here — this is the last gate

@@ -28,7 +28,7 @@ use super::state::{ExecutionState, RunStatus, VoteRec};
 use crate::agent::Agent;
 #[cfg(test)]
 use crate::model_resolution::fallback_model_for_tier;
-use crate::model_resolution::{ModelTier, resolve_model_for_tier, resolve_tier_placeholder};
+use crate::model_resolution::{ModelTier, resolve_routed_tier, resolve_tier_placeholder};
 use crate::orchestration::llm_agents::{
     RING_ACTION_INSTRUCTIONS, parse_ring_action, parse_vote_confidence,
 };
@@ -816,7 +816,7 @@ impl EffectRunner for RingEffectRunner {
                     ModelTier::Pro
                 }
             };
-            resolve_model_for_tier(&agent_def.metadata.provider, tier)
+            resolve_routed_tier(&agent_def.metadata.provider, tier)
         } else {
             // Every OTHER `latest:*` placeholder (`latest`, `latest:fast`,
             // `latest:pro`, `latest:max`, …) has a tier that is known

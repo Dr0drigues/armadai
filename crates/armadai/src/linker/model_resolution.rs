@@ -1,5 +1,7 @@
 use super::LinkAgent;
-use armadai_core::model_resolution::{ModelTier, fallback_model_for_tier, resolve_model_for_tier};
+use armadai_core::model_resolution::{
+    ModelTier, fallback_model_for_tier, resolve_model_for_tier, resolve_routed_tier,
+};
 
 /// Classification of link targets.
 pub enum TargetKind {
@@ -102,8 +104,14 @@ pub fn resolve_latest_placeholders(agents: &mut [LinkAgent]) {
         if let Some(ref model) = agent.model
             && let Some(tier) = parse_latest_placeholder(model)
         {
+            // `resolve_routed_tier`, not `resolve_model_for_tier`: the value
+            // here is an agent's own `provider:` — a *tool* name (`gemini`,
+            // `aider`, …), which the vendor-keyed catalog does not know. Fed
+            // in raw it missed the cache and fell through to the Anthropic
+            // catch-all, so a `provider: gemini` agent was written into a
+            // native config with a Claude model id (#398 review, F1).
             let provider = agent.provider.as_deref().unwrap_or("anthropic");
-            agent.model = Some(resolve_model_for_tier(provider, tier));
+            agent.model = Some(resolve_routed_tier(provider, tier));
         }
     }
 }
