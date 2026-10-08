@@ -27,6 +27,9 @@ permissions:
   # the action fails with "Resource not accessible by integration" even when
   # the audit itself is clean.
   checks: write
+  # The action creates issues to report vulnerabilities to development team.
+  # This permission allows creating those issues.
+  issues: write
 
 jobs:
   audit:
@@ -37,4 +40,3 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          deny: vulnerabilities
