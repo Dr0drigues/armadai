@@ -22,8 +22,6 @@ pub(crate) mod unlink;
 mod up;
 mod update;
 mod validate;
-#[cfg(feature = "tui")]
-mod watch;
 
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 
@@ -317,24 +315,6 @@ pub enum Command {
         #[arg(long)]
         ascii: bool,
     },
-    /// Launch the web UI
-    #[cfg(feature = "web")]
-    #[command(
-        long_about = "Launch the web UI.\n\n\
-            Starts an HTTP server with a browser-based dashboard for browsing agents, \
-            viewing execution history, and tracking costs.",
-        after_help = "Examples:\n  \
-            armadai web\n  \
-            armadai web --port 8080"
-    )]
-    Web {
-        /// Port to listen on
-        #[arg(long, short, default_value = "3000")]
-        port: u16,
-        /// Show agents from the global library (~/.config/armadai/) only
-        #[arg(long)]
-        global: bool,
-    },
     /// Start infrastructure services (Docker Compose)
     #[command(long_about = "Start infrastructure services (Docker Compose).\n\n\
         Starts SurrealDB and LiteLLM proxy containers defined in docker-compose.yml.")]
@@ -505,28 +485,11 @@ pub enum Command {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
-    /// Internal: called by the Claude Code plugin's SessionStart hook. Reads
-    /// the hook JSON from stdin and registers the session. Hidden from help.
-    #[command(hide = true, name = "__claude-register-session")]
-    ClaudeRegisterSession,
     /// Internal: called by the Claude Code `PreToolUse` hook on the Agent
     /// tool. Reads the hook JSON from stdin and enforces the declared
     /// delegation topology. Hidden from help.
     #[command(hide = true, name = "__claude-policy-gate")]
     ClaudePolicyGate,
-    /// Watch a Claude Code session live in the Workroom (via the armadai plugin).
-    #[cfg(feature = "tui")]
-    Watch {
-        /// Attach to the most recently registered session.
-        #[arg(long)]
-        last: bool,
-        /// Attach to a specific session id.
-        #[arg(long)]
-        session: Option<String>,
-        /// Emit reconstructed RunEvents as JSONL to stdout instead of the TUI.
-        #[arg(long)]
-        json: bool,
-    },
 }
 
 /// Names of the subcommands marked `hide = true`, taken from clap itself
@@ -694,11 +657,6 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             armadai_core::config::set_force_global(global);
             crate::tui::run(ascii).await
         }
-        #[cfg(feature = "web")]
-        Command::Web { port, global } => {
-            armadai_core::config::set_force_global(global);
-            crate::web::serve(port).await
-        }
         Command::Models(action) => models::execute(action).await,
         Command::Extract(args) => extract::execute(args).await,
         Command::Registry(action) => registry::execute(action).await,
@@ -739,14 +697,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             );
             Ok(())
         }
-        Command::ClaudeRegisterSession => crate::claude_adapter::register_from_stdin(),
         Command::ClaudePolicyGate => crate::claude_adapter::policy_gate::gate_from_stdin(),
-        #[cfg(feature = "tui")]
-        Command::Watch {
-            last,
-            session,
-            json,
-        } => watch::execute(last, session, json).await,
     }
 }
 
@@ -829,7 +780,7 @@ mod tests {
     fn completion_scripts_keep_the_real_commands() {
         // The filter must not be a blunt instrument.
         let zsh = completion(clap_complete::Shell::Zsh);
-        for cmd in ["audit", "run", "link", "watch", "completion"] {
+        for cmd in ["audit", "run", "link", "completion"] {
             assert!(
                 zsh.contains(&format!("'{cmd}:")),
                 "zsh completion lost the {cmd} command"
