@@ -12,9 +12,7 @@ name = "armadai"
 path = "src/main.rs"
 
 [features]
-default = ["tui", "storage", "providers-api"]
-tui = ["dep:ratatui", "dep:crossterm", "dep:portable-pty", "dep:strip-ansi-escapes", "dep:unicode-width"]
-storage = ["dep:armadai-storage", "dep:rusqlite"]
+default = ["providers-api"]
 providers-api = ["dep:reqwest", "armadai-providers/api"]
 
 [dependencies]
@@ -22,7 +20,6 @@ providers-api = ["dep:reqwest", "armadai-providers/api"]
 armadai-core = { path = "../armadai-core" }
 armadai-providers = { path = "../armadai-providers" }
 armadai-secrets = { path = "../armadai-secrets" }
-armadai-storage = { path = "../armadai-storage", optional = true }
 
 # Async runtime
 tokio = { workspace = true, features = ["full"] }
@@ -35,11 +32,6 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 dialoguer = { workspace = true, features = ["fuzzy-select"] }
 
-# TUI (optional — enable with `tui` feature)
-ratatui = { version = "0.30", optional = true }
-crossterm = { version = "0.29", optional = true }
-unicode-width = { version = "0.2", optional = true }
-
 # HTTP client (optional — enable with `providers-api` feature)
 reqwest = { workspace = true, optional = true }
 
@@ -47,9 +39,6 @@ reqwest = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
-
-# Database (optional — enable with `storage` feature)
-rusqlite = { workspace = true, optional = true }
 
 # Markdown parsing
 pulldown-cmark = { workspace = true }
@@ -62,17 +51,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
-# Embedded assets
-include_dir = { workspace = true }
-
 # Utils
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { workspace = true, features = ["v4", "serde"] }
 sha2 = { workspace = true }
-
-# PTY support (for interactive shell mode)
-portable-pty = { version = "0.9", optional = true }
-strip-ansi-escapes = { version = "0.2", optional = true }
 regex = "1"
 anstyle = "1.0.14"
 anstream = "1.0.0"

@@ -116,37 +116,6 @@ pub fn resolve_latest_placeholders(agents: &mut [LinkAgent]) {
     }
 }
 
-/// Preview model resolution for all known link targets (sync, always available).
-///
-/// Returns a list of (target_name, resolved_model) tuples showing what model
-/// would be used when linking to each target.
-pub fn preview_model_resolution(agent_model: Option<&str>) -> Vec<(&'static str, String)> {
-    use clap::ValueEnum;
-    let tier = agent_model.and_then(parse_latest_placeholder);
-    // Derived from the enum rather than restated: a preview that silently
-    // omits a link target is a UI that lies about what `link` will do.
-    super::LinkTarget::value_variants()
-        .iter()
-        .map(|t| t.as_str())
-        .map(|target| {
-            let resolved = match classify_target(target) {
-                TargetKind::LlmEditor { provider } => {
-                    resolve_model_for_tier(provider, tier.unwrap_or(ModelTier::Pro))
-                }
-                TargetKind::Orchestrator => {
-                    if let Some(t) = tier {
-                        // Resolve against anthropic as default for preview
-                        resolve_model_for_tier("anthropic", t)
-                    } else {
-                        agent_model.unwrap_or("(requires --model)").to_string()
-                    }
-                }
-            };
-            (target, resolved)
-        })
-        .collect()
-}
-
 /// Prompt the user interactively to pick a provider and model.
 ///
 /// Used for orchestrator targets (copilot, opencode) when no `--model` flag is given.
@@ -230,35 +199,6 @@ pub fn prompt_model_interactive() -> anyhow::Result<String> {
         .with_prompt("Model name")
         .interact_text()?;
     Ok(model)
-}
-
-/// Whether `warn_unknown_model` should skip its unknown-model warning for `model`.
-///
-/// True for `latest:*` placeholders (resolved at link time, see
-/// [`is_latest_placeholder`]) and for the `latest:auto` routing placeholder used by
-/// the OH4 router (deliberately NOT recognized by [`parse_latest_placeholder`],
-/// since it is resolved by tier-routing logic upstream rather than by the
-/// `latest:*` tier parser — see `run_single_agent` step 5).
-fn should_skip_unknown_model_warning(model: &str) -> bool {
-    is_latest_placeholder(model) || model == "latest:auto"
-}
-
-/// Warn if the model is not found in the cached models.dev registry.
-///
-/// Skips the warning for `latest:*` placeholders (they are resolved at link time)
-/// and for `latest:auto` (resolved by the router before the provider call).
-pub fn warn_unknown_model(model: &str, provider: &str) {
-    if should_skip_unknown_model_warning(model) {
-        return;
-    }
-    if let Some(entries) = armadai_providers::model_registry::fetch::load_models_cached(provider)
-        && !entries.iter().any(|e| e.id == model)
-    {
-        tracing::warn!(
-            "Model '{model}' not found in {provider} registry — \
-             it may be unavailable. Consider adding model_fallback entries."
-        );
-    }
 }
 
 #[cfg(test)]
@@ -443,95 +383,5 @@ mod tests {
                 agent.name
             );
         }
-    }
-
-    #[test]
-    fn test_preview_resolution_fallbacks() {
-        // Without cache, preview should return fallback models for LLM editors
-        // and the agent model (or placeholder) for orchestrators.
-        let result = preview_model_resolution(Some("my-model"));
-        assert_eq!(result.len(), 5);
-
-        let targets: Vec<&str> = result.iter().map(|(t, _)| *t).collect();
-        assert!(targets.contains(&"claude"));
-        assert!(targets.contains(&"codex"));
-        assert!(targets.contains(&"gemini"));
-        assert!(targets.contains(&"copilot"));
-        assert!(targets.contains(&"opencode"));
-
-        // Orchestrator targets use agent model
-        for (target, model) in &result {
-            if matches!(classify_target(target), TargetKind::Orchestrator) {
-                assert_eq!(model, "my-model");
-            }
-        }
-
-        // Without agent model, orchestrators show placeholder
-        let result_no_model = preview_model_resolution(None);
-        for (target, model) in &result_no_model {
-            if matches!(classify_target(target), TargetKind::Orchestrator) {
-                assert_eq!(model, "(requires --model)");
-            }
-        }
-    }
-
-    #[test]
-    fn test_preview_resolution_with_latest() {
-        // Hermetic: force an empty, private `ARMADAI_CONFIG_DIR` so this test
-        // never sees the ambient/machine-local models.dev cache (which may
-        // be present, absent, or contain `-latest` alias ids depending on
-        // machine + parallel test runs — see resolve_model_for_tier's
-        // doc-comment). With no cache reachable, resolution always takes the
-        // hardcoded-fallback path, making the assertion deterministic.
-        let _guard = armadai_core::test_support::env_lock();
-        let orig = std::env::var("ARMADAI_CONFIG_DIR").ok();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // SAFETY: env mutation is serialised via `env_lock()` for the duration
-        // of this test, and the original value is restored before returning.
-        unsafe {
-            std::env::set_var("ARMADAI_CONFIG_DIR", tmp.path());
-        }
-
-        let result = preview_model_resolution(Some("latest:fast"));
-
-        match orig {
-            Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
-            None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
-        }
-
-        for (_target, model) in &result {
-            // All targets should resolve to a concrete model, not "latest:fast"
-            assert!(!model.contains("latest"));
-        }
-    }
-
-    // ── warn_unknown_model guard ──────────────────────────────────
-
-    #[test]
-    fn test_should_skip_unknown_model_warning_for_latest_auto() {
-        // Regression test: `latest:auto` must be treated as a placeholder to
-        // skip, even though `parse_latest_placeholder`/`is_latest_placeholder`
-        // deliberately do NOT recognize it (it's resolved by router tier
-        // logic, not the `latest:*` tier parser).
-        assert!(should_skip_unknown_model_warning("latest:auto"));
-    }
-
-    #[test]
-    fn test_should_skip_unknown_model_warning_for_latest_placeholders() {
-        assert!(should_skip_unknown_model_warning("latest"));
-        assert!(should_skip_unknown_model_warning("latest:pro"));
-        assert!(should_skip_unknown_model_warning("latest:fast"));
-        assert!(should_skip_unknown_model_warning("latest:max"));
-    }
-
-    #[test]
-    fn test_should_warn_for_concrete_models() {
-        // Concrete/`latest:pro`-resolved models must still get the normal
-        // unknown-model warning path (routing behavior must not change).
-        assert!(!should_skip_unknown_model_warning(
-            "claude-sonnet-4-5-20250929"
-        ));
-        assert!(!should_skip_unknown_model_warning("some-unknown-model"));
-        assert!(!should_skip_unknown_model_warning("latest:autopilot"));
     }
 }

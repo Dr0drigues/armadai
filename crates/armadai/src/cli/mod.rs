@@ -1,121 +1,45 @@
 mod audit;
 mod config;
-mod costs;
 mod extract;
-mod history;
 pub mod init;
 mod inspect;
 mod link;
 mod list;
 mod models;
 pub(crate) mod new;
-mod projections;
 mod prompts;
 mod registry;
-mod run;
-mod run_es_record;
-mod run_replay;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;
 pub(crate) mod unlink;
-mod up;
 mod update;
 mod validate;
 
-use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
     name = "armadai",
     about = "AI agent orchestrator",
-    long_about = "AI agent orchestrator — define, manage and run specialized agents from Markdown files.\n\n\
+    long_about = "AI agent orchestrator — define and manage specialized agents from Markdown files.\n\n\
         Each agent is a .md file in agents/ with metadata, system prompt, and optional instructions.\n\
         Supports any LLM provider (Claude, GPT, Gemini) via CLI tools or API.",
     version,
+    arg_required_else_help = true,
     after_help = "Examples:\n  \
         armadai new my-agent --template dev-review --stack rust\n  \
-        armadai run my-agent \"Review this code for bugs\"\n  \
-        armadai run --pipe reviewer writer src/main.rs\n  \
         armadai list --tags dev --stack rust\n  \
-        armadai tui\n  \
-        armadai web --port 8080\n\n\
+        armadai link --target claude\n\n\
         Documentation: https://github.com/Dr0drigues/swarm-festai"
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Option<Command>,
+    pub command: Command,
 }
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Run an agent with the given input
-    #[command(
-        long_about = "Run an agent with the given input.\n\n\
-            Loads the agent definition from agents/<name>.md, sends the input to the \
-            configured provider, and prints the response. Use --pipe to chain multiple \
-            agents sequentially (output of one becomes input of the next).\n\n\
-            Exactly one of <AGENT>, --resume, or --replay must be given.",
-        after_help = "Examples:\n  \
-            armadai run code-reviewer \"Review this function\"\n  \
-            armadai run summarizer @long-document.txt\n  \
-            armadai run --pipe reviewer writer src/main.rs\n  \
-            armadai run --resume <RUN_ID>\n  \
-            armadai run --replay <RUN_ID>",
-        group(
-            ArgGroup::new("run_mode")
-                .args(["agent", "resume", "replay"])
-                .required(true)
-        )
-    )]
-    Run {
-        /// Agent name (filename without .md)
-        agent: Option<String>,
-        /// Input text or file path (use @file.txt for files)
-        input: Option<String>,
-        /// Pipeline mode: chain agents sequentially
-        #[arg(long, num_args = 1..)]
-        pipe: Option<Vec<String>>,
-        /// Orchestration pattern for multi-agent execution
-        #[arg(long, value_parser = ["blackboard", "ring"])]
-        orchestrate: Option<String>,
-        /// Non-interactive mode for CI: no prompts, CI exit codes
-        #[arg(long)]
-        headless: bool,
-        /// Emit a JSONL event stream on stdout (implies non-interactive)
-        #[arg(long)]
-        json: bool,
-        /// With --json: emit only the final `result` event
-        #[arg(long)]
-        quiet: bool,
-        /// With --json: truncate `content` of intermediate events to N chars
-        #[arg(long, value_name = "N")]
-        max_content: Option<usize>,
-        /// C8: select agents by a named route from `orchestration.routes`
-        #[arg(long, value_name = "NAME")]
-        route: Option<String>,
-        /// C8: select agents whose tags/stacks intersect these (comma-separated)
-        #[arg(long, value_name = "TAGS", value_delimiter = ',')]
-        tags: Option<Vec<String>>,
-        /// Resolve agents, providers and models and print what would run,
-        /// without calling any provider (0 tokens): the project is not
-        /// registered and agent files are never rewritten. Refuses whatever
-        /// the real run refuses, with the same exit code. Works on every
-        /// path: a single agent, --pipe, --orchestrate and --resume — the
-        /// last of which still opens the run journal, read back to rebuild
-        /// the roster it previews.
-        #[arg(long, conflicts_with = "replay")]
-        dry_run: bool,
-        /// Disable the live orchestration TUI (force plain headless output)
-        #[arg(long = "no-tui")]
-        no_tui: bool,
-        /// Resume a previously interrupted run by its run_id (OH1 Lot 6)
-        #[arg(long, value_name = "RUN_ID")]
-        resume: Option<String>,
-        /// Replay a previously recorded run by its run_id (OH1 Lot 6)
-        #[arg(long, value_name = "RUN_ID")]
-        replay: Option<String>,
-    },
     /// Create a new agent from a template
     #[command(
         long_about = "Create a new agent from a template.\n\n\
@@ -242,41 +166,6 @@ pub enum Command {
             armadai extract --from user --agents dev-lead --out ./snapshot --as-pack"
     )]
     Extract(extract::ExtractArgs),
-    /// View execution history
-    #[command(after_help = "Examples:\n  \
-        armadai history\n  \
-        armadai history --agent code-reviewer")]
-    History {
-        /// Filter by agent name
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    /// View cost tracking
-    #[command(after_help = "Examples:\n  \
-        armadai costs\n  \
-        armadai costs --agent code-reviewer\n  \
-        armadai costs --from 2025-01-01")]
-    Costs {
-        /// Filter by agent name
-        #[arg(long)]
-        agent: Option<String>,
-        /// Start date (YYYY-MM-DD)
-        #[arg(long)]
-        from: Option<String>,
-    },
-    /// Manage flat-table projections from the event log
-    #[command(
-        subcommand,
-        long_about = "Manage flat-table projections from the event log.\n\n\
-            Re-derives flat tables (runs, orchestration_runs, board_entries, ring_contributions, \
-            ring_votes, delegation_events) from the immutable execution_events log. \
-            The projector is idempotent: multiple rebuilds produce the same result.",
-        after_help = "Examples:\n  \
-            armadai projections rebuild\n  \
-            armadai projections rebuild --all\n  \
-            armadai projections rebuild --run <run-id>"
-    )]
-    Projections(projections::ProjectionsAction),
     /// Manage providers and secrets
     #[command(
         long_about = "Manage providers and secrets.\n\n\
@@ -290,45 +179,12 @@ pub enum Command {
         #[command(subcommand)]
         action: config::ConfigAction,
     },
-    /// Launch the interactive shell
-    #[cfg(feature = "tui")]
-    #[command(long_about = "Launch the interactive shell.\n\n\
-            Conversational interface for interacting with LLM providers. \
-            Type messages and press Enter to get responses. Use Ctrl+C or Esc to quit, \
-            Ctrl+L to clear conversation.")]
-    Shell {
-        /// Use ASCII glyphs instead of Unicode (for limited terminals)
-        #[arg(long)]
-        ascii: bool,
-    },
-    /// Launch the TUI dashboard
-    #[cfg(feature = "tui")]
-    #[command(long_about = "Launch the TUI dashboard.\n\n\
-            Interactive terminal interface for browsing agents, viewing history and costs. \
-            Use Tab/Shift+Tab or 1-4 to switch views, j/k to navigate, Enter for details, \
-            : or Ctrl+P for command palette, q to quit.")]
-    Tui {
-        /// Show agents from the global library (~/.config/armadai/) only
-        #[arg(long)]
-        global: bool,
-        /// Use ASCII glyphs instead of Unicode (for limited terminals)
-        #[arg(long)]
-        ascii: bool,
-    },
-    /// Start infrastructure services (Docker Compose)
-    #[command(long_about = "Start infrastructure services (Docker Compose).\n\n\
-        Starts SurrealDB and LiteLLM proxy containers defined in docker-compose.yml.")]
-    Up,
-    /// Stop infrastructure services (Docker Compose)
-    #[command(long_about = "Stop infrastructure services (Docker Compose).\n\n\
-        Stops and removes the containers started by 'armadai up'.")]
-    Down,
     /// Manage model deprecations and project registry
     #[command(
         subcommand,
         long_about = "Manage model deprecations and project registry.\n\n\
             Check for deprecated models in agent files and update them in-place. \
-            Projects are auto-registered when you run `armadai run` or `armadai link`.",
+            Projects are auto-registered when you run `armadai link`.",
         after_help = "Examples:\n  \
             armadai models check\n  \
             armadai models check --all --prune\n  \
@@ -542,7 +398,7 @@ fn strip_hidden_subcommands(script: &str, hidden: &[String]) -> String {
                 continue 'lines;
             }
         }
-        // bash: `opts="run new ... <name> ... help"`, and fish's
+        // bash: `opts="new ... <name> ... help"`, and fish's
         // `not __fish_seen_subcommand_from ... <name> ...` guard lists.
         let mut kept = line.to_string();
         if kept.contains("opts=\"") || kept.contains("__fish_seen_subcommand_from") {
@@ -559,54 +415,7 @@ fn strip_hidden_subcommands(script: &str, hidden: &[String]) -> String {
 }
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
-    let command = match cli.command {
-        Some(cmd) => cmd,
-        None => {
-            // No subcommand — launch the interactive shell
-            #[cfg(feature = "tui")]
-            return crate::shell::app::run_shell(false).await;
-            #[cfg(not(feature = "tui"))]
-            anyhow::bail!(
-                "Shell requires the 'tui' feature. Use `armadai shell` or `armadai --help`."
-            );
-        }
-    };
-
-    match command {
-        Command::Run {
-            agent,
-            input,
-            pipe,
-            orchestrate,
-            headless,
-            json,
-            quiet,
-            max_content,
-            route,
-            tags,
-            dry_run,
-            no_tui,
-            resume,
-            replay,
-        } => {
-            run::execute(
-                agent,
-                input,
-                pipe,
-                orchestrate,
-                headless,
-                json,
-                quiet,
-                max_content,
-                route,
-                tags,
-                dry_run,
-                no_tui,
-                resume,
-                replay,
-            )
-            .await
-        }
+    match cli.command {
         Command::New {
             name,
             template,
@@ -646,17 +455,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             )
             .await
         }
-        Command::History { agent } => history::execute(agent).await,
-        Command::Costs { agent, from } => costs::execute(agent, from).await,
-        Command::Projections(action) => projections::execute(action).await,
         Command::Config { action } => config::execute(action).await,
-        #[cfg(feature = "tui")]
-        Command::Shell { ascii } => crate::shell::app::run_shell(ascii).await,
-        #[cfg(feature = "tui")]
-        Command::Tui { global, ascii } => {
-            armadai_core::config::set_force_global(global);
-            crate::tui::run(ascii).await
-        }
         Command::Models(action) => models::execute(action).await,
         Command::Extract(args) => extract::execute(args).await,
         Command::Registry(action) => registry::execute(action).await,
@@ -685,8 +484,6 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             pack,
         } => init::execute(force, project, pack).await,
         Command::Update => update::execute().await,
-        Command::Up => up::start().await,
-        Command::Down => up::stop().await,
         Command::Completion { shell } => {
             let mut buf = Vec::new();
             clap_complete::generate(shell, &mut Cli::command(), "armadai", &mut buf);
@@ -780,7 +577,7 @@ mod tests {
     fn completion_scripts_keep_the_real_commands() {
         // The filter must not be a blunt instrument.
         let zsh = completion(clap_complete::Shell::Zsh);
-        for cmd in ["audit", "run", "link", "completion"] {
+        for cmd in ["audit", "link", "unlink", "completion"] {
             assert!(
                 zsh.contains(&format!("'{cmd}:")),
                 "zsh completion lost the {cmd} command"

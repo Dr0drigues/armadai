@@ -10,9 +10,9 @@
 # Runs on: every push to master, every pull request
 #
 # Performance strategy:
-# - Heavy optional deps (ratatui, rusqlite) are behind feature flags
-# - clippy/test run with `--no-default-features --features tui` (minimal deps)
-# - build --release compiles with all default features (full binary)
+# - The only optional dep group left is `providers-api` (reqwest)
+# - clippy/test run featureless and with `providers-api`
+# - build --release compiles the featureless binary
 # - Swatinem/rust-cache caches ~/.cargo and target/ between runs
 # - Cache is shared across clippy/test/build via shared-key
 # - Cache is only saved on master pushes (save-if), PRs read from it
@@ -55,20 +55,18 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       # The repo root is a VIRTUAL workspace (no root package), so a bare
       # `cargo clippy` lints EVERY member crate (armadai + core/providers/
-      # storage/secrets), test targets included via `--all-targets` — the
+      # secrets), test targets included via `--all-targets` — the
       # explicit `-p` steps this replaces are no longer needed.
       #
       # We run every feature combination the code is gated for so a lint that
       # only trips under one combo is caught in CI, not just locally. The
       # feature flags belong to the bin and propagate to the member crates,
-      # so these combos also cover armadai-providers in BOTH states: `tui`
-      # builds it without `api` (the `#[cfg(not(feature = "api"))]`
-      # fallbacks), `tui,providers-api` builds it with `api` (HTTP providers +
-      # online model_registry). See CLAUDE.md and the OH1 event-sourcing spec §9.
-      - run: cargo clippy --all-targets --no-default-features --features tui -- -D warnings
-      - run: cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
-      - run: cargo clippy --all-targets --no-default-features --features tui,storage -- -D warnings
-      - run: cargo clippy --all-targets --no-default-features --features tui,storage,providers-api -- -D warnings
+      # so these combos also cover armadai-providers in BOTH states: the
+      # featureless run builds it without `api` (the
+      # `#[cfg(not(feature = "api"))]` fallbacks), `providers-api` builds it
+      # with `api` (HTTP providers + online model_registry).
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
+      - run: cargo clippy --all-targets --no-default-features --features providers-api -- -D warnings
 
   test:
     name: Test
@@ -81,23 +79,16 @@ jobs:
           shared-key: ci-cargo
           save-if: ${{ github.ref == 'refs/heads/master' }}
       # The repo root is a VIRTUAL workspace, so each `cargo test` below runs
-      # the WHOLE workspace (bin + core/providers/storage/secrets); the bin's
+      # the WHOLE workspace (bin + core/providers/secrets); the bin's
       # feature flags propagate to the member crates. The modes together
       # exercise every crate in every gated state — no explicit `-p` steps needed.
       #
-      # tui: baseline (bin + all members; armadai-providers without `api`).
-      - run: cargo test --no-default-features --features tui
-      # tui,storage: adds the bin's SQLite-gated code (SqliteLog wiring, the
-      # storage-backed CLI paths) — the armadai-storage crate's own tests
-      # already run under bare `tui`.
-      - run: cargo test --no-default-features --features tui,storage
-      # tui,providers-api: exercises the bin's providers-api-gated code
-      # (linker/cli/tui) AND armadai-providers WITH `api` (HTTP providers +
-      # online model_registry) — both untested by the two modes above.
-      - run: cargo test --no-default-features --features tui,providers-api
-      # tui,storage,providers-api: the crate's default feature set, so it
-      # doubles as the "does the default build even compile" check.
-      - run: cargo test --no-default-features --features tui,storage,providers-api
+      # featureless: baseline (bin + all members; armadai-providers without `api`).
+      - run: cargo test --no-default-features
+      # providers-api: the crate's default feature set — exercises the bin's
+      # providers-api-gated code (linker/cli) AND armadai-providers WITH `api`
+      # (HTTP providers + online model_registry).
+      - run: cargo test --no-default-features --features providers-api
 
   build:
     name: Build
@@ -109,10 +100,10 @@ jobs:
         with:
           shared-key: ci-cargo-release
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      # Build with storage (SQLite bundled) to verify full compilation.
-      - run: cargo build --release --no-default-features --features tui,storage
+      # Release build of the featureless binary.
+      - run: cargo build --release --no-default-features
       # Portability guard (OH7): the reusable core must compile standalone,
-      # featureless, with no heavy deps (no reqwest/rusqlite/ratatui/axum) —
+      # featureless, with no heavy deps (no reqwest) —
       # this is what OH2/the Claude Code plugin will depend on. A dep leaking
       # into core (e.g. via unintended feature unification) fails here.
       - run: cargo build -p armadai-core
