@@ -237,6 +237,7 @@ pub enum Command {
         #[arg(long)]
         pack: Option<String>,
     },
+    /// Manage composable prompts
     #[command(
         subcommand,
         long_about = "Manage composable prompt fragments.\n\n\
@@ -485,6 +486,40 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn every_kept_command_has_a_help_description() {
+        use clap::CommandFactory;
+        let root = Cli::command();
+        let help = root.clone().render_help().to_string();
+        for cmd in [
+            "new",
+            "list",
+            "inspect",
+            "validate",
+            "config",
+            "models",
+            "extract",
+            "prompts",
+            "skills",
+            "link",
+            "unlink",
+            "init",
+            "update",
+            "completion",
+        ] {
+            let sub = root
+                .find_subcommand(cmd)
+                .unwrap_or_else(|| panic!("`{cmd}` missing from top-level help:\n{help}"));
+            // Without an explicit short description clap silently falls back
+            // to the first line of `long_about`, so check `about` itself.
+            let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+            assert!(
+                !about.trim().is_empty(),
+                "`{cmd}` has no short description (doc comment) in --help:\n{help}"
+            );
         }
     }
 
