@@ -251,12 +251,12 @@ pub async fn execute(
     // what produced it for the link manifest (issue #338). Every `Linker`
     // implementation emits exactly one file per agent, in the same order as
     // `link_agents`, before any aggregate/context file — verified by
-    // reading each of claude/codex/copilot/gemini/opencode's own
+    // reading each of claude/codex/copilot/opencode's own
     // `generate()`. Anything past that prefix is the target's
-    // coordinator/context document (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`,
+    // coordinator/context document (`CLAUDE.md`, `AGENTS.md`,
     // `copilot-instructions.md`, `instructions.md`), attributed to the
     // configured coordinator, or — for the handful of targets that emit a
-    // team-roster document even with no coordinator set (codex, gemini) —
+    // team-roster document even with no coordinator set (codex) —
     // to the target itself, since no single agent owns it.
     let agent_count = link_agents.len();
     let output_files: Vec<(PathBuf, String, linker::manifest::ProducedBy)> = files

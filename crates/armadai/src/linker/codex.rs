@@ -7,7 +7,7 @@ use super::{LinkAgent, Linker, OutputFile, armadai_protocol_block, slugify};
 /// Produces:
 /// - `agents/{slug}.toml` — one TOML config per agent (model + developer_instructions)
 /// - `config.toml` — main config referencing all agents
-/// - `AGENTS.md` — coordinator context document (same pattern as Gemini linker)
+/// - `AGENTS.md` — coordinator context document
 pub struct CodexLinker;
 
 impl Linker for CodexLinker {
