@@ -2,7 +2,7 @@
 //! review, "Missing coverage"): `link`'s refuse-to-write and `list`'s
 //! warn-and-continue had zero automated coverage — a refuse-unconditionally
 //! implementation would have passed every existing test. Spawns the real
-//! binary (like `audit_usage.rs`) since the policy is wired in
+//! binary (like `hook_stdout.rs`) since the policy is wired in
 //! `cli::link::execute`/`cli::list::execute`, end to end.
 
 #[cfg(test)]

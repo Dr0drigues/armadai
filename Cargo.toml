@@ -1,5 +1,7 @@
 [workspace]
 members = ["crates/*"]
+# Frozen, standalone package (own `[workspace]`): not built by CI or root `cargo test`.
+exclude = ["frozen/armadai-audit"]
 resolver = "3"
 
 [workspace.package]

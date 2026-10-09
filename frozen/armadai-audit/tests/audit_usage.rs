@@ -45,9 +45,8 @@ mod tests {
     fn audit_reports_observed_usage_and_usage_findings() {
         let (_dir, project, projects) = scenario();
 
-        let mut cmd = Command::cargo_bin("armadai").unwrap();
-        cmd.arg("audit")
-            .arg(&project)
+        let mut cmd = Command::cargo_bin("armadai-audit").unwrap();
+        cmd.arg(&project)
             .env("ARMADAI_CLAUDE_PROJECTS_DIR", &projects)
             .env("NO_COLOR", "1");
         let output = cmd.output().unwrap();
@@ -83,9 +82,8 @@ mod tests {
         let empty = dir.path().join("no-transcripts-here");
         std::fs::create_dir_all(&empty).unwrap();
 
-        let mut cmd = Command::cargo_bin("armadai").unwrap();
-        cmd.arg("audit")
-            .arg(&project)
+        let mut cmd = Command::cargo_bin("armadai-audit").unwrap();
+        cmd.arg(&project)
             .env("ARMADAI_CLAUDE_PROJECTS_DIR", &empty)
             .env("NO_COLOR", "1");
         let output = cmd.output().unwrap();

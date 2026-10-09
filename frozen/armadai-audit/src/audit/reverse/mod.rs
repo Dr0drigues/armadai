@@ -181,7 +181,7 @@ pub struct ImportedConfig {
     pub instructions: Option<ImportedInstructions>,
 }
 
-/// Mirror of `crate::linker::Linker`, in the read direction.
+/// Mirror of the `armadai` binary's `linker::Linker`, in the read direction.
 pub trait ReverseLinker {
     fn name(&self) -> &'static str;
     /// Does this repository contain a surface this linker can read?

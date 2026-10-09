@@ -29,7 +29,7 @@
 //! - **tools** stays `None` *and* the format is recorded, because this format
 //!   cannot express a tool restriction at all. See [`AgentFormat`].
 //!
-//! [`LinkAgent`]: crate::linker::LinkAgent
+//! [`LinkAgent`]: crate::vendored::linker::link_description
 //! [`AgentFormat`]: super::AgentFormat
 
 use std::path::{Path, PathBuf};
@@ -97,10 +97,10 @@ fn parse_one(path: &Path, space: &Path) -> ImportedAgent {
 }
 
 fn imported(path: &Path, agent: &Agent, space: &Path) -> ImportedAgent {
-    // The single existing implementation of "what description does ArmadAI
-    // publish for this agent", reused rather than restated: `link` writes
-    // this exact string into the native config a router then reads.
-    let description = crate::linker::LinkAgent::from(agent).description;
+    // "What description does ArmadAI publish for this agent": `link` writes
+    // this exact string into the native config a router then reads. Frozen
+    // copy of the linker's derivation (see `vendored::linker`).
+    let description = crate::vendored::linker::link_description(agent);
     let stem = stem(path);
     ImportedAgent {
         name: stem.clone(),
@@ -271,9 +271,9 @@ A code block, ready to save.
 
         let agents = parse_agents(&dir.path().join("agents"), dir.path());
 
-        let published =
-            crate::linker::LinkAgent::from(&armadai_core::parser::parse_agent_file(&path).unwrap())
-                .description;
+        let published = crate::vendored::linker::link_description(
+            &armadai_core::parser::parse_agent_file(&path).unwrap(),
+        );
         assert_eq!(
             agents[0].metadata.description, published,
             "the audit must judge the description the linker publishes"

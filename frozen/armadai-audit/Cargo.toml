@@ -1,0 +1,33 @@
+[package]
+name = "armadai-audit"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "FROZEN: the `armadai audit` engine, isolated from the workspace until it is rebuilt on the declarative model (post-v1)."
+
+# Not a member of the root workspace: keeps CI and `cargo test` at the root unaffected.
+[workspace]
+
+[[bin]]
+name = "armadai-audit"
+path = "src/main.rs"
+
+[dependencies]
+armadai-core = { path = "../../crates/armadai-core" }
+# Model catalogue only (`model_registry::fetch::load_all_providers_cached`),
+# without the `api` feature: no HTTP client, no execution provider.
+armadai-providers = { path = "../../crates/armadai-providers" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+regex = "1"
+anstyle = "1.0.14"
+anstream = "1.0.0"
+
+[dev-dependencies]
+armadai-core = { path = "../../crates/armadai-core", features = ["test-support"] }
+assert_cmd = "2.2.2"
+tempfile = "3"

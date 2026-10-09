@@ -31,20 +31,6 @@ pub fn classify_target(target: &str) -> TargetKind {
 /// `link` honours and `run` sends verbatim to the provider was that issue.
 pub use armadai_core::model_resolution::parse_latest_placeholder;
 
-/// Check whether a model string is a `latest:*` placeholder.
-pub fn is_latest_placeholder(model: &str) -> bool {
-    parse_latest_placeholder(model).is_some()
-}
-
-/// The portable placeholder string for a tier (inverse of `parse_latest_placeholder`).
-pub(crate) fn tier_placeholder(tier: ModelTier) -> &'static str {
-    match tier {
-        ModelTier::Fast => "latest:fast",
-        ModelTier::Pro => "latest:pro",
-        ModelTier::Max => "latest:max",
-    }
-}
-
 /// Hardcoded fallback model for a given provider (defaults to Pro tier).
 #[allow(dead_code)]
 pub fn fallback_model(provider: &str) -> &'static str {
@@ -293,15 +279,6 @@ mod tests {
         assert_eq!(fallback_model("google"), "gemini-2.5-pro");
         assert_eq!(fallback_model("openai"), "gpt-4o");
         assert_eq!(fallback_model("unknown"), "claude-sonnet-4-5-20250929");
-    }
-
-    // ── Latest placeholder parsing ───────────────────────────────
-
-    #[test]
-    fn test_is_latest_placeholder() {
-        assert!(is_latest_placeholder("latest"));
-        assert!(is_latest_placeholder("latest:fast"));
-        assert!(!is_latest_placeholder("claude-sonnet-4-5-20250929"));
     }
 
     // ── Remap functions ──────────────────────────────────────────
