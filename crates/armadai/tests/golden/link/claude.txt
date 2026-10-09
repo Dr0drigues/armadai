@@ -1,0 +1,48 @@
+=== .claude/CLAUDE.md ===
+LEAD_SYSTEM_MARKER — you coordinate the team.
+
+LEAD_INSTRUCTIONS_MARKER — delegate, then synthesize.
+
+## Coordination
+
+You are the project coordinator (`lead`). Your role is to analyze each request and delegate to the appropriate specialized agent listed below. Use `/agents` to activate a sub-agent.
+
+## Team
+
+| Agent | Description |
+|-------|-------------|
+| dev | DEV_SYSTEM_MARKER — you write the code. |
+
+To delegate to a specialized agent, use `/agents` and select the appropriate one.
+
+
+## ArmadAI Response Protocol
+
+Follow this protocol for all responses:
+
+1. When finished responding, end with this marker on its own line:
+   <!--ARMADAI_END-->
+
+2. When delegating to a sub-agent, prefix with:
+   <!--ARMADAI_DELEGATE:agent-name-->
+
+3. Before the END marker, include metadata:
+   <!--ARMADAI_META:status=complete-->
+
+=== .claude/agents/dev.md ===
+---
+name: dev
+description: "DEV_SYSTEM_MARKER — you write the code."
+model: claude-sonnet-4-5-20250929
+---
+
+DEV_SYSTEM_MARKER — you write the code.
+
+### Style
+
+DEV_SUBSECTION_MARKER — small functions.
+
+## Instructions
+
+DEV_INSTRUCTIONS_MARKER — tests first.
+
