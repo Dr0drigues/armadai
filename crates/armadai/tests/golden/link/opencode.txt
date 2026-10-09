@@ -1,0 +1,43 @@
+=== .opencode/agents/dev.md ===
+---
+description: "DEV_SYSTEM_MARKER — you write the code."
+mode: subagent
+model: claude-sonnet-4-5-20250929
+temperature: 0.9
+---
+
+DEV_SYSTEM_MARKER — you write the code.
+
+### Style
+
+DEV_SUBSECTION_MARKER — small functions.
+
+## Instructions
+
+DEV_INSTRUCTIONS_MARKER — tests first.
+
+=== .opencode/instructions.md ===
+LEAD_SYSTEM_MARKER — you coordinate the team.
+
+LEAD_INSTRUCTIONS_MARKER — delegate, then synthesize.
+
+## Team
+
+| Agent | File | Description |
+|-------|------|-------------|
+| dev | [agents/dev.md](agents/dev.md) | DEV_SYSTEM_MARKER — you write the code. |
+
+
+## ArmadAI Response Protocol
+
+Follow this protocol for all responses:
+
+1. When finished responding, end with this marker on its own line:
+   <!--ARMADAI_END-->
+
+2. When delegating to a sub-agent, prefix with:
+   <!--ARMADAI_DELEGATE:agent-name-->
+
+3. Before the END marker, include metadata:
+   <!--ARMADAI_META:status=complete-->
+
