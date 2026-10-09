@@ -9,7 +9,8 @@
 
 use std::path::{Path, PathBuf};
 
-use armadai_core::registries::{RegistrySource, SourceKind, cache_key};
+use armadai_core::project::find_project_config;
+use armadai_core::registries::{RegistrySource, SourceKind, cache_key, load_user_registries};
 #[cfg(test)]
 use armadai_core::starter::discover_packs;
 pub use armadai_core::starter::starters_cache_dir;
@@ -17,6 +18,26 @@ pub use armadai_core::starter::starters_cache_dir;
 /// Cache dir for one source URL.
 pub fn source_cache_dir(url: &str) -> PathBuf {
     starters_cache_dir().join(cache_key(url))
+}
+
+/// Gather typed starter registry sources (user ∪ project), deduplicated by
+/// URL. Keeps the full [`RegistrySource`] so `sync_starters` can dispatch via
+/// `resolved_kind()` with an explicit `kind:` honored when set.
+pub fn effective_starter_sources() -> Vec<RegistrySource> {
+    let user = load_user_registries();
+    let project = find_project_config()
+        .map(|(_, cfg)| cfg)
+        .and_then(|cfg| cfg.registries);
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let project_starters = project.map(|cfg| cfg.starters).unwrap_or_default();
+    for source in user.starters.into_iter().chain(project_starters) {
+        if seen.insert(source.url.clone()) {
+            out.push(source);
+        }
+    }
+    out
 }
 
 pub trait StarterFetcher {

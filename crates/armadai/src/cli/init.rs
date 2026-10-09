@@ -86,7 +86,7 @@ fn init_global(force: bool) -> anyhow::Result<()> {
 /// takes precedence, otherwise fall back to the named starter pack lookup.
 ///
 /// If both miss, auto-sync-on-miss kicks in: known starter registry sources
-/// (user ∪ project, see `crate::cli::registry::effective_starter_sources`)
+/// (user ∪ project, see `crate::starters_registry::effective_starter_sources`)
 /// are synced once, then the lookup is retried. Network is only touched on
 /// a miss — a plain `armadai init --pack <known-local-name>` never syncs.
 pub(crate) fn resolve_pack_dir(name: &str) -> Option<std::path::PathBuf> {
@@ -99,7 +99,7 @@ pub(crate) fn resolve_pack_dir(name: &str) -> Option<std::path::PathBuf> {
     }
 
     // Auto-sync-on-miss: fetch remote starter sources, then retry once.
-    let sources = crate::cli::registry::effective_starter_sources();
+    let sources = crate::starters_registry::effective_starter_sources();
     if sources.is_empty() {
         return None;
     }

@@ -1,7 +1,6 @@
 mod claude_adapter;
 mod cli;
 mod linker;
-mod registry;
 mod skills_registry;
 mod starters_registry;
 
