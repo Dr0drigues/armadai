@@ -17,7 +17,6 @@ pub fn classify_target(target: &str) -> TargetKind {
         "claude" => TargetKind::LlmEditor {
             provider: "anthropic",
         },
-        "gemini" => TargetKind::LlmEditor { provider: "google" },
         "codex" => TargetKind::LlmEditor { provider: "openai" },
         // copilot, opencode, etc.
         _ => TargetKind::Orchestrator,
@@ -228,14 +227,6 @@ mod tests {
             TargetKind::LlmEditor {
                 provider: "anthropic"
             }
-        ));
-    }
-
-    #[test]
-    fn test_classify_gemini() {
-        assert!(matches!(
-            classify_target("gemini"),
-            TargetKind::LlmEditor { provider: "google" }
         ));
     }
 

@@ -20,12 +20,11 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     /// Every target CLI the linker supports. The truncation was in the shared
-    /// parser, so it hit all five identically — and so must the fix.
+    /// parser, so it hit all four identically — and so must the fix.
     const TARGETS: &[(&str, &str)] = &[
         ("claude", ".claude/agents/nested.md"),
         ("codex", ".codex/agents/nested.toml"),
         ("copilot", ".github/agents/nested.agent.md"),
-        ("gemini", ".gemini/agents/nested.md"),
         ("opencode", ".opencode/agents/nested.md"),
     ];
 
@@ -148,8 +147,8 @@ OUTPUTFORMAT_SUBSECTION_MARKER — one sentence.
     /// The metadata block is parsed field by field, so the truncation dropped
     /// every field declared after a sub-heading. Proven through the generated
     /// file rather than the parser: `temperature: 0.9` sits under the SECOND
-    /// `###` of `## Metadata`, and only `gemini`/`opencode` emit it — so this
-    /// is measured on `gemini`, where a lost field is visible in the output.
+    /// `###` of `## Metadata`, and only `opencode` emits it — so this
+    /// is measured on `opencode`, where a lost field is visible in the output.
     #[test]
     fn link_keeps_metadata_fields_declared_after_a_subsection() {
         let dir = project_with_nested_agent();
@@ -158,7 +157,7 @@ OUTPUTFORMAT_SUBSECTION_MARKER — one sentence.
         let mut cmd = Command::cargo_bin("armadai").unwrap();
         cmd.current_dir(&root)
             .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
-            .args(["link", "--target", "gemini", "--force"]);
+            .args(["link", "--target", "opencode", "--force"]);
         let output = cmd.output().unwrap();
         assert!(
             output.status.success(),
@@ -166,7 +165,7 @@ OUTPUTFORMAT_SUBSECTION_MARKER — one sentence.
             String::from_utf8_lossy(&output.stderr)
         );
 
-        let content = std::fs::read_to_string(root.join(".gemini/agents/nested.md")).unwrap();
+        let content = std::fs::read_to_string(root.join(".opencode/agents/nested.md")).unwrap();
         assert!(
             content.contains("temperature: 0.9"),
             "`temperature` declared under a second `### ` in `## Metadata` was dropped \

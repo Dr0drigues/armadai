@@ -308,10 +308,9 @@ async fn interactive_create() -> anyhow::Result<()> {
 
 /// The `provider:` values `armadai new -i` offers.
 ///
-/// This is the same set `providers::factory::create_provider` accepts, and a
-/// test pins that: a name missing here is a provider the wizard cannot author
-/// an agent for, which is how `codex`, `copilot` and `opencode` stayed
-/// unreachable from the wizard after they became runnable (issue #369).
+/// These are agent `provider:` names (LLM tools and API vendors), not link
+/// targets: `gemini` stays here because an agent may still declare it, even
+/// though `armadai link` no longer writes a Gemini config.
 ///
 /// Order is UX, not inventory: the unified tool names first (`claude` is the
 /// default), then the explicit API providers, then the generic escape hatch.

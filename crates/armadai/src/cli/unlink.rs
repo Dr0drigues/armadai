@@ -891,7 +891,7 @@ async fn unlink_via_fallback(
 
     // Model resolution — mirror what `link` computes for this target, so
     // the regenerated content used by the guard below matches what `link`
-    // actually wrote. For `LlmEditor` targets (claude, gemini, codex) this
+    // actually wrote. For `LlmEditor` targets (claude, codex) this
     // is a pure function of the current config, exactly like `link`'s own
     // step, so it reproduces byte-for-byte. For `Orchestrator` targets
     // (copilot, opencode), `link` may additionally honour an explicit
