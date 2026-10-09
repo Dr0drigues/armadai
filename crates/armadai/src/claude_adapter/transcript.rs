@@ -49,6 +49,7 @@ pub enum RelevantEntry {
 /// Defensive parse of one transcript JSONL line. Returns `None` for malformed
 /// lines and for any entry type the adapter does not model (ai-title, mode,
 /// pr-link, system, attachment, …) — never panics.
+#[cfg(test)]
 pub fn parse_line(line: &str) -> Option<RelevantEntry> {
     let line = line.trim();
     if line.is_empty() {

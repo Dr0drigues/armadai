@@ -12,9 +12,8 @@ name = "armadai"
 path = "src/main.rs"
 
 [features]
-default = ["tui", "web", "storage", "providers-api"]
+default = ["tui", "storage", "providers-api"]
 tui = ["dep:ratatui", "dep:crossterm", "dep:portable-pty", "dep:strip-ansi-escapes", "dep:unicode-width"]
-web = ["dep:axum", "dep:tower-http"]
 storage = ["dep:armadai-storage", "dep:rusqlite"]
 providers-api = ["dep:reqwest", "armadai-providers/api"]
 
@@ -43,10 +42,6 @@ unicode-width = { version = "0.2", optional = true }
 
 # HTTP client (optional — enable with `providers-api` feature)
 reqwest = { workspace = true, optional = true }
-
-# HTTP server (optional — enable with `web` feature)
-axum = { version = "0.8", optional = true }
-tower-http = { version = "0.7", features = ["cors"], optional = true }
 
 # Serialization
 serde = { workspace = true }

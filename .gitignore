@@ -40,8 +40,5 @@ config/
 # Session state (not shipped)
 docs/SESSION-STATE.md
 
-# Web UI (node_modules ignored, dist committed)
-crates/armadai/web/ui/node_modules/
-
 # mdBook build output (docs site, not committed)
 book/

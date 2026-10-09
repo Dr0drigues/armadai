@@ -67,16 +67,8 @@ jobs:
       # online model_registry). See CLAUDE.md and the OH1 event-sourcing spec §9.
       - run: cargo clippy --all-targets --no-default-features --features tui -- -D warnings
       - run: cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
-      - run: cargo clippy --all-targets --no-default-features --features tui,web,storage -- -D warnings
-      # tui,web,storage,providers-api: `web` and `providers-api` never appear
-      # together in any mode above (#355), so the `#[cfg(feature =
-      # "providers-api")]` arms inside src/web/ (e.g. `refresh_models` in
-      # web/api.rs) were never compiled by CI at all — only their
-      # `#[cfg(not(...))]` fallback was. This mode is also, deliberately,
-      # exactly the crate's default feature set (`default = ["tui", "web",
-      # "storage", "providers-api"]` in Cargo.toml): before this line, no job
-      # compiled what a user gets from a bare `cargo build`/`cargo install`.
-      - run: cargo clippy --all-targets --no-default-features --features tui,web,storage,providers-api -- -D warnings
+      - run: cargo clippy --all-targets --no-default-features --features tui,storage -- -D warnings
+      - run: cargo clippy --all-targets --no-default-features --features tui,storage,providers-api -- -D warnings
 
   test:
     name: Test
@@ -95,29 +87,17 @@ jobs:
       #
       # tui: baseline (bin + all members; armadai-providers without `api`).
       - run: cargo test --no-default-features --features tui
-      # tui,storage,web: adds the bin's SQLite-gated code (SqliteLog
-      # wiring, the storage-backed CLI paths) — the armadai-storage crate's
-      # own tests already run under bare `tui`. `web` extends
-      # this mode (rather than adding a fourth job) to mirror clippy's
-      # `tui,web,storage` combo above: before this, no test job ever enabled
-      # `web`, so every `#[cfg(test)]` in src/web/{mod,api}.rs — including the
-      # ones gated on `feature = "storage"` — was compiled and linted by
-      # clippy but never actually run (#350). Kept off the `tui`-only mode
-      # above to keep that mode minimal.
-      - run: cargo test --no-default-features --features tui,storage,web
+      # tui,storage: adds the bin's SQLite-gated code (SqliteLog wiring, the
+      # storage-backed CLI paths) — the armadai-storage crate's own tests
+      # already run under bare `tui`.
+      - run: cargo test --no-default-features --features tui,storage
       # tui,providers-api: exercises the bin's providers-api-gated code
       # (linker/cli/tui) AND armadai-providers WITH `api` (HTTP providers +
-      # online model_registry) — both untested by the two modes above. `web`
-      # is NOT enabled here; its own providers-api-gated code (e.g.
-      # `refresh_models`) is covered by the dedicated mode below instead.
+      # online model_registry) — both untested by the two modes above.
       - run: cargo test --no-default-features --features tui,providers-api
-      # tui,web,storage,providers-api: mirrors clippy's mode of the same name
-      # (#355) — `web` and `providers-api` are otherwise never enabled
-      # together, so `web/api.rs`'s `#[cfg(feature = "providers-api")]` arm
-      # (`refresh_models`'s real body) was compiled by no job and run by
-      # none. This is also exactly the crate's default feature set, so it
+      # tui,storage,providers-api: the crate's default feature set, so it
       # doubles as the "does the default build even compile" check.
-      - run: cargo test --no-default-features --features tui,web,storage,providers-api
+      - run: cargo test --no-default-features --features tui,storage,providers-api
 
   build:
     name: Build
