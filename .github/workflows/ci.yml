@@ -77,13 +77,6 @@ jobs:
       # "storage", "providers-api"]` in Cargo.toml): before this line, no job
       # compiled what a user gets from a bare `cargo build`/`cargo install`.
       - run: cargo clippy --all-targets --no-default-features --features tui,web,storage,providers-api -- -D warnings
-      # tui,storage,e2e-fake: the only mode that compiles the e2e test surface
-      # (crates/armadai/tests/gaveldrop.rs, the fake-claude bin, and
-      # armadai-fake's `engine` feature) — everything else above skips it, so
-      # without this mode CI's test job would build that code but clippy never
-      # would. Fetches gaveldrop from its (public) git dependency, same as the
-      # test job's tui,storage,e2e-fake mode.
-      - run: cargo clippy --all-targets --no-default-features --features tui,storage,e2e-fake -- -D warnings
 
   test:
     name: Test
@@ -102,21 +95,16 @@ jobs:
       #
       # tui: baseline (bin + all members; armadai-providers without `api`).
       - run: cargo test --no-default-features --features tui
-      # tui,storage,e2e-fake,web: adds the bin's SQLite-gated code (SqliteLog
+      # tui,storage,web: adds the bin's SQLite-gated code (SqliteLog
       # wiring, the storage-backed CLI paths) — the armadai-storage crate's
-      # own tests already run under bare `tui`. `e2e-fake` additionally builds
-      # the `fake-claude` bin and the `gaveldrop` test target (crates/armadai/
-      # tests/gaveldrop.rs), which runs the 10-case e2e suite through the
-      # external `gaveldrop` YAML test engine (a git dependency, pinned by
-      # `tag` — see crates/armadai/Cargo.toml) and writes an HTML report to
-      # target/gaveldrop-report/ for the next step to upload. `web` extends
+      # own tests already run under bare `tui`. `web` extends
       # this mode (rather than adding a fourth job) to mirror clippy's
       # `tui,web,storage` combo above: before this, no test job ever enabled
       # `web`, so every `#[cfg(test)]` in src/web/{mod,api}.rs — including the
       # ones gated on `feature = "storage"` — was compiled and linted by
       # clippy but never actually run (#350). Kept off the `tui`-only mode
       # above to keep that mode minimal.
-      - run: cargo test --no-default-features --features tui,storage,e2e-fake,web
+      - run: cargo test --no-default-features --features tui,storage,web
       # tui,providers-api: exercises the bin's providers-api-gated code
       # (linker/cli/tui) AND armadai-providers WITH `api` (HTTP providers +
       # online model_registry) — both untested by the two modes above. `web`
@@ -130,14 +118,6 @@ jobs:
       # none. This is also exactly the crate's default feature set, so it
       # doubles as the "does the default build even compile" check.
       - run: cargo test --no-default-features --features tui,web,storage,providers-api
-      - name: Upload gaveldrop report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: gaveldrop-report
-          path: target/gaveldrop-report/gaveldrop-report.html
-          if-no-files-found: warn
-          retention-days: 14
 
   build:
     name: Build
