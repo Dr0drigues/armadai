@@ -1,0 +1,20 @@
+version: 1
+targets:
+  gemini:
+    linked_at: 2026-10-09T14:46:15Z
+    root: .gemini
+    created_dirs:
+    - .gemini/agents
+    entries:
+    - path: .gemini/agents/nested.md
+      produced_by:
+        kind: agent
+        name: nested
+      outcome: created
+      digest: sha256:d6f9a45d96af431446b3531ad06e083474476dbdf96eccac05d2a27313add8f0
+    - path: .gemini/GEMINI.md
+      produced_by:
+        kind: coordinator
+        name: gemini
+      outcome: created
+      digest: sha256:a291e9210918cc21651a6ac588cf8aff768f6e326524b79d19417c55ab49d645
