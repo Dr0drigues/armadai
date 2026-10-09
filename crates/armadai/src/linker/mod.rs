@@ -672,22 +672,6 @@ mod tests {
                 assert!(sentence.contains(name), "'{name}' missing from: {sentence}");
             }
         }
-
-        /// And a fifth: the model-resolution preview shown in the TUI's agent
-        /// detail view must cover every target `link` can write, or it shows
-        /// the user a preview of something other than what will happen.
-        #[test]
-        fn the_model_resolution_preview_covers_every_link_target() {
-            let previewed: Vec<&str> = model_resolution::preview_model_resolution(Some("m"))
-                .into_iter()
-                .map(|(target, _)| target)
-                .collect();
-            let targets: Vec<&str> = LinkTarget::value_variants()
-                .iter()
-                .map(|t| t.as_str())
-                .collect();
-            assert_eq!(sorted(previewed), sorted(targets));
-        }
     }
 
     #[test]

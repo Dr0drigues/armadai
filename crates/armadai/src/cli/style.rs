@@ -1,7 +1,6 @@
 //! ANSI styling for human CLI output (design system "pont de commandement").
 //!
-//! Distinct from `crate::theme` (ratatui `Color`, for the TUI/shell). This is
-//! for plain stdout/stderr. **Accent-only**: body text keeps the terminal's
+//! For plain stdout/stderr. **Accent-only**: body text keeps the terminal's
 //! default foreground (legible on light AND dark backgrounds); only accents
 //! (brass), status signals, and secondary text are coloured. Colour on/off is
 //! delegated entirely to `anstream` (respects `NO_COLOR`/`CLICOLOR`/TTY) — the
@@ -11,18 +10,14 @@ use anstyle::{AnsiColor, Color, RgbColor, Style};
 
 /// Indent a multi-line message's continuation lines by `indent`, so they
 /// read as part of the same sentence rather than as unrelated output.
-/// Shared by every surface that prints one — `link`, `unlink` and the
-/// shell's setup wizard align theirs under the `  warn: ` prefix,
+/// Shared by every surface that prints one — `link` and `unlink` align
+/// theirs under the `  warn: ` prefix,
 /// `validate` under its own `WARN  location:` one.
 pub(crate) fn indent_continuation(message: &str, indent: &str) -> String {
     message.replace('\n', &format!("\n{indent}"))
 }
 
 // Design-system accents (assets/terminal-palette.json).
-// `#[allow(dead_code)]` on the remaining unwired items below: CLI-1 wired
-// `cli/run.rs`, CLI-2 (this lot) wires the discovery/read commands (`err()`
-// now used by `models.rs`/`validate.rs`); `agent()` still lands in a
-// follow-up lot (same convention as `crate::theme`).
 const BRASS: Color = Color::Rgb(RgbColor(0xc7, 0x9a, 0x4a));
 const SIGNAL_OK: Color = Color::Rgb(RgbColor(0x5c, 0xbf, 0x87));
 const SIGNAL_WARNING: Color = Color::Rgb(RgbColor(0xe2, 0xb2, 0x4c));
@@ -57,11 +52,6 @@ pub fn running() -> Style {
 pub fn muted() -> Style {
     Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlack)))
 }
-/// Agent / role name: bold, no colour (avoids clashing with status colours).
-#[allow(dead_code)]
-pub fn agent() -> Style {
-    Style::new().bold()
-}
 
 #[cfg(test)]
 mod tests {
@@ -78,9 +68,6 @@ mod tests {
             muted().get_fg_color(),
             Some(Color::Ansi(AnsiColor::BrightBlack))
         );
-        // agent(): bold, no colour.
-        assert_eq!(agent().get_fg_color(), None);
-        assert!(agent().get_effects().contains(anstyle::Effects::BOLD));
     }
 
     #[test]
