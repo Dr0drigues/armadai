@@ -7,7 +7,6 @@ mod list;
 mod models;
 pub(crate) mod new;
 mod prompts;
-mod registry;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;
@@ -238,20 +237,6 @@ pub enum Command {
         #[arg(long)]
         pack: Option<String>,
     },
-    /// Browse and import agents from the community registry
-    #[command(
-        subcommand,
-        long_about = "Browse and import agents from the community registry.\n\n\
-            Integrates with awesome-copilot as a discovery and distribution mechanism. \
-            Agents are converted from Copilot format to ArmadAI Markdown on import.",
-        after_help = "Examples:\n  \
-            armadai registry sync\n  \
-            armadai registry search \"security review\"\n  \
-            armadai registry list --category official\n  \
-            armadai registry add official/security\n  \
-            armadai registry info official/security"
-    )]
-    Registry(registry::RegistryAction),
     /// Manage composable prompts
     #[command(
         subcommand,
@@ -390,7 +375,6 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Config { action } => config::execute(action).await,
         Command::Models(action) => models::execute(action).await,
         Command::Extract(args) => extract::execute(args).await,
-        Command::Registry(action) => registry::execute(action).await,
         Command::Prompts(action) => prompts::execute(action).await,
         Command::Skills(action) => skills::execute(action).await,
         Command::Link {
@@ -502,6 +486,40 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn every_kept_command_has_a_help_description() {
+        use clap::CommandFactory;
+        let root = Cli::command();
+        let help = root.clone().render_help().to_string();
+        for cmd in [
+            "new",
+            "list",
+            "inspect",
+            "validate",
+            "config",
+            "models",
+            "extract",
+            "prompts",
+            "skills",
+            "link",
+            "unlink",
+            "init",
+            "update",
+            "completion",
+        ] {
+            let sub = root
+                .find_subcommand(cmd)
+                .unwrap_or_else(|| panic!("`{cmd}` missing from top-level help:\n{help}"));
+            // Without an explicit short description clap silently falls back
+            // to the first line of `long_about`, so check `about` itself.
+            let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+            assert!(
+                !about.trim().is_empty(),
+                "`{cmd}` has no short description (doc comment) in --help:\n{help}"
+            );
         }
     }
 

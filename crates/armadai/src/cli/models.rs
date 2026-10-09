@@ -55,7 +55,7 @@ fn check(all: bool, prune: bool) -> anyhow::Result<()> {
         if registry.projects.is_empty() {
             let m = crate::cli::style::muted();
             anstream::println!(
-                "{m}No registered projects. Run `armadai run` or `armadai link` in a project first.{m:#}"
+                "{m}No registered projects. Run `armadai link` in a project first.{m:#}"
             );
             return Ok(());
         }
@@ -252,9 +252,7 @@ fn list() -> anyhow::Result<()> {
     if registry.projects.is_empty() {
         let m = crate::cli::style::muted();
         anstream::println!("{m}No registered projects.{m:#}");
-        anstream::println!(
-            "{m}Projects are auto-registered when you run `armadai run` or `armadai link`.{m:#}"
-        );
+        anstream::println!("{m}Projects are auto-registered when you run `armadai link`.{m:#}");
         return Ok(());
     }
 
