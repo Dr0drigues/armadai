@@ -8,8 +8,6 @@ use crate::audit::{
     rules::{AuditSettings, Severity},
 };
 use armadai_core::agent::{Agent, AgentMetadata};
-use armadai_core::provider::{ChatMessage, CompletionRequest};
-use armadai_providers::factory::create_provider;
 
 pub(crate) fn min_severity_from(flag: &str, quiet: bool) -> Severity {
     if quiet {
@@ -31,7 +29,7 @@ const DEEP_AUDITOR_TIER: &str = "latest:pro";
 /// The concrete model id the deep-pass auditor declares, for `cli`'s vendor.
 ///
 /// [`DEEP_AUDITOR_TIER`] is resolved here rather than handed to the provider
-/// as-is: `call_deep_auditor` copies `metadata.model` straight into its
+/// as-is: `call_deep_auditor` copied (in the unfrozen build) `metadata.model` straight into its
 /// `CompletionRequest`, so this is the last gate before the string would
 /// become a provider's model name — the same class #376 named and #398 closed
 /// on the five `run` paths, and (measured over every
@@ -98,28 +96,16 @@ fn build_deep_auditor(cli: &str) -> Agent {
     }
 }
 
-/// Call the deep-pass auditor synchronously, bridging into the async
-/// provider API. `execute` runs on the tokio multi-thread runtime installed
-/// by `#[tokio::main]`, so `block_in_place` + `Handle::current().block_on`
-/// is safe here (it is only reached once a real CLI has been detected —
-/// the `deep_without_cli_errors_explicitly` test bails out before this
-/// point and never exercises it on the single-threaded test runtime).
-fn call_deep_auditor(agent: &Agent, prompt: &str) -> anyhow::Result<String> {
-    let provider = create_provider(agent)?;
-    let request = CompletionRequest {
-        model: agent.metadata.model.clone().unwrap_or_default(),
-        system_prompt: String::new(),
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: prompt.to_string(),
-        }],
-        temperature: 0.2,
-        max_tokens: None,
-    };
-    let response = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(provider.complete(request))
-    })?;
-    Ok(response.content)
+/// Call the deep-pass auditor.
+///
+/// FROZEN BUILD: the original sent `prompt` to the provider `agent` names,
+/// through `armadai_providers::factory::create_provider`. The step-0 cleanup
+/// removed the execution path that call relied on, so this frozen crate
+/// carries no provider and `--deep` fails here, explicitly, before anything
+/// leaves the machine. The option is still parsed and still detects its CLI,
+/// so the day the audit is rebuilt only this function changes.
+fn call_deep_auditor(_agent: &Agent, _prompt: &str) -> anyhow::Result<String> {
+    anyhow::bail!("--deep needs an execution provider and is unavailable in the frozen build")
 }
 
 /// What `--deep` is about to send, and — in global scope — whose material it
@@ -168,7 +154,7 @@ async fn apply_deep_pass(
     };
     let agent = build_deep_auditor(cli);
     let run = |prompt: &str| call_deep_auditor(&agent, prompt);
-    let w = crate::cli::style::warn();
+    let w = crate::vendored::style::warn();
     let note = deep_privacy_note(audit.scope, cli);
     anstream::eprintln!("{w}  {note}{w:#}");
     match run_deep(
@@ -247,8 +233,8 @@ pub async fn execute(
         AuditInput::for_project(&root)
     };
     if input.detected().is_empty() {
-        let o = crate::cli::style::ok();
-        let m = crate::cli::style::muted();
+        let o = crate::vendored::style::ok();
+        let m = crate::vendored::style::muted();
         let where_ = match input.scope() {
             AuditScope::Global => "your global library".to_string(),
             AuditScope::Project => format!("{}", root.display()),
@@ -280,16 +266,16 @@ pub async fn execute(
             .unwrap_or(false);
         if is_html {
             std::fs::write(&out, audit.to_html())?;
-            let o = crate::cli::style::ok();
-            let m = crate::cli::style::muted();
+            let o = crate::vendored::style::ok();
+            let m = crate::vendored::style::muted();
             anstream::println!(
                 "\n  {o}HTML report written to{o:#} {m}{}{m:#}",
                 out.display()
             );
         } else {
             std::fs::write(&out, audit.to_markdown())?;
-            let o = crate::cli::style::ok();
-            let m = crate::cli::style::muted();
+            let o = crate::vendored::style::ok();
+            let m = crate::vendored::style::muted();
             anstream::println!(
                 "\n  {o}Markdown report written to{o:#} {m}{}{m:#}",
                 out.display()
@@ -299,8 +285,8 @@ pub async fn execute(
     if propose {
         let summary = generate_proposal(&root, input.config())?;
         anstream::println!();
-        let o = crate::cli::style::ok();
-        let m = crate::cli::style::muted();
+        let o = crate::vendored::style::ok();
+        let m = crate::vendored::style::muted();
         anstream::println!(
             "  {o}Proposal written to{o:#} {m}{}/{m:#}",
             summary.out_dir.display()
@@ -313,7 +299,7 @@ pub async fn execute(
             summary.skill_fixes
         );
         if !summary.skipped_agents.is_empty() {
-            let w = crate::cli::style::warn();
+            let w = crate::vendored::style::warn();
             anstream::println!(
                 "{w}    {} agent(s) skipped (unreadable): {}{w:#}",
                 summary.skipped_agents.len(),
@@ -756,5 +742,25 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("--deep requires an LLM CLI"));
+    }
+
+    /// Frozen build: with a CLI detected, `--deep` still refuses, explicitly,
+    /// because the crate carries no execution provider.
+    #[tokio::test]
+    async fn deep_pass_with_a_cli_errors_in_the_frozen_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join(".claude/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("a.md"), "---\nname: a\ndescription: d\n---\nP.").unwrap();
+        let settings = AuditSettings::from_project(dir.path());
+        let input = AuditInput::for_project(dir.path());
+        let mut audit = input.analyse(&settings, None);
+        let err = apply_deep_pass(&mut audit, input.config(), &settings, Some("claude"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--deep needs an execution provider and is unavailable in the frozen build"
+        );
     }
 }

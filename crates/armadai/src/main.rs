@@ -1,4 +1,3 @@
-mod audit;
 mod claude_adapter;
 mod cli;
 mod linker;

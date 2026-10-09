@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::claude_adapter::transcript::{Block, RelevantEntry, parse_value};
+use crate::vendored::transcript::{Block, RelevantEntry, parse_value};
 
 use super::discovery::{subagent_files_for, transcript_files};
 use super::facts::{ROOT_AGENT, UsageFacts};

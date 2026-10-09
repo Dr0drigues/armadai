@@ -107,9 +107,9 @@ impl AuditReport {
     /// Accent style for a severity level (terminal output only).
     fn severity_style(s: Severity) -> anstyle::Style {
         match s {
-            Severity::Critical => crate::cli::style::err(),
-            Severity::Warning => crate::cli::style::warn(),
-            Severity::Info => crate::cli::style::ok(),
+            Severity::Critical => crate::vendored::style::err(),
+            Severity::Warning => crate::vendored::style::warn(),
+            Severity::Info => crate::vendored::style::ok(),
         }
     }
 
@@ -235,8 +235,8 @@ impl AuditReport {
         let Some(view) = self.usage_view() else {
             return;
         };
-        let h = crate::cli::style::header();
-        let m = crate::cli::style::muted();
+        let h = crate::vendored::style::header();
+        let m = crate::vendored::style::muted();
         anstream::println!();
         anstream::println!("  {h}Observed usage{h:#}");
         anstream::println!("  {m}Sessions scanned:{m:#} {}", view.usage.sessions);
@@ -339,10 +339,10 @@ impl AuditReport {
     /// `anyhow::bail!` on critical findings is what signals errors on
     /// stderr, so this only ever writes to stdout.
     pub fn print_terminal(&self, min_severity: Severity) {
-        let h = crate::cli::style::header();
+        let h = crate::vendored::style::header();
         anstream::println!("{h}{} - {}{h:#}", self.title(), self.root.display());
-        let m = crate::cli::style::muted();
-        let a = crate::cli::style::accent();
+        let m = crate::vendored::style::muted();
+        let a = crate::vendored::style::accent();
         anstream::println!(
             "  {m}Detected:{m:#} {a}{}{a:#} {m}({} agent(s), {} skill(s)){m:#}",
             self.detected.join(", "),
@@ -378,8 +378,8 @@ impl AuditReport {
                 } else {
                     format!(" (+{} others)", f.related.len())
                 };
-                let a = crate::cli::style::accent();
-                let m = crate::cli::style::muted();
+                let a = crate::vendored::style::accent();
+                let m = crate::vendored::style::muted();
                 anstream::println!(
                     "    {a}{:<4}{a:#} {m}{}{related}{m:#}  {}",
                     f.rule,
@@ -387,7 +387,7 @@ impl AuditReport {
                     f.message
                 );
                 if let Some(s) = &f.suggestion {
-                    let m = crate::cli::style::muted();
+                    let m = crate::vendored::style::muted();
                     anstream::println!("         {m}-> {s}{m:#}");
                 }
             }
@@ -398,13 +398,13 @@ impl AuditReport {
             .filter(|f| f.severity > min_severity)
             .count();
         anstream::println!();
-        let h = crate::cli::style::header();
+        let h = crate::vendored::style::header();
         anstream::println!("  {h}Summary:{h:#} {}", self.summary_line());
         if !self.findings.is_empty() {
             anstream::println!("  {h}Breakdown:{h:#} {}", self.breakdown_line());
         }
         if hidden > 0 {
-            let m = crate::cli::style::muted();
+            let m = crate::vendored::style::muted();
             anstream::println!(
                 "  {m}({hidden} finding(s) hidden below the severity threshold){m:#}"
             );
@@ -412,18 +412,18 @@ impl AuditReport {
         let funnel = self.funnel_lines();
         if !funnel.is_empty() {
             anstream::println!();
-            let h = crate::cli::style::header();
+            let h = crate::vendored::style::header();
             anstream::println!("  {h}What ArmadAI would give you:{h:#}");
-            let m = crate::cli::style::muted();
+            let m = crate::vendored::style::muted();
             for l in funnel {
                 anstream::println!("    {m}- {l}{m:#}");
             }
-            let a = crate::cli::style::accent();
+            let a = crate::vendored::style::accent();
             anstream::println!("    {a}Run `armadai audit --propose` to generate the config.{a:#}");
         }
         if let Some(raw) = &self.deep_raw {
             anstream::println!();
-            let h = crate::cli::style::header();
+            let h = crate::vendored::style::header();
             anstream::println!("  {h}Deep analysis (unstructured):{h:#}");
             for line in raw.lines() {
                 anstream::println!("    {line}");

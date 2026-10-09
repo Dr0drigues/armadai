@@ -83,10 +83,10 @@ mod tests {
         ///   tests assert on. Pointed at an empty directory, the usage pass
         ///   finds nothing and stays silent.
         fn audit(&self, cwd: &Path, target: &str) -> Output {
-            let out = Command::cargo_bin("armadai")
+            let out = Command::cargo_bin("armadai-audit")
                 .unwrap()
                 .current_dir(cwd)
-                .args(["audit", target])
+                .arg(target)
                 .env("NO_COLOR", "1")
                 .env("ARMADAI_CONFIG_DIR", self.root().join("config"))
                 .env("XDG_DATA_HOME", self.root().join("data"))

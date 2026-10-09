@@ -1,4 +1,3 @@
-mod audit;
 mod config;
 mod extract;
 pub mod init;
@@ -107,51 +106,6 @@ pub enum Command {
     Validate {
         /// Path to pack or project directory (default: current directory)
         path: Option<std::path::PathBuf>,
-    },
-    /// Audit native agentic configs (Claude Code) and report issues
-    #[command(
-        long_about = "Audit native agentic configs and report issues.\n\n\
-            Scans .claude/agents/, .claude/skills/ and CLAUDE.md (no ArmadAI setup \
-            required), runs static rules (deprecated models, oversized prompts, \
-            duplicated blocks, broken references, plaintext secrets...) and prints \
-            an actionable report. It also reads this project's Claude Code transcripts \
-            under ~/.claude/projects/ to measure observed usage (rules U01-U04) — that \
-            data never leaves this machine; pass --no-usage or set `audit.usage: false` \
-            in the project config to skip it. Exits non-zero if critical findings exist.\n\n\
-            With --global, audits what you carry into every session instead: \
-            ~/.claude/agents/, ~/.claude/skills/, ~/.claude/CLAUDE.md and \
-            ~/.config/armadai/skills/. Every rule family applies except U01-U04, which \
-            correlate one project's transcripts. The synced catalogue \
-            (~/.config/armadai/registry) is never read, in either scope.",
-        after_help = "Examples:\n  \
-            armadai audit\n  \
-            armadai audit --global\n  \
-            armadai audit --report report.html"
-    )]
-    Audit {
-        /// Project directory to audit (defaults to current directory)
-        path: Option<std::path::PathBuf>,
-        /// Audit the user's global library instead of a project
-        #[arg(long, conflicts_with = "path")]
-        global: bool,
-        /// Write a report to this file (markdown, or HTML if the extension is .html)
-        #[arg(long)]
-        report: Option<std::path::PathBuf>,
-        /// Only display findings at or above this severity (exit code still counts everything)
-        #[arg(long, value_parser = ["crit", "warn", "info"], default_value = "info")]
-        min_severity: String,
-        /// Shortcut for --min-severity warn
-        #[arg(long, conflicts_with = "min_severity")]
-        quiet: bool,
-        /// Generate an installable ArmadAI pack from the audited config (.armadai-proposal/)
-        #[arg(long)]
-        propose: bool,
-        /// Run an optional LLM pass (needs an installed CLI: claude, gemini): sends prompt excerpts (with detected secrets redacted) to the CLI
-        #[arg(long)]
-        deep: bool,
-        /// Skip scanning Claude Code transcripts for observed usage (overrides `audit.usage` in project config)
-        #[arg(long)]
-        no_usage: bool,
     },
     /// Extract agents, prompts, and skills with dependency resolution
     #[command(
@@ -433,28 +387,6 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Inspect { agent } => inspect::execute(agent).await,
         Command::Validate { path } => validate::execute(path).await,
-        Command::Audit {
-            path,
-            global,
-            report,
-            min_severity,
-            quiet,
-            propose,
-            deep,
-            no_usage,
-        } => {
-            audit::execute(
-                path,
-                global,
-                report,
-                min_severity,
-                quiet,
-                propose,
-                deep,
-                no_usage,
-            )
-            .await
-        }
         Command::Config { action } => config::execute(action).await,
         Command::Models(action) => models::execute(action).await,
         Command::Extract(args) => extract::execute(args).await,
@@ -577,7 +509,7 @@ mod tests {
     fn completion_scripts_keep_the_real_commands() {
         // The filter must not be a blunt instrument.
         let zsh = completion(clap_complete::Shell::Zsh);
-        for cmd in ["audit", "link", "unlink", "completion"] {
+        for cmd in ["extract", "link", "unlink", "completion"] {
             assert!(
                 zsh.contains(&format!("'{cmd}:")),
                 "zsh completion lost the {cmd} command"

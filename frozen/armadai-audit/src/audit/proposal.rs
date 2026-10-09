@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use super::reverse::{ImportedAgent, ImportedConfig};
-use crate::linker::model_resolution::{is_latest_placeholder, tier_placeholder};
+use crate::vendored::linker::{is_latest_placeholder, tier_placeholder};
 use armadai_core::model_aliases::resolve_alias;
 use armadai_core::model_resolution::classify_model_tier;
 
@@ -696,7 +696,7 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
             .iter()
             .map(|a| {
                 unique_slug(
-                    crate::linker::slugify(&a.name),
+                    armadai_core::agent::slugify(&a.name),
                     &mut used_agent_slugs,
                     "agent",
                 )
@@ -779,7 +779,7 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
             .iter()
             .map(|s| {
                 unique_slug(
-                    crate::linker::slugify(&s.name),
+                    armadai_core::agent::slugify(&s.name),
                     &mut used_skill_slugs,
                     "skill",
                 )
@@ -801,7 +801,7 @@ pub fn generate_proposal(root: &Path, config: &ImportedConfig) -> anyhow::Result
         // pack.yaml
         let pack_name = root
             .file_name()
-            .map(|n| crate::linker::slugify(&n.to_string_lossy()))
+            .map(|n| armadai_core::agent::slugify(&n.to_string_lossy()))
             .unwrap_or_else(|| "imported".to_string());
         let mut pack = String::new();
         let _ = writeln!(pack, "name: {pack_name}-agents");

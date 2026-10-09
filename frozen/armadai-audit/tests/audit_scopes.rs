@@ -80,10 +80,9 @@ mod tests {
         ///   `~/.claude/projects`, whose `U0x` findings would land in the very
         ///   stdout these tests assert on.
         fn run(&self, args: &[&str]) -> Output {
-            let out = Command::cargo_bin("armadai")
+            let out = Command::cargo_bin("armadai-audit")
                 .unwrap()
                 .current_dir(self.work())
-                .arg("audit")
                 .args(args)
                 .env("NO_COLOR", "1")
                 .env("HOME", self.home())
@@ -110,10 +109,9 @@ mod tests {
         /// `env_lock()`, which is not reentrant and which several tests in
         /// this crate already take.
         fn run_without_home(&self, args: &[&str]) -> Output {
-            let out = Command::cargo_bin("armadai")
+            let out = Command::cargo_bin("armadai-audit")
                 .unwrap()
                 .current_dir(self.work())
-                .arg("audit")
                 .args(args)
                 .env("NO_COLOR", "1")
                 .env_remove("HOME")
