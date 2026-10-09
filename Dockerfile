@@ -11,7 +11,7 @@ WORKDIR /app
 # pinning to a fixed patch version just re-creates the same staleness.)
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-RUN cargo build --release -p armadai --no-default-features --features tui,storage
+RUN cargo build --release -p armadai --no-default-features
 
 # Debian release matched to `rust:1-slim`'s base (trixie) — the old
 # bookworm-slim runtime failed at startup with a GLIBC version mismatch
