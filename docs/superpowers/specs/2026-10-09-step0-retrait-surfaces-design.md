@@ -1,6 +1,6 @@
 # Étape 0 — Retrait des surfaces d'exécution et redéfinition de l'équipe
 
-Date : 2026-10-09 · Statut : appliquée (PR #442-#453, 2026-10-12) · Étape précédente : étape -1 (CI d'audit réparée, Dependabot, terminée le 2026-10-08)
+Date : 2026-10-09 · Statut : appliquée (PR #442-#454 ; correctifs postérieurs #459 marqueurs, #460 init, #461 modèles embarqués ; 2026-10-12) · Étape précédente : étape -1 (CI d'audit réparée, Dependabot, terminée le 2026-10-08)
 
 ## 1. Contexte et objectif
 
@@ -70,7 +70,7 @@ Chaque PR met à jour la CI en même temps que ses suppressions (une feature sup
 
 Vérifiables, chacun avec une commande ou une observation :
 
-1. Le tag `pre-v1-declaratif` existe sur le dernier commit d'avant P1 (`9b02047`).
+1. Le tag `pre-v1-declaratif` existe sur `9b02047`, le commit d'avant P0 (#442) ; le tag a été poussé le 2026-10-12.
 2. Le test d'étalon de P0 (sortie de `link` pour Claude, Codex, OpenCode, Copilot sur un projet témoin) est **inchangé** après P1 à P6, hors suppression du cas Gemini. Il est écrit avant les suppressions et doit échouer si une sortie change (vérifié par mutation).
 3. `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings` et `cargo test` passent sans `--features`, ainsi que `cargo build -p armadai-core`.
 4. `cargo tree -i ratatui`, `-i axum`, `-i rusqlite` et `-i portable-pty` ne trouvent rien.
