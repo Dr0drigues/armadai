@@ -124,7 +124,7 @@ warning on stderr.
 
 | Code | Severity | Meaning | Fix |
 |---|---|---|---|
-| `missing-manifest` | error | `.armadai/project.yaml` not found | Create it with `schema_version: 1`, or run `armadai migrate` |
+| `missing-manifest` | error | `.armadai/project.yaml` not found | Create it with `schema_version: 1`, or run `armadai migrate` (library API only: the CLI picks the new mode only when `project.yaml` exists) |
 | `unsupported-schema-version` | error | `schema_version` is not `1` | Set `schema_version: 1` |
 | `invalid-yaml` | error | Syntax error, unknown or duplicate key, wrong type or value, empty or unreadable file | Fix the YAML at the given line |
 | `missing-frontmatter` | error | An agent file does not start with `---` | Add a `---` frontmatter with at least `description` |

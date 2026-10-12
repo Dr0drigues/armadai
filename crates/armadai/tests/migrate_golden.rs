@@ -116,7 +116,7 @@ fn migrate_output_matches_the_golden_snapshots() {
         let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/golden/migrate")
             .join(case);
-        if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        if std::env::var("UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty() && v != "0") {
             let _ = std::fs::remove_dir_all(&golden);
             for (rel, bytes) in &snap {
                 let p = golden.join(rel);
