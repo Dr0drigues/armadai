@@ -66,15 +66,56 @@ fn unknown_agent_in_a_step_is_positioned_on_its_token() {
 }
 
 #[test]
-fn unknown_agent_in_coordinator_and_free_agents() {
+fn unknown_coordinator_is_an_error_unknown_free_agent_a_warning() {
     let ds = diags(&[(
         ".armadai/project.yaml",
-        "schema_version: 1\ncoordinator: boss\npolicy:\n  free_agents: [dev]\n",
+        "schema_version: 1\ncoordinator: boss\npolicy:\n  free_agents: [Explore]\n",
     )]);
-    let hits: Vec<_> = ds.iter().filter(|d| d.code == "unknown-agent").collect();
-    assert_eq!(hits.len(), 2, "{ds:?}");
-    assert_eq!((hits[0].line, hits[0].column), (Some(2), Some(14)));
-    assert_eq!((hits[1].line, hits[1].column), (Some(4), Some(17)));
+    let d = err(&ds, "unknown-agent", (2, 14));
+    assert!(d.message.contains("boss"));
+    let w = expect(&ds, "unknown-free-agent", Severity::Warning, (4, 17));
+    assert!(
+        w.hint
+            .as_deref()
+            .unwrap()
+            .contains("Explore, Plan, general-purpose"),
+        "{w:?}"
+    );
+    assert!(
+        !ds.iter()
+            .any(|d| d.code == "unknown-agent" && d.message.contains("Explore"))
+    );
+}
+
+#[test]
+fn a_built_in_free_agent_does_not_refuse_the_project() {
+    let dir = project(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\npolicy:\n  free_agents: [Explore, general-purpose]\n",
+        ),
+        DEV,
+    ]);
+    let (p, _) = load_checked(dir.path()).unwrap();
+    assert_eq!(
+        p.manifest.policy.free_agents,
+        ["Explore", "general-purpose"]
+    );
+}
+
+#[test]
+fn a_free_agent_close_to_a_project_agent_gets_a_did_you_mean() {
+    let ds = diags(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\npolicy:\n  free_agents: [dve]\n",
+        ),
+        DEV,
+    ]);
+    assert_eq!(
+        only(&ds, "unknown-free-agent").hint.as_deref(),
+        Some("did you mean `dev`?")
+    );
 }
 
 #[test]

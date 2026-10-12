@@ -7,7 +7,7 @@ Written (8):
   .armadai/agents/test-writer.md
   .armadai/flows/orchestration.yaml
   .armadai/project.yaml
-Dropped (25):
+Dropped (24):
   claude-cli-reviewer: args (no reader in the new format)
   claude-cli-reviewer: command (no reader in the new format)
   claude-cli-reviewer: stacks (no reader in the new format)
@@ -25,7 +25,6 @@ Dropped (25):
   gemini-reviewer: stacks (no reader in the new format)
   gemini-reviewer: timeout (no reader in the new format)
   orchestration: enabled (the execution engine was removed)
-  orchestration: free_agents.Explore (not an agent of this project (the new format lists project agents only))
   orchestration: max_depth (the execution engine was removed)
   orchestration: pattern (the execution engine was removed)
   orchestration: routes (the execution engine was removed)

@@ -36,7 +36,7 @@ outputs: { claude: .claude } # optional: output directory per target
 coordinator: lead            # optional: agent id whose prompt becomes the root file
 policy:                      # optional
   delegation: strict         # off (default) | strict
-  free_agents: [explorer]    # agent ids allowed without a link
+  free_agents: [explorer, Explore]    # reachable from anywhere: project agent ids, or agents the target provides (Claude Code's Explore)
 native: { claude: {} }       # optional, opaque
 ```
 
@@ -134,7 +134,8 @@ warning on stderr.
 | `duplicate-step` | error | A `sequence` defines the same step id twice | Use `{ id: …, agent: … }` for the repeat |
 | `bad-id` | error | A file, folder or step id does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
 | `unknown-target` | error | A target in `targets`, `outputs` or a `native` key is not supported | Use `claude`, `codex`, `copilot` or `opencode` |
-| `unknown-agent` | error | A step, `coordinator` or `free_agents` names no agent of the project | Use an existing agent id (the hint suggests a close one) |
+| `unknown-agent` | error | A step or `coordinator` names no agent of the project | Use an existing agent id (the hint suggests a close one) |
+| `unknown-free-agent` | warning | A `free_agents` entry names no agent of the project | None needed for an agent the target provides itself (Claude Code: `Explore`, `Plan`, `general-purpose`); otherwise fix the id (the hint suggests a close one) |
 | `unknown-skill` | error | An agent lists a skill the project does not have | Add the skill or fix the id |
 | `empty-description` | error | An agent's `description` is empty | Write a one-line description |
 | `invalid-temperature` | error | `temperature` is not a finite number | Use a number such as `0.4` |
@@ -195,7 +196,7 @@ What the conversion does:
 | Project `skills:` | `skills/<id>/` (folder copied; `tools` and `version` dropped) |
 | `link.target`, `link.overrides.<target>.output`, `link.coordinator` | `targets`, `outputs`, `coordinator` (an unsupported target such as `gemini` is dropped) |
 | `orchestration.coordinator` + `teams` | a flow `orchestration`: coordinator → team lead → members (members without a lead under the coordinator); an unknown agent is omitted with a warning |
-| `orchestration.policy`, `free_agents` | `policy.delegation`, `policy.free_agents` (a name that is not a project agent, such as `Explore`, is dropped) |
+| `orchestration.policy`, `free_agents` | `policy.delegation`, `policy.free_agents` (a name that is not a project agent, such as `Explore`, is kept as it is: it may be an agent the target provides) |
 | `orchestration.enabled`, `pattern`, `routes`, limits; `defaults`, `routing`, `registries`, `sources` | **dropped**, listed |
 
 Agents of the user library that the project references are copied into the project.

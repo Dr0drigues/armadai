@@ -238,7 +238,7 @@ mod tests {
     const AGENTS: [&str; 6] = ["lead", "dev", "qa", "doc", "helper", "general-purpose"];
 
     /// `lead` coordinates; flow ship: build(dev) -> test(qa); `doc` is in no flow.
-    /// Free agents must be declared agents (the validator refuses Claude built-ins).
+    /// `Explore` is a Claude Code built-in, not a project agent: allowed as a free agent.
     fn write_project(dir: &Path, manifest: &str) {
         std::fs::create_dir_all(dir.join(".armadai/agents")).unwrap();
         std::fs::create_dir_all(dir.join(".armadai/flows")).unwrap();
@@ -257,7 +257,7 @@ mod tests {
         .unwrap();
     }
 
-    const STRICT: &str = "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n  free_agents: [helper]\n";
+    const STRICT: &str = "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n  free_agents: [helper, Explore]\n";
 
     fn strict() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -286,7 +286,7 @@ mod tests {
     fn an_agent_outside_the_flows_is_refused_with_the_permitted_ones() {
         let dir = strict();
         let r = reason(decide(&payload("", "doc", dir.path())));
-        assert!(r.contains("[dev, helper, qa]"), "{r}");
+        assert!(r.contains("[Explore, dev, helper, qa]"), "{r}");
         assert!(r.contains("free_agents"), "{r}");
     }
 
@@ -311,6 +311,7 @@ mod tests {
         let dir = strict();
         assert!(decide(&payload("", "helper", dir.path())).is_none());
         assert!(decide(&payload("qa", "helper", dir.path())).is_none());
+        assert!(decide(&payload("qa", "Explore", dir.path())).is_none());
     }
 
     #[test]

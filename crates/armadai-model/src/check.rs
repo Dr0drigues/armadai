@@ -207,10 +207,29 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         o.unknown_target(man, t);
     }
     o.native_keys(man, m.native.keys());
-    for a in m.coordinator.iter().chain(&m.policy.free_agents) {
-        if !agents.contains(a.as_str()) {
-            o.unknown_ref(man, "unknown-agent", "agent", a, &agents);
-        }
+    for a in m
+        .coordinator
+        .iter()
+        .filter(|a| !agents.contains(a.as_str()))
+    {
+        o.unknown_ref(man, "unknown-agent", "agent", a, &agents);
+    }
+    // a free agent may be one the target provides itself (Claude Code's `Explore`, ...)
+    for a in (m.policy.free_agents.iter()).filter(|a| !agents.contains(a.as_str())) {
+        let hint = hint_for(a, &agents)
+            .filter(|h| h.starts_with("did you mean"))
+            .unwrap_or_else(|| {
+                "fine if the target provides it (Claude Code: Explore, Plan, general-purpose)"
+                    .into()
+            });
+        o.emit(
+            man,
+            Severity::Warning,
+            "unknown-free-agent",
+            Some((a, false)),
+            format!("free agent `{a}` is not an agent of this project"),
+            Some(hint),
+        );
     }
 
     // agents

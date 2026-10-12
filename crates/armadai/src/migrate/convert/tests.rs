@@ -457,10 +457,11 @@ fn orchestration_becomes_a_flow_and_policy() {
         ]
     );
     assert_eq!(p.manifest.policy.delegation, Delegation::Strict);
-    assert_eq!(p.manifest.policy.free_agents, ["tester"]);
+    // `Explore` is Claude Code's own agent: kept, not dropped
+    assert_eq!(p.manifest.policy.free_agents, ["tester", "Explore"]);
     assert_eq!(
         dropped(&r, "orchestration"),
-        ["enabled", "free_agents.Explore", "max_depth", "pattern"]
+        ["enabled", "max_depth", "pattern"]
     );
     assert_valid(&p);
 }

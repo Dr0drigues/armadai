@@ -235,7 +235,8 @@ mod tests {
         assert!(f.steps.contains_key("doc-generator"));
         assert!(r.warnings.iter().any(|w| w.contains("`ghost-agent`")));
         assert_eq!(p.manifest.coordinator.as_deref(), Some("code-reviewer"));
-        assert_eq!(p.manifest.policy.free_agents, ["doc-generator"]);
+        // a name outside the project (Claude Code's `Explore`) is kept as it is
+        assert_eq!(p.manifest.policy.free_agents, ["Explore", "doc-generator"]);
     }
 
     #[test]

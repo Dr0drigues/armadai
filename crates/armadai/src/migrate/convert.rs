@@ -425,16 +425,13 @@ fn convert_orchestration(
         PolicyMode::Strict => Delegation::Strict,
     };
     for f in &o.free_agents {
-        match resolve(f) {
-            Some(id) if !policy.free_agents.contains(&id) => policy.free_agents.push(id),
-            Some(_) => {}
-            None => r.drop(
-                S,
-                &format!("free_agents.{f}"),
-                "not an agent of this project (the new format lists project agents only)",
-            ),
+        // not a project agent: a built-in of the target (Claude Code's `Explore`), kept
+        let id = resolve(f).unwrap_or_else(|| f.clone());
+        if !policy.free_agents.contains(&id) {
+            policy.free_agents.push(id);
         }
     }
+
     for (field, present) in [
         ("enabled", o.enabled),
         ("pattern", o.pattern != OrchestrationPattern::Direct),
