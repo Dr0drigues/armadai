@@ -179,21 +179,15 @@ Resources (agents, prompts, skills) are resolved in this order:
 
 ## IDE Support
 
-The repository ships a JSON Schema for `armadai.yaml` (`schemas/armadai.schema.json`) that gives autocompletion and validation in editors that support it.
+The repository ships JSON Schemas for every file of a project in `schemas/v1/` (generated from
+the model, so they cannot drift): `project.schema.json`, `agent.schema.json` (agent
+frontmatter), `skill.schema.json`, `flow.schema.json`, `automation.schema.json`.
 
-**VS Code** (with [YAML extension by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)) and **IntelliJ** — add this comment as the first line of your `armadai.yaml`:
+**VS Code** (with [YAML extension by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)) and **IntelliJ** — add this comment as the first line of `.armadai/project.yaml`:
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/Dr0drigues/armadai/master/schemas/armadai.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Dr0drigues/armadai/master/schemas/v1/project.schema.json
 ```
-
-This schema predates the declarative refocus. Its link targets match what `armadai link` accepts
-(`claude`, `codex`, `copilot`, `opencode`), and fields of the removed execution engine and shell
-are described as ignored, but it is maintained by hand and does not cover every key the parser
-accepts (for instance `routing` and `registries`). A
-versioned schema with a validator is planned (see the
-[step 0 spec](https://github.com/Dr0drigues/armadai/blob/master/docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md)); it does not
-exist yet.
 
 ## Next Steps
 

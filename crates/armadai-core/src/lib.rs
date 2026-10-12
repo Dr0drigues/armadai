@@ -2,7 +2,6 @@ pub mod agent;
 pub mod agent_decl;
 pub mod agent_source;
 pub mod config;
-pub mod dependency_resolver;
 pub(crate) mod embedded;
 pub mod model_aliases;
 pub mod model_resolution;

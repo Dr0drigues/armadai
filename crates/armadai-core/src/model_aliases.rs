@@ -55,22 +55,6 @@ pub fn resolve_alias(model: &str) -> Option<String> {
     }
 }
 
-/// Apply alias resolution to model + fallbacks, logging warnings.
-pub fn resolve_model_deprecations(model: &mut Option<String>, fallbacks: &mut [String]) {
-    if let Some(current) = model.as_deref()
-        && let Some(replacement) = resolve_alias(current)
-    {
-        tracing::warn!("Model '{current}' is deprecated, using '{replacement}' instead");
-        *model = Some(replacement);
-    }
-    for fb in fallbacks.iter_mut() {
-        if let Some(replacement) = resolve_alias(fb) {
-            tracing::warn!("Fallback model '{fb}' is deprecated, using '{replacement}' instead");
-            *fb = replacement;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,38 +81,11 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_deprecations_mutates() {
-        let mut model = Some("gpt-4-turbo".to_string());
-        let mut fallbacks = vec![
-            "gemini-3.0-pro".to_string(),
-            "claude-sonnet-4-5".to_string(),
-        ];
-
-        resolve_model_deprecations(&mut model, &mut fallbacks);
-
-        assert_eq!(model, Some("gpt-4o".to_string()));
-        assert_eq!(fallbacks[0], "latest:pro");
-        // Unknown model stays unchanged
-        assert_eq!(fallbacks[1], "claude-sonnet-4-5");
-    }
-
-    #[test]
     fn test_circular_alias_safe() {
         // With only embedded aliases, no circularity exists.
         // But the algorithm protects against it via the `seen` set.
         // We verify the function terminates and returns a valid result.
         let result = resolve_alias("gpt-3.5-turbo");
         assert_eq!(result, Some("gpt-4o-mini".to_string()));
-    }
-
-    #[test]
-    fn test_no_mutation_when_no_alias() {
-        let mut model = Some("claude-sonnet-4-5".to_string());
-        let mut fallbacks = vec!["o3-mini".to_string()];
-
-        resolve_model_deprecations(&mut model, &mut fallbacks);
-
-        assert_eq!(model, Some("claude-sonnet-4-5".to_string()));
-        assert_eq!(fallbacks[0], "o3-mini");
     }
 }

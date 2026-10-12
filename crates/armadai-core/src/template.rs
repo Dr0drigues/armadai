@@ -138,12 +138,6 @@ pub fn render_lenient(template: &str, vars: &BTreeMap<String, String>) -> (Strin
     (substitute(template, vars), left)
 }
 
-/// Values supplied that the template never uses — almost always a typo.
-pub fn unused_vars(template: &str, vars: &BTreeMap<String, String>) -> Vec<String> {
-    let used = placeholders(template);
-    vars.keys().filter(|k| !used.contains(k)).cloned().collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,16 +174,6 @@ mod tests {
                 assert_eq!(names, vec!["who".to_string(), "whom".to_string()])
             }
         }
-    }
-
-    #[test]
-    fn a_provided_but_unused_variable_is_reported_not_fatal() {
-        // Almost always a typo — worth saying, never worth failing.
-        assert!(render("nothing here", &vars(&[("spare", "x")])).is_ok());
-        assert_eq!(
-            unused_vars("nothing here", &vars(&[("spare", "x")])),
-            vec!["spare".to_string()]
-        );
     }
 
     /// `armadai new` must keep working on the 10 templates that carry

@@ -434,42 +434,6 @@ pub fn find_remote_pack_by_name(name: &str) -> Option<PathBuf> {
     find_remote_pack_by_name_in(&starters_cache_dir(), name)
 }
 
-/// Load all starter packs from all source directories.
-///
-/// Packs are deduplicated by name: later directories (user, custom) override
-/// built-in packs with the same name.
-pub fn load_all_packs() -> Vec<StarterPack> {
-    let mut packs_map: HashMap<String, StarterPack> = HashMap::new();
-
-    for dir in all_starters_dirs() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir()
-                && path.join("pack.yaml").is_file()
-                && let Ok(pack) = StarterPack::load(&path)
-            {
-                packs_map.insert(pack.name.clone(), pack);
-            }
-        }
-    }
-
-    // Remote (synced registry cache) packs: never override a local pack of
-    // the same name (local always wins over remote).
-    for dir in remote_starter_pack_dirs() {
-        if let Ok(pack) = StarterPack::load(&dir) {
-            packs_map.entry(pack.name.clone()).or_insert(pack);
-        }
-    }
-
-    let mut packs: Vec<StarterPack> = packs_map.into_values().collect();
-    packs.sort_by(|a, b| a.name.cmp(&b.name));
-    packs
-}
-
 /// List all available starter pack names.
 pub fn list_available_packs() -> Vec<String> {
     let mut seen = HashMap::new();
@@ -803,20 +767,6 @@ agents:
         let found = find_remote_pack_by_name_in(&tmp, "cool-pack");
         assert!(found.is_some());
         let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn test_load_all_packs() {
-        let packs = load_all_packs();
-        assert!(
-            !packs.is_empty(),
-            "Expected at least one pack from load_all_packs()"
-        );
-        // Should be sorted by name
-        let names: Vec<&str> = packs.iter().map(|p| p.name.as_str()).collect();
-        let mut sorted = names.clone();
-        sorted.sort();
-        assert_eq!(names, sorted);
     }
 
     #[test]
