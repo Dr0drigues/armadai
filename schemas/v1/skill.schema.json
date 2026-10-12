@@ -1,8 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "SkillFront",
+  "additionalProperties": true,
   "description": "Skill frontmatter. No `deny_unknown_fields`: the format belongs to other tools,\nunknown keys are warnings computed by the loader.",
-  "type": "object",
   "properties": {
     "compatibility": {
       "type": [
@@ -23,13 +22,13 @@
       ]
     },
     "metadata": {
+      "additionalProperties": {
+        "type": "string"
+      },
       "type": [
         "object",
         "null"
-      ],
-      "additionalProperties": {
-        "type": "string"
-      }
+      ]
     },
     "name": {
       "type": [
@@ -38,5 +37,6 @@
       ]
     }
   },
-  "additionalProperties": true
+  "title": "SkillFront",
+  "type": "object"
 }

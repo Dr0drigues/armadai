@@ -1,69 +1,15 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "AgentFront",
-  "type": "object",
-  "properties": {
-    "capabilities": {
-      "$ref": "#/$defs/Capabilities"
-    },
-    "description": {
-      "type": "string"
-    },
-    "native": {
-      "type": "object",
-      "additionalProperties": true
-    },
-    "skills": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "tags": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "temperature": {
-      "type": [
-        "number",
-        "null"
-      ],
-      "format": "float"
-    },
-    "tier": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Tier"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "title": {
-      "type": [
-        "string",
-        "null"
-      ]
-    }
-  },
-  "additionalProperties": false,
-  "required": [
-    "description"
-  ],
   "$defs": {
     "Cap": {
-      "type": "string",
       "enum": [
         "allow",
         "ask",
         "deny"
-      ]
+      ],
+      "type": "string"
     },
     "Capabilities": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "delegate": {
           "anyOf": [
@@ -116,15 +62,69 @@
           ]
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "Tier": {
-      "type": "string",
       "enum": [
         "fast",
         "pro",
         "max"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/Capabilities"
+    },
+    "description": {
+      "type": "string"
+    },
+    "native": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "skills": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "temperature": {
+      "format": "float",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "tier": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Tier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
       ]
     }
-  }
+  },
+  "required": [
+    "description"
+  ],
+  "title": "AgentFront",
+  "type": "object"
 }

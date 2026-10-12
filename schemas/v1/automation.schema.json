@@ -1,7 +1,19 @@
 {
+  "$defs": {
+    "Event": {
+      "enum": [
+        "session-start",
+        "session-end",
+        "before-tool",
+        "after-tool",
+        "on-prompt",
+        "on-stop"
+      ],
+      "type": "string"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Automation",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "description": {
       "type": [
@@ -13,29 +25,17 @@
       "$ref": "#/$defs/Event"
     },
     "native": {
-      "type": "object",
-      "additionalProperties": true
+      "additionalProperties": true,
+      "type": "object"
     },
     "run": {
       "type": "string"
     }
   },
-  "additionalProperties": false,
   "required": [
     "event",
     "run"
   ],
-  "$defs": {
-    "Event": {
-      "type": "string",
-      "enum": [
-        "session-start",
-        "session-end",
-        "before-tool",
-        "after-tool",
-        "on-prompt",
-        "on-stop"
-      ]
-    }
-  }
+  "title": "Automation",
+  "type": "object"
 }

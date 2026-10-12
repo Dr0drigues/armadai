@@ -25,6 +25,8 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::compile::patch::PatchedFile;
+
 /// The only manifest format this build writes or trusts. A manifest whose
 /// `version` differs — written by an older or a future `armadai` — is
 /// treated exactly like a missing one, per §4: its shape isn't guaranteed to
@@ -149,6 +151,11 @@ pub struct TargetManifest {
     #[serde(default)]
     pub created_dirs: Vec<PathBuf>,
     pub entries: Vec<ManifestEntry>,
+    /// Files shared with the user that link patched rather than wrote whole
+    /// (`.claude/settings.json`, the root `CLAUDE.md`) and exactly what it added.
+    /// Absent from manifests written before step 2, hence the default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patched: Vec<PatchedFile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -630,6 +637,7 @@ pub fn write_target(
     target_root: PathBuf,
     created_dirs: Vec<PathBuf>,
     entries: Vec<ManifestEntry>,
+    patched: &[PatchedFile],
 ) -> std::io::Result<()> {
     let mut manifest = read(root).unwrap_or_else(|| Manifest {
         version: MANIFEST_VERSION,
@@ -643,6 +651,7 @@ pub fn write_target(
             root: target_root,
             created_dirs,
             entries,
+            patched: patched.to_vec(),
         },
     );
 
@@ -735,6 +744,7 @@ pub fn write_files(
     target_root: &Path,
     files: Vec<(PathBuf, String, ProducedBy)>,
     force: bool,
+    patched: &[PatchedFile],
 ) -> std::io::Result<Vec<FileOutcome>> {
     // The previous manifest write for this exact target, keyed by path —
     // used only to recognise a file that is still exactly what `link`
@@ -842,6 +852,7 @@ pub fn write_files(
         output_dir.to_path_buf(),
         created_dirs,
         manifest_entries,
+        patched,
     ) {
         // Deliberately non-fatal: every file above was already written (or
         // correctly left alone); refusing to report success over a
@@ -1065,12 +1076,69 @@ mod tests {
             PathBuf::from(".claude"),
             vec![],
             vec![],
+            &[],
         )
         .unwrap();
         assert!(matches!(
             lookup_target(dir.path(), "codex"),
             Lookup::Fallback
         ));
+    }
+
+    #[test]
+    fn a_manifest_written_before_patched_files_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            manifest_path(dir.path()),
+            "version: 1\ntargets:\n  claude:\n    linked_at: \"now\"\n    root: .claude\n    entries: []\n",
+        )
+        .unwrap();
+        match lookup_target(dir.path(), "claude") {
+            Lookup::Found(t) => assert!(t.patched.is_empty()),
+            Lookup::Fallback => panic!("an older manifest must still be found"),
+        }
+    }
+
+    #[test]
+    fn patched_files_round_trip_through_the_manifest() {
+        use crate::compile::claude_settings::{HookEntry, Owned};
+        use crate::compile::patch::{PatchKind, PatchedFile};
+        let dir = tempfile::tempdir().unwrap();
+        let patched = vec![
+            PatchedFile {
+                path: PathBuf::from(".claude/settings.json"),
+                kind: PatchKind::SettingsHooks(Owned {
+                    entries: vec![HookEntry {
+                        event: "PreToolUse".into(),
+                        matcher: Some("Agent".into()),
+                        command: "armadai __claude-policy-gate".into(),
+                        native: [("timeout".to_string(), serde_json::json!(5))].into(),
+                    }],
+                    keys: [("model".to_string(), serde_json::json!("opus"))].into(),
+                    containers: vec!["hooks".into()],
+                }),
+                created: true,
+            },
+            PatchedFile {
+                path: PathBuf::from("CLAUDE.md"),
+                kind: PatchKind::MarkdownBlock,
+                created: false,
+            },
+        ];
+        write_target(
+            dir.path(),
+            "claude",
+            PathBuf::from(".claude"),
+            vec![],
+            vec![],
+            &patched,
+        )
+        .unwrap();
+        match lookup_target(dir.path(), "claude") {
+            Lookup::Found(t) => assert_eq!(t.patched, patched),
+            Lookup::Fallback => panic!("expected Found"),
+        }
     }
 
     #[test]
@@ -1107,6 +1175,7 @@ mod tests {
             PathBuf::from(".claude"),
             created_dirs.clone(),
             entries.clone(),
+            &[],
         )
         .unwrap();
 
@@ -1130,6 +1199,7 @@ mod tests {
             PathBuf::from(".claude"),
             vec![],
             claude_entries,
+            &[],
         )
         .unwrap();
 
@@ -1140,6 +1210,7 @@ mod tests {
             PathBuf::from(".codex"),
             vec![],
             codex_entries.clone(),
+            &[],
         )
         .unwrap();
 
@@ -1152,6 +1223,7 @@ mod tests {
             PathBuf::from(".claude"),
             vec![],
             new_claude_entries.clone(),
+            &[],
         )
         .unwrap();
 
@@ -1189,6 +1261,7 @@ mod tests {
             &target_root,
             vec![(path.clone(), content.clone(), ProducedBy::agent("solo"))],
             false,
+            &[],
         )
         .unwrap();
 
@@ -1238,6 +1311,7 @@ mod tests {
             &target_root,
             vec![(path.clone(), "hello".to_string(), ProducedBy::agent("solo"))],
             false,
+            &[],
         )
         .unwrap();
 
@@ -1285,6 +1359,7 @@ mod tests {
                 ProducedBy::agent("solo"),
             )],
             false,
+            &[],
         )
         .unwrap();
 
@@ -1327,6 +1402,7 @@ mod tests {
             &target_root,
             vec![(path.clone(), new_content.clone(), ProducedBy::agent("solo"))],
             true,
+            &[],
         )
         .unwrap();
 
@@ -1366,6 +1442,7 @@ mod tests {
             &target_root,
             vec![(path.clone(), "v1".to_string(), ProducedBy::agent("solo"))],
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
@@ -1381,6 +1458,7 @@ mod tests {
             &target_root,
             vec![(path.clone(), "v2".to_string(), ProducedBy::agent("solo"))],
             false,
+            &[],
         )
         .unwrap();
 
@@ -1792,6 +1870,7 @@ mod tests {
                 &target_root,
                 vec![(path.clone(), generated, ProducedBy::agent("solo"))],
                 false,
+                &[],
             )
             .unwrap();
             assert_eq!(outcomes, vec![FileOutcome::SkippedExisting(path.clone())]);

@@ -7,6 +7,8 @@
 #![allow(dead_code)]
 
 pub mod claude;
+pub mod claude_settings;
+pub mod patch;
 pub mod report;
 
 use std::path::{Path, PathBuf};

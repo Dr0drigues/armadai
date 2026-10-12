@@ -364,6 +364,7 @@ pub async fn execute(
         &target_root,
         output_files.into_iter().chain(extra_files).collect(),
         force,
+        &[],
     )?;
 
     let mut written = 0;
