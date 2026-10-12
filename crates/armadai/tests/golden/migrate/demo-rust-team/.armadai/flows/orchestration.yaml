@@ -1,0 +1,17 @@
+description: Delegations of the legacy `orchestration:` section
+steps:
+  refactor-advisor:
+    agent: refactor-advisor
+  rust-reviewer:
+    agent: rust-reviewer
+  rust-test-writer:
+    agent: rust-test-writer
+  security-auditor:
+    agent: security-auditor
+links:
+- from: rust-reviewer
+  to: security-auditor
+- from: rust-reviewer
+  to: rust-test-writer
+- from: rust-reviewer
+  to: refactor-advisor

@@ -44,3 +44,4 @@ docs/SESSION-STATE.md
 book/
 !crates/armadai-model/tests/fixtures/**/.armadai/
 !crates/armadai/tests/fixtures/**/.armadai/
+!crates/armadai/tests/golden/**/.armadai/

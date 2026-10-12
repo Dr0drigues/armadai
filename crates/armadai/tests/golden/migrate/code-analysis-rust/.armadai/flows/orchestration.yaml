@@ -1,0 +1,21 @@
+description: Delegations of the legacy `orchestration:` section
+steps:
+  lead-analyst:
+    agent: lead-analyst
+  rust-doc-writer:
+    agent: rust-doc-writer
+  rust-reviewer:
+    agent: rust-reviewer
+  rust-security:
+    agent: rust-security
+  rust-test-analyzer:
+    agent: rust-test-analyzer
+links:
+- from: lead-analyst
+  to: rust-reviewer
+- from: lead-analyst
+  to: rust-test-analyzer
+- from: lead-analyst
+  to: rust-doc-writer
+- from: lead-analyst
+  to: rust-security

@@ -1,0 +1,29 @@
+Written (8):
+  .armadai/agents/adapter-specialist.md
+  .armadai/agents/cli-specialist.md
+  .armadai/agents/dev-lead.md
+  .armadai/agents/qa-specialist.md
+  .armadai/agents/release-manager.md
+  .armadai/agents/schema-specialist.md
+  .armadai/project.yaml
+  .armadai/skills/rust-conventions/SKILL.md
+Dropped (14):
+  adapter-specialist: max_tokens (no reader in the new format)
+  adapter-specialist: stacks (no reader in the new format)
+  cli-specialist: max_tokens (no reader in the new format)
+  cli-specialist: stacks (no reader in the new format)
+  dev-lead: max_tokens (no reader in the new format)
+  dev-lead: stacks (no reader in the new format)
+  provider: dropped for 6 agents (the target tool picks its own provider)
+  qa-specialist: max_tokens (no reader in the new format)
+  qa-specialist: stacks (no reader in the new format)
+  release-manager: max_tokens (no reader in the new format)
+  release-manager: stacks (no reader in the new format)
+  rust-conventions: apply_to (a skill is loaded on demand by the target, not attached to agents)
+  schema-specialist: max_tokens (no reader in the new format)
+  schema-specialist: stacks (no reader in the new format)
+Warnings (3):
+  YAML comments of the legacy files are not preserved; review the backup
+  description derived from the first line of the prompt for 6 agents: dev-lead, schema-specialist, adapter-specialist, cli-specialist, qa-specialist, release-manager
+  unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
+Note: 'armadai link' reads the new format from step 2 of the v1 work; the previous project is in .armadai/.migrated/<timestamp>/.
