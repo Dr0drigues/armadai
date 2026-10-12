@@ -144,32 +144,38 @@ mod tests {
         }
     }
 
-    /// `link` must never reach the network (decision of 2026-10-09): pointing
-    /// every proxy variable at a closed local port makes any attempt fail fast.
+    /// `link` must never reach the network (decision of 2026-10-09): every
+    /// proxy variable points at a live local listener, so any HTTP(S) attempt
+    /// from an env-honoring client shows up as an accepted connection.
+    /// Direct sockets that bypass the proxy variables are not covered.
     #[test]
     fn link_does_not_touch_the_network() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
         let dir = project();
         let root = dir.path().join("project");
         let output = Command::cargo_bin("armadai")
             .unwrap()
             .current_dir(&root)
             .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
-            .env("HTTPS_PROXY", "http://127.0.0.1:9")
-            .env("HTTP_PROXY", "http://127.0.0.1:9")
-            .env("ALL_PROXY", "http://127.0.0.1:9")
+            .env("HTTPS_PROXY", &proxy)
+            .env("HTTP_PROXY", &proxy)
+            .env("ALL_PROXY", &proxy)
+            .env("https_proxy", &proxy)
+            .env("http_proxy", &proxy)
+            .env("all_proxy", &proxy)
             .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
             .args(["link", "--target", "opencode", "--force"])
             .args(COORDINATOR_ARGS)
             .output()
             .unwrap();
         let text = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "link failed: {text}");
         assert!(
-            output.status.success(),
-            "link failed with the network closed: {text}"
-        );
-        assert!(
-            !text.to_lowercase().contains("connection refused"),
-            "link tried to reach the network: {text}"
+            matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "link opened a connection through the proxy"
         );
     }
 }
