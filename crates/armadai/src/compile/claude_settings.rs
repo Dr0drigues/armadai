@@ -90,12 +90,17 @@ pub fn hook_entries(project: &Project) -> anyhow::Result<Vec<HookEntry>> {
         {
             bail!("{what}: native.claude key `{k}` collides with a generated key");
         }
-        out.push(HookEntry {
+        let entry = HookEntry {
             event: event_name(a.event).into(),
             matcher,
             command: a.run.clone(),
             native: native.into_iter().collect(),
-        });
+        };
+        // two identical automations are one hook: owning it twice would let unlink
+        // remove a user's identical handler as the second copy
+        if !out.contains(&entry) {
+            out.push(entry);
+        }
     }
     if project.manifest.policy.delegation == Delegation::Strict {
         out.push(gate_entry());
@@ -394,6 +399,26 @@ mod tests {
         std::fs::write(dir.path().join(".armadai/automations/a.yaml"), yaml).unwrap();
         let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
         hook_entries(&p)
+    }
+
+    #[test]
+    fn identical_automations_give_one_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai/automations")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/project.yaml"),
+            "schema_version: 1\n",
+        )
+        .unwrap();
+        for id in ["a", "b"] {
+            std::fs::write(
+                dir.path().join(format!(".armadai/automations/{id}.yaml")),
+                "event: on-stop\nrun: cargo fmt\n",
+            )
+            .unwrap();
+        }
+        let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
+        assert_eq!(hook_entries(&p).unwrap().len(), 1);
     }
 
     #[test]

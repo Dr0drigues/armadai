@@ -49,23 +49,72 @@ fn read(path: &Path) -> anyhow::Result<Option<String>> {
     }
 }
 
-/// Temporary file next to `path`, then rename: a reader never sees half a file.
+/// `root/rel`, refused unless it stays under `root/trust` (lexically, and through
+/// any symbolic link on the way): a manifest is data on disk. `trust` is the project
+/// root (`.`) for the root CLAUDE.md, the target's root for its settings.json, which
+/// may legitimately sit outside the project (`--output ../sibling`).
+fn checked(root: &Path, trust: &Path, rel: &Path) -> anyhow::Result<PathBuf> {
+    use crate::linker::manifest::lexically_normalize;
+    let path = root.join(rel);
+    let base = lexically_normalize(&root.join(trust));
+    let real_base = real(&base)?;
+    // a trust root inside the project must not be a link leading out of it
+    if base.starts_with(lexically_normalize(root)) && !real_base.starts_with(real(root)?) {
+        bail!("{} resolves outside the project", trust.display());
+    }
+    // the file itself may be a symlink: `read` refuses it with a clearer message
+    let parent = path.parent().context("patched file has no parent")?;
+    if !real(parent)?.starts_with(&real_base) {
+        bail!(
+            "{} resolves outside where link patches files",
+            rel.display()
+        );
+    }
+    Ok(path)
+}
+
+/// `p` with its deepest existing ancestor resolved (symbolic links followed) and
+/// the not-yet-existing rest appended.
+fn real(p: &Path) -> anyhow::Result<PathBuf> {
+    let mut rest = Vec::new();
+    let mut cur = p;
+    loop {
+        if cur.exists() {
+            let mut out = cur.canonicalize()?;
+            out.extend(rest.iter().rev());
+            return Ok(out);
+        }
+        rest.push(cur.file_name().context("path without a name")?);
+        cur = cur.parent().context("path without an existing ancestor")?;
+    }
+}
+
+/// A fresh, exclusively created temporary file next to `path` (random name, never
+/// a planted one), then rename: a reader never sees half a file. The original's
+/// permissions are kept.
 fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
     let dir = path.parent().context("patched file has no parent")?;
     std::fs::create_dir_all(dir)?;
-    let name = path.file_name().context("patched file has no name")?;
-    let tmp = dir.join(format!(".{}.armadai-tmp", name.to_string_lossy()));
-    let result = (|| {
-        std::fs::write(&tmp, text)?;
-        if let Ok(m) = std::fs::metadata(path) {
-            std::fs::set_permissions(&tmp, m.permissions())?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("cannot write next to {}", path.display()))?;
+    tmp.write_all(text.as_bytes())?;
+    match std::fs::metadata(path) {
+        Ok(m) => std::fs::set_permissions(tmp.path(), m.permissions())?,
+        // a new file: the usual mode of a versioned text file, not the temp file's 0600
+        #[cfg(unix)]
+        Err(_) => {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o644))?
         }
-        std::fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+        #[cfg(not(unix))]
+        Err(_) => {}
     }
-    result.with_context(|| format!("cannot write {}", path.display()))
+    tmp.as_file().sync_all()?;
+    tmp.persist(path)
+        .map_err(|e| e.error)
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    Ok(())
 }
 
 /// Everything [`apply_settings`] would refuse (symbolic link, unreadable or invalid
@@ -73,11 +122,12 @@ fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
 pub fn preflight_settings(
     root: &Path,
     rel: &Path,
+    trust: &Path,
     entries: &[HookEntry],
     keys: &BTreeMap<String, Value>,
     previous: Option<&PatchedFile>,
 ) -> anyhow::Result<()> {
-    let path = root.join(rel);
+    let path = checked(root, trust, rel)?;
     let prev = match previous.map(|p| &p.kind) {
         Some(PatchKind::SettingsHooks(o)) => o.clone(),
         _ => Owned::default(),
@@ -89,22 +139,25 @@ pub fn preflight_settings(
 
 /// Everything [`apply_markdown_block`] would refuse, checked without writing.
 pub fn preflight_markdown(root: &Path, rel: &Path) -> anyhow::Result<()> {
-    let path = root.join(rel);
+    let path = checked(root, Path::new("."), rel)?;
     if let Some(t) = read(&path)? {
         block_span(&t, &path)?;
     }
     Ok(())
 }
 
-/// Merge hook `entries` and native `keys` into `root/rel` (a settings.json).
+/// Merge hook `entries` and native `keys` into `root/rel` (a settings.json). Also
+/// says whether an existing file was reformatted: values and key order are kept,
+/// the JSON layout is normalised. A file whose value does not change is not written.
 pub fn apply_settings(
     root: &Path,
     rel: &Path,
+    trust: &Path,
     entries: &[HookEntry],
     keys: &BTreeMap<String, Value>,
     previous: Option<&PatchedFile>,
-) -> anyhow::Result<PatchedFile> {
-    let path = root.join(rel);
+) -> anyhow::Result<(PatchedFile, bool)> {
+    let path = checked(root, trust, rel)?;
     let existing = read(&path)?;
     let prev_owned = match previous.map(|p| &p.kind) {
         Some(PatchKind::SettingsHooks(o)) => o.clone(),
@@ -113,23 +166,39 @@ pub fn apply_settings(
     let created = previous.is_some_and(|p| p.created) || existing.is_none();
     let (text, owned) = merge_settings(existing.as_deref(), entries, keys, &prev_owned)
         .with_context(|| path.display().to_string())?;
-    let nothing_to_create = existing.is_none() && owned == Owned::default();
-    if !nothing_to_create && existing.as_deref() != Some(text.as_str()) {
-        write_atomic(&path, &text)?;
+    let mut reformatted = false;
+    match &existing {
+        None if owned == Owned::default() => {}
+        None => write_atomic(&path, &text)?,
+        Some(old) => {
+            let old_value: Value = serde_json::from_str(old)?;
+            if old_value != serde_json::from_str::<Value>(&text)? {
+                let canonical = serde_json::to_string_pretty(&old_value)? + "\n";
+                reformatted = *old != canonical;
+                write_atomic(&path, &text)?;
+            }
+        }
     }
-    Ok(PatchedFile {
+    let patched = PatchedFile {
         path: rel.to_path_buf(),
         kind: PatchKind::SettingsHooks(owned),
         created,
-    })
+    };
+    Ok((patched, reformatted))
 }
 
-fn marked(block: &str) -> String {
+/// `block` between the markers, with the file's line ending (`\r\n` or `\n`).
+fn marked(block: &str, crlf: bool) -> String {
     let nl = if block.ends_with('\n') { "" } else { "\n" };
-    format!("{BLOCK_BEGIN}\n{block}{nl}{BLOCK_END}\n")
+    let text = format!("{BLOCK_BEGIN}\n{block}{nl}{BLOCK_END}\n");
+    if crlf {
+        text.replace('\n', "\r\n")
+    } else {
+        text
+    }
 }
 
-/// Byte span of the ArmadAI block (end includes the newline after the end marker).
+/// Byte span of the ArmadAI block (end includes the line ending after the end marker).
 fn block_span(text: &str, path: &Path) -> anyhow::Result<Option<(usize, usize)>> {
     let Some(b) = text.find(BLOCK_BEGIN) else {
         return Ok(None);
@@ -137,12 +206,11 @@ fn block_span(text: &str, path: &Path) -> anyhow::Result<Option<(usize, usize)>>
     let Some(e) = text[b..].find(BLOCK_END).map(|i| b + i + BLOCK_END.len()) else {
         bail!("{}: `{BLOCK_BEGIN}` without `{BLOCK_END}`", path.display());
     };
-    let e = if text[e..].starts_with('\n') {
-        e + 1
-    } else {
-        e
-    };
-    Ok(Some((b, e)))
+    let eol = ["\r\n", "\n"]
+        .into_iter()
+        .find(|eol| text[e..].starts_with(eol))
+        .map_or(0, str::len);
+    Ok(Some((b, e + eol)))
 }
 
 /// Put `block` between the ArmadAI markers of `root/rel`: replaced in place when the
@@ -153,19 +221,26 @@ pub fn apply_markdown_block(
     block: &str,
     previous: Option<&PatchedFile>,
 ) -> anyhow::Result<PatchedFile> {
-    let path = root.join(rel);
+    if block.contains(BLOCK_BEGIN) || block.contains(BLOCK_END) {
+        bail!("the ArmadAI block may not contain `{BLOCK_BEGIN}` or `{BLOCK_END}`");
+    }
+    let path = checked(root, Path::new("."), rel)?;
     let existing = read(&path)?;
     let created = previous.is_some_and(|p| p.created) || existing.is_none();
     let text = match &existing {
-        None => marked(block),
-        Some(t) => match block_span(t, &path)? {
-            Some((b, e)) => format!("{}{}{}", &t[..b], marked(block), &t[e..]),
-            None if t.is_empty() => marked(block),
-            None => {
-                let nl = if t.ends_with('\n') { "" } else { "\n" };
-                format!("{t}{nl}\n{}", marked(block))
+        None => marked(block, false),
+        Some(t) => {
+            let crlf = t.contains("\r\n");
+            match block_span(t, &path)? {
+                Some((b, e)) => format!("{}{}{}", &t[..b], marked(block, crlf), &t[e..]),
+                None if t.is_empty() => marked(block, false),
+                None => {
+                    let eol = if crlf { "\r\n" } else { "\n" };
+                    let sep = if t.ends_with('\n') { "" } else { eol };
+                    format!("{t}{sep}{eol}{}", marked(block, crlf))
+                }
             }
-        },
+        }
     };
     if existing.as_deref() != Some(text.as_str()) {
         write_atomic(&path, &text)?;
@@ -178,9 +253,15 @@ pub fn apply_markdown_block(
 }
 
 /// Undo `patched` under `root`: remove what link added, and the file itself when link
-/// created it and nothing else is left. A missing file is nothing to undo.
-pub fn remove_patch(root: &Path, patched: &PatchedFile) -> anyhow::Result<()> {
-    let path = root.join(&patched.path);
+/// created it and nothing else is left. A missing file is nothing to undo. `trust`
+/// is the target's root: where a settings.json may be (a CLAUDE.md is always at the
+/// project root).
+pub fn remove_patch(root: &Path, trust: &Path, patched: &PatchedFile) -> anyhow::Result<()> {
+    let trust = match patched.kind {
+        PatchKind::MarkdownBlock => Path::new("."),
+        PatchKind::SettingsHooks(_) => trust,
+    };
+    let path = checked(root, trust, &patched.path)?;
     let Some(text) = read(&path)? else {
         return Ok(());
     };
@@ -197,8 +278,13 @@ pub fn remove_patch(root: &Path, patched: &PatchedFile) -> anyhow::Result<()> {
             };
             let mut rest = format!("{}{}", &text[..b], &text[e..]);
             // the blank line `apply_markdown_block` put before an appended block
-            if e == text.len() && rest.ends_with("\n\n") {
-                rest.pop();
+            if e == text.len() {
+                for eol in ["\r\n", "\n"] {
+                    if rest.ends_with(&eol.repeat(2)) {
+                        rest.truncate(rest.len() - eol.len());
+                        break;
+                    }
+                }
             }
             let empty = rest.trim().is_empty();
             (rest, empty)
@@ -242,23 +328,247 @@ mod tests {
             .collect()
     }
 
+    fn apply(root: &Path, prev: Option<&PatchedFile>) -> PatchedFile {
+        apply_settings(
+            root,
+            Path::new(SETTINGS),
+            Path::new(".claude"),
+            &entries(),
+            &BTreeMap::new(),
+            prev,
+        )
+        .unwrap()
+        .0
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_temporary_symlink_never_redirects_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "precious").unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        for planted in [
+            ".claude/.settings.json.armadai-tmp",
+            ".CLAUDE.md.armadai-tmp",
+        ] {
+            std::os::unix::fs::symlink(&victim, dir.path().join(planted)).unwrap();
+        }
+        apply(dir.path(), None);
+        apply_markdown_block(dir.path(), Path::new("CLAUDE.md"), "Lead.\n", None).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
+        assert!(value(&dir.path().join(SETTINGS))["hooks"].is_object());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_user_file_permissions_are_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join(SETTINGS);
+        let md = dir.path().join("CLAUDE.md");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, USER).unwrap();
+        std::fs::write(&md, "# Mine\n").unwrap();
+        for f in [&settings, &md] {
+            std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        apply(dir.path(), None);
+        apply_markdown_block(dir.path(), Path::new("CLAUDE.md"), "Lead.\n", None).unwrap();
+        for f in [&settings, &md] {
+            let mode = std::fs::metadata(f).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o640, "{}", f.display());
+        }
+    }
+
+    #[test]
+    fn a_settings_file_already_up_to_date_is_not_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = apply(dir.path(), None);
+        let file = dir.path().join(SETTINGS);
+        // the user reformats it by hand: same value, other bytes
+        let compact = serde_json::to_string(&value(&file)).unwrap();
+        std::fs::write(&file, &compact).unwrap();
+        let (_, reformatted) = apply_settings(
+            dir.path(),
+            Path::new(SETTINGS),
+            Path::new(".claude"),
+            &entries(),
+            &BTreeMap::new(),
+            Some(&p),
+        )
+        .unwrap();
+        assert!(!reformatted);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), compact);
+    }
+
+    #[test]
+    fn rewriting_a_user_file_says_it_was_reformatted() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(SETTINGS);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "{\"permissions\": {}}").unwrap();
+        let (_, reformatted) = apply_settings(
+            dir.path(),
+            Path::new(SETTINGS),
+            Path::new(".claude"),
+            &entries(),
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+        assert!(reformatted);
+        let fresh = tempfile::tempdir().unwrap();
+        let (_, reformatted) = apply_settings(
+            fresh.path(),
+            Path::new(SETTINGS),
+            Path::new(".claude"),
+            &entries(),
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+        assert!(!reformatted, "a file link creates is not a reformat");
+    }
+
+    #[test]
+    fn numbers_are_kept_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(SETTINGS);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            "{\"big\": 12345678901234567890123, \"sci\": 1e2, \"f\": 0.1}",
+        )
+        .unwrap();
+        let p = apply(dir.path(), None);
+        let text = std::fs::read_to_string(&file).unwrap();
+        // `1e2` may be spelled `1e+2`: the same number, still not turned into `100.0`
+        for n in ["12345678901234567890123", "1e", "0.1"] {
+            assert!(text.contains(n), "{n} lost in {text}");
+        }
+        remove_patch(dir.path(), Path::new(".claude"), &p).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            text.contains("12345678901234567890123") && text.contains("1e"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_path_outside_the_project_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("p");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(dir.path().join("victim.json"), "{}").unwrap();
+        for bad in ["../victim.json", "/tmp/x.json"] {
+            assert!(
+                apply_settings(
+                    &root,
+                    Path::new(bad),
+                    Path::new(".claude"),
+                    &entries(),
+                    &BTreeMap::new(),
+                    None
+                )
+                .is_err(),
+                "{bad}"
+            );
+            let forged = PatchedFile {
+                path: PathBuf::from(bad),
+                kind: PatchKind::MarkdownBlock,
+                created: true,
+            };
+            assert!(
+                remove_patch(&root, Path::new(".claude"), &forged).is_err(),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("victim.json")).unwrap(),
+            "{}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_parent_leaving_the_project_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("p");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".claude")).unwrap();
+        assert!(
+            apply_settings(
+                &root,
+                Path::new(SETTINGS),
+                Path::new(".claude"),
+                &entries(),
+                &BTreeMap::new(),
+                None
+            )
+            .is_err()
+        );
+        assert!(!outside.join("settings.json").exists());
+    }
+
+    #[test]
+    fn a_created_file_stays_created_across_relinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = apply(dir.path(), None);
+        let second = apply(dir.path(), Some(&first));
+        assert!(second.created);
+        remove_patch(dir.path(), Path::new(".claude"), &second).unwrap();
+        assert!(!dir.path().join(SETTINGS).exists(), "no `{{}}` left behind");
+    }
+
+    #[test]
+    fn a_crlf_markdown_file_gets_a_crlf_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("CLAUDE.md");
+        std::fs::write(&file, "# Mine\r\nline\r\n").unwrap();
+        let p = apply_markdown_block(dir.path(), Path::new("CLAUDE.md"), "Lead.\nMore.\n", None)
+            .unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            text.matches('\n').count(),
+            text.matches("\r\n").count(),
+            "{text:?}"
+        );
+        apply_markdown_block(dir.path(), Path::new("CLAUDE.md"), "Lead v2.\n", Some(&p)).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            text.matches('\n').count(),
+            text.matches("\r\n").count(),
+            "{text:?}"
+        );
+        remove_patch(dir.path(), Path::new(".claude"), &p).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "# Mine\r\nline\r\n"
+        );
+    }
+
     #[test]
     fn a_created_settings_file_is_removed_again() {
         let dir = tempfile::tempdir().unwrap();
         let p = apply_settings(
             dir.path(),
             Path::new(SETTINGS),
+            Path::new(".claude"),
             &entries(),
             &BTreeMap::new(),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert!(p.created);
         assert_eq!(p.path, Path::new(SETTINGS));
         let file = dir.path().join(SETTINGS);
         assert!(value(&file)["hooks"]["SessionStart"].is_array());
         assert!(leftovers(&dir.path().join(".claude")).is_empty());
-        remove_patch(dir.path(), &p).unwrap();
+        remove_patch(dir.path(), Path::new(".claude"), &p).unwrap();
         assert!(!file.exists());
     }
 
@@ -271,19 +581,29 @@ mod tests {
         let p = apply_settings(
             dir.path(),
             Path::new(SETTINGS),
+            Path::new(".claude"),
             &entries(),
             &BTreeMap::new(),
             None,
         )
-        .unwrap();
-        remove_patch(dir.path(), &p).unwrap();
+        .unwrap()
+        .0;
+        remove_patch(dir.path(), Path::new(".claude"), &p).unwrap();
         assert_eq!(value(&file), json!({}));
     }
 
     #[test]
     fn nothing_to_add_creates_no_file() {
         let dir = tempfile::tempdir().unwrap();
-        apply_settings(dir.path(), Path::new(SETTINGS), &[], &BTreeMap::new(), None).unwrap();
+        apply_settings(
+            dir.path(),
+            Path::new(SETTINGS),
+            Path::new(".claude"),
+            &[],
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
         assert!(!dir.path().join(SETTINGS).exists());
     }
 
@@ -296,24 +616,28 @@ mod tests {
         let p = apply_settings(
             dir.path(),
             Path::new(SETTINGS),
+            Path::new(".claude"),
             &entries(),
             &BTreeMap::new(),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert!(!p.created);
         assert_eq!(value(&file)["permissions"], json!({"allow": ["Bash(ls)"]}));
         // relinking with the recorded patch changes nothing
         let again = apply_settings(
             dir.path(),
             Path::new(SETTINGS),
+            Path::new(".claude"),
             &entries(),
             &BTreeMap::new(),
             Some(&p),
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(again, p);
-        remove_patch(dir.path(), &p).unwrap();
+        remove_patch(dir.path(), Path::new(".claude"), &p).unwrap();
         assert_eq!(value(&file), serde_json::from_str::<Value>(USER).unwrap());
     }
 
@@ -328,6 +652,7 @@ mod tests {
         let err = apply_settings(
             dir.path(),
             Path::new(SETTINGS),
+            Path::new(".claude"),
             &entries(),
             &BTreeMap::new(),
             None,
@@ -347,6 +672,7 @@ mod tests {
             apply_settings(
                 dir.path(),
                 Path::new(SETTINGS),
+                Path::new(".claude"),
                 &entries(),
                 &BTreeMap::new(),
                 None
@@ -373,7 +699,7 @@ mod tests {
             format!("# Mine\n\n{BLOCK_BEGIN}\nLead v2.\n{BLOCK_END}\n"),
             "replaced in place, never duplicated"
         );
-        remove_patch(dir.path(), &p).unwrap();
+        remove_patch(dir.path(), Path::new(".claude"), &p).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "# Mine\n");
     }
 
@@ -391,7 +717,7 @@ mod tests {
             std::fs::read_to_string(&file).unwrap(),
             format!("top\n{BLOCK_BEGIN}\nnew\n{BLOCK_END}\nbottom\n")
         );
-        remove_patch(dir.path(), &p).unwrap();
+        remove_patch(dir.path(), Path::new(".claude"), &p).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "top\nbottom\n");
     }
 
@@ -400,7 +726,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = apply_markdown_block(dir.path(), Path::new("CLAUDE.md"), "Lead.\n", None).unwrap();
         assert!(p.created);
-        remove_patch(dir.path(), &p).unwrap();
+        remove_patch(dir.path(), Path::new(".claude"), &p).unwrap();
         assert!(!dir.path().join("CLAUDE.md").exists());
     }
 

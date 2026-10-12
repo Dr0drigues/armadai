@@ -278,7 +278,7 @@ fn unlink_from_manifest(
                 untrusted += 1;
                 continue;
             }
-            patch::remove_patch(root, f)?;
+            patch::remove_patch(root, &target_root, f)?;
             let m = crate::cli::style::muted();
             anstream::println!("{m}  unpatched {}{m:#}", root.join(&f.path).display());
         }

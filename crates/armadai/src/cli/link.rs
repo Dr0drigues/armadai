@@ -134,7 +134,14 @@ fn prepare(
         let rel = p.output_dir.join("settings.json");
         let hooks = claude_settings::hook_entries(project)?;
         let keys = claude_settings::native_settings(project)?;
-        patch::preflight_settings(root, &rel, &hooks, &keys, p.previous_patch(&rel))?;
+        patch::preflight_settings(
+            root,
+            &rel,
+            &p.output_dir,
+            &hooks,
+            &keys,
+            p.previous_patch(&rel),
+        )?;
         p.settings = Some((rel, hooks, keys));
     }
     for (rel, _) in &p.blocks {
@@ -248,17 +255,26 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
         .iter()
         .filter(|f| f.path == Path::new("CLAUDE.md"))
     {
-        patch::remove_patch(root, f)?;
+        patch::remove_patch(root, &p.output_dir, f)?;
     }
 
     if let Some((rel, hooks, keys)) = p.settings.take() {
         let prev = p.previous_patch(&rel).cloned();
         if hooks.is_empty() && keys.is_empty() {
             if let Some(prev) = &prev {
-                patch::remove_patch(root, prev)?;
+                patch::remove_patch(root, &p.output_dir, prev)?;
             }
         } else {
-            let done = patch::apply_settings(root, &rel, &hooks, &keys, prev.as_ref())?;
+            let (done, reformatted) =
+                patch::apply_settings(root, &rel, &p.output_dir, &hooks, &keys, prev.as_ref())?;
+            if reformatted {
+                p.report.push(
+                    &p.target,
+                    rel.display().to_string(),
+                    Status::Approximated,
+                    Some("settings.json reformatted (values and key order kept)"),
+                );
+            }
             if let PatchKind::SettingsHooks(owned) = &done.kind {
                 for h in hooks.iter().filter(|h| !owned.entries.contains(h)) {
                     p.report.push(

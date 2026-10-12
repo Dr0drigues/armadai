@@ -449,3 +449,45 @@ fn a_forged_patched_path_is_refused_untouched() {
     assert!(stderr.contains("refused"), "{stderr}");
     assert_eq!(std::fs::read_to_string(&victim).unwrap(), text);
 }
+
+/// A hook identical to one link would add is the user's: kept, reported, never
+/// claimed, so unlink leaves it.
+#[test]
+fn an_identical_user_hook_is_reported_and_left_to_the_user() {
+    let env = Env::new(PROJECT);
+    let user =
+        r#"{"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "cargo fmt"}]}]}}"#;
+    write(&env.root(), &[(".claude/settings.json", user)]);
+    let out = env.ok(&["link"]);
+    assert!(
+        out.contains(
+            "hook PostToolUse cargo fmt: approximated (existing identical hook kept, not owned)"
+        ),
+        "{out}"
+    );
+    assert!(out.contains("settings.json reformatted"), "{out}");
+    env.ok(&["unlink"]);
+    let v: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(env.root().join(".claude/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v, serde_json::from_str::<serde_json::Value>(user).unwrap());
+}
+
+/// A settings.json link created holds nothing once the project has no hook left:
+/// relinking removes it rather than leaving `{}`.
+#[test]
+fn relinking_without_hooks_removes_the_settings_file_link_created() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    let settings = env.root().join(".claude/settings.json");
+    assert!(settings.is_file());
+    std::fs::remove_file(env.root().join(".armadai/automations/fmt.yaml")).unwrap();
+    std::fs::write(
+        env.root().join(".armadai/project.yaml"),
+        "schema_version: 1\ncoordinator: lead\n",
+    )
+    .unwrap();
+    env.ok(&["link"]);
+    assert!(!settings.exists());
+}

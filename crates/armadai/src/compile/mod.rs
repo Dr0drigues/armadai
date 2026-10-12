@@ -50,8 +50,9 @@ pub struct Plan {
 pub const BLOCK_BEGIN: &str = "<!-- armadai:begin -->";
 pub const BLOCK_END: &str = "<!-- armadai:end -->";
 
-/// Every file under `dir` as (path relative to `dir`, bytes), sorted. A file whose
-/// real path leaves `dir` (a symlink pointing out) is an error naming it.
+/// Every file under `dir` as (path relative to `dir`, bytes), sorted. Refused, with
+/// an error naming it: a symbolic link leaving `dir` or pointing to a directory
+/// (never followed: no loop, no duplicate), anything that is not a regular file.
 pub fn read_tree(dir: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>)>> {
     let base = dir
         .canonicalize()
@@ -62,20 +63,32 @@ pub fn read_tree(dir: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>)>> {
         for entry in
             std::fs::read_dir(&d).with_context(|| format!("cannot read {}", d.display()))?
         {
-            let path = entry?.path();
-            let real = path
-                .canonicalize()
-                .with_context(|| format!("cannot resolve {}", path.display()))?;
-            if !real.starts_with(&base) {
-                bail!("{} points outside {}", path.display(), dir.display());
-            }
-            if real.is_dir() {
+            let entry = entry?;
+            let path = entry.path();
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
                 todo.push(path);
-            } else {
-                let bytes = std::fs::read(&path)
-                    .with_context(|| format!("cannot read {}", path.display()))?;
-                out.push((path.strip_prefix(dir)?.to_path_buf(), bytes));
+                continue;
             }
+            if kind.is_symlink() {
+                let real = path
+                    .canonicalize()
+                    .with_context(|| format!("cannot resolve {}", path.display()))?;
+                if !real.starts_with(&base) {
+                    bail!("{} points outside {}", path.display(), dir.display());
+                }
+                if !real.is_file() {
+                    bail!(
+                        "{} is a link to a directory or a special file",
+                        path.display()
+                    );
+                }
+            } else if !kind.is_file() {
+                bail!("{} is not a regular file", path.display());
+            }
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+            out.push((path.strip_prefix(dir)?.to_path_buf(), bytes));
         }
     }
     out.sort();
@@ -108,7 +121,7 @@ pub fn default_output(target: &str) -> &'static str {
 
 /// Files of the legacy format: a project holding one of them and no
 /// `.armadai/project.yaml` must be migrated first.
-const LEGACY_CONFIGS: [&str; 3] = [".armadai/config.yaml", "armadai.yaml", "armadai.yml"];
+pub const LEGACY_CONFIGS: [&str; 3] = [".armadai/config.yaml", "armadai.yaml", "armadai.yml"];
 
 /// The nearest ancestor of `cwd` holding `.armadai/project.yaml`, without crossing a
 /// `.git` boundary. A legacy project found first is an error asking for `migrate`.

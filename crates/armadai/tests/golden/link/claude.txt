@@ -87,7 +87,7 @@ claude: agent dev temperature: not-compiled (no equivalent in Claude Code subage
 claude: agent lead: compiled (coordinator, rendered into CLAUDE.md)
 claude: agent lead tier: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
 claude: automation fmt: compiled (hook PostToolUse in .claude/settings.json)
-claude: flow ship: approximated (rendered as guidance in CLAUDE.md, not enforced)
+claude: flow ship: approximated (rendered as guidance in CLAUDE.md; delegation topology enforced by the gate)
 claude: flow ship step build: approximated (states and on_failure rendered as guidance)
 claude: policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)
 claude: skill review: compiled

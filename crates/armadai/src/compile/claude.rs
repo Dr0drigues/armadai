@@ -7,7 +7,8 @@ use armadai_model::{Agent, AgentFront, Cap, Delegation, Flow, Project, Tier};
 use serde_yaml_ng::{Mapping, Value};
 
 use super::{
-    Artifact, ArtifactKind, BLOCK_BEGIN, Compiler, Plan, Report, Status, claude_settings, read_tree,
+    Artifact, ArtifactKind, BLOCK_BEGIN, BLOCK_END, Compiler, Plan, Report, Status,
+    claude_settings, read_tree,
 };
 use crate::linker::manifest::ProducedBy;
 
@@ -31,6 +32,7 @@ impl Compiler for ClaudeCompiler {
     fn compile(&self, project: &Project, root: &Path) -> anyhow::Result<Plan> {
         let mut plan = Plan::default();
         let coordinator = project.manifest.coordinator.as_deref();
+        let strict = project.manifest.policy.delegation == Delegation::Strict;
 
         for (id, agent) in &project.agents {
             informational(&mut plan.report, id, &agent.front);
@@ -60,6 +62,14 @@ impl Compiler for ClaudeCompiler {
             }
             plan.report
                 .push(T, format!("skill {id}"), Status::Compiled, None);
+            for key in project.skills[id].front.extra.keys() {
+                plan.report.push(
+                    T,
+                    format!("skill {id} key {key}"),
+                    Status::Compiled,
+                    Some("kept in SKILL.md as is, for Claude Code to read"),
+                );
+            }
         }
         plan.artifacts.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -76,6 +86,14 @@ impl Compiler for ClaudeCompiler {
                 Status::Compiled,
                 Some(&reason),
             );
+            if a.description.is_some() {
+                plan.report.push(
+                    T,
+                    format!("automation {id} description"),
+                    Status::NotCompiled,
+                    Some("Claude Code hooks have no description field"),
+                );
+            }
         }
         if !claude_settings::native_settings(project)?.is_empty() {
             plan.report.push(
@@ -85,7 +103,7 @@ impl Compiler for ClaudeCompiler {
                 Some("merged into .claude/settings.json"),
             );
         }
-        if project.manifest.policy.delegation == Delegation::Strict {
+        if strict {
             plan.report.push(
                 T,
                 "policy delegation=strict",
@@ -100,6 +118,15 @@ impl Compiler for ClaudeCompiler {
                     .agents
                     .get(c)
                     .with_context(|| format!("coordinator `{c}` is not a declared agent"))?;
+                if [BLOCK_BEGIN, BLOCK_END]
+                    .iter()
+                    .any(|m| lead.body.contains(m))
+                {
+                    bail!(
+                        "the prompt of coordinator `{c}` contains `{BLOCK_BEGIN}` or \
+                         `{BLOCK_END}`, which delimit ArmadAI's block in CLAUDE.md"
+                    );
+                }
                 plan.blocks
                     .push((PathBuf::from("CLAUDE.md"), claude_md(c, lead, project)));
                 plan.report.push(
@@ -122,7 +149,11 @@ impl Compiler for ClaudeCompiler {
                         T,
                         format!("flow {fid}"),
                         Status::Approximated,
-                        Some("rendered as guidance in CLAUDE.md, not enforced"),
+                        Some(if strict {
+                            "rendered as guidance in CLAUDE.md; delegation topology enforced by the gate"
+                        } else {
+                            "rendered as guidance in CLAUDE.md, not enforced"
+                        }),
                     );
                     for (sid, s) in &flow.steps {
                         if !s.states.is_empty() || s.on_failure.is_some() {
@@ -138,12 +169,19 @@ impl Compiler for ClaudeCompiler {
             }
             None => {
                 for fid in project.flows.keys() {
-                    plan.report.push(
-                        T,
-                        format!("flow {fid}"),
-                        Status::NotCompiled,
-                        Some("no coordinator: no CLAUDE.md to render the flow into"),
-                    );
+                    let (status, reason) = if strict {
+                        (
+                            Status::Approximated,
+                            "delegation topology enforced by the gate; no coordinator, so no CLAUDE.md guidance",
+                        )
+                    } else {
+                        (
+                            Status::NotCompiled,
+                            "no coordinator: no CLAUDE.md to render the flow into",
+                        )
+                    };
+                    plan.report
+                        .push(T, format!("flow {fid}"), status, Some(reason));
                 }
             }
         }
@@ -244,6 +282,8 @@ fn agent_file(id: &str, agent: &Agent, r: &mut Report) -> anyhow::Result<String>
         let Some(cap) = cap else { continue };
         let element = format!("agent {id} capability {name}={}", cap_str(cap));
         match cap {
+            // also for `delegate`: subagents may spawn subagents (up to three levels,
+            // CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH), sub-agents doc checked 2026-10-12
             Cap::Allow => r.push(T, element, Status::Compiled, Some("inherited tools")),
             Cap::Ask => r.push(T, element, Status::Approximated, Some(ASK)),
             Cap::Deny => {
@@ -730,6 +770,107 @@ mod tests {
             b"event: on-stop\nrun: x\nnative:\n  claude:\n    type: http\n",
         ));
         assert!(compile(&files).unwrap_err().to_string().contains("`type`"));
+    }
+
+    #[test]
+    fn under_a_strict_policy_flows_are_reported_as_enforced_topology() {
+        let mut files = team();
+        files[0] = (
+            ".armadai/project.yaml",
+            b"schema_version: 1\npolicy:\n  delegation: strict\n",
+        );
+        let plan = compile(&files).unwrap();
+        let l = line(&plan, "flow ship");
+        assert_eq!(
+            l.status,
+            Status::Approximated,
+            "no coordinator, but the gate applies it"
+        );
+        assert!(
+            l.reason
+                .as_deref()
+                .unwrap()
+                .contains("enforced by the gate"),
+            "{l:?}"
+        );
+        files[0] = (
+            ".armadai/project.yaml",
+            b"schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n",
+        );
+        let plan = compile(&files).unwrap();
+        let reason = line(&plan, "flow ship").reason.clone().unwrap();
+        assert!(
+            reason.contains("guidance") && reason.contains("enforced by the gate"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn a_coordinator_prompt_holding_the_end_marker_is_an_error() {
+        let mut files = team();
+        files[1] = (
+            ".armadai/agents/lead.md",
+            b"---\ndescription: Leads\n---\nYou lead.\n<!-- armadai:end -->\n",
+        );
+        let err = compile(&files).unwrap_err().to_string();
+        assert!(err.contains("lead") && err.contains("armadai:end"), "{err}");
+    }
+
+    #[test]
+    fn skill_extra_keys_and_automation_descriptions_are_reported() {
+        let plan = compile(&[
+            M,
+            (
+                ".armadai/skills/lint/SKILL.md",
+                b"---\nname: lint\ndescription: Lint\nallowed-tools: Bash\n---\nBody\n",
+            ),
+            (
+                ".armadai/automations/fmt.yaml",
+                b"event: on-stop\nrun: cargo fmt\ndescription: format\n",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            line(&plan, "skill lint key allowed-tools").status,
+            Status::Compiled
+        );
+        assert_eq!(
+            line(&plan, "automation fmt description").status,
+            Status::NotCompiled
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_skill_symlink_to_a_directory_or_a_fifo_is_refused() {
+        for kind in ["dir", "fifo"] {
+            let (dir, p) = project(&[
+                M,
+                (
+                    ".armadai/skills/lint/SKILL.md",
+                    b"---\nname: lint\ndescription: Lint\n---\nBody\n",
+                ),
+            ]);
+            let skill = dir.path().join(".armadai/skills/lint");
+            if kind == "dir" {
+                std::fs::create_dir_all(skill.join("sub")).unwrap();
+                std::os::unix::fs::symlink(skill.join("sub"), skill.join("sub/loop")).unwrap();
+            } else {
+                let status = std::process::Command::new("mkfifo")
+                    .arg(skill.join("pipe"))
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+            }
+            let err = ClaudeCompiler
+                .compile(&p, dir.path())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains(if kind == "dir" { "loop" } else { "pipe" }),
+                "{kind}: {err}"
+            );
+        }
     }
 
     #[test]
