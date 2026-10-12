@@ -1,118 +1,74 @@
 # Templates
 
-Templates are Markdown files in the `templates/` directory that serve as starting points for new agents.
+Templates are Markdown files that serve as starting points for new agents, used by
+`armadai new`.
+
+## Where templates are read from
+
+`armadai new` reads templates from `templates/` in the current directory if it exists, otherwise
+from `~/.config/armadai/templates/`. Templates are **not** embedded in the binary and `armadai init`
+does not install them: the set described below lives in the repository, in
+`crates/armadai/templates/`. Copy it to one of those two locations first:
+
+```bash
+mkdir -p ~/.config/armadai/templates
+cp crates/armadai/templates/*.md ~/.config/armadai/templates/
+```
+
+Without any template directory, `armadai new --template <name>` fails with
+`(no templates directory found)`.
 
 ## Available Templates
 
-### basic
-
-General-purpose agent with Anthropic provider.
-
-```bash
-armadai new my-agent --template basic --description "what this agent does"
-```
-
-### dev-review
-
-Code review specialist. Produces structured reviews with severity levels.
+| Template | Purpose |
+|---|---|
+| `basic` | General-purpose agent |
+| `dev-review` | Code review specialist; structured reviews with severity levels |
+| `dev-test` | Test generation specialist |
+| `cli-generic` | Agent wrapping a command-line tool (`command`/`args` fields — inert since the execution engine was removed) |
+| `planning` | Sprint and project planning |
+| `security-review` | Security review (OWASP, CVE) |
+| `debug` | Debugging assistant with systematic root cause analysis |
+| `tech-debt` | Technical debt analyzer |
+| `tdd-red` / `tdd-green` / `tdd-refactor` | The three steps of a TDD cycle |
+| `tech-writer` | Documentation writer |
 
 ```bash
 armadai new rust-reviewer --template dev-review --stack rust
+armadai new sec-reviewer --template security-review --stack typescript -d "audit OWASP top 10"
+armadai new -i                     # guided wizard
 ```
 
-### dev-test
-
-Test generation specialist. Writes unit tests for given code.
-
-```bash
-armadai new test-gen --template dev-test --stack typescript
-```
-
-### cli-generic
-
-Wrapper for any CLI tool (claude, aider, custom scripts).
-
-```bash
-armadai new my-tool --template cli-generic
-```
-
-Then edit `agents/my-tool.md` to set the `command` and `args` fields.
-
-### planning
-
-Sprint and project planning agent. Produces structured plans.
-
-```bash
-armadai new sprint-planner --template planning --stack rust
-```
-
-### security-review
-
-Security audit specialist. Identifies vulnerabilities (OWASP, CVE).
-
-```bash
-armadai new sec-reviewer --template security-review --stack typescript
-```
-
-### debug
-
-Debugging assistant with systematic root cause analysis.
-
-```bash
-armadai new my-debugger --template debug --stack rust
-```
-
-### tech-debt
-
-Technical debt analyzer. Identifies and prioritizes refactoring opportunities.
-
-```bash
-armadai new debt-scanner --template tech-debt --stack java
-```
-
-### tdd-red / tdd-green / tdd-refactor
-
-TDD cycle agents — use them in a pipeline:
-
-```bash
-armadai new failing-tests --template tdd-red --stack rust
-armadai new make-pass --template tdd-green --stack rust
-armadai new clean-up --template tdd-refactor --stack rust
-```
-
-### tech-writer
-
-Documentation writer. Produces clear, structured docs.
-
-```bash
-armadai new doc-writer --template tech-writer --stack rust
-```
+The new agent is written to `<name>.md` in the first agents directory that exists among
+`.armadai/agents/` and `agents/`, otherwise in your user library (`~/.config/armadai/agents/`).
+Reference it from the project config to have
+`armadai link` compile it (see [Getting Started](getting-started.md#writing-your-own-agent)).
 
 ## Placeholders
 
 Templates use `{{placeholder}}` syntax for customizable values:
 
-| Placeholder | CLI Flag | Description |
+| Placeholder | Filled by | Description |
 |---|---|---|
-| `{{name}}` | positional `<name>` | Agent display name (auto title-cased from the slug) |
-| `{{description}}` | `--description` / `-d` | Agent description for the system prompt |
+| `{{name}}` | positional `<name>` | Agent display name (title-cased from the slug) |
+| `{{description}}` | `--description` / `-d` | Agent description |
 | `{{stack}}` | `--stack` / `-s` | Tech stack (rust, typescript, java, etc.) |
-| `{{command}}` | — | CLI command (edit manually) |
-| `{{args}}` | — | CLI arguments (edit manually) |
-| `{{tags}}` | — | Agent tags (edit manually) |
+| `{{model}}` | always | Set to `latest:pro` |
+| `{{command}}`, `{{args}}`, `{{tags}}` | — | Left for manual editing |
 
-Placeholders not replaced by CLI flags remain in the output file. The command lists them so you know what to fill in manually.
+Placeholders not replaced remain in the output file; the command lists them so you know what to
+fill in manually.
 
 ## Creating Custom Templates
 
-Add a `.md` file to the `templates/` directory following the [agent format](agent-format.md):
+Add a `.md` file to your templates directory following the [agent format](agent-format.md):
 
 ```markdown
 # {{name}}
 
 ## Metadata
-- provider: anthropic
-- model: latest:pro
+- provider: claude
+- model: {{model}}
 - temperature: 0.5
 - tags: [{{tags}}]
 - stacks: [{{stack}}]
@@ -132,4 +88,5 @@ You are an expert at {{description}} for {{stack}} projects.
 Clear, actionable response with examples.
 ```
 
-Use any `{{placeholder}}` name — only `{{name}}`, `{{description}}`, and `{{stack}}` are auto-replaced by CLI flags. Others are left for manual editing.
+Use any `{{placeholder}}` name — only `{{name}}`, `{{description}}`, `{{stack}}` and `{{model}}`
+are replaced automatically. Others are left for manual editing.

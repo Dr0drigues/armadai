@@ -2,32 +2,28 @@
 
 A project can declare its agents in `.armadai/agents.yaml` instead of writing each one as a
 Markdown file. The YAML is parsed into the same `Agent` struct the `.md` parser produces — same
-provider factory, same linker, same everything downstream. Nothing changes for a project that
-never creates the file.
+linker, same everything downstream. Nothing changes for a project that never creates the file.
 
 ## What this does not buy
 
 Measured on the 77 agents in `~/.config/armadai/agents/` (2026-08-20), before writing a line of
 this format:
 
-- **No token saving.** Metadata never reaches the model — ArmadAI parses it locally to pick a
-  provider, model and temperature. The 5,152 tokens of `## Metadata` blocks across that library
-  cost disk space and eyestrain, not API spend. What actually costs money is the ~52,460 tokens of
-  instruction prose, and moving it into YAML changes nothing about that: the prose still has to
-  exist somewhere, in full, for the model to read it.
+- **No token saving.** `## Metadata` is configuration, not prompt text. The 5,152 tokens of
+  `## Metadata` blocks across that library cost disk space and eyestrain, not context. What the
+  assistant actually reads is the ~52,460 tokens of instruction prose, and moving it into YAML
+  changes nothing about that: the prose still has to exist somewhere, in full.
 - **No reduction in context saturation**, for the same reason — and composition can make it worse.
   Fragments in this library average ~66 lines and a composed prompt averages ~680 tokens; an agent
-  that composes four of them ends up with a longer system prompt than one written to fit, not a
-  shorter one. You are trading duplication on disk for inclusion at runtime, not eliminating either.
+  that composes four of them ends up with a longer prompt than one written to fit, not a shorter
+  one. You are trading duplication on disk for inclusion at link time, not eliminating either.
 - **No guaranteed improvement in agent quality.** A prompt assembled from generic, reusable
   fragments is less specific than one written for exactly one agent, and an agent left with vague
   instructions fills in the gaps itself. Whatever consistency you gain this way may cost you
-  precision. Only a real task comparison would say — this chantier didn't run one.
+  precision.
 
-The one real gain is structural, not computational: a fact that used to live in one `.md` file now
-has exactly one place to be wrong in, instead of a `.md` file and whatever someone remembers about
-it. If you're adopting this expecting a smaller or cheaper context, don't — that expectation is
-what this section exists to correct before you build on it.
+The one real gain is structural: a fact that used to live in one `.md` file now has exactly one
+place to be wrong in, instead of a `.md` file and whatever someone remembers about it.
 
 ## What a declaration looks like
 
@@ -37,29 +33,30 @@ defaults:
   provider: claude
   model: latest:pro
   temperature: 0.3
-  max_tokens: 8192
 
 agents:
-  - name: core-specialist
-    description: Core domain and orchestration engine
-    scope: [src/core/**, src/parser/**]
-    tags: [rust, domain]
+  - name: code-reviewer
+    description: Reviews Rust changes for correctness and style
+    scope: [src/**, tests/**]
+    tags: [rust, review]
     prompt:
       - specialist-base
-      - { armadai-architecture: { module: core } }
+      - { project-architecture: { module: core } }
 
-  - name: ui-specialist
-    description: TUI and Web dashboards
+  - name: doc-writer
+    description: Writes and updates the user documentation
     temperature: 0.4          # the only deviation from defaults
     prompt: [specialist-base]
 ```
 
 `defaults` supplies values every agent inherits unless it overrides them. `provider` is required —
 at agent or `defaults` level — exactly like the `.md` format: an agent with no provider anywhere
-fails to load, on both sides. `command`/`args` are also expressible, so a `provider: cli` agent
-(wrapping `claude`, `gemini`, or any other command-line tool) can be declared, not just an API one.
-`defaults` has no `scope` field — there is no fleet-wide default scope; `scope` is per-agent only,
-and an agent that omits it simply has none.
+fails to load, on both sides. `defaults` has no `scope` field — `scope` is per-agent only, and an
+agent that omits it simply has none.
+
+The format also accepts `command`, `args`, `max_tokens` and `timeout`, like the `.md` metadata;
+they configured the removed execution engine and no command uses them now (see
+[Agent format](agent-format.md#metadata-required)).
 
 ## The `.md` format is not going away
 
@@ -69,12 +66,12 @@ that resolves a fleet (see the [Agent format](agent-format.md) page for the `.md
 
 ## Defaults merge; lists replace, never merge
 
-Every field a declared agent omits falls back to `defaults`. Scalars (`temperature`, `model`,
-`max_tokens`, …) behave the way you'd expect. **Lists do not.** An agent that declares `tags: [own]`
-has exactly `[own]` — the default's tags are not appended. An agent that declares `tags: []` has no
-tags at all, not "inherit whatever `defaults` set." This is the one rule most likely to surprise a
-reader coming from a format where lists usually merge — say it plainly: they don't, here, ever
-(`tags`, `stacks`, `model_fallback`, `args` all follow the same rule).
+Every field a declared agent omits falls back to `defaults`. Scalars (`temperature`, `model`, …)
+behave the way you'd expect. **Lists do not.** An agent that declares `tags: [own]` has exactly
+`[own]` — the default's tags are not appended. An agent that declares `tags: []` has no tags at
+all, not "inherit whatever `defaults` set." This is the one rule most likely to surprise a reader
+coming from a format where lists usually merge — they don't, here, ever (`tags`, `stacks`,
+`model_fallback`, `args` all follow the same rule).
 
 ## Composing a prompt from fragments
 
@@ -88,7 +85,7 @@ or a single-key map naming a fragment and the variables to substitute into it:
 
 ```yaml
 prompt:
-  - { armadai-architecture: { module: core } }
+  - { project-architecture: { module: core } }
 ```
 
 Each fragment body goes through the same `{{var}}` substitution `armadai new` uses
@@ -97,47 +94,39 @@ in the order declared. Every fragment body is trimmed first, so a fragment file'
 newline doesn't pile up into two or three blank lines at the join. Two variables are always
 available implicitly: `name` (the agent's own name) and `description` (the agent's own
 `description:`, when it declares one) — a step's own variables win if it supplies the same name.
-`{{ name }}` (inner whitespace, either side or both) is the same placeholder as `{{name}}` — the
-missing-value check and the substitution agree on that by construction, so a spaced placeholder is
-never left in the rendered prompt unsubstituted.
+`{{ name }}` (inner whitespace, either side or both) is the same placeholder as `{{name}}`.
 
 ## Failure is the default, not degradation
 
 A missing fragment, or a fragment left with an unsubstituted `{{variable}}`, **fails agent loading**
 — it does not ship a shorter or blanker prompt. The same applies to `description`: if a fragment
 references `{{description}}` and the agent declares none, loading fails, naming both the agent and
-the fragment. This is deliberate: an agent shipped with amputated instructions doesn't complain
-about it, it fills the gaps itself, and a hard failure is the only way to make that visible before a
-model ever sees the result. If you genuinely need a fragment's `{{description}}` filled without the
-agent declaring one, a prompt step can supply it directly as one of its own variables — that's the
-escape hatch, not a default.
+the fragment. An agent shipped with amputated instructions doesn't complain about it, it fills the
+gaps itself, and a hard failure is the only way to make that visible before the files are written.
+If you need a fragment's `{{description}}` filled without the agent declaring one, a prompt step
+can supply it directly as one of its own variables.
 
 Deprecated model names are checked and fixed in `agents.yaml` too — `defaults.model` and every
 deviating agent's own `model`/`model_fallback`, one finding per occurrence — the same textual
-in-place rewrite `armadai models update` already does for `.md` files, chosen so comments and key
-order survive. Two forms are refused rather than half-fixed: a quoted `"model":` key, and any case
-where the structured YAML parse and the textual rewrite disagree about what needs changing. The
-tool would rather stop and tell you than guess at a partial fix.
+in-place rewrite `armadai models update` does for `.md` files, chosen so comments and key order
+survive. Two forms are refused rather than half-fixed: a quoted `"model":` key, and any case where
+the structured YAML parse and the textual rewrite disagree about what needs changing.
 
 ## A name both declared and written as a file: no precedence
 
-If a name in `agents.yaml` collides with a `.md` file — compared as a slug, so `Core Specialist`,
-`core-specialist` and `core_specialist` all collide with each other — **the declaration is
-refused**, and neither side is given precedence.
+If a name in `agents.yaml` collides with a `.md` file — compared as a slug, so `Code Reviewer`,
+`code-reviewer` and `code_reviewer` all collide with each other — **the declaration is refused**,
+and neither side is given precedence.
 
-This check runs against **all three** directories ArmadAI already searches for agent files:
+This check runs against **all three** directories ArmadAI searches for agent files:
 `.armadai/agents/` (project-local, preferred), `agents/` (project-local, legacy), and
 **`~/.config/armadai/agents/` — your personal library**, which the project doesn't own and may not
-even know about. On a machine with a large accumulated personal library, this is the first thing a
-new user is likely to hit: you write `name: code-reviewer` in a fresh project's `agents.yaml`, and
-loading refuses because you happen to have a `code-reviewer.md` sitting in your global agents
-directory from an unrelated project.
+even know about. On a machine with a large personal library, this is the first thing a new user is
+likely to hit: you write `name: code-reviewer` in a fresh project's `agents.yaml`, and loading
+refuses because you happen to have a `code-reviewer.md` in your global agents directory.
 
-The reasoning: a silent "the local file wins" (or the reverse) would recreate exactly the duplicated
-truth this format exists to remove. You'd edit the `.md`, see no effect because the YAML quietly
-took precedence, and have nothing on screen telling you why — the same failure mode as two
-`CLAUDE.md` files disagreeing and the model citing one while acting on the other. Refusing outright,
-by contrast, tells you immediately and by name. The message looks like this:
+A silent "the local file wins" (or the reverse) would recreate exactly the duplicated truth this
+format exists to remove. Refusing outright tells you immediately and by name:
 
 ```
 agent 'code-reviewer' is declared in .armadai/agents.yaml and also written as
@@ -146,266 +135,54 @@ deliberately no precedence between them
 ```
 
 What to do: rename or delete one side — whichever is actually stale. There is no flag to suppress
-the check or to force one side to win; a suppression flag would just be the silent precedence rule
-in disguise.
+the check or to force one side to win.
 
-The blast radius is scoped, though: a collision costs only the colliding declaration, never the
-rest of the fleet — every other declared agent, and the colliding `.md` file itself, still load
-fine elsewhere. But the three commands that can hit one don't all react the same way:
+A collision costs only the colliding declaration, never the rest of the fleet, but the commands
+react differently:
 
 - `armadai list` is read-only over the whole fleet: it prints a warning for the colliding name and
   carries on, showing every other agent that did load.
-- `armadai run <name>` and `armadai inspect <name>` are about one specific agent, and refuse to
-  guess which side of a collision you meant: naming a colliding agent **hard-fails** (exit 1),
-  naming both `agents.yaml` and the colliding `.md` file. A command that is about to execute or
-  describe one agent must not silently pick a winner between a declaration and a file.
-- `armadai run --pipe` refuses a colliding name in **any** position of the chain, and refuses it
-  before running the first link — so a collision costs no provider call at all (see [a chain is
-  resolved before it runs](#a-chain-is-resolved-before-it-runs)). It used to let the chain through
-  while the single-agent path refused the very same name, because the chain loop resolved agents by
-  file path and so never consulted the declarations; routing it through the same by-name loader
-  removed that inconsistency.
-- Because that check is scoped to just the one name you asked for, `armadai inspect
-  <some-other-name>` says **nothing** about an unrelated collision sitting elsewhere in the fleet —
-  it doesn't scan the whole project the way `list` does. Don't rely on `inspect` to surface
-  collisions in general; only `armadai list` (or `armadai link`) looks at the whole fleet at once.
-- `armadai link` is different again: because it writes files other tools then trust, it refuses to
-  write **anything** when the collision falls inside what you asked it to link (the whole fleet by
-  default, or the names passed to `--agents`) — a command that writes config must not silently ship
-  a smaller fleet than the one you declared.
+- `armadai inspect <name>` is about one specific agent and refuses to guess: naming a colliding
+  agent **hard-fails** (exit 1), naming both `agents.yaml` and the colliding `.md` file. It checks
+  only the name you asked for, so it says nothing about a collision elsewhere in the fleet; only
+  `armadai list` (or `armadai link`) looks at the whole fleet at once.
+- `armadai link` writes files other tools then trust, so it refuses to write **anything** when
+  the collision falls inside what you asked it to link (the whole fleet by default, or the names
+  passed to `--agents`).
 
-## A chain is resolved before it runs
+## What's wired
 
-`armadai run <head> <task> --pipe b c d` resolves **every** link — declared or file-backed — before
-it runs the first one. A name that resolves nowhere, or a name caught by the collision check above,
-fails the whole command at once, with no agent started:
+Every command that resolves a project's agents sees declared agents alongside file-backed ones:
 
-```
-chain link 3/4 ('reviwer') could not be resolved, so no agent was run: agent
-'reviwer' not found: not resolvable as a file (…), and not declared in
-/path/to/project/.armadai/agents.yaml
-```
-
-The failure names the link's **position** as well as its name, because with several names on one
-command line the name alone leaves you counting them.
-
-This used to happen link by link, inside the execution loop: a typo on the third of four links was
-only discovered after the first two had already run. Those are real provider calls — billed, and
-not undoable — spent on a chain that could never have completed. If you are used to seeing the
-first links produce output before a later typo surfaced, that is the behaviour that changed: you
-now get the error immediately, and nothing runs.
-
-Each link's **provider** is built up front too, not only its definition. An agent whose
-`provider:` is misspelled, whose API key is nowhere to be found, or which asks for `provider: cli`
-without naming a `command:`, fails on its own metadata — nothing an earlier link produces could
-change the outcome — so it is caught in the same pass, and the failure names the link the same way:
-
-```
-chain link 2/3 ('summariser') has no usable provider, so no agent was run: No API key found for
-'anthropic'. Set ANTHROPIC_API_KEY or add to config/providers.secret.yaml
-```
-
-What stays where it was is *running*. A link that resolves and builds fine and then fails during
-its call still fails part-way through the chain, and the earlier links' calls are already spent —
-that is inherent to running them.
-
-`--dry-run` stops right after this pass. It prints the links in execution order with the provider
-and the model each would use, and calls nothing:
-
-```
-[dry-run] sequential chain (3 agent(s)): reader, summariser, reviewer
-[dry-run]   1/3 reader — provider=cli, model=(not sent — cli:jq chooses)
-[dry-run]   2/3 summariser — provider=anthropic, model=claude-sonnet-4-5-20250929
-[dry-run]   3/3 reviewer — provider=anthropic, model=latest:auto (tier chosen per call)
-[dry-run] no provider called, no project registered, no agent file rewritten; nothing was recorded or billed
-```
-
-The model column is the string the run would really send, not the one written in the agent
-file: deprecated aliases and tier placeholders are already resolved. An agent relayed by a
-command-line tool is the exception — the relay never receives `model`, it picks its own — so the
-preview says so rather than naming an id that would never be asked for.
-
-The sign-off line is about the **disk**, not only the bill. A preview does not add the project to
-`projects.json` (being registered is a consequence of having run in a project, not of having
-looked at one), and the deprecated-model auto-check runs non-interactively: it still reports every
-deprecated model it finds — a real run would offer to rewrite them, which is worth knowing before
-you launch it — but it never offers, and therefore never touches an agent file.
-
-It says those two things, and not "writes nothing", because that stronger claim would be false on
-one path. A single agent, a `--pipe` chain and `--orchestrate` leave the disk entirely alone.
-`--resume` cannot: to preview the roster of a recorded run it has to read the run journal, and
-opening the journal creates it — so a `--resume --dry-run` on a machine that has never run
-`armadai` leaves an empty SQLite database behind. That is the record it was asked to look at, not
-a side effect of the preview, but it is a write, and the promise is worded to say only what it
-keeps.
-
-Because it is the same pass, the preview **refuses whatever the real run refuses**, with the same
-message and the same non-zero exit — an unresolvable link, a colliding name, a provider that
-cannot be built. A preview that cannot fail would pre-check nothing. This holds for a single agent
-(`armadai run <name> --dry-run`), for `--orchestrate` (which previews provider and model per
-roster member, then says plainly that who speaks when is the engine's to decide), and for
-`--resume` too, which previews the roster it reloaded and leaves the run resumable.
-
-`--replay` is the one mode `--dry-run` refuses outright, as a usage error (exit 2). A replay
-re-emits a recorded run from the event log and calls no provider at all, so previewing one would
-describe something cheaper than simply doing it. Until it was refused, `--replay --dry-run` was
-accepted and the flag silently dropped: the caller asked for a preview and got the full replay,
-ending on the zeroed `result` the `dry_run` event exists to keep out of a consumer's hands.
-
-`latest:auto` is the one thing a dry run cannot resolve: its tier is
-chosen from each link's own input, and for every link but the first that input is the previous
-link's output — precisely what a dry run declines to compute.
-
-With `--json`, the preview closes its JSONL stream on a `dry_run` event. It used to emit
-`run_start` and then nothing at all — the preview itself goes to stderr, and the agent names to
-stdout only when *not* emitting JSON — so a consumer could not tell "the preview is over" from
-"the process died at startup":
-
-```
-{"t":"run_start","run_id":"…","v":1,"agents":["alpha","beta"],"prov":"","model":"ring","in_chars":5}
-{"t":"dry_run","mode":"orchestrated","pattern":"ring","agents":[{"agent":"alpha","prov":"cli","model":"(not sent — cli:echo chooses)"},{"agent":"beta","prov":"cli","model":"(not sent — cli:echo chooses)"}],"reason":"no routing (full roster)"}
-```
-
-`mode` is `sequential` (a single agent or a `--pipe` chain), `orchestrated`, or `resume`;
-`pattern` is the orchestration pattern, empty on the sequential path; `agents` is the roster in
-execution order with the same provider and model the stderr lines show; `reason` says why this
-roster and not another. It is deliberately **not** a `result` with zeroed tokens — those zeroes
-would be the truth and still the wrong shape, since a real run that cost nothing looks exactly the
-same, and a consumer that bills or records on `result` would count a preview as a run. Nothing
-else in the stream changed, so a consumer that only reads `result` still sees exactly what it saw
-before: nothing.
-
-## Long compositions still get audited
-
-Composing several fragments is easy to do without noticing how long the result got. `armadai
-audit`'s existing rule `A05` (system prompt exceeds a configurable token estimate, default 4000,
-`audit.prompt_token_threshold` in project config) doesn't care where a prompt came from — once a
-declared agent is linked into a native config, `armadai audit` reads that generated file exactly
-like a hand-written one. A four-fragment composition is exactly as likely to trip it as an
-over-written `.md`.
-
-## What's wired, and what isn't
-
-Every surface that resolves a project's agent fleet sees declared agents alongside file-backed
-ones:
-
-| Surface | Sees declared agents? |
+| Command | Sees declared agents? |
 |---|---|
-| `armadai run <name>` (single agent) | Yes |
-| `armadai run --orchestrate` | Yes |
-| `armadai run --resume` | Yes |
-| `armadai run --pipe` (multi-agent chain) | Yes — any position of the chain, mixed freely with file-backed agents |
 | `armadai link` | Yes (and refuses to write on an unresolved collision, see above) |
+| `armadai unlink` | Yes |
 | `armadai list` | Yes |
 | `armadai inspect` | Yes |
 | `armadai models check` / `armadai models update` | Yes — including the deprecated-model rewrite described above |
-| `armadai unlink` | Yes |
-| `armadai validate` | Yes — a declared agent named as an `orchestration.coordinator`/`teams[].lead`/`teams[].agents` entry resolves, even when never relisted in `armadai.yaml`'s `agents:` |
-| TUI dashboard | Yes |
-| Web API | Yes |
-| `armadai shell`'s setup wizard (its own `link`, run once before entering the shell) | Yes |
-| `armadai shell`'s in-session pipeline steps (an `agent:` entry relayed from inside the shell) | Yes — declared or file-backed alike; an API-only provider is skipped with an explanation, see below |
-
-There is no longer a "No" row. If one ever reappears, read it as a real capability gap rather than
-a wording problem: a surface that resolves agents by *file path* cannot see a declared agent at all,
-because a declared agent has no file.
-
-The TUI dashboard and Web API used to be worse than an omission: both resolved a project's agents
-via `project::resolve_all_agents`, which only ever returns file paths, so a declared agent (which
-has no file) was silently dropped — and if a same-named agent happened to exist in the global
-library (`~/.config/armadai/agents/`), *that* agent was shown in its place, with no warning. Both
-now go through the same `agent_source::load_all_agents` every other wired surface uses, so a
-declared agent is loaded on its own terms rather than shadowed by an unrelated global homonym.
-
-`armadai shell`'s wizard used to be a fifth, independent copy of the project-detection gate — a
-plain `config.agents.is_empty()` check with no notion of `.armadai/agents.yaml` at all, so a
-declarations-only project failed the wizard's own `link` step with a false "No agents declared"
-(issue #339's second half). Its write side had also drifted from `link`'s in a second, unrelated
-way: the wizard hand-rolled its own file-write loop, with no link manifest entry and no
-exists-guard, so `unlink` could never account for what it wrote and a hand-written file in its way
-could be silently overwritten (issue #347). Both were fixed together, since both were the wizard
-using its own variant instead of the primitive the rest of the fleet already shares: the wizard's
-`run_link` now calls `agent_source::project_declares_agents`/`load_all_agents` for detection and
-resolution, and `linker::manifest::write_files` — the same function `cli::link::execute` itself
-calls — for the write, so the manifest entry and the exists-guard come from the same place `link`
-gets them rather than a third copy that could drift from both.
-
-The last two path-shaped resolvers were `armadai run --pipe`'s chain loop and the shell's
-in-session pipeline lookup (`shell::app::resolve_project_agent`). Both resolved a *path* per agent
-and handed it down to be parsed, which no declared agent can satisfy — the chain loop failed with a
-message naming the three library directories and never the `agents.yaml` that declares the agent,
-and the shell answered a declarations-only project with a false "not found in project config".
-Both now call the same by-name loaders every other surface uses (`load_agent_for_run`, itself
-`agent_source::load_agent_by_name`), and the path-returning helper the chain loop used
-(`cli::run::resolve_agent_path`) was **deleted** rather than left unused, so a future call site
-cannot pick it up and reintroduce the same blind spot. The shell's honest-but-limiting
-"declarative agents can't be run from the shell yet" message is gone because the capability it
-described as missing now exists: a pipeline step's `agent:` entry loads a declared agent and relays
-it exactly as it relays a file-backed one — same composed system prompt, and the same command
-resolution described below.
-
-### What the in-session relay can and cannot run
-
-A pipeline step spawns a CLI and hands it the prompt on argv, so the step's command comes from the
-agent's metadata the way `providers::factory` reads it: `provider: cli` spawns whatever `command:`
-names, any other provider spawns `command:` if set and the provider name otherwise, and an explicit
-`args:` list is passed through verbatim (otherwise the canonical JSON-mode argv for that command is
-used). Reading `provider:` alone — which this relay did until it was fixed — turned every
-`provider: cli` agent into an attempt to spawn a binary literally named `cli`.
-
-An agent whose provider is an HTTP API (`anthropic`, `openai`, `google`, `proxy`) has no command to
-spawn at all. Such a step is **skipped with an explanation** and the rest of the chain runs on: the
-step is lost, not the pipeline. Run those agents with `armadai run <name>`, which builds the API
-client instead of relaying a CLI.
-
-A command that *is* named but is not installed on this machine gets the same treatment. It can only
-be discovered when the spawn fails, and that used to end the whole pipeline; now it costs its own
-step, naming the step and the missing binary, and the next link reads what it would have read
-anyway:
-
-```
-Skipping step 'review' ('opencode'): failed to spawn: No such file or directory (os error 2)
-```
-
-A step that spawns and then *exits non-zero* is a different case and still stops the pipeline: it
-ran, and what it printed on stderr is reported with the failure.
-
-If **every** step of a pipeline skips, the turn is not recorded at all — the shell says so and
-leaves the conversation history untouched. Skipping deliberately leaves the running input alone so
-the next link reads what it would have read anyway; with nothing left to answer, that input is
-still your own message, and filing it as the assistant's answer would persist it with the session
-and replay it as context on your next turn.
+| `armadai validate` | Yes — a declared agent named as an `orchestration.coordinator`/`teams[].lead`/`teams[].agents` entry resolves, even when never relisted in the config's `agents:` |
 
 ## Parity with the `.md` format — and its limits
 
 A declared agent and its hand-written `.md` twin are proven, by test
-(`crates/armadai/src/linker/mod.rs`), to project **byte-identical native output** on all five link
-targets (claude, codex, copilot, gemini, opencode) — same file paths, same content — and to carry
-identical values for every field the declarative format is able to express. That's a real, tested
-guarantee, covering a plain API agent, a `provider: cli` agent with `command`/`args`, and an agent
-composed from two fragments.
+(`crates/armadai/src/linker/mod.rs`), to project **byte-identical native output** on all four link
+targets (claude, codex, copilot, opencode) — same file paths, same content — and to carry identical
+values for every field the declarative format is able to express.
 
-It is narrower than "the two formats are interchangeable," though, in two ways worth knowing before
-you rely on it:
+It is narrower than "the two formats are interchangeable," in two ways:
 
-- **The linker doesn't emit every field it merges.** No target's generated file includes
-  `command`, `args`, `tags`, `scope` or `stacks` in its content — the five-target comparison is
-  real, but it cannot fail on a divergence in a field none of the five linkers ever write out. Those
-  fields are checked separately, at the `Agent`/`AgentMetadata` level, by a second test — necessary
-  precisely because the projection check can't see them.
+- **The linkers don't emit every field.** No target's generated file includes `command`, `args`,
+  `tags`, `scope` or `stacks`, so the projection comparison cannot fail on a divergence in those
+  fields. They are checked separately, at the `Agent`/`AgentMetadata` level, by a second test.
 - **Seven `AgentMetadata` fields have no declarative equivalent at all**: `cost_limit`,
   `rate_limit`, `context_window`, `mode`, `orchestration`, `triggers`, `ring_config`. A declared
-  agent always resolves these to `None`/default, whatever it says — there is no key for them in the
-  format. The parity test's assertions on these seven are true by construction, not by
-  demonstration: both sides are always `None`, so they can never fail while the format stays as it
-  is. If your `.md` agent uses any of these seven, declaring it means losing that capability, not
-  preserving it under a different spelling.
+  agent always resolves these to `None`/default. None of the kept commands uses them.
 
-So: identical projection, for what both formats can actually say. Not identical expressiveness.
+So: identical projection, for what both formats can actually say.
 
 ## See also
 
-[Agent format](agent-format.md) documents the `.md` side — required sections, the full metadata
-table, provider types. Anything not covered here (Instructions, Output Format, Pipeline, Context,
-Triggers, Ring Config) is `.md`-only for now; a declared agent has no way to set any of them —
-`to_agent()` always resolves `context` to `None`, exactly like the other five.
+[Agent format](agent-format.md) documents the `.md` side. Instructions, Output Format and Context
+are `.md`-only for now: a declared agent's prompt is its composed fragments, and `to_agent()`
+always resolves `context` to `None`.
