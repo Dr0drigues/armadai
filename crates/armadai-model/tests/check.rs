@@ -580,3 +580,33 @@ fn did_you_mean_prefers_the_nearest_over_the_first() {
         Some("did you mean `pipelinx`?")
     );
 }
+
+#[test]
+fn load_checked_refuses_a_project_with_an_error() {
+    // `ghost` is not a declared agent: a semantic (check) error, not a loader one
+    let dir = project(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\ncoordinator: ghost\n",
+        ),
+        DEV,
+    ]);
+    let ds = load_checked(dir.path()).unwrap_err();
+    assert!(has_errors(&ds), "{ds:?}");
+}
+
+#[test]
+fn load_checked_refuses_a_missing_manifest() {
+    let dir = project(&[DEV]);
+    let ds = load_checked(dir.path()).unwrap_err();
+    assert!(ds.iter().any(|d| d.code == "missing-manifest"), "{ds:?}");
+}
+
+#[test]
+fn load_checked_accepts_a_project_with_warnings_only() {
+    let dir = project(&[M, DEV, (".armadai/flows/x.yml", "sequence: [dev]\n")]);
+    assert!(!validate(dir.path()).is_empty(), "the fixture must warn");
+    let (p, origins) = load_checked(dir.path()).unwrap();
+    assert!(p.agents.contains_key("dev"));
+    assert!(origins.files.contains_key(&(Kind::Agent, "dev".into())));
+}

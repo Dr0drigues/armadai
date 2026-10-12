@@ -15,12 +15,25 @@ pub fn has_errors(ds: &[Diagnostic]) -> bool {
 
 /// Loader diagnostics plus, when a project could be loaded, the semantic ones.
 pub fn validate(root: &Path) -> Vec<Diagnostic> {
+    checked(root).2
+}
+
+fn checked(root: &Path) -> (Option<Project>, Origins, Vec<Diagnostic>) {
     let loaded = load_project(root);
     let mut ds = loaded.diagnostics;
     if let Some(p) = &loaded.project {
         ds.extend(check(p, &loaded.origins));
     }
-    ds
+    (loaded.project, loaded.origins, ds)
+}
+
+/// The project at `root`, or every diagnostic when at least one is an error
+/// (warnings alone do not refuse).
+pub fn load_checked(root: &Path) -> Result<(Project, Origins), Vec<Diagnostic>> {
+    match checked(root) {
+        (Some(p), origins, ds) if !has_errors(&ds) => Ok((p, origins)),
+        (_, _, ds) => Err(ds),
+    }
 }
 
 /// `[a-z0-9][a-z0-9-]{0,63}`
