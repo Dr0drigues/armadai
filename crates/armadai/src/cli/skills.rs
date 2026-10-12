@@ -2,7 +2,6 @@ use clap::Subcommand;
 
 use crate::skills_registry::{cache, search, sync};
 use armadai_core::config::user_skills_dir;
-use armadai_core::project;
 use armadai_core::skill::{Skill, load_all_skills};
 
 #[derive(Subcommand)]
@@ -477,41 +476,16 @@ fn check_staleness() {
 fn collect_skills() -> Vec<Skill> {
     let mut skills = Vec::new();
 
-    // Project-level skills
-    if let Some((root, config)) = project::find_project_config() {
-        let (paths, errors) = project::resolve_all_skills(&config, &root);
-        for err in &errors {
-            let w = crate::cli::style::warn();
-            anstream::eprintln!("{w}  warn: {err}{w:#}");
-        }
-        for path in &paths {
-            match Skill::load(path) {
-                Ok(s) => skills.push(s),
-                Err(e) => {
-                    let w = crate::cli::style::warn();
-                    anstream::eprintln!(
-                        "{w}  warn: failed to load skill {}: {e}{w:#}",
-                        path.display()
-                    );
-                }
-            }
-        }
-
-        // Also scan project-local skills/ directory
-        let local_dir = root.join("skills");
-        if local_dir.is_dir() {
-            for s in load_all_skills(&local_dir) {
-                if !skills.iter().any(|existing| existing.name == s.name) {
-                    skills.push(s);
-                }
-            }
-        }
-    } else {
-        // No project config — scan local skills/ dir
-        let local_dir = std::path::Path::new("skills");
-        if local_dir.is_dir() {
-            skills.extend(load_all_skills(local_dir));
-        }
+    // Project skills: `.armadai/skills/` of the canonical project, else a local skills/
+    let local_dir = match std::env::current_dir()
+        .ok()
+        .and_then(|cwd| crate::compile::find_project(&cwd).ok())
+    {
+        Some(root) => root.join(".armadai/skills"),
+        None => std::path::PathBuf::from("skills"),
+    };
+    if local_dir.is_dir() {
+        skills.extend(load_all_skills(&local_dir));
     }
 
     // Always include user-global skills

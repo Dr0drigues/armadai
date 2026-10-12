@@ -1,5 +1,4 @@
 mod config;
-mod extract;
 pub mod init;
 mod inspect;
 mod link;
@@ -7,7 +6,6 @@ mod list;
 mod migrate;
 mod models;
 pub(crate) mod new;
-mod prompts;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;
@@ -50,7 +48,8 @@ pub enum Command {
             security-review, debug, tech-debt, tdd-red, tdd-green, tdd-refactor, tech-writer \
             (built into the binary; a same-named file in ./templates or \
             ~/.config/armadai/templates overrides one, and adds your own).\n\
-            The new agent is created at agents/<name>.md.\n\n\
+            The agent is converted to the canonical format and written to \
+            .armadai/agents/<name>.md of the current project (armadai init --project first).\n\n\
             Use --interactive (-i) for a guided step-by-step creation wizard.",
         after_help = "Examples:\n  \
             armadai new my-assistant\n  \
@@ -74,36 +73,28 @@ pub enum Command {
         #[arg(long, short = 'i')]
         interactive: bool,
     },
-    /// List available agents
+    /// List the project's agents, skills, flows and automations
     #[command(after_help = "Examples:\n  \
         armadai list\n  \
-        armadai list --tags dev review\n  \
-        armadai list --stack rust")]
+        armadai list --tags dev review")]
     List {
-        /// Filter by tags
-        #[arg(long)]
+        /// Only agents carrying one of these tags
+        #[arg(long, num_args = 1..)]
         tags: Option<Vec<String>>,
-        /// Filter by stack
-        #[arg(long)]
-        stack: Option<String>,
-        /// Show agents from the global library (~/.config/armadai/) only
-        #[arg(long)]
-        global: bool,
     },
-    /// Inspect an agent's parsed configuration
-    #[command(long_about = "Inspect an agent's parsed configuration.\n\n\
-            Displays the fully parsed agent definition: metadata, system prompt, \
-            instructions, output format, and pipeline configuration.")]
+    /// Show one agent of the project
+    #[command(long_about = "Show one agent of the project.\n\n\
+            Displays its frontmatter (description, tier, tags, skills, capabilities, \
+            native targets), the flows it takes part in, and its prompt.")]
     Inspect {
-        /// Agent name
+        /// Agent id (its file name under .armadai/agents/)
         agent: String,
     },
-    /// Validate starter pack or project config
+    /// Validate the project (.armadai/) or a starter pack
     #[command(
-        long_about = "Validate starter pack or project config.\n\n\
-            Auto-detects whether the target is a starter pack (pack.yaml) or project \
-            (armadai.yaml / .armadai/config.yaml) and runs the appropriate validation. \
-            Checks agent/prompt/skill references, the orchestration declaration, and trigger sections.",
+        long_about = "Validate the project (.armadai/project.yaml and its folders) or a \
+            starter pack (pack.yaml). A legacy project must be migrated first \
+            (armadai migrate).",
         after_help = "Examples:\n  \
             armadai validate\n  \
             armadai validate starters/armadai-authoring\n  \
@@ -144,19 +135,6 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Extract agents, prompts, and skills with dependency resolution
-    #[command(
-        long_about = "Extract agents, prompts, and skills with dependency resolution.\n\n\
-            Pulls resources from a starter pack, the user library, or the current project, \
-            optionally including prompts that target the selected agents via `apply_to`. \
-            When called with no flags, walks you through an interactive wizard.",
-        after_help = "Examples:\n  \
-            armadai extract\n  \
-            armadai extract -i\n  \
-            armadai extract --from armadai-authoring --agents authoring-lead --with-deps\n  \
-            armadai extract --from user --agents dev-lead --out ./snapshot --as-pack"
-    )]
-    Extract(extract::ExtractArgs),
     /// Manage providers and secrets
     #[command(
         long_about = "Manage providers and secrets.\n\n\
@@ -251,8 +229,9 @@ pub enum Command {
             Creates ~/.config/armadai/ with default config.yaml, providers.yaml, \
             and subdirectories (agents/, prompts/, skills/, and registry/, the \
             cache for remote starter packs).\n\n\
-            Use --project to create a .armadai/ directory with config.yaml and \
-            subdirectories (agents/, prompts/, skills/, starters/).",
+            Use --project to create an empty project: .armadai/project.yaml, agents/, \
+            skills/, flows/, automations/ and .armadai/.gitignore. Use --pack to create \
+            the project from a starter pack instead (converted like `armadai migrate`).",
         after_help = "Examples:\n  \
             armadai init\n  \
             armadai init --force\n  \
@@ -264,25 +243,13 @@ pub enum Command {
         /// Overwrite existing config files
         #[arg(long)]
         force: bool,
-        /// Create a project-local .armadai/ directory with config.yaml
+        /// Create an empty project (.armadai/project.yaml and its folders) here
         #[arg(long)]
         project: bool,
-        /// Starter pack name, or path to a directory containing pack.yaml
+        /// Create the project from this starter pack (name, or a directory holding pack.yaml)
         #[arg(long)]
         pack: Option<String>,
     },
-    /// Manage composable prompts
-    #[command(
-        subcommand,
-        long_about = "Manage composable prompt fragments.\n\n\
-            Prompts are reusable Markdown files with optional YAML frontmatter \
-            (name, description, apply_to). They compose with agents via the \
-            apply_to field or explicit project config references.",
-        after_help = "Examples:\n  \
-            armadai prompts list\n  \
-            armadai prompts show rust-conventions"
-    )]
-    Prompts(prompts::PromptsAction),
     /// Manage composable skills
     #[command(
         subcommand,
@@ -396,14 +363,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             description,
             interactive,
         } => new::execute(name, template, stack, description, interactive).await,
-        Command::List {
-            tags,
-            stack,
-            global,
-        } => {
-            armadai_core::config::set_force_global(global);
-            list::execute(tags, stack).await
-        }
+        Command::List { tags } => list::execute(tags).await,
         Command::Inspect { agent } => inspect::execute(agent).await,
         Command::Validate { path, json } => validate::execute(path, json).await,
         Command::Migrate {
@@ -413,8 +373,6 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         } => migrate::execute(path, dry_run, force),
         Command::Config { action } => config::execute(action).await,
         Command::Models(action) => models::execute(action).await,
-        Command::Extract(args) => extract::execute(args).await,
-        Command::Prompts(action) => prompts::execute(action).await,
         Command::Skills(action) => skills::execute(action).await,
         Command::Link {
             target,
@@ -537,8 +495,6 @@ mod tests {
             "validate",
             "config",
             "models",
-            "extract",
-            "prompts",
             "skills",
             "link",
             "unlink",
@@ -563,7 +519,7 @@ mod tests {
     fn completion_scripts_keep_the_real_commands() {
         // The filter must not be a blunt instrument.
         let zsh = completion(clap_complete::Shell::Zsh);
-        for cmd in ["extract", "link", "unlink", "completion"] {
+        for cmd in ["migrate", "link", "unlink", "completion"] {
             assert!(
                 zsh.contains(&format!("'{cmd}:")),
                 "zsh completion lost the {cmd} command"

@@ -29,7 +29,9 @@ fn scratch() -> Scratch {
     let config = root.path().join("config");
     let cwd = root.path().join("work");
     std::fs::create_dir_all(&config).unwrap();
-    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(cwd.join(".armadai")).unwrap();
+    // `new` writes into the canonical project of the current directory
+    std::fs::write(cwd.join(".armadai/project.yaml"), "schema_version: 1\n").unwrap();
     Scratch {
         _root: root,
         config,
@@ -49,7 +51,7 @@ fn armadai(s: &Scratch, args: &[&str]) -> assert_cmd::assert::Assert {
 }
 
 fn agent_path(s: &Scratch, name: &str) -> PathBuf {
-    s.config.join("agents").join(format!("{name}.md"))
+    s.cwd.join(".armadai/agents").join(format!("{name}.md"))
 }
 
 #[test]
@@ -68,8 +70,12 @@ fn every_embedded_template_creates_a_parseable_agent_without_any_templates_dir()
         armadai(&s, &["new", &name, "--template", tpl]).success();
         let path = agent_path(&s, &name);
         assert!(path.exists(), "{tpl}: {} not created", path.display());
-        armadai_core::parser::parse_agent_file(&path)
-            .unwrap_or_else(|e| panic!("{tpl}: produced file does not parse: {e}"));
+        armadai_model::load_checked(&s.cwd).unwrap_or_else(|ds| {
+            panic!(
+                "{tpl}: the project no longer validates: {}",
+                ds.iter().map(|d| d.render()).collect::<Vec<_>>().join("\n")
+            )
+        });
     }
 }
 
@@ -127,6 +133,23 @@ fn a_custom_template_is_offered_next_to_the_embedded_ones() {
     let body = std::fs::read_to_string(agent_path(&s, "a")).unwrap();
     assert!(body.contains("MINE"), "{body}");
     armadai(&s, &["new", "b", "--template", "dev-review"]).success();
+}
+
+#[test]
+fn new_outside_a_project_is_refused() {
+    let s = scratch();
+    std::fs::remove_dir_all(s.cwd.join(".armadai")).unwrap();
+    let out = armadai(&s, &["new", "lonely"]).failure();
+    let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(err.contains("armadai init --project"), "{err}");
+}
+
+#[test]
+fn an_invalid_id_or_an_existing_agent_is_refused() {
+    let s = scratch();
+    armadai(&s, &["new", "Bad_Name"]).failure();
+    armadai(&s, &["new", "dup"]).success();
+    armadai(&s, &["new", "dup"]).failure();
 }
 
 #[test]

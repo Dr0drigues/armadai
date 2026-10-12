@@ -105,15 +105,17 @@ fn json_of_a_valid_project_is_an_empty_array() {
     assert_eq!(String::from_utf8(out).unwrap().trim(), "[]");
 }
 
-const INVITE: &str = "This project uses the legacy format. Run `armadai migrate` to convert it.";
-
 #[test]
-fn legacy_project_output_is_unchanged_plus_invitation() {
-    let dir = project(&[("armadai.yaml", "agents: []\n")]);
-    let out = validate(&dir, &[]).get_output().stdout.clone();
-    let out = String::from_utf8_lossy(&out);
-    assert!(out.contains("Validating project config at:"), "{out}");
-    assert!(out.trim_end().ends_with(INVITE), "{out}");
+fn a_legacy_project_is_an_error_asking_for_migrate() {
+    for args in [&[][..], &["--json"][..]] {
+        let dir = project(&[("armadai.yaml", "agents: []\n")]);
+        let a = validate(&dir, args).failure();
+        let err = String::from_utf8_lossy(&a.get_output().stderr).into_owned();
+        assert!(
+            err.contains("legacy format, run `armadai migrate`"),
+            "{err}"
+        );
+    }
 }
 
 #[test]
@@ -121,18 +123,4 @@ fn new_format_never_shows_the_invitation() {
     let dir = project(&[M]);
     let out = validate(&dir, &[]).success().get_output().stdout.clone();
     assert!(!String::from_utf8_lossy(&out).contains("legacy format"));
-}
-
-#[test]
-fn json_on_a_legacy_project_warns_on_stderr_only() {
-    let dir = project(&[("armadai.yaml", "agents: []\n")]);
-    let a = validate(&dir, &["--json"]);
-    let out = String::from_utf8_lossy(&a.get_output().stdout).into_owned();
-    let err = String::from_utf8_lossy(&a.get_output().stderr).into_owned();
-    assert!(
-        err.contains("--json only applies to new-format projects"),
-        "{err}"
-    );
-    assert!(!out.contains("--json"), "{out}");
-    assert!(out.trim_end().ends_with(INVITE), "{out}");
 }

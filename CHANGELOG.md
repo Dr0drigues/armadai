@@ -1,5 +1,22 @@
 ## Unreleased
 
+### Changed (step 2: link on the canonical model)
+
+- `list`, `inspect` and `validate` read `.armadai/project.yaml` only; a legacy project gets
+  "legacy format, run `armadai migrate`" (exit 1). `list` shows agents, skills, flows and
+  automations (`--stack` and `--global` removed: no stacks in the model, no user library).
+- `init --project` writes `.armadai/project.yaml`, `agents/`, `skills/`, `flows/`,
+  `automations/` and `.armadai/.gitignore`; `init --pack` creates such a project from a starter
+  pack (converted like `migrate`) instead of installing the pack into the user library.
+- `new` writes the agent, converted, to `.armadai/agents/<name>.md` of the current project.
+
+### Removed (step 2)
+
+- **`armadai extract`**: it extracted agents, prompts and skills out of the user library, which
+  the canonical model no longer has (C11).
+- **`armadai prompts`**: prompts are no longer a concept of the model (C6); `migrate` folds them
+  into agent bodies.
+
 ### Added (step 1: canonical model)
 
 - **`armadai-model` crate**: the new project format (`.armadai/project.yaml`, `agents/<id>.md`,

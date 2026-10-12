@@ -1,32 +1,20 @@
+use std::path::Path;
+
 use crate::linker::{LinkTarget, supported_target_names};
 use armadai_core::config;
 use armadai_core::starter::{StarterPack, find_pack_dir, list_available_packs};
 
 pub async fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Result<()> {
-    if let Some(ref pack_name) = pack
-        && project
-    {
-        // Combined mode: install pack + create project config referencing it
-        init_global(force)?;
-        let installed_pack = install_pack(pack_name, force)?;
-        init_project_with_pack(&installed_pack, pack_name)?;
-        return Ok(());
-    }
-
-    if project {
-        return init_project();
-    }
-
-    // Always init global config first
-    init_global(force)?;
-
-    // Install starter pack if requested
+    let root = std::env::current_dir()?;
     if let Some(pack_name) = pack {
-        install_pack(&pack_name, force)?;
+        // a pack always becomes a project here: the user library is gone (C11)
+        return init_project_from_pack(&root, &pack_name, force);
     }
-
+    if project {
+        return init_project(&root);
+    }
+    init_global(force)?;
     super::setup::prompt_shell_setup();
-
     Ok(())
 }
 
@@ -112,262 +100,198 @@ pub(crate) fn resolve_pack_dir(name: &str) -> Option<std::path::PathBuf> {
     find_pack_dir(name)
 }
 
-/// Install a starter pack by name or local path. Returns the loaded pack definition.
-fn install_pack(name: &str, force: bool) -> anyhow::Result<StarterPack> {
-    let pack_dir = match resolve_pack_dir(name) {
-        Some(dir) => dir,
-        None => {
-            let available = list_available_packs();
-            if available.is_empty() {
-                anyhow::bail!("Starter pack '{name}' not found. No packs available.");
-            } else {
-                anyhow::bail!(
-                    "Starter pack '{name}' not found. Available packs: {}",
-                    available.join(", ")
-                );
-            }
-        }
-    };
-
-    let pack = StarterPack::load(&pack_dir)?;
-    let r = crate::cli::style::running();
-    let a = crate::cli::style::accent();
-    anstream::println!(
-        "\n{r}Installing starter pack:{r:#} {a}{}{a:#} — {}",
-        pack.name,
-        pack.description
-    );
-
-    let (agents, prompts, skills) = pack.install(&pack_dir, force)?;
-    let o = crate::cli::style::ok();
-    let m = crate::cli::style::muted();
-    anstream::println!(
-        "\n{o}Pack{o:#} {a}'{}'{a:#} {o}installed:{o:#} {m}{} agent(s), {} prompt(s), {} skill(s){m:#}",
-        pack.name,
-        agents,
-        prompts,
-        skills
-    );
-
-    Ok(pack)
-}
-
-/// Generate the YAML content for an empty armadai project configuration.
-pub fn generate_empty_project_yaml() -> String {
-    "\
-# ArmadAI project configuration
-# See: https://github.com/Dr0drigues/swarm-festai
-
-# Agents used in this project
-agents:
-  # - name: code-reviewer           # Named agent from user library
-  # - registry: official/security   # Agent from the registry
-  # - path: .armadai/agents/team.md # Local agent file
-
-# Composable prompt fragments
-prompts: []
-  # - name: rust-conventions
-  # - path: .armadai/prompts/style.md
-
-# Skills (Agent Skills open standard)
-skills: []
-  # - name: docker-compose
-  # - path: .armadai/skills/deploy/
-
-# Context files injected into agent runs
-sources: []
-  # - docs/architecture.md
-  # - CONTRIBUTING.md
-
-# Linker configuration
-# link:
-#   target: claude
-#   overrides:
-#     claude:
-#       output: .claude/
-#     copilot:
-#       output: .github/agents/
-"
-    .to_string()
-}
-
-/// Create a `.armadai/` project structure in the current directory.
-fn init_project() -> anyhow::Result<()> {
-    let dotarmadai = std::path::Path::new(".armadai");
-    let dotarmadai_config = dotarmadai.join("config.yaml");
-    let legacy_path = std::path::Path::new("armadai.yaml");
-
-    if dotarmadai_config.exists() {
-        anyhow::bail!(".armadai/config.yaml already exists in current directory");
+/// Refuse to overwrite a project: the new format, or a legacy one to migrate.
+fn ensure_no_project(root: &Path) -> anyhow::Result<()> {
+    if root.join(".armadai/project.yaml").exists() {
+        anyhow::bail!("{} already holds .armadai/project.yaml", root.display());
     }
-    if legacy_path.exists() {
+    if (crate::compile::LEGACY_CONFIGS.iter()).any(|c| root.join(c).is_file()) {
         anyhow::bail!(
-            "armadai.yaml already exists in current directory. \
-             Remove it first or manually move it to .armadai/config.yaml"
+            "{} holds a legacy project: run `armadai migrate` instead",
+            root.display()
         );
     }
-
-    // Create directory structure
-    for subdir in &["agents", "prompts", "skills", "starters"] {
-        std::fs::create_dir_all(dotarmadai.join(subdir))?;
-    }
-
-    let content = generate_empty_project_yaml();
-    std::fs::write(&dotarmadai_config, content)?;
-    let o = crate::cli::style::ok();
-    let m = crate::cli::style::muted();
-    anstream::println!("{o}Created .armadai/ project structure:{o:#}");
-    anstream::println!("{m}  .armadai/config.yaml{m:#}");
-    anstream::println!("{m}  .armadai/agents/{m:#}");
-    anstream::println!("{m}  .armadai/prompts/{m:#}");
-    anstream::println!("{m}  .armadai/skills/{m:#}");
-    anstream::println!("{m}  .armadai/starters/{m:#}");
-    anstream::println!(
-        "\n{m}  Edit .armadai/config.yaml to declare agents, prompts, skills and link targets.{m:#}"
-    );
-
-    // Check for deprecated models in newly created project
-    if let Some((root, _)) = armadai_core::project::find_project_config() {
-        armadai_core::model_updater::auto_check_and_prompt(&root, true);
-    }
-
     Ok(())
 }
 
-/// Generate YAML content for an armadai project pre-configured with a starter pack.
-#[cfg(test)]
-pub fn generate_project_yaml(pack: &StarterPack, pack_name: &str) -> String {
-    generate_project_yaml_with_target(pack, pack_name).0
+/// An empty project: `project.yaml`, the four folders (kept by `.gitkeep`) and
+/// `.armadai/.gitignore`.
+fn init_project(root: &Path) -> anyhow::Result<()> {
+    ensure_no_project(root)?;
+    let base = root.join(".armadai");
+    for dir in ["agents", "skills", "flows", "automations"] {
+        std::fs::create_dir_all(base.join(dir))?;
+        std::fs::write(base.join(dir).join(".gitkeep"), "")?;
+    }
+    std::fs::write(base.join("project.yaml"), "schema_version: 1\n")?;
+    crate::linker::manifest::ensure_gitignore(root)?;
+    let o = crate::cli::style::ok();
+    let m = crate::cli::style::muted();
+    anstream::println!("{o}Created .armadai/:{o:#}");
+    for f in [
+        "project.yaml",
+        "agents/",
+        "skills/",
+        "flows/",
+        "automations/",
+        ".gitignore",
+    ] {
+        anstream::println!("{m}  .armadai/{f}{m:#}");
+    }
+    anstream::println!("\n{m}  Add agents under .armadai/agents/, then run `armadai link`.{m:#}");
+    Ok(())
 }
 
-/// Like [`generate_project_yaml`], also returning the inferred `link.target`
-/// (`None` when no agent of the pack names a supported target).
-fn generate_project_yaml_with_target(
+fn md_name(name: &str) -> String {
+    if name.ends_with(".md") {
+        name.to_string()
+    } else {
+        format!("{name}.md")
+    }
+}
+
+/// The pack, materialised as a legacy project under `tmp`: its files copied
+/// under `tmp/.armadai/`, and a synthetic config naming them by path (never by
+/// name, which would also search the user's library).
+fn materialize_pack(
+    pack_dir: &Path,
     pack: &StarterPack,
     pack_name: &str,
-) -> (String, Option<String>) {
-    // Detect provider and coordinator from the pack's agent files
-    let link_target = detect_pack_link_target(pack_name);
-    let coordinator_name = detect_pack_coordinator(pack, pack_name);
-
-    let mut content = String::from(
-        "# ArmadAI project configuration\n\
-         # See: https://github.com/Dr0drigues/swarm-festai\n\n\
-         # Agents used in this project\n\
-         agents:\n",
-    );
-
-    for agent in &pack.agents {
-        content.push_str(&format!("  - name: {agent}\n"));
-    }
-
-    // Prompts
-    if !pack.prompts.is_empty() {
-        content.push_str("\n# Composable prompt fragments\nprompts:\n");
-        for prompt in &pack.prompts {
-            content.push_str(&format!("  - name: {prompt}\n"));
+    tmp: &Path,
+) -> anyhow::Result<()> {
+    let base = tmp.join(".armadai");
+    let unsafe_name = |n: &str| n.contains('/') || n.contains('\\') || n.contains("..");
+    let mut config = String::from("agents:\n");
+    std::fs::create_dir_all(base.join("agents"))?;
+    for name in pack.agents.iter().filter(|n| !unsafe_name(n)) {
+        let file = md_name(name);
+        let src = pack_dir.join("agents").join(&file);
+        if !src.is_file() {
+            eprintln!(
+                "  warn: agent '{name}' not found in pack at {}",
+                src.display()
+            );
+            continue;
         }
-    } else {
-        content.push_str("\nprompts: []\n");
+        std::fs::copy(&src, base.join("agents").join(&file))?;
+        config.push_str(&format!("  - path: .armadai/agents/{file}\n"));
     }
-
-    // Skills
-    if !pack.skills.is_empty() {
-        content.push_str("\n# Skills (Agent Skills open standard)\nskills:\n");
-        for skill in &pack.skills {
-            content.push_str(&format!("  - name: {skill}\n"));
+    config.push_str("prompts:\n");
+    std::fs::create_dir_all(base.join("prompts"))?;
+    for name in pack.prompts.iter().filter(|n| !unsafe_name(n)) {
+        let file = md_name(name);
+        let src = pack_dir.join("prompts").join(&file);
+        if src.is_file() {
+            std::fs::copy(&src, base.join("prompts").join(&file))?;
+            config.push_str(&format!("  - path: .armadai/prompts/{file}\n"));
         }
-    } else {
-        content.push_str("\nskills: []\n");
     }
-
-    content.push_str("\nsources: []\n");
-
-    // Linker configuration
-    if let Some(target) = &link_target {
-        content.push_str(&format!(
-            "\n# Linker configuration\nlink:\n  target: {target}\n"
+    config.push_str("skills:\n");
+    for name in pack.skills.iter().filter(|n| !unsafe_name(n)) {
+        let src = pack_dir.join("skills").join(name);
+        if !src.is_dir() {
+            eprintln!("  warn: skill '{name}' is not bundled in the pack: not added");
+            continue;
+        }
+        copy_tree(&src, &base.join("skills").join(name))?;
+        config.push_str(&format!("  - path: .armadai/skills/{name}\n"));
+    }
+    let coordinator = detect_pack_coordinator(pack, pack_name);
+    let target = detect_pack_link_target(pack_name);
+    if coordinator.is_some() || target.is_some() {
+        config.push_str("link:\n");
+        if let Some(t) = &target {
+            config.push_str(&format!("  target: {t}\n"));
+        }
+        if let Some(c) = &coordinator {
+            config.push_str(&format!("  coordinator: {c}\n"));
+        }
+    }
+    if let Some(c) = &coordinator {
+        config.push_str(&format!(
+            "orchestration:\n  enabled: true\n  pattern: hierarchical\n  coordinator: {c}\n  teams:\n    - agents:\n"
         ));
-        if let Some(ref coord) = coordinator_name {
-            content.push_str(&format!("  coordinator: {coord}\n"));
-        }
-    } else if let Some(ref coord) = coordinator_name {
-        content.push_str(&format!(
-            "\n# Linker configuration\nlink:\n  coordinator: {coord}\n"
-        ));
-    }
-
-    // Orchestration configuration (when a coordinator is detected)
-    if let Some(ref coord) = coordinator_name {
-        let non_coord_agents: Vec<&String> = pack
-            .agents
-            .iter()
-            .filter(|a| Some(*a) != coordinator_name.as_ref())
-            .collect();
-
-        content.push_str(&format!(
-            "\n# Orchestration — auto-detected coordinator '{coord}'\n\
-             orchestration:\n\
-             \x20 enabled: true\n\
-             \x20 pattern: hierarchical\n\
-             \x20 coordinator: {coord}\n\
-             \x20 teams:\n\
-             \x20   - agents:\n"
-        ));
-        for agent in &non_coord_agents {
-            content.push_str(&format!("        - {agent}\n"));
+        for a in pack.agents.iter().filter(|a| *a != c) {
+            config.push_str(&format!("        - {a}\n"));
         }
     }
-
-    (content, link_target)
+    std::fs::write(base.join("config.yaml"), config)?;
+    Ok(())
 }
 
-/// Create a `.armadai/` project structure pre-configured with a starter pack.
-fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result<()> {
-    let dotarmadai = std::path::Path::new(".armadai");
-    let dotarmadai_config = dotarmadai.join("config.yaml");
-    let legacy_path = std::path::Path::new("armadai.yaml");
-
-    if dotarmadai_config.exists() {
-        anyhow::bail!(".armadai/config.yaml already exists in current directory");
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let dest = to.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            copy_tree(&e.path(), &dest)?;
+        } else if e.file_type()?.is_file() {
+            std::fs::copy(e.path(), dest)?;
+        }
     }
-    if legacy_path.exists() {
+    Ok(())
+}
+
+/// A canonical project from a starter pack (review R-I9): the pack is
+/// materialised as a legacy project in a scratch directory and converted by
+/// `migrate` (same converter, same validation, skill folders copied whole), then
+/// its `.armadai/` is copied here, backup excluded.
+fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::Result<()> {
+    if !force {
+        ensure_no_project(root)?;
+    }
+    let Some(pack_dir) = resolve_pack_dir(pack_name) else {
+        let available = list_available_packs();
         anyhow::bail!(
-            "armadai.yaml already exists in current directory. \
-             Remove it first or manually move it to .armadai/config.yaml"
+            "Starter pack '{pack_name}' not found. Available packs: {}",
+            if available.is_empty() {
+                "none".into()
+            } else {
+                available.join(", ")
+            }
         );
+    };
+    let pack = StarterPack::load(&pack_dir)?;
+    let tmp = tempfile::tempdir()?;
+    materialize_pack(&pack_dir, &pack, pack_name, tmp.path())?;
+    let report = crate::migrate::run(tmp.path(), false, false)?;
+    let built = tmp.path().join(".armadai");
+    for e in std::fs::read_dir(&built)? {
+        let e = e?;
+        if e.file_name() == ".migrated" {
+            continue;
+        }
+        let dest = root.join(".armadai").join(e.file_name());
+        if e.file_type()?.is_dir() {
+            copy_tree(&e.path(), &dest)?;
+        } else {
+            std::fs::create_dir_all(root.join(".armadai"))?;
+            std::fs::copy(e.path(), dest)?;
+        }
     }
-
-    // Create directory structure
-    for subdir in &["agents", "prompts", "skills", "starters"] {
-        std::fs::create_dir_all(dotarmadai.join(subdir))?;
-    }
-
-    let (content, link_target) = generate_project_yaml_with_target(pack, pack_name);
-    std::fs::write(&dotarmadai_config, &content)?;
     let o = crate::cli::style::ok();
     let a = crate::cli::style::accent();
     let m = crate::cli::style::muted();
     anstream::println!(
-        "\n{o}Created .armadai/config.yaml with pack{o:#} {a}'{}'{a:#} {o}agents{o:#}",
-        pack.name
+        "{o}Created .armadai/ from pack{o:#} {a}'{}'{a:#}: {m}{} agent(s), {} skill(s){m:#}",
+        pack.name,
+        report
+            .written
+            .iter()
+            .filter(|p| p.starts_with(".armadai/agents"))
+            .count(),
+        report
+            .written
+            .iter()
+            .filter(|p| p.starts_with(".armadai/skills") && p.ends_with("SKILL.md"))
+            .count(),
     );
-    if link_target.is_none() {
-        let w = crate::cli::style::warn();
-        anstream::println!(
-            "{w}  No link target could be inferred from the pack's agents.{w:#}\n\
-             {m}  Run `armadai link --target <{}>` to generate target config files.{m:#}",
-            supported_target_names().join("|")
-        );
-    } else {
-        anstream::println!("{m}  Run `armadai link` to generate target config files.{m:#}");
+    for w in &report.warnings {
+        let s = crate::cli::style::warn();
+        anstream::eprintln!("{s}  warn: {w}{s:#}");
     }
-
-    // Check for deprecated models in newly created project
-    if let Some((root, _)) = armadai_core::project::find_project_config() {
-        armadai_core::model_updater::auto_check_and_prompt(&root, true);
-    }
-
+    anstream::println!("{m}  Run `armadai link` to generate the target files.{m:#}");
     Ok(())
 }
 
@@ -554,8 +478,10 @@ mod tests {
         assert_eq!(pick_link_target(&providers).as_deref(), Some("copilot"));
     }
 
+    /// Every embedded pack becomes a canonical project that validates (review
+    /// R-I9), with its skill folders whole and only supported targets.
     #[test]
-    fn embedded_packs_never_yield_an_invalid_link_target() {
+    fn every_embedded_pack_becomes_a_valid_canonical_project() {
         let starters =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../armadai-core/starters");
         let supported = supported_target_names();
@@ -567,19 +493,27 @@ mod tests {
             }
             seen += 1;
             let pack = StarterPack::load(&dir).unwrap();
-            let yaml = generate_project_yaml(&pack, dir.to_str().unwrap());
-            let targets: Vec<&str> = yaml
-                .lines()
-                .filter_map(|l| l.strip_prefix("  target: "))
-                .collect();
-            assert!(targets.len() <= 1, "{}: {targets:?}", pack.name);
-            for t in targets {
-                assert!(
-                    supported.contains(&t.trim()),
-                    "{}: invalid link.target {t:?}",
-                    pack.name
-                );
+            let out = tempfile::tempdir().unwrap();
+            init_project_from_pack(out.path(), dir.to_str().unwrap(), false)
+                .unwrap_or_else(|e| panic!("{}: {e:#}", pack.name));
+            let (p, _) = armadai_model::load_checked(out.path())
+                .unwrap_or_else(|ds| panic!("{}: {ds:?}", pack.name));
+            assert_eq!(p.agents.len(), pack.agents.len(), "{}", pack.name);
+            for t in &p.manifest.targets {
+                assert!(supported.contains(&t.as_str()), "{}: {t}", pack.name);
             }
+            for s in pack
+                .skills
+                .iter()
+                .filter(|s| dir.join("skills").join(s).is_dir())
+            {
+                for f in crate::compile::read_tree(&dir.join("skills").join(s)).unwrap() {
+                    let copied = out.path().join(".armadai/skills").join(s).join(&f.0);
+                    assert!(copied.is_file(), "{}: {} lost", pack.name, copied.display());
+                }
+            }
+            assert!(!out.path().join(".armadai/.migrated").exists());
+            assert!(out.path().join(".armadai/.gitignore").is_file());
         }
         assert!(seen >= 7, "expected the embedded packs, saw {seen}");
     }

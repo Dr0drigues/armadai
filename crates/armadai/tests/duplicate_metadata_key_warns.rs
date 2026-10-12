@@ -6,7 +6,7 @@
 //! parser's unit tests prove which duplicates are *detected*; a warning that is
 //! computed but never printed leaves every one of them green. What matters here
 //! is that the real binary puts the sentence on stderr, so these assertions run
-//! `armadai` itself.
+//! `armadai` itself — `migrate`, the command that reads legacy agents since step 2.
 //!
 //! Measured on `master` before the fix, on an agent whose `## Metadata` carries
 //! an `### Alternative setup (not in use)` block:
@@ -133,7 +133,7 @@ You are clean.
         let source = config.join("agents/dup.md");
 
         let output = armadai(&config, &root)
-            .args(["inspect", "dup"])
+            .args(["migrate", "--dry-run"])
             .output()
             .unwrap();
         assert!(
@@ -164,9 +164,8 @@ You are clean.
             );
             // One line per override, not two. Nothing else pins the count:
             // measured, emitting every warning twice left the whole suite
-            // green. `inspect` is the surface to assert it on — it parses
-            // each file once, where `link` parses twice (#419) and so prints
-            // each of these lines twice today. Pinning the count here says
+            // green. `migrate --dry-run` is the surface to assert it on — it parses
+            // each file once. Pinning the count here says
             // "one warning per override" without rusting the moment #419 is
             // fixed.
             assert_eq!(
@@ -179,11 +178,18 @@ You are clean.
         // Which value wins is deliberately unchanged: this issue is about the
         // silence, not the precedence. If that ever becomes a real decision,
         // these three lines are what says it was one.
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("openai"), "last-wins changed:\n{stdout}");
+        // (`migrate` reads legacy agents with this parser since `inspect` moved to
+        // the canonical model.)
+        let done = armadai(&config, &root).arg("migrate").output().unwrap();
         assert!(
-            stdout.contains("gpt-4o-mini"),
-            "last-wins changed:\n{stdout}"
+            done.status.success(),
+            "{}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+        let migrated = std::fs::read_to_string(root.join(".armadai/agents/dup.md")).unwrap();
+        assert!(
+            migrated.contains("temperature: 1.0"),
+            "last-wins changed:\n{migrated}"
         );
     }
 
@@ -197,7 +203,7 @@ You are clean.
         let root = project(dir.path(), "agents:\n  - name: clean\n");
 
         let output = armadai(&config, &root)
-            .args(["inspect", "clean"])
+            .args(["migrate", "--dry-run"])
             .output()
             .unwrap();
         assert!(output.status.success());

@@ -79,7 +79,8 @@ pub fn prune_stale(registry: &mut ProjectRegistry) -> Vec<String> {
     let mut pruned = Vec::new();
     registry.projects.retain(|entry| {
         let root = Path::new(&entry.path);
-        let has_config = root.join(".armadai").join("config.yaml").is_file()
+        let has_config = root.join(".armadai").join("project.yaml").is_file()
+            || root.join(".armadai").join("config.yaml").is_file()
             || root.join("armadai.yaml").is_file()
             || root.join("armadai.yml").is_file();
         if !has_config {
@@ -248,6 +249,25 @@ mod tests {
         assert_eq!(pruned.len(), 1);
         assert_eq!(pruned[0], "/nonexistent/stale");
         assert_eq!(registry.projects.len(), 1);
+    }
+
+    /// `armadai link` registers canonical projects: pruning must keep them.
+    #[test]
+    fn test_prune_keeps_a_canonical_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/project.yaml"),
+            "schema_version: 1\n",
+        )
+        .unwrap();
+        let mut registry = ProjectRegistry {
+            projects: vec![ProjectEntry {
+                path: dir.path().to_string_lossy().to_string(),
+                last_seen: "2025-01-01T00:00:00Z".to_string(),
+            }],
+        };
+        assert!(prune_stale(&mut registry).is_empty());
     }
 
     #[test]
