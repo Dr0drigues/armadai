@@ -491,3 +491,106 @@ fn relinking_without_hooks_removes_the_settings_file_link_created() {
     env.ok(&["link"]);
     assert!(!settings.exists());
 }
+
+/// A changed source is recompiled: link rewrites a file that is still exactly
+/// what it wrote last time.
+#[test]
+fn a_changed_source_is_recompiled_on_relink() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    std::fs::write(
+        env.root().join(".armadai/agents/dev.md"),
+        "---\ndescription: Writes code\n---\nYou write better code.\n",
+    )
+    .unwrap();
+    let out = env.ok(&["link"]);
+    let text = std::fs::read_to_string(env.root().join(".claude/agents/dev.md")).unwrap();
+    assert!(text.contains("better code"), "{text}");
+    assert!(out.contains("agent dev: compiled"), "{out}");
+}
+
+/// A generated file the user edited is left alone, and the report says so: no
+/// `compiled` for a file link did not write. `--force` overwrites it.
+#[test]
+fn an_edited_output_is_left_and_reported_until_forced() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    let dev = env.root().join(".claude/agents/dev.md");
+    std::fs::write(&dev, "mine\n").unwrap();
+    std::fs::write(
+        env.root().join(".armadai/agents/dev.md"),
+        "---\ndescription: Writes code\n---\nYou write better code.\n",
+    )
+    .unwrap();
+    let out = env.ok(&["link"]);
+    assert_eq!(std::fs::read_to_string(&dev).unwrap(), "mine\n");
+    assert!(
+        out.contains(
+            "agent dev: not-compiled (file exists and was not written by link (use --force)"
+        ),
+        "{out}"
+    );
+    assert!(!out.contains("agent dev: compiled"), "{out}");
+    env.ok(&["link", "--force"]);
+    assert!(
+        std::fs::read_to_string(&dev)
+            .unwrap()
+            .contains("better code")
+    );
+}
+
+/// Upgrade: files written by an earlier link whose manifest this build cannot
+/// read (another `version`) are not provably link's: left in place and reported.
+/// Files an earlier link recorded with a digest that still matches are rewritten.
+#[test]
+fn files_of_an_earlier_link_are_rewritten_only_when_provably_ours() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    let dev = env.root().join(".claude/agents/dev.md");
+    let manifest = env.root().join(".armadai/link-manifest.yaml");
+    // an earlier link wrote other bytes, and recorded them
+    std::fs::write(&dev, "old format\n").unwrap();
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let mut out = String::from("sha256:");
+        for b in Sha256::digest(b"old format\n") {
+            out.push_str(&format!("{b:02x}"));
+        }
+        out
+    };
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let start = text.find("- path: .claude/agents/dev.md").unwrap();
+    let d = start + text[start..].find("digest: ").unwrap() + "digest: ".len();
+    let end = d + text[d..].find('\n').unwrap();
+    std::fs::write(&manifest, format!("{}{digest}{}", &text[..d], &text[end..])).unwrap();
+    env.ok(&["link"]);
+    assert!(
+        std::fs::read_to_string(&dev)
+            .unwrap()
+            .contains("You write code.")
+    );
+
+    // a manifest of another format: nothing is provably ours
+    std::fs::write(&dev, "old format\n").unwrap();
+    let text = std::fs::read_to_string(&manifest)
+        .unwrap()
+        .replace("version: 1", "version: 0");
+    std::fs::write(&manifest, text).unwrap();
+    let out = env.ok(&["link"]);
+    assert_eq!(std::fs::read_to_string(&dev).unwrap(), "old format\n");
+    assert!(out.contains("agent dev: not-compiled"), "{out}");
+}
+
+/// `--agents` narrows what is written, never what is considered stale.
+#[test]
+fn agents_filter_never_removes_the_other_agents_files() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    env.ok(&["link", "--agents", "dev"]);
+    assert!(env.root().join(".claude/agents/dev.md").is_file());
+    let out = env.ok(&["link", "--agents", "lead"]);
+    assert!(env.root().join(".claude/agents/dev.md").is_file(), "{out}");
+    // still recorded: unlink reclaims it
+    env.ok(&["unlink"]);
+    assert!(!env.root().join(".claude/agents/dev.md").exists());
+}

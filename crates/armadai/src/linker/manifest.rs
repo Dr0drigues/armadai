@@ -679,6 +679,32 @@ pub fn write_target(
     std::fs::write(path, yaml)
 }
 
+/// Add `entries` to `target`'s record (an entry already recorded at the same path
+/// is kept as is). Used for the files `--agents` left out of a link.
+pub fn append_entries(
+    root: &Path,
+    target: &str,
+    entries: Vec<ManifestEntry>,
+) -> std::io::Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let Some(mut manifest) = read(root) else {
+        return Ok(());
+    };
+    let Some(t) = manifest.targets.get_mut(target) else {
+        return Ok(());
+    };
+    for e in entries {
+        if !t.entries.iter().any(|x| x.path == e.path) {
+            t.entries.push(e);
+        }
+    }
+    let yaml = serde_yaml_ng::to_string(&manifest)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(manifest_path(root), yaml)
+}
+
 /// Create `dir` and any missing ancestors — like `std::fs::create_dir_all`
 /// — but also return exactly the directories that did not already exist,
 /// deepest first (`dir` itself, then its parent if that was also missing,
@@ -805,33 +831,22 @@ pub fn write_files(
                 continue;
             }
 
-            // The freshly generated content differs from what's on disk —
-            // but if the on-disk bytes are still exactly what `link`
-            // itself wrote last time (per the previous manifest), this is
-            // still `link`'s own file, just stale relative to an upstream
-            // change, not a stranger's to leave mislabelled forever.
+            // Still exactly what `link` wrote last time (per the previous
+            // manifest): link's own output, stale against a changed source —
+            // rewritten below, never left behind with a `compiled` report.
             let still_own_output = previous_digests
                 .get(&relative_path)
                 .is_some_and(|old_digest| check_digest(old_digest, &path) == DigestCheck::Matches);
-            if still_own_output {
+            if !still_own_output {
                 manifest_entries.push(ManifestEntry {
-                    path: relative_path.clone(),
+                    path: relative_path,
                     produced_by,
-                    outcome: Outcome::Created,
-                    digest: previous_digests.get(&relative_path).cloned(),
+                    outcome: Outcome::Skipped,
+                    digest: None,
                 });
                 outcomes.push(FileOutcome::SkippedExisting(path));
                 continue;
             }
-
-            manifest_entries.push(ManifestEntry {
-                path: relative_path,
-                produced_by,
-                outcome: Outcome::Skipped,
-                digest: None,
-            });
-            outcomes.push(FileOutcome::SkippedExisting(path));
-            continue;
         }
 
         if let Some(parent) = path.parent() {
@@ -1437,21 +1452,14 @@ mod tests {
         }
     }
 
-    /// Issue #348, coordination note 2: a re-`link` that leaves a file
-    /// untouched (no `--force`, because the *newly generated* content
-    /// differs from what's on disk) must not mislabel that file `Skipped`
-    /// in the manifest when the on-disk bytes are still exactly what
-    /// `link` itself wrote last time — only the upstream source changed,
-    /// not the file.
+    /// A file still exactly what `link` wrote last time is link's own output,
+    /// stale against a changed source: the relink rewrites it (step 2 review
+    /// B1 — it used to be left behind while the report said `compiled`).
     ///
-    /// Mutation this catches: if the previous-digest check were removed
-    /// (or always returned `false`), the second write's entry would come
-    /// back `Skipped`/`None` instead of `Created` with the digest of
-    /// what's actually on disk — this test's outcome/digest assertions
-    /// would fail.
+    /// Mutation this catches: the previous-digest check removed (the file is
+    /// then skipped as hand-written) or the rewrite removed (old content kept).
     #[test]
-    fn write_files_relink_of_untouched_own_output_stays_created_even_when_content_changed_upstream()
-    {
+    fn write_files_relink_rewrites_its_own_output_when_the_source_changed() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let target_root = root.join(".claude");
@@ -1485,26 +1493,13 @@ mod tests {
         )
         .unwrap();
 
-        // Conservative file-system behaviour is unchanged: without
-        // --force, the file itself is never overwritten.
-        assert_eq!(outcomes, vec![FileOutcome::SkippedExisting(path.clone())]);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+        assert_eq!(outcomes, vec![FileOutcome::Wrote(path.clone())]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2");
 
         match lookup_target(root, "claude") {
             Lookup::Found(found) => {
-                assert_eq!(
-                    found.entries[0].outcome,
-                    Outcome::Created,
-                    "a file that is still exactly what link wrote last time must stay \
-                     attributed to link, not be downgraded to hand-written just \
-                     because the upstream source has since changed"
-                );
-                assert_eq!(
-                    found.entries[0].digest,
-                    Some(digest_of(b"v1")),
-                    "the recorded digest must match what's actually on disk, so a \
-                     later unlink can still reclaim this file"
-                );
+                assert_eq!(found.entries[0].outcome, Outcome::Created);
+                assert_eq!(found.entries[0].digest, Some(digest_of(b"v2")));
             }
             Lookup::Fallback => panic!("write_files must leave a usable manifest behind"),
         }

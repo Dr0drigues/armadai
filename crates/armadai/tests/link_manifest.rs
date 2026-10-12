@@ -1623,15 +1623,12 @@ mod tests {
         let (link2_ok, _, link2_stderr) =
             run_armadai(&root, &config, &["link", "--target", "claude"]);
         assert!(link2_ok, "second link must succeed: stderr={link2_stderr}");
-        assert!(
-            link2_stderr.contains("skip:"),
-            "without --force the file must not be overwritten: stderr={link2_stderr}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&solo_file).unwrap(),
-            first_content,
-            "the file itself must remain untouched without --force"
-        );
+        // still exactly what the first link wrote: link's own, so rewritten
+        // (step 2 review B1)
+        assert!(!link2_stderr.contains("skip:"), "stderr={link2_stderr}");
+        let second = std::fs::read_to_string(&solo_file).unwrap();
+        assert_ne!(second, first_content);
+        assert!(second.contains("updated"), "{second}");
 
         let manifest = read_manifest(&root);
         assert!(

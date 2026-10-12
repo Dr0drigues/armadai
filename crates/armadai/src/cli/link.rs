@@ -27,6 +27,9 @@ struct Prepared {
     /// `(settings.json path relative to the root, hooks, native keys)`, Claude only.
     settings: Option<Settings>,
     previous: Option<manifest::TargetManifest>,
+    /// Everything the project produces for this target, `--agents` or not: what
+    /// is stale is decided on this, never on a filtered subset.
+    all_produced: BTreeSet<PathBuf>,
     report: Report,
 }
 
@@ -98,7 +101,9 @@ fn prepare(
             Lookup::Fallback => None,
         },
         report: plan.report,
+        all_produced: BTreeSet::new(),
     };
+    p.all_produced = p.artifacts.iter().map(|a| p.rel(a)).collect();
 
     // `--agents` narrows the agent files only, never the root file nor the hooks
     if let Some(filter) = agents {
@@ -233,6 +238,27 @@ fn remove_stale(root: &Path, p: &mut Prepared, produced: &BTreeSet<PathBuf>) {
     }
 }
 
+/// A file link left in place is not compiled: its element's report line says so
+/// (never `compiled` for a file link did not write).
+fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
+    let Some(a) = p.artifacts.iter().find(|a| root.join(p.rel(a)) == path) else {
+        return;
+    };
+    let element = match a.produced_by.kind {
+        manifest::ProducedByKind::Skill => format!("skill {}", a.produced_by.name),
+        manifest::ProducedByKind::Native => format!("native {}", a.produced_by.name),
+        _ => format!("agent {}", a.produced_by.name),
+    };
+    let reason = format!(
+        "file exists and was not written by link (use --force): {}",
+        p.rel(a).display()
+    );
+    p.report.lines.retain(|l| l.element != element);
+    let target = p.target.clone();
+    p.report
+        .push(&target, element, Status::NotCompiled, Some(&reason));
+}
+
 fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> anyhow::Result<()> {
     let mut patched = Vec::new();
 
@@ -298,7 +324,7 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
             )
         })
         .collect();
-    let produced: BTreeSet<PathBuf> = p.artifacts.iter().map(|a| p.rel(a)).collect();
+    let produced = p.all_produced.clone();
     remove_stale(root, p, &produced);
 
     let target_root = root.join(&p.output_dir);
@@ -311,6 +337,13 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
         force,
         &patched,
     )?;
+    // files `--agents` left out stay recorded as they were
+    let written: BTreeSet<PathBuf> = p.artifacts.iter().map(|a| p.rel(a)).collect();
+    let kept: Vec<manifest::ManifestEntry> = (p.previous.iter().flat_map(|t| &t.entries))
+        .filter(|e| p.all_produced.contains(&e.path) && !written.contains(&e.path))
+        .cloned()
+        .collect();
+    manifest::append_entries(root, &p.target, kept)?;
     for o in outcomes {
         out.push(match o {
             FileOutcome::Wrote(path) => format!("  wrote {}", path.display()),
@@ -320,6 +353,7 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
                     "  skip: {} already exists (use --force to overwrite)",
                     path.display()
                 );
+                not_written(p, root, &path);
                 continue;
             }
         });
