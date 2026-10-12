@@ -15,6 +15,7 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(description = "Default link targets: claude, codex, copilot, opencode")]
     pub targets: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub outputs: BTreeMap<String, String>,

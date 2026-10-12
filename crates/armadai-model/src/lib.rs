@@ -3,11 +3,13 @@
 pub mod check;
 pub mod diag;
 pub mod load;
+pub mod schema;
 pub mod types;
 pub mod write;
 pub use check::{check, has_errors, validate};
 pub use diag::{Diagnostic, Severity, locate, locate_key};
 pub use load::*;
+pub use schema::schemas;
 pub use types::*;
 pub use write::*;
 
