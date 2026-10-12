@@ -1,3 +1,67 @@
+## Unreleased
+
+Declarative refocus ("step 0"). ArmadAI becomes a declarative compiler: agents, prompts and
+skills are described once and compiled by `armadai link` into the native files of Claude Code,
+Codex, OpenCode and Copilot. Everything that executed agents is removed. The removed code is
+recoverable from commit `9b02047`. Spec:
+`docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md`.
+
+### Removed
+
+- **`armadai run`** and the event-sourced orchestration engine (Direct, Blackboard, Ring,
+  Hierarchical, Auto), with `history`, `costs`, `projections`, `up`/`down`, `--pipe`,
+  `--orchestrate`, `--resume` and `--replay` (#446, #450).
+- **The conversational shell** and its setup wizard, and **the TUI** (#446).
+- **The web dashboard** (#445).
+- **SQLite storage** (`armadai-storage` crate) and the run event log (#446).
+- **`armadai watch`** and the Workroom, the Claude Code session adapter and plugin (#445).
+- **`armadai registry`** (awesome-copilot community agents) (#448).
+- **Gemini CLI as a link target**: `link`/`unlink --target gemini` (#449).
+- **The execution providers**: API (Anthropic, OpenAI, Google), CLI relay and proxy, rate
+  limiting, and the online model-catalogue refresh (#450).
+- **Cargo features** `providers-api`, `tui`, `web`, `storage` and `e2e-fake`; the
+  `armadai-fake` crate (#444, #445, #446, #450).
+- **The gaveldrop e2e suite** and the `run_*` integration tests (#444).
+- `docker-compose.yml` (#446).
+
+### Changed
+
+- `armadai` without a subcommand prints the help and exits with code 2, instead of starting the
+  shell (#446).
+- `link` and `new` never touch the network: they read only the local model-catalogue cache;
+  without one, `link` falls back to the embedded model table and `new -i` to the model lists of
+  `providers.yaml` (#450).
+- CI runs a single configuration (one clippy, one test job) instead of nine feature combinations.
+- `audit` is removed from the binary and moved to `frozen/armadai-audit/`, a frozen crate outside
+  the workspace and CI, not maintained (#447).
+- The output of `link` for the four kept targets is pinned by a golden test (#443).
+- The project's own agent team and instructions (`CLAUDE.md`, `.claude/`) are redefined around
+  the declarative scope (#451).
+- Documentation rewritten for the declarative scope; documents of the execution era moved to
+  `docs/archive/`.
+
+### Migration notes
+
+- **A project linked to Gemini**: `link`/`unlink --target gemini` no longer exist. Delete the
+  generated `.gemini/` files listed in `.armadai/link-manifest.yaml` and the `gemini:` entry of
+  that manifest by hand, or run `unlink --target gemini` with the previous version before
+  upgrading. The other targets keep working with the entry in place.
+- **Model catalogue**: nothing refreshes the local catalogue cache any more. A cache written by an
+  earlier version is still read; without one, `link` resolves `latest:*` with the embedded
+  fallback table, whose content is dated (e.g. `claude-sonnet-4-5-20250929` for Anthropic Pro).
+- **Agent metadata** used only by the execution engine (`command`, `args`, `max_tokens`,
+  `timeout`, `cost_limit`, `rate_limit`, `context_window`, `mode`, `## Pipeline`,
+  `## Triggers`, `## Ring Config`) is still parsed but no longer used.
+- **Contributors**: the agent team and the project instructions were redefined (5 agents:
+  `dev-lead`, `schema-specialist`, `adapter-specialist`, `cli-specialist`, `qa-specialist`);
+  the build has no feature flags.
+
+### Security
+
+- `rustls` upgraded to resolve RUSTSEC-2026-0285 (#437).
+- The security audit workflow repaired (permissions and inputs) (#436).
+- Removing `ratatui` drops `lru` from the dependency tree.
+
 ## v1.0.0-rc.5 (2026-07-27)
 
 Fifth release candidate. Consolidates the reopened-scope work: the full
