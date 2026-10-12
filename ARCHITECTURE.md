@@ -84,11 +84,11 @@ Les prompts et skills du projet sont copiés sous `prompts/` et `skills/` dans l
 cible. La sortie des quatre cibles sur un projet témoin est figée par un test d'étalon
 (`crates/armadai/tests/link_golden.rs`).
 
-Deux mécanismes de délégation coexistent, à ne pas confondre : le protocole de marqueurs
-`<!--ARMADAI_DELEGATE-->`, que `link` écrit encore dans le fichier racine mais que plus rien ne
-consomme ; et le gate `PreToolUse` (`armadai __claude-policy-gate`), qui lit `.armadai/config.yaml`
-(`orchestration.policy`) à l'exécution. Rien ne l'installe ni ne le génère : le hook s'ajoute à la
-main (voir `docs/wiki/policy-gate.md`).
+Il n'y a plus de protocole de marqueurs de réponse : `link` n'écrit plus de `ARMADAI_DELEGATE`,
+`ARMADAI_END` ni `ARMADAI_META`, et la délégation passe par le mécanisme natif de chaque outil. Le
+gate `PreToolUse` de Claude Code (`armadai __claude-policy-gate`) est un mécanisme distinct : il lit
+`.armadai/config.yaml` (`orchestration.policy`) à l'exécution. Rien ne l'installe ni ne le génère :
+le hook s'ajoute à la main (voir `docs/wiki/policy-gate.md`).
 
 `OrchestrationPattern { Direct, Blackboard, Ring, Hierarchical, Auto }` et les champs
 `orchestration`, `triggers`, `ring_config` d'un agent sont des types de déclaration conservés pour

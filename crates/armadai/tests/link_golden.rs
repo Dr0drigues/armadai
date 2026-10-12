@@ -117,6 +117,13 @@ mod tests {
                 "target {target}: the coordinator did not reach the output:\n{rendered}"
             );
 
+            // The response-marker protocol was removed: no target may write
+            // an `ARMADAI_` marker into the generated files again.
+            assert!(
+                !rendered.contains("ARMADAI_"),
+                "target {target}: the output contains an ARMADAI_ marker:\n{rendered}"
+            );
+
             let golden = golden_path(target);
             if std::env::var_os("UPDATE_GOLDEN").is_some() {
                 std::fs::create_dir_all(golden.parent().unwrap()).unwrap();

@@ -49,7 +49,7 @@ CI (`.github/workflows/ci.yml`) runs fmt, clippy, test, build (`cargo build --re
 **Non-obvious facts**:
 - `crates/armadai` is **binary-only** — no `lib.rs`. `cargo test --lib` there returns "0 passed" with **no error**; use `--bin armadai` or `--test <name>`.
 - There is no execution engine: `OrchestrationPattern { Direct, Blackboard, Ring, Hierarchical, Auto }` is a declaration type, not something ArmadAI runs, and the linkers do not read it. Its consumers are the parser, `validate`/`inspect` (through the parser), `validate_config` (run by `link` when `orchestration.enabled`) and the policy gate.
-- Two delegation mechanisms exist, don't conflate them: the `<!--ARMADAI_DELEGATE-->` marker protocol, which `link` still writes into the root file but nothing consumes any more; and the `PreToolUse` policy gate (`armadai __claude-policy-gate`), which reads `.armadai/config.yaml` at runtime and is installed by hand (nothing installs or generates it, see `docs/wiki/policy-gate.md`).
+- There is no response-marker protocol any more (`ARMADAI_DELEGATE`/`END`/`META` were removed): delegation goes through each tool's native mechanism. The `PreToolUse` policy gate (`armadai __claude-policy-gate`) is a separate hook for Claude Code: it reads `.armadai/config.yaml` at runtime and is installed by hand (nothing installs or generates it, see `docs/wiki/policy-gate.md`).
 - Test env isolation lives in `armadai_core::test_support` (behind the core's dev-only `test-support` cargo feature) and is **not reentrant** — two guards on one thread deadlock.
 
 **Agent definition** lives in `~/.config/armadai/agents/` (user library) or project-local paths. Templates in `crates/armadai/templates/*.md` use `{{name}}`, `{{stack}}`, `{{description}}`, `{{model}}` placeholders.
