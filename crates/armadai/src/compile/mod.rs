@@ -104,6 +104,53 @@ pub fn read_tree(dir: &Path, within: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<
     Ok(out)
 }
 
+/// The first component of `rel` names `.git` or `.armadai`, in any case (on a
+/// case-insensitive file system `.GIT` is `.git`).
+fn into_sources(rel: &Path) -> bool {
+    rel.components().next().is_some_and(|c| {
+        let c = c.as_os_str().to_string_lossy();
+        c.eq_ignore_ascii_case(".git") || c.eq_ignore_ascii_case(".armadai")
+    })
+}
+
+/// Every file link writes: `root/rel` must stay under `root/trust` once resolved
+/// (symbolic links on the way followed, a link at the destination itself refused),
+/// and never reach `.git/` nor `.armadai/`, lexically or really, in any case.
+pub fn check_destination(root: &Path, trust: &Path, rel: &Path) -> anyhow::Result<()> {
+    use crate::linker::manifest::{lexically_normalize, resolve_real};
+    let path = root.join(rel);
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+        bail!(
+            "{} is a symbolic link; link does not write through it",
+            rel.display()
+        );
+    }
+    let real = resolve_real(root, rel);
+    let real_root = resolve_real(root, Path::new("."));
+    let lexical = lexically_normalize(&path);
+    let inside_lexically = lexical
+        .strip_prefix(lexically_normalize(root))
+        .ok()
+        .map(Path::to_path_buf);
+    if inside_lexically.as_deref().is_some_and(into_sources)
+        || real.strip_prefix(&real_root).is_ok_and(into_sources)
+    {
+        bail!("{} would write into .git/ or .armadai/", rel.display());
+    }
+    if !real.starts_with(resolve_real(root, trust)) {
+        bail!(
+            "{} resolves outside {}; nothing was written",
+            rel.display(),
+            if trust == Path::new(".") {
+                "the project".to_string()
+            } else {
+                trust.display().to_string()
+            }
+        );
+    }
+    Ok(())
+}
+
 /// An output directory link may write and unlink may clean: anywhere (a `--output`
 /// may leave the project for one run) except the project root itself, its sources
 /// (`.armadai/`) and `.git/`, lexically and through symbolic links.
@@ -111,7 +158,7 @@ pub fn check_output(root: &Path, output: &Path) -> anyhow::Result<()> {
     use crate::linker::manifest::resolve_real;
     let base = resolve_real(root, Path::new("."));
     let out = resolve_real(root, output);
-    if out == base || out.starts_with(base.join(".armadai")) || out.starts_with(base.join(".git")) {
+    if out == base || out.strip_prefix(&base).is_ok_and(into_sources) || into_sources(output) {
         bail!(
             "--output {} would write into the project root, `.armadai/` or `.git/`",
             output.display()

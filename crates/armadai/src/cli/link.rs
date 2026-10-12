@@ -157,17 +157,14 @@ fn prepare(
     // `.armadai/native/<target>/<path>` is copied as is to `<root>/<path>`
     let native_dir = root.join(".armadai/native").join(target);
     if native_dir.is_dir() {
-        let generated: BTreeSet<PathBuf> = (p.artifacts.iter().map(|a| p.rel(a)))
+        // everything the project produces, `--agents` or not
+        let generated: BTreeSet<PathBuf> = (p.all_produced.iter().cloned())
             .chain(p.blocks.iter().map(|(r, _)| r.clone()))
             .chain(p.settings.iter().map(|(r, _, _)| r.clone()))
             .collect();
         for (path, content) in read_tree(&native_dir, &root.join(".armadai"))? {
-            if path.starts_with(".armadai") || path.starts_with(".git") {
-                bail!(
-                    "native file {} would write into .armadai/ or .git/",
-                    path.display()
-                );
-            }
+            compile::check_destination(root, Path::new("."), &path)
+                .map_err(|e| anyhow::anyhow!("native file: {e}"))?;
             if generated.contains(&path) {
                 bail!(
                     "native file .armadai/native/{target}/{} collides with a file ArmadAI \
@@ -188,6 +185,28 @@ fn prepare(
                 kind: ArtifactKind::Native,
             });
         }
+    }
+
+    // every destination, before any write: an output from project.yaml must stay in
+    // the project; only `--output` may lead elsewhere, for its own files
+    let trust = if output.is_some() {
+        p.output_dir.clone()
+    } else {
+        PathBuf::from(".")
+    };
+    for a in &p.artifacts {
+        let t = if a.kind == ArtifactKind::Native {
+            Path::new(".")
+        } else {
+            trust.as_path()
+        };
+        compile::check_destination(root, t, &p.rel(a))?;
+    }
+    for (rel, _) in &p.blocks {
+        compile::check_destination(root, Path::new("."), rel)?;
+    }
+    if let Some((rel, _, _)) = &p.settings {
+        compile::check_destination(root, &trust, rel)?;
     }
 
     // the root file of the former Claude linker, which Claude Code still reads

@@ -714,3 +714,110 @@ fn executable_skill_files_stay_executable() {
         .mode();
     assert!(plain & 0o111 == 0, "{plain:o}");
 }
+
+/// On a case-insensitive file system `.GIT` is `.git`: a native file may not
+/// reach the repository's hooks nor the sources under any spelling.
+#[test]
+fn native_files_cannot_reach_git_or_the_sources_under_any_case() {
+    for bad in [
+        ".GIT/hooks/pre-commit",
+        ".Git/config",
+        ".ARMADAI/project.yaml",
+    ] {
+        let mut files = PROJECT.to_vec();
+        let at = format!(".armadai/native/claude/{bad}");
+        files.push((&at, "evil\n"));
+        let env = Env::new(&files);
+        let (ok, _, err) = env.run(&["link"]);
+        assert!(!ok, "{bad}: {err}");
+        assert!(
+            !env.root().join(".claude").exists(),
+            "{bad}: nothing written"
+        );
+    }
+}
+
+#[cfg(unix)]
+fn outside_and_link(env: &Env, link: &str) -> PathBuf {
+    let outside = env.dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let at = env.root().join(link);
+    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&outside, &at).unwrap();
+    outside
+}
+
+#[cfg(unix)]
+fn empty(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|mut d| d.next().is_none())
+        .unwrap_or(true)
+}
+
+/// Every write stays inside the project, whatever links sit on the way.
+#[cfg(unix)]
+#[test]
+fn no_write_leaves_the_project_through_a_symbolic_link() {
+    // an output declared in project.yaml that is a link leading out
+    let mut files = PROJECT.to_vec();
+    files[0] = (
+        ".armadai/project.yaml",
+        "schema_version: 1\noutputs:\n  codex: esc\n",
+    );
+    let env = Env::new(&files);
+    let outside = outside_and_link(&env, "esc");
+    let (ok, _, err) = env.run(&["link", "--target", "codex"]);
+    assert!(!ok, "{err}");
+    assert!(empty(&outside), "codex output written outside");
+
+    // a linked folder inside the default output
+    let env = Env::new(PROJECT);
+    let outside = outside_and_link(&env, ".claude/agents");
+    let (ok, _, err) = env.run(&["link"]);
+    assert!(!ok, "{err}");
+    assert!(empty(&outside), "agents written outside");
+
+    // a dangling link at a destination
+    let env = Env::new(PROJECT);
+    let outside = env.dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::create_dir_all(env.root().join(".claude/agents")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.join("x.md"),
+        env.root().join(".claude/agents/dev.md"),
+    )
+    .unwrap();
+    let (ok, _, err) = env.run(&["link"]);
+    assert!(!ok, "{err}");
+    assert!(!outside.join("x.md").exists(), "followed a dangling link");
+
+    // a link at a destination pointing back into the project: not written through
+    let env = Env::new(PROJECT);
+    std::fs::write(env.root().join("README.md"), "mine\n").unwrap();
+    std::fs::create_dir_all(env.root().join(".claude/agents")).unwrap();
+    std::os::unix::fs::symlink(
+        env.root().join("README.md"),
+        env.root().join(".claude/agents/dev.md"),
+    )
+    .unwrap();
+    let (ok, _, err) = env.run(&["link"]);
+    assert!(!ok && err.contains("symbolic link"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(env.root().join("README.md")).unwrap(),
+        "mine\n"
+    );
+    assert!(
+        !env.root().join("CLAUDE.md").exists(),
+        "refused before any write"
+    );
+}
+
+/// `--agents` narrows what is written, never the native collision check.
+#[test]
+fn agents_filter_keeps_the_native_collision_check() {
+    let mut files = PROJECT.to_vec();
+    files.push((".armadai/native/claude/.claude/agents/dev.md", "mine\n"));
+    let env = Env::new(&files);
+    let (ok, _, err) = env.run(&["link", "--agents", "lead"]);
+    assert!(!ok && err.contains("collides"), "{err}");
+}

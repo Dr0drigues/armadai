@@ -831,6 +831,16 @@ pub fn write_files(
     for (path, content, produced_by) in files {
         let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
 
+        // never write through a link at the destination (it may lead anywhere)
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{} is a symbolic link; link does not write through it",
+                    path.display()
+                ),
+            ));
+        }
         if path.exists() && !force {
             // A pre-existing file whose bytes are *already* exactly what
             // this write would produce is this write's to reclaim, not a
@@ -1526,6 +1536,32 @@ mod tests {
             }
             Lookup::Fallback => panic!("write_files must leave a usable manifest behind"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_files_never_writes_through_a_link_at_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target_root = root.join(".claude");
+        std::fs::create_dir_all(target_root.join("agents")).unwrap();
+        std::fs::write(root.join("victim"), "mine").unwrap();
+        let path = target_root.join("agents/solo.md");
+        std::os::unix::fs::symlink(root.join("victim"), &path).unwrap();
+        let r = write_files(
+            root,
+            "claude",
+            Path::new(".claude"),
+            &target_root,
+            vec![(path, b"x".to_vec(), ProducedBy::agent("solo"))],
+            true,
+            &[],
+        );
+        assert!(r.is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("victim")).unwrap(),
+            "mine"
+        );
     }
 
     // ── resolve_real (issue #348: no direct unit tests before this) ───
