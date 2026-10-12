@@ -43,7 +43,7 @@ const KNOWN_TOOLS: &[(&str, ToolDef)] = &[
 ];
 
 /// API vendor names, which map to themselves.
-pub const API_PROVIDER_NAMES: &[&str] = &["anthropic", "openai", "google", "proxy"];
+const API_PROVIDER_NAMES: &[&str] = &["anthropic", "openai", "google", "proxy"];
 
 fn find_tool(name: &str) -> Option<&'static ToolDef> {
     KNOWN_TOOLS

@@ -18,7 +18,7 @@ armadai-providers = { path = "../armadai-providers" }
 armadai-secrets = { path = "../armadai-secrets" }
 
 # Async runtime
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

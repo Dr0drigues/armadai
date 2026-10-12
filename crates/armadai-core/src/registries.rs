@@ -1,8 +1,9 @@
 //! Custom registry sources configuration and resolution.
 //!
 //! ArmadAI ships with default registry URLs baked into `registry::sync`
-//! (`DEFAULT_REGISTRY_URL`), `skills_registry::sync` (`default_skill_sources`),
-//! and `model_registry::fetch` (`MODELS_DEV_URL`). This module is the socle
+//! (`DEFAULT_REGISTRY_URL`), `skills_registry::sync` (`default_skill_sources`) and
+//! formerly `model_registry::fetch` (`MODELS_DEV_URL`, removed with the
+//! online model-catalogue refresh). This module is the socle
 //! (B2 Lot A / Task 1) that lets users and projects declare *additional*
 //! registry sources via a `registries:` section in
 //! `~/.config/armadai/registries.yaml` (user) and/or `armadai.yaml`
@@ -133,8 +134,7 @@ pub fn resolved_sources(
 /// This is the single sanitization scheme shared by every consumer that
 /// needs to turn an arbitrary registry source URL into a directory or file
 /// name: `registry::sync::source_key` (per-source clone directories) and
-/// `model_registry::fetch::source_cache_path` (per-source model catalog
-/// cache files) both delegate here. Before this, each maintained its own ad
+/// the starter registry cache delegate here. Before this, each maintained its own ad
 /// hoc sanitization, neither of which was collision-resistant (see B2 Task 2
 /// review, minor finding).
 ///
