@@ -43,3 +43,4 @@ docs/SESSION-STATE.md
 # mdBook build output (docs site, not committed)
 book/
 !crates/armadai-model/tests/fixtures/**/.armadai/
+!crates/armadai/tests/fixtures/**/.armadai/

@@ -1,0 +1,9 @@
+# Declared agents (.armadai/agents.yaml) composed from fragments, plus one file agent
+# and a project skill.
+agents:
+  - name: release-notes
+skills:
+  - name: review-checklist
+sources: [https://example.invalid/agents]
+defaults:
+  mode: guided

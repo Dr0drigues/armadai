@@ -1,6 +1,9 @@
 mod claude_adapter;
 mod cli;
 mod linker;
+// shortcut: wired to the CLI in the next commit (`armadai migrate`); drop this allow then.
+#[allow(dead_code)]
+mod migrate;
 mod skills_registry;
 mod starters_registry;
 
