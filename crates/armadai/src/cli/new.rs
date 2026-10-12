@@ -68,7 +68,8 @@ fn template_create(
     let templates_dir = &paths.templates_dir;
     let agents_dir = &paths.agents_dir;
 
-    // Load template
+    // Load template. Through the CLI clap rejects unknown names first; this
+    // listing is kept for programmatic callers.
     let Some(template_source) = load_template_from(templates_dir, template) else {
         let e = crate::cli::style::err();
         anstream::eprintln!("{e}Template '{template}' not found.{e:#}\n");
@@ -86,9 +87,6 @@ fn template_create(
         );
     }
 
-    // Read and replace placeholders
-    let content = template_source;
-
     let title = slug_to_title(name);
     let mut vars = std::collections::BTreeMap::new();
     vars.insert("name".to_string(), title.clone());
@@ -101,7 +99,7 @@ fn template_create(
         vars.insert("stack".to_string(), s.to_string());
     }
 
-    let (content, remaining) = armadai_core::template::render_lenient(&content, &vars);
+    let (content, remaining) = armadai_core::template::render_lenient(&template_source, &vars);
 
     // Ensure agents directory exists
     std::fs::create_dir_all(agents_dir)?;
@@ -575,15 +573,10 @@ pub fn parse_comma_list(input: &str) -> Vec<String> {
 }
 
 /// Clap value parser that provides completion for available template names.
-/// When no templates are found (e.g. templates dir doesn't exist), accepts
-/// any value so that clap doesn't reject the default "basic".
+/// The embedded templates are always offered, so the list is never empty.
 pub fn template_value_parser() -> clap::builder::ValueParser {
     let paths = armadai_core::config::AppPaths::resolve();
     let names = template_names_from(&paths.templates_dir);
-    if names.is_empty() {
-        // No templates found — accept any value, validation happens at runtime
-        return clap::builder::ValueParser::string();
-    }
     // Leak strings to get 'static references needed by clap's PossibleValuesParser.
     // This is called once at startup, so the leak is negligible.
     let leaked: Vec<&'static str> = names

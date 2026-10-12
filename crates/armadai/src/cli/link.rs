@@ -153,7 +153,7 @@ pub async fn execute(
         .or_else(|| config.link.as_ref().and_then(|l| l.target.clone()))
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "No link target specified. Use --target or set link.target in armadai.yaml.\n{}",
+                "No link target specified. Use --target or set link.target in .armadai/config.yaml (or armadai.yaml).\n{}",
                 crate::linker::supported_targets_sentence()
             )
         })?;

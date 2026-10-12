@@ -151,16 +151,16 @@ pub struct OrchestrationConfig {
     pub timeout: Option<u64>,
 
     // ── PR #91 parameters (blackboard/ring) ────────────────────
-    /// Blackboard: max rounds (default: 5).
+    /// Blackboard: max rounds.
     pub max_rounds: Option<u32>,
 
-    /// Ring: max token laps (default: 3).
+    /// Ring: max token laps.
     pub max_laps: Option<u32>,
 
-    /// Consensus threshold (default: 0.75).
+    /// Consensus threshold.
     pub consensus_threshold: Option<f32>,
 
-    /// Global token budget (default: 100_000).
+    /// Global token budget.
     pub token_budget: Option<u64>,
 
     /// Global cost budget in USD (no default, optional enforcement).
