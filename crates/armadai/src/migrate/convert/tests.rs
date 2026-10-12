@@ -611,14 +611,14 @@ fn provider_and_derived_descriptions_are_grouped_in_the_report() {
     assert!(!out.contains("a: provider"), "{out}");
     assert!(
         out.contains(
-            "description derived from the first line of the prompt for 4 agents: a, b, c, d"
+            "description derived from the first sentence of the prompt for 4 agents: a, b, c, d"
         ),
         "{out}"
     );
     let (_, _, r) = convert(&old(vec![agent("A")]));
     assert!(
         r.render()
-            .contains("agent `a`: description derived from the first line of its prompt"),
+            .contains("agent `a`: description derived from the first sentence of its prompt"),
         "{}",
         r.render()
     );
@@ -656,4 +656,31 @@ fn kept_text_after_an_empty_section_is_separated_by_one_blank_line() {
         p.agents["dev"].body,
         "You are Dev.\nMore.\n\n## Output Format\n\n## Report\n\nR."
     );
+}
+
+#[test]
+fn derived_description_is_the_first_whole_sentence() {
+    // Wrapped paragraph: sentence ends mid-line, later lines are ignored.
+    assert_eq!(
+        first_line("You are a reviewer. You focus on\nsafety.\n\nSecond.", 200).unwrap(),
+        "You are a reviewer."
+    );
+    // No terminator: the paragraph is joined on one line.
+    assert_eq!(first_line("  one\n two  \n\nnext", 200).unwrap(), "one two");
+    assert_eq!(first_line("Really? Yes.", 200).unwrap(), "Really?");
+    assert_eq!(
+        first_line("v1.2 is out. Done", 200).unwrap(),
+        "v1.2 is out."
+    );
+    assert_eq!(first_line("\n\n  \n", 200), None);
+}
+
+#[test]
+fn derived_description_longer_than_the_cap_is_cut_at_a_word() {
+    let d = first_line("alpha beta gamma delta", 12).unwrap();
+    assert_eq!(d, "alpha beta…");
+    assert_eq!(first_line("ab cd efgh", 5).unwrap(), "ab cd…"); // space exactly at the cap
+    let d = first_line("abcdefghijklmnop", 5).unwrap(); // no space: hard cut
+    assert_eq!(d, "abcde…");
+    assert!(d.chars().count() <= 6);
 }

@@ -31,6 +31,6 @@ Warnings (6):
   agent `refactor-advisor`: kept verbatim: ## Analyse de refactoring
   agent `rust-reviewer`: kept verbatim: ## Revue de code
   agent `security-auditor`: kept verbatim: ## Audit de securite
-  description derived from the first line of the prompt for 5 agents: rust-reviewer, rust-test-writer, security-auditor, doc-writer, refactor-advisor
+  description derived from the first sentence of the prompt for 5 agents: rust-reviewer, rust-test-writer, security-auditor, doc-writer, refactor-advisor
   unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
 Note: 'armadai link' reads the new format from step 2 of the v1 work; the previous project is in .armadai/.migrated/<timestamp>/.

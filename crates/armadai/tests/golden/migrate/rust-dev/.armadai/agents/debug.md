@@ -1,5 +1,5 @@
 ---
-description: You are a systematic debugger. You follow a disciplined 4-phase process
+description: You are a systematic debugger.
 title: Debug
 tier: pro
 temperature: 0.3

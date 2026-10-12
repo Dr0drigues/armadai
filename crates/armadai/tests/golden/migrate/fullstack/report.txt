@@ -35,7 +35,7 @@ Dropped (25):
   test-writer: stacks (no reader in the new format)
 Warnings (5):
   YAML comments of the legacy files are not preserved; review the backup
-  description derived from the first line of the prompt for 6 agents: code-reviewer, test-writer, doc-generator, claude-cli-reviewer, echo-reviewer, gemini-reviewer
+  description derived from the first sentence of the prompt for 6 agents: code-reviewer, test-writer, doc-generator, claude-cli-reviewer, echo-reviewer, gemini-reviewer
   link target `gemini` is not supported: no default target written
   orchestration references unknown agent `ghost-agent`: omitted from the flow
   unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
