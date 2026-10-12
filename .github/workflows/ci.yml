@@ -67,6 +67,7 @@ jobs:
       # Portability guard (OH7): the reusable core must compile standalone
       # with no heavy deps.
       - run: cargo build -p armadai-core
+      - run: cargo build -p armadai-model
 
   commits:
     name: Conventional Commits
