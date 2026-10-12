@@ -1,5 +1,9 @@
 # v0 → v1 Migration Guide
 
+> **Superseded for projects.** A legacy project is now converted by `armadai migrate`; see
+> [Project format](../../wiki/project-format.md#migrating-a-legacy-project). This archived page
+> describes the earlier v0 → v1 changes.
+
 This guide lists the breaking changes between ArmadAI v0.x and v1.0.0, and
 provides a step-by-step procedure for migrating an existing environment
 (user agents in `~/.config/armadai/`, projects using `armadai.yaml` /
