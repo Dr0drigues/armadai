@@ -1,7 +1,7 @@
 //! Semantic layer: symbol table and cross-references.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::TARGETS;
 use crate::diag::{Diagnostic, Severity, locate, locate_key};
@@ -23,7 +23,8 @@ pub fn validate(root: &Path) -> Vec<Diagnostic> {
     ds
 }
 
-fn valid_id(id: &str) -> bool {
+/// `[a-z0-9][a-z0-9-]{0,63}`
+pub fn is_valid_id(id: &str) -> bool {
     let mut cs = id.chars();
     id.len() <= 64
         && cs
@@ -32,24 +33,39 @@ fn valid_id(id: &str) -> bool {
         && cs.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// Optimal string alignment distance (a swap of two letters costs 1).
 fn edit_distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut prev = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let cur = row[j + 1];
-            row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(cur + 1);
-            prev = cur;
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let sub = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + sub);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
         }
     }
-    row[b.len()]
+    d[a.len()][b.len()]
 }
 
 /// "did you mean" when an id is within edit distance 2, else the known ids.
 fn hint_for(token: &str, known: &BTreeSet<&str>) -> Option<String> {
-    if let Some(near) = known.iter().find(|k| edit_distance(token, k) <= 2) {
+    // closest id (ties: alphabetical, the set is sorted), within a bound that grows with length
+    let bound = (token.chars().count() / 3).max(1);
+    let best = known
+        .iter()
+        .map(|k| (edit_distance(token, k), *k))
+        .min_by_key(|(d, _)| *d);
+    if let Some((_, near)) = best.filter(|(d, _)| *d <= bound) {
         return Some(format!("did you mean `{near}`?"));
     }
     if known.is_empty() {
@@ -78,18 +94,18 @@ impl Out<'_> {
         message: String,
         hint: Option<String>,
     ) {
-        let Some((file, text)) = self.origins.files.get(&(kind, id.to_string())) else {
-            return;
+        // A diagnostic without a known origin is kept, just without a position.
+        let origin = self.origins.files.get(&(kind, id.to_string()));
+        let (line, column) = match (origin, token) {
+            (Some((_, text)), Some((t, false))) => locate(text, t),
+            (Some((_, text)), Some((t, true))) => locate_key(text, t),
+            _ => (None, None),
         };
-        let (line, column) = match token {
-            Some((t, false)) => locate(text, t),
-            Some((t, true)) => locate_key(text, t),
-            None => (None, None),
-        };
+        let file = origin.map_or_else(|| PathBuf::from(id), |(f, _)| f.clone());
         self.ds.push(Diagnostic {
             severity,
             code,
-            file: file.clone(),
+            file,
             path: String::new(),
             line,
             column,
@@ -157,7 +173,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         (Kind::Flow, project.flows.keys().collect()),
         (Kind::Automation, project.automations.keys().collect()),
     ] {
-        for id in ids.into_iter().filter(|id| !valid_id(id)) {
+        for id in ids.into_iter().filter(|id| !is_valid_id(id)) {
             o.err(
                 (kind, id),
                 "bad-id",
@@ -284,6 +300,24 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
             if let Some(t) = s.on_failure.as_deref().filter(|t| !steps.contains(t)) {
                 o.unknown_ref(at, "unknown-step", "step", t, &steps);
             }
+            if s.on_failure.as_deref() == Some(sid.as_str()) {
+                o.err(
+                    at,
+                    "self-link",
+                    Some(("on_failure", true)),
+                    format!("step `{sid}` has itself as `on_failure`"),
+                    None,
+                );
+            }
+            if !is_valid_id(sid) {
+                o.err(
+                    at,
+                    "bad-id",
+                    Some((sid, false)),
+                    format!("step id `{sid}` is not a valid id"),
+                    Some("ids match [a-z0-9][a-z0-9-]{0,63}".into()),
+                );
+            }
         }
 
         // failure paths: on_failure + links `when: failed`, per source step
@@ -293,7 +327,18 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 *failure.entry(sid).or_default() += 1;
             }
         }
+        let mut seen_links = BTreeSet::new();
         for l in &f.links {
+            let key = (&l.from, &l.to, l.when.as_deref().unwrap_or("done"));
+            if !seen_links.insert(key) {
+                o.err(
+                    at,
+                    "duplicate-link",
+                    Some((&l.from, false)),
+                    format!("link `{}` -> `{}` is declared twice", l.from, l.to),
+                    None,
+                );
+            }
             for end in [&l.from, &l.to] {
                 if !steps.contains(end.as_str()) {
                     o.unknown_ref(at, "unknown-step", "step", end, &steps);

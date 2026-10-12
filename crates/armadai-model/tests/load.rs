@@ -431,3 +431,15 @@ fn bom_does_not_shift_columns_and_split_tolerates_it() {
         Some(("a: 1\n", "B\n", 2))
     );
 }
+
+#[test]
+fn sequence_exclusivity_is_about_key_presence() {
+    for body in [
+        "steps: {}\nsequence: [dev]\n",
+        "sequence: []\nsteps:\n  a: { agent: dev }\n",
+        "sequence: [dev]\nlinks: []\n",
+    ] {
+        let ds = errors_for(&[M, (".armadai/flows/f.yaml", body)], "sequence-and-steps");
+        assert_eq!(ds.len(), 1, "{body}");
+    }
+}

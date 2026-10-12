@@ -456,3 +456,127 @@ fn id_length_limit_is_64() {
     let ds = diags(&[M, (&format!(".armadai/agents/{bad}.md"), body)]);
     only(&ds, "bad-id");
 }
+
+#[test]
+fn on_failure_to_its_own_step_is_a_self_link() {
+    let ds = flow("steps:\n  a: { agent: dev, on_failure: a }\n");
+    err(&ds, "self-link", (2, 20));
+}
+
+#[test]
+fn did_you_mean_picks_the_closest_within_a_proportional_bound() {
+    let agent = |n: &str| {
+        (
+            format!(".armadai/agents/{n}.md"),
+            "---\ndescription: d\n---\n".to_string(),
+        )
+    };
+    let (a1, b1) = agent("reviewer");
+    let (a2, b2) = agent("reviewers");
+    let ds = diags(&[
+        M,
+        (&a1, &b1),
+        (&a2, &b2),
+        (
+            ".armadai/flows/f.yaml",
+            "steps:\n  a: { agent: reviewerz }\n",
+        ),
+    ]);
+    // `reviewers` is at distance 1, `reviewer` at 1 too: tie -> alphabetical
+    assert_eq!(
+        only(&ds, "unknown-agent").hint.as_deref(),
+        Some("did you mean `reviewer`?")
+    );
+    let ds = diags(&[
+        M,
+        (&a1, &b1),
+        (
+            ".armadai/flows/f.yaml",
+            "steps:\n  a: { agent: reviewxx }\n",
+        ),
+    ]);
+    // distance 2 > max(1, 8/3) = 2? equal: accepted
+    assert_eq!(
+        only(&ds, "unknown-agent").hint.as_deref(),
+        Some("did you mean `reviewer`?")
+    );
+    let ds = diags(&[
+        M,
+        (&a1, &b1),
+        (
+            ".armadai/flows/f.yaml",
+            "steps:\n  a: { agent: rexxxxxx }\n",
+        ),
+    ]);
+    assert!(
+        only(&ds, "unknown-agent")
+            .hint
+            .unwrap()
+            .starts_with("known:")
+    );
+    // short token: bound is 1, so distance 2 is refused
+    let (a3, b3) = agent("dev");
+    let ds = diags(&[
+        M,
+        (&a3, &b3),
+        (".armadai/flows/f.yaml", "steps:\n  a: { agent: xyv }\n"),
+    ]);
+    assert!(
+        only(&ds, "unknown-agent")
+            .hint
+            .unwrap()
+            .starts_with("known:")
+    );
+}
+
+#[test]
+fn a_diagnostic_without_origin_is_kept_without_position() {
+    let loaded = load_project(
+        project(&[
+            M,
+            DEV,
+            (".armadai/flows/f.yaml", "steps:\n  a: { agent: ghost }\n"),
+        ])
+        .path(),
+    );
+    let ds = check(&loaded.project.unwrap(), &Origins::default());
+    let d = only(&ds, "unknown-agent");
+    assert_eq!((d.line, d.column), (None, None));
+}
+
+#[test]
+fn identical_links_are_a_duplicate() {
+    let ds = flow(
+        "steps:\n  a: { agent: dev }\n  b: { agent: dev }\nlinks:\n  - { from: a, to: b }\n  - { from: a, to: b, when: done }\n",
+    );
+    only(&ds, "duplicate-link");
+    let ds = flow(
+        "steps:\n  a: { agent: dev }\n  b: { agent: dev }\nlinks:\n  - { from: a, to: b }\n  - { from: a, to: b, when: failed }\n",
+    );
+    assert!(!ds.iter().any(|d| d.code == "duplicate-link"), "{ds:?}");
+}
+
+#[test]
+fn step_ids_follow_the_id_pattern() {
+    let ds = flow("steps:\n  Bad_Step: { agent: dev }\n");
+    let d = err(&ds, "bad-id", (2, 3));
+    assert!(d.message.contains("Bad_Step"));
+}
+
+#[test]
+fn did_you_mean_prefers_the_nearest_over_the_first() {
+    let body = "---\ndescription: d\n---\n";
+    let ds = diags(&[
+        M,
+        (".armadai/agents/pipe-a.md", body),
+        (".armadai/agents/pipelinx.md", body),
+        (
+            ".armadai/flows/f.yaml",
+            "steps:\n  a: { agent: pipeline }\n",
+        ),
+    ]);
+    assert_eq!(
+        only(&ds, "unknown-agent").hint.as_deref(),
+        Some("did you mean `pipelinx`?")
+    );
+}

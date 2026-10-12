@@ -12,10 +12,26 @@ fn fixtures() -> Vec<PathBuf> {
     v
 }
 
+fn fixture(name: &str) -> PathBuf {
+    fixtures().into_iter().find(|p| p.ends_with(name)).unwrap()
+}
+
 fn load_ok(root: &Path) -> Project {
     let l = load_project(root);
-    assert!(l.diagnostics.is_empty(), "{:?}", l.diagnostics);
+    assert!(!has_errors(&l.diagnostics), "{:?}", l.diagnostics);
     l.project.unwrap()
+}
+
+/// The writer ends every non-empty body with a newline.
+fn normalized(mut p: Project) -> Project {
+    let fix = |b: &mut String| {
+        if !b.is_empty() && !b.ends_with('\n') {
+            b.push('\n');
+        }
+    };
+    p.agents.values_mut().for_each(|a| fix(&mut a.body));
+    p.skills.values_mut().for_each(|s| fix(&mut s.body));
+    p
 }
 
 /// Every file under `<root>/.armadai`, as (relative path, bytes).
@@ -49,7 +65,7 @@ fn roundtrip_is_semantically_stable() {
     let all = fixtures();
     assert!(!all.is_empty());
     for fx in all {
-        let a = load_ok(&fx);
+        let a = normalized(load_ok(&fx));
         let dir = tempfile::tempdir().unwrap();
         write_project(&a, dir.path()).unwrap();
         let b = load_ok(dir.path());
@@ -103,7 +119,7 @@ fn body_without_trailing_newline_gets_one() {
 #[test]
 fn sequence_flow_is_written_expanded() {
     let dir = tempfile::tempdir().unwrap();
-    write_project(&load_ok(&fixtures()[0]), dir.path()).unwrap();
+    write_project(&load_ok(&fixture("full")), dir.path()).unwrap();
     let text = std::fs::read_to_string(dir.path().join(".armadai/flows/linear.yaml")).unwrap();
     assert!(!text.contains("sequence"), "{text}");
     assert!(text.contains("steps:") && text.contains("links:"), "{text}");
@@ -112,7 +128,7 @@ fn sequence_flow_is_written_expanded() {
 
 #[test]
 fn agent_key_order_follows_the_struct() {
-    let a = load_ok(&fixtures()[0]);
+    let a = load_ok(&fixture("full"));
     let out = render_agent("developpeur", &a.agents["developpeur"]);
     let pos = |k: &str| {
         out.find(&format!("\n{k}:"))
@@ -122,4 +138,49 @@ fn agent_key_order_follows_the_struct() {
     assert!(pos("title") < pos("tier") && pos("tier") < pos("temperature"));
     assert!(pos("temperature") < pos("tags") && pos("skills") < pos("capabilities"));
     assert!(pos("capabilities") < pos("native"));
+}
+
+#[test]
+fn unknown_skill_keys_survive_the_round_trip() {
+    let edge = fixture("edge");
+    let a = load_ok(&edge);
+    let out = render_skill(&a.skills["tooling"]);
+    assert!(out.contains("allowed-tools: Bash"), "{out}");
+    assert!(out.contains("x-custom:"), "{out}");
+    assert!(out.contains("compatibility:"), "{out}");
+}
+
+#[test]
+fn frontmatter_with_fence_lookalikes_is_not_cut_short() {
+    let edge = fixture("edge");
+    let a = load_ok(&edge);
+    assert_eq!(
+        a.agents["edge"].front.description,
+        "Line one\n---\nLine three\n"
+    );
+    assert_eq!(
+        a.agents["edge"].body,
+        "Intro\n---\nA rule above and below\n---\nEnd\n"
+    );
+}
+
+#[test]
+fn write_refuses_ids_that_are_not_safe_file_names() {
+    let mut p = load_ok(&fixture("full"));
+    let agent = p.agents["lead"].clone();
+    for bad in ["../evil", "a/b", "..", "Dev", ""] {
+        let mut q = p.clone();
+        q.agents.insert(bad.to_string(), agent.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let e = write_project(&q, dir.path()).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{bad}");
+        assert!(
+            !dir.path().join(".armadai").exists(),
+            "{bad}: wrote before refusing"
+        );
+    }
+    p.agents.clear();
+    p.flows.clear();
+    let dir = tempfile::tempdir().unwrap();
+    write_project(&p, dir.path()).unwrap();
 }

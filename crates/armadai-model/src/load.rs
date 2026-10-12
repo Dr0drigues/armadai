@@ -142,6 +142,30 @@ pub fn expand_sequence(items: &[SeqItem]) -> (BTreeMap<String, Step>, Vec<Link>)
     (steps, links)
 }
 
+/// Remove every ` at line N column M` suffix, wherever it sits.
+fn strip_positions(msg: &str) -> String {
+    let mut out = String::new();
+    let mut rest = msg;
+    while let Some(i) = rest.find(" at line ") {
+        let after = &rest[i + " at line ".len()..];
+        let digits = |s: &str| s.bytes().take_while(u8::is_ascii_digit).count();
+        let n = digits(after);
+        let tail = &after[n..];
+        match tail.strip_prefix(" column ") {
+            Some(t) if n > 0 && digits(t) > 0 => {
+                out.push_str(&rest[..i]);
+                rest = &t[digits(t)..];
+            }
+            _ => {
+                out.push_str(&rest[..i + 1]);
+                rest = &rest[i + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 struct Ctx {
     origins: Origins,
     diagnostics: Vec<Diagnostic>,
@@ -248,11 +272,8 @@ impl Ctx {
             Err(e) => e,
         };
         let loc = err.location();
-        let mut message = err.to_string();
         // the position lives in the line/column fields
-        if let Some(i) = message.rfind(" at line ") {
-            message.truncate(i);
-        }
+        let message = strip_positions(&err.to_string());
         self.diagnostics.push(Diagnostic {
             severity: Severity::Error,
             code: "invalid-yaml",
@@ -395,28 +416,15 @@ pub fn load_project(root: &Path) -> Loaded {
         let Some(front) = cx.parse::<SkillFront>(yaml, &p, first - 1) else {
             continue;
         };
-        if let Ok(serde_yaml_ng::Value::Mapping(m)) = serde_yaml_ng::from_str(yaml) {
-            const KNOWN: [&str; 5] = [
-                "name",
-                "description",
-                "license",
-                "compatibility",
-                "metadata",
-            ];
-            for k in m.keys().filter_map(|k| k.as_str()) {
-                if !KNOWN.contains(&k) {
-                    cx.diag(
-                        Severity::Warning,
-                        "unknown-skill-key",
-                        &p,
-                        {
-                            let (l, c) = locate_key(yaml, k);
-                            (l.map(|l| l + first - 1), c)
-                        },
-                        format!("unknown skill frontmatter key `{k}`"),
-                    );
-                }
-            }
+        for k in front.extra.keys() {
+            let (l, c) = locate_key(yaml, k);
+            cx.diag(
+                Severity::Warning,
+                "unknown-skill-key",
+                &p,
+                (l.map(|l| l + first - 1), c),
+                format!("unknown skill frontmatter key `{k}`"),
+            );
         }
         skills.insert(
             id,
@@ -439,9 +447,13 @@ pub fn load_project(root: &Path) -> Loaded {
         let Some(raw) = cx.parse::<FlowFile>(&text, &p, 0) else {
             continue;
         };
-        let (steps, links) = if raw.sequence.is_empty() {
+        let has = |k: &str| {
+            matches!(serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text),
+                Ok(serde_yaml_ng::Value::Mapping(m)) if m.contains_key(k))
+        };
+        let (steps, links) = if !has("sequence") {
             (raw.steps, raw.links)
-        } else if !raw.steps.is_empty() || !raw.links.is_empty() {
+        } else if has("steps") || has("links") {
             cx.error(
                 "sequence-and-steps",
                 &p,
@@ -494,5 +506,24 @@ pub fn load_project(root: &Path) -> Loaded {
         }),
         origins: cx.origins,
         diagnostics: cx.diagnostics,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_positions;
+
+    #[test]
+    fn strips_every_position_suffix_wherever_it_is() {
+        assert_eq!(strip_positions("bad value at line 3 column 7"), "bad value");
+        assert_eq!(
+            strip_positions("a at line 1 column 2, then b at line 4 column 5"),
+            "a, then b"
+        );
+        assert_eq!(
+            strip_positions("arrived at line speed"),
+            "arrived at line speed"
+        );
+        assert_eq!(strip_positions("at line 3 column x"), "at line 3 column x");
     }
 }

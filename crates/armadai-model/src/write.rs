@@ -49,6 +49,17 @@ pub fn render_automation(a: &Automation) -> String {
 
 /// Write `project` under `root/.armadai/`; returns the written paths, sorted.
 pub fn write_project(project: &Project, root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    // ids become file names: refuse anything that could escape `.armadai/` (before writing)
+    let ids = (project.agents.keys())
+        .chain(project.skills.keys())
+        .chain(project.flows.keys())
+        .chain(project.automations.keys());
+    if let Some(bad) = ids.into_iter().find(|id| !crate::is_valid_id(id)) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("`{bad}` is not a valid id"),
+        ));
+    }
     let base = root.join(".armadai");
     let mut files: Vec<(PathBuf, String)> = vec![(
         base.join("project.yaml"),

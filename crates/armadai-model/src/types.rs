@@ -198,6 +198,10 @@ pub struct SkillFront {
     pub compatibility: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, String>>,
+    /// Keys owned by other tools (`allowed-tools`, ...): kept so a rewrite loses nothing.
+    #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(with = "BTreeMap<String, serde_json::Value>")]
+    pub extra: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
 #[cfg(test)]
