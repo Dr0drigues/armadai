@@ -5,9 +5,59 @@ use std::path::PathBuf;
 
 use armadai_core::pack_validation::{Severity, validate_pack, validate_project_config};
 
-pub async fn execute(path: Option<PathBuf>) -> anyhow::Result<()> {
+const LEGACY_INVITATION: &str =
+    "This project uses the legacy format. Run `armadai migrate` to convert it.";
+
+/// New format: `.armadai/project.yaml` present. Diagnostics come from `armadai-model`.
+fn execute_new(target_path: &std::path::Path, json: bool) -> anyhow::Result<()> {
+    use armadai_model::{Severity as S, has_errors, validate};
+
+    let ds = validate(target_path);
+    let errors = ds.iter().filter(|d| d.severity == S::Error).count();
+    let warnings = ds.len() - errors;
+    if json {
+        let v: Vec<_> = ds
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "severity": d.severity.as_str(),
+                    "code": d.code,
+                    "file": d.file.display().to_string(),
+                    "path": d.path,
+                    "line": d.line,
+                    "column": d.column,
+                    "message": d.message,
+                    "hint": d.hint,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&v)?);
+    } else {
+        for d in &ds {
+            println!("{}", d.render());
+        }
+        let style = if errors > 0 {
+            crate::cli::style::err()
+        } else if warnings > 0 {
+            crate::cli::style::warn()
+        } else {
+            crate::cli::style::ok()
+        };
+        anstream::println!("{style}{errors} error(s), {warnings} warning(s){style:#}");
+    }
+    if has_errors(&ds) {
+        anyhow::bail!("validation failed: {errors} error(s)");
+    }
+    Ok(())
+}
+
+pub async fn execute(path: Option<PathBuf>, json: bool) -> anyhow::Result<()> {
     // Resolve path (default: current directory)
     let target_path = path.unwrap_or_else(|| env::current_dir().expect("Failed to get cwd"));
+
+    if target_path.join(".armadai/project.yaml").is_file() {
+        return execute_new(&target_path, json);
+    }
 
     // Auto-detect mode
     let pack_yaml = target_path.join("pack.yaml");
@@ -87,6 +137,9 @@ pub async fn execute(path: Option<PathBuf>) -> anyhow::Result<()> {
 
     // Exit code logic
     if error_count > 0 {
+        if mode == "project" {
+            println!("{LEGACY_INVITATION}");
+        }
         anyhow::bail!("validation failed: {} error(s)", error_count);
     }
 
@@ -97,6 +150,9 @@ pub async fn execute(path: Option<PathBuf>) -> anyhow::Result<()> {
         mode,
         target_path.display()
     );
+    if mode == "project" {
+        println!("{LEGACY_INVITATION}");
+    }
 
     Ok(())
 }

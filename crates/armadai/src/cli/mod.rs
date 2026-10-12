@@ -111,6 +111,9 @@ pub enum Command {
     Validate {
         /// Path to pack or project directory (default: current directory)
         path: Option<std::path::PathBuf>,
+        /// Print the diagnostics of a new-format project as a JSON array
+        #[arg(long)]
+        json: bool,
     },
     /// Extract agents, prompts, and skills with dependency resolution
     #[command(
@@ -378,7 +381,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             list::execute(tags, stack).await
         }
         Command::Inspect { agent } => inspect::execute(agent).await,
-        Command::Validate { path } => validate::execute(path).await,
+        Command::Validate { path, json } => validate::execute(path, json).await,
         Command::Config { action } => config::execute(action).await,
         Command::Models(action) => models::execute(action).await,
         Command::Extract(args) => extract::execute(args).await,
