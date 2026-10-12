@@ -14,8 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 armadai-core = { path = "../../crates/armadai-core" }
-# Model catalogue only (`model_registry::fetch::load_all_providers_cached`),
-# without the `api` feature: no HTTP client, no execution provider.
+# Model catalogue only (`model_registry::fetch::load_all_providers_cached`):
+# a read-only cache reader, no HTTP client, no execution provider.
 armadai-providers = { path = "../../crates/armadai-providers" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

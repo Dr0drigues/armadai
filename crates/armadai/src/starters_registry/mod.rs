@@ -5,7 +5,7 @@
 //! Cache-dir resolution and pack discovery (`starters_cache_dir`,
 //! `discover_packs`) live in `armadai_core::starter` — pure filesystem/YAML
 //! logic with no coupling to fetching, re-exported here for the fetchers
-//! below (which own the git/archive sync path, gated behind `providers-api`).
+//! below (which own the git/archive sync path).
 
 use std::path::{Path, PathBuf};
 
@@ -121,10 +121,6 @@ fn archive_entry_is_safe(name: &str) -> bool {
 
 /// List entry paths inside an archive without extracting it, so they can be
 /// validated by [`archive_entry_is_safe`] before anything is written to disk.
-// Only called by `extract_archive`, itself only called by `ArchiveFetcher`
-// (gated `providers-api`); without that feature this helper is unused (still
-// exercised indirectly through `extract_archive`'s own tests).
-#[cfg_attr(not(feature = "providers-api"), allow(dead_code))]
 fn list_archive_entries(archive: &Path, is_zip: bool) -> anyhow::Result<Vec<String>> {
     let out = if is_zip {
         std::process::Command::new("unzip")
@@ -156,9 +152,6 @@ fn list_archive_entries(archive: &Path, is_zip: bool) -> anyhow::Result<Vec<Stri
 /// [`archive_entry_is_safe`]: a malicious archive with a `../../etc/x` or
 /// absolute-path entry (zip-slip) is rejected up front rather than allowed to
 /// write outside `dest`.
-// Only called by `ArchiveFetcher`, which is gated `providers-api`; without
-// that feature this helper is unused (still exercised directly by tests).
-#[cfg_attr(not(feature = "providers-api"), allow(dead_code))]
 fn extract_archive(archive: &Path, dest: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dest)?;
     let name = archive.to_string_lossy().to_lowercase();
@@ -200,10 +193,8 @@ fn extract_archive(archive: &Path, dest: &Path) -> anyhow::Result<()> {
 }
 
 /// Archive-backed fetcher: download via reqwest, then extract via `tar`/`unzip`.
-#[cfg(feature = "providers-api")]
 pub struct ArchiveFetcher;
 
-#[cfg(feature = "providers-api")]
 impl StarterFetcher for ArchiveFetcher {
     fn fetch(&self, url: &str, dest: &Path) -> anyhow::Result<()> {
         // Download to a temp file, then extract into `dest`.
@@ -221,7 +212,6 @@ impl StarterFetcher for ArchiveFetcher {
     }
 }
 
-#[cfg(feature = "providers-api")]
 fn archive_ext(url: &str) -> &'static str {
     let u = url.to_lowercase();
     if u.ends_with(".zip") {
@@ -233,7 +223,6 @@ fn archive_ext(url: &str) -> &'static str {
     }
 }
 
-#[cfg(feature = "providers-api")]
 fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
     // `fetch` is a sync trait method but is called from WITHIN an async runtime
     // (`registry sync`, `init`). Creating a tokio runtime inline would panic
@@ -265,18 +254,8 @@ pub fn fetch_starter_source(source: &RegistrySource) -> anyhow::Result<PathBuf> 
             Ok(dest)
         }
         SourceKind::Archive => {
-            #[cfg(feature = "providers-api")]
-            {
-                ArchiveFetcher.fetch(&source.url, &dest)?;
-                Ok(dest)
-            }
-            #[cfg(not(feature = "providers-api"))]
-            {
-                anyhow::bail!(
-                    "archive starter source '{}' requires the `providers-api` feature (B2 Lot B Lot 2)",
-                    source.url
-                )
-            }
+            ArchiveFetcher.fetch(&source.url, &dest)?;
+            Ok(dest)
         }
     }
 }
@@ -336,18 +315,6 @@ mod tests {
         assert_eq!(packs.len(), 1);
         assert_eq!(packs[0].file_name().unwrap().to_string_lossy(), "rust-qa");
         let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    #[cfg(not(feature = "providers-api"))]
-    fn fetch_archive_kind_errors_without_providers_api() {
-        // Without `providers-api`, archive sources have no fetcher wired and
-        // must fail fast with a clear error (no network attempted).
-        let src = RegistrySource {
-            url: "https://x/p.tar.gz".to_string(),
-            kind: None,
-        };
-        assert!(fetch_starter_source(&src).is_err());
     }
 
     #[test]
@@ -455,7 +422,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "providers-api"))]
+#[cfg(test)]
 mod archive_tests {
     use super::*;
     use std::fs;

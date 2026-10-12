@@ -4,22 +4,12 @@ version = "1.0.0-rc.5"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "ArmadAI — LLM provider implementations (API + CLI) and model registry."
-
-[features]
-api = ["dep:reqwest", "dep:armadai-secrets"]
+description = "ArmadAI — read-only models.dev catalogue cache and tool-to-vendor table."
 
 [dependencies]
 armadai-core = { path = "../armadai-core" }
-armadai-secrets = { path = "../armadai-secrets", optional = true }
-anyhow = { workspace = true }
-async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tracing = { workspace = true }
-tokio = { workspace = true, features = ["process", "io-util", "time", "macros", "rt", "rt-multi-thread", "sync"] }
-tokio-stream = { workspace = true }
-reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 armadai-core = { path = "../armadai-core", features = ["test-support"] }

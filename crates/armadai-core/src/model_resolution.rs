@@ -154,9 +154,9 @@ pub fn effective_tier(vendor: &str, tier: ModelTier) -> ModelTier {
 ///
 /// Returns `None` for a concrete model id — and, deliberately, for
 /// `latest:auto`: that placeholder's tier is not knowable statically. It
-/// depends on the run's own input and is resolved per call by
-/// [`crate::routing::route`], which is why every caller here treats it
-/// separately rather than folding it into this table.
+/// depends on the run's own input (the `routing:` rules, see
+/// [`crate::routing::RoutingRules`]), which is why every caller here treats
+/// it separately rather than folding it into this table.
 ///
 /// Lives in core (rather than beside the linker, which was its only user
 /// until #376) because the run path needs the exact same table: a tier
@@ -290,14 +290,13 @@ struct CachedModel {
 /// Read the model ids and prices for `provider` from the shared, on-disk
 /// models.dev cache (`<config_dir>/models-cache.json`), ignoring cache age.
 ///
-/// This is a minimal, dependency-free mirror of the bin-side
-/// `model_registry::fetch::load_models_cached` (which also exposes the
-/// context window and the display name). Core reads the same cache file
-/// directly instead of depending on the `model_registry` module — which
-/// stays in the bin (it owns the online refresh path, gated behind
-/// `providers-api`, and the richer `ModelEntry` used by the TUI/Web/CLI
-/// listings). Returns `None` if the cache is missing/unreadable; callers
-/// fall back to [`fallback_model_for_tier`].
+/// This is a minimal, dependency-free mirror of
+/// `armadai_providers::model_registry::fetch::load_models` (which also
+/// exposes the context window and the display name). Core reads the same
+/// cache file directly instead of depending on `armadai-providers`, which
+/// owns the richer `ModelEntry` used by the CLI listings. Returns `None` if
+/// the cache is missing/unreadable; callers fall back to
+/// [`fallback_model_for_tier`].
 ///
 /// The price is read and the context window is not, on purpose: a tier is a
 /// price class, whereas the context window is not monotone in the tier —

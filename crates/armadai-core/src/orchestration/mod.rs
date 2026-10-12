@@ -1,51 +1,10 @@
-//! Unified orchestration module.
-//!
-//! Supports four patterns:
-//! - **Direct**: single-shot agent execution (default)
-//! - **Blackboard**: parallel shared-state (PR #91)
-//! - **Ring**: sequential token-passing with consensus (PR #91)
-//! - **Hierarchical**: pyramid topology with coordinator → leads → agents
-//!
-//! The `Auto` variant uses a classifier to pick the best pattern.
+//! Orchestration declaration types: the `orchestration:` section of
+//! `armadai.yaml` and the per-agent orchestration metadata, their validation,
+//! and the Claude Code policy gate (`policy`). No execution engine lives here.
 
-pub mod agent_selection;
-pub mod blackboard;
-pub mod classifier;
-pub mod context_injection;
-pub mod es;
-pub mod hierarchical;
-pub mod llm_agents;
 pub mod policy;
-pub mod protocol;
-pub mod ring;
-#[cfg(test)]
-pub(crate) mod test_helpers;
 
 use serde::{Deserialize, Serialize};
-
-/// Custom serde helpers for `Arc<Vec<T>>` so we can drop the global `serde/rc`
-/// feature flag.  Serializes/deserializes as a plain `Vec<T>`.
-pub(crate) mod arc_vec_serde {
-    use std::sync::Arc;
-
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<T: Serialize, S: Serializer>(
-        data: &Arc<Vec<T>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        data.as_ref().serialize(serializer)
-    }
-
-    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Arc<Vec<T>>, D::Error> {
-        Vec::<T>::deserialize(deserializer).map(Arc::new)
-    }
-}
-
-use self::blackboard::BlackboardConfig;
-use self::ring::RingConfig;
 
 /// Orchestration pattern for multi-agent execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -95,15 +54,6 @@ impl std::fmt::Display for NestedPattern {
             Self::Ring => write!(f, "ring"),
         }
     }
-}
-
-/// Configuration for the selected orchestration pattern.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "pattern", rename_all = "lowercase")]
-pub enum PatternConfig {
-    Direct { agent: String },
-    Blackboard(BlackboardConfig),
-    Ring(RingConfig),
 }
 
 /// Blackboard trigger configuration for reactive agent activation.
@@ -383,64 +333,6 @@ pub fn validate_config(
     }
 }
 
-// ── Topology helpers ─────────────────────────────────────────────
-
-/// Relationship between two agents in the hierarchy.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AgentRelationship {
-    /// sender is the lead/coordinator of target
-    Superior,
-    /// sender and target are in the same team
-    Peer,
-    /// target is the lead/coordinator of sender
-    Subordinate,
-    /// no direct relationship
-    Unknown,
-}
-
-/// Determine the relationship between two agents given the config.
-pub fn classify_relationship(
-    config: &OrchestrationConfig,
-    sender: &str,
-    target: &str,
-) -> AgentRelationship {
-    let coordinator = config.coordinator.as_deref().unwrap_or("");
-
-    // Coordinator → anyone = Superior
-    if sender == coordinator {
-        return AgentRelationship::Superior;
-    }
-
-    // Anyone → coordinator = Subordinate
-    if target == coordinator {
-        return AgentRelationship::Subordinate;
-    }
-
-    for team in &config.teams {
-        let lead = team.lead.as_deref();
-        let agents = &team.agents;
-
-        // Lead → agent in same team = Superior
-        if lead == Some(sender) && agents.iter().any(|a| a == target) {
-            return AgentRelationship::Superior;
-        }
-
-        // Agent → lead of same team = Subordinate
-        if lead == Some(target) && agents.iter().any(|a| a == sender) {
-            return AgentRelationship::Subordinate;
-        }
-
-        // Both in same team's agents = Peer
-        let sender_in_team = agents.iter().any(|a| a == sender) || lead == Some(sender);
-        let target_in_team = agents.iter().any(|a| a == target) || lead == Some(target);
-        if sender_in_team && target_in_team {
-            return AgentRelationship::Peer;
-        }
-    }
-
-    AgentRelationship::Unknown
-}
-
 // ── Tests ────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -694,71 +586,6 @@ routes:
         let config = OrchestrationConfig::default();
         assert_eq!(config.pattern, OrchestrationPattern::Direct);
         assert!(!config.enabled);
-    }
-
-    // ── Relationship tests ──
-
-    #[test]
-    fn test_coordinator_to_anyone_is_superior() {
-        let config = sample_config();
-        assert_eq!(
-            classify_relationship(&config, "coordinator", "java-lead"),
-            AgentRelationship::Superior
-        );
-    }
-
-    #[test]
-    fn test_anyone_to_coordinator_is_subordinate() {
-        let config = sample_config();
-        assert_eq!(
-            classify_relationship(&config, "java-lead", "coordinator"),
-            AgentRelationship::Subordinate
-        );
-    }
-
-    #[test]
-    fn test_lead_to_agent_is_superior() {
-        let config = sample_config();
-        assert_eq!(
-            classify_relationship(&config, "java-lead", "java-arch"),
-            AgentRelationship::Superior
-        );
-    }
-
-    #[test]
-    fn test_agent_to_lead_is_subordinate() {
-        let config = sample_config();
-        assert_eq!(
-            classify_relationship(&config, "java-arch", "java-lead"),
-            AgentRelationship::Subordinate
-        );
-    }
-
-    #[test]
-    fn test_same_team_agents_are_peers() {
-        let config = sample_config();
-        assert_eq!(
-            classify_relationship(&config, "java-arch", "java-sec"),
-            AgentRelationship::Peer
-        );
-    }
-
-    #[test]
-    fn test_different_team_agents_are_unknown() {
-        let config = sample_config();
-        assert_eq!(
-            classify_relationship(&config, "java-arch", "node-arch"),
-            AgentRelationship::Unknown
-        );
-    }
-
-    #[test]
-    fn test_leadless_team_agents_are_peers() {
-        let config = sample_config();
-        assert_eq!(
-            classify_relationship(&config, "cloud-expert", "ops-expert"),
-            AgentRelationship::Peer
-        );
     }
 
     #[test]

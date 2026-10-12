@@ -162,26 +162,12 @@ pub async fn execute(
     let target_kind = model_resolution::classify_target(&target_name);
     match target_kind {
         TargetKind::LlmEditor { provider } => {
-            #[cfg(feature = "providers-api")]
-            {
-                model_resolution::remap_models_for_llm_editor(&mut link_agents, provider).await;
-                if let Some(ref mut coord) = coordinator {
-                    model_resolution::remap_models_for_llm_editor(
-                        std::slice::from_mut(coord),
-                        provider,
-                    )
-                    .await;
-                }
-            }
-            #[cfg(not(feature = "providers-api"))]
-            {
-                model_resolution::remap_models_for_llm_editor(&mut link_agents, provider);
-                if let Some(ref mut coord) = coordinator {
-                    model_resolution::remap_models_for_llm_editor(
-                        std::slice::from_mut(coord),
-                        provider,
-                    );
-                }
+            model_resolution::remap_models_for_llm_editor(&mut link_agents, provider);
+            if let Some(ref mut coord) = coordinator {
+                model_resolution::remap_models_for_llm_editor(
+                    std::slice::from_mut(coord),
+                    provider,
+                );
             }
         }
         TargetKind::Orchestrator => {
@@ -194,9 +180,6 @@ pub async fn execute(
                     );
                 }
             } else if std::io::stdin().is_terminal() {
-                #[cfg(feature = "providers-api")]
-                let model = model_resolution::prompt_model_interactive().await?;
-                #[cfg(not(feature = "providers-api"))]
                 let model = model_resolution::prompt_model_interactive()?;
                 model_resolution::remap_models_for_orchestrator(&mut link_agents, &model);
                 if let Some(ref mut coord) = coordinator {

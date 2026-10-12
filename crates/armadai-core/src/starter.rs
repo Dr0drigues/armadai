@@ -296,7 +296,7 @@ pub fn all_starters_dirs() -> Vec<PathBuf> {
 // ---------------------------------------------------------------------------
 //
 // Moved here from the bin-side `starters_registry` module (which owns the
-// online fetch path — git/archive sources, gated behind `providers-api` —
+// online fetch path — git/archive sources —
 // and re-exports these two functions for backward compatibility): scanning
 // an already-synced cache dir for packs is pure filesystem/YAML logic with
 // no coupling to fetching, so it belongs with the rest of `core::starter`'s
