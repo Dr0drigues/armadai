@@ -651,3 +651,26 @@ fn load_checked_accepts_a_project_with_warnings_only() {
     assert!(p.agents.contains_key("dev"));
     assert!(origins.files.contains_key(&(Kind::Agent, "dev".into())));
 }
+
+#[test]
+fn an_output_outside_the_project_or_into_its_sources_is_an_error() {
+    for bad in [
+        "/etc/claude",
+        "../elsewhere",
+        ".armadai/out",
+        ".git/hooks",
+        ".",
+    ] {
+        let ds = diags(&[(
+            ".armadai/project.yaml",
+            &format!("schema_version: 1\noutputs:\n  claude: '{bad}'\n"),
+        )]);
+        let d = err(&ds, "bad-output", (3, 12));
+        assert!(d.message.contains(bad), "{d:?}");
+    }
+    let ds = diags(&[(
+        ".armadai/project.yaml",
+        "schema_version: 1\noutputs:\n  claude: tools/claude\n",
+    )]);
+    assert!(!ds.iter().any(|d| d.code == "bad-output"), "{ds:?}");
+}

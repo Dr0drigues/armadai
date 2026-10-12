@@ -28,6 +28,7 @@ pub async fn execute(
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(compile::default_output(&target_name))),
         };
+        compile::check_output(&root, &output_dir)?;
         // The target's own root, independently computed: the manifest's declared
         // `root` is trusted only once confirmed against it (design review R1).
         let target_root = root.join(&output_dir);

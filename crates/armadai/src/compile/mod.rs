@@ -53,10 +53,19 @@ pub const BLOCK_END: &str = "<!-- armadai:end -->";
 /// Every file under `dir` as (path relative to `dir`, bytes), sorted. Refused, with
 /// an error naming it: a symbolic link leaving `dir` or pointing to a directory
 /// (never followed: no loop, no duplicate), anything that is not a regular file.
-pub fn read_tree(dir: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>)>> {
+///
+/// `dir` itself must resolve under `within` (the project's `.armadai/`): a skill or
+/// `native/<target>` folder that is a link leaving the sources is refused too.
+pub fn read_tree(dir: &Path, within: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>)>> {
     let base = dir
         .canonicalize()
         .with_context(|| format!("cannot read {}", dir.display()))?;
+    let allowed = within
+        .canonicalize()
+        .with_context(|| format!("cannot read {}", within.display()))?;
+    if !base.starts_with(&allowed) {
+        bail!("{} points outside {}", dir.display(), within.display());
+    }
     let mut out = Vec::new();
     let mut todo = vec![dir.to_path_buf()];
     while let Some(d) = todo.pop() {
@@ -93,6 +102,22 @@ pub fn read_tree(dir: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>)>> {
     }
     out.sort();
     Ok(out)
+}
+
+/// An output directory link may write and unlink may clean: anywhere (a `--output`
+/// may leave the project for one run) except the project root itself, its sources
+/// (`.armadai/`) and `.git/`, lexically and through symbolic links.
+pub fn check_output(root: &Path, output: &Path) -> anyhow::Result<()> {
+    use crate::linker::manifest::resolve_real;
+    let base = resolve_real(root, Path::new("."));
+    let out = resolve_real(root, output);
+    if out == base || out.starts_with(base.join(".armadai")) || out.starts_with(base.join(".git")) {
+        bail!(
+            "--output {} would write into the project root, `.armadai/` or `.git/`",
+            output.display()
+        );
+    }
+    Ok(())
 }
 
 /// The compiler of a link target.

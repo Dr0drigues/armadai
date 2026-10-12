@@ -203,6 +203,27 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
     for t in m.targets.iter().filter(|t| !TARGETS.contains(&t.as_str())) {
         o.unknown_target(man, t);
     }
+    // an output is written and unlinked by link: inside the project, never into its
+    // sources (`.armadai/`) nor `.git/`, never the project root itself
+    for out in m.outputs.values() {
+        use std::path::Component;
+        let p = Path::new(out);
+        let first = p.components().next();
+        let bad = p.is_absolute()
+            || p.components()
+                .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+            || p.components().all(|c| matches!(c, Component::CurDir))
+            || first.is_some_and(|c| c.as_os_str() == ".armadai" || c.as_os_str() == ".git");
+        if bad {
+            o.err(
+                man,
+                "bad-output",
+                Some((out, false)),
+                format!("output `{out}` must be a folder inside the project, outside `.armadai/` and `.git/`"),
+                Some("use a relative path such as `.claude` or `tools/claude`; `--output` can point elsewhere for one run".into()),
+            );
+        }
+    }
     for t in m.outputs.keys().filter(|t| !TARGETS.contains(&t.as_str())) {
         o.unknown_target(man, t);
     }

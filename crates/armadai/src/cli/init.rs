@@ -507,7 +507,7 @@ mod tests {
                 .iter()
                 .filter(|s| dir.join("skills").join(s).is_dir())
             {
-                for f in crate::compile::read_tree(&dir.join("skills").join(s)).unwrap() {
+                for f in crate::compile::read_tree(&dir.join("skills").join(s), &dir).unwrap() {
                     let copied = out.path().join(".armadai/skills").join(s).join(&f.0);
                     assert!(copied.is_file(), "{}: {} lost", pack.name, copied.display());
                 }

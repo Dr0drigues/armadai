@@ -52,7 +52,7 @@ impl Compiler for ClaudeCompiler {
 
         for id in project.skills.keys() {
             let dir = root.join(".armadai/skills").join(id);
-            for (rel, content) in read_tree(&dir)? {
+            for (rel, content) in read_tree(&dir, &root.join(".armadai"))? {
                 plan.artifacts.push(Artifact {
                     path: Path::new("skills").join(id).join(rel),
                     content,

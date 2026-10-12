@@ -103,7 +103,10 @@ impl Compiler for LegacyCompiler {
             });
         }
         for id in project.skills.keys() {
-            for (rel, content) in read_tree(&root.join(".armadai/skills").join(id))? {
+            for (rel, content) in read_tree(
+                &root.join(".armadai/skills").join(id),
+                &root.join(".armadai"),
+            )? {
                 plan.artifacts.push(Artifact {
                     path: PathBuf::from("skills").join(id).join(rel),
                     content,

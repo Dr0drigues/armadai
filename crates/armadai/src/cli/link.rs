@@ -89,6 +89,7 @@ fn prepare(
     output: Option<&Path>,
     agents: Option<&[String]>,
 ) -> anyhow::Result<Prepared> {
+    compile::check_output(root, &output_of(target, output, project))?;
     let plan = compile::compiler_for(target)?.compile(project, root)?;
     let mut p = Prepared {
         target: target.to_string(),
@@ -160,7 +161,7 @@ fn prepare(
             .chain(p.blocks.iter().map(|(r, _)| r.clone()))
             .chain(p.settings.iter().map(|(r, _, _)| r.clone()))
             .collect();
-        for (path, content) in read_tree(&native_dir)? {
+        for (path, content) in read_tree(&native_dir, &root.join(".armadai"))? {
             if path.starts_with(".armadai") {
                 bail!("native file {} would write into .armadai/", path.display());
             }

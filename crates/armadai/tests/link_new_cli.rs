@@ -594,3 +594,53 @@ fn agents_filter_never_removes_the_other_agents_files() {
     env.ok(&["unlink"]);
     assert!(!env.root().join(".claude/agents/dev.md").exists());
 }
+
+/// `--output` may leave the project for one run, never point into its sources or
+/// `.git/`; a project `outputs` value must stay inside (a model error).
+#[test]
+fn outputs_into_the_sources_or_git_are_refused() {
+    let env = Env::new(PROJECT);
+    for out in [".armadai", ".armadai/x", ".git", "."] {
+        for cmd in ["link", "unlink"] {
+            let (ok, _, err) = env.run(&[cmd, "--output", out]);
+            assert!(!ok, "{cmd} -o {out}");
+            assert!(err.contains("--output"), "{cmd} -o {out}: {err}");
+        }
+    }
+    assert!(env.root().join(".armadai/agents/dev.md").is_file());
+    let mut files = PROJECT.to_vec();
+    files[0] = (
+        ".armadai/project.yaml",
+        "schema_version: 1\noutputs:\n  claude: /tmp/x\n",
+    );
+    let env = Env::new(&files);
+    let (ok, _, err) = env.run(&["link"]);
+    assert!(!ok && err.contains("bad-output"), "{err}");
+}
+
+/// A skill folder or `native/<target>` that is itself a link leaving `.armadai/`
+/// is refused: nothing outside the sources is ever copied.
+#[cfg(unix)]
+#[test]
+fn a_linked_skill_or_native_root_leaving_the_sources_is_refused() {
+    for link in [".armadai/skills/evil", ".armadai/native/claude"] {
+        let env = Env::new(PROJECT);
+        let secret = env.dir.path().join("secret");
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(
+            secret.join("SKILL.md"),
+            "---\nname: evil\ndescription: x\n---\nsecret\n",
+        )
+        .unwrap();
+        let at = env.root().join(link);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&secret, &at).unwrap();
+        let (ok, _, err) = env.run(&["link"]);
+        assert!(!ok, "{link}: {err}");
+        assert!(err.contains("outside"), "{link}: {err}");
+        assert!(
+            !env.root().join(".claude").exists(),
+            "{link}: nothing written"
+        );
+    }
+}
