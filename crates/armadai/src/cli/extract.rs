@@ -167,7 +167,7 @@ pub struct Selection {
 }
 
 /// Return the file-stem (kebab-case) identifier of a resource — this is what
-/// `pack.yaml`, `armadai run`, and other CLI commands use to refer to it.
+/// `pack.yaml` and the CLI commands use to refer to it.
 fn file_stem(p: &Path) -> String {
     p.file_stem()
         .and_then(|s| s.to_str())

@@ -14,7 +14,7 @@ outside the product: this crate is **not a member of the root workspace**
 so neither CI nor `cargo test` at the repository root compiles it.
 
 It still depends on `armadai-core` and `armadai-providers` (model catalogue
-only, without the `api` feature) by path. The handful of items it used from
+cache reader only; that crate no longer has an HTTP client) by path. The handful of items it used from
 the `armadai` binary crate are frozen copies under `src/vendored/`, each
 naming its origin (commit `c486959`).
 

@@ -178,11 +178,9 @@ pub fn parse_metadata(raw: &str, source: &Path) -> anyhow::Result<AgentMetadata>
             // own `orchestration.pattern` accepted all five through serde's
             // lowercase derive on the same enum.
             //
-            // Widening cannot change how any run behaves: this per-agent field
-            // is descriptive only. Its sole readers are `tui/views/agent_detail`
-            // and `web/api`, both of which just display it; the pattern an
-            // orchestrated run actually uses comes from `armadai.yaml` or
-            // `--orchestrate`.
+            // Widening cannot change any behaviour: this per-agent field is
+            // descriptive only. Nothing reads it after parsing since the
+            // execution engine, TUI and web UI were removed (step 0).
             "orchestration" => {
                 orchestration = Some(match value.to_lowercase().as_str() {
                     "direct" => OrchestrationPattern::Direct,

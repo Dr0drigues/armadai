@@ -349,14 +349,12 @@ pub fn load_all_agents(
 
 /// Find one agent by name, whether it is declared or written as a file.
 ///
-/// Resolution order: file-backed first — a config `AgentRef` matching `name`
-/// (mirroring `AgentResolution::Project`'s own ref-matching in `cli::run` and
-/// `cli::inspect`, which this replaces), or failing that a bare `Named`
-/// lookup — then the project's declarations. There is deliberately no
+/// Resolution order: file-backed first — a config `AgentRef` matching `name`,
+/// or failing that a bare `Named` lookup — then the project's declarations. There is deliberately no
 /// precedence rule for a name that resolves both ways: this function refuses
 /// it outright (see the `shadowing_conflict` check below), the same refusal
 /// `load_all_agents` applies per-declaration — a name ambiguous enough to
-/// fail `link`/`list` must fail `run`/`inspect` too, not silently resolve to
+/// fail `link`/`list` must fail `inspect` too, not silently resolve to
 /// whichever side is tried first.
 ///
 /// A `config.agents` entry of `AgentRef::Declared` matching `name` is never
@@ -369,7 +367,7 @@ pub fn load_all_agents(
 /// `name` either. When the file-backed lookup ALSO succeeds, that `.md` is
 /// unambiguous and is served, alongside a [`LoadWarning`] so the broken yaml
 /// is not silently invisible — returned rather than printed here, so the
-/// CLI (`cli::run`/`cli::inspect`) renders it in its own voice
+/// CLI (`cli::inspect`) renders it in its own voice
 /// (`cli::style::warn`) instead of core reaching a user's terminal directly
 /// with a bare `tracing::warn!` line. Only when the file-backed lookup fails
 /// too does the yaml error become the reason to fail — a working

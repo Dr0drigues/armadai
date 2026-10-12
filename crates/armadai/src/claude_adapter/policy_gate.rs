@@ -10,8 +10,8 @@
 //! output. A gate that refuses because it did not understand is a gate that
 //! gets uninstalled the same day.
 //!
-//! Nothing may be written to stdout except the decision JSON — the same
-//! contract `__claude-register-session` observes (tracing goes to stderr).
+//! Nothing may be written to stdout except the decision JSON (tracing goes
+//! to stderr).
 
 use std::io::Read;
 use std::path::Path;

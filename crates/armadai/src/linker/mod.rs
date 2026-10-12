@@ -164,9 +164,8 @@ pub struct CoordinatorRef {
 /// Which coordinator reference is in force — the CLI flag when given,
 /// otherwise the project config, otherwise none.
 ///
-/// One priority rule, in one place, for the three callers (`link`,
-/// `unlink`, `armadai shell`'s setup wizard) that used to spell it out
-/// themselves. `None` — no coordinator configured at all — is the normal
+/// One priority rule, in one place, for the callers (`link`, `unlink`)
+/// that used to spell it out themselves. `None` — no coordinator configured at all — is the normal
 /// case for most projects and warrants nothing.
 pub fn coordinator_reference(
     coordinator_flag: Option<String>,

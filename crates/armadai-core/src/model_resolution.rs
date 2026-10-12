@@ -158,11 +158,9 @@ pub fn effective_tier(vendor: &str, tier: ModelTier) -> ModelTier {
 /// [`crate::routing::RoutingRules`]), which is why every caller here treats
 /// it separately rather than folding it into this table.
 ///
-/// Lives in core (rather than beside the linker, which was its only user
-/// until #376) because the run path needs the exact same table: a tier
-/// placeholder that `armadai link` resolves but `armadai run` sends
-/// verbatim to the provider is the defect #376 closed, and two tables would
-/// have let that divergence come back.
+/// Lives in core (rather than beside the linker) so every reader shares one
+/// table: #376 was a second code path that sent a placeholder `link`
+/// resolves verbatim to the provider.
 pub fn parse_latest_placeholder(model: &str) -> Option<ModelTier> {
     match model.trim() {
         "latest" | "latest:pro" | "latest:medium" => Some(ModelTier::Pro),
@@ -182,9 +180,8 @@ pub fn parse_latest_placeholder(model: &str) -> Option<ModelTier> {
 /// the vendor table's catch-all, which answers with an **Anthropic** model:
 /// `provider: gemini` + `model: latest:pro` used to send
 /// `claude-sonnet-4-5-20250929` to `generativelanguage.googleapis.com`
-/// (#398 review, F1). `armadai shell` already carried this table privately
-/// (`shell::config::shell_provider_to_linker`), which is exactly how two
-/// subcommands of one binary came to disagree on one agent file.
+/// (#398 review, F1). A second private copy of this table elsewhere in the
+/// binary is how two subcommands once came to disagree on one agent file.
 ///
 /// Deliberately NOT `armadai_providers::factory::api_backend_for_tool`,
 /// which answers a different question — "if this CLI is missing, which API
