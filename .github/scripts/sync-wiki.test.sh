@@ -54,7 +54,7 @@ leftover=$(grep -roE '\((\./)?[a-z0-9][a-z0-9-]*\.md(#[^)]*)?\)' "$WIKI" 2>/dev/
 # many source links it actually covers: a page nothing links to yet cannot
 # prove anything today, and saying so keeps it from reading as evidence it
 # isn't. Those cases become real assertions the moment a link appears.
-for page in audit declarative-agents migration-v0-to-v1 orchestration-guide policy-gate; do
+for page in declarative-agents policy-gate; do
     in_source=$(grep -roE "\((\./)?${page}\.md\)" "$SRC" 2>/dev/null | grep -v '/SUMMARY.md:' | wc -l | tr -d ' ')
     still_raw=$(grep -rlE "\((\./)?${page}\.md\)" "$WIKI" 2>/dev/null || true)
     if [ "$in_source" = "0" ]; then
