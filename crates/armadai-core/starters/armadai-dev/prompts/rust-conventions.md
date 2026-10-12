@@ -3,10 +3,9 @@ name: rust-conventions
 description: Rust 2024 edition coding conventions, clippy strict mode, and feature flag best practices
 apply_to:
   - dev-lead
-  - core-specialist
-  - provider-specialist
+  - schema-specialist
+  - adapter-specialist
   - cli-specialist
-  - ui-specialist
   - qa-specialist
   - release-manager
 ---

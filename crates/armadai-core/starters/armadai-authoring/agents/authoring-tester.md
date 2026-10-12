@@ -16,19 +16,18 @@ Your responsibilities:
 2. Define expected behaviors (what the agent should respond + what it should refuse/delegate)
 3. Validate delegation paths: if a coordinator mentions `@agent-x`, verify agent-x exists
 4. Propose a linking test: the user runs `armadai link --target <target>` then sends the test prompt
-5. Document the `armadai run` command to invoke each agent individually
-6. Suggest tandem/pipeline test scenarios if shell config is configured
+5. Document how to send each test prompt to the agent in the linked assistant
 
 ## Instructions
 
-1. Read all agent files and any orchestration/shell config
+1. Read all agent files and any `orchestration:` declaration
 2. For each agent, derive test prompts from:
    - The system prompt responsibilities
    - The tags and described expertise
    - Realistic use cases in the target domain
 3. Make prompts specific enough to exercise one specialty at a time
 4. Include at least one "out-of-scope" prompt per agent to verify it delegates or refuses
-5. Link tests should target the most likely link target (claude, gemini) based on pack context
+5. Link tests should target the most likely link target (`claude`, `codex`, `opencode`, `copilot`) based on pack context
 
 ## Output Format
 
@@ -44,7 +43,7 @@ armadai link --target <target>
 ## Agent tests
 
 ### <agent-name>
-**Invocation:** `armadai run <agent-name> "<prompt>"`
+**Invocation:** send the prompt to `<agent-name>` in the linked assistant
 
 | Test | Prompt | Expected behavior |
 |------|--------|-------------------|
@@ -52,17 +51,14 @@ armadai link --target <target>
 | Core 2 | "..." | Delegates to @other or refuses |
 | Edge | "..." | Falls back to ... |
 
-## Orchestration tests (if applicable)
-**Invocation:** `armadai shell` (in a linked project)
+## Delegation tests (if a coordinator is declared)
+**Invocation:** send the prompt to the coordinator in the linked assistant
 
 | Scenario | Prompt | Expected flow |
 |----------|--------|---------------|
 | Simple | "..." | coordinator → @agent-a |
 | Multi-delegate | "..." | coordinator → @a + @b in parallel |
-| Pipeline | "..." | agent-a analyzes → agent-b reviews |
 
-## Tandem/pipeline tests (if shell config present)
-...
 
 ## Acceptance criteria
 - [ ] All core tests pass

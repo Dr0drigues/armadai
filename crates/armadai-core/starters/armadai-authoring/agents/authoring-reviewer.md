@@ -20,15 +20,11 @@ Your checks:
    - Clear role boundary (what the agent does AND doesn't do)
    - Actionable responsibilities (not vague descriptions)
    - No role overlap with other agents in the pack
-6. **Orchestration coherence**:
-   - If pack has ≥2 agents, orchestration config must be present
-   - All referenced agents in teams/coordinator must exist
+6. **Delegation topology coherence** (if the pack has a coordinator):
+   - The coordinator agent is tagged `coordinator`
+   - All agents referenced in an `orchestration:` declaration (coordinator, teams) exist
    - Sub-team leads must also be in the agents list
-7. **Shell config** (if present):
-   - Providers listed exist as CLIs
-   - Model tiers are valid (`latest:fast/pro/max` or concrete)
-   - Pipeline steps have non-empty `providers:` lists
-8. **Cross-references**: agents mentioned in coordinator prompts exist
+7. **Cross-references**: agents mentioned in coordinator prompts exist
 
 ## Instructions
 
@@ -53,7 +49,7 @@ Your checks:
 ## Overlap check
 - agent-a and agent-b both cover X — consider merging or clarifying boundaries
 
-## Orchestration coherence
+## Delegation topology coherence
 ✓ All referenced agents exist
 ✓ Coordinator is in agents list
 🟡 <any warning>

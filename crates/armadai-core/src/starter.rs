@@ -725,6 +725,47 @@ agents:
         );
     }
 
+    /// Every pack embedded in the binary must be installable as shipped: it
+    /// validates (every agent and prompt it lists exists and parses, every
+    /// `apply_to` names one of its agents), and every skill it lists exists either
+    /// bundled in the pack or as an embedded built-in skill. `validate_pack`
+    /// skips unbundled skills (they may be built-in), so a pack still naming
+    /// a deleted built-in skill would otherwise pass in silence.
+    #[test]
+    fn every_embedded_pack_validates_and_its_skills_exist() {
+        let starters = Path::new(env!("CARGO_MANIFEST_DIR")).join("starters");
+        let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&starters).unwrap() {
+            let dir = entry.unwrap().path();
+            if !dir.join("pack.yaml").is_file() {
+                continue;
+            }
+            seen += 1;
+            // One known, pre-existing issue is tolerated: the two
+            // code-analysis packs apply their prompt to `analysis`, which
+            // names no agent. Anything else (missing file, unparsable file,
+            // `apply_to` naming a removed agent) fails.
+            let errors: Vec<_> = crate::pack_validation::validate_pack(&dir)
+                .into_iter()
+                .filter(|i| !i.location.ends_with("apply_to['analysis']"))
+                .map(|i| format!("{}: {}", i.location, i.message))
+                .collect();
+            assert!(errors.is_empty(), "{}: {errors:?}", dir.display());
+            let pack = StarterPack::load(&dir).unwrap();
+            for skill in &pack.skills {
+                let bundled = dir.join("skills").join(skill).join("SKILL.md");
+                let builtin = skills.join(skill).join("SKILL.md");
+                assert!(
+                    bundled.is_file() || builtin.is_file(),
+                    "{}: skill '{skill}' is neither bundled nor built-in",
+                    dir.display()
+                );
+            }
+        }
+        assert_eq!(seen, EMBEDDED_STARTERS.dirs().count());
+    }
+
     #[test]
     fn test_find_pack_dir_builtin() {
         // Built-in packs should be findable

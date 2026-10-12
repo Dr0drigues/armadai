@@ -34,7 +34,7 @@ Use lowercase, common vocabulary for tags. Standard tag categories:
 - Include concrete examples when explaining expected behavior
 - Coordinator agents MUST use the `@agent-name: task` delegation protocol
 - Coordinator agents MUST list team members in a table (Agent | Role)
-- Starter packs with coordinators auto-generate `orchestration:` config on init
+- For a pack with a coordinator, `armadai init --pack <name> --project` writes an `orchestration:` declaration into the project config
 
 ## File Organization
 

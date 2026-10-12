@@ -50,7 +50,7 @@ EXAMPLES:
 
 - "Create an agent for code review" → `@agent-builder: Create a code review agent for Rust projects`
 - "Build a pack for DevOps automation" →
-  1. `@authoring-architect: Design a DevOps automation pack — what agents, what orchestration, what model tiers?`
+  1. `@authoring-architect: Design a DevOps automation pack — what agents, what delegation topology, what model tiers?`
   2. `@agent-builder: ...` + `@prompt-builder: ...` + `@skill-builder: ...` (per architect plan)
   3. `@starter-builder: Assemble the pack using the agents/prompts/skills above`
   4. `@authoring-reviewer: Review all generated files for consistency`
