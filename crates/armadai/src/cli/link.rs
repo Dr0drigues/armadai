@@ -308,28 +308,78 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
         manifest::ProducedByKind::Native => format!("native {}", a.produced_by.name),
         _ => format!("agent {}", a.produced_by.name),
     };
-    let reason = format!(
-        "file exists and was not written by link (use --force): {}",
-        p.rel(a).display()
-    );
+    let rel = p.rel(a);
+    let ours_before = (p.previous.iter().flat_map(|t| &t.entries))
+        .any(|e| e.path == rel && e.outcome == Outcome::Created);
+    let reason = if ours_before {
+        format!(
+            "edited since the last link (use --force): {}",
+            rel.display()
+        )
+    } else {
+        format!(
+            "file exists and was not written by link (use --force): {}",
+            rel.display()
+        )
+    };
     p.report.lines.retain(|l| l.element != element);
     let target = p.target.clone();
     p.report
         .push(&target, element, Status::NotCompiled, Some(&reason));
 }
 
+/// The `--dry-run` side of `write_files`' decision: the files a real run would
+/// leave in place (they exist with other bytes, are not link's previous output,
+/// and `--force` is not given), reported exactly as the real run reports them.
+fn simulate_skips(root: &Path, p: &mut Prepared, force: bool) {
+    if force {
+        return;
+    }
+    let previous: std::collections::BTreeMap<PathBuf, String> =
+        (p.previous.iter().flat_map(|t| &t.entries))
+            .filter(|e| e.outcome == Outcome::Created)
+            .filter_map(|e| e.digest.clone().map(|d| (e.path.clone(), d)))
+            .collect();
+    let skipped: Vec<PathBuf> = (p.artifacts.iter())
+        .map(|a| (root.join(p.rel(a)), p.rel(a), &a.content))
+        .filter(|(path, rel, content)| {
+            let Ok(disk) = std::fs::read(path) else {
+                return false;
+            };
+            disk != **content
+                && !previous
+                    .get(rel)
+                    .is_some_and(|d| manifest::check_digest(d, path) == DigestCheck::Matches)
+        })
+        .map(|(path, _, _)| path)
+        .collect();
+    for path in skipped {
+        not_written(p, root, &path);
+    }
+}
+
+/// The bytes of `path`, `None` when absent: to tell a real patch from a no-op.
+fn bytes(path: &Path) -> Option<Vec<u8>> {
+    std::fs::read(path).ok()
+}
+
 fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> anyhow::Result<()> {
     let mut patched = Vec::new();
+    let mut changed: BTreeSet<PathBuf> = BTreeSet::new();
 
     // the root CLAUDE.md block: written, or removed once no longer produced
     let blocks = std::mem::take(&mut p.blocks);
     for (rel, block) in &blocks {
+        let before = bytes(&root.join(rel));
         patched.push(patch::apply_markdown_block(
             root,
             rel,
             block,
             p.previous_patch(rel),
         )?);
+        if bytes(&root.join(rel)) != before {
+            changed.insert(rel.clone());
+        }
     }
     let stale_blocks: Vec<PatchedFile> = (p.previous.iter().flat_map(|t| &t.patched))
         .filter(|f| matches!(f.kind, PatchKind::MarkdownBlock))
@@ -348,10 +398,22 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
         if hooks.is_empty() && keys.is_empty() {
             if let Some(prev) = &prev {
                 patch::remove_patch(root, &p.output_dir, prev)?;
+                if prev.created && !root.join(&prev.path).exists() {
+                    p.report.push(
+                        &p.target,
+                        prev.path.display().to_string(),
+                        Status::Compiled,
+                        Some("removed: link created it and no hook is left"),
+                    );
+                }
             }
         } else {
+            let before = bytes(&root.join(&rel));
             let (done, reformatted) =
                 patch::apply_settings(root, &rel, &p.output_dir, &hooks, &keys, prev.as_ref())?;
+            if bytes(&root.join(&rel)) != before {
+                changed.insert(rel.clone());
+            }
             if reformatted {
                 p.report.push(
                     &p.target,
@@ -419,7 +481,7 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
             }
         });
     }
-    for f in &patched {
+    for f in patched.iter().filter(|f| changed.contains(&f.path)) {
         out.push(format!("  patched {}", root.join(&f.path).display()));
     }
     Ok(())
@@ -449,6 +511,7 @@ pub async fn execute(
         for p in &mut prepared {
             let produced = p.all_produced.clone();
             remove_stale(&root, p, &produced, true);
+            simulate_skips(&root, p, force);
         }
         for p in &prepared {
             lines.push(format!(

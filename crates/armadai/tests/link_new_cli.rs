@@ -488,8 +488,14 @@ fn relinking_without_hooks_removes_the_settings_file_link_created() {
         "schema_version: 1\ncoordinator: lead\n",
     )
     .unwrap();
-    env.ok(&["link"]);
+    let out = env.ok(&["link"]);
     assert!(!settings.exists());
+    assert!(
+        out.contains(
+            ".claude/settings.json: compiled (removed: link created it and no hook is left)"
+        ),
+        "{out}"
+    );
 }
 
 /// A changed source is recompiled: link rewrites a file that is still exactly
@@ -525,9 +531,7 @@ fn an_edited_output_is_left_and_reported_until_forced() {
     let out = env.ok(&["link"]);
     assert_eq!(std::fs::read_to_string(&dev).unwrap(), "mine\n");
     assert!(
-        out.contains(
-            "agent dev: not-compiled (file exists and was not written by link (use --force)"
-        ),
+        out.contains("agent dev: not-compiled (edited since the last link (use --force)"),
         "{out}"
     );
     assert!(!out.contains("agent dev: compiled"), "{out}");
@@ -820,4 +824,68 @@ fn agents_filter_keeps_the_native_collision_check() {
     let env = Env::new(&files);
     let (ok, _, err) = env.run(&["link", "--agents", "lead"]);
     assert!(!ok && err.contains("collides"), "{err}");
+}
+
+/// The dry run takes the same write-or-skip decision as the real run: its report
+/// is the real one.
+#[test]
+fn the_dry_run_report_is_the_real_report() {
+    let mut files = PROJECT.to_vec();
+    files.push((".armadai/native/claude/.mcp.json", "{}\n"));
+    let env = Env::new(&files);
+    env.ok(&["link"]);
+    std::fs::write(env.root().join(".claude/agents/dev.md"), "mine\n").unwrap();
+    std::fs::write(env.root().join(".mcp.json"), "{\"mine\": 1}\n").unwrap();
+    std::fs::write(
+        env.root().join(".armadai/agents/dev.md"),
+        "---\ndescription: Writes code\n---\nYou write better code.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        env.root().join(".armadai/native/claude/.mcp.json"),
+        "{\"v\": 2}\n",
+    )
+    .unwrap();
+    // link's own output, stale against its source: rewritten, so compiled
+    std::fs::write(
+        env.root().join(".armadai/skills/notes/SKILL.md"),
+        "---\nname: notes\ndescription: Notes\n---\nTake better notes.\n",
+    )
+    .unwrap();
+    let dry = env.ok(&["link", "--dry-run", "--json"]);
+    let real = env.ok(&["link", "--json"]);
+    assert_eq!(dry, real);
+    assert!(real.contains("edited since the last link"), "{real}");
+    let text = env.ok(&["link", "--dry-run"]);
+    assert!(text.contains("agent dev: not-compiled"), "{text}");
+    assert!(text.contains("native .mcp.json: not-compiled"), "{text}");
+    assert!(
+        real.contains("\"element\": \"skill notes\",\n    \"status\": \"compiled\""),
+        "{real}"
+    );
+}
+
+/// A file link never wrote is told apart from one edited since the last link.
+#[test]
+fn a_file_link_never_wrote_is_reported_as_such() {
+    let env = Env::new(PROJECT);
+    std::fs::create_dir_all(env.root().join(".claude/agents")).unwrap();
+    std::fs::write(env.root().join(".claude/agents/dev.md"), "mine\n").unwrap();
+    let out = env.ok(&["link"]);
+    assert!(
+        out.contains(
+            "agent dev: not-compiled (file exists and was not written by link (use --force)"
+        ),
+        "{out}"
+    );
+}
+
+/// A relink that changes nothing says nothing about patching.
+#[test]
+fn an_unchanged_patched_file_is_not_reported_as_patched() {
+    let env = Env::new(PROJECT);
+    let first = env.ok(&["link"]);
+    assert!(first.contains("patched"), "{first}");
+    let again = env.ok(&["link"]);
+    assert!(!again.contains("patched"), "{again}");
 }
