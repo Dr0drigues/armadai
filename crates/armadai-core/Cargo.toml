@@ -4,7 +4,7 @@ version = "1.0.0-rc.5"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "ArmadAI — reusable orchestration core: domain types, Provider/EventLog traits, parser, event-sourced engine."
+description = "ArmadAI — core domain: agent and project types, parser, model resolution, starters and packs."
 
 [features]
 test-support = ["dep:tempfile"]
@@ -15,10 +15,6 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
-async-trait = { workspace = true }
-futures-util = { workspace = true }
-tokio = { workspace = true, features = ["time", "macros", "rt", "rt-multi-thread", "sync"] }
-tokio-stream = { workspace = true }
 pulldown-cmark = { workspace = true }
 include_dir = { workspace = true }
 tracing = { workspace = true }

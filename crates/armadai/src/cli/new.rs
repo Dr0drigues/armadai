@@ -332,7 +332,7 @@ pub(crate) const WIZARD_PROVIDER_CHOICES: &[&str] = &[
 ];
 
 /// Prompt for model based on provider.
-/// Tries models.dev registry first (with cache), falls back to providers.yaml.
+/// Tries the local models.dev cache first (no network), falls back to providers.yaml.
 async fn prompt_model(provider: &str) -> anyhow::Result<Option<String>> {
     // CLI provider doesn't need a model
     if provider == "cli" {
@@ -341,17 +341,7 @@ async fn prompt_model(provider: &str) -> anyhow::Result<Option<String>> {
 
     let backend = api_backend_for_tool(provider).unwrap_or(provider);
 
-    // Try models.dev registry (online fetch with cache)
-    #[cfg(feature = "providers-api")]
-    if let Some(entries) =
-        armadai_providers::model_registry::fetch::load_models_online(backend).await
-        && !entries.is_empty()
-    {
-        return prompt_from_registry_entries(&entries);
-    }
-
     // Try models.dev cache only (no network)
-    #[cfg(not(feature = "providers-api"))]
     if let Some(entries) = armadai_providers::model_registry::fetch::load_models(backend)
         && !entries.is_empty()
     {

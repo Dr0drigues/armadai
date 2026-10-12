@@ -48,20 +48,8 @@ pub fn resolve_best_model_cached(provider: &str) -> String {
 ///
 /// Agents with `latest:*` placeholders get tier-specific resolution.
 /// Agents with concrete models get remapped to the target provider's Pro tier.
-#[cfg(feature = "providers-api")]
-pub async fn remap_models_for_llm_editor(agents: &mut [LinkAgent], provider: &str) {
-    for agent in agents.iter_mut() {
-        let tier = agent
-            .model
-            .as_deref()
-            .and_then(parse_latest_placeholder)
-            .unwrap_or(ModelTier::Pro);
-        agent.model = Some(resolve_model_for_tier(provider, tier));
-    }
-}
-
-/// Remap all agents' models for an LLM editor target (sync/cache-only).
-#[cfg(not(feature = "providers-api"))]
+/// Resolution reads the static table and the local models cache only: `link`
+/// never reaches the network.
 pub fn remap_models_for_llm_editor(agents: &mut [LinkAgent], provider: &str) {
     for agent in agents.iter_mut() {
         let tier = agent
@@ -103,50 +91,8 @@ pub fn resolve_latest_placeholders(agents: &mut [LinkAgent]) {
 
 /// Prompt the user interactively to pick a provider and model.
 ///
-/// Used for orchestrator targets (copilot, opencode) when no `--model` flag is given.
-#[cfg(feature = "providers-api")]
-pub async fn prompt_model_interactive() -> anyhow::Result<String> {
-    use dialoguer::Select;
-
-    let providers = &["anthropic", "google", "openai"];
-    let idx = Select::new()
-        .with_prompt("Provider for model selection")
-        .items(providers)
-        .default(0)
-        .interact()?;
-    let provider = providers[idx];
-
-    if let Some(entries) =
-        armadai_providers::model_registry::fetch::load_models_online(provider).await
-        && !entries.is_empty()
-    {
-        let labels: Vec<String> = entries.iter().map(|e| e.display_label()).collect();
-        let mut items = labels;
-        items.push("(custom)".to_string());
-
-        let model_idx = Select::new()
-            .with_prompt("Model")
-            .items(&items)
-            .default(0)
-            .interact()?;
-
-        if model_idx == items.len() - 1 {
-            let model: String = dialoguer::Input::new()
-                .with_prompt("Custom model name")
-                .interact_text()?;
-            return Ok(model);
-        }
-        return Ok(entries[model_idx].id.clone());
-    }
-
-    let model: String = dialoguer::Input::new()
-        .with_prompt("Model name")
-        .interact_text()?;
-    Ok(model)
-}
-
-/// Prompt the user interactively to pick a provider and model (cache-only, sync).
-#[cfg(not(feature = "providers-api"))]
+/// Used for orchestrator targets (copilot, opencode) when no `--model` flag is
+/// given. Reads the local models cache only: `link` never reaches the network.
 pub fn prompt_model_interactive() -> anyhow::Result<String> {
     use dialoguer::Select;
 

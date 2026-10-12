@@ -11,10 +11,6 @@ default-run = "armadai"
 name = "armadai"
 path = "src/main.rs"
 
-[features]
-default = ["providers-api"]
-providers-api = ["dep:reqwest", "armadai-providers/api"]
-
 [dependencies]
 # Workspace crates
 armadai-core = { path = "../armadai-core" }
@@ -22,26 +18,20 @@ armadai-providers = { path = "../armadai-providers" }
 armadai-secrets = { path = "../armadai-secrets" }
 
 # Async runtime
-tokio = { workspace = true, features = ["full"] }
-tokio-stream = { workspace = true }
-async-trait = { workspace = true }
-futures-util = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 dialoguer = { workspace = true, features = ["fuzzy-select"] }
 
-# HTTP client (optional — enable with `providers-api` feature)
-reqwest = { workspace = true, optional = true }
+# HTTP client (starter archives)
+reqwest = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
-
-# Markdown parsing
-pulldown-cmark = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
@@ -49,7 +39,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 
 # Utils
 chrono = { version = "0.4", features = ["serde"] }

@@ -15,25 +15,19 @@ description = "Check formatting (CI parity)"
 run = "cargo fmt --all -- --check"
 
 [tasks.clippy]
-description = "Clippy over the feature-combo matrix (workspace-wide, -D warnings)"
-run = [
-  "cargo clippy --all-targets --no-default-features -- -D warnings",
-  "cargo clippy --all-targets --no-default-features --features providers-api -- -D warnings",
-]
+description = "Clippy (workspace-wide, -D warnings)"
+run = "cargo clippy --all-targets -- -D warnings"
 
 [tasks.test]
-description = "Test the workspace across the gated feature modes"
-run = [
-  "cargo test --no-default-features",
-  "cargo test --no-default-features --features providers-api",
-]
+description = "Test the workspace"
+run = "cargo test --no-fail-fast"
 
 [tasks.build]
-description = "Release build (featureless binary)"
-run = "cargo build --release --no-default-features"
+description = "Release build"
+run = "cargo build --release"
 
 [tasks.core-build]
-description = "Portability guard: armadai-core builds standalone, featureless, no heavy deps"
+description = "Portability guard: armadai-core builds standalone, no heavy deps"
 run = "cargo build -p armadai-core"
 
 [tasks.ci]

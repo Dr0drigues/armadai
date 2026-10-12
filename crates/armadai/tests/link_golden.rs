@@ -136,4 +136,33 @@ mod tests {
             );
         }
     }
+
+    /// `link` must never reach the network (decision of 2026-10-09): pointing
+    /// every proxy variable at a closed local port makes any attempt fail fast.
+    #[test]
+    fn link_does_not_touch_the_network() {
+        let dir = project();
+        let root = dir.path().join("project");
+        let output = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(&root)
+            .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+            .env("HTTPS_PROXY", "http://127.0.0.1:9")
+            .env("HTTP_PROXY", "http://127.0.0.1:9")
+            .env("ALL_PROXY", "http://127.0.0.1:9")
+            .env_remove("NO_PROXY")
+            .args(["link", "--target", "opencode", "--force"])
+            .args(COORDINATOR_ARGS)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "link failed with the network closed: {text}"
+        );
+        assert!(
+            !text.to_lowercase().contains("connection refused"),
+            "link tried to reach the network: {text}"
+        );
+    }
 }
