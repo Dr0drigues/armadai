@@ -1,135 +1,110 @@
 # Starter Packs
 
-Starter packs are curated bundles of agents, prompts and skills that you can install with a single command. They provide ready-to-use agent configurations for common development workflows.
+Starter packs are curated bundles of agents, prompts and skills that you can install with a single
+command, then compile for your assistant with `armadai link`.
 
 ## Usage
 
 ```bash
-# Install a pack (agents, prompts, skills copied to user library)
+# Install a pack (agents, prompts, skills copied to the user library)
 armadai init --pack <pack-name>
 
-# Install a pack + create .armadai/config.yaml project config
+# Install a pack + create .armadai/config.yaml declaring its agents and prompts
 armadai init --pack <pack-name> --project
 ```
 
-This copies the pack's agents, prompts and skills into your user library (`~/.config/armadai/agents/`, `~/.config/armadai/prompts/`, `~/.config/armadai/skills/`).
+This copies the pack's agents, prompts and skills into your user library
+(`~/.config/armadai/agents/`, `~/.config/armadai/prompts/`, `~/.config/armadai/skills/`).
 
-### Init from TUI / Web UI
-
-You can also init a project from the UI:
-
-- **TUI**: navigate to the Starters tab (or Starter Detail), press `i` to create `.armadai/config.yaml` in the current working directory
-- **Web UI**: click the "Download config.yaml" button on any starter detail page
+> The project config written by `--project` currently sets `link.target: anthropic`, which is not
+> a link target: pass `armadai link --target <claude|codex|opencode|copilot>` explicitly, or fix
+> `link.target` in `.armadai/config.yaml`.
 
 ## Available Packs
+
+The packs below ship embedded in the binary. Their content predates the declarative refocus: some
+agents and prompts (notably `armadai-dev`, `orchestration-demo` and parts of `armadai-authoring`)
+still refer to the removed execution engine, and are kept as shipped until they are revised.
 
 ### rust-dev
 
 Rust development essentials: code review, test writing, debugging, and Rust conventions.
 
-```bash
-armadai init --pack rust-dev
-```
-
-| Type | Name | Description |
-|---|---|---|
-| Agent | `code-reviewer` | Rust code review specialist |
-| Agent | `test-writer` | Rust test generation |
-| Agent | `debug` | Debugging assistant for Rust |
-| Prompt | `rust-conventions` | Rust coding conventions and idioms |
+| Type | Name |
+|---|---|
+| Agent | `code-reviewer`, `test-writer`, `debug` |
+| Prompt | `rust-conventions` |
 
 ### fullstack
 
-Full stack web development with 6 agents covering multiple providers.
+General-purpose pack — code review, testing, documentation, and CLI examples.
 
-```bash
-armadai init --pack fullstack
-```
-
-| Type | Name | Description |
-|---|---|---|
-| Agent | `code-reviewer` | General code review (Anthropic API) |
-| Agent | `test-writer` | Test generation |
-| Agent | `doc-generator` | Documentation writer |
-| Agent | `claude-cli-reviewer` | Code review via Claude CLI |
-| Agent | `gemini-reviewer` | Code review via Gemini CLI |
-| Agent | `echo-reviewer` | Simple echo agent (testing) |
+| Type | Name |
+|---|---|
+| Agent | `code-reviewer`, `test-writer`, `doc-generator`, `claude-cli-reviewer`, `echo-reviewer`, `gemini-reviewer` |
 
 ### code-analysis-rust
 
-Rust-focused code analysis team with a lead analyst coordinator.
+Code analysis crew for Rust projects — a coordinator with scoped specialists.
 
-```bash
-armadai init --pack code-analysis-rust
-```
-
-| Type | Name | Description |
-|---|---|---|
-| Agent | `lead-analyst` | Coordinator: dispatches analysis tasks |
-| Agent | `rust-reviewer` | Rust code review specialist |
-| Agent | `rust-test-analyzer` | Test quality analysis |
-| Agent | `rust-doc-writer` | Documentation review |
-| Agent | `rust-security` | Security audit specialist |
-| Prompt | `analysis-standards` | Code analysis standards and conventions |
+| Type | Name |
+|---|---|
+| Agent | `lead-analyst` (coordinator), `rust-reviewer`, `rust-test-analyzer`, `rust-doc-writer`, `rust-security` |
+| Prompt | `analysis-standards` |
 
 ### code-analysis-web
 
-Web-focused code analysis team with a lead analyst coordinator.
+Code analysis crew for JS/TS/Node projects — a coordinator with scoped specialists.
 
-```bash
-armadai init --pack code-analysis-web
-```
-
-| Type | Name | Description |
-|---|---|---|
-| Agent | `lead-analyst` | Coordinator: dispatches analysis tasks |
-| Agent | `web-reviewer` | Web code review specialist |
-| Agent | `web-test-analyzer` | Test quality analysis |
-| Agent | `web-doc-writer` | Documentation review |
-| Agent | `web-security` | Security audit specialist |
-| Prompt | `analysis-standards` | Code analysis standards and conventions |
+| Type | Name |
+|---|---|
+| Agent | `lead-analyst` (coordinator), `web-reviewer`, `web-test-analyzer`, `web-doc-writer`, `web-security` |
+| Prompt | `analysis-standards` |
 
 ### armadai-authoring
 
-ArmadAI content authoring team — create agents, prompts and skills.
+ArmadAI authoring pack — design, create, review and test agents, prompts, skills and starters.
 
-```bash
-armadai init --pack armadai-authoring
-```
+| Type | Name |
+|---|---|
+| Agent | `authoring-lead` (coordinator), `authoring-architect`, `agent-builder`, `prompt-builder`, `skill-builder`, `starter-builder`, `authoring-reviewer`, `authoring-tester` |
+| Prompt | `armadai-conventions`, `armadai-v012-updates` |
+| Skill | `armadai-agent-authoring`, `armadai-prompt-authoring`, `armadai-skill-authoring`, `armadai-starter-authoring`, `armadai-orchestration-patterns`, `armadai-shell-config` |
 
-| Type | Name | Description |
-|---|---|---|
-| Agent | `authoring-lead` | Coordinator: manages authoring tasks |
-| Agent | `agent-builder` | Creates new agents |
-| Agent | `prompt-builder` | Creates composable prompts |
-| Agent | `skill-builder` | Creates skills (SKILL.md) |
-| Prompt | `armadai-conventions` | ArmadAI authoring conventions |
-| Skill | `armadai-agent-authoring` | Built-in skill for agent authoring |
-| Skill | `armadai-prompt-authoring` | Built-in skill for prompt authoring |
-| Skill | `armadai-skill-authoring` | Built-in skill for skill authoring |
+### armadai-dev
+
+The former development team of ArmadAI itself, with hierarchical delegation.
+
+| Type | Name |
+|---|---|
+| Agent | `dev-lead`, `core-specialist`, `provider-specialist`, `cli-specialist`, `ui-specialist`, `qa-specialist`, `release-manager` |
+| Prompt | `rust-conventions` |
+
+### orchestration-demo
+
+A minimal team written to illustrate the Hierarchical, Blackboard and Ring patterns of the removed
+engine.
+
+| Type | Name |
+|---|---|
+| Agent | `demo-coordinator`, `demo-analyst`, `demo-reviewer`, `demo-writer` |
+| Prompt | `demo-conventions` |
 
 ### pirate-crew
 
-A fun demo pack with pirate-themed agents. Showcases the coordinator pattern and custom prompts.
+A fun demo pack with pirate-themed agents: a captain coordinator and their crew.
 
-```bash
-armadai init --pack pirate-crew
-```
-
-| Type | Name | Description |
-|---|---|---|
-| Agent | `capitaine` | Pirate captain coordinator agent |
-| Agent | `cartographe` | Navigation and architecture specialist |
-| Agent | `vigie` | Lookout / code review specialist |
-| Agent | `charpentier` | Ship builder / implementation agent |
-| Prompt | `code-nautique` | Pirate-themed coding conventions |
+| Type | Name |
+|---|---|
+| Agent | `capitaine` (coordinator), `vigie`, `charpentier`, `cartographe` |
+| Prompt | `code-nautique` |
 
 ## Pack Format
 
-Each pack lives in `starters/<pack-name>/` with this structure:
+Each pack lives in its own directory with this structure:
 
 ```
-starters/<pack-name>/
+<pack-name>/
 ├── pack.yaml           # Pack manifest
 ├── agents/             # Agent definitions (.md files)
 │   ├── agent-one.md
@@ -157,26 +132,31 @@ skills:
   - armadai-agent-authoring   # Refers to built-in or bundled skill
 ```
 
-Skills listed in `pack.yaml` but not bundled in the pack directory (e.g. built-in skills already installed by `armadai init`) are silently skipped during installation.
+Skills listed in `pack.yaml` but not bundled in the pack directory (e.g. built-in skills already
+installed by `armadai init`) are silently skipped during installation.
+
+`armadai validate <pack-dir>` checks that every agent and prompt `pack.yaml` lists exists and
+parses.
 
 ## Embedded Versioning
 
-Starter packs embedded in the binary are extracted to `~/.config/armadai/starters/` on first use. Each extracted pack contains a `.armadai-version` marker file tracking the binary version at extraction time.
-
-When the binary is updated, packs are automatically re-extracted to ensure they stay in sync. The same mechanism applies to built-in skills.
+Starter packs embedded in the binary are extracted to `~/.config/armadai/starters/` on first use.
+Each extracted pack contains a `.armadai-version` marker file tracking the binary version at
+extraction time. When the binary is updated, packs are re-extracted to stay in sync. The same
+mechanism applies to built-in skills.
 
 ## Creating Custom Packs
 
-1. Create a directory under `starters/` with your pack name
+1. Create a directory with your pack name, in one of the starter directories below
 2. Add a `pack.yaml` manifest listing agents, prompts and skills
 3. Add agent `.md` files in `agents/`
 4. Add prompt `.md` files in `prompts/` (optional)
 5. Add skill directories in `skills/` (optional)
 6. Follow the [Agent Format](agent-format.md) for agent files
 
-## Custom Starter Directories
+`armadai init --pack <path>` also accepts a path to a directory containing `pack.yaml`.
 
-By default, ArmadAI looks for starters in the built-in directory and the user library. You can add custom directories in several ways:
+## Custom Starter Directories
 
 ### Priority order
 
@@ -190,7 +170,6 @@ By default, ArmadAI looks for starters in the built-in directory and the user li
 
 ```bash
 export ARMADAI_STARTERS_DIRS=/path/to/starters1:/path/to/starters2
-armadai list --starters
 ```
 
 ### Config file
@@ -211,13 +190,15 @@ armadai config starters-dir list
 armadai config starters-dir remove /path/to/my-starters
 ```
 
-### Project-local starters
+### Remote starter registries
 
-Place starter packs in `.armadai/starters/` for project-specific starters that are versioned with the project.
+When `armadai init --pack <name>` finds no local pack of that name, it syncs the remote starter
+registries declared under `registries:` (in `~/.config/armadai/registries.yaml` or the project
+config) once, then retries. A pack that exists locally never triggers a sync.
 
 ## See Also
 
 - [Getting Started](getting-started.md) — installation and first steps
 - [Agent Format](agent-format.md) — agent Markdown file reference
 - [Templates](templates.md) — creating agents from templates
-- [Registry](registry.md) — community agents
+- [Link](link.md) — compiling a pack's agents for your assistant

@@ -1,11 +1,15 @@
 # ArmadAI Agent Creation Guide
 
-> Universal prompt for any AI assistant (Claude Code, Gemini CLI, Cursor, Copilot, etc.)
+> Universal prompt for any AI assistant (Claude Code, Codex, OpenCode, Copilot, etc.)
 > to help users create valid ArmadAI agent files.
 
 ## What is an ArmadAI Agent?
 
-An ArmadAI agent is a Markdown file (`.md`) that defines an AI-powered specialist. Each agent has a role, a provider, and a system prompt. Agents live in the `agents/` directory and can be run with `armadai run <name> "<input>"`.
+An ArmadAI agent is a Markdown file (`.md`) that defines an AI specialist: a role, a system prompt
+and a few metadata fields. Agents live in `.armadai/agents/`, `agents/` or the user library
+(`~/.config/armadai/agents/`). ArmadAI does not run them: `armadai link --target <t>` compiles
+them into the native agent files of Claude Code, Codex, OpenCode or Copilot, and that assistant
+runs them.
 
 ## Agent File Format
 
@@ -16,7 +20,6 @@ An ArmadAI agent is a Markdown file (`.md`) that defines an AI-powered specialis
 - provider: <provider>
 - model: <model>
 - temperature: <0.0 - 2.0>
-- max_tokens: <integer>
 - tags: [tag1, tag2]
 - stacks: [rust, python]
 
@@ -26,42 +29,39 @@ An ArmadAI agent is a Markdown file (`.md`) that defines an AI-powered specialis
 
 ## Instructions
 
-<Optional step-by-step execution instructions.>
+<Optional step-by-step instructions.>
 
 ## Output Format
 
 <Optional description of expected output structure.>
 ```
 
-## Valid Providers
+The first non-empty line of the system prompt becomes the agent's description in the generated
+files: make it a one-line summary of the role.
 
-| Provider | Type | Requires |
-|----------|------|----------|
-| `claude` | Unified (CLI or API) | Auto-detects Claude CLI or falls back to Anthropic API |
-| `gemini` | Unified (CLI or API) | Auto-detects Gemini CLI or falls back to Google API |
-| `gpt` | API only (unified name) | OpenAI API — never probes `PATH`, see wiki `providers.md` |
-| `aider` | Unified (CLI or API) | Auto-detects aider CLI or falls back to OpenAI API |
-| `anthropic` | API only | `model` field, `ANTHROPIC_API_KEY` env var |
-| `openai` | API only | `model` field, `OPENAI_API_KEY` env var |
-| `google` | API only | `model` field, `GOOGLE_API_KEY` env var |
-| `cli` | CLI only | `command` field (e.g. `command: claude`) |
-| `proxy` | Any OpenAI-compatible server | `model` field, `PROXY_BASE_URL` (or `providers.proxy.base_url`) pointing at the gateway or local runtime |
+## The `provider` field
 
-## Known Models
+`provider` is required. It names the vendor whose model catalogue resolves a `latest:*`
+placeholder:
 
-Use `latest:*` placeholders instead of hardcoded model names:
+| Provider | Model vendor |
+|----------|--------------|
+| `claude` or `anthropic` | Anthropic |
+| `gpt`, `openai`, `codex` or `aider` | OpenAI |
+| `gemini` or `google` | Google |
 
-| Placeholder | Tier | Examples |
-|---|---|---|
-| `latest` or `latest:pro` | Balanced (default) | `claude-sonnet-4-5-20250929`, `gpt-4o`, `gemini-2.5-pro` |
-| `latest:fast` | Fast / cheap | `claude-haiku-4-5-20251001`, `gpt-4o-mini`, `gemini-2.5-flash` |
-| `latest:max` | Most capable | `claude-opus-4-5-20250929`, `o3-pro`, `gemini-2.5-ultra` |
+## Models
 
-You can also use concrete model names if needed:
+Prefer `latest:*` placeholders to hardcoded model names:
 
-**Anthropic**: `claude-opus-4-6`, `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`
-**OpenAI**: `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini`
-**Google**: `gemini-2.0-flash`, `gemini-2.0-pro`
+| Placeholder | Tier |
+|---|---|
+| `latest` or `latest:pro` | Balanced (default) |
+| `latest:fast` | Fast / cheap |
+| `latest:max` | Most capable |
+
+`link --target claude` always writes an Anthropic model and `link --target codex` an OpenAI model,
+whatever the agent says; see the wiki page `docs/wiki/providers.md` for the exact rules.
 
 ## Temperature Guide
 
@@ -71,29 +71,28 @@ You can also use concrete model names if needed:
 | Balanced | 0.5 | General-purpose, moderate creativity |
 | Creative | 0.7 | Writing, brainstorming, ideation |
 
-Range: 0.0 (deterministic) to 2.0 (maximum randomness).
+Range: 0.0 (deterministic) to 2.0 (maximum randomness). Only the OpenCode target writes it.
 
 ## Creation Flow
 
 When helping a user create an ArmadAI agent, ask these questions in order:
 
 1. **Name**: What should the agent be called? (slug format: `my-agent-name`)
-2. **Provider**: Which LLM provider? (claude, gemini, gpt, anthropic, openai, google, cli, proxy)
-3. **Model**: Which model? (suggest based on provider — see Known Models above)
+2. **Provider**: Which model vendor? (claude, gpt, gemini)
+3. **Model**: Which tier or model? (suggest a `latest:*` placeholder)
 4. **Temperature**: What creativity level? (Focused 0.2 / Balanced 0.5 / Creative 0.7)
-5. **Max tokens**: Set a limit? (optional, e.g. 4096)
-6. **Tags**: Categories for filtering? (comma-separated, e.g. `dev, review`)
-7. **Stacks**: Tech stacks? (comma-separated, e.g. `rust, typescript`)
-8. **System prompt**: What is the agent's role and expertise?
-9. **Instructions**: Step-by-step process? (optional)
-10. **Output format**: Expected output structure? (optional)
+5. **Tags**: Categories for filtering? (comma-separated, e.g. `dev, review`)
+6. **Stacks**: Tech stacks? (comma-separated, e.g. `rust, typescript`)
+7. **System prompt**: What is the agent's role and expertise?
+8. **Instructions**: Step-by-step process? (optional)
+9. **Output format**: Expected output structure? (optional)
 
 ## Naming Convention
 
 - Use kebab-case: `code-reviewer`, `test-writer`, `doc-generator`
 - Only letters, digits, and hyphens
-- The filename becomes the agent ID: `agents/code-reviewer.md` → `armadai run code-reviewer`
-- The H1 heading is the display name: `# Code Reviewer`
+- The H1 heading is the display name: `# Code Reviewer`; its slug names the generated files
+  (`.claude/agents/code-reviewer.md`)
 
 ## Complete Example
 
@@ -104,7 +103,6 @@ When helping a user create an ArmadAI agent, ask these questions in order:
 - provider: claude
 - model: latest:pro
 - temperature: 0.3
-- max_tokens: 4096
 - tags: [dev, review, quality]
 - stacks: [rust]
 
@@ -132,28 +130,14 @@ Structured review with sections:
 Each item: severity, location, description, suggested fix.
 ```
 
-## Validation
+## Validation and linking
 
-After creating the file, validate it:
-
-```bash
-armadai validate <agent-name>
-```
-
-This checks:
-- Required sections are present (H1 title, Metadata, System Prompt)
-- Provider/model consistency
-- Temperature is within range (0.0 - 2.0)
-
-## Running the Agent
+After creating the file, reference it in `.armadai/config.yaml` (`agents: [{ name: rust-code-reviewer }]`
+or `- path: .armadai/agents/rust-code-reviewer.md`), then:
 
 ```bash
-# Direct input
-armadai run code-reviewer "Review this function: fn add(a: i32, b: i32) -> i32 { a + b }"
-
-# File input
-armadai run code-reviewer @src/main.rs
-
-# Pipeline (chain agents)
-armadai run --pipe code-reviewer test-writer src/lib.rs
+armadai inspect rust-code-reviewer          # show how the file was parsed
+armadai validate                            # check the project config and its references
+armadai link --target claude --dry-run      # preview the generated files
+armadai link --target claude                # write them
 ```

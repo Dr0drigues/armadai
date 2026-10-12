@@ -42,46 +42,56 @@ The binary is at `target/release/armadai`. Add it to your `PATH`:
 ln -s $(pwd)/target/release/armadai ~/.local/bin/armadai
 
 # Option 2: cargo install
-cargo install --path .
+cargo install --path crates/armadai
 ```
 
 ### Prerequisites
 
 | Tool | Required | Purpose |
 |---|---|---|
-| Rust 1.86+ | Yes | Build from source |
-| Docker | No | Infrastructure services (SurrealDB, LiteLLM) |
-| SOPS + age | No | Encrypted secret management |
+| Rust (recent stable) | To build from source | `.mise.toml` pins the toolchain the project uses |
+| SOPS + age | No | Encrypted secret management (`armadai config secrets`) |
 
-## First Agent
+Running `armadai` without a subcommand prints the help.
 
-Create your first agent from a template:
+## A first project
 
-```bash
-armadai new my-assistant --template basic --description "general-purpose coding assistant"
-```
-
-This creates `agents/my-assistant.md`. Open it and customize the system prompt to your needs.
-
-## Starter Packs
-
-Instead of creating agents one by one, install a curated pack:
+The shortest path to generated files is a starter pack:
 
 ```bash
-# Rust development essentials (code-reviewer, test-writer, debug + conventions prompt)
-armadai init --pack rust-dev
-
-# Full stack web development (6 agents)
-armadai init --pack fullstack
-
-# ArmadAI authoring team (4 agents + skills)
-armadai init --pack armadai-authoring
-
-# Install pack + create project config in one step
-armadai init --pack rust-dev --project
+cd my-project
+armadai init --pack rust-dev --project     # install the pack, declare its agents in .armadai/config.yaml
+armadai link --target claude --dry-run     # preview what would be written
+armadai link --target claude               # write .claude/agents/*.md
 ```
 
-Available packs: `rust-dev`, `fullstack`, `code-analysis-rust`, `code-analysis-web`, `armadai-authoring`, `pirate-crew`. See [Starter Packs](starter-packs.md) for details.
+`link` accepts `claude`, `codex`, `opencode` and `copilot`. See [Link](link.md) for what each
+target receives, and for `unlink`, which removes exactly what `link` wrote.
+
+> `init --pack … --project` currently writes `link.target: anthropic` into the generated config,
+> which is not a link target: pass `--target` explicitly, or set `link.target` to one of the four
+> targets above.
+
+Available packs: `rust-dev`, `fullstack`, `code-analysis-rust`, `code-analysis-web`,
+`armadai-authoring`, `armadai-dev`, `orchestration-demo`, `pirate-crew`. See
+[Starter Packs](starter-packs.md) for details.
+
+## Writing your own agent
+
+An agent is a Markdown file (see [Agent Format](agent-format.md)). Put it in `.armadai/agents/`
+or `agents/`, then reference it from `.armadai/config.yaml`:
+
+```yaml
+agents:
+  - name: my-assistant                      # from ~/.config/armadai/agents/
+  - path: .armadai/agents/my-assistant.md   # or a project-local file
+```
+
+`armadai new <name> --template <tpl>` creates one from a template, in `.armadai/agents/` or
+`agents/` when the project has one, otherwise in your user library. It reads templates from
+`templates/` in the current directory or from `~/.config/armadai/templates/`, which nothing
+installs for you (see [Templates](templates.md)). A project can also declare agents in `.armadai/agents.yaml` — see
+[Declarative agents](declarative-agents.md).
 
 ## Verify Setup
 
@@ -89,32 +99,11 @@ Available packs: `rust-dev`, `fullstack`, `code-analysis-rust`, `code-analysis-w
 # List all available agents
 armadai list
 
-# Validate all agent configurations
+# Validate the project config (or a starter pack directory)
 armadai validate
 
 # Inspect a specific agent
 armadai inspect my-assistant
-```
-
-## Configure Providers
-
-Before running agents, configure your API keys:
-
-```bash
-# Quick setup (unencrypted, gitignored)
-cat > config/providers.secret.yaml << 'EOF'
-providers:
-  anthropic:
-    api_key: sk-ant-your-key-here
-EOF
-```
-
-For production use, see the [Providers](providers.md) page for SOPS + age encrypted configuration.
-
-## Run an Agent
-
-```bash
-armadai run my-assistant "Explain the builder pattern in Rust"
 ```
 
 ## Shell Completion
@@ -130,42 +119,6 @@ armadai completion zsh > ~/.zfunc/_armadai
 
 # Fish
 armadai completion fish > ~/.config/fish/completions/armadai.fish
-```
-
-## TUI Dashboard
-
-Browse and manage your agent library visually:
-
-```bash
-armadai tui
-```
-
-Use `Tab`/`Shift+Tab` to switch views (Agents, Prompts, Skills, Starters, History, Costs), `j`/`k` to navigate, `Enter` to view details, `i` to init a project from the Starters tab, `:` to open the command palette, and `q` to quit.
-
-## Web UI
-
-For a browser-based dashboard:
-
-```bash
-armadai web              # http://localhost:3000
-armadai web --port 8080  # custom port
-```
-
-Browse agents, prompts, skills and starters. View execution history and track costs. Skill detail views show reference file contents in collapsible sections. Starter detail pages include a "Download config.yaml" button.
-
-## Community Registry
-
-Browse and import agents from the community:
-
-```bash
-# Sync the registry
-armadai registry sync
-
-# Search for agents
-armadai registry search "security review"
-
-# Import an agent
-armadai registry add official/security
 ```
 
 ## Discover Skills
@@ -192,11 +145,12 @@ ArmadAI uses a `.armadai/` directory as the canonical project configuration loca
 
 ```
 .armadai/
-├── config.yaml     # Project configuration (agents, prompts, skills, link targets)
-├── agents/         # Project-local agent definitions (.md files)
-├── prompts/        # Project-local prompt fragments (.md files)
-├── skills/         # Project-local skills (directories with SKILL.md)
-└── starters/       # Project-local starter packs
+├── config.yaml         # Project configuration (agents, prompts, skills, link settings)
+├── agents/             # Project-local agent definitions (.md files)
+├── prompts/            # Project-local prompt fragments (.md files)
+├── skills/             # Project-local skills (directories with SKILL.md)
+├── starters/           # Project-local starter packs
+└── link-manifest.yaml  # Written by `armadai link`: what it created, for `unlink`
 ```
 
 Create this structure with:
@@ -224,7 +178,7 @@ Resources (agents, prompts, skills) are resolved in this order:
 
 ## IDE Support
 
-ArmadAI provides a JSON Schema for `armadai.yaml` that enables autocompletion and real-time validation in your editor.
+The repository ships a JSON Schema for `armadai.yaml` (`schemas/armadai.schema.json`) that gives autocompletion and validation in editors that support it.
 
 **VS Code** (with [YAML extension by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)) and **IntelliJ** — add this comment as the first line of your `armadai.yaml`:
 
@@ -232,19 +186,17 @@ ArmadAI provides a JSON Schema for `armadai.yaml` that enables autocompletion an
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Dr0drigues/armadai/master/schemas/armadai.schema.json
 ```
 
-Once added, your editor will provide:
-
-- Autocompletion for all configuration keys (`agents`, `prompts`, `skills`, `sources`, `link`)
-- Inline documentation and descriptions for each field
-- Validation of required fields and allowed values (e.g. link targets: `claude`, `copilot`, `gemini`, `opencode`)
-- Type checking for agent, prompt, and skill references
+This schema predates the declarative refocus: it still offers fields of the removed execution
+engine and lists `gemini` among the link targets, which `armadai link` no longer accepts. A
+versioned schema with a validator is planned (see the
+[step 0 spec](https://github.com/Dr0drigues/armadai/blob/master/docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md)); it does not
+exist yet.
 
 ## Next Steps
 
 - [Agent Format](agent-format.md) — full reference for agent Markdown files
-- [Providers](providers.md) — configure API, CLI, and proxy providers
+- [Link](link.md) — generating native configs for Claude Code, Codex, OpenCode and Copilot
+- [Providers and models](providers.md) — the `provider` and `model` fields as `link` uses them
 - [Templates](templates.md) — available templates and how to create your own
 - [Starter Packs](starter-packs.md) — curated agent bundles for quick setup
-- [Link Command](link.md) — generating native configs for AI CLI tools
 - [Skills & Prompts](skills-prompts.md) — composable prompt fragments and skills
-- [Registry](registry.md) — browsing and importing community agents

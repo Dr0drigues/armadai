@@ -1,10 +1,13 @@
 # Skills & Prompts
 
-ArmadAI supports reusable **prompts** (Markdown fragments with optional frontmatter) and **skills** (autonomous capabilities following the Agent Skills standard).
+ArmadAI supports reusable **prompts** (Markdown fragments with optional frontmatter) and
+**skills** (capabilities following the Agent Skills standard). A project lists the ones it uses in
+`.armadai/config.yaml`, and `armadai link` copies them next to the generated agent files.
 
 ## Prompts
 
-Prompts are reusable Markdown fragments that represent coding conventions, project rules, or instructions to inject into generated configs.
+Prompts are reusable Markdown fragments that represent coding conventions, project rules, or
+instructions shared by several agents.
 
 ### Format
 
@@ -12,7 +15,9 @@ Prompts are reusable Markdown fragments that represent coding conventions, proje
 ---
 name: rust-conventions
 description: Rust coding conventions
-apply_to: "*.rs"
+apply_to:
+  - code-reviewer
+  - test-writer
 ---
 
 # Rust Conventions
@@ -27,27 +32,33 @@ apply_to: "*.rs"
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | Yes | Prompt identifier |
+| `name` | string | No | Prompt identifier (defaults to the file name) |
 | `description` | string | No | Short description |
-| `apply_to` | string | No | File glob pattern (maps to `globs:` in Cursor, `applyTo:` in Copilot) |
+| `apply_to` | list | No | Agent names this prompt is meant for (`*` = every agent). `armadai extract --with-deps` uses it to pull in the prompts of the agents it extracts |
 
 ### Storage Locations
 
-1. **Project-local** — referenced via `path:` in `armadai.yaml`
+1. **Project-local** — `.armadai/prompts/`, or referenced via `path:` in the project config
 2. **User library** — `~/.config/armadai/prompts/<name>.md`
 3. **Starter packs** — installed via `armadai init --pack`
 
-### Usage in armadai.yaml
+### Usage in the project config
 
 ```yaml
 prompts:
-  - rust-conventions                   # From ~/.config/armadai/prompts/
-  - path: ./prompts/project-rules.md   # Project-local
+  - name: rust-conventions                     # from the project or user library
+  - path: .armadai/prompts/project-rules.md    # explicit file
+```
+
+```bash
+armadai prompts list
+armadai prompts show rust-conventions
 ```
 
 ## Skills
 
-Skills follow the open [Agent Skills standard](https://agentskills.io/specification) and provide autonomous capabilities with scripts and assets.
+Skills follow the open [Agent Skills standard](https://agentskills.io/specification) and provide
+capabilities with scripts and assets.
 
 ### Structure
 
@@ -74,34 +85,30 @@ description: Expert code review with security analysis
 3. Provide actionable feedback
 ```
 
-### Viewing Skill Details
-
-Both the TUI and Web UI display full skill details including reference file contents:
-
-- **TUI** (`armadai tui` → Skills → Enter): shows metadata, SKILL.md body, and each reference file as a scrollable block
-- **Web UI** (`armadai web` → Skills → click): shows metadata, SKILL.md body, and each file as a collapsible `<details>` section
-
-Reference files (e.g. `references/format.md`) are read inline — scripts and assets show names only.
-
 ### Built-in Skills
 
-ArmadAI ships with built-in skills that are automatically installed during `armadai init`:
+ArmadAI ships built-in skills that `armadai init` installs into `~/.config/armadai/skills/`:
+`armadai-agent-authoring`, `armadai-prompt-authoring`, `armadai-skill-authoring`,
+`armadai-starter-authoring`, `armadai-orchestration-patterns`, `armadai-protocol`,
+`armadai-shell-config` and `zsh-env-authoring`.
 
-| Skill | Description |
-|---|---|
-| `armadai-agent-authoring` | Guidelines and examples for creating ArmadAI agents |
-| `armadai-prompt-authoring` | Guidelines and examples for composable prompts |
-| `armadai-skill-authoring` | Guidelines and examples for creating skills |
-| `zsh-env-authoring` | Guidelines for zsh environment configuration |
+Their content predates the declarative refocus: some of them still describe the removed execution
+engine and shell. They are kept as shipped until they are revised.
 
-Built-in skills are automatically updated when the binary version changes (tracked via `.armadai-version` marker files).
+Built-in skills are re-installed when the binary version changes (tracked via `.armadai-version`
+marker files).
 
-### Usage in armadai.yaml
+### Usage in the project config
 
 ```yaml
 skills:
-  - code-review                        # From ~/.config/armadai/skills/
-  - path: ./scripts/deploy             # Project-local skill directory
+  - name: code-review                  # from ~/.config/armadai/skills/
+  - path: .armadai/skills/deploy       # project-local skill directory
+```
+
+```bash
+armadai skills list
+armadai skills show code-review
 ```
 
 ## Skills Registry
@@ -114,7 +121,8 @@ Discover and install skills from GitHub repos without copying files manually.
 armadai skills sync
 ```
 
-Clones or updates the default skill sources (shallow clone) and builds a local search index at `~/.config/armadai/skills-registry/`.
+Clones or updates the skill sources (shallow clone) and builds a local search index at
+`~/.config/armadai/skills-registry/`.
 
 ### Search skills
 
@@ -138,7 +146,8 @@ armadai skills add owner/repo
 armadai skills add anthropics/skills/webapp-testing --force
 ```
 
-The skill directory (SKILL.md + scripts/ + references/ + assets/) is copied to `~/.config/armadai/skills/<skill-name>/`.
+The skill directory (SKILL.md + scripts/ + references/ + assets/) is copied to
+`~/.config/armadai/skills/<skill-name>/`.
 
 ### Show skill info
 
@@ -148,19 +157,23 @@ armadai skills info webapp-testing
 
 Displays metadata from the registry index and the SKILL.md content.
 
-## How Prompts are Linked
+## How prompts and skills are linked
 
-When running `armadai link`, prompts are included in the generated config:
+`armadai link` copies every prompt and skill the project config lists into the target's output
+directory, verbatim, and records each file in the link manifest:
 
-| Target CLI | Prompt Output |
-|---|---|
-| Claude Code | Section in `CLAUDE.md` |
-| Copilot | `.github/copilot-instructions.md` or `.github/agents/*.agent.md` |
-| Gemini CLI | Section in `GEMINI.md` |
+| Target | Prompts | Skills |
+|---|---|---|
+| Claude Code | `.claude/prompts/<name>.md` | `.claude/skills/<name>/` |
+| Codex | `.codex/prompts/<name>.md` | `.codex/skills/<name>/` |
+| OpenCode | `.opencode/prompts/<name>.md` | `.opencode/skills/<name>/` |
+| Copilot | `.github/prompts/<name>.md` | `.github/skills/<name>/` |
+
+The prompts are not inlined into the agents' own files. Whether each assistant reads a file from
+these locations is up to that assistant.
 
 ## See Also
 
 - [Agent Format](agent-format.md) — agent Markdown file reference
-- [Link Command](link.md) — generating config for AI CLIs
-- [Registry](registry.md) — community agents
+- [Link](link.md) — generating config for Claude Code, Codex, OpenCode and Copilot
 - [Getting Started](getting-started.md) — installation and first steps

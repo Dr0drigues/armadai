@@ -15,7 +15,7 @@ orchestration:
   policy: strict            # off | strict — default: off
   coordinator: dev-lead
   teams:
-    - agents: [core-specialist, cli-specialist, qa-specialist]
+    - agents: [schema-specialist, adapter-specialist, cli-specialist, qa-specialist]
   free_agents: [Explore, Plan]
 ```
 
@@ -39,21 +39,19 @@ the declared topology allows only [dev-lead] from the main thread; hand the work
 those, or declare 'qa-specialist' in orchestration.teams or orchestration.free_agents
 ```
 
-`policy` is independent of `enabled`, which governs the `run --orchestrate` engine. Two neighbouring
-keys, two different jobs.
+`policy` is independent of `enabled`. `enabled` used to switch on the removed execution engine;
+today it only makes `armadai link` validate the `orchestration:` block before writing anything.
+The gate reads `policy` alone.
 
 ## Migrating a project
 
 Turning on `strict` before declaring what you actually use will refuse most of your delegations.
-`armadai audit` gives you the inventory: rule `U02` lists every sub-agent that ran but is not
-declared in this project's `.claude/agents/`. Read it, then declare each of those agents in
-`teams` or `free_agents`, and switch `policy` to `strict`.
+Start from an inventory of the sub-agents your sessions actually call — the agents in
+`.claude/agents/`, plus the Claude Code built-ins you rely on — declare each of them in `teams` or
+`free_agents`, and only then switch `policy` to `strict`.
 
-One thing that trips people up: `U02` and the gate look at **different declarations**. The audit
-reads `.claude/agents/`; the gate reads `orchestration.teams` and `orchestration.free_agents`.
-Declaring an agent for the gate therefore does **not** silence `U02` — the rule is an inventory of
-what runs, not a checklist that empties as you configure. Treat it as the starting list, not as
-progress.
+(The former `armadai audit` command produced that inventory as rule `U02`. It now lives, frozen
+and unmaintained, in `frozen/armadai-audit/`, outside the product.)
 
 ## Installing the hook
 
@@ -86,13 +84,16 @@ the same gate under different rules, or none.
 
 ## Limits
 
-The gate judges whether a delegation is *permitted*, never whether it is *apt*: sending a UI task to
-the QA specialist is allowed if the topology allows it. It cannot see which files a sub-agent will
+The gate judges whether a delegation is *permitted*, never whether it is *apt*: sending a CLI task
+to the QA specialist is allowed if the topology allows it. It cannot see which files a sub-agent will
 touch, nor track a budget or a depth across calls — those need other interception points and
 persistent state.
 
-It is specific to Claude Code. The other link targets (codex, copilot, gemini, opencode) have no
-sub-agent notion and no equivalent hook, so nothing portable is offered here.
+It is specific to Claude Code. ArmadAI generates no equivalent for the other link targets (codex,
+copilot, opencode), so nothing portable is offered here. The gate is to be rewritten on the links
+of the flow graph (planned, see the
+[step 0 spec](https://github.com/Dr0drigues/armadai/blob/master/docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md),
+section 2.2); until then it works as described on this page.
 
 Every uncertainty resolves to *allowed*: unreadable payload or config, no declared coordinator,
 `policy: off`. A gate that refuses because it failed to understand is a gate you uninstall the same

@@ -4,28 +4,27 @@ This file provides instructions for AI coding agents working on the ArmadAI proj
 
 ## Project Overview
 
-ArmadAI is an AI agent fleet orchestrator written in Rust. It allows defining,
-managing and executing specialized AI agents configured via Markdown files.
+ArmadAI is a declarative compiler written in Rust (edition 2024). Agents, prompts and skills are
+described once (Markdown files or `.armadai/agents.yaml`), then `armadai link` compiles them into
+the native files of Claude Code, Codex, OpenCode and Copilot. ArmadAI does not run agents: there
+is no execution engine, no TUI and no web UI.
 
 ## Build & Test
 
+There is a single configuration (no optional cargo features), identical to CI:
+
 ```bash
-# Build (all features)
-cargo build
-
-# Run tests (with API providers)
-cargo test --no-default-features --features tui,providers-api
-
-# Run clippy (both modes — CI and full)
-cargo clippy --all-targets --no-default-features --features tui -- -D warnings
-cargo clippy --all-targets --no-default-features --features tui,providers-api -- -D warnings
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test --no-fail-fast
+cargo build -p armadai-core   # the core builds standalone
 
 # Run with debug logging
 RUST_LOG=armadai=debug cargo run -- <command>
-
-# Format code
-cargo fmt -- --check
 ```
+
+`crates/armadai` is binary-only: `cargo test --lib` there runs nothing and reports no error; use
+`--bin armadai` or `--test <name>`.
 
 ## Code Style
 
@@ -38,31 +37,28 @@ cargo fmt -- --check
 
 ## Architecture
 
-See ARCHITECTURE.md for full details. Key modules:
-- `src/cli/` — CLI commands (clap)
-- `src/tui/` — Terminal UI (ratatui)
-- `src/core/` — Domain: Agent, Coordinator, Task, Context
-- `src/core/project.rs` — Project config (armadai.yaml) with agent/prompt/skill resolution
-- `src/core/prompt.rs` — Composable prompt fragments with YAML frontmatter
-- `src/core/skill.rs` — Skills following the SKILL.md open standard
-- `src/core/starter.rs` — Starter packs installation
-- `src/core/fleet.rs` — Fleet definitions linking agent groups to directories
-- `src/parser/` — Markdown agent file parsing
-- `src/parser/frontmatter.rs` — Generic YAML frontmatter extraction
-- `src/providers/` — LLM provider abstraction (API, CLI, proxy)
-- `src/linker/` — Generate native config for AI CLIs (Claude Code, Copilot, Gemini, etc.)
-- `src/registry/` — Community agent registry integration (awesome-copilot)
-- `src/skills_registry/` — GitHub-based skills discovery and installation
-- `src/model_registry/` — Dynamic model catalog from models.dev (fetch, cache, enriched selection)
-- `src/storage/` — SQLite persistence layer (rusqlite)
-- `src/web/` — Axum-based web UI dashboard
-- `src/secrets/` — SOPS + age secret management
+See ARCHITECTURE.md for full details. Workspace crates:
+
+- `crates/armadai-core` — the domain: agent model and parser (`agent.rs`, `agent_decl.rs`,
+  `agent_source.rs`, `parser/`), project config (`project.rs`), prompts, skills, starter packs
+  (embedded), model resolution, and the orchestration declaration types (`orchestration/`,
+  including the Claude Code `policy` gate).
+- `crates/armadai` — the binary: `cli/` (commands), `linker/` (one linker per target plus the
+  link manifest), `claude_adapter/` (the `__claude-policy-gate` hook), `skills_registry/`,
+  `starters_registry/`, `templates/`, and integration tests with the golden `link` outputs in
+  `tests/`.
+- `crates/armadai-providers` — read-only access to the local models.dev catalogue cache and the
+  tool-to-vendor table. No network access.
+- `crates/armadai-secrets` — SOPS + age secret management.
+
+`frozen/armadai-audit/` holds the former `audit` command. It is outside the workspace and outside
+CI: do not build or edit it.
 
 ## Testing
 
 - Unit tests go in the same file as the code (`#[cfg(test)]` module)
-- Integration tests go in `tests/`
-- Test agent files go in `starters/` (organized by pack)
+- Integration tests go in `crates/armadai/tests/`
+- Never call a real API in a test; isolate the config directory (`ARMADAI_CONFIG_DIR`) in a temp dir
 
 ## Commit Messages
 

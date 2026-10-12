@@ -35,12 +35,12 @@ CI (`.github/workflows/ci.yml`) runs fmt, clippy, test, build (`cargo build --re
 
 ## Architecture
 
-**Flow**: declarative model (Markdown/YAML definitions) -> validation -> per-target adapters (linkers) -> native files for Claude Code, Codex, OpenCode and Copilot. `link` never touches the network (only `models update` does); `unlink` removes what `link` wrote, guided by the link manifest.
+**Flow**: declarative model (Markdown/YAML definitions) -> validation -> per-target adapters (linkers) -> native files for Claude Code, Codex, OpenCode and Copilot. `link` never touches the network (only `init --pack` on a local miss, `skills sync`/`add` and `update` do); `unlink` removes what `link` wrote, guided by the link manifest.
 
 **Where things live**:
 - `crates/armadai-core`: the domain — agent model and parser (`agent.rs`, `agent_decl.rs`, `agent_source.rs`, `parser/`, `project.rs`), skills, starters and prompts (embedded via `include_dir`), model resolution, and the declaration types of `orchestration/` (patterns, teams, and the Claude Code delegation `policy` gate). It also holds `test_support/` (env isolation).
 - `crates/armadai`: the binary — `cli/` (commands), `linker/` (one linker per target: `claude.rs`, `codex.rs`, `opencode.rs`, `copilot.rs`, plus `manifest.rs`), `claude_adapter/`, `skills_registry/`, `starters_registry/`, `templates/`, and the integration tests and golden outputs in `tests/`.
-- `crates/armadai-providers`: read-only models.dev catalogue cache (`model_registry/`) and the tool-to-vendor table (`factory.rs`).
+- `crates/armadai-providers`: only a reader of the local models.dev catalogue cache (`model_registry/`; no network in this crate, nothing refreshes the cache) plus the tool-to-vendor table (`factory.rs`).
 - `crates/armadai-secrets`: SOPS-based secret handling.
 - `frozen/armadai-audit/`: the former `audit` command, frozen. It is outside the workspace and outside CI; do not build or edit it.
 
@@ -60,7 +60,7 @@ CI (`.github/workflows/ci.yml`) runs fmt, clippy, test, build (`cargo build --re
 
 - **Branch model** (master-only): `master` (default/trunk), `release/*` (release-line stabilization), `feature/*` branches. No `develop`.
 - **Conventional Commits** enforced by `.githooks/commit-msg` hook and CI. Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`, `perf`, `style`, `build`, `revert`
-- **PR process**: Always squash merge to `master`. Before merging: check for Dependabot PRs, verify CI passes (all 6 checks: fmt, clippy, test, build, conventional commits, audit — one single configuration, no feature matrix).
+- **PR process**: Always squash merge to `master`, and merge only when Dimitri's brief authorises it (otherwise open the PR and stop, see `.claude/CLAUDE.md`). Before merging: check for Dependabot PRs, verify CI passes (all 6 checks: fmt, clippy, test, build, conventional commits, audit — one single configuration, no feature matrix).
 - Enable hooks after clone: `git config core.hooksPath .githooks`
 
 ## Language

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  AI agent orchestrator — define, manage and run specialized agents from Markdown files.
+  Declarative agent teams — describe them once, compile them for Claude Code, Codex, OpenCode and Copilot.
 </p>
 
 <p align="center">
@@ -13,29 +13,37 @@
 
 ## Overview
 
-ArmadAI lets you build a team of specialized AI agents, each configured with a simple Markdown file. It works with any LLM provider (Claude, GPT, Gemini) and any CLI tool (Claude Code, aider, etc.) through a unified interface.
+ArmadAI is a declarative compiler for AI agent teams. You describe your agents (Markdown files
+or a YAML declaration), the prompts and skills they share, and which agent coordinates the
+others; `armadai link` then writes the native configuration files of the assistant you use:
 
 ```
-armadai run code-reviewer "Review this PR for security issues"
-armadai run --pipe code-reviewer test-writer "src/main.rs"
-armadai tui
+armadai link --target claude      # .claude/agents/*.md        (+ .claude/CLAUDE.md for a coordinator)
+armadai link --target codex       # .codex/agents/*.toml, .codex/config.toml, .codex/AGENTS.md
+armadai link --target opencode    # .opencode/agents/*.md      (+ .opencode/instructions.md for a coordinator)
+armadai link --target copilot     # .github/agents/*.agent.md  (+ .github/copilot-instructions.md for a coordinator)
 ```
+
+The project's prompts and skills are copied alongside, under `prompts/` and `skills/` in the same
+directory.
+
+ArmadAI does not run agents: the assistant does. There is no execution engine, no TUI and no
+web UI, and `link` never touches the network.
 
 ### Key Features
 
-- **Markdown-based agents** — one `.md` file = one agent. Human-readable, git-friendly.
-- **Multi-provider** — unified tool names (`claude`, `gemini`, `codex`, `copilot`, `opencode`, `aider`) auto-detect CLI vs API, and `gpt` goes straight to the OpenAI API; explicit API/CLI/proxy modes also supported
-- **Multi-pattern orchestration** — Direct (single-shot), Blackboard (parallel shared-state), Ring (sequential consensus), Hierarchical (coordinator → leads → agents)
-- **Pipeline mode** — chain agents sequentially (output A becomes input B)
-- **TUI & Web dashboards** — agent library management with browser, detail view, history, costs, and command palette
-- **Shell completion** — auto-complete for bash, zsh, fish, powershell, elvish
-- **Cost tracking** — per-agent, per-run cost monitoring stored in SQLite
+- **One source, four targets** — the same definitions compile to Claude Code, Codex, OpenCode
+  and GitHub Copilot.
+- **Markdown-based agents** — one `.md` file = one agent, human-readable and git-friendly; or
+  declare them in `.armadai/agents.yaml`.
+- **Composable prompts and skills** — reusable prompt fragments, and skills following the
+  `SKILL.md` standard.
+- **Reversible** — `link` records what it wrote in a manifest, and `unlink` removes exactly that.
+- **Policy gate** — for Claude Code, a `PreToolUse` hook that enforces the declared delegation
+  topology.
+- **Starter packs and templates** — curated bundles and agent templates to start from.
 
 ## Quick Start
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (1.86+) — only needed to build from source
 
 ### Install
 
@@ -47,42 +55,38 @@ curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.s
 Options: `INSTALL_DIR=~/.local/bin` (default), `VERSION=v0.1.0` (default: latest).
 
 ```bash
-armadai new --template basic my-assistant   # create your first agent
-armadai run my-assistant "Explain how async/await works in Rust"
+armadai init --pack rust-dev --project      # install a starter pack and declare its agents in .armadai/config.yaml
+armadai link --target claude --dry-run      # preview the generated files
+armadai link --target claude                # write them
 ```
 
-See [Getting Started](docs/wiki/getting-started.md) for building from source, configuring providers, and starter packs.
+See [Getting Started](docs/wiki/getting-started.md) for building from source, the project
+layout and starter packs.
 
 ## Usage
 
-| Command | Description | Status |
-|---|---|---|
-| `armadai list [--tags t] [--stack s]` | List available agents | Done |
-| `armadai new --template <tpl> <name>` | Create an agent from a template | Done |
-| `armadai inspect <agent>` | Show parsed agent config | Done |
-| `armadai validate [path]` | Validate starter pack or project config | Done |
-| `armadai run <agent> [input]` | Run an agent | Done |
-| `armadai run --pipe <a> <b> [input]` | Chain agents in a pipeline | Done |
-| `armadai history [--agent a]` | View execution history | Done |
-| `armadai history --replay <id>` | Replay a past execution | Planned |
-| `armadai costs [--agent a] [--from d]` | View cost tracking | Done |
-| `armadai config providers` | Show provider configs and secrets status | Done |
-| `armadai init [--force] [--project]` | Initialize ArmadAI configuration (.armadai/) | Done |
-| `armadai init --pack <name>` | Install a starter pack (rust-dev, fullstack, ...) | Done |
-| `armadai link --target <t> [--dry-run]` | Generate native AI assistant configs | Done |
-| `armadai registry sync/search/list/add` | Browse and import community agents | Done |
-| `armadai prompts list/show` | Manage composable prompts | Done |
-| `armadai skills list/show/sync/search/add/info` | Manage and discover composable skills | Done |
-| `armadai models check/update/list` | Check, update, and list registered models | Done |
-| `armadai update` | Self-update to latest release | Done |
-| `armadai tui` | Launch the TUI dashboard | Done |
-| `armadai web [--port N]` | Launch the web UI | Done |
-| `armadai completion <shell>` | Generate shell completions | Done |
-| `armadai up / down` | Start/stop infra (Docker Compose) | Done |
+Running `armadai` without a subcommand prints the help.
+
+| Command | Description |
+|---|---|
+| `armadai link --target <t> [--dry-run]` | Generate native config files for an assistant |
+| `armadai unlink --target <t> [--dry-run]` | Remove what `link` wrote, and only that |
+| `armadai list [--tags t] [--stack s]` | List available agents |
+| `armadai inspect <agent>` | Show an agent's parsed configuration |
+| `armadai validate [path]` | Validate a starter pack or project config |
+| `armadai new --template <tpl> <name>` | Create an agent from a template (`-i` for a wizard) |
+| `armadai init [--project] [--pack <name>]` | Initialize the user or project configuration, install a starter pack |
+| `armadai prompts list/show` | Manage composable prompts |
+| `armadai skills list/show/sync/search/add/info` | Manage and discover skills |
+| `armadai extract` | Extract agents, prompts and skills with their dependencies |
+| `armadai models check/update/list` | Check and rewrite deprecated model ids, list linked projects |
+| `armadai config providers/secrets/starters-dir` | Provider status, SOPS + age secrets, custom starter directories |
+| `armadai update` | Self-update to the latest release |
+| `armadai completion <shell>` | Generate shell completions |
 
 ## Agent Format
 
-Each agent is a Markdown file in `agents/`:
+Each agent is a Markdown file in `agents/` (or `.armadai/agents/`):
 
 ```markdown
 # Code Reviewer
@@ -91,7 +95,6 @@ Each agent is a Markdown file in `agents/`:
 - provider: claude
 - model: latest:pro
 - temperature: 0.3
-- max_tokens: 4096
 - tags: [dev, review, quality]
 - stacks: [rust, typescript, java]
 
@@ -109,7 +112,7 @@ You are an expert code reviewer...
 Structured review: bugs, security, performance, style.
 ```
 
-See the [Agent Format](docs/wiki/agent-format.md) page for the full section reference and provider configuration options.
+See the [Agent Format](docs/wiki/agent-format.md) page for the full section reference.
 
 ## Starter Packs
 
@@ -117,56 +120,43 @@ Install curated bundles of agents, prompts and skills:
 
 ```bash
 armadai init --pack rust-dev              # Rust essentials (3 agents + conventions prompt)
-armadai init --pack fullstack             # Full stack web (6 agents)
-armadai init --pack rust-dev --project    # Combined: install pack + create project config
+armadai init --pack fullstack             # General-purpose pack (6 agents)
+armadai init --pack rust-dev --project    # Install the pack and create the project config
 ```
 
-See [Starter Packs](docs/wiki/starter-packs.md) for the full list (`rust-dev`, `fullstack`, `code-analysis-rust`, `code-analysis-web`, `armadai-authoring`, `pirate-crew`) and their contents.
+See [Starter Packs](docs/wiki/starter-packs.md) for the full list and their contents.
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the technical documentation.
 
 ```
-HOST MACHINE
-├── armadai (native binary)
-│   ├── CLI + TUI + Web UI
-│   ├── Orchestration (Direct / Blackboard / Ring / Hierarchical)
-│   ├── Providers (API / CLI / Proxy)
-│   ├── SQLite (embedded storage)
-│   └── SOPS + age secrets
-│
-└── docker-compose (optional)
-    └── litellm     :4000
+agent definitions (.md / agents.yaml) + prompts + skills + project config
+        │
+        ▼
+armadai (native binary): parse → validate → one linker per target
+        │
+        ▼
+native files for Claude Code · Codex · OpenCode · Copilot  (+ .armadai/link-manifest.yaml)
 ```
 
-### Cargo Feature Flags
-
-Heavy dependencies are gated behind optional feature flags for faster compilation:
-
-| Feature | Default | Description |
-|---|---|---|
-| `tui` | Yes | TUI dashboard (ratatui + crossterm) |
-| `web` | Yes | Web UI dashboard (axum + tower-http) |
-| `storage` | Yes | SQLite persistence (rusqlite bundled) |
-| `providers-api` | Yes | HTTP API providers (Anthropic, OpenAI, Google) |
-
-```bash
-cargo build --release                                    # Full build (all features)
-cargo build --release --no-default-features               # Lightweight build
-cargo build --release --no-default-features --features storage  # CLI + storage (no TUI)
-```
+What the declarative refocus removed, and what comes next, is specified in
+[the step 0 spec](docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md).
 
 ## Documentation
 
-Full documentation lives in [`docs/wiki/`](docs/wiki/) (and the published site once available):
+Full documentation lives in [`docs/wiki/`](docs/wiki/):
 
 - [Getting Started](docs/wiki/getting-started.md)
 - [Agent format](docs/wiki/agent-format.md)
-- [Orchestration guide](docs/wiki/orchestration-guide.md)
-- [Providers](docs/wiki/providers.md)
+- [Declarative agents](docs/wiki/declarative-agents.md)
+- [Link](docs/wiki/link.md)
+- [Providers and models](docs/wiki/providers.md)
 - [Skills & Prompts](docs/wiki/skills-prompts.md)
-- [Migration v0 → v1](docs/wiki/migration-v0-to-v1.md)
+- [Policy gate](docs/wiki/policy-gate.md)
+
+Documents describing the former execution engine are kept, unmaintained, in
+[`docs/archive/`](docs/archive/README.md).
 
 ## Development
 
@@ -178,15 +168,22 @@ cd armadai
 git config core.hooksPath .githooks    # Enable commit message validation
 ```
 
+Building from source needs a recent stable Rust toolchain; `.mise.toml` pins the one the
+project uses (`mise install`).
+
 ### Build & Test
 
+There is a single configuration (no optional cargo features), identical to CI:
+
 ```bash
-cargo build              # Build
-cargo test               # Run tests
-cargo clippy             # Lint
-cargo fmt                # Format
-RUST_LOG=debug cargo run  # Run with debug logs
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test --no-fail-fast
+cargo build -p armadai-core   # the core builds standalone
+RUST_LOG=debug cargo run -- list
 ```
+
+`mise run ci` runs the same gate.
 
 ### Git Flow
 
@@ -206,7 +203,7 @@ A git hook validates messages automatically. Use `cz commit` for an interactive 
 feat: add agent validation command
 fix(parser): handle empty metadata section
 docs: update README with new CLI commands
-refactor(providers): extract common HTTP logic
+refactor(linker): share the prompt composition
 ```
 
 Changelogs are generated automatically via `cz bump`.

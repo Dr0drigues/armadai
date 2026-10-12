@@ -2,599 +2,175 @@
 
 ## Vision
 
-ArmadAI est un orchestrateur d'agents IA en ligne de commande. Il permet de
-définir, gérer et exécuter une flotte d'agents spécialisés, chacun configuré via un
-simple fichier Markdown. L'outil est agnostique vis-à-vis des modèles (Claude, GPT,
-Gemini...) et des modes d'exécution (API HTTP, proxy, CLI tools).
+ArmadAI est un compilateur déclaratif d'équipes d'agents IA. Une équipe (agents, prompts, skills,
+coordinateur, topologie de délégation) est décrite une fois, en Markdown ou en YAML, puis compilée
+par `armadai link` vers les fichiers natifs de Claude Code, Codex, OpenCode et GitHub Copilot.
+
+ArmadAI n'exécute pas d'agents : c'est l'assistant cible qui les exécute. Il n'y a ni moteur
+d'exécution, ni TUI, ni interface web, ni stockage. Le recentrage (ce qui a été retiré, gardé ou
+gelé) est décrit dans
+[la spec de l'étape 0](docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md). Le
+code retiré reste récupérable depuis le commit `9b02047` (tag `pre-v1-declaratif` une fois poussé).
 
 ---
 
 ## Choix techniques
 
-| Aspect              | Choix                          | Justification                                            |
-| ------------------- | ------------------------------ | -------------------------------------------------------- |
-| Langage             | Rust                           | Performance, binaire unique, écosystème CLI/TUI mature   |
-| Runtime async       | tokio                          | Standard de facto, écosystème massif (reqwest, axum...)   |
-| Format agent        | Markdown (agents.md)           | Lisible, versionnable, compatible avec le standard ouvert |
-| Orchestration       | Hub & Spoke + Blackboard + Ring | Hub centralisé + patterns non-hiérarchiques             |
-| Interface           | CLI + TUI (ratatui)            | CLI scriptable + TUI riche pour le monitoring/interaction |
-| Stockage            | SQLite embarqué (rusqlite)     | Zéro config, in-process, léger, fiable                   |
-| Secrets             | SOPS + age                     | Chiffrement champ par champ, diff-friendly, moderne      |
-| Portabilité         | Docker Compose (optionnel)     | Pour l'infra (SurrealDB serveur, proxy LiteLLM)          |
-| Extensibilité       | Fichiers config uniquement     | Un agent = un fichier .md. Simplicité maximale           |
+| Aspect | Choix | Justification |
+| --- | --- | --- |
+| Langage | Rust (édition 2024) | Binaire unique, portable, sans runtime |
+| Format agent | Markdown, ou YAML (`.armadai/agents.yaml`) | Lisible, versionnable |
+| Sortie | Fichiers natifs de chaque assistant | L'assistant reste maître de l'exécution |
+| Réversibilité | Manifeste de `link` (`.armadai/link-manifest.yaml`) | `unlink` retire exactement ce que `link` a écrit |
+| Réseau | Aucun pour `link` | Compilation hors ligne et reproductible |
+| Secrets | SOPS + age | Chiffrement champ par champ, diff-friendly |
+| Configuration | Une seule (aucune feature cargo optionnelle) | Une seule barrière, identique en local et en CI |
 
 ---
 
-## Architecture d'exécution
+## Flux
 
 ```
-┌─ HOST MACHINE ─────────────────────────────────────────────┐
-│                                                             │
-│  armadai (binaire natif Rust)                              │
-│  ├── CLI (clap)            commandes : run, new, list...   │
-│  ├── TUI (ratatui)         monitoring, interaction, logs   │
-│  ├── Core                  parsing .md, orchestration      │
-│  ├── Providers             API, proxy, CLI tools           │
-│  │   ├── ApiProvider  ──── HTTP ──▶  OpenAI / Anthropic / Google
-│  │   ├── ProxyProvider ─── HTTP ──▶  LiteLLM / OpenRouter
-│  │   └── CliProvider  ──── spawn ─▶  claude / aider / any CLI
-│  ├── Storage ──────────────────────▶  SQLite (embarqué)
-│  └── Secrets (SOPS+age)                                    │
-│                                                             │
-│  ┌─ docker-compose (OPTIONNEL) ──────────────────────┐     │
-│  │  litellm-proxy   :4000   (proxy unifié)           │     │
-│  └───────────────────────────────────────────────────┘     │
-└─────────────────────────────────────────────────────────────┘
+définitions (.md / agents.yaml) + prompts + skills + config projet
+        │  parser/, agent_source.rs, project.rs        (armadai-core)
+        ▼
+modèle en mémoire (Agent, ProjectConfig, OrchestrationConfig)
+        │  validation : références, orchestration, link.coordinator
+        ▼
+un linker par cible (linker/claude.rs, codex.rs, opencode.rs, copilot.rs)   (armadai)
+        │  résolution du modèle (latest:* → id concret, hors ligne)
+        ▼
+fichiers natifs + .armadai/link-manifest.yaml
 ```
 
-**Le binaire `armadai` tourne toujours nativement sur la machine hôte**, jamais dans Docker.
-Cela garantit :
-- L'accès direct au terminal (TUI)
-- L'accès aux CLI tools installés sur la machine (claude, aider, etc.)
-- L'accès au système de fichiers local (projets, repos git)
-
-Docker Compose est **optionnel** et ne sert qu'à l'infrastructure :
-- Proxy LiteLLM (normalisation multi-providers)
+Le seul composant qui intervient pendant une session de l'assistant est le hook
+`__claude-policy-gate` (Claude Code, `PreToolUse`) : il refuse une délégation que la topologie
+déclarée n'autorise pas (voir `docs/wiki/policy-gate.md`).
 
 ---
 
-## Modèles d'orchestration
+## Crates du workspace
 
-Trois patterns d'orchestration coexistent, chacun adapté à un type de tâche.
+| Crate | Rôle |
+| --- | --- |
+| `crates/armadai-core` | Le domaine : modèle d'agent et parser (`agent.rs`, `agent_decl.rs`, `agent_source.rs`, `parser/`), config projet (`project.rs`), prompts, skills, starter packs et skills intégrés (`include_dir`), résolution des modèles (`model_resolution.rs`, `model_aliases.rs`, `model_updater.rs`), types déclaratifs d'orchestration (`orchestration/`, dont `policy.rs` pour le gate), validation de packs et de projets (`pack_validation.rs`), isolation d'environnement pour les tests (`test_support.rs`, feature de dev `test-support`). |
+| `crates/armadai` | Le binaire (pas de `lib.rs`) : `cli/` (commandes), `linker/` (un linker par cible, `manifest.rs`, `model_resolution.rs`), `claude_adapter/policy_gate.rs` (le hook), `skills_registry/`, `starters_registry/`, `templates/`, tests d'intégration et étalons de sortie de `link` dans `tests/`. |
+| `crates/armadai-providers` | Lecture seule du cache local du catalogue models.dev (`model_registry/`) et table outil → fournisseur (`factory.rs`). Aucun accès réseau. |
+| `crates/armadai-secrets` | Gestion des secrets SOPS + age. |
 
-### Hub & Spoke (coordinateur central)
+`frozen/armadai-audit/` contient l'ancienne commande `audit`, gelée : hors du workspace, hors de
+la CI, non maintenue (voir son README).
 
-```
-                    ┌──────────────┐
-           ┌───────│ Coordinator  │───────┐
-           │       │  (hub agent) │       │
-           │       └──────┬───────┘       │
-           ▼              ▼               ▼
-    ┌────────────┐ ┌────────────┐ ┌────────────┐
-    │  Agent A   │ │  Agent B   │ │  Agent C   │
-    │ (reviewer) │ │ (test gen) │ │ (doc gen)  │
-    └────────────┘ └────────────┘ └────────────┘
-```
+### Accès réseau
 
-Le **Coordinator** :
-- Reçoit la tâche utilisateur
-- Analyse et décompose en sous-tâches
-- Dispatch aux agents spécialisés appropriés
-- Agrège les résultats et fournit la réponse finale
-- Utilisé par la commande `link` pour générer les fichiers de configuration
-
-### Blackboard (parallel, état partagé)
-
-```
-    ┌─────────────────────────────────────────────┐
-    │              Board (shared state)            │
-    │  entries: [Finding, Challenge, Confirmation] │
-    └───────┬──────────┬──────────┬───────────────┘
-            │          │          │
-     ┌──────▼──┐ ┌─────▼───┐ ┌───▼───────┐
-     │ Agent A │ │ Agent B  │ │ Agent C   │
-     │ (react) │ │ (react)  │ │ (react)   │
-     └─────────┘ └─────────┘ └───────────┘
-```
-
-- Les agents tournent en **parallèle** à chaque round
-- Chaque agent lit le board, produit des deltas (Finding, Challenge, Confirmation, Synthesis...)
-- Le board évalue la convergence : consensus, divergence, ou stabilité
-- Arrêt sur consensus, max_rounds, ou budget épuisé
-- Agents réactifs : `## Triggers` contrôle quand un agent s'active (min/max round, requires, excludes)
-
-### Ring (séquentiel, token-passing)
-
-```
-     ┌───────────┐     ┌───────────┐     ┌───────────┐
-     │  Agent A  │────▶│  Agent B  │────▶│  Agent C  │
-     │(initiator)│     │(specialist)│     │(challenger)│
-     └───────────┘     └───────────┘     └───────────┘
-           ▲                                    │
-           └────────────── lap N+1 ─────────────┘
-```
-
-- Token circule séquentiellement entre les agents (laps)
-- Chaque agent choisit une action : Propose, Enrich, Contest, Endorse, Synthesize, Pass
-- Après circulation : phase de vote avec positions pondérées (`vote_weight`)
-- Résolution : Consensus, Majority (avec dissents), ou NoConsensus
-- Groupement par similarité de position (Jaccard word-overlap, `similarity_threshold`)
-
-### Sélection automatique du pattern
-
-Le **classifier** (heuristique phase 1) choisit le pattern en fonction :
-- du nombre d'agents pertinents (tags + nom, prefix matching)
-- de l'overlap des domaines (Jaccard sur les tags)
-- de mots-clés dans la tâche (review/audit → Ring, generate/build → Blackboard)
-
-Override manuel : `armadai run agent-a --pipe agent-b agent-c --orchestrate blackboard|ring`
-
-### Configuration projet
-
-```yaml
-# armadai.yaml
-defaults:
-  orchestration:
-    max_rounds: 10          # Blackboard
-    max_laps: 5             # Ring
-    consensus_threshold: 0.85
-    token_budget: 100000
-    agent_timeout_secs: 120
-```
-
-### Choix du pattern
-
-| Critère | Hub & Spoke | Blackboard | Ring |
-|---|---|---|---|
-| Agents indépendants, tâches décomposables | Oui | — | — |
-| Agents parallèles, état partagé | — | Oui | — |
-| Revue croisée, consensus | — | — | Oui |
-| Coordinateur nécessaire | Oui | Non | Non |
-| CLI | `link` | `--orchestrate blackboard` | `--orchestrate ring` |
+- `link`, `unlink`, `new`, `list`, `inspect`, `validate`, `models` : aucun.
+- `init --pack <nom>` : synchronise les registres distants de starters seulement si le pack est
+  introuvable localement.
+- `skills sync` / `skills add` : clonent des dépôts GitHub de skills.
+- `update` : télécharge la dernière version publiée.
 
 ---
 
-## Abstraction des providers
+## Cibles de `link`
 
-```rust
-#[async_trait]
-pub trait Provider: Send + Sync {
-    /// Envoie un prompt et retourne la réponse complète
-    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
+| Cible | Fichiers par agent | Fichier racine (coordinateur) |
+| --- | --- | --- |
+| `claude` | `.claude/agents/<agent>.md` | `.claude/CLAUDE.md` |
+| `codex` | `.codex/agents/<agent>.toml` + `.codex/config.toml` | `.codex/AGENTS.md` |
+| `opencode` | `.opencode/agents/<agent>.md` | `.opencode/instructions.md` |
+| `copilot` | `.github/agents/<agent>.agent.md` | `.github/copilot-instructions.md` |
 
-    /// Envoie un prompt et retourne un stream de tokens
-    async fn stream(&self, request: CompletionRequest) -> Result<TokenStream>;
+Les prompts et skills du projet sont copiés sous `prompts/` et `skills/` dans le répertoire de la
+cible. La sortie des quatre cibles sur un projet témoin est figée par un test d'étalon
+(`crates/armadai/tests/link_golden.rs`).
 
-    /// Retourne les métadonnées du provider (nom, modèles supportés, limites)
-    fn metadata(&self) -> ProviderMetadata;
-}
-```
+Deux mécanismes de délégation coexistent, à ne pas confondre : le protocole de marqueurs
+`<!--ARMADAI_DELEGATE-->` injecté par les linkers dans le fichier racine, et le gate `PreToolUse`
+compilé depuis la topologie déclarée (`orchestration.policy`).
 
-### Trois implémentations
-
-| Type          | Transport       | Exemples                              |
-| ------------- | --------------- | ------------------------------------- |
-| ApiProvider   | HTTP (reqwest)  | OpenAI, Anthropic, Google AI          |
-| ProxyProvider | HTTP (reqwest)  | LiteLLM, OpenRouter                   |
-| CliProvider   | Process (spawn) | claude, aider, tout CLI configurable  |
-
-Le `CliProvider` est **générique** : il spawne n'importe quelle commande configurée,
-capture stdout/stderr, et gère le streaming via les pipes du process.
+`OrchestrationPattern { Direct, Blackboard, Ring, Hierarchical, Auto }` et les champs
+`orchestration`, `triggers`, `ring_config` d'un agent sont des types de déclaration conservés pour
+le parser, `inspect`, la validation et le gate ; ils ne pilotent plus aucune exécution.
 
 ---
 
 ## Format d'un agent (.md)
 
-Chaque agent est un fichier Markdown dans le dossier `agents/`. Le parser extrait
-les sections par convention de nommage des headings.
-
 ```markdown
 # Code Reviewer
 
 ## Metadata
-- provider: anthropic
+- provider: claude
 - model: latest:pro
 - temperature: 0.3
-- max_tokens: 4096
 - tags: [dev, review, quality]
-- stacks: [rust, typescript, java, python]
-- cost_limit: 0.50
+- stacks: [rust, typescript]
 
 ## System Prompt
 
-Tu es un expert en revue de code. Tu analyses le code en profondeur
-pour identifier les bugs, failles de sécurité, problèmes de performance
-et violations des conventions du projet.
+Tu es un expert en revue de code...
 
 ## Instructions
 
 1. Comprendre le contexte du changement
 2. Identifier les bugs potentiels et failles de sécurité
-3. Évaluer la lisibilité et la maintenabilité
-4. Fournir un feedback constructif avec des suggestions concrètes
 
 ## Output Format
 
-Revue structurée en sections : bugs, sécurité, performance, style.
-Chaque point inclut : sévérité, localisation, suggestion de fix.
+Revue structurée : bugs, sécurité, performance, style.
 ```
 
-### Exemple avec CliProvider
-
-```markdown
-# Claude Code Agent
-
-## Metadata
-- provider: cli
-- command: claude
-- args: ["-p", "--model", "sonnet", "--output-format", "json"]
-- timeout: 300
-- tags: [dev, multi-purpose]
-
-## System Prompt
-
-Tu es un assistant de développement polyvalent.
-
-## Instructions
-
-Exécute la tâche demandée en utilisant tes outils disponibles.
-```
-
-### Sections reconnues
-
-| Section          | Obligatoire | Description                                            |
-| ---------------- | ----------- | ------------------------------------------------------ |
-| `# Titre`        | oui         | Nom de l'agent (heading H1)                            |
-| `## Metadata`    | oui         | Configuration technique (provider, model, params...)   |
-| `## System Prompt` | oui       | Prompt système envoyé au modèle                        |
-| `## Instructions` | non        | Étapes / guidelines pour l'agent                       |
-| `## Output Format` | non       | Format attendu de la sortie                            |
-| `## Pipeline`    | non         | Déclaration de chaînage avec d'autres agents           |
-| `## Context`     | non         | Fichiers, URLs ou données à injecter dans le contexte  |
-
-### Champs Metadata reconnus
-
-| Champ          | Type          | Description                                         |
-| -------------- | ------------- | --------------------------------------------------- |
-| `provider`     | string        | Nom du provider (`anthropic`, `openai`, `google`, `cli`, `proxy`) |
-| `model`        | string        | Identifiant du modèle                               |
-| `command`      | string        | Commande CLI (si provider=cli)                      |
-| `args`         | list[string]  | Arguments CLI (si provider=cli)                     |
-| `temperature`  | float         | Température de sampling (0.0 - 2.0)                 |
-| `max_tokens`   | int           | Limite de tokens en sortie                          |
-| `timeout`      | int           | Timeout en secondes                                 |
-| `tags`         | list[string]  | Tags pour filtrage et organisation                  |
-| `stacks`       | list[string]  | Stacks techniques supportées                        |
-| `cost_limit`   | float         | Limite de coût par exécution (USD)                  |
-| `rate_limit`   | string        | Limite de requêtes (ex: "10/min")                   |
-| `model_fallback` | list[string] | Chaîne de fallback en cas de modèle indisponible   |
-| `mode`          | string       | Mode d'exécution (`guided` ou `autonomous`)         |
-| `scope`         | list[string] | Fichiers/répertoires ciblés par l'agent             |
-| `context_window` | int         | Override de la taille du contexte du modèle         |
+Référence complète : `docs/wiki/agent-format.md` (sections, champs de métadonnées et ce que
+`link` en fait) et `docs/wiki/declarative-agents.md` (format YAML).
 
 ---
 
-## Structure du projet
-
-```
-armadai/
-├── agents/                      # Définitions d'agents
-│   └── _coordinator.md          # Agent hub (orchestrateur)
-├── starters/                    # Packs d'agents pré-configurés
-│   ├── rust-dev/
-│   │   ├── pack.yaml
-│   │   ├── agents/
-│   │   └── prompts/
-│   └── fullstack/
-│       ├── pack.yaml
-│       └── agents/
-├── templates/                   # Templates pour scaffolding
-│   ├── basic.md
-│   ├── dev-review.md
-│   ├── dev-test.md
-│   └── cli-generic.md
-├── config/
-│   ├── providers.sops.yaml      # Clés API chiffrées (SOPS + age)
-│   ├── providers.yaml           # Config providers (endpoints, modèles disponibles)
-│   └── settings.yaml            # Config globale (defaults, rate limits, storage)
-├── src/
-│   ├── main.rs                  # Point d'entrée, setup tokio
-│   ├── cli/                     # Commandes CLI (clap)
-│   │   ├── mod.rs
-│   │   ├── run.rs               # armadai run <agent> [input]
-│   │   ├── new.rs               # armadai new --template <tpl> <name>
-│   │   ├── list.rs              # armadai list [--tags ...] [--stack ...]
-│   │   ├── inspect.rs           # armadai inspect <agent>
-│   │   ├── history.rs           # armadai history [--agent ...] [--replay id]
-│   │   ├── init.rs              # armadai init (bootstrap config)
-│   │   ├── link.rs              # armadai link --target <t> (génération configs natives)
-│   │   ├── models.rs            # armadai models check/update/list
-│   │   ├── up.rs                # armadai up (lance docker-compose)
-│   │   ├── config.rs            # armadai config (providers, secrets, starters-dir)
-│   │   └── validate.rs          # armadai validate [agent] (dry-run)
-│   ├── tui/                     # Interface TUI
-│   │   ├── mod.rs
-│   │   ├── app.rs               # État global de l'app TUI
-│   │   ├── views/
-│   │   │   ├── dashboard.rs     # Vue principale : liste agents, statuts
-│   │   │   ├── execution.rs     # Vue exécution : streaming output
-│   │   │   ├── history.rs       # Vue historique : runs passés
-│   │   │   └── costs.rs         # Vue coûts : tracking par agent
-│   │   └── widgets/
-│   │       ├── agent_list.rs
-│   │       ├── log_viewer.rs
-│   │       └── cost_chart.rs
-│   ├── core/                    # Domaine métier
-│   │   ├── mod.rs
-│   │   ├── agent.rs             # Struct Agent, chargement depuis .md
-│   │   ├── config.rs            # Config centralisée, résolution XDG, AppPaths, save_user_config()
-│   │   ├── coordinator.rs       # Hub & spoke : décomposition et dispatch
-│   │   ├── pipeline.rs          # Mode pipeline : chaînage séquentiel
-│   │   ├── task.rs              # Définition d'une tâche + résultat
-│   │   ├── context.rs           # Gestion du contexte partagé entre agents
-│   │   ├── project.rs          # Config projet (.armadai/config.yaml ou armadai.yaml), résolution 3 niveaux
-│   │   ├── embedded.rs         # Versioning des ressources embedded (.armadai-version)
-│   │   ├── fleet.rs            # Définitions de flottes, liaison projets-agents
-│   │   ├── model_updater.rs    # Détection et mise à jour des modèles dépréciés
-│   │   ├── project_registry.rs # Registre des projets (auto-enregistrement, prune)
-│   │   ├── prompt.rs           # Fragments de prompts composables (YAML frontmatter)
-│   │   ├── skill.rs            # Skills (standard SKILL.md)
-│   │   └── starter.rs          # Starter packs, all_starters_dirs(), ARMADAI_STARTERS_DIRS
-│   ├── parser/                  # Parsing Markdown → Agent
-│   │   ├── mod.rs
-│   │   ├── markdown.rs          # Parsing headings, sections, metadata
-│   │   ├── metadata.rs          # Parsing de la section Metadata (YAML-like)
-│   │   └── frontmatter.rs      # Extraction YAML frontmatter générique
-│   ├── providers/               # Abstraction LLM
-│   │   ├── mod.rs
-│   │   ├── traits.rs            # Provider trait + types communs
-│   │   ├── api/
-│   │   │   ├── mod.rs
-│   │   │   ├── openai.rs
-│   │   │   ├── anthropic.rs
-│   │   │   └── google.rs
-│   │   ├── proxy.rs             # LiteLLM / OpenRouter
-│   │   └── cli.rs               # CliProvider générique (spawn process)
-│   ├── web/                   # Interface Web (Axum)
-│   │   ├── mod.rs             # Serveur HTTP, routes, embedded HTML
-│   │   ├── api.rs             # Handlers JSON (/api/agents, /api/skills, /api/starters...)
-│   │   └── index.html         # SPA embarquée (dashboard web)
-│   ├── linker/                # Génération de configs natives
-│   │   ├── mod.rs             # Trait Linker + dispatch
-│   │   ├── claude.rs          # .claude/agents/*.md
-│   │   ├── codex.rs           # .codex/agents/*.md
-│   │   ├── copilot.rs         # .github/agents/*.agent.md
-│   │   ├── gemini.rs          # .gemini/agents/*.md
-│   │   ├── opencode.rs        # .opencode/agents/*.md
-│   │   ├── model_aliases.rs   # Résolution des alias de modèles dépréciés
-│   │   └── model_resolution.rs # Remapping de modèles par cible
-│   ├── registry/              # Intégration awesome-copilot
-│   │   ├── mod.rs
-│   │   ├── sync.rs            # Clone/pull du repo registry
-│   │   ├── cache.rs           # Index JSON, scanning fichiers
-│   │   ├── search.rs          # Recherche multi-mots-clés avec scoring
-│   │   └── convert.rs         # Conversion Copilot → ArmadAI
-│   ├── skills_registry/       # Découverte de skills GitHub
-│   │   ├── mod.rs
-│   │   ├── sync.rs            # Clone/pull de repos de skills
-│   │   ├── cache.rs           # Index JSON des SKILL.md découverts
-│   │   └── search.rs          # Recherche multi-mots-clés avec scoring
-│   ├── model_registry/        # Catalogue de modèles models.dev
-│   │   ├── mod.rs             # Types (ModelEntry, ModelCost, ModelLimits)
-│   │   └── fetch.rs           # Fetch HTTP + cache JSON local (24h TTL)
-│   ├── storage/                 # Couche persistance (SQLite)
-│   │   ├── mod.rs
-│   │   ├── schema.rs            # Définition de la table runs
-│   │   └── queries.rs           # Requêtes CRUD : historique, coûts, métriques
-│   └── secrets/                 # Gestion des secrets
-│       ├── mod.rs
-│       └── sops.rs              # Déchiffrement SOPS + age
-├── Cargo.toml
-├── Dockerfile                   # Build du binaire (multi-stage)
-├── docker-compose.yml           # Infra optionnelle (SurrealDB, LiteLLM)
-├── AGENTS.md                    # Instructions pour les agents IA travaillant sur CE projet
-└── ARCHITECTURE.md              # Ce fichier
-```
-
----
-
-## Dépendances Rust (Cargo.toml)
-
-| Crate             | Version | Usage                                    |
-| ----------------- | ------- | ---------------------------------------- |
-| `tokio`           | 1.x     | Runtime async                            |
-| `clap`            | 4.x     | Parsing CLI avec derive                  |
-| `ratatui`         | 0.30+   | Framework TUI                            |
-| `crossterm`       | 0.29+   | Backend terminal pour ratatui            |
-| `reqwest`         | 0.12+   | Client HTTP async (appels API)           |
-| `serde`           | 1.x     | Sérialisation/désérialisation            |
-| `serde_yaml_ng`   | 0.10+   | Parsing YAML (configs)                   |
-| `serde_json`      | 1.x     | Parsing JSON (réponses API)              |
-| `rusqlite`        | 0.34+   | Base de données SQLite embarquée (bundled) |
-| `pulldown-cmark`  | 0.13+   | Parsing Markdown (fichiers agents)       |
-| `tracing`         | 0.1+    | Logging structuré & instrumentation      |
-| `tracing-subscriber` | 0.3+ | Collecteur de logs                       |
-| `async-trait`     | 0.1+    | Traits async (provider abstraction)      |
-| `tokio-stream`    | 0.1+    | Streaming async (réponses LLM)           |
-| `anyhow`          | 1.x     | Gestion d'erreurs simplifiée             |
-| `thiserror`       | 2.x     | Erreurs typées pour la lib               |
-| `chrono`          | 0.4+    | Timestamps (historique, métriques)       |
-| `uuid`            | 1.x     | Identifiants uniques (runs, tasks)       |
-
----
-
-## Commandes CLI
-
-```
-armadai run <agent> [input]        # Exécuter un agent avec un input
-armadai run --pipe <a> <b> [input] # Pipeline : chaîner des agents
-armadai new --template <tpl> <nom> # Créer un agent depuis un template
-armadai list [--tags t] [--stack s]# Lister les agents disponibles
-armadai inspect <agent>            # Afficher la config parsée d'un agent
-armadai validate [agent]           # Dry-run : valider sans appel API
-armadai history [--agent a]        # Historique des exécutions
-armadai history --replay <id>      # Rejouer une exécution passée
-armadai costs [--agent a] [--from] # Consulter les coûts
-armadai config providers           # Gérer les providers
-armadai config secrets init        # Initialiser SOPS + age
-armadai config starters-dir list   # Lister les répertoires starters
-armadai config starters-dir add <path>  # Ajouter un répertoire starters
-armadai config starters-dir remove <path> # Retirer un répertoire starters
-armadai init                       # Initialiser ~/.config/armadai/
-armadai init --force               # Écraser les fichiers existants
-armadai init --project             # Créer .armadai/config.yaml local
-armadai tui                        # Lancer l'interface TUI
-armadai up                         # Lancer l'infra Docker (optionnel)
-armadai down                       # Arrêter l'infra Docker
-armadai fleet create/link/list/show  # Gérer les flottes d'agents
-armadai link --target <t>            # Générer configs natives (claude, copilot...)
-armadai models check [--all] [--prune] # Vérifier les modèles dépréciés
-armadai models update [--all]        # Mettre à jour les modèles dépréciés
-armadai models list                  # Lister les projets enregistrés
-armadai registry sync/search/list/add # Registre communautaire
-armadai prompts list/show            # Fragments de prompts composables
-armadai skills list/show             # Skills (standard SKILL.md)
-armadai skills sync/search/add/info  # Registre de skills GitHub
-armadai init --pack <name>           # Installer un starter pack
-armadai update                       # Mise à jour automatique
-armadai completion <shell>           # Générer les completions shell
-armadai web [--port N]               # Lancer l'interface web
-```
-
----
-
-## Configuration centralisée
-
-Toute la résolution de chemins et la configuration utilisateur passe par `core/config.rs`.
+## Configuration
 
 ### Répertoire utilisateur
 
 ```
 ~/.config/armadai/
-├── config.yaml          # Defaults (provider, model, storage, rate limits, costs, logging)
-├── providers.yaml       # Endpoints et modèles disponibles (non sensible)
+├── config.yaml          # Réglages utilisateur (starters_dirs, defaults…)
+├── providers.yaml       # Endpoints et listes de modèles (non sensible)
 ├── agents/              # Bibliothèque d'agents globale
-├── prompts/             # Fragments de prompts composables
-├── skills/              # Skills des agents
-├── fleets/              # Définitions de flottes
-├── registry/            # Cache du registre awesome-copilot
-└── skills-registry/     # Cache du registre de skills GitHub
+├── prompts/             # Fragments de prompts
+├── skills/              # Skills (dont les skills intégrés)
+├── starters/            # Starter packs extraits
+├── skills-registry/     # Cache du registre de skills GitHub
+├── models-cache.json    # Cache du catalogue models.dev, s'il a été écrit par une version antérieure
+└── projects.json        # Projets enregistrés par link (models list / check --all)
 ```
 
-### Résolution XDG
+Résolution : `$ARMADAI_CONFIG_DIR`, puis `$XDG_CONFIG_HOME/armadai`, puis `$HOME/.config/armadai`.
 
-1. `$ARMADAI_CONFIG_DIR` (override explicite)
-2. `$XDG_CONFIG_HOME/armadai`
-3. `$HOME/.config/armadai`
+### Projet
 
-### Résolution des chemins (AppPaths)
+Recherche en remontant depuis le répertoire courant : `.armadai/config.yaml` (préféré), puis
+`armadai.yaml` / `armadai.yml` (ancien format, avec un message de migration).
 
-Pour `agents/`, `templates/`, `config/` :
-1. `.armadai/{type}/` (dossier projet préféré)
-2. `{type}/` (répertoire projet-local legacy)
-3. Fallback vers le répertoire global `~/.config/armadai/`
+Résolution des agents, prompts et skills : `.armadai/{type}/`, puis `{type}/`, puis
+`~/.config/armadai/{type}/`.
 
-### Config projet
+### Couches
 
-Priorité de recherche (walk-up depuis le cwd) :
-1. `.armadai/config.yaml` (préféré)
-2. `armadai.yaml` / `armadai.yml` (legacy, hint migration affiché)
-
-### Couches de configuration
-
-1. Defaults Rust (impl `Default`)
-2. `~/.config/armadai/config.yaml` (désérialisation serde avec `#[serde(default)]`)
-3. Variables d'environnement : `ARMADAI_PROVIDER`, `ARMADAI_MODEL`, `ARMADAI_TEMPERATURE`, `ARMADAI_STARTERS_DIRS`
-
----
-
-## Features V1
-
-| #  | Feature                  | Description                                                          |
-| -- | ------------------------ | -------------------------------------------------------------------- |
-| 1  | Scaffolding rapide       | `armadai new --template` pour créer des agents en une commande         |
-| 3  | Dry-run mode             | Validation de la config agent sans appel API                         |
-| 4  | Cost tracking            | Suivi des coûts par agent/exécution dans SurrealDB                   |
-| 5  | Streaming TUI            | Affichage temps réel des réponses dans la TUI                        |
-| 6  | Rate limiting            | Limites par provider, configurables dans settings.yaml               |
-| 7  | Historique & replay      | Enregistrement et rejeu des exécutions passées                       |
-| 8  | Agent versioning         | Fichiers .md versionnés avec git, diff-friendly                      |
-| 9  | Context windowing        | Gestion intelligente de la taille du contexte selon le modèle        |
-| 10 | Pipeline mode            | Chaînage séquentiel d'agents (output A → input B)                    |
-
-### Hors V1 (V2+)
-
-| #  | Feature                  | Description                                                          |
-| -- | ------------------------ | -------------------------------------------------------------------- |
-| 2  | Model fallback chain     | Basculement automatique sur un modèle alternatif en cas d'échec      |
-
----
-
-## Stacks techniques supportées (templates initiaux)
-
-- JavaScript / TypeScript
-- Java
-- sh / zsh
-- Rust
-- Python
+1. Valeurs par défaut (impl `Default`)
+2. `~/.config/armadai/config.yaml`
+3. Variables d'environnement : `ARMADAI_PROVIDER`, `ARMADAI_MODEL`, `ARMADAI_TEMPERATURE`,
+   `ARMADAI_STARTERS_DIRS`
 
 ---
 
 ## Gestion des secrets
 
-```
-config/
-├── providers.yaml           # Non sensible (endpoints, noms de modèles)
-└── providers.sops.yaml      # Chiffré par SOPS + age
-```
-
-Workflow :
-1. `armadai config secrets init` → génère une clé age, configure `.sops.yaml`
-2. Les clés API sont stockées dans `providers.sops.yaml` (chiffré)
-3. Au runtime, `armadai` déchiffre en mémoire via la clé age locale
-4. Le fichier chiffré est committé dans git (safe), la clé age ne l'est pas
+`armadai config secrets init` génère une clé age et un `config/providers.sops.yaml` chiffré ;
+`armadai config secrets rotate` les renouvelle ; `armadai config providers` affiche l'état. Depuis
+le retrait de l'exécution, aucune autre commande ne lit ces clés.
 
 ---
 
-## Stockage (SQLite)
+## Suite prévue
 
-### Mode embarqué (défaut)
-- Base locale dans `data/armadai.sqlite` (projet) ou chemin configurable
-- Zéro configuration, démarrage instantané via rusqlite (bundled)
-- Idéal pour usage single-user
-
-### Schéma principal
-
-```sql
-CREATE TABLE IF NOT EXISTS runs (
-    id          TEXT PRIMARY KEY,
-    agent       TEXT NOT NULL,
-    input       TEXT NOT NULL,
-    output      TEXT NOT NULL,
-    provider    TEXT NOT NULL,
-    model       TEXT NOT NULL,
-    tokens_in   INTEGER NOT NULL DEFAULT 0,
-    tokens_out  INTEGER NOT NULL DEFAULT 0,
-    cost        REAL NOT NULL DEFAULT 0.0,
-    duration_ms INTEGER NOT NULL DEFAULT 0,
-    status      TEXT NOT NULL DEFAULT 'success',
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-```
-
----
-
-## Docker Compose (optionnel)
-
-```yaml
-# Lancé via `armadai up`, arrêté via `armadai down`
-services:
-  litellm:  # Proxy multi-providers
-    image: ghcr.io/berriai/litellm:main-latest
-    ports:
-      - "4000:4000"
-    volumes:
-      - ./config/litellm.yaml:/app/config.yaml
-```
-
-> **Note :** Le stockage local utilise SQLite embarqué (via rusqlite bundled) — aucun service Docker requis pour la persistance.
+Un schéma versionné avec validateur et table des symboles, `armadai migrate`, et des adaptateurs
+qui produisent un rapport de conformité par cible sont **prévus, pas encore écrits**. Voir la spec
+de l'étape 0, section 8.
