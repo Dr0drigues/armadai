@@ -6,6 +6,9 @@ Codex, OpenCode and Copilot. Everything that executed agents is removed. The rem
 recoverable from commit `9b02047`. Spec:
 `docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md`.
 
+This section covers the step 0 refocus and the two security PRs (#436, #437) only; earlier
+unreleased changes since rc.5 are not itemised here.
+
 ### Removed
 
 - **`armadai run`** and the event-sourced orchestration engine (Direct, Blackboard, Ring,
@@ -31,7 +34,8 @@ recoverable from commit `9b02047`. Spec:
 - `link` and `new` never touch the network: they read only the local model-catalogue cache;
   without one, `link` falls back to the embedded model table and `new -i` to the model lists of
   `providers.yaml` (#450).
-- CI runs a single configuration (one clippy, one test job) instead of nine feature combinations.
+- CI runs a single configuration (one clippy, one test job) instead of nine feature-gated
+  clippy/test runs.
 - `audit` is removed from the binary and moved to `frozen/armadai-audit/`, a frozen crate outside
   the workspace and CI, not maintained (#447).
 - The output of `link` for the four kept targets is pinned by a golden test (#443).
@@ -42,10 +46,13 @@ recoverable from commit `9b02047`. Spec:
 
 ### Migration notes
 
-- **A project linked to Gemini**: `link`/`unlink --target gemini` no longer exist. Delete the
-  generated `.gemini/` files listed in `.armadai/link-manifest.yaml` and the `gemini:` entry of
-  that manifest by hand, or run `unlink --target gemini` with the previous version before
-  upgrading. The other targets keep working with the entry in place.
+- **A project linked to Gemini**: `link`/`unlink --target gemini` no longer exist. By hand,
+  delete the files listed under `targets: gemini:` in `.armadai/link-manifest.yaml` with
+  `outcome: created` (leave `outcome: skipped` entries, which `link` never wrote) and the
+  now-empty `created_dirs`, then remove that `gemini:` block; or run `unlink --target gemini`
+  with the previous version before upgrading. If `.armadai/config.yaml` sets
+  `link.target: gemini`, change it to another target, or a bare `armadai link` fails. The other
+  targets keep working with the manifest entry in place.
 - **Model catalogue**: nothing refreshes the local catalogue cache any more. A cache written by an
   earlier version is still read; without one, `link` resolves `latest:*` with the embedded
   fallback table, whose content is dated (e.g. `claude-sonnet-4-5-20250929` for Anthropic Pro).

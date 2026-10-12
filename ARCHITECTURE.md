@@ -173,4 +173,4 @@ le retrait de l'exécution, aucune autre commande ne lit ces clés.
 
 Un schéma versionné avec validateur et table des symboles, `armadai migrate`, et des adaptateurs
 qui produisent un rapport de conformité par cible sont **prévus, pas encore écrits**. Voir la spec
-de l'étape 0, section 8.
+de l'étape 0, sections 6.2 et 8.

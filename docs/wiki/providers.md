@@ -22,8 +22,9 @@ resolves a `latest:*` placeholder, on the targets that resolve per agent (see be
 `armadai link`.
 
 The interactive wizard of `armadai new -i` uses a second, older tool-to-vendor table
-(`armadai-providers`' `factory.rs`) to pick which catalogue to list. It differs on one name:
-`codex` maps to no vendor there.
+(`armadai-providers`' `factory.rs`) to pick which catalogue to list. It differs on two names:
+`codex` maps to no vendor there, and `proxy` maps to itself there but to no vendor in the table
+above.
 
 ## The `model` field and the `latest:*` placeholders
 

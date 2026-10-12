@@ -68,9 +68,9 @@ armadai link --target claude               # write .claude/agents/*.md
 `link` accepts `claude`, `codex`, `opencode` and `copilot`. See [Link](link.md) for what each
 target receives, and for `unlink`, which removes exactly what `link` wrote.
 
-> `init --pack … --project` currently writes `link.target: anthropic` into the generated config,
-> which is not a link target: pass `--target` explicitly, or set `link.target` to one of the four
-> targets above.
+> `init --pack … --project` currently copies the `provider:` of one of the pack's agents into
+> `link.target` (e.g. `anthropic` for `rust-dev`), which is usually not a link target: pass
+> `--target` explicitly, or set `link.target` to one of the four targets above.
 
 Available packs: `rust-dev`, `fullstack`, `code-analysis-rust`, `code-analysis-web`,
 `armadai-authoring`, `armadai-dev`, `orchestration-demo`, `pirate-crew`. See
@@ -187,7 +187,8 @@ The repository ships a JSON Schema for `armadai.yaml` (`schemas/armadai.schema.j
 ```
 
 This schema predates the declarative refocus: it still offers fields of the removed execution
-engine and lists `gemini` among the link targets, which `armadai link` no longer accepts. A
+engine, lists `gemini` among the link targets, which `armadai link` no longer accepts, and lacks
+`codex`, which it does accept. A
 versioned schema with a validator is planned (see the
 [step 0 spec](https://github.com/Dr0drigues/armadai/blob/master/docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md)); it does not
 exist yet.

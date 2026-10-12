@@ -160,11 +160,15 @@ for cleanup" rather than "will be removed".
 
 Gemini CLI is no longer a target: `link --target gemini` and `unlink --target gemini` are refused
 as invalid values. A project linked to Gemini by an earlier version keeps its generated files and
-its `gemini:` entry in `.armadai/link-manifest.yaml`. Clean it up by hand:
+its `gemini:` entry under `targets:` in `.armadai/link-manifest.yaml`. Clean it up by hand:
 
-1. Delete the files listed under `gemini:` in `.armadai/link-manifest.yaml` (by default under
-   `.gemini/`), after checking you have not edited them since.
-2. Remove the `gemini:` block from `.armadai/link-manifest.yaml`.
+1. Delete the files listed under `targets: gemini:` that have `outcome: created` (by default
+   under `.gemini/`), after checking you have not edited them since. Leave the entries with
+   `outcome: skipped`: those are hand-written files `link` found and never wrote. Then remove the
+   now-empty directories listed in that block's `created_dirs`.
+2. Remove the `gemini:` block under `targets:` of `.armadai/link-manifest.yaml`.
+3. If `.armadai/config.yaml` sets `link.target: gemini`, change it to another target: otherwise
+   a bare `armadai link` fails with "Unknown link target".
 
 Until you do, the `gemini:` entry is left alone: `link` and `unlink` on the other targets keep
 working with it in place. Alternatively, run `armadai unlink --target gemini` with the previous
