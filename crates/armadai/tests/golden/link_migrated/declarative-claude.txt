@@ -1,0 +1,58 @@
+=== .claude/agents/cli-specialist.md ===
+---
+name: cli-specialist
+description: You are cli-specialist, a specialist of this Rust workspace.
+model: claude-sonnet-4-5
+---
+You are cli-specialist, a specialist of this Rust workspace.
+
+You only change files of the `cli` module.
+
+=== .claude/agents/core-specialist.md ===
+---
+name: core-specialist
+description: Owns the domain layer
+model: sonnet
+---
+You are core-specialist, a specialist of this Rust workspace.
+
+You only change files of the `core` module.
+
+=== .claude/agents/release-notes.md ===
+---
+name: release-notes
+description: You write release notes from the merged pull requests.
+---
+You write release notes from the merged pull requests.
+
+## Output Format
+
+A Markdown changelog section.
+
+=== .claude/skills/review-checklist/SKILL.md ===
+---
+name: review-checklist
+description: Checklist applied before approving a change
+license: MIT
+---
+# Review checklist
+
+Run `scripts/check.sh`, then read the diff.
+
+=== .claude/skills/review-checklist/scripts/check.sh ===
+#!/bin/sh
+echo ok
+
+=== report ===
+claude: agent cli-specialist: compiled
+claude: agent cli-specialist native: compiled (merged into the subagent frontmatter)
+claude: agent cli-specialist tags: not-compiled (informational, no Claude Code field)
+claude: agent cli-specialist temperature: not-compiled (no equivalent in Claude Code subagents)
+claude: agent cli-specialist title: not-compiled (Claude Code names a subagent by its id)
+claude: agent core-specialist: compiled
+claude: agent core-specialist tags: not-compiled (informational, no Claude Code field)
+claude: agent core-specialist title: not-compiled (Claude Code names a subagent by its id)
+claude: agent release-notes: compiled
+claude: agent release-notes tags: not-compiled (informational, no Claude Code field)
+claude: agent release-notes title: not-compiled (Claude Code names a subagent by its id)
+claude: skill review-checklist: compiled
