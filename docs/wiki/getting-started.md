@@ -68,9 +68,10 @@ armadai link --target claude               # write .claude/agents/*.md
 `link` accepts `claude`, `codex`, `opencode` and `copilot`. See [Link](link.md) for what each
 target receives, and for `unlink`, which removes exactly what `link` wrote.
 
-> `init --pack … --project` currently copies the `provider:` of one of the pack's agents into
-> `link.target` (e.g. `anthropic` for `rust-dev`), which is usually not a link target: pass
-> `--target` explicitly, or set `link.target` to one of the four targets above.
+> `init --pack … --project` writes `link.target` only when it can infer a supported target from
+> the pack's agents (their `provider:`, read in file-name order; `anthropic` maps to `claude`).
+> Otherwise it writes none and says so: pass `armadai link --target <target>` or set
+> `link.target` yourself.
 
 Available packs: `rust-dev`, `fullstack`, `code-analysis-rust`, `code-analysis-web`,
 `armadai-authoring`, `armadai-dev`, `pirate-crew`. See

@@ -16,10 +16,10 @@ armadai init --pack <pack-name> --project
 This copies the pack's agents, prompts and skills into your user library
 (`~/.config/armadai/agents/`, `~/.config/armadai/prompts/`, `~/.config/armadai/skills/`).
 
-> The project config written by `--project` currently copies the `provider:` of one of the pack's
-> agents into `link.target` (e.g. `anthropic` for `rust-dev`), which is usually not a link
-> target: pass `armadai link --target <claude|codex|opencode|copilot>` explicitly, or fix
-> `link.target` in `.armadai/config.yaml`.
+> The project config written by `--project` sets `link.target` only when a supported target can
+> be inferred from the pack's agents (their `provider:`, read in file-name order; `anthropic`
+> maps to `claude`). When none can, no `link.target` is written, `init` prints a hint, and
+> `armadai link --target <claude|codex|opencode|copilot>` must be given.
 
 ## Available Packs
 
