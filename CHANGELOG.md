@@ -35,6 +35,8 @@
   `automations/` and `.armadai/.gitignore`; `init --pack` creates such a project from a starter
   pack (converted like `migrate`) instead of installing the pack into the user library.
 - `new` writes the agent, converted, to `.armadai/agents/<name>.md` of the current project.
+- `armadai init` (user configuration) no longer creates `agents/` and `prompts/` libraries in
+  `~/.config/armadai/`; `migrate` still reads an existing one for a legacy project.
 
 ### Removed (step 2)
 
