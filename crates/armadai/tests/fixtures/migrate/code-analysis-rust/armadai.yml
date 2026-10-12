@@ -1,0 +1,14 @@
+# From the code-analysis-rust starter pack, laid out the legacy way: agents/ and
+# prompts/ at the project root, config in armadai.yml.
+agents:
+  - name: lead-analyst
+  - name: rust-reviewer
+  - name: rust-test-analyzer
+  - name: rust-doc-writer
+  - name: rust-security
+prompts:
+  - name: analysis-standards
+orchestration:
+  coordinator: lead-analyst
+  teams:
+    - agents: [rust-reviewer, rust-test-analyzer, rust-doc-writer, rust-security]

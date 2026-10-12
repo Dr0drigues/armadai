@@ -1,0 +1,45 @@
+Written (8):
+  .armadai/agents/lead-analyst.md
+  .armadai/agents/rust-doc-writer.md
+  .armadai/agents/rust-reviewer.md
+  .armadai/agents/rust-security.md
+  .armadai/agents/rust-test-analyzer.md
+  .armadai/flows/orchestration.yaml
+  .armadai/project.yaml
+  .armadai/skills/analysis-standards/SKILL.md
+Dropped (23):
+  analysis-standards: apply_to (a skill is loaded on demand by the target, not attached to agents)
+  lead-analyst: cost_limit (the execution engine was removed)
+  lead-analyst: max_tokens (no reader in the new format)
+  lead-analyst: model_fallback (no reader in the new format)
+  lead-analyst: pipeline (the execution engine was removed)
+  lead-analyst: stacks (no reader in the new format)
+  provider: dropped for 5 agents (the target tool picks its own provider)
+  rust-doc-writer: max_tokens (no reader in the new format)
+  rust-doc-writer: model_fallback (no reader in the new format)
+  rust-doc-writer: scope (no reader in the new format)
+  rust-doc-writer: stacks (no reader in the new format)
+  rust-reviewer: max_tokens (no reader in the new format)
+  rust-reviewer: model_fallback (no reader in the new format)
+  rust-reviewer: scope (no reader in the new format)
+  rust-reviewer: stacks (no reader in the new format)
+  rust-security: max_tokens (no reader in the new format)
+  rust-security: model_fallback (no reader in the new format)
+  rust-security: scope (no reader in the new format)
+  rust-security: stacks (no reader in the new format)
+  rust-test-analyzer: max_tokens (no reader in the new format)
+  rust-test-analyzer: model_fallback (no reader in the new format)
+  rust-test-analyzer: scope (no reader in the new format)
+  rust-test-analyzer: stacks (no reader in the new format)
+Warnings (10):
+  YAML comments of the legacy files are not preserved; review the backup
+  agent `lead-analyst`: kept verbatim: ## Delegation Protocol
+  description derived from the first line of the prompt for 5 agents: lead-analyst, rust-reviewer, rust-test-analyzer, rust-doc-writer, rust-security
+  legacy file left in place: agents/lead-analyst.md
+  legacy file left in place: agents/rust-doc-writer.md
+  legacy file left in place: agents/rust-reviewer.md
+  legacy file left in place: agents/rust-security.md
+  legacy file left in place: agents/rust-test-analyzer.md
+  legacy file left in place: prompts/analysis-standards.md
+  unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
+Note: 'armadai link' reads the new format from step 2 of the v1 work; the previous project is in .armadai/.migrated/<timestamp>/.

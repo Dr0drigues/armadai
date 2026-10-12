@@ -1,5 +1,21 @@
 ## Unreleased
 
+### Added (step 1: canonical model)
+
+- **`armadai-model` crate**: the new project format (`.armadai/project.yaml`, `agents/<id>.md`,
+  `skills/<id>/SKILL.md`, `flows/<id>.yaml`, `automations/<id>.yaml`) as strict types, a loader
+  with positioned diagnostics, a semantic validator with stable codes, and a canonical writer.
+  Pure: no other workspace crate, no CLI, async or network dependency; CI builds it standalone.
+- **JSON Schemas** of every file in `schemas/v1/`, generated from the types and checked for
+  staleness by a test.
+- **`armadai validate`** on the new format: `file:line:column: error[code]` diagnostics, exit
+  code 1 on error, `--json`. A legacy project is validated as before, plus an invitation to
+  migrate.
+- **`armadai migrate`** (`--path`, `--dry-run`, `--force`): converts a legacy project, backs it up
+  in `.armadai/.migrated/<timestamp>/` first, and reports written files, every dropped field and
+  warnings; no text of an agent is lost. YAML comments are not preserved. `link` reads the new
+  format only from step 2. See `docs/wiki/project-format.md`.
+
 Declarative refocus ("step 0"). ArmadAI becomes a declarative compiler: agents, prompts and
 skills are described once and compiled by `armadai link` into the native files of Claude Code,
 Codex, OpenCode and Copilot. Everything that executed agents is removed. The removed code is

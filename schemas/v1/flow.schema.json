@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FlowFile",
+  "description": "Raw flow as read from `flows/<id>.yaml`.",
+  "type": "object",
+  "properties": {
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Link"
+      }
+    },
+    "sequence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SeqItem"
+      }
+    },
+    "steps": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Step"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Link": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "when": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "SeqExplicit": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "agent"
+      ]
+    },
+    "SeqItem": {
+      "description": "Element of the `sequence` shortcut.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/SeqExplicit"
+        }
+      ]
+    },
+    "Step": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "on_failure": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "agent"
+      ]
+    }
+  }
+}

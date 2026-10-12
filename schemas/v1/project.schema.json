@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manifest",
+  "type": "object",
+  "properties": {
+    "coordinator": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "native": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "policy": {
+      "$ref": "#/$defs/Policy"
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "targets": {
+      "description": "Default link targets: claude, codex, copilot, opencode",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version"
+  ],
+  "$defs": {
+    "Delegation": {
+      "type": "string",
+      "enum": [
+        "off",
+        "strict"
+      ]
+    },
+    "Policy": {
+      "type": "object",
+      "properties": {
+        "delegation": {
+          "$ref": "#/$defs/Delegation"
+        },
+        "free_agents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

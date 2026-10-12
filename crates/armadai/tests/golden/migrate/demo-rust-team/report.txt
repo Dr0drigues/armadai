@@ -1,0 +1,36 @@
+Written (7):
+  .armadai/agents/doc-writer.md
+  .armadai/agents/refactor-advisor.md
+  .armadai/agents/rust-reviewer.md
+  .armadai/agents/rust-test-writer.md
+  .armadai/agents/security-auditor.md
+  .armadai/flows/orchestration.yaml
+  .armadai/project.yaml
+Dropped (19):
+  doc-writer: cost_limit (the execution engine was removed)
+  doc-writer: max_tokens (no reader in the new format)
+  doc-writer: stacks (no reader in the new format)
+  orchestration: enabled (the execution engine was removed)
+  orchestration: max_depth (the execution engine was removed)
+  orchestration: pattern (the execution engine was removed)
+  provider: dropped for 5 agents (the target tool picks its own provider)
+  refactor-advisor: cost_limit (the execution engine was removed)
+  refactor-advisor: max_tokens (no reader in the new format)
+  refactor-advisor: stacks (no reader in the new format)
+  rust-reviewer: cost_limit (the execution engine was removed)
+  rust-reviewer: max_tokens (no reader in the new format)
+  rust-reviewer: stacks (no reader in the new format)
+  rust-test-writer: cost_limit (the execution engine was removed)
+  rust-test-writer: max_tokens (no reader in the new format)
+  rust-test-writer: stacks (no reader in the new format)
+  security-auditor: cost_limit (the execution engine was removed)
+  security-auditor: max_tokens (no reader in the new format)
+  security-auditor: stacks (no reader in the new format)
+Warnings (6):
+  YAML comments of the legacy files are not preserved; review the backup
+  agent `refactor-advisor`: kept verbatim: ## Analyse de refactoring
+  agent `rust-reviewer`: kept verbatim: ## Revue de code
+  agent `security-auditor`: kept verbatim: ## Audit de securite
+  description derived from the first line of the prompt for 5 agents: rust-reviewer, rust-test-writer, security-auditor, doc-writer, refactor-advisor
+  unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
+Note: 'armadai link' reads the new format from step 2 of the v1 work; the previous project is in .armadai/.migrated/<timestamp>/.

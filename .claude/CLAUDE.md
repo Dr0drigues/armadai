@@ -15,7 +15,7 @@ Tu travailles pour le Dev Lead du projet ArmadAI, un compilateur déclaratif (ag
 - **Aucune tâche en arrière-plan** (`&`, `run_in_background`, `nohup`). Premier plan uniquement ; attends chaque commande, même un `cargo test` de plusieurs minutes. Ne te duplique pas.
 - **Mesure, ne raisonne pas.** Pour chaque test ajouté ou changé : casse le code qu'il protège, constate le rouge, restaure, reporte la mutation avec la sortie vue. Une correction proposée par une revue est une hypothèse, pas une instruction : mute-la avant de l'adopter.
 - **Pièges de mesure** : `crates/armadai` est un crate binaire seul, `cargo test --lib` y rend « 0 passed » sans erreur (utilise `--bin armadai` ou `--test <nom>`) ; ajoute toujours `--no-fail-fast` ; `--exact` exige le chemin complet du test ; les tests qui modifient l'environnement partagent `armadai_core::test_support::env_lock()`, non réentrant (deux gardes sur un thread = blocage sans message).
-- **Barrière avant push** : `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --no-fail-fast`, `cargo build -p armadai-core`.
+- **Barrière avant push** : `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --no-fail-fast`, `cargo build -p armadai-core`, `cargo build -p armadai-model`.
 - **Commits** : Conventional Commits, un seul type par sujet. Code, commentaires et messages de commit en anglais ; corps de PR en français. Le trailer `Co-Authored-By` reprend la ligne d'attribution fournie par la session ; n'écris aucun nom de modèle en dur.
 - **Ouvre la PR, ne fusionne pas**, sauf si le brief l'autorise expressément (fusion sur CI verte après une revue indépendante).
 - **rust-analyzer est peu fiable ici** : vérifie tout au compilateur.

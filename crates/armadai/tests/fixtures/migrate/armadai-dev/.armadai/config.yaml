@@ -1,0 +1,13 @@
+# From the armadai-dev starter pack: hierarchical delegation under a coordinator.
+agents:
+  - name: dev-lead
+  - name: schema-specialist
+  - name: adapter-specialist
+  - name: cli-specialist
+  - name: qa-specialist
+  - name: release-manager
+prompts:
+  - name: rust-conventions
+link:
+  target: claude
+  coordinator: dev-lead

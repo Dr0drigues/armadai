@@ -1,0 +1,42 @@
+Written (8):
+  .armadai/agents/claude-cli-reviewer.md
+  .armadai/agents/code-reviewer.md
+  .armadai/agents/doc-generator.md
+  .armadai/agents/echo-reviewer.md
+  .armadai/agents/gemini-reviewer.md
+  .armadai/agents/test-writer.md
+  .armadai/flows/orchestration.yaml
+  .armadai/project.yaml
+Dropped (25):
+  claude-cli-reviewer: args (no reader in the new format)
+  claude-cli-reviewer: command (no reader in the new format)
+  claude-cli-reviewer: stacks (no reader in the new format)
+  claude-cli-reviewer: timeout (no reader in the new format)
+  code-reviewer: cost_limit (the execution engine was removed)
+  code-reviewer: max_tokens (no reader in the new format)
+  code-reviewer: stacks (no reader in the new format)
+  doc-generator: max_tokens (no reader in the new format)
+  doc-generator: stacks (no reader in the new format)
+  echo-reviewer: args (no reader in the new format)
+  echo-reviewer: command (no reader in the new format)
+  echo-reviewer: timeout (no reader in the new format)
+  gemini-reviewer: args (no reader in the new format)
+  gemini-reviewer: command (no reader in the new format)
+  gemini-reviewer: stacks (no reader in the new format)
+  gemini-reviewer: timeout (no reader in the new format)
+  orchestration: enabled (the execution engine was removed)
+  orchestration: free_agents.Explore (not an agent of this project (the new format lists project agents only))
+  orchestration: max_depth (the execution engine was removed)
+  orchestration: pattern (the execution engine was removed)
+  orchestration: routes (the execution engine was removed)
+  project: link.target (target `gemini` is not supported)
+  provider: dropped for 6 agents (the target tool picks its own provider)
+  test-writer: max_tokens (no reader in the new format)
+  test-writer: stacks (no reader in the new format)
+Warnings (5):
+  YAML comments of the legacy files are not preserved; review the backup
+  description derived from the first line of the prompt for 6 agents: code-reviewer, test-writer, doc-generator, claude-cli-reviewer, echo-reviewer, gemini-reviewer
+  link target `gemini` is not supported: no default target written
+  orchestration references unknown agent `ghost-agent`: omitted from the flow
+  unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
+Note: 'armadai link' reads the new format from step 2 of the v1 work; the previous project is in .armadai/.migrated/<timestamp>/.

@@ -1,0 +1,5 @@
+description: short
+sequence:
+  - developpeur
+  - { id: second-look, agent: relecteur }
+  - developpeur

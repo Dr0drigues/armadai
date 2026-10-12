@@ -30,6 +30,10 @@ run = "cargo build --release"
 description = "Portability guard: armadai-core builds standalone, no heavy deps"
 run = "cargo build -p armadai-core"
 
+[tasks.model-build]
+description = "Portability guard: armadai-model builds standalone, no heavy deps"
+run = "cargo build -p armadai-model"
+
 [tasks.ci]
 description = "Full local gate — mirrors the CI pipeline"
-depends = ["fmt-check", "clippy", "test", "build", "core-build"]
+depends = ["fmt-check", "clippy", "test", "build", "core-build", "model-build"]

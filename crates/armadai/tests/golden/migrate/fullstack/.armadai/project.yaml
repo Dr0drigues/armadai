@@ -1,0 +1,8 @@
+schema_version: 1
+outputs:
+  claude: .claude
+coordinator: code-reviewer
+policy:
+  delegation: strict
+  free_agents:
+  - doc-generator

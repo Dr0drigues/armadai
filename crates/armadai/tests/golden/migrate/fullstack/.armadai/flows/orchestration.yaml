@@ -1,0 +1,21 @@
+description: Delegations of the legacy `orchestration:` section
+steps:
+  claude-cli-reviewer:
+    agent: claude-cli-reviewer
+  code-reviewer:
+    agent: code-reviewer
+  doc-generator:
+    agent: doc-generator
+  echo-reviewer:
+    agent: echo-reviewer
+  test-writer:
+    agent: test-writer
+links:
+- from: code-reviewer
+  to: test-writer
+- from: test-writer
+  to: doc-generator
+- from: code-reviewer
+  to: echo-reviewer
+- from: code-reviewer
+  to: claude-cli-reviewer

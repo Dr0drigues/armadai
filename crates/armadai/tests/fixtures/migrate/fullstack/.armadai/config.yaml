@@ -1,0 +1,27 @@
+# From the fullstack starter pack, with a coordinator and an orchestration section.
+agents:
+  - name: code-reviewer
+  - name: test-writer
+  - name: doc-generator
+  - name: claude-cli-reviewer
+  - name: echo-reviewer
+  - name: gemini-reviewer
+link:
+  target: gemini
+  coordinator: Code Reviewer
+  overrides:
+    claude:
+      output: .claude
+orchestration:
+  enabled: true
+  pattern: hierarchical
+  coordinator: code-reviewer
+  policy: strict
+  free_agents: [Explore, doc-generator]
+  teams:
+    - lead: test-writer
+      agents: [doc-generator, ghost-agent]
+    - agents: [echo-reviewer, claude-cli-reviewer]
+  max_depth: 3
+  routes:
+    review: [code-reviewer, gemini-reviewer]

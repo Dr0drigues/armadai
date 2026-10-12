@@ -1,0 +1,17 @@
+defaults:
+  provider: claude
+  model: latest:pro
+  tags: [team]
+agents:
+  - name: core-specialist
+    description: Owns the domain layer
+    prompt:
+      - specialist-base
+      - { module-scope: { module: core } }
+  - name: cli-specialist
+    model: claude-sonnet-4-5
+    temperature: 0.3
+    timeout: 300
+    prompt:
+      - specialist-base
+      - { module-scope: { module: cli } }

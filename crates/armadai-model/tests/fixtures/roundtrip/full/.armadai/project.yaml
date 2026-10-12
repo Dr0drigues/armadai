@@ -1,0 +1,12 @@
+schema_version: 1
+name: demo
+targets: [claude, opencode]
+outputs:
+  claude: .claude
+coordinator: lead
+policy:
+  delegation: strict
+  free_agents: [explorer]
+native:
+  claude:
+    anything: [1, 2]

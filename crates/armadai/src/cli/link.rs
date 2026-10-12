@@ -16,6 +16,12 @@ pub async fn execute(
 ) -> anyhow::Result<()> {
     // 1. Find project config
     let (root, config) = project::find_project_config().ok_or_else(|| {
+        if std::path::Path::new(".armadai/project.yaml").is_file() {
+            return anyhow::anyhow!(
+                "This project uses the new format (.armadai/project.yaml); \
+                 `armadai link` will read it in step 2 of the v1 work."
+            );
+        }
         anyhow::anyhow!(
             "No project config found (.armadai/config.yaml or armadai.yaml). \
              Run `armadai init --project` to create one."

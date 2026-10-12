@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 # Workspace crates
 armadai-core = { path = "../armadai-core" }
+armadai-model = { path = "../armadai-model" }
 armadai-providers = { path = "../armadai-providers" }
 armadai-secrets = { path = "../armadai-secrets" }
 
@@ -33,6 +34,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 
+# Legacy agent Markdown, read the way armadai-core parses it (migrate)
+pulldown-cmark = { workspace = true }
+
 # Embedded agent templates
 include_dir = { workspace = true }
 
@@ -46,6 +50,8 @@ anyhow = { workspace = true }
 # Utils
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = { workspace = true }
+# migrate --dry-run validates in a scratch directory
+tempfile = { workspace = true }
 anstyle = "1.0.14"
 anstream = "1.0.0"
 

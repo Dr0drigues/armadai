@@ -1,0 +1,23 @@
+Written (5):
+  .armadai/agents/code-reviewer.md
+  .armadai/agents/debug.md
+  .armadai/agents/test-writer.md
+  .armadai/project.yaml
+  .armadai/skills/rust-conventions/SKILL.md
+Dropped (9):
+  code-reviewer: cost_limit (the execution engine was removed)
+  code-reviewer: max_tokens (no reader in the new format)
+  code-reviewer: stacks (no reader in the new format)
+  debug: max_tokens (no reader in the new format)
+  debug: stacks (no reader in the new format)
+  provider: dropped for 3 agents (the target tool picks its own provider)
+  rust-conventions: apply_to (a skill is loaded on demand by the target, not attached to agents)
+  test-writer: max_tokens (no reader in the new format)
+  test-writer: stacks (no reader in the new format)
+Warnings (5):
+  YAML comments of the legacy files are not preserved; review the backup
+  agent `code-reviewer`: description derived from the first line of its prompt
+  agent `debug`: description derived from the first line of its prompt
+  agent `test-writer`: description derived from the first line of its prompt
+  unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
+Note: 'armadai link' reads the new format from step 2 of the v1 work; the previous project is in .armadai/.migrated/<timestamp>/.

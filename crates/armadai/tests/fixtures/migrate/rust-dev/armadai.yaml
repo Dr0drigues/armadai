@@ -1,0 +1,7 @@
+# Legacy root config file name (armadai.yaml), from the rust-dev starter pack.
+agents:
+  - name: code-reviewer
+  - name: test-writer
+  - name: debug
+prompts:
+  - name: rust-conventions

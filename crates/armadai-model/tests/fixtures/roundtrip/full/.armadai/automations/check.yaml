@@ -1,0 +1,6 @@
+event: before-tool
+run: ./scripts/check.sh
+description: guard
+native:
+  claude:
+    matcher: Bash
