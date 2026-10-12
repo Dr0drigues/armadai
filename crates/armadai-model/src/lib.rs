@@ -1,6 +1,10 @@
 //! Canonical ArmadAI project model. Pure: depends on no other workspace crate.
 
+pub mod diag;
+pub mod load;
 pub mod types;
+pub use diag::{Diagnostic, Severity};
+pub use load::*;
 pub use types::*;
 
 /// The only accepted `schema_version`.
