@@ -235,7 +235,17 @@ fn init_project() -> anyhow::Result<()> {
 }
 
 /// Generate YAML content for an armadai project pre-configured with a starter pack.
+#[cfg(test)]
 pub fn generate_project_yaml(pack: &StarterPack, pack_name: &str) -> String {
+    generate_project_yaml_with_target(pack, pack_name).0
+}
+
+/// Like [`generate_project_yaml`], also returning the inferred `link.target`
+/// (`None` when no agent of the pack names a supported target).
+fn generate_project_yaml_with_target(
+    pack: &StarterPack,
+    pack_name: &str,
+) -> (String, Option<String>) {
     // Detect provider and coordinator from the pack's agent files
     let link_target = detect_pack_link_target(pack_name);
     let coordinator_name = detect_pack_coordinator(pack, pack_name);
@@ -274,7 +284,7 @@ pub fn generate_project_yaml(pack: &StarterPack, pack_name: &str) -> String {
     content.push_str("\nsources: []\n");
 
     // Linker configuration
-    if let Some(target) = link_target {
+    if let Some(target) = &link_target {
         content.push_str(&format!(
             "\n# Linker configuration\nlink:\n  target: {target}\n"
         ));
@@ -309,7 +319,7 @@ pub fn generate_project_yaml(pack: &StarterPack, pack_name: &str) -> String {
         }
     }
 
-    content
+    (content, link_target)
 }
 
 /// Create a `.armadai/` project structure pre-configured with a starter pack.
@@ -333,7 +343,7 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
         std::fs::create_dir_all(dotarmadai.join(subdir))?;
     }
 
-    let content = generate_project_yaml(pack, pack_name);
+    let (content, link_target) = generate_project_yaml_with_target(pack, pack_name);
     std::fs::write(&dotarmadai_config, &content)?;
     let o = crate::cli::style::ok();
     let a = crate::cli::style::accent();
@@ -342,7 +352,7 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
         "\n{o}Created .armadai/config.yaml with pack{o:#} {a}'{}'{a:#} {o}agents{o:#}",
         pack.name
     );
-    if pack_link_target_missing(&content) {
+    if link_target.is_none() {
         let w = crate::cli::style::warn();
         anstream::println!(
             "{w}  No link target could be inferred from the pack's agents.{w:#}\n\
@@ -359,11 +369,6 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
     }
 
     Ok(())
-}
-
-/// True when the generated project config carries no `link.target`.
-fn pack_link_target_missing(yaml: &str) -> bool {
-    !yaml.lines().any(|l| l.starts_with("  target: "))
 }
 
 /// Detect a coordinator agent from a pack by scanning agent files for a
@@ -419,6 +424,11 @@ fn pick_link_target(providers: &[String]) -> Option<String> {
     providers.iter().find_map(|p| link_target_for_provider(p))
 }
 
+/// Order agent files by file name.
+fn sort_agent_files(files: &mut [std::path::PathBuf]) {
+    files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+}
+
 /// Read the `provider:` of every agent file in `agents_dir`, ordered by file
 /// name so the result never depends on `read_dir` order.
 fn read_agent_providers(agents_dir: &std::path::Path) -> Vec<String> {
@@ -430,7 +440,7 @@ fn read_agent_providers(agents_dir: &std::path::Path) -> Vec<String> {
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "md"))
         .collect();
-    files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    sort_agent_files(&mut files);
 
     files
         .iter()
@@ -507,6 +517,23 @@ mod tests {
         assert_eq!(
             pick_link_target(&strs(&["google", "codex", "claude"])).as_deref(),
             Some("codex")
+        );
+    }
+
+    #[test]
+    fn sort_agent_files_orders_by_file_name() {
+        use std::path::PathBuf;
+        let mut files: Vec<PathBuf> = ["d/c.md", "d/a.md", "d/b.md"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        sort_agent_files(&mut files);
+        assert_eq!(
+            files,
+            ["d/a.md", "d/b.md", "d/c.md"]
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>()
         );
     }
 
