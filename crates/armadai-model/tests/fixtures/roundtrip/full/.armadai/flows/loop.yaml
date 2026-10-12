@@ -1,0 +1,9 @@
+description: Code to review
+steps:
+  premier-jet: { agent: developpeur }
+  revue: { agent: relecteur, states: [approved, rejected], on_failure: corrections }
+  corrections: { agent: developpeur }
+links:
+  - { from: premier-jet, to: revue }
+  - { from: revue, to: corrections, when: rejected }
+  - { from: corrections, to: revue }
