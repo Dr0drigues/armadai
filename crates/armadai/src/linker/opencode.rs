@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{LinkAgent, Linker, OutputFile, armadai_protocol_block, slugify};
+use super::{LinkAgent, Linker, OutputFile, slugify};
 
 /// Generates OpenCode agent files in `.opencode/`.
 ///
@@ -115,9 +115,6 @@ fn generate_instructions_md(coordinator: &LinkAgent, agents: &[LinkAgent]) -> Ou
             ));
         }
     }
-
-    // Inject ArmadAI response protocol
-    content.push_str(armadai_protocol_block());
 
     OutputFile {
         path: PathBuf::from(".opencode/instructions.md"),
@@ -345,11 +342,8 @@ mod tests {
         assert!(file.content.contains("## Team"));
         assert!(file.content.contains("agents/worker.md"));
 
-        // Protocol block must be present
-        assert!(file.content.contains("## ArmadAI Response Protocol"));
-        assert!(file.content.contains("<!--ARMADAI_END-->"));
-        assert!(file.content.contains("<!--ARMADAI_DELEGATE:agent-name-->"));
-        assert!(file.content.contains("<!--ARMADAI_META:status=complete-->"));
+        // The response-marker protocol was removed
+        assert!(!file.content.contains("ARMADAI_"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{LinkAgent, Linker, OutputFile, armadai_protocol_block, slugify};
+use super::{LinkAgent, Linker, OutputFile, slugify};
 
 /// Generates GitHub Copilot agent files (`.github/agents/{slug}.agent.md`).
 ///
@@ -98,9 +98,6 @@ fn generate_copilot_instructions(coordinator: &LinkAgent, agents: &[LinkAgent]) 
     if !content.ends_with('\n') {
         content.push('\n');
     }
-
-    // Inject ArmadAI response protocol
-    content.push_str(armadai_protocol_block());
 
     OutputFile {
         path: PathBuf::from(".github/copilot-instructions.md"),
@@ -287,10 +284,7 @@ mod tests {
         assert!(file.content.contains("Always be kind."));
         assert!(file.content.contains("## Team"));
 
-        // Protocol block must be present
-        assert!(file.content.contains("## ArmadAI Response Protocol"));
-        assert!(file.content.contains("<!--ARMADAI_END-->"));
-        assert!(file.content.contains("<!--ARMADAI_DELEGATE:agent-name-->"));
-        assert!(file.content.contains("<!--ARMADAI_META:status=complete-->"));
+        // The response-marker protocol was removed
+        assert!(!file.content.contains("ARMADAI_"));
     }
 }
