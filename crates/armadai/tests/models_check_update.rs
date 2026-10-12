@@ -115,3 +115,97 @@ fn check_all_names_a_registered_legacy_project() {
         "{out}"
     );
 }
+
+/// Only `model:` values change, across agents, quotes, flow form and CRLF; an id
+/// that merely starts like a deprecated one, a comment or a description is kept.
+#[test]
+fn update_rewrites_model_values_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    let a = "---\r\n# gpt-4-turbo was pinned here; model: gpt-4-turbo\r\ndescription: 'moves off gpt-4-turbo'\r\nnative:\r\n  codex:\r\n    model: \"gpt-4-turbo\"\r\n  opencode: { model: 'gpt-4-turbo' }\r\n  claude:\r\n    model: gpt-4-turbo-preview\r\n---\r\nKeep gpt-4-turbo in the body.\r\n";
+    let b = "---\ndescription: B\nnative:\n  codex:\n    model: gpt-4\n  opencode:\n    model: gpt-4o-mini\n---\nB\n";
+    for (p, c) in [
+        (".armadai/project.yaml", "schema_version: 1\n"),
+        (".armadai/agents/a.md", a),
+        (".armadai/agents/b.md", b),
+    ] {
+        let path = root.join(p);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, c).unwrap();
+    }
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/model-aliases.json"),
+        r#"{"gpt-4": "gpt-4o"}"#,
+    )
+    .unwrap();
+    let (ok, out) = armadai(dir.path(), &root, &["models", "update"]);
+    assert!(ok, "{out}");
+    assert_eq!(
+        std::fs::read_to_string(root.join(".armadai/agents/a.md")).unwrap(),
+        a.replace("model: \"gpt-4-turbo\"", "model: \"gpt-4o\"")
+            .replace("{ model: 'gpt-4-turbo' }", "{ model: 'gpt-4o' }")
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".armadai/agents/b.md")).unwrap(),
+        b.replace("model: gpt-4\n", "model: gpt-4o\n")
+    );
+}
+
+/// An update that would break the project writes nothing; with `--all` the other
+/// projects are still updated and the run fails at the end.
+#[test]
+fn a_failing_update_writes_nothing_and_all_goes_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let broken = project(dir.path());
+    let fine = dir.path().join("fine");
+    copy(&broken, &fine);
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    // a replacement that is not a valid YAML scalar for this agent only
+    std::fs::write(
+        broken.join(".armadai/agents/dev.md"),
+        DEV.replace("gpt-4-turbo", "gpt-3.5-turbo"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("config/model-aliases.json"),
+        r#"{"gpt-3.5-turbo": "x: y"}"#,
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(broken.join(".armadai/agents/dev.md")).unwrap();
+    std::fs::write(
+        dir.path().join("config/projects.json"),
+        serde_json::json!({"projects": [
+            {"path": broken, "last_seen": "2026-10-12T00:00:00Z"},
+            {"path": fine, "last_seen": "2026-10-12T00:00:00Z"}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let (ok, out) = armadai(dir.path(), dir.path(), &["models", "update", "--all"]);
+    assert!(!ok, "{out}");
+    assert_eq!(
+        std::fs::read_to_string(broken.join(".armadai/agents/dev.md")).unwrap(),
+        before
+    );
+    assert!(
+        std::fs::read_to_string(fine.join(".armadai/agents/dev.md"))
+            .unwrap()
+            .contains("model: gpt-4o"),
+        "{out}"
+    );
+}
+
+fn copy(from: &Path, to: &Path) {
+    for e in std::fs::read_dir(from).unwrap() {
+        let p = e.unwrap().path();
+        let dest = to.join(p.file_name().unwrap());
+        if p.is_dir() {
+            std::fs::create_dir_all(&dest).unwrap();
+            copy(&p, &dest);
+        } else {
+            std::fs::create_dir_all(to).unwrap();
+            std::fs::copy(&p, &dest).unwrap();
+        }
+    }
+}

@@ -78,39 +78,113 @@ fn findings(root: &Path) -> anyhow::Result<Vec<Finding>> {
     Ok(out)
 }
 
-/// Replace the deprecated ids inside each agent's frontmatter only, as text, so
-/// the rest of the file (comments, order, body) is kept; the project must still
-/// validate afterwards.
+/// Replace `current` by `replacement` where it is the whole value of a `model:` key
+/// (block `model: x` at the start of a line, or flow `{ model: x }` / `, model: x`),
+/// bare or quoted; never inside a comment, another key's value, or a longer id.
+fn replace_model_values(front: &str, current: &str, replacement: &str) -> (String, usize) {
+    let mut out = String::with_capacity(front.len());
+    let mut n = 0;
+    for line in front.split_inclusive('\n') {
+        let mut rest = line;
+        let mut done = String::new();
+        while let Some(i) = rest.find("model") {
+            let before = rest[..i].trim_end_matches([' ', '\t']);
+            let key_position = (done.is_empty() && before.is_empty())
+                || before.ends_with('{')
+                || before.ends_with(',');
+            let after = &rest[i + "model".len()..];
+            let value = after
+                .trim_start_matches([' ', '\t'])
+                .strip_prefix(':')
+                .map(|v| v.trim_start_matches([' ', '\t']));
+            let hit = key_position
+                && value.is_some_and(|v| {
+                    let (q, v) = match v.chars().next() {
+                        Some(c @ ('\'' | '"')) => (Some(c), &v[1..]),
+                        _ => (None, v),
+                    };
+                    v.strip_prefix(current).is_some_and(|tail| {
+                        let tail = match q {
+                            Some(q) => match tail.strip_prefix(q) {
+                                Some(t) => t,
+                                None => return false,
+                            },
+                            None => tail,
+                        };
+                        let tail = tail.trim_start_matches([' ', '\t']);
+                        tail.is_empty() || tail.starts_with([',', '}', '#', '\r', '\n'])
+                    })
+                });
+            if !hit {
+                done.push_str(&rest[..i + "model".len()]);
+                rest = &rest[i + "model".len()..];
+                continue;
+            }
+            let v = value.unwrap_or_default();
+            let start = rest.len() - v.len();
+            let quoted = usize::from(v.starts_with(['\'', '"']));
+            done.push_str(&rest[..start + quoted]);
+            done.push_str(replacement);
+            rest = &rest[start + quoted + current.len()..];
+            n += 1;
+        }
+        out.push_str(&done);
+        out.push_str(rest);
+    }
+    (out, n)
+}
+
+/// Replace the deprecated ids of every agent of `root`, in memory first: written
+/// only when each replacement landed on its `model:` value and the project still
+/// validates; the previous files are restored otherwise.
 fn apply(root: &Path, findings: &[Finding]) -> anyhow::Result<usize> {
     let mut by_agent: std::collections::BTreeMap<&str, Vec<&Finding>> = Default::default();
     for f in findings.iter().filter(|f| f.rewritable()) {
         by_agent.entry(&f.agent).or_default().push(f);
     }
-    let mut n = 0;
-    for (agent, fs) in by_agent {
+    let mut planned = Vec::new();
+    for (agent, fs) in &by_agent {
         let path = root.join(".armadai/agents").join(format!("{agent}.md"));
         let text = std::fs::read_to_string(&path)?;
         let (yaml, _, _) = armadai_model::split_frontmatter(&text)
             .ok_or_else(|| anyhow::anyhow!("{}: no frontmatter", path.display()))?;
         let start = yaml.as_ptr() as usize - text.as_ptr() as usize;
         let mut front = yaml.to_string();
-        for f in &fs {
-            front = front.replace(f.current.as_str(), &f.replacement);
+        let mut seen = std::collections::BTreeSet::new();
+        // the same id pinned for two targets is one replacement of both
+        for f in fs.iter().filter(|f| seen.insert(f.current.as_str())) {
+            let (next, hits) = replace_model_values(&front, &f.current, &f.replacement);
+            if hits == 0 {
+                anyhow::bail!(
+                    "{}: `{}` not found as a `model:` value; nothing was rewritten",
+                    path.display(),
+                    f.current
+                );
+            }
+            front = next;
         }
         let new = format!("{}{front}{}", &text[..start], &text[start + yaml.len()..]);
-        std::fs::write(&path, new)?;
-        n += fs.len();
-        let o = crate::cli::style::ok();
-        anstream::println!(
-            "{o}  updated {}: {} replacement(s){o:#}",
-            path.display(),
-            fs.len()
-        );
+        planned.push((path, text, new, fs.len()));
+    }
+    for (path, _, new, _) in &planned {
+        std::fs::write(path, new)?;
     }
     if armadai_model::load_checked(root).is_err() {
+        for (path, old, _, _) in &planned {
+            std::fs::write(path, old)?;
+        }
         anyhow::bail!(
-            "{}: the project no longer validates after the update",
+            "{}: the project would no longer validate; nothing was rewritten",
             root.display()
+        );
+    }
+    let mut n = 0;
+    for (path, _, _, count) in &planned {
+        n += count;
+        let o = crate::cli::style::ok();
+        anstream::println!(
+            "{o}  updated {}: {count} replacement(s){o:#}",
+            path.display()
         );
     }
     Ok(n)
@@ -204,7 +278,14 @@ fn run(all: bool, prune: bool, update: bool) -> anyhow::Result<()> {
         print_findings(&fs);
         found += fs.len();
         if update {
-            updated += apply(root, &fs)?;
+            match apply(root, &fs) {
+                Ok(n) => updated += n,
+                Err(e) => {
+                    let er = crate::cli::style::err();
+                    anstream::eprintln!("{er}  error: {e}{er:#}");
+                    failed = true;
+                }
+            }
         }
     }
     if found == 0 {
@@ -220,8 +301,8 @@ fn run(all: bool, prune: bool, update: bool) -> anyhow::Result<()> {
             "\n{w}{found} deprecated model(s) found. Run `armadai models update{all_flag}` to fix.{w:#}"
         );
     }
-    if failed && !all {
-        anyhow::bail!("the project could not be checked");
+    if failed {
+        anyhow::bail!("one or more project(s) could not be checked or updated (see above)");
     }
     Ok(())
 }
@@ -251,4 +332,44 @@ fn list() -> anyhow::Result<()> {
     anstream::println!("\n{m}{} project(s) total.{m:#}", registry.projects.len());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_model_values;
+
+    #[test]
+    fn only_model_values_are_replaced_as_whole_tokens() {
+        let front = "# gpt-4-turbo is deprecated, see model: gpt-4-turbo\r\n\
+                     description: 'moves off gpt-4-turbo; model: gpt-4-turbo'\r\n\
+                     native:\r\n  codex:\r\n    model: gpt-4-turbo\r\n  \
+                     opencode: { model: \"gpt-4-turbo\", temperature: 1 }\r\n  \
+                     copilot:\r\n    model: 'gpt-4-turbo' # pinned\r\n  \
+                     claude:\r\n    model: gpt-4-turbo-preview\r\n";
+        let (out, n) = replace_model_values(front, "gpt-4-turbo", "gpt-4o");
+        assert_eq!(n, 3, "{out}");
+        assert!(out.contains("    model: gpt-4o\r\n"), "{out}");
+        assert!(
+            out.contains("{ model: \"gpt-4o\", temperature: 1 }"),
+            "{out}"
+        );
+        assert!(out.contains("    model: 'gpt-4o' # pinned\r\n"), "{out}");
+        assert!(
+            out.contains("model: gpt-4-turbo-preview\r\n"),
+            "a longer id is another id"
+        );
+        assert!(out.starts_with("# gpt-4-turbo is deprecated, see model: gpt-4-turbo\r\n"));
+        assert!(out.contains("description: 'moves off gpt-4-turbo; model: gpt-4-turbo'"));
+    }
+
+    #[test]
+    fn a_prefix_alias_does_not_touch_a_longer_id() {
+        let front = "native:\n  codex: { model: gpt-4o-mini }\n  opencode:\n    model: gpt-4\n";
+        let (out, n) = replace_model_values(front, "gpt-4", "gpt-4o");
+        assert_eq!(n, 1);
+        assert!(
+            out.contains("{ model: gpt-4o-mini }") && out.contains("    model: gpt-4o\n"),
+            "{out}"
+        );
+    }
 }
