@@ -37,7 +37,7 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
     r.warnings.extend(old.load_warnings.iter().cloned());
     r.warn("YAML comments of the legacy files are not preserved; review the backup");
     r.warn(
-        "unknown keys of the legacy YAML files (config, agents.yaml) are not detected (the legacy loader ignores them); \
+        "unknown keys of the legacy config file are not detected (the legacy loader ignores them); \
          review the backup",
     );
 
@@ -201,6 +201,7 @@ fn convert_agent(id: &str, a: &OldAgent, old: &OldProject, r: &mut Report) -> (A
     let mut body = a.composed_prompt();
     if let Some(l) = old.leftovers.get(&a.source) {
         for (label, text) in &l.kept {
+            body.truncate(body.trim_end().len());
             if !body.is_empty() {
                 body.push_str("\n\n");
             }

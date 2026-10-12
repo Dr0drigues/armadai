@@ -637,3 +637,23 @@ fn common_accents_are_transliterated_and_the_rename_reported() {
     );
     assert!(!r.warnings.iter().any(|w| w.contains("`Revue` renamed")));
 }
+
+#[test]
+fn kept_text_after_an_empty_section_is_separated_by_one_blank_line() {
+    let mut a = agent("Dev");
+    a.instructions = None;
+    a.output_format = Some(String::new());
+    let mut o = old(vec![a.clone()]);
+    o.leftovers.insert(
+        a.source.clone(),
+        crate::migrate::leftover::Leftover {
+            kept: vec![("## Report".into(), "## Report\n\nR.".into())],
+            unknown_metadata: Vec::new(),
+        },
+    );
+    let (p, _, _) = convert(&o);
+    assert_eq!(
+        p.agents["dev"].body,
+        "You are Dev.\nMore.\n\n## Output Format\n\n## Report\n\nR."
+    );
+}
