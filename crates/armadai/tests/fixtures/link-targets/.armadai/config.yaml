@@ -1,0 +1,17 @@
+# Old-format reference for the legacy targets (codex, copilot, opencode): a
+# coordinator, two agents in one flow, a project skill. Its old-path link
+# output is frozen under tests/golden/legacy_targets/ (step 2, Task 5).
+agents:
+  - path: .armadai/agents/lead.md
+  - path: .armadai/agents/dev.md
+  - path: .armadai/agents/qa.md
+skills:
+  - name: review-checklist
+link:
+  coordinator: lead
+orchestration:
+  enabled: true
+  pattern: hierarchical
+  coordinator: lead
+  teams:
+    - agents: [dev, qa]

@@ -1,0 +1,43 @@
+=== agents/dev.agent.md ===
+DEV_SYSTEM_MARKER — you write the code.
+
+DEV_SYSTEM_MARKER — you write the code.
+
+### Style
+
+DEV_SUBSECTION_MARKER — small functions.
+
+## Instructions
+
+DEV_INSTRUCTIONS_MARKER — tests first.
+
+=== agents/qa.agent.md ===
+QA_SYSTEM_MARKER — you test the code.
+
+QA_SYSTEM_MARKER — you test the code.
+
+=== copilot-instructions.md ===
+LEAD_SYSTEM_MARKER — you coordinate the team.
+
+LEAD_INSTRUCTIONS_MARKER — delegate, then synthesize.
+
+## Team
+
+| Agent | Description |
+|-------|-------------|
+| dev | DEV_SYSTEM_MARKER — you write the code. |
+| qa | QA_SYSTEM_MARKER — you test the code. |
+
+To delegate to a specialized agent, mention `@<agent-name>` in your prompt.
+
+=== skills/review-checklist/SKILL.md ===
+---
+name: review-checklist
+description: Review checklist
+---
+CHECKLIST_MARKER
+
+=== skills/review-checklist/scripts/check.sh ===
+#!/bin/sh
+echo check
+

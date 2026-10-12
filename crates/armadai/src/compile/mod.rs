@@ -8,6 +8,7 @@
 
 pub mod claude;
 pub mod claude_settings;
+pub mod legacy_targets;
 pub mod patch;
 pub mod report;
 
