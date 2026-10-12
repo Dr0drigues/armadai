@@ -73,7 +73,7 @@ target receives, and for `unlink`, which removes exactly what `link` wrote.
 > `--target` explicitly, or set `link.target` to one of the four targets above.
 
 Available packs: `rust-dev`, `fullstack`, `code-analysis-rust`, `code-analysis-web`,
-`armadai-authoring`, `armadai-dev`, `orchestration-demo`, `pirate-crew`. See
+`armadai-authoring`, `armadai-dev`, `pirate-crew`. See
 [Starter Packs](starter-packs.md) for details.
 
 ## Writing your own agent
@@ -186,9 +186,10 @@ The repository ships a JSON Schema for `armadai.yaml` (`schemas/armadai.schema.j
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Dr0drigues/armadai/master/schemas/armadai.schema.json
 ```
 
-This schema predates the declarative refocus: it still offers fields of the removed execution
-engine, lists `gemini` among the link targets, which `armadai link` no longer accepts, and lacks
-`codex`, which it does accept. A
+This schema predates the declarative refocus. Its link targets match what `armadai link` accepts
+(`claude`, `codex`, `copilot`, `opencode`), and fields of the removed execution engine and shell
+are described as ignored, but it is maintained by hand and does not cover every key the parser
+accepts (for instance `routing` and `registries`). A
 versioned schema with a validator is planned (see the
 [step 0 spec](https://github.com/Dr0drigues/armadai/blob/master/docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md)); it does not
 exist yet.

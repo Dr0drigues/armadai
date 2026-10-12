@@ -89,11 +89,15 @@ description: Expert code review with security analysis
 
 ArmadAI ships built-in skills that `armadai init` installs into `~/.config/armadai/skills/`:
 `armadai-agent-authoring`, `armadai-prompt-authoring`, `armadai-skill-authoring`,
-`armadai-starter-authoring`, `armadai-orchestration-patterns`, `armadai-protocol`,
-`armadai-shell-config` and `zsh-env-authoring`.
+`armadai-starter-authoring`, `armadai-orchestration-patterns`, `armadai-protocol` and
+`zsh-env-authoring`.
 
-Their content predates the declarative refocus: some of them still describe the removed execution
-engine and shell. They are kept as shipped until they are revised.
+`armadai-orchestration-patterns` describes the `orchestration:` block as a declaration, checked by
+`armadai validate` and enforced in Claude Code by the [policy gate](policy-gate.md).
+`armadai-protocol` documents the response markers (`ARMADAI_END`, `ARMADAI_DELEGATE`,
+`ARMADAI_META`) that `armadai link` still writes into the coordinator's root instructions file;
+the shell relay that consumed them is no longer part of ArmadAI, so they have no automatic effect
+until the adapters are rewritten (planned).
 
 Built-in skills are re-installed when the binary version changes (tracked via `.armadai-version`
 marker files).
