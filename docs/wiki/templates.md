@@ -5,18 +5,19 @@ Templates are Markdown files that serve as starting points for new agents, used 
 
 ## Where templates are read from
 
-`armadai new` reads templates from `templates/` in the current directory if it exists, otherwise
-from `~/.config/armadai/templates/`. Templates are **not** embedded in the binary and `armadai init`
-does not install them: the set described below lives in the repository, in
-`crates/armadai/templates/`. Copy it to one of those two locations first:
+The templates described below are **embedded in the binary**: `armadai new` works out of the box,
+with no setup and no templates directory.
 
-```bash
-mkdir -p ~/.config/armadai/templates
-cp crates/armadai/templates/*.md ~/.config/armadai/templates/
-```
+A template file with the same name in a templates directory **overrides** the embedded one, and a
+file with a new name adds a template of your own. The directory is `templates/` in the current
+directory if it exists, otherwise `~/.config/armadai/templates/`. Resolution order for
+`--template <name>`:
 
-Without any template directory, `armadai new --template <name>` fails with
-`(no templates directory found)`.
+1. `<templates dir>/<name>.md` (project, or user directory when the project has none)
+2. the template embedded in the binary
+
+To customise a built-in template, copy its source from `crates/armadai/templates/` into one of
+those directories and edit it.
 
 ## Available Templates
 
