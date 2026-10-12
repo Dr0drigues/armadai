@@ -87,10 +87,12 @@ released one exists. OpenAI's o-series is a reasoning line and claims no tier, e
 
 ## Deprecated model ids
 
-`armadai models check` reports agents whose `model` or `model_fallback` names a deprecated id, and
-`armadai models update` rewrites them in place (in `.md` files and in `.armadai/agents.yaml`) —
-legacy agent files, before `armadai migrate`; canonical agents carry a tier, not an id.
-`--all` applies to every project registered by `armadai link`; `armadai models list` shows them.
+Canonical agents carry a tier; a model id only appears where an agent pins one, in
+`native.<target>.model`. `armadai models check` reports the deprecated ones, and
+`armadai models update` replaces them in place (only the id, in the frontmatter: comments and
+the body are kept; a replacement that is a tier is reported, not written). `--all` applies to
+every project registered by `armadai link`; `armadai models list` shows them. A legacy project
+is reported "legacy format, run `armadai migrate`".
 
 ## Secrets
 

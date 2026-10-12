@@ -152,7 +152,8 @@ pub enum Command {
     #[command(
         subcommand,
         long_about = "Manage model deprecations and project registry.\n\n\
-            Check for deprecated models in agent files and update them in-place. \
+            Check the model ids agents pin in `native.<target>.model` for deprecated ones, \
+            and replace them in place (agents otherwise carry a tier). \
             Projects are auto-registered when you run `armadai link`.",
         after_help = "Examples:\n  \
             armadai models check\n  \

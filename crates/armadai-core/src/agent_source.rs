@@ -1,8 +1,7 @@
 //! Loading an `Agent`, whatever its origin.
 //!
-//! `project::resolve_agent` returns a **path**, which serves callers that
-//! manipulate files — `model_updater` and `pack_validation` rewrite deprecated
-//! models in place. A declared agent has no file of its own, so it is right
+//! `project::resolve_agent` returns a **path**, which serves callers that need
+//! the file. A declared agent has no file of its own, so it is right
 //! that `resolve_agent` fails for one. This module is for callers that want the
 //! agent, not its file.
 

@@ -25,6 +25,9 @@
   `.migrated/`): `.armadai/` is now meant to be versioned.
 - `outputs` values must stay inside the project, outside `.armadai/` and `.git/`
   (`bad-output`).
+- `models check` / `models update` read the canonical model: the deprecated ids agents pin in
+  `native.<target>.model`, replaced in place (frontmatter only). `--all` covers the projects
+  `link` registers (and `--prune` keeps them); a legacy project is reported "run migrate".
 - `list`, `inspect` and `validate` read `.armadai/project.yaml` only; a legacy project gets
   "legacy format, run `armadai migrate`" (exit 1). `list` shows agents, skills, flows and
   automations (`--stack` and `--global` removed: no stacks in the model, no user library).
