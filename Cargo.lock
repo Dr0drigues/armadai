@@ -84,6 +84,7 @@ dependencies = [
  "anstyle",
  "anyhow",
  "armadai-core",
+ "armadai-model",
  "armadai-providers",
  "armadai-secrets",
  "assert_cmd",

@@ -274,6 +274,29 @@ mod tests {
     use super::*;
     use armadai_core::agent::AgentMetadata;
 
+    /// `armadai_model::TARGETS` is the one list the new format validates against;
+    /// it must be exactly what `link` supports. The exhaustive match breaks the
+    /// build if a `LinkTarget` variant is added without revisiting this test.
+    #[test]
+    fn model_targets_match_the_link_targets() {
+        let all = [
+            LinkTarget::Claude,
+            LinkTarget::Codex,
+            LinkTarget::Copilot,
+            LinkTarget::Opencode,
+        ];
+        for t in all {
+            match t {
+                LinkTarget::Claude
+                | LinkTarget::Codex
+                | LinkTarget::Copilot
+                | LinkTarget::Opencode => {}
+            }
+        }
+        let names: Vec<&str> = all.iter().map(|t| t.as_str()).collect();
+        assert_eq!(names, armadai_model::TARGETS);
+    }
+
     /// [`CoordinatorRef`]'s own branches, including the two the black-box
     /// suite (`tests/link_coordinator_no_match.rs`) cannot reach: the
     /// `--coordinator` flag's priority over the config, and the origin

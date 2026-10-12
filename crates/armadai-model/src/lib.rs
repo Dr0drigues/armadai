@@ -1,9 +1,11 @@
 //! Canonical ArmadAI project model. Pure: depends on no other workspace crate.
 
+pub mod check;
 pub mod diag;
 pub mod load;
 pub mod types;
-pub use diag::{Diagnostic, Severity};
+pub use check::{check, has_errors, validate};
+pub use diag::{Diagnostic, Severity, locate, locate_key};
 pub use load::*;
 pub use types::*;
 
