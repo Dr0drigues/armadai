@@ -1,5 +1,10 @@
 # Providers and models
 
+> **Legacy format.** This page describes the format of projects before v1 (`.armadai/config.yaml`,
+> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and
+> internally by `armadai new` (templates) and `armadai init --pack` (starter packs). Projects use
+> the [Project format](project-format.md).
+
 ArmadAI no longer executes agents, so it has no execution providers: no API client, no CLI
 relay, no proxy. What remains of "providers" is the `provider:` and `model:` fields of an agent,
 and how `armadai link` turns them into the model id written into each target's files. Everything
@@ -39,21 +44,12 @@ other non-placeholder string (see below).
 
 ## What `link` writes, per target
 
-| Target | Model written | How it is chosen |
-|---|---|---|
-| `claude` | `model:` in `.claude/agents/*.md` | Always an **Anthropic** model: a `latest:*` tier is resolved for Anthropic; any other value (a concrete id, `latest:auto`, nothing) becomes Anthropic's Pro tier |
-| `codex` | `model` in `.codex/agents/*.toml` | Always an **OpenAI** model, by the same rule |
-| `opencode` | `model:` in `.opencode/agents/*.md` | `--model <id>`: that id for every agent. Otherwise, in an interactive terminal, `link` asks for a vendor and a model (listed from the local catalogue cache, or typed in). Otherwise, each agent's `latest:*` tier is resolved with the vendor of its own `provider:`; any other value is written unchanged |
-| `copilot` | none | Same choice as `opencode`, but the generated `.agent.md` files carry no model |
-
-Measured on a project with four agents and no catalogue cache:
-
-| Agent (`provider` / `model`) | claude | codex | opencode (non-interactive) |
-|---|---|---|---|
-| `cli` / `latest:fast` | `claude-haiku-4-5-20251001` | `gpt-4o-mini` | `claude-haiku-4-5-20251001` |
-| `gemini` / `latest:max` | `claude-opus-4-6` | `o3-pro` | `gemini-2.5-pro` |
-| `openai` / `gpt-4.1` | `claude-sonnet-4-5-20250929` | `gpt-4o` | `gpt-4.1` |
-| `claude` / `latest:auto` | `claude-sonnet-4-5-20250929` | `gpt-4o` | `latest:auto` |
+`link` reads the canonical model, where an agent has a `tier` (`fast`, `pro`, `max`) and no
+provider: `armadai migrate` turns `latest:*` placeholders and known model ids into a tier, and
+keeps any other model id as `native.<target>.model`. How each target turns a tier into a model is
+described in [Link](link.md) (Claude: `haiku`/`sonnet`/`opus`; Codex and OpenCode: the static
+table below; Copilot: no model). `link` never asks for a model and never reads the local catalogue
+cache.
 
 ## How a tier becomes a model id
 
@@ -91,9 +87,12 @@ released one exists. OpenAI's o-series is a reasoning line and claims no tier, e
 
 ## Deprecated model ids
 
-`armadai models check` reports agents whose `model` or `model_fallback` names a deprecated id, and
-`armadai models update` rewrites them in place (in `.md` files and in `.armadai/agents.yaml`).
-`--all` applies to every project registered by `armadai link`; `armadai models list` shows them.
+Canonical agents carry a tier; a model id only appears where an agent pins one, in
+`native.<target>.model`. `armadai models check` reports the deprecated ones, and
+`armadai models update` replaces them in place (only the id, in the frontmatter: comments and
+the body are kept; a replacement that is a tier is reported, not written). `--all` applies to
+every project registered by `armadai link`; `armadai models list` shows them. A legacy project
+is reported "legacy format, run `armadai migrate`".
 
 ## Secrets
 

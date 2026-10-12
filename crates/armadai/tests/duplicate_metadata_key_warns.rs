@@ -6,7 +6,7 @@
 //! parser's unit tests prove which duplicates are *detected*; a warning that is
 //! computed but never printed leaves every one of them green. What matters here
 //! is that the real binary puts the sentence on stderr, so these assertions run
-//! `armadai` itself.
+//! `armadai` itself — `migrate`, the command that reads legacy agents since step 2.
 //!
 //! Measured on `master` before the fix, on an agent whose `## Metadata` carries
 //! an `### Alternative setup (not in use)` block:
@@ -62,24 +62,6 @@ You are dup.
 ### Alternative ring (not in use)
 - role: coordinator
 - vote_weight: 9.0
-";
-
-    /// The hardest case of #396: the losing block holds a value that does not
-    /// parse, so the agent does not merely get misconfigured — it disappears.
-    /// `link` warns, skips it and still exits 0.
-    const FATAL_AGENT: &str = "\
-# fatal
-
-## Metadata
-- provider: anthropic
-- model: claude-sonnet-4-5-20250929
-- timeout: 300
-
-### Alternative setup (not in use)
-- timeout: to be decided
-
-## System Prompt
-You are fatal.
 ";
 
     /// Negative control. Every recognised key appears once; two `###` blocks
@@ -151,7 +133,7 @@ You are clean.
         let source = config.join("agents/dup.md");
 
         let output = armadai(&config, &root)
-            .args(["inspect", "dup"])
+            .args(["migrate", "--dry-run"])
             .output()
             .unwrap();
         assert!(
@@ -182,9 +164,8 @@ You are clean.
             );
             // One line per override, not two. Nothing else pins the count:
             // measured, emitting every warning twice left the whole suite
-            // green. `inspect` is the surface to assert it on — it parses
-            // each file once, where `link` parses twice (#419) and so prints
-            // each of these lines twice today. Pinning the count here says
+            // green. `migrate --dry-run` is the surface to assert it on — it parses
+            // each file once. Pinning the count here says
             // "one warning per override" without rusting the moment #419 is
             // fixed.
             assert_eq!(
@@ -197,11 +178,18 @@ You are clean.
         // Which value wins is deliberately unchanged: this issue is about the
         // silence, not the precedence. If that ever becomes a real decision,
         // these three lines are what says it was one.
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("openai"), "last-wins changed:\n{stdout}");
+        // (`migrate` reads legacy agents with this parser since `inspect` moved to
+        // the canonical model.)
+        let done = armadai(&config, &root).arg("migrate").output().unwrap();
         assert!(
-            stdout.contains("gpt-4o-mini"),
-            "last-wins changed:\n{stdout}"
+            done.status.success(),
+            "{}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+        let migrated = std::fs::read_to_string(root.join(".armadai/agents/dup.md")).unwrap();
+        assert!(
+            migrated.contains("temperature: 1.0"),
+            "last-wins changed:\n{migrated}"
         );
     }
 
@@ -215,7 +203,7 @@ You are clean.
         let root = project(dir.path(), "agents:\n  - name: clean\n");
 
         let output = armadai(&config, &root)
-            .args(["inspect", "clean"])
+            .args(["migrate", "--dry-run"])
             .output()
             .unwrap();
         assert!(output.status.success());
@@ -223,55 +211,6 @@ You are clean.
         assert!(
             !stderr.contains("is overridden by"),
             "no key is set twice in this agent, yet: {stderr}"
-        );
-    }
-
-    /// The disappearing-agent case. `link` keeps its old behaviour to the
-    /// letter — warn, link what did load, exit 0 — but the user now also learns
-    /// that a second `timeout:` is what broke the file.
-    #[test]
-    fn link_names_the_duplicate_that_makes_an_agent_unloadable() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = isolated_library(
-            dir.path(),
-            &[
-                ("fatal", FATAL_AGENT),
-                (
-                    "healthy",
-                    "# healthy\n\n## Metadata\n- provider: anthropic\n\
-                     - model: claude-sonnet-4-5-20250929\n\n## System Prompt\nYou are healthy.\n",
-                ),
-            ],
-        );
-        let root = project(dir.path(), "agents:\n  - name: fatal\n  - name: healthy\n");
-        let source = config.join("agents/fatal.md");
-
-        let output = armadai(&config, &root)
-            .args(["link", "--target", "claude", "--force"])
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        // Unchanged, on purpose: warning is not failing.
-        assert!(output.status.success(), "link must still exit 0:\n{stderr}");
-        assert!(
-            stdout.contains("Linked 1 agent(s)"),
-            "the pre-existing skip behaviour must be untouched:\n{stdout}"
-        );
-
-        // `contains`, not a count: `link` currently emits this line TWICE,
-        // because it parses every agent file twice — once in
-        // `model_updater::auto_check_and_prompt` (cli/link.rs) and once in
-        // `agent_source::load_all_agents`. Measured: `list` and `inspect` print
-        // it once, `link` and `link --dry-run` twice. That double parse
-        // predates this fix and is a defect of its own; pinning a count here
-        // would make this test fail the day it is fixed, for a reason that has
-        // nothing to do with #396.
-        let line = expected(&source, "Metadata", "timeout", "300", "to be decided");
-        assert!(
-            stderr.contains(&line),
-            "the duplicate that broke the file must be named:\n  {line}\ngot:\n{stderr}"
         );
     }
 }

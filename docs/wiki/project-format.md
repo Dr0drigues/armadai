@@ -1,13 +1,9 @@
 # Project format
 
-A project in the new format is a `.armadai/` directory whose manifest, `.armadai/project.yaml`,
-**defines** it: when that file exists, `armadai validate` checks the new format; otherwise it
-validates the legacy format (`.armadai/config.yaml`, `armadai.yaml`, `armadai.yml`) and suggests
-`armadai migrate`.
-
-> **Transitional state.** `armadai link` still reads the legacy format. It reads this one from
-> step 2 of the v1 work. Until then, a migrated project can be validated but not linked; the
-> legacy project stays in `.armadai/.migrated/<timestamp>/` (see [Migrating](#migrating-a-legacy-project)).
+A project is a `.armadai/` directory whose manifest, `.armadai/project.yaml`, **defines** it.
+Every project command (`link`, `unlink`, `list`, `inspect`, `validate`, `new`) reads this
+format only; a legacy project (`.armadai/config.yaml`, `armadai.yaml`, `armadai.yml`) is refused
+with "legacy format, run `armadai migrate`" (see [Migrating](#migrating-a-legacy-project)).
 
 ```
 .armadai/
@@ -16,7 +12,7 @@ validates the legacy format (`.armadai/config.yaml`, `armadai.yaml`, `armadai.ym
   skills/<id>/SKILL.md    # cross-tool skill standard, folder copied as is
   flows/<id>.yaml
   automations/<id>.yaml
-  native/<target>/<path>  # files copied as is (read from step 2)
+  native/<target>/<path>  # files copied as is by link
 ```
 
 Every file is strict YAML: an unknown key, a duplicate key or a value outside its domain is an
@@ -36,7 +32,7 @@ outputs: { claude: .claude } # optional: output directory per target
 coordinator: lead            # optional: agent id whose prompt becomes the root file
 policy:                      # optional
   delegation: strict         # off (default) | strict
-  free_agents: [explorer]    # agent ids allowed without a link
+  free_agents: [explorer, Explore]    # reachable from anywhere: project agent ids, or agents the target provides (Claude Code's Explore)
 native: { claude: {} }       # optional, opaque
 ```
 
@@ -134,7 +130,9 @@ warning on stderr.
 | `duplicate-step` | error | A `sequence` defines the same step id twice | Use `{ id: …, agent: … }` for the repeat |
 | `bad-id` | error | A file, folder or step id does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
 | `unknown-target` | error | A target in `targets`, `outputs` or a `native` key is not supported | Use `claude`, `codex`, `copilot` or `opencode` |
-| `unknown-agent` | error | A step, `coordinator` or `free_agents` names no agent of the project | Use an existing agent id (the hint suggests a close one) |
+| `bad-output` | error | An `outputs` value is absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` | Use a folder inside the project such as `.claude` (`link --output` can point elsewhere for one run) |
+| `unknown-agent` | error | A step or `coordinator` names no agent of the project | Use an existing agent id (the hint suggests a close one) |
+| `unknown-free-agent` | warning | A `free_agents` entry names no agent of the project | None needed for an agent the target provides itself (Claude Code: `Explore`, `Plan`, `general-purpose`); otherwise fix the id (the hint suggests a close one) |
 | `unknown-skill` | error | An agent lists a skill the project does not have | Add the skill or fix the id |
 | `empty-description` | error | An agent's `description` is empty | Write a one-line description |
 | `invalid-temperature` | error | `temperature` is not a finite number | Use a number such as `0.4` |
@@ -195,7 +193,7 @@ What the conversion does:
 | Project `skills:` | `skills/<id>/` (folder copied; `tools` and `version` dropped) |
 | `link.target`, `link.overrides.<target>.output`, `link.coordinator` | `targets`, `outputs`, `coordinator` (an unsupported target such as `gemini` is dropped) |
 | `orchestration.coordinator` + `teams` | a flow `orchestration`: coordinator → team lead → members (members without a lead under the coordinator); an unknown agent is omitted with a warning |
-| `orchestration.policy`, `free_agents` | `policy.delegation`, `policy.free_agents` (a name that is not a project agent, such as `Explore`, is dropped) |
+| `orchestration.policy`, `free_agents` | `policy.delegation`, `policy.free_agents` (a name that is not a project agent, such as `Explore`, is kept as it is: it may be an agent the target provides) |
 | `orchestration.enabled`, `pattern`, `routes`, limits; `defaults`, `routing`, `registries`, `sources` | **dropped**, listed |
 
 Agents of the user library that the project references are copied into the project.

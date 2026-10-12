@@ -1,5 +1,9 @@
 # Starter Packs
 
+> Packs are written in the [legacy format](agent-format.md): `armadai init --pack <name>` converts
+> one, like `armadai migrate`, into a project in the current directory
+> ([Project format](project-format.md)). Packs are no longer installed into a user library.
+
 Starter packs are curated bundles of agents, prompts and skills that you can install with a single
 command, then compile for your assistant with `armadai link`.
 

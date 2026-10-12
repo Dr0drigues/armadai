@@ -1,38 +1,7 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "FlowFile",
-  "description": "Raw flow as read from `flows/<id>.yaml`.",
-  "type": "object",
-  "properties": {
-    "description": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "links": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/Link"
-      }
-    },
-    "sequence": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/SeqItem"
-      }
-    },
-    "steps": {
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/$defs/Step"
-      }
-    }
-  },
-  "additionalProperties": false,
   "$defs": {
     "Link": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "from": {
           "type": "string"
@@ -47,14 +16,14 @@
           ]
         }
       },
-      "additionalProperties": false,
       "required": [
         "from",
         "to"
-      ]
+      ],
+      "type": "object"
     },
     "SeqExplicit": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "agent": {
           "type": "string"
@@ -63,14 +32,13 @@
           "type": "string"
         }
       },
-      "additionalProperties": false,
       "required": [
         "id",
         "agent"
-      ]
+      ],
+      "type": "object"
     },
     "SeqItem": {
-      "description": "Element of the `sequence` shortcut.",
       "anyOf": [
         {
           "type": "string"
@@ -78,10 +46,11 @@
         {
           "$ref": "#/$defs/SeqExplicit"
         }
-      ]
+      ],
+      "description": "Element of the `sequence` shortcut."
     },
     "Step": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "agent": {
           "type": "string"
@@ -93,16 +62,47 @@
           ]
         },
         "states": {
-          "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "type": "array"
         }
       },
-      "additionalProperties": false,
       "required": [
         "agent"
-      ]
+      ],
+      "type": "object"
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Raw flow as read from `flows/<id>.yaml`.",
+  "properties": {
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "links": {
+      "items": {
+        "$ref": "#/$defs/Link"
+      },
+      "type": "array"
+    },
+    "sequence": {
+      "items": {
+        "$ref": "#/$defs/SeqItem"
+      },
+      "type": "array"
+    },
+    "steps": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Step"
+      },
+      "type": "object"
+    }
+  },
+  "title": "FlowFile",
+  "type": "object"
 }

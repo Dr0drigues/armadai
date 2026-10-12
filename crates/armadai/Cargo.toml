@@ -31,7 +31,7 @@ reqwest = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order", "arbitrary_precision"] }
 serde_yaml_ng = { workspace = true }
 
 # Legacy agent Markdown, read the way armadai-core parses it (migrate)

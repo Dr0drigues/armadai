@@ -4,8 +4,23 @@ use schemars::{JsonSchema, schema_for};
 
 use crate::types::{AgentFront, Automation, FlowFile, Manifest, SkillFront};
 
+/// Keys sorted at every level: the bytes must not depend on whether another crate of
+/// the build enables serde_json's `preserve_order` (feature unification).
+fn sort_keys(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(m) => {
+            m.sort_keys();
+            m.values_mut().for_each(sort_keys);
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(sort_keys),
+        _ => {}
+    }
+}
+
 fn render<T: JsonSchema>() -> String {
-    let mut s = serde_json::to_string_pretty(&schema_for!(T)).expect("schema serializes");
+    let mut v = serde_json::to_value(schema_for!(T)).expect("schema serializes");
+    sort_keys(&mut v);
+    let mut s = serde_json::to_string_pretty(&v).expect("schema serializes");
     s.push('\n');
     s
 }

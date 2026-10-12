@@ -1,5 +1,6 @@
 mod claude_adapter;
 mod cli;
+mod compile;
 mod linker;
 mod migrate;
 mod skills_registry;

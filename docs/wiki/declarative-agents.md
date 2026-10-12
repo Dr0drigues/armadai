@@ -1,5 +1,10 @@
 # Declarative agents
 
+> **Legacy format.** This page describes the format of projects before v1 (`.armadai/config.yaml`,
+> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and
+> internally by `armadai new` (templates) and `armadai init --pack` (starter packs). Projects use
+> the [Project format](project-format.md).
+
 A project can declare its agents in `.armadai/agents.yaml` instead of writing each one as a
 Markdown file. The YAML is parsed into the same `Agent` struct the `.md` parser produces — same
 linker, same everything downstream. Nothing changes for a project that never creates the file.
@@ -55,8 +60,7 @@ fails to load, on both sides. `defaults` has no `scope` field — `scope` is per
 agent that omits it simply has none.
 
 The format also accepts `command`, `args`, `max_tokens` and `timeout`, like the `.md` metadata;
-they configured the removed execution engine and nothing executes them; `armadai inspect`
-still displays them (see
+they configured the removed execution engine; `migrate` drops them and says so (see
 [Agent format](agent-format.md#metadata-required)).
 
 ## The `.md` format is not going away
@@ -107,11 +111,8 @@ gaps itself, and a hard failure is the only way to make that visible before the 
 If you need a fragment's `{{description}}` filled without the agent declaring one, a prompt step
 can supply it directly as one of its own variables.
 
-Deprecated model names are checked and fixed in `agents.yaml` too — `defaults.model` and every
-deviating agent's own `model`/`model_fallback`, one finding per occurrence — the same textual
-in-place rewrite `armadai models update` does for `.md` files, chosen so comments and key order
-survive. Two forms are refused rather than half-fixed: a quoted `"model":` key, and any case where
-the structured YAML parse and the textual rewrite disagree about what needs changing.
+`migrate` turns a `latest:*` model into a tier and keeps any other model id as
+`native.<target>.model`, which `armadai models check` then checks for deprecation.
 
 ## A name both declared and written as a file: no precedence
 
@@ -138,49 +139,12 @@ deliberately no precedence between them
 What to do: rename or delete one side — whichever is actually stale. There is no flag to suppress
 the check or to force one side to win.
 
-A collision costs only the colliding declaration, never the rest of the fleet, but the commands
-react differently:
+## Who reads this format
 
-- `armadai list` is read-only over the whole fleet: it prints a warning for the colliding name and
-  carries on, showing every other agent that did load.
-- `armadai inspect <name>` is about one specific agent and refuses to guess: naming a colliding
-  agent **hard-fails** (exit 1), naming both `agents.yaml` and the colliding `.md` file. It checks
-  only the name you asked for, so it says nothing about a collision elsewhere in the fleet; only
-  `armadai list` (or `armadai link`) looks at the whole fleet at once.
-- `armadai link` writes files other tools then trust, so it refuses to write **anything** when
-  the collision falls inside what you asked it to link (the whole fleet by default, or the names
-  passed to `--agents`).
-
-## What's wired
-
-Every command that resolves a project's agents sees declared agents alongside file-backed ones:
-
-| Command | Sees declared agents? |
-|---|---|
-| `armadai link` | Yes (and refuses to write on an unresolved collision, see above) |
-| `armadai unlink` | Yes |
-| `armadai list` | Yes |
-| `armadai inspect` | Yes |
-| `armadai models check` / `armadai models update` | Yes — including the deprecated-model rewrite described above |
-| `armadai validate` | Yes — a declared agent named as an `orchestration.coordinator`/`teams[].lead`/`teams[].agents` entry resolves, even when never relisted in the config's `agents:` |
-
-## Parity with the `.md` format — and its limits
-
-A declared agent and its hand-written `.md` twin are proven, by test
-(`crates/armadai/src/linker/mod.rs`), to project **byte-identical native output** on all four link
-targets (claude, codex, copilot, opencode) — same file paths, same content — and to carry identical
-values for every field the declarative format is able to express.
-
-It is narrower than "the two formats are interchangeable," in two ways:
-
-- **The linkers don't emit every field.** No target's generated file includes `command`, `args`,
-  `tags`, `scope` or `stacks`, so the projection comparison cannot fail on a divergence in those
-  fields. They are checked separately, at the `Agent`/`AgentMetadata` level, by a second test.
-- **Seven `AgentMetadata` fields have no declarative equivalent at all**: `cost_limit`,
-  `rate_limit`, `context_window`, `mode`, `orchestration`, `triggers`, `ring_config`. A declared
-  agent always resolves these to `None`/default. None of the kept commands uses them.
-
-So: identical projection, for what both formats can actually say.
+Since step 2 of v1, only `armadai migrate` reads it (and, internally, `armadai new` and
+`armadai init --pack`): it converts every declared agent into `.armadai/agents/<id>.md` with its
+composed prompt, exactly like a file-backed one, and its report says what was dropped. `list`,
+`inspect`, `link`, `validate` and `models` read the [Project format](project-format.md) only.
 
 ## See also
 

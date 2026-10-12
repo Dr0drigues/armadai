@@ -5,4 +5,5 @@ coordinator: code-reviewer
 policy:
   delegation: strict
   free_agents:
+  - Explore
   - doc-generator

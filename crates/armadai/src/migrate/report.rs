@@ -81,7 +81,7 @@ impl Report {
         }
         if let Some(b) = &self.backup {
             out.push_str(&format!(
-                "Note: 'armadai link' reads the new format from step 2 of the v1 work; \
+                "Note: run 'armadai link' to compile the migrated project; \
                  the previous project is in {}/.\n",
                 b.display()
             ));

@@ -838,24 +838,6 @@ test
     }
 
     #[test]
-    fn parse_real_agent_files() {
-        let agents_dir = Path::new("agents");
-        if !agents_dir.exists() {
-            return;
-        }
-        let agents = crate::agent::Agent::load_all(agents_dir).unwrap();
-        assert!(
-            !agents.is_empty(),
-            "Should parse at least one agent from agents/"
-        );
-        for agent in &agents {
-            assert!(!agent.name.is_empty());
-            assert!(!agent.metadata.provider.is_empty());
-            assert!(!agent.system_prompt.is_empty());
-        }
-    }
-
-    #[test]
     fn parse_triggers_section() {
         let f = write_temp_agent(
             r#"# Trigger Agent

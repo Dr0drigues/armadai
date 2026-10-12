@@ -3,10 +3,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use armadai_core::pack_validation::{Severity, validate_pack, validate_project_config};
-
-const LEGACY_INVITATION: &str =
-    "This project uses the legacy format. Run `armadai migrate` to convert it.";
+use armadai_core::pack_validation::{Severity, validate_pack};
 
 /// New format: `.armadai/project.yaml` present. Diagnostics come from `armadai-model`.
 fn execute_new(target_path: &std::path::Path, json: bool) -> anyhow::Result<()> {
@@ -62,39 +59,26 @@ pub async fn execute(path: Option<PathBuf>, json: bool) -> anyhow::Result<()> {
         eprintln!("warning: --json only applies to new-format projects; ignored");
     }
 
-    // Auto-detect mode
-    let pack_yaml = target_path.join("pack.yaml");
-    let armadai_yaml = target_path.join("armadai.yaml");
-    let armadai_config_yaml = target_path.join(".armadai/config.yaml");
-    let armadai_yml = target_path.join("armadai.yml");
-
-    let (mode, issues) = if pack_yaml.is_file() {
-        // Pack mode
-        let h = crate::cli::style::header();
-        let a = crate::cli::style::accent();
-        anstream::println!(
-            "{h}Validating starter pack at:{h:#} {a}{}{a:#}",
-            target_path.display()
-        );
-        println!();
-        ("pack", validate_pack(&target_path))
-    } else if armadai_config_yaml.is_file() || armadai_yaml.is_file() || armadai_yml.is_file() {
-        // Project mode
-        let h = crate::cli::style::header();
-        let a = crate::cli::style::accent();
-        anstream::println!(
-            "{h}Validating project config at:{h:#} {a}{}{a:#}",
-            target_path.display()
-        );
-        println!();
-        ("project", validate_project_config(&target_path))
-    } else {
-        // No recognized config file
+    if !target_path.join("pack.yaml").is_file() {
+        if (crate::compile::LEGACY_CONFIGS.iter()).any(|c| target_path.join(c).is_file()) {
+            anyhow::bail!(
+                "{} uses the legacy format, run `armadai migrate`",
+                target_path.display()
+            );
+        }
         anyhow::bail!(
-            "No pack.yaml or armadai.yaml found at {}",
+            "No .armadai/project.yaml or pack.yaml found at {}",
             target_path.display()
         );
-    };
+    }
+    let h = crate::cli::style::header();
+    let a = crate::cli::style::accent();
+    anstream::println!(
+        "{h}Validating starter pack at:{h:#} {a}{}{a:#}",
+        target_path.display()
+    );
+    println!();
+    let issues = validate_pack(&target_path);
 
     // Display issues
     let mut error_count = 0;
@@ -138,24 +122,16 @@ pub async fn execute(path: Option<PathBuf>, json: bool) -> anyhow::Result<()> {
         warning_count
     );
 
-    // Exit code logic
     if error_count > 0 {
-        if mode == "project" {
-            println!("{LEGACY_INVITATION}");
-        }
         anyhow::bail!("validation failed: {} error(s)", error_count);
     }
 
     println!();
     let o = crate::cli::style::ok();
     anstream::println!(
-        "{o}Validation passed for {} at {}{o:#}",
-        mode,
+        "{o}Validation passed for pack at {}{o:#}",
         target_path.display()
     );
-    if mode == "project" {
-        println!("{LEGACY_INVITATION}");
-    }
 
     Ok(())
 }

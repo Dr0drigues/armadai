@@ -73,6 +73,7 @@ fn run_with(
     write::remove_legacy(&root, &plan).with_context(interrupted)?;
     report.written = write::write_all(&project, &copies, &root, &root, &root.join(&backup))
         .with_context(interrupted)?;
+    crate::linker::manifest::ensure_gitignore(&root).with_context(interrupted)?;
     after_write(&root);
     if let Some(errors) = rendered_errors(&root) {
         bail!(
@@ -235,7 +236,8 @@ mod tests {
         assert!(f.steps.contains_key("doc-generator"));
         assert!(r.warnings.iter().any(|w| w.contains("`ghost-agent`")));
         assert_eq!(p.manifest.coordinator.as_deref(), Some("code-reviewer"));
-        assert_eq!(p.manifest.policy.free_agents, ["doc-generator"]);
+        // a name outside the project (Claude Code's `Explore`) is kept as it is
+        assert_eq!(p.manifest.policy.free_agents, ["Explore", "doc-generator"]);
     }
 
     #[test]

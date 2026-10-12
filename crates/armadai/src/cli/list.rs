@@ -1,124 +1,88 @@
-use armadai_core::agent::Agent;
-use armadai_core::config::AppPaths;
-use armadai_core::project;
+//! `armadai list`: the agents, skills, flows and automations of the project.
+//!
+//! Read-only: a project with errors is still listed (diagnostics on stderr), as far
+//! as it loads.
 
-pub async fn execute(tags: Option<Vec<String>>, stack: Option<String>) -> anyhow::Result<()> {
-    let mut agents = load_agents()?;
+use armadai_model::{Project, Tier};
 
-    if agents.is_empty() {
-        let m = crate::cli::style::muted();
-        anstream::println!("{m}No agents found.{m:#}");
-        anstream::println!("{m}Create one with: armadai new --template basic <name>{m:#}");
-        return Ok(());
+/// The project at or above the current directory, as far as it loads; every
+/// diagnostic goes to stderr.
+pub fn load_for_reading() -> anyhow::Result<Project> {
+    let root = crate::compile::find_project(&std::env::current_dir()?)?;
+    let loaded = armadai_model::load_project(&root);
+    let mut ds = loaded.diagnostics;
+    if let Some(p) = &loaded.project {
+        ds.extend(armadai_model::check(p, &loaded.origins));
     }
-
-    // Apply filters
-    if let Some(ref tags) = tags {
-        agents.retain(|a| a.matches_tags(tags));
+    for d in &ds {
+        let s = crate::cli::style::warn();
+        anstream::eprintln!("{s}{}{s:#}", d.render());
     }
-    if let Some(ref stack) = stack {
-        agents.retain(|a| a.matches_stack(stack));
-    }
-
-    if agents.is_empty() {
-        let m = crate::cli::style::muted();
-        anstream::println!("{m}No agents match the given filters.{m:#}");
-        return Ok(());
-    }
-
-    // Compute column widths
-    let name_w = agents
-        .iter()
-        .map(|a| a.name.len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
-    let provider_w = agents
-        .iter()
-        .map(|a| a.metadata.provider.len())
-        .max()
-        .unwrap_or(8)
-        .max(8);
-    let model_w = agents
-        .iter()
-        .map(|a| a.model_display().len())
-        .max()
-        .unwrap_or(5)
-        .max(5);
-
-    // Header
-    let h = crate::cli::style::header();
-    anstream::println!(
-        "{h}  {:<name_w$}  {:<provider_w$}  {:<model_w$}  TAGS  STACKS{h:#}",
-        "NAME",
-        "PROVIDER",
-        "MODEL",
-    );
-    let m = crate::cli::style::muted();
-    anstream::println!(
-        "{m}  {:<name_w$}  {:<provider_w$}  {:<model_w$}  ----  ------{m:#}",
-        "-".repeat(name_w),
-        "-".repeat(provider_w),
-        "-".repeat(model_w),
-    );
-
-    // Rows
-    for agent in &agents {
-        let tags_str = if agent.metadata.tags.is_empty() {
-            "-".to_string()
-        } else {
-            agent.metadata.tags.join(", ")
-        };
-        let stacks_str = if agent.metadata.stacks.is_empty() {
-            "-".to_string()
-        } else {
-            agent.metadata.stacks.join(", ")
-        };
-
-        let a = crate::cli::style::accent();
-        anstream::println!(
-            "  {a}{:<name_w$}{a:#}  {:<provider_w$}  {:<model_w$}  {}  {}",
-            agent.name,
-            agent.metadata.provider,
-            agent.model_display(),
-            tags_str,
-            stacks_str,
-        );
-    }
-
-    let m = crate::cli::style::muted();
-    anstream::println!("\n{m}  {} agent(s) found.{m:#}", agents.len());
-    Ok(())
+    loaded
+        .project
+        .ok_or_else(|| anyhow::anyhow!("the project manifest could not be read"))
 }
 
-/// Load agents: if a project config is found, resolve project agents
-/// (file-backed and declared alike). Otherwise, load all agents from the
-/// default directory. When `--global` is active, always load from the
-/// global library.
-///
-/// A project counts as having agents when `agents:` lists any, OR
-/// `.armadai/agents.yaml` declares any — every declared agent is included
-/// automatically, so a project that only uses that format (an empty/absent
-/// `agents:` list) must still take the project branch instead of falling
-/// through to the global library.
-fn load_agents() -> anyhow::Result<Vec<Agent>> {
-    if !armadai_core::config::is_force_global()
-        && let Some((root, config)) = project::find_project_config()
-        && armadai_core::agent_source::project_declares_agents(&root, &config)
-    {
-        let fragments = armadai_core::agent_source::project_fragments(&root);
-        let (agents, warnings) =
-            armadai_core::agent_source::load_all_agents(&config, &root, &fragments);
-        // Read-only: unlike `link`, `list` never refuses over a drop
-        // (pre-existing or new to this chantier's format alike) -- it warns
-        // and shows whatever did load.
-        for w in &warnings {
-            let s = crate::cli::style::warn();
-            anstream::eprintln!("{s}  warn: {}{s:#}", w.message());
-        }
-        return Ok(agents);
+pub fn tier_str(t: Option<Tier>) -> &'static str {
+    match t {
+        Some(Tier::Fast) => "fast",
+        Some(Tier::Pro) => "pro",
+        Some(Tier::Max) => "max",
+        None => "-",
     }
+}
 
-    let paths = AppPaths::resolve();
-    Agent::load_all(&paths.agents_dir)
+pub async fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
+    let project = load_for_reading()?;
+    let agents: Vec<_> = (project.agents.iter())
+        .filter(|(_, a)| {
+            tags.as_ref()
+                .is_none_or(|t| t.iter().any(|t| a.front.tags.contains(t)))
+        })
+        .collect();
+
+    let h = crate::cli::style::header();
+    let m = crate::cli::style::muted();
+    let acc = crate::cli::style::accent();
+    if agents.is_empty() {
+        anstream::println!("{m}No agents found.{m:#}");
+    } else {
+        let w = agents
+            .iter()
+            .map(|(id, _)| id.len())
+            .max()
+            .unwrap_or(2)
+            .max(2);
+        anstream::println!("{h}  {:<w$}  TIER  TAGS  DESCRIPTION{h:#}", "ID");
+        for (id, a) in &agents {
+            let role = if project.manifest.coordinator.as_deref() == Some(id.as_str()) {
+                " (coordinator)"
+            } else {
+                ""
+            };
+            let tags = if a.front.tags.is_empty() {
+                "-".to_string()
+            } else {
+                a.front.tags.join(", ")
+            };
+            anstream::println!(
+                "  {acc}{:<w$}{acc:#}  {:<4}  {tags}  {}{role}",
+                id,
+                tier_str(a.front.tier),
+                a.front.description.lines().next().unwrap_or_default(),
+            );
+        }
+        anstream::println!("\n{m}  {} agent(s) found.{m:#}", agents.len());
+    }
+    for (title, ids) in [
+        ("Skills", project.skills.keys().collect::<Vec<_>>()),
+        ("Flows", project.flows.keys().collect()),
+        ("Automations", project.automations.keys().collect()),
+    ] {
+        if !ids.is_empty() {
+            let ids: Vec<&str> = ids.into_iter().map(String::as_str).collect();
+            anstream::println!("{h}{title}:{h:#} {}", ids.join(", "));
+        }
+    }
+    Ok(())
 }

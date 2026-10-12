@@ -17,4 +17,4 @@ Warnings (4):
   agent `cli-specialist`: description derived from the first sentence of its prompt
   agent `release-notes`: description derived from the first sentence of its prompt
   unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
-Note: 'armadai link' reads the new format from step 2 of the v1 work; the previous project is in .armadai/.migrated/<timestamp>/.
+Note: run 'armadai link' to compile the migrated project; the previous project is in .armadai/.migrated/<timestamp>/.

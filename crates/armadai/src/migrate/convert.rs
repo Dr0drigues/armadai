@@ -374,6 +374,15 @@ fn convert_link(
     }
 }
 
+/// Agents Claude Code provides itself: free agents that need no warning.
+const CLAUDE_BUILT_INS: [&str; 5] = [
+    "Explore",
+    "Plan",
+    "general-purpose",
+    "statusline-setup",
+    "claude-code-guide",
+];
+
 fn convert_orchestration(
     o: &armadai_core::orchestration::OrchestrationConfig,
     resolve: &dyn Fn(&str) -> Option<String>,
@@ -445,16 +454,31 @@ fn convert_orchestration(
         PolicyMode::Strict => Delegation::Strict,
     };
     for f in &o.free_agents {
-        match resolve(f) {
-            Some(id) if !policy.free_agents.contains(&id) => policy.free_agents.push(id),
-            Some(_) => {}
-            None => r.drop(
-                S,
-                &format!("free_agents.{f}"),
-                "not an agent of this project (the new format lists project agents only)",
-            ),
+        // not a project agent: a built-in of the target (Claude Code's `Explore`), kept
+        let id = match resolve(f) {
+            Some(id) => {
+                if id != *f {
+                    r.warn(format!(
+                        "orchestration.free_agents: `{f}` renamed to `{id}`"
+                    ));
+                }
+                id
+            }
+            None => {
+                if !armadai_model::is_valid_id(f) && !CLAUDE_BUILT_INS.contains(&f.as_str()) {
+                    r.warn(format!(
+                        "orchestration.free_agents: `{f}` is neither a project agent, an agent \
+                         Claude Code provides, nor a valid id: kept as is"
+                    ));
+                }
+                f.clone()
+            }
+        };
+        if !policy.free_agents.contains(&id) {
+            policy.free_agents.push(id);
         }
     }
+
     for (field, present) in [
         ("enabled", o.enabled),
         ("pattern", o.pattern != OrchestrationPattern::Direct),

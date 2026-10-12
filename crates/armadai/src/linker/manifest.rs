@@ -25,6 +25,8 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::compile::patch::PatchedFile;
+
 /// The only manifest format this build writes or trusts. A manifest whose
 /// `version` differs — written by an older or a future `armadai` — is
 /// treated exactly like a missing one, per §4: its shape isn't guaranteed to
@@ -68,10 +70,10 @@ impl ProducedBy {
         }
     }
 
-    pub fn prompt(name: impl Into<String>) -> Self {
+    pub fn native(path: impl Into<String>) -> Self {
         Self {
-            kind: ProducedByKind::Prompt,
-            name: name.into(),
+            kind: ProducedByKind::Native,
+            name: path.into(),
         }
     }
 }
@@ -83,6 +85,10 @@ pub enum ProducedByKind {
     Coordinator,
     Skill,
     Prompt,
+    /// A file copied as is from `.armadai/native/<target>/`, relative to the
+    /// project root (not the target's root). An older binary reads a manifest
+    /// holding this value as unusable (`Lookup::Fallback`).
+    Native,
 }
 
 /// `Created`: `link` wrote this path, **or** found it already present with
@@ -149,6 +155,11 @@ pub struct TargetManifest {
     #[serde(default)]
     pub created_dirs: Vec<PathBuf>,
     pub entries: Vec<ManifestEntry>,
+    /// Files shared with the user that link patched rather than wrote whole
+    /// (`.claude/settings.json`, the root `CLAUDE.md`) and exactly what it added.
+    /// Absent from manifests written before step 2, hence the default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patched: Vec<PatchedFile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -618,6 +629,17 @@ fn read(root: &Path) -> Option<Manifest> {
     Some(manifest)
 }
 
+/// Create `<root>/.armadai/.gitignore` when it is missing: `.armadai/` is versioned,
+/// but the link manifest and migration backups describe this machine only.
+pub fn ensure_gitignore(root: &Path) -> std::io::Result<()> {
+    let path = root.join(".armadai/.gitignore");
+    if path.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(root.join(".armadai"))?;
+    std::fs::write(path, "link-manifest.yaml\n.migrated/\n")
+}
+
 /// Replace `target`'s data with `root`/`created_dirs`/`entries`, leaving
 /// every other target's data in the manifest untouched (design §3/§8:
 /// grouped by target, full replacement within one target only — a project
@@ -630,6 +652,7 @@ pub fn write_target(
     target_root: PathBuf,
     created_dirs: Vec<PathBuf>,
     entries: Vec<ManifestEntry>,
+    patched: &[PatchedFile],
 ) -> std::io::Result<()> {
     let mut manifest = read(root).unwrap_or_else(|| Manifest {
         version: MANIFEST_VERSION,
@@ -643,6 +666,7 @@ pub fn write_target(
             root: target_root,
             created_dirs,
             entries,
+            patched: patched.to_vec(),
         },
     );
 
@@ -653,6 +677,60 @@ pub fn write_target(
     let yaml = serde_yaml_ng::to_string(&manifest)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(path, yaml)
+}
+
+/// Forget `target` (after `unlink`); the manifest file goes once no target is left.
+pub fn remove_target(root: &Path, target: &str) -> std::io::Result<()> {
+    let Some(mut manifest) = read(root) else {
+        return Ok(());
+    };
+    manifest.targets.remove(target);
+    if manifest.targets.is_empty() {
+        return std::fs::remove_file(manifest_path(root));
+    }
+    let yaml = serde_yaml_ng::to_string(&manifest)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(manifest_path(root), yaml)
+}
+
+/// The one decision `write_files` and `link --dry-run` share: a file that exists
+/// with other bytes is left in place, unless `--force`, or unless it is still
+/// exactly what link wrote last time (`previous_digest`), i.e. link's own output.
+pub fn left_in_place(
+    path: &Path,
+    content: &[u8],
+    force: bool,
+    previous_digest: Option<&String>,
+) -> bool {
+    !force
+        && std::fs::read(path).is_ok_and(|disk| disk != content)
+        && !previous_digest.is_some_and(|d| check_digest(d, path) == DigestCheck::Matches)
+}
+
+/// Add `entries` to `target`'s record (an entry already recorded at the same path
+/// is kept as is). Used for the files `--agents` left out of a link.
+pub fn append_entries(
+    root: &Path,
+    target: &str,
+    entries: Vec<ManifestEntry>,
+) -> std::io::Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let Some(mut manifest) = read(root) else {
+        return Ok(());
+    };
+    let Some(t) = manifest.targets.get_mut(target) else {
+        return Ok(());
+    };
+    for e in entries {
+        if !t.entries.iter().any(|x| x.path == e.path) {
+            t.entries.push(e);
+        }
+    }
+    let yaml = serde_yaml_ng::to_string(&manifest)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(manifest_path(root), yaml)
 }
 
 /// Create `dir` and any missing ancestors — like `std::fs::create_dir_all`
@@ -733,8 +811,9 @@ pub fn write_files(
     target_name: &str,
     output_dir: &Path,
     target_root: &Path,
-    files: Vec<(PathBuf, String, ProducedBy)>,
+    files: Vec<(PathBuf, Vec<u8>, ProducedBy)>,
     force: bool,
+    patched: &[PatchedFile],
 ) -> std::io::Result<Vec<FileOutcome>> {
     // The previous manifest write for this exact target, keyed by path —
     // used only to recognise a file that is still exactly what `link`
@@ -756,57 +835,67 @@ pub fn write_files(
 
     let mut outcomes = Vec::with_capacity(files.len());
     let mut manifest_entries: Vec<ManifestEntry> = Vec::with_capacity(files.len());
-    let mut created_dirs: Vec<PathBuf> = Vec::new();
+    // directories an earlier link created stay recorded: a relink finds them
+    // existing and creates none, yet they are still link's to clean up
+    let mut created_dirs: Vec<PathBuf> = match lookup_target(root, target_name) {
+        Lookup::Found(t) => t.created_dirs,
+        Lookup::Fallback => Vec::new(),
+    };
 
     for (path, content, produced_by) in files {
         let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
 
+        // never write through a link at the destination (it may lead anywhere)
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{} is a symbolic link; link does not write through it",
+                    path.display()
+                ),
+            ));
+        }
         if path.exists() && !force {
             // A pre-existing file whose bytes are *already* exactly what
             // this write would produce is this write's to reclaim, not a
             // stranger's to leave alone (design review R6 — see
             // `Outcome`'s own doc).
             let matches_expected = std::fs::read(&path)
-                .map(|actual| actual == content.as_bytes())
+                .map(|actual| actual == content)
                 .unwrap_or(false);
             if matches_expected {
                 manifest_entries.push(ManifestEntry {
                     path: relative_path,
                     produced_by,
                     outcome: Outcome::Created,
-                    digest: Some(digest_of(content.as_bytes())),
+                    digest: Some(digest_of(&content)),
                 });
                 outcomes.push(FileOutcome::UpToDate(path));
                 continue;
             }
 
-            // The freshly generated content differs from what's on disk —
-            // but if the on-disk bytes are still exactly what `link`
-            // itself wrote last time (per the previous manifest), this is
-            // still `link`'s own file, just stale relative to an upstream
-            // change, not a stranger's to leave mislabelled forever.
-            let still_own_output = previous_digests
-                .get(&relative_path)
-                .is_some_and(|old_digest| check_digest(old_digest, &path) == DigestCheck::Matches);
-            if still_own_output {
-                manifest_entries.push(ManifestEntry {
-                    path: relative_path.clone(),
-                    produced_by,
-                    outcome: Outcome::Created,
-                    digest: previous_digests.get(&relative_path).cloned(),
-                });
+            if left_in_place(&path, &content, force, previous_digests.get(&relative_path)) {
+                // a file link wrote and the user edited stays recorded as link's
+                // (its digest no longer matches): "edited since the last link", and
+                // unlink keeps it as "content differs"; anything else is the user's
+                let entry = match previous_digests.get(&relative_path) {
+                    Some(d) => ManifestEntry {
+                        path: relative_path,
+                        produced_by,
+                        outcome: Outcome::Created,
+                        digest: Some(d.clone()),
+                    },
+                    None => ManifestEntry {
+                        path: relative_path,
+                        produced_by,
+                        outcome: Outcome::Skipped,
+                        digest: None,
+                    },
+                };
+                manifest_entries.push(entry);
                 outcomes.push(FileOutcome::SkippedExisting(path));
                 continue;
             }
-
-            manifest_entries.push(ManifestEntry {
-                path: relative_path,
-                produced_by,
-                outcome: Outcome::Skipped,
-                digest: None,
-            });
-            outcomes.push(FileOutcome::SkippedExisting(path));
-            continue;
         }
 
         if let Some(parent) = path.parent() {
@@ -814,8 +903,12 @@ pub fn write_files(
                 // Never record the target's own root, or anything above
                 // it — only its descendants are ever eligible for
                 // `unlink` to remove later.
-                if created.starts_with(target_root) && created != target_root {
-                    created_dirs.push(created.strip_prefix(root).unwrap_or(&created).to_path_buf());
+                let rel = created.strip_prefix(root).unwrap_or(&created).to_path_buf();
+                if created.starts_with(target_root)
+                    && created != target_root
+                    && !created_dirs.contains(&rel)
+                {
+                    created_dirs.push(rel);
                 }
             }
         }
@@ -831,7 +924,7 @@ pub fn write_files(
             path: relative_path,
             produced_by,
             outcome: Outcome::Created,
-            digest: Some(digest_of(content.as_bytes())),
+            digest: Some(digest_of(&content)),
         });
         outcomes.push(FileOutcome::Wrote(path));
     }
@@ -842,6 +935,7 @@ pub fn write_files(
         output_dir.to_path_buf(),
         created_dirs,
         manifest_entries,
+        patched,
     ) {
         // Deliberately non-fatal: every file above was already written (or
         // correctly left alone); refusing to report success over a
@@ -1065,12 +1159,69 @@ mod tests {
             PathBuf::from(".claude"),
             vec![],
             vec![],
+            &[],
         )
         .unwrap();
         assert!(matches!(
             lookup_target(dir.path(), "codex"),
             Lookup::Fallback
         ));
+    }
+
+    #[test]
+    fn a_manifest_written_before_patched_files_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            manifest_path(dir.path()),
+            "version: 1\ntargets:\n  claude:\n    linked_at: \"now\"\n    root: .claude\n    entries: []\n",
+        )
+        .unwrap();
+        match lookup_target(dir.path(), "claude") {
+            Lookup::Found(t) => assert!(t.patched.is_empty()),
+            Lookup::Fallback => panic!("an older manifest must still be found"),
+        }
+    }
+
+    #[test]
+    fn patched_files_round_trip_through_the_manifest() {
+        use crate::compile::claude_settings::{HookEntry, Owned};
+        use crate::compile::patch::{PatchKind, PatchedFile};
+        let dir = tempfile::tempdir().unwrap();
+        let patched = vec![
+            PatchedFile {
+                path: PathBuf::from(".claude/settings.json"),
+                kind: PatchKind::SettingsHooks(Owned {
+                    entries: vec![HookEntry {
+                        event: "PreToolUse".into(),
+                        matcher: Some("Agent".into()),
+                        command: "armadai __claude-policy-gate".into(),
+                        native: [("timeout".to_string(), serde_json::json!(5))].into(),
+                    }],
+                    keys: [("model".to_string(), serde_json::json!("opus"))].into(),
+                    containers: vec!["hooks".into()],
+                }),
+                created: true,
+            },
+            PatchedFile {
+                path: PathBuf::from("CLAUDE.md"),
+                kind: PatchKind::MarkdownBlock,
+                created: false,
+            },
+        ];
+        write_target(
+            dir.path(),
+            "claude",
+            PathBuf::from(".claude"),
+            vec![],
+            vec![],
+            &patched,
+        )
+        .unwrap();
+        match lookup_target(dir.path(), "claude") {
+            Lookup::Found(t) => assert_eq!(t.patched, patched),
+            Lookup::Fallback => panic!("expected Found"),
+        }
     }
 
     #[test]
@@ -1107,6 +1258,7 @@ mod tests {
             PathBuf::from(".claude"),
             created_dirs.clone(),
             entries.clone(),
+            &[],
         )
         .unwrap();
 
@@ -1130,6 +1282,7 @@ mod tests {
             PathBuf::from(".claude"),
             vec![],
             claude_entries,
+            &[],
         )
         .unwrap();
 
@@ -1140,6 +1293,7 @@ mod tests {
             PathBuf::from(".codex"),
             vec![],
             codex_entries.clone(),
+            &[],
         )
         .unwrap();
 
@@ -1152,6 +1306,7 @@ mod tests {
             PathBuf::from(".claude"),
             vec![],
             new_claude_entries.clone(),
+            &[],
         )
         .unwrap();
 
@@ -1187,8 +1342,13 @@ mod tests {
             "claude",
             Path::new(".claude"),
             &target_root,
-            vec![(path.clone(), content.clone(), ProducedBy::agent("solo"))],
+            vec![(
+                path.clone(),
+                content.clone().into_bytes(),
+                ProducedBy::agent("solo"),
+            )],
             false,
+            &[],
         )
         .unwrap();
 
@@ -1236,8 +1396,9 @@ mod tests {
             "claude",
             Path::new(".claude"),
             &target_root,
-            vec![(path.clone(), "hello".to_string(), ProducedBy::agent("solo"))],
+            vec![(path.clone(), b"hello".to_vec(), ProducedBy::agent("solo"))],
             false,
+            &[],
         )
         .unwrap();
 
@@ -1281,10 +1442,11 @@ mod tests {
             &target_root,
             vec![(
                 path.clone(),
-                "# generated content\n".to_string(),
+                b"# generated content\n".to_vec(),
                 ProducedBy::agent("solo"),
             )],
             false,
+            &[],
         )
         .unwrap();
 
@@ -1325,8 +1487,13 @@ mod tests {
             "claude",
             Path::new(".claude"),
             &target_root,
-            vec![(path.clone(), new_content.clone(), ProducedBy::agent("solo"))],
+            vec![(
+                path.clone(),
+                new_content.clone().into_bytes(),
+                ProducedBy::agent("solo"),
+            )],
             true,
+            &[],
         )
         .unwrap();
 
@@ -1338,21 +1505,14 @@ mod tests {
         }
     }
 
-    /// Issue #348, coordination note 2: a re-`link` that leaves a file
-    /// untouched (no `--force`, because the *newly generated* content
-    /// differs from what's on disk) must not mislabel that file `Skipped`
-    /// in the manifest when the on-disk bytes are still exactly what
-    /// `link` itself wrote last time — only the upstream source changed,
-    /// not the file.
+    /// A file still exactly what `link` wrote last time is link's own output,
+    /// stale against a changed source: the relink rewrites it (step 2 review
+    /// B1 — it used to be left behind while the report said `compiled`).
     ///
-    /// Mutation this catches: if the previous-digest check were removed
-    /// (or always returned `false`), the second write's entry would come
-    /// back `Skipped`/`None` instead of `Created` with the digest of
-    /// what's actually on disk — this test's outcome/digest assertions
-    /// would fail.
+    /// Mutation this catches: the previous-digest check removed (the file is
+    /// then skipped as hand-written) or the rewrite removed (old content kept).
     #[test]
-    fn write_files_relink_of_untouched_own_output_stays_created_even_when_content_changed_upstream()
-    {
+    fn write_files_relink_rewrites_its_own_output_when_the_source_changed() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let target_root = root.join(".claude");
@@ -1364,8 +1524,9 @@ mod tests {
             "claude",
             Path::new(".claude"),
             &target_root,
-            vec![(path.clone(), "v1".to_string(), ProducedBy::agent("solo"))],
+            vec![(path.clone(), b"v1".to_vec(), ProducedBy::agent("solo"))],
             false,
+            &[],
         )
         .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
@@ -1379,34 +1540,48 @@ mod tests {
             "claude",
             Path::new(".claude"),
             &target_root,
-            vec![(path.clone(), "v2".to_string(), ProducedBy::agent("solo"))],
+            vec![(path.clone(), b"v2".to_vec(), ProducedBy::agent("solo"))],
             false,
+            &[],
         )
         .unwrap();
 
-        // Conservative file-system behaviour is unchanged: without
-        // --force, the file itself is never overwritten.
-        assert_eq!(outcomes, vec![FileOutcome::SkippedExisting(path.clone())]);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+        assert_eq!(outcomes, vec![FileOutcome::Wrote(path.clone())]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2");
 
         match lookup_target(root, "claude") {
             Lookup::Found(found) => {
-                assert_eq!(
-                    found.entries[0].outcome,
-                    Outcome::Created,
-                    "a file that is still exactly what link wrote last time must stay \
-                     attributed to link, not be downgraded to hand-written just \
-                     because the upstream source has since changed"
-                );
-                assert_eq!(
-                    found.entries[0].digest,
-                    Some(digest_of(b"v1")),
-                    "the recorded digest must match what's actually on disk, so a \
-                     later unlink can still reclaim this file"
-                );
+                assert_eq!(found.entries[0].outcome, Outcome::Created);
+                assert_eq!(found.entries[0].digest, Some(digest_of(b"v2")));
             }
             Lookup::Fallback => panic!("write_files must leave a usable manifest behind"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_files_never_writes_through_a_link_at_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target_root = root.join(".claude");
+        std::fs::create_dir_all(target_root.join("agents")).unwrap();
+        std::fs::write(root.join("victim"), "mine").unwrap();
+        let path = target_root.join("agents/solo.md");
+        std::os::unix::fs::symlink(root.join("victim"), &path).unwrap();
+        let r = write_files(
+            root,
+            "claude",
+            Path::new(".claude"),
+            &target_root,
+            vec![(path, b"x".to_vec(), ProducedBy::agent("solo"))],
+            true,
+            &[],
+        );
+        assert!(r.is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("victim")).unwrap(),
+            "mine"
+        );
     }
 
     // ── resolve_real (issue #348: no direct unit tests before this) ───
@@ -1790,8 +1965,13 @@ mod tests {
                 "claude",
                 Path::new(".claude"),
                 &target_root,
-                vec![(path.clone(), generated, ProducedBy::agent("solo"))],
+                vec![(
+                    path.clone(),
+                    generated.into_bytes(),
+                    ProducedBy::agent("solo"),
+                )],
                 false,
+                &[],
             )
             .unwrap();
             assert_eq!(outcomes, vec![FileOutcome::SkippedExisting(path.clone())]);

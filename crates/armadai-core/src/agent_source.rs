@@ -1,8 +1,7 @@
 //! Loading an `Agent`, whatever its origin.
 //!
-//! `project::resolve_agent` returns a **path**, which serves callers that
-//! manipulate files — `model_updater` and `pack_validation` rewrite deprecated
-//! models in place. A declared agent has no file of its own, so it is right
+//! `project::resolve_agent` returns a **path**, which serves callers that need
+//! the file. A declared agent has no file of its own, so it is right
 //! that `resolve_agent` fails for one. This module is for callers that want the
 //! agent, not its file.
 
@@ -16,29 +15,6 @@ use crate::prompt::Prompt;
 /// Where a project's declarations live.
 pub fn declarations_path(project_root: &Path) -> std::path::PathBuf {
     project_root.join(".armadai").join("agents.yaml")
-}
-
-/// Does this project count as declaring agents at all — via `armadai.yaml`'s
-/// `agents:` list, or via any declaration in `.armadai/agents.yaml`?
-///
-/// Every declared agent is included automatically (it does not need to be
-/// relisted in `agents:` — that would duplicate the declaration this format
-/// exists to remove), so a project relying purely on this format — an
-/// empty or absent `agents:` list — must still count as declaring agents,
-/// rather than being treated as having none.
-///
-/// The single boolean `link`, `list`, `run` and `unlink` each need for their
-/// own project-detection gate, kept in one place: `unlink` shipped as a
-/// fourth, un-widened copy of this exact check after the other three had
-/// already learned to widen it, which is how the false "no agents declared"
-/// message survived on the one command whose job is to undo `link`. A fifth
-/// call site forgetting to widen its own copy is the failure this function
-/// exists to make structurally impossible.
-pub fn project_declares_agents(
-    project_root: &Path,
-    config: &crate::project::ProjectConfig,
-) -> bool {
-    !config.agents.is_empty() || declarations_path(project_root).is_file()
 }
 
 /// Does `name` (compared as a slug) collide with a `.md` file in any of
@@ -468,35 +444,6 @@ pub fn load_agent_by_name(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// I2's shared gate: a project relying purely on `.armadai/agents.yaml`
-    /// (an empty/absent `agents:` list) must still count as declaring
-    /// agents — the exact case `unlink.rs` got wrong before this helper
-    /// existed.
-    #[test]
-    fn project_declares_agents_is_true_for_a_declarations_only_project() {
-        let dir = tempfile::tempdir().unwrap();
-        project(dir.path());
-        let config = crate::project::ProjectConfig::default();
-        assert!(project_declares_agents(dir.path(), &config));
-    }
-
-    #[test]
-    fn project_declares_agents_is_true_when_only_agents_lists_something() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = crate::project::ProjectConfig {
-            agents: vec![AgentRef::Named { name: "x".into() }],
-            ..Default::default()
-        };
-        assert!(project_declares_agents(dir.path(), &config));
-    }
-
-    #[test]
-    fn project_declares_agents_is_false_for_neither() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = crate::project::ProjectConfig::default();
-        assert!(!project_declares_agents(dir.path(), &config));
-    }
 
     /// A project with one declared agent and one fragment on disk.
     fn project(dir: &std::path::Path) {

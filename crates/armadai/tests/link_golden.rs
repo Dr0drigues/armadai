@@ -1,8 +1,6 @@
-//! Golden snapshots of what `armadai link` writes for the four targets kept by
-//! the v1 refocus (claude, codex, copilot, opencode).
-//!
-//! Step 0 removes ~47k lines around `link` without touching it. This test is
-//! the proof: the generated tree must stay byte-identical. Regenerate with
+//! Golden snapshots of what `armadai link` writes for the four targets from a
+//! canonical project (step 2): the generated tree (plus the root `CLAUDE.md` for
+//! Claude) and the conformance report. Regenerate with
 //! `UPDATE_GOLDEN=1 cargo test -p armadai --test link_golden` ONLY when a PR
 //! deliberately changes link output, and say so in the PR body.
 
@@ -19,12 +17,33 @@ mod tests {
         ("opencode", ".opencode"),
     ];
 
-    /// Selects the coordinator. Adjust here if `link --help` names it differently.
-    const COORDINATOR_ARGS: &[&str] = &["--coordinator", "lead"];
-
-    const LEAD: &str = "# lead\n\n## Metadata\n\n- provider: anthropic\n- model: claude-sonnet-4-5-20250929\n- temperature: 0.4\n- tags: [coordination]\n\n## System Prompt\n\nLEAD_SYSTEM_MARKER — you coordinate the team.\n\n## Instructions\n\nLEAD_INSTRUCTIONS_MARKER — delegate, then synthesize.\n\n## Output Format\n\nLEAD_OUTPUT_MARKER — one paragraph.\n";
-
-    const DEV: &str = "# dev\n\n## Metadata\n\n- provider: anthropic\n- model: claude-sonnet-4-5-20250929\n- temperature: 0.9\n- tags: [dev]\n\n## System Prompt\n\nDEV_SYSTEM_MARKER — you write the code.\n\n### Style\n\nDEV_SUBSECTION_MARKER — small functions.\n\n## Instructions\n\nDEV_INSTRUCTIONS_MARKER — tests first.\n";
+    /// A canonical project exercising every element the Claude adapter compiles.
+    const FILES: &[(&str, &str)] = &[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n  free_agents: [Explore]\n",
+        ),
+        (
+            ".armadai/agents/lead.md",
+            "---\ndescription: Coordinates the team\ntier: max\n---\nLEAD_SYSTEM_MARKER — you coordinate the team.\n\n## Instructions\n\nLEAD_INSTRUCTIONS_MARKER — delegate, then synthesize.\n",
+        ),
+        (
+            ".armadai/agents/dev.md",
+            "---\ndescription: 'Writes code: \"small\" functions'\ntier: pro\ntemperature: 0.9\ntags: [dev]\nskills: [review]\ncapabilities:\n  shell: ask\n  web: deny\n---\nDEV_SYSTEM_MARKER — you write the code.\n\n### Style\n\nDEV_SUBSECTION_MARKER — small functions.\n",
+        ),
+        (
+            ".armadai/skills/review/SKILL.md",
+            "---\nname: review\ndescription: Review checklist\n---\nREVIEW_MARKER\n",
+        ),
+        (
+            ".armadai/flows/ship.yaml",
+            "steps:\n  build: { agent: dev, states: [blocked] }\n  plan: { agent: lead }\nlinks:\n  - { from: plan, to: build }\n  - { from: build, to: plan, when: blocked }\n",
+        ),
+        (
+            ".armadai/automations/fmt.yaml",
+            "event: after-tool\nrun: cargo fmt\nnative:\n  claude:\n    matcher: Edit|Write\n",
+        ),
+    ];
 
     fn isolated_config(dir: &Path) -> PathBuf {
         let config = dir.join("config");
@@ -35,15 +54,11 @@ mod tests {
     fn project() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
-        std::fs::create_dir_all(root.join("agents")).unwrap();
-        std::fs::create_dir_all(root.join(".armadai")).unwrap();
-        std::fs::write(
-            root.join(".armadai/config.yaml"),
-            "agents:\n  - path: agents/lead.md\n  - path: agents/dev.md\n",
-        )
-        .unwrap();
-        std::fs::write(root.join("agents/lead.md"), LEAD).unwrap();
-        std::fs::write(root.join("agents/dev.md"), DEV).unwrap();
+        for (p, c) in FILES {
+            let path = root.join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, c).unwrap();
+        }
         dir
     }
 
@@ -91,8 +106,7 @@ mod tests {
             let mut cmd = Command::cargo_bin("armadai").unwrap();
             cmd.current_dir(&root)
                 .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
-                .args(["link", "--target", target, "--force"])
-                .args(COORDINATOR_ARGS);
+                .args(["link", "--target", target]);
             let output = cmd.output().unwrap();
             assert!(
                 output.status.success(),
@@ -106,8 +120,19 @@ mod tests {
                 "target {target}: {} was not created",
                 produced.display()
             );
-            let rendered = render_tree(&root, &produced);
-            // Guards against a vacuous snapshot: both markers must be present.
+            let mut rendered = render_tree(&root, &produced);
+            if *target == "claude" {
+                let md = std::fs::read_to_string(root.join("CLAUDE.md")).unwrap();
+                rendered = format!("=== CLAUDE.md ===\n{md}\n{rendered}");
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let report = stdout
+                .split_once("Conformance report:\n")
+                .expect("link prints its conformance report")
+                .1;
+            rendered.push_str(&format!("=== report ===\n{report}"));
+            // Guards against a vacuous snapshot: both markers must be present
+            // (the coordinator lives in CLAUDE.md for claude, in the root file elsewhere).
             assert!(
                 rendered.contains("DEV_SYSTEM_MARKER"),
                 "target {target}: the dev agent did not reach the output:\n{rendered}"
@@ -167,8 +192,7 @@ mod tests {
             .env("all_proxy", &proxy)
             .env_remove("NO_PROXY")
             .env_remove("no_proxy")
-            .args(["link", "--target", "opencode", "--force"])
-            .args(COORDINATOR_ARGS)
+            .args(["link", "--target", "opencode"])
             .output()
             .unwrap();
         let text = String::from_utf8_lossy(&output.stderr);

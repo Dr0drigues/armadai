@@ -15,12 +15,25 @@ pub fn has_errors(ds: &[Diagnostic]) -> bool {
 
 /// Loader diagnostics plus, when a project could be loaded, the semantic ones.
 pub fn validate(root: &Path) -> Vec<Diagnostic> {
+    checked(root).2
+}
+
+fn checked(root: &Path) -> (Option<Project>, Origins, Vec<Diagnostic>) {
     let loaded = load_project(root);
     let mut ds = loaded.diagnostics;
     if let Some(p) = &loaded.project {
         ds.extend(check(p, &loaded.origins));
     }
-    ds
+    (loaded.project, loaded.origins, ds)
+}
+
+/// The project at `root`, or every diagnostic when at least one is an error
+/// (warnings alone do not refuse).
+pub fn load_checked(root: &Path) -> Result<(Project, Origins), Vec<Diagnostic>> {
+    match checked(root) {
+        (Some(p), origins, ds) if !has_errors(&ds) => Ok((p, origins)),
+        (_, _, ds) => Err(ds),
+    }
 }
 
 /// `[a-z0-9][a-z0-9-]{0,63}`
@@ -190,14 +203,54 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
     for t in m.targets.iter().filter(|t| !TARGETS.contains(&t.as_str())) {
         o.unknown_target(man, t);
     }
+    // an output is written and unlinked by link: inside the project, never into its
+    // sources (`.armadai/`) nor `.git/`, never the project root itself
+    for out in m.outputs.values() {
+        use std::path::Component;
+        let p = Path::new(out);
+        let first = p.components().next();
+        let bad = p.is_absolute()
+            || p.components()
+                .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+            || p.components().all(|c| matches!(c, Component::CurDir))
+            || first.is_some_and(|c| c.as_os_str() == ".armadai" || c.as_os_str() == ".git");
+        if bad {
+            o.err(
+                man,
+                "bad-output",
+                Some((out, false)),
+                format!("output `{out}` must be a folder inside the project, outside `.armadai/` and `.git/`"),
+                Some("use a relative path such as `.claude` or `tools/claude`; `--output` can point elsewhere for one run".into()),
+            );
+        }
+    }
     for t in m.outputs.keys().filter(|t| !TARGETS.contains(&t.as_str())) {
         o.unknown_target(man, t);
     }
     o.native_keys(man, m.native.keys());
-    for a in m.coordinator.iter().chain(&m.policy.free_agents) {
-        if !agents.contains(a.as_str()) {
-            o.unknown_ref(man, "unknown-agent", "agent", a, &agents);
-        }
+    for a in m
+        .coordinator
+        .iter()
+        .filter(|a| !agents.contains(a.as_str()))
+    {
+        o.unknown_ref(man, "unknown-agent", "agent", a, &agents);
+    }
+    // a free agent may be one the target provides itself (Claude Code's `Explore`, ...)
+    for a in (m.policy.free_agents.iter()).filter(|a| !agents.contains(a.as_str())) {
+        let hint = hint_for(a, &agents)
+            .filter(|h| h.starts_with("did you mean"))
+            .unwrap_or_else(|| {
+                "fine if the target provides it (Claude Code: Explore, Plan, general-purpose)"
+                    .into()
+            });
+        o.emit(
+            man,
+            Severity::Warning,
+            "unknown-free-agent",
+            Some((a, false)),
+            format!("free agent `{a}` is not an agent of this project"),
+            Some(hint),
+        );
     }
 
     // agents

@@ -1,5 +1,10 @@
 # Skills & Prompts
 
+> **Legacy format.** This page describes the format of projects before v1 (`.armadai/config.yaml`,
+> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and
+> internally by `armadai new` (templates) and `armadai init --pack` (starter packs). Projects use
+> the [Project format](project-format.md).
+
 ArmadAI supports reusable **prompts** (Markdown fragments with optional frontmatter) and
 **skills** (capabilities following the Agent Skills standard). A project lists the ones it uses in
 `.armadai/config.yaml`, and `armadai link` copies them next to the generated agent files.
@@ -34,13 +39,13 @@ apply_to:
 |---|---|---|---|
 | `name` | string | No | Prompt identifier (defaults to the file name) |
 | `description` | string | No | Short description |
-| `apply_to` | list | No | Agent names this prompt is meant for (`*` = every agent). `armadai extract --with-deps` uses it to pull in the prompts of the agents it extracts |
+| `apply_to` | list | No | Agent names this prompt is meant for (`*` = every agent). |
 
 ### Storage Locations
 
 1. **Project-local** — `.armadai/prompts/`, or referenced via `path:` in the project config
 2. **User library** — `~/.config/armadai/prompts/<name>.md`
-3. **Starter packs** — installed via `armadai init --pack`
+3. **Starter packs** — converted with the pack by `armadai init --pack`
 
 ### Usage in the project config
 
@@ -50,10 +55,8 @@ prompts:
   - path: .armadai/prompts/project-rules.md    # explicit file
 ```
 
-```bash
-armadai prompts list
-armadai prompts show rust-conventions
-```
+`armadai migrate` turns each prompt into a skill of the project (`armadai prompts` was removed
+with the prompt concept).
 
 ## Skills
 

@@ -66,7 +66,7 @@ fn template_create(
 ) -> anyhow::Result<()> {
     let paths = AppPaths::resolve();
     let templates_dir = &paths.templates_dir;
-    let agents_dir = &paths.agents_dir;
+    let output_path = agent_destination(name)?;
 
     // Load template. Through the CLI clap rejects unknown names first; this
     // listing is kept for programmatic callers.
@@ -76,16 +76,6 @@ fn template_create(
         list_templates(templates_dir)?;
         anyhow::bail!("Use --template <name> with one of the templates above");
     };
-
-    // Check for duplicate
-    let output_path = agents_dir.join(format!("{name}.md"));
-    if output_path.exists() {
-        anyhow::bail!(
-            "Agent '{}' already exists at {}",
-            name,
-            output_path.display()
-        );
-    }
 
     let title = slug_to_title(name);
     let mut vars = std::collections::BTreeMap::new();
@@ -101,11 +91,7 @@ fn template_create(
 
     let (content, remaining) = armadai_core::template::render_lenient(&template_source, &vars);
 
-    // Ensure agents directory exists
-    std::fs::create_dir_all(agents_dir)?;
-
-    // Write the agent file
-    std::fs::write(&output_path, &content)?;
+    write_canonical_agent(name, &content, &output_path)?;
 
     let o = crate::cli::style::ok();
     let m = crate::cli::style::muted();
@@ -128,11 +114,49 @@ fn template_create(
     Ok(())
 }
 
+/// `.armadai/agents/<name>.md` of the project at or above the current directory;
+/// refused for an invalid id or an agent that already exists.
+fn agent_destination(name: &str) -> anyhow::Result<std::path::PathBuf> {
+    if !armadai_model::is_valid_id(name) {
+        anyhow::bail!("`{name}` is not a valid agent id ([a-z0-9][a-z0-9-]{{0,63}})");
+    }
+    let root = crate::compile::find_project(&std::env::current_dir()?)
+        .map_err(|e| anyhow::anyhow!("{e}\nCreate a project first: `armadai init --project`"))?;
+    let path = root.join(".armadai/agents").join(format!("{name}.md"));
+    if path.exists() {
+        anyhow::bail!("Agent '{name}' already exists at {}", path.display());
+    }
+    Ok(path)
+}
+
+/// The rendered template is a legacy agent: it goes through the same converter
+/// as `migrate` (legacy parser, then the canonical writer), in a scratch project,
+/// and lands at `dest` in the canonical format (review R-I9).
+fn write_canonical_agent(name: &str, legacy: &str, dest: &Path) -> anyhow::Result<()> {
+    let tmp = tempfile::tempdir()?;
+    std::fs::write(tmp.path().join(format!("{name}.md")), legacy)?;
+    std::fs::write(
+        tmp.path().join("armadai.yaml"),
+        format!("agents:\n  - path: {name}.md\n"),
+    )?;
+    crate::migrate::run(tmp.path(), false, false)?;
+    let agents = tmp.path().join(".armadai/agents");
+    let converted = std::fs::read_dir(&agents)?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "md"))
+        .ok_or_else(|| anyhow::anyhow!("the template did not convert into an agent"))?;
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::copy(converted, dest)?;
+    Ok(())
+}
+
 /// Interactive agent creation wizard
 async fn interactive_create() -> anyhow::Result<()> {
     let paths = AppPaths::resolve();
     let templates_dir = &paths.templates_dir;
-    let agents_dir = &paths.agents_dir;
 
     let h = crate::cli::style::header();
     anstream::println!("{h}🧙 ArmadAI Agent Creation Wizard{h:#}\n");
@@ -144,21 +168,14 @@ async fn interactive_create() -> anyhow::Result<()> {
             if input.is_empty() {
                 return Err("Name cannot be empty".into());
             }
-            if !input
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-            {
-                return Err("Use only letters, digits, hyphens, underscores".into());
+            if !armadai_model::is_valid_id(input) {
+                return Err("Use lowercase letters, digits and hyphens".into());
             }
             Ok(())
         })
         .interact_text()?;
 
-    // Check for duplicate
-    let output_path = agents_dir.join(format!("{name}.md"));
-    if output_path.exists() {
-        anyhow::bail!("Agent '{name}' already exists at {}", output_path.display());
-    }
+    let output_path = agent_destination(&name)?;
 
     // 2. Template selection
     let mut template_names = template_names_from(templates_dir);
@@ -322,9 +339,7 @@ async fn interactive_create() -> anyhow::Result<()> {
         })
     };
 
-    // Write
-    std::fs::create_dir_all(agents_dir)?;
-    std::fs::write(&output_path, &content)?;
+    write_canonical_agent(&name, &content, &output_path)?;
 
     let o = crate::cli::style::ok();
     let m = crate::cli::style::muted();

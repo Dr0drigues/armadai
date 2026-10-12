@@ -66,15 +66,56 @@ fn unknown_agent_in_a_step_is_positioned_on_its_token() {
 }
 
 #[test]
-fn unknown_agent_in_coordinator_and_free_agents() {
+fn unknown_coordinator_is_an_error_unknown_free_agent_a_warning() {
     let ds = diags(&[(
         ".armadai/project.yaml",
-        "schema_version: 1\ncoordinator: boss\npolicy:\n  free_agents: [dev]\n",
+        "schema_version: 1\ncoordinator: boss\npolicy:\n  free_agents: [Explore]\n",
     )]);
-    let hits: Vec<_> = ds.iter().filter(|d| d.code == "unknown-agent").collect();
-    assert_eq!(hits.len(), 2, "{ds:?}");
-    assert_eq!((hits[0].line, hits[0].column), (Some(2), Some(14)));
-    assert_eq!((hits[1].line, hits[1].column), (Some(4), Some(17)));
+    let d = err(&ds, "unknown-agent", (2, 14));
+    assert!(d.message.contains("boss"));
+    let w = expect(&ds, "unknown-free-agent", Severity::Warning, (4, 17));
+    assert!(
+        w.hint
+            .as_deref()
+            .unwrap()
+            .contains("Explore, Plan, general-purpose"),
+        "{w:?}"
+    );
+    assert!(
+        !ds.iter()
+            .any(|d| d.code == "unknown-agent" && d.message.contains("Explore"))
+    );
+}
+
+#[test]
+fn a_built_in_free_agent_does_not_refuse_the_project() {
+    let dir = project(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\npolicy:\n  free_agents: [Explore, general-purpose]\n",
+        ),
+        DEV,
+    ]);
+    let (p, _) = load_checked(dir.path()).unwrap();
+    assert_eq!(
+        p.manifest.policy.free_agents,
+        ["Explore", "general-purpose"]
+    );
+}
+
+#[test]
+fn a_free_agent_close_to_a_project_agent_gets_a_did_you_mean() {
+    let ds = diags(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\npolicy:\n  free_agents: [dve]\n",
+        ),
+        DEV,
+    ]);
+    assert_eq!(
+        only(&ds, "unknown-free-agent").hint.as_deref(),
+        Some("did you mean `dev`?")
+    );
 }
 
 #[test]
@@ -579,4 +620,57 @@ fn did_you_mean_prefers_the_nearest_over_the_first() {
         only(&ds, "unknown-agent").hint.as_deref(),
         Some("did you mean `pipelinx`?")
     );
+}
+
+#[test]
+fn load_checked_refuses_a_project_with_an_error() {
+    // `ghost` is not a declared agent: a semantic (check) error, not a loader one
+    let dir = project(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\ncoordinator: ghost\n",
+        ),
+        DEV,
+    ]);
+    let ds = load_checked(dir.path()).unwrap_err();
+    assert!(has_errors(&ds), "{ds:?}");
+}
+
+#[test]
+fn load_checked_refuses_a_missing_manifest() {
+    let dir = project(&[DEV]);
+    let ds = load_checked(dir.path()).unwrap_err();
+    assert!(ds.iter().any(|d| d.code == "missing-manifest"), "{ds:?}");
+}
+
+#[test]
+fn load_checked_accepts_a_project_with_warnings_only() {
+    let dir = project(&[M, DEV, (".armadai/flows/x.yml", "sequence: [dev]\n")]);
+    assert!(!validate(dir.path()).is_empty(), "the fixture must warn");
+    let (p, origins) = load_checked(dir.path()).unwrap();
+    assert!(p.agents.contains_key("dev"));
+    assert!(origins.files.contains_key(&(Kind::Agent, "dev".into())));
+}
+
+#[test]
+fn an_output_outside_the_project_or_into_its_sources_is_an_error() {
+    for bad in [
+        "/etc/claude",
+        "../elsewhere",
+        ".armadai/out",
+        ".git/hooks",
+        ".",
+    ] {
+        let ds = diags(&[(
+            ".armadai/project.yaml",
+            &format!("schema_version: 1\noutputs:\n  claude: '{bad}'\n"),
+        )]);
+        let d = err(&ds, "bad-output", (3, 12));
+        assert!(d.message.contains(bad), "{d:?}");
+    }
+    let ds = diags(&[(
+        ".armadai/project.yaml",
+        "schema_version: 1\noutputs:\n  claude: tools/claude\n",
+    )]);
+    assert!(!ds.iter().any(|d| d.code == "bad-output"), "{ds:?}");
 }

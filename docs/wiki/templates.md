@@ -1,5 +1,8 @@
 # Templates
 
+> Templates are written in the [legacy agent format](agent-format.md): `armadai new` renders one
+> and converts it, like `armadai migrate`, into `.armadai/agents/<name>.md` of the current project.
+
 Templates are Markdown files that serve as starting points for new agents, used by
 `armadai new`.
 

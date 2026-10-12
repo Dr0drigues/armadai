@@ -1,25 +1,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Global mode flag
 // ---------------------------------------------------------------------------
-
-static FORCE_GLOBAL: AtomicBool = AtomicBool::new(false);
-
-/// Force all path resolution to return the global library paths,
-/// ignoring project-local directories.
-pub fn set_force_global(val: bool) {
-    FORCE_GLOBAL.store(val, Ordering::Relaxed);
-}
-
-/// Returns `true` when `--global` was passed on the CLI.
-pub fn is_force_global() -> bool {
-    FORCE_GLOBAL.load(Ordering::Relaxed)
-}
 
 // ---------------------------------------------------------------------------
 // XDG path helpers
@@ -89,13 +75,9 @@ pub fn registries_config_path() -> PathBuf {
 
 /// Create the full directory tree under the config root.
 pub fn ensure_config_dirs() -> anyhow::Result<()> {
-    let dirs = [
-        config_dir(),
-        user_agents_dir(),
-        user_prompts_dir(),
-        user_skills_dir(),
-        registry_cache_dir(),
-    ];
+    // no agents/ nor prompts/ library: only `migrate` reads one, for a legacy
+    // project that already has it
+    let dirs = [config_dir(), user_skills_dir(), registry_cache_dir()];
     for dir in &dirs {
         std::fs::create_dir_all(dir)?;
     }
@@ -187,18 +169,7 @@ pub struct AppPaths {
 
 impl AppPaths {
     /// Resolve paths: prefer `.armadai/` → project-local → global.
-    ///
-    /// When `--global` is active (`is_force_global()`), always return the
-    /// global library paths regardless of local directories.
     pub fn resolve() -> Self {
-        if is_force_global() {
-            return Self {
-                agents_dir: user_agents_dir(),
-                templates_dir: config_dir().join("templates"),
-                config_dir: config_dir(),
-            };
-        }
-
         let dotarmadai_agents = Path::new(".armadai/agents");
         let local_agents = Path::new("agents");
         let local_templates = Path::new("templates");

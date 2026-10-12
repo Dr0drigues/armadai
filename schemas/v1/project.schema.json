@@ -1,7 +1,30 @@
 {
+  "$defs": {
+    "Delegation": {
+      "enum": [
+        "off",
+        "strict"
+      ],
+      "type": "string"
+    },
+    "Policy": {
+      "additionalProperties": false,
+      "properties": {
+        "delegation": {
+          "$ref": "#/$defs/Delegation"
+        },
+        "free_agents": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Manifest",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
     "coordinator": {
       "type": [
@@ -16,57 +39,34 @@
       ]
     },
     "native": {
-      "type": "object",
-      "additionalProperties": true
+      "additionalProperties": true,
+      "type": "object"
     },
     "outputs": {
-      "type": "object",
       "additionalProperties": {
         "type": "string"
-      }
+      },
+      "type": "object"
     },
     "policy": {
       "$ref": "#/$defs/Policy"
     },
     "schema_version": {
-      "type": "integer",
       "format": "uint32",
-      "minimum": 0
+      "minimum": 0,
+      "type": "integer"
     },
     "targets": {
       "description": "Default link targets: claude, codex, copilot, opencode",
-      "type": "array",
       "items": {
         "type": "string"
-      }
+      },
+      "type": "array"
     }
   },
-  "additionalProperties": false,
   "required": [
     "schema_version"
   ],
-  "$defs": {
-    "Delegation": {
-      "type": "string",
-      "enum": [
-        "off",
-        "strict"
-      ]
-    },
-    "Policy": {
-      "type": "object",
-      "properties": {
-        "delegation": {
-          "$ref": "#/$defs/Delegation"
-        },
-        "free_agents": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "additionalProperties": false
-    }
-  }
+  "title": "Manifest",
+  "type": "object"
 }
