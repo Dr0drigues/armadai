@@ -35,6 +35,8 @@ The delegation topology is declared in the `orchestration:` block of the project
 
 ```yaml
 orchestration:
+  enabled: true
+  pattern: hierarchical                      # with enabled: true, `armadai link` checks the structure
   coordinator: architect
   teams:
     - agents: [direct, reports, here]       # flat
@@ -42,11 +44,11 @@ orchestration:
       agents: [vm-tester-linux, vm-tester-macos]
 ```
 
-It is a declaration, not an engine: `armadai validate` checks it, and the Claude Code policy gate can enforce it (`policy: strict`). Use sub-teams when the pack has distinct domains or >6 agents.
+It is a declaration, not an engine: nothing executes any pattern. `armadai validate` checks that its names are declared agents; with `enabled: true` and `pattern: hierarchical`, `armadai link` checks its structure before writing; the Claude Code policy gate can enforce it (`policy: strict`). Use sub-teams when the pack has distinct domains or >6 agents.
 
 ## 3. Engine-only sections
 
-`## Pipeline`, `## Triggers` and `## Ring Config`, and the metadata keys `command`, `args`, `max_tokens`, `timeout`, `cost_limit`, `rate_limit`, `context_window` and `mode`, are still parsed for compatibility, but they configured the removed execution engine and nothing uses them now. Do not add them to new agents. The `shell:` section of the project config is in the same situation.
+`## Pipeline`, `## Triggers` and `## Ring Config`, and the metadata keys `command`, `args`, `max_tokens`, `timeout`, `cost_limit`, `rate_limit`, `context_window` and `mode`, are still parsed for compatibility, but they configured the removed execution engine and nothing executes them (`armadai validate` still checks the syntax of `## Triggers`). Do not add them to new agents. The `shell:` section of the project config is in the same situation.
 
 ## Checklist for new packs
 

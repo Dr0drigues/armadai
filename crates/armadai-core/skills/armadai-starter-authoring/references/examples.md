@@ -145,7 +145,7 @@ orchestration:
 **Key traits:**
 - Coordinator tagged with `coordinator` → auto-detected
 - Non-coordinator agents grouped into a team automatically
-- The block is a declaration, not an engine: `armadai validate` checks it, and the Claude Code policy gate can enforce it (`policy: strict`); `enabled: true` also makes `armadai link` validate it before writing anything, and `pattern` is descriptive only
+- The block is a declaration, not an engine: nothing executes any pattern. `armadai validate` checks that its names are declared agents; because it has `enabled: true` and `pattern: hierarchical`, `armadai link` checks its structure before writing (coordinator present, at least one team, no duplicates, coordinator not in a team); the Claude Code policy gate can enforce it (`policy: strict`)
 
 ## Full Pack Template
 

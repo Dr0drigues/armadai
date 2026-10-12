@@ -39,9 +39,14 @@ the declared topology allows only [dev-lead] from the main thread; hand the work
 those, or declare 'qa-specialist' in orchestration.teams or orchestration.free_agents
 ```
 
-`policy` is independent of `enabled`. `enabled` used to switch on the removed execution engine;
-today it only makes `armadai link` validate the `orchestration:` block before writing anything.
-The gate reads `policy` alone.
+`policy` is independent of `enabled` and `pattern`; the gate reads `policy` alone. `enabled` and
+`pattern` used to drive the removed execution engine; nothing executes any pattern now. Today,
+`enabled: true` with `pattern: hierarchical` (what `armadai init --pack <name> --project`
+writes) makes `armadai link` check the block's structure before writing anything: a coordinator
+is present, there is at least one team, no agent or lead appears twice, the coordinator is not
+inside a team, and a team with its own `pattern` has a `lead`. With any other `pattern`, `link`
+skips that check, and a team-level `pattern` under a non-hierarchical root makes `link` fail.
+Only `armadai validate` checks that the coordinator, leads and team members are declared agents.
 
 ## Migrating a project
 

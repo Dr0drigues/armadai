@@ -122,7 +122,8 @@ enforced in Claude Code by the policy gate (see the `armadai-orchestration-patte
 `## Pipeline`, `## Triggers` and `## Ring Config`, and the metadata keys `command`, `args`,
 `max_tokens`, `timeout`, `cost_limit`, `rate_limit`, `context_window` and `mode`, configured the
 removed execution engine (pipelines, Blackboard, Ring, per-run budgets). They are still parsed for
-compatibility, but nothing uses them now: do not add them to new agents.
+compatibility, but nothing executes them (`armadai validate` still checks the syntax of
+`## Triggers`): do not add them to new agents.
 
 ## Common Anti-Patterns
 

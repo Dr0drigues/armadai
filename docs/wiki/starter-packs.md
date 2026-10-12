@@ -26,7 +26,7 @@ This copies the pack's agents, prompts and skills into your user library
 The seven packs below ship embedded in the binary. `armadai-dev` and `armadai-authoring` were
 revised for the declarative refocus. The three CLI example agents of `fullstack`
 (`claude-cli-reviewer`, `echo-reviewer`, `gemini-reviewer`) were written for the removed execution
-engine: their `command`/`args` fields are parsed but nothing uses them now.
+engine: their `command`/`args` fields are parsed (and shown by `armadai inspect`) but nothing executes them.
 
 ### rust-dev
 

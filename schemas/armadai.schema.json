@@ -224,11 +224,11 @@
     "OrchestrationConfig": {
       "type": "object",
       "title": "Orchestration Configuration",
-      "description": "Declared delegation topology. ArmadAI does not execute it: armadai validate checks it, armadai link validates it when enabled is true, and the Claude Code policy gate enforces it when policy is strict. The engine limits (pattern, max_*, timeout, consensus_threshold, token_budget, cost_limit) are parsed but no longer used.",
+      "description": "Declared delegation topology; nothing executes any pattern. armadai validate checks that its names are declared agents. With enabled: true and pattern: hierarchical, armadai link checks its structure before writing (coordinator present, at least one team, no duplicates, coordinator not in a team); with another pattern link skips that check, and a team-level pattern under a non-hierarchical root makes link fail. The Claude Code policy gate enforces it when policy is strict. The engine limits (max_*, timeout, consensus_threshold, token_budget, cost_limit, routes) are parsed but no longer used.",
       "properties": {
-        "enabled": { "type": "boolean", "default": false, "description": "Makes armadai link validate this block before writing anything." },
+        "enabled": { "type": "boolean", "default": false, "description": "With pattern: hierarchical, makes armadai link check the block's structure before writing. Without it, link checks nothing." },
         "policy": { "type": "string", "enum": ["off", "strict"], "default": "off", "description": "Claude Code policy gate: strict refuses any delegation the declared topology does not allow." },
-        "pattern": { "type": "string", "enum": ["direct", "blackboard", "ring", "hierarchical", "auto"], "description": "Descriptive only: the execution engine that ran these patterns was removed." },
+        "pattern": { "type": "string", "enum": ["direct", "blackboard", "ring", "hierarchical", "auto"], "description": "Nothing executes it. hierarchical (with enabled: true) turns on armadai link's structure check; any other value skips it." },
         "coordinator": { "type": "string" },
         "free_agents": { "type": "array", "items": { "type": "string" }, "description": "Assistance agents reachable from anywhere under policy: strict (e.g. Explore, Plan)." },
         "teams": {

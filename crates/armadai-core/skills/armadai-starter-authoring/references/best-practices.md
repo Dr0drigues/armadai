@@ -85,7 +85,8 @@ To delegate: `@agent-name: description of the task`
 ```
 
 The Blackboard and Ring patterns, and the `## Triggers` and `## Ring Config` sections they used,
-belonged to the removed execution engine: they are still parsed, but nothing uses them now.
+belonged to the removed execution engine: they are still parsed, but nothing executes them
+(`armadai validate` still checks the syntax of `## Triggers`).
 
 ## Testing Your Pack
 

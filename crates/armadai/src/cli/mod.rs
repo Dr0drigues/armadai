@@ -22,7 +22,8 @@ use clap::{CommandFactory, Parser, Subcommand};
     about = "Declarative agent teams, compiled for Claude Code, Codex, OpenCode and Copilot",
     long_about = "Declarative agent teams — describe them once, compile them for Claude Code, Codex, \
         OpenCode and Copilot.\n\n\
-        Each agent is a .md file in agents/ with metadata, system prompt, and optional instructions.\n\
+        Agents are Markdown files (with metadata, system prompt, and optional instructions) or \
+        entries of a declarative YAML file.\n\
         `armadai link` writes the native configuration files of the target assistant; ArmadAI \
         does not run agents itself. An agent's `provider:` (Claude, GPT, Gemini…) only selects \
         the model catalogue used to resolve its `latest:*` tier.",
@@ -32,7 +33,7 @@ use clap::{CommandFactory, Parser, Subcommand};
         armadai new my-agent --template dev-review --stack rust\n  \
         armadai list --tags dev --stack rust\n  \
         armadai link --target claude\n\n\
-        Documentation: https://github.com/Dr0drigues/swarm-festai"
+        Documentation: https://github.com/Dr0drigues/armadai"
 )]
 pub struct Cli {
     #[command(subcommand)]

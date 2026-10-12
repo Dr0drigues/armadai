@@ -71,7 +71,9 @@ unreleased changes since rc.5 are not itemised here.
   fallback table, whose content is dated (e.g. `claude-sonnet-4-5-20250929` for Anthropic Pro).
 - **Agent metadata** used only by the execution engine (`command`, `args`, `max_tokens`,
   `timeout`, `cost_limit`, `rate_limit`, `context_window`, `mode`, `## Pipeline`,
-  `## Triggers`, `## Ring Config`) is still parsed but no longer used.
+  `## Triggers`, `## Ring Config`) is still parsed, but nothing executes it (`armadai inspect`
+  still displays `command`, `args`, `max_tokens` and `timeout`, and `armadai validate` still
+  checks the syntax of `## Triggers`).
 - **Contributors**: the agent team and the project instructions were redefined (5 agents:
   `dev-lead`, `schema-specialist`, `adapter-specialist`, `cli-specialist`, `qa-specialist`);
   the build has no feature flags.

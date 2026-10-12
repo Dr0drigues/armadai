@@ -69,6 +69,8 @@ The `orchestration:` block is a declaration, not an engine: ArmadAI does not run
 
 ```yaml
 orchestration:
+  enabled: true
+  pattern: hierarchical      # with enabled: true, `armadai link` checks the structure
   coordinator: architect
   teams:
     - agents: [shared-specialist-1, shared-specialist-2]  # direct reports

@@ -10,24 +10,37 @@ tools: []
 ArmadAI does not execute agents: the agents run inside the assistant a project is linked to
 (Claude Code, Codex, OpenCode, Copilot). The `orchestration:` block of the project config
 (`.armadai/config.yaml` or `armadai.yaml`) is therefore a **declaration** of who delegates to
-whom, not an engine. Two things read it:
+whom, not an engine. Three things read it:
 
-- `armadai validate` (and `armadai link` when `enabled: true`) checks that it is consistent: the
-  coordinator and every team member must be declared agents.
+- `armadai validate` checks that the coordinator, the team leads and the team members are
+  declared agents (it ignores `pattern`).
+- `armadai link` checks the block's structure before writing, only when `enabled: true` and
+  `pattern: hierarchical` (see below).
 - The Claude Code policy gate (the `armadai __claude-policy-gate` `PreToolUse` hook) enforces it
   when `policy: strict`. It is specific to Claude Code; nothing equivalent is generated for the
   other targets.
 
 The removed execution engine used to run five patterns (Direct, Blackboard, Ring, Hierarchical,
-Auto) with `armadai run --orchestrate`. That command no longer exists. The `pattern` field and the
-engine limits (`max_depth`, `max_iterations`, `max_concurrency`, `timeout`, `max_rounds`,
-`max_laps`, `consensus_threshold`, `token_budget`, `cost_limit`, `routes`, and per-team
-`pattern`) are still parsed, but nothing uses them now.
+Auto) with `armadai run --orchestrate`. That command no longer exists, and nothing executes any
+pattern now. The engine limits (`max_depth`, `max_iterations`, `max_concurrency`, `timeout`,
+`max_rounds`, `max_laps`, `consensus_threshold`, `token_budget`, `cost_limit`, `routes`) are
+still parsed, but nothing uses them. `pattern` (root and per team) is still read by `link`'s
+check:
+
+`enabled: true` with `pattern: hierarchical` (what `armadai init --pack <name> --project`
+writes) makes `armadai link` check the block's structure before writing anything: a coordinator
+is present, there is at least one team, no agent or lead appears twice, the coordinator is not
+inside a team, and a team with its own `pattern` has a `lead`. With any other `pattern`, `link`
+skips that check, and a team-level `pattern` under a non-hierarchical root makes `link` fail.
+Only `armadai validate` checks that the coordinator, leads and team members are declared agents.
+Nothing executes any pattern.
 
 ## Declaring a topology
 
 ```yaml
 orchestration:
+  enabled: true             # with pattern: hierarchical, link checks the structure
+  pattern: hierarchical
   policy: strict            # off | strict — default: off
   coordinator: dev-lead
   teams:
@@ -44,14 +57,15 @@ Under `policy: strict`:
 - `free_agents` are reachable from anywhere — assistance agents, outside the topology;
 - **anything not declared is refused.**
 
-`policy` is independent of `enabled`: `enabled` only makes `armadai link` validate the block
-before writing anything. The gate reads `policy` alone. Every uncertainty (unreadable config, no
+`policy` is independent of `enabled` and `pattern`: the gate reads `policy` alone. Every uncertainty (unreadable config, no
 coordinator, `policy: off`) resolves to *allowed*.
 
 ## Sub-teams
 
 ```yaml
 orchestration:
+  enabled: true
+  pattern: hierarchical
   coordinator: architect
   teams:
     - agents: [cloud-expert, ops-expert]   # direct reports of the coordinator
@@ -71,8 +85,8 @@ When to use sub-teams:
 | Situation | Declaration |
 |-----------|-------------|
 | One agent, or independent agents the user calls directly | no coordinator, no `orchestration:` block |
-| A coordinator that dispatches to specialists | `coordinator` + `teams` |
-| Many specialists, or distinct domains | `coordinator` + `teams` with `lead` sub-teams |
+| A coordinator that dispatches to specialists | `enabled: true`, `pattern: hierarchical`, `coordinator` + `teams` |
+| Many specialists, or distinct domains | the same, with `lead` sub-teams |
 
 The coordinator agent is tagged `coordinator`. For a pack with such an agent,
 `armadai init --pack <name> --project` writes `link.coordinator` and an `orchestration:` block

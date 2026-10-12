@@ -746,9 +746,16 @@ agents:
             // code-analysis packs apply their prompt to `analysis`, which
             // names no agent. Anything else (missing file, unparsable file,
             // `apply_to` naming a removed agent) fails.
+            let pack_name = dir.file_name().unwrap().to_string_lossy().into_owned();
+            let known_issue = |location: &str| {
+                matches!(
+                    pack_name.as_str(),
+                    "code-analysis-rust" | "code-analysis-web"
+                ) && location == "prompts/analysis-standards.md:apply_to['analysis']"
+            };
             let errors: Vec<_> = crate::pack_validation::validate_pack(&dir)
                 .into_iter()
-                .filter(|i| !i.location.ends_with("apply_to['analysis']"))
+                .filter(|i| !known_issue(&i.location))
                 .map(|i| format!("{}: {}", i.location, i.message))
                 .collect();
             assert!(errors.is_empty(), "{}: {errors:?}", dir.display());

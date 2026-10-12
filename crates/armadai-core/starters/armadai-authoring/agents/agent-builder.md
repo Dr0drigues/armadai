@@ -23,7 +23,7 @@ An ArmadAI agent file is a Markdown document with these required sections:
 - **## Output Format** — Expected output structure
 - **## Context** — Background the agent needs
 
-`## Pipeline`, `## Triggers` and `## Ring Config` are still parsed for compatibility, but they configured the removed execution engine and nothing uses them now: do not add them to new agents.
+`## Pipeline`, `## Triggers` and `## Ring Config` are still parsed for compatibility, but they configured the removed execution engine and nothing executes them (`armadai validate` still checks the syntax of `## Triggers`): do not add them to new agents.
 
 ### Metadata Fields
 Required:

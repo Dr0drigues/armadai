@@ -17,5 +17,5 @@ Layout:
 - `design/`, `proposals/`: design notes and proposals of the execution era.
 - `superpowers/specs/`, `superpowers/plans/`: specs and plans of the execution era, plus the
   gaveldrop migration logs.
-- `scripts/`: `migrate-v0-to-v1.sh`, the v0 to v1 agent migration helper.
+- `scripts/`: [`migrate-v0-to-v1.sh`](scripts/migrate-v0-to-v1.sh), the v0 to v1 agent migration helper.
 - `PARALLEL_DELEGATION.md`, `v1-backlog.md`, `unsafe-audit-2026-04-01.md`: standalone notes.

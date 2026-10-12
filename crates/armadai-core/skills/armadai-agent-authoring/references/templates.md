@@ -103,7 +103,7 @@ Technical documentation writer. Produces clear, structured documentation.
 
 ### `cli-generic`
 
-CLI tool wrapper template. It was meant for agents that executed an external command through the removed execution engine; its `command`, `args` and `timeout` fields are parsed but nothing uses them now.
+CLI tool wrapper template. It was meant for agents that executed an external command through the removed execution engine; its `command`, `args` and `timeout` fields are parsed (and shown by `armadai inspect`) but nothing executes them.
 
 - Provider: `cli`
 - Tags: `[cli, tool]`

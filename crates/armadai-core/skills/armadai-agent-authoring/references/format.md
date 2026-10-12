@@ -56,7 +56,7 @@ Instead of hardcoding model names, use `latest:*` placeholders that `armadai lin
 
 `command`, `args`, `max_tokens`, `timeout`, `cost_limit`, `rate_limit`, `context_window` and `mode`
 are still parsed for compatibility, but they configured the removed execution engine and nothing
-uses them now.
+executes them (`armadai inspect` still displays `command`, `args`, `max_tokens`, `timeout`).
 
 #### List Syntax
 
@@ -122,7 +122,8 @@ This project uses the Axum web framework with SQLite storage.
 ### Engine-only sections
 
 `## Pipeline`, `## Triggers` and `## Ring Config` are still parsed, but they configured the
-removed execution engine (agent chaining, Blackboard, Ring) and nothing uses them now. Any other
+removed execution engine (agent chaining, Blackboard, Ring) and nothing executes them
+(`armadai validate` still checks the syntax of `## Triggers`). Any other
 `##` heading is dropped by the parser.
 
 ## Complete Minimal Example
