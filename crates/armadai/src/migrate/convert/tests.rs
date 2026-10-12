@@ -340,7 +340,8 @@ fn skill_and_prompt_ids_do_not_collide() {
     }];
     let (p, copies, _) = convert(&o);
     assert_eq!(p.skills.len(), 2);
-    assert_eq!(copies[0].id, "review-2");
+    assert_eq!(copies[0].id, "review");
+    assert_eq!(p.skills["review-2"].body, "b");
     assert_valid(&p);
 }
 

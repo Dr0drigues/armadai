@@ -85,6 +85,24 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
 
     let mut skill_ids = BTreeSet::new();
     let mut skills = BTreeMap::new();
+    // legacy skills first: one already in `.armadai/skills/<id>/` keeps its directory
+    let mut copies = Vec::new();
+    for (i, s) in old.skills.iter().enumerate() {
+        let dir_name = s.dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let id = unique_id(
+            dir_name,
+            &format!("skill-{}", i + 1),
+            &mut skill_ids,
+            &mut r,
+        );
+        let (front, body) = convert_skill(&id, &s.text, &s.dir, &mut r);
+        skills.insert(id.clone(), Skill { front, body });
+        copies.push(SkillCopy {
+            id,
+            from: s.dir.clone(),
+        });
+    }
+
     for (i, p) in old.prompts.iter().enumerate() {
         let id = unique_id(&p.name, &format!("skill-{}", i + 1), &mut skill_ids, &mut r);
         if !p.apply_to.is_empty() {
@@ -103,23 +121,6 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
         let body = p.body.clone();
         skills.insert(id, Skill { front, body });
     }
-    let mut copies = Vec::new();
-    for (i, s) in old.skills.iter().enumerate() {
-        let dir_name = s.dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let id = unique_id(
-            dir_name,
-            &format!("skill-{}", i + 1),
-            &mut skill_ids,
-            &mut r,
-        );
-        let (front, body) = convert_skill(&id, &s.text, &s.dir, &mut r);
-        skills.insert(id.clone(), Skill { front, body });
-        copies.push(SkillCopy {
-            id,
-            from: s.dir.clone(),
-        });
-    }
-
     let project = Project {
         manifest,
         agents,

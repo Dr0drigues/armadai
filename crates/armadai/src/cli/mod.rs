@@ -4,6 +4,7 @@ pub mod init;
 mod inspect;
 mod link;
 mod list;
+mod migrate;
 mod models;
 pub(crate) mod new;
 mod prompts;
@@ -114,6 +115,31 @@ pub enum Command {
         /// Print the diagnostics of a new-format project as a JSON array
         #[arg(long)]
         json: bool,
+    },
+    /// Convert a legacy project to the new .armadai/project.yaml format
+    #[command(
+        long_about = "Convert a legacy project to the new .armadai/project.yaml format.\n\n\
+            Reads the legacy config (.armadai/config.yaml, armadai.yaml or armadai.yml), its \
+            agents, declared agents, prompts and skills, and writes the new format under \
+            .armadai/. The legacy files are first copied to .armadai/.migrated/<timestamp>/, \
+            then removed from .armadai/ (files elsewhere are left in place). The report lists \
+            the files written, every dropped field with its reason, and the warnings.\n\n\
+            Note: 'armadai link' reads the new format only from step 2 of the v1 work.",
+        after_help = "Examples:\n  \
+            armadai migrate --dry-run\n  \
+            armadai migrate\n  \
+            armadai migrate --path /path/to/project --force"
+    )]
+    Migrate {
+        /// Project directory (default: current directory)
+        #[arg(long)]
+        path: Option<std::path::PathBuf>,
+        /// Convert and validate without writing anything; print the report
+        #[arg(long)]
+        dry_run: bool,
+        /// Migrate again although .armadai/project.yaml already exists
+        #[arg(long)]
+        force: bool,
     },
     /// Extract agents, prompts, and skills with dependency resolution
     #[command(
@@ -382,6 +408,11 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Inspect { agent } => inspect::execute(agent).await,
         Command::Validate { path, json } => validate::execute(path, json).await,
+        Command::Migrate {
+            path,
+            dry_run,
+            force,
+        } => migrate::execute(path, dry_run, force),
         Command::Config { action } => config::execute(action).await,
         Command::Models(action) => models::execute(action).await,
         Command::Extract(args) => extract::execute(args).await,

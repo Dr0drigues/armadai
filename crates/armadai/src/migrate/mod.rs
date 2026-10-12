@@ -3,6 +3,69 @@
 pub mod convert;
 pub mod read;
 pub mod report;
+pub mod write;
+
+use std::path::Path;
+
+use anyhow::bail;
+
+use convert::SkillCopy;
+use read::OldProject;
+use report::Report;
+
+type Convert = fn(&OldProject) -> (armadai_model::Project, Vec<SkillCopy>, Report);
+
+/// Migrate the legacy project at `root`. With `dry_run`, nothing under `root` changes.
+pub fn run(root: &Path, dry_run: bool, force: bool) -> anyhow::Result<Report> {
+    run_with(root, dry_run, force, convert::convert)
+}
+
+fn rendered_errors(dir: &Path) -> Option<String> {
+    let ds = armadai_model::validate(dir);
+    armadai_model::has_errors(&ds)
+        .then(|| ds.iter().map(|d| d.render()).collect::<Vec<_>>().join("\n"))
+}
+
+fn run_with(root: &Path, dry_run: bool, force: bool, conv: Convert) -> anyhow::Result<Report> {
+    if root.join(".armadai/project.yaml").exists() && !force {
+        bail!(
+            "{} is already migrated (use --force to redo it)",
+            root.display()
+        );
+    }
+    let old = read::read_old(root)?;
+    let root = old.root.clone();
+    let (project, copies, mut report) = conv(&old);
+
+    // Written and validated in a scratch directory first: a conversion that does not
+    // validate fails here, before the project is touched.
+    let scratch = tempfile::tempdir()?;
+    report.written = write::write_all(&project, &copies, scratch.path(), &root, &root)?;
+    if let Some(errors) = rendered_errors(scratch.path()) {
+        bail!("the converted project does not validate; nothing was changed:\n{errors}");
+    }
+    let plan = write::plan(&old, &copies);
+    report.warnings.extend(plan.warnings.iter().cloned());
+    if dry_run {
+        return Ok(report);
+    }
+
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = write::backup(&root, &plan, secs)?;
+    report.backup = Some(backup.clone());
+    write::remove_legacy(&root, &plan)?;
+    report.written = write::write_all(&project, &copies, &root, &root, &root.join(&backup))?;
+    if let Some(errors) = rendered_errors(&root) {
+        bail!(
+            "the migrated project does not validate; the previous project is in {}:\n{errors}",
+            backup.display()
+        );
+    }
+    Ok(report)
+}
 
 #[cfg(test)]
 mod tests {
@@ -28,6 +91,64 @@ mod tests {
         let old = read::read_old(&fixture(case)).unwrap();
         let (p, _, r) = convert::convert(&old);
         (p, r)
+    }
+
+    fn tree(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut files = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    let bytes = std::fs::read(&p).unwrap();
+                    files.push((p, bytes));
+                }
+            }
+        }
+        files.sort();
+        files
+    }
+
+    /// A conversion whose output does not validate: a step naming no agent.
+    fn invalid(old: &OldProject) -> (armadai_model::Project, Vec<SkillCopy>, Report) {
+        let (mut p, c, r) = convert::convert(old);
+        let flow: armadai_model::FlowFile =
+            serde_yaml_ng::from_str("steps:\n  a: { agent: ghost }\n").unwrap();
+        p.flows.insert(
+            "bad".into(),
+            armadai_model::Flow {
+                description: None,
+                steps: flow.steps,
+                links: Vec::new(),
+            },
+        );
+        (p, c, r)
+    }
+
+    #[test]
+    fn an_invalid_conversion_fails_before_touching_the_project() {
+        let _iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        let dir = tempfile::tempdir().unwrap();
+        let src = fixture("demo-rust-team").join(".armadai");
+        std::fs::create_dir_all(dir.path().join(".armadai/agents")).unwrap();
+        for f in [
+            "config.yaml",
+            "agents/rust-reviewer.md",
+            "agents/doc-writer.md",
+        ] {
+            std::fs::copy(src.join(f), dir.path().join(".armadai").join(f)).unwrap();
+        }
+        let before = tree(dir.path());
+        let e = run_with(dir.path(), false, false, invalid)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("unknown-agent") && e.contains("nothing was changed"),
+            "{e}"
+        );
+        assert_eq!(tree(dir.path()), before);
     }
 
     #[test]
