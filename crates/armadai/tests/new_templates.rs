@@ -4,21 +4,19 @@
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 
-/// Every template shipped in `crates/armadai/templates/`.
-const EMBEDDED: &[&str] = &[
-    "basic",
-    "cli-generic",
-    "debug",
-    "dev-review",
-    "dev-test",
-    "planning",
-    "security-review",
-    "tdd-green",
-    "tdd-red",
-    "tdd-refactor",
-    "tech-debt",
-    "tech-writer",
-];
+/// Every template shipped in `crates/armadai/templates/`, read from the directory.
+fn embedded_templates() -> Vec<String> {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/templates");
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "md"))
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+        .collect();
+    names.sort();
+    names
+}
 
 struct Scratch {
     _root: tempfile::TempDir,
@@ -60,7 +58,12 @@ fn every_embedded_template_creates_a_parseable_agent_without_any_templates_dir()
     assert!(!s.cwd.join("templates").exists());
     assert!(!s.config.join("templates").exists());
 
-    for tpl in EMBEDDED {
+    let templates = embedded_templates();
+    assert!(
+        templates.len() >= 12,
+        "expected the shipped templates, saw {templates:?}"
+    );
+    for tpl in &templates {
         let name = format!("agent-{tpl}");
         armadai(&s, &["new", &name, "--template", tpl]).success();
         let path = agent_path(&s, &name);
@@ -121,6 +124,8 @@ fn a_custom_template_is_offered_next_to_the_embedded_ones() {
     .unwrap();
 
     armadai(&s, &["new", "a", "--template", "mine"]).success();
+    let body = std::fs::read_to_string(agent_path(&s, "a")).unwrap();
+    assert!(body.contains("MINE"), "{body}");
     armadai(&s, &["new", "b", "--template", "dev-review"]).success();
 }
 
