@@ -4,10 +4,13 @@
 cd examples/demo-nextjs-shop
 ```
 
-1. Init avec le pack pirate-crew
+1. Installer le pack pirate-crew dans la bibliothèque utilisateur
+
+L'exemple contient déjà sa configuration (`armadai.yaml`), donc on n'utilise pas `--project`
+(qui refuse d'écraser un `armadai.yaml` existant) : on installe seulement les agents.
 
 ```sh
-armadai init --project --pack pirate-crew
+armadai init --pack pirate-crew
 ```
 
 2. Générer la configuration Claude Code (`.claude/CLAUDE.md` et `.claude/agents/`)
