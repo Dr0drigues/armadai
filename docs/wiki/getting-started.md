@@ -89,9 +89,9 @@ agents:
 ```
 
 `armadai new <name> --template <tpl>` creates one from a template, in `.armadai/agents/` or
-`agents/` when the project has one, otherwise in your user library. It reads templates from
-`templates/` in the current directory or from `~/.config/armadai/templates/`, which nothing
-installs for you (see [Templates](templates.md)). A project can also declare agents in `.armadai/agents.yaml` — see
+`agents/` when the project has one, otherwise in your user library. The templates are built into
+the binary; files in `templates/` (current directory) or `~/.config/armadai/templates/` override
+them (see [Templates](templates.md)). A project can also declare agents in `.armadai/agents.yaml` — see
 [Declarative agents](declarative-agents.md).
 
 ## Verify Setup

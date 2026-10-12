@@ -46,7 +46,9 @@ pub enum Command {
     #[command(
         long_about = "Create a new agent from a template.\n\n\
             Available templates: basic, dev-review, dev-test, cli-generic, planning, \
-            security-review, debug, tech-debt, tdd-red, tdd-green, tdd-refactor, tech-writer.\n\
+            security-review, debug, tech-debt, tdd-red, tdd-green, tdd-refactor, tech-writer \
+            (built into the binary; a same-named file in ./templates or \
+            ~/.config/armadai/templates overrides one, and adds your own).\n\
             The new agent is created at agents/<name>.md.\n\n\
             Use --interactive (-i) for a guided step-by-step creation wizard.",
         after_help = "Examples:\n  \

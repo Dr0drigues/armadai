@@ -65,6 +65,9 @@ unreleased changes since rc.5 are not itemised here.
 
 ### Fixed
 
+- **`armadai new`** works out of the box: the agent templates are embedded in the binary
+  (it used to fail with "no templates directory found" on a fresh install). `./templates` and
+  `~/.config/armadai/templates` still take precedence over the embedded ones.
 - **`armadai init --pack <pack> --project`** now writes `link.target` only when a supported
   target can be inferred (agents read in file-name order, `anthropic` mapped to `claude`),
   instead of copying an arbitrary agent provider such as `google` or `cli`; when none can be
