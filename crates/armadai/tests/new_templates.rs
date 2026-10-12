@@ -1,0 +1,140 @@
+//! `armadai new` must work on a fresh machine: the agent templates are embedded
+//! in the binary, and a `templates/` directory (project or user) overrides them.
+
+use assert_cmd::Command;
+use std::path::{Path, PathBuf};
+
+/// Every template shipped in `crates/armadai/templates/`.
+const EMBEDDED: &[&str] = &[
+    "basic",
+    "cli-generic",
+    "debug",
+    "dev-review",
+    "dev-test",
+    "planning",
+    "security-review",
+    "tdd-green",
+    "tdd-red",
+    "tdd-refactor",
+    "tech-debt",
+    "tech-writer",
+];
+
+struct Scratch {
+    _root: tempfile::TempDir,
+    config: PathBuf,
+    cwd: PathBuf,
+}
+
+fn scratch() -> Scratch {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config");
+    let cwd = root.path().join("work");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&cwd).unwrap();
+    Scratch {
+        _root: root,
+        config,
+        cwd,
+    }
+}
+
+fn armadai(s: &Scratch, args: &[&str]) -> assert_cmd::assert::Assert {
+    Command::cargo_bin("armadai")
+        .unwrap()
+        .current_dir(&s.cwd)
+        .env("ARMADAI_CONFIG_DIR", &s.config)
+        .env("HOME", &s.cwd)
+        .env("XDG_CONFIG_HOME", s.cwd.join("xdg"))
+        .args(args)
+        .assert()
+}
+
+fn agent_path(s: &Scratch, name: &str) -> PathBuf {
+    s.config.join("agents").join(format!("{name}.md"))
+}
+
+#[test]
+fn every_embedded_template_creates_a_parseable_agent_without_any_templates_dir() {
+    let s = scratch();
+    assert!(!s.cwd.join("templates").exists());
+    assert!(!s.config.join("templates").exists());
+
+    for tpl in EMBEDDED {
+        let name = format!("agent-{tpl}");
+        armadai(&s, &["new", &name, "--template", tpl]).success();
+        let path = agent_path(&s, &name);
+        assert!(path.exists(), "{tpl}: {} not created", path.display());
+        armadai_core::parser::parse_agent_file(&path)
+            .unwrap_or_else(|e| panic!("{tpl}: produced file does not parse: {e}"));
+    }
+}
+
+#[test]
+fn default_template_works_with_no_flag() {
+    let s = scratch();
+    armadai(&s, &["new", "my-agent"]).success();
+    assert!(agent_path(&s, "my-agent").exists());
+}
+
+#[test]
+fn project_templates_dir_overrides_the_embedded_template() {
+    let s = scratch();
+    let tpl_dir = s.cwd.join("templates");
+    std::fs::create_dir_all(&tpl_dir).unwrap();
+    std::fs::write(
+        tpl_dir.join("basic.md"),
+        "# {{name}}\n\n## Metadata\n\n- provider: anthropic\n- model: {{model}}\n\n## System Prompt\n\nPROJECT_OVERRIDE_MARKER\n",
+    )
+    .unwrap();
+
+    armadai(&s, &["new", "over", "--template", "basic"]).success();
+    let body = std::fs::read_to_string(agent_path(&s, "over")).unwrap();
+    assert!(body.contains("PROJECT_OVERRIDE_MARKER"), "{body}");
+}
+
+#[test]
+fn user_templates_dir_overrides_the_embedded_template() {
+    let s = scratch();
+    let tpl_dir = s.config.join("templates");
+    std::fs::create_dir_all(&tpl_dir).unwrap();
+    std::fs::write(
+        tpl_dir.join("basic.md"),
+        "# {{name}}\n\n## Metadata\n\n- provider: anthropic\n- model: {{model}}\n\n## System Prompt\n\nUSER_OVERRIDE_MARKER\n",
+    )
+    .unwrap();
+
+    armadai(&s, &["new", "over", "--template", "basic"]).success();
+    let body = std::fs::read_to_string(agent_path(&s, "over")).unwrap();
+    assert!(body.contains("USER_OVERRIDE_MARKER"), "{body}");
+}
+
+#[test]
+fn a_custom_template_is_offered_next_to_the_embedded_ones() {
+    let s = scratch();
+    let tpl_dir = s.cwd.join("templates");
+    std::fs::create_dir_all(&tpl_dir).unwrap();
+    std::fs::write(
+        tpl_dir.join("mine.md"),
+        "# {{name}}\n\n## Metadata\n\n- provider: anthropic\n- model: {{model}}\n\n## System Prompt\n\nMINE\n",
+    )
+    .unwrap();
+
+    armadai(&s, &["new", "a", "--template", "mine"]).success();
+    armadai(&s, &["new", "b", "--template", "dev-review"]).success();
+}
+
+#[test]
+fn unknown_template_is_rejected_and_lists_the_available_ones() {
+    let s = scratch();
+    let out = armadai(&s, &["new", "x", "--template", "nope"]).failure();
+    let o = out.get_output();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    // Rejected by clap's possible-values list, which now includes the embedded names.
+    assert!(text.contains("basic") && text.contains("tdd-red"), "{text}");
+    assert!(!Path::new(&agent_path(&s, "x")).exists());
+}

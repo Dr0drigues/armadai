@@ -91,6 +91,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "dialoguer",
+ "include_dir",
  "reqwest",
  "serde",
  "serde_json",

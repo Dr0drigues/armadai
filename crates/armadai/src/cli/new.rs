@@ -1,9 +1,45 @@
 use std::path::Path;
 
 use dialoguer::{Confirm, Input, Select};
+use include_dir::{Dir, include_dir};
 
 use armadai_core::config::AppPaths;
 use armadai_providers::factory::api_backend_for_tool;
+
+/// Agent templates shipped inside the binary, so `armadai new` works on a
+/// fresh machine. A same-named file in the templates directory overrides them.
+static EMBEDDED_TEMPLATES: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
+
+/// Content of an embedded template, if there is one with this name.
+fn embedded_template(name: &str) -> Option<&'static str> {
+    EMBEDDED_TEMPLATES
+        .get_file(format!("{name}.md"))
+        .and_then(|f| f.contents_utf8())
+}
+
+/// Resolve a template: `templates_dir/<name>.md` first (project or user
+/// directory), then the embedded set.
+fn load_template_from(templates_dir: &Path, name: &str) -> Option<String> {
+    std::fs::read_to_string(templates_dir.join(format!("{name}.md")))
+        .ok()
+        .or_else(|| embedded_template(name).map(str::to_string))
+}
+
+/// Sorted, de-duplicated names of the templates in `templates_dir` plus the
+/// embedded ones.
+fn template_names_from(templates_dir: &Path) -> Vec<String> {
+    let mut names = collect_template_names(templates_dir);
+    names.extend(
+        EMBEDDED_TEMPLATES
+            .files()
+            .filter(|f| f.path().extension().is_some_and(|ext| ext == "md"))
+            .filter_map(|f| f.path().file_stem())
+            .map(|s| s.to_string_lossy().to_string()),
+    );
+    names.sort();
+    names.dedup();
+    names
+}
 
 pub async fn execute(
     name: Option<String>,
@@ -33,13 +69,12 @@ fn template_create(
     let agents_dir = &paths.agents_dir;
 
     // Load template
-    let template_path = templates_dir.join(format!("{template}.md"));
-    if !template_path.exists() {
+    let Some(template_source) = load_template_from(templates_dir, template) else {
         let e = crate::cli::style::err();
         anstream::eprintln!("{e}Template '{template}' not found.{e:#}\n");
         list_templates(templates_dir)?;
         anyhow::bail!("Use --template <name> with one of the templates above");
-    }
+    };
 
     // Check for duplicate
     let output_path = agents_dir.join(format!("{name}.md"));
@@ -52,7 +87,7 @@ fn template_create(
     }
 
     // Read and replace placeholders
-    let content = std::fs::read_to_string(&template_path)?;
+    let content = template_source;
 
     let title = slug_to_title(name);
     let mut vars = std::collections::BTreeMap::new();
@@ -128,7 +163,7 @@ async fn interactive_create() -> anyhow::Result<()> {
     }
 
     // 2. Template selection
-    let mut template_names = collect_template_names(templates_dir);
+    let mut template_names = template_names_from(templates_dir);
     template_names.insert(0, "from scratch".to_string());
 
     let template_idx = Select::new()
@@ -246,8 +281,8 @@ async fn interactive_create() -> anyhow::Result<()> {
 
     // Generate content
     let content = if let Some(tpl_name) = chosen_template {
-        let template_path = templates_dir.join(format!("{tpl_name}.md"));
-        let mut content = std::fs::read_to_string(&template_path)?;
+        let mut content = load_template_from(templates_dir, tpl_name)
+            .ok_or_else(|| anyhow::anyhow!("Template '{tpl_name}' not found"))?;
         let title = slug_to_title(&name);
         // Through the shared `template` module, not a hand-rolled
         // `replace("{{name}}", ..)` — that exact shape is what let a
@@ -544,7 +579,7 @@ pub fn parse_comma_list(input: &str) -> Vec<String> {
 /// any value so that clap doesn't reject the default "basic".
 pub fn template_value_parser() -> clap::builder::ValueParser {
     let paths = armadai_core::config::AppPaths::resolve();
-    let names = collect_template_names(&paths.templates_dir);
+    let names = template_names_from(&paths.templates_dir);
     if names.is_empty() {
         // No templates found — accept any value, validation happens at runtime
         return clap::builder::ValueParser::string();
@@ -580,28 +615,14 @@ fn list_templates(templates_dir: &Path) -> anyhow::Result<()> {
     let h = crate::cli::style::header();
     let m = crate::cli::style::muted();
     anstream::println!("{h}Available templates:{h:#}");
-    if !templates_dir.exists() {
-        anstream::println!("{m}  (no templates directory found){m:#}");
-        return Ok(());
+    for name in template_names_from(templates_dir) {
+        let a = crate::cli::style::accent();
+        anstream::println!("  - {a}{name}{a:#}");
     }
-
-    let mut found = false;
-    for entry in std::fs::read_dir(templates_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "md")
-            && let Some(stem) = path.file_stem()
-        {
-            let a = crate::cli::style::accent();
-            anstream::println!("  - {a}{}{a:#}", stem.to_string_lossy());
-            found = true;
-        }
-    }
-
-    if !found {
-        anstream::println!("{m}  (no templates found){m:#}");
-    }
-
+    anstream::println!(
+        "{m}  Built-in templates are overridden by a same-named file in {}{m:#}",
+        templates_dir.display()
+    );
     Ok(())
 }
 
@@ -674,6 +695,52 @@ mod tests {
         let agent = armadai_core::parser::parse_agent_file(&path).unwrap();
         assert_eq!(agent.name, "Test Agent");
         assert_eq!(agent.metadata.provider, "claude");
+    }
+
+    #[test]
+    fn load_template_falls_back_to_embedded_when_dir_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-dir");
+        let body = load_template_from(&missing, "basic").expect("embedded basic");
+        assert_eq!(body, embedded_template("basic").unwrap());
+        assert!(load_template_from(&missing, "no-such-template").is_none());
+    }
+
+    #[test]
+    fn load_template_prefers_the_filesystem_over_embedded() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("basic.md"), "FS_WINS").unwrap();
+        assert_eq!(load_template_from(dir.path(), "basic").unwrap(), "FS_WINS");
+        // other names still come from the embedded set
+        assert_eq!(
+            load_template_from(dir.path(), "debug").unwrap(),
+            embedded_template("debug").unwrap()
+        );
+    }
+
+    #[test]
+    fn template_names_merge_embedded_and_filesystem_sorted_unique() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("basic.md"), "x").unwrap(); // shadows an embedded name
+        fs::write(dir.path().join("zzz-custom.md"), "x").unwrap();
+        fs::write(dir.path().join("notes.txt"), "x").unwrap(); // not a template
+        let names = template_names_from(dir.path());
+        assert_eq!(names.iter().filter(|n| *n == "basic").count(), 1);
+        assert!(names.contains(&"zzz-custom".to_string()));
+        assert!(names.contains(&"tdd-refactor".to_string()));
+        assert!(!names.contains(&"notes".to_string()));
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+        assert_eq!(names.len(), 13);
+    }
+
+    #[test]
+    fn embedded_set_matches_the_templates_directory() {
+        let on_disk =
+            collect_template_names(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates")));
+        assert_eq!(template_names_from(Path::new("/nonexistent")), on_disk);
+        assert_eq!(on_disk.len(), 12);
     }
 
     #[test]
