@@ -889,3 +889,77 @@ fn an_unchanged_patched_file_is_not_reported_as_patched() {
     let again = env.ok(&["link"]);
     assert!(!again.contains("patched"), "{again}");
 }
+
+/// On a case-insensitive file system `.CLAUDE/agents/dev.md` is the generated
+/// `.claude/agents/dev.md`: a collision, with or without `--force`, every run.
+#[test]
+fn native_collisions_ignore_case() {
+    for bad in [".CLAUDE/agents/dev.md", ".claude/Agents/DEV.md"] {
+        let mut files = PROJECT.to_vec();
+        let at = format!(".armadai/native/claude/{bad}");
+        files.push((&at, "mine\n"));
+        let env = Env::new(&files);
+        for args in [&["link"][..], &["link", "--force"][..], &["link"][..]] {
+            let (ok, _, err) = env.run(args);
+            assert!(!ok && err.contains("collides"), "{bad} {args:?}: {err}");
+        }
+        assert!(!env.root().join(".claude/agents/dev.md").exists(), "{bad}");
+    }
+}
+
+/// The dry run reports the removal of a settings.json link created, like the real run.
+#[test]
+fn the_dry_run_reports_the_settings_removal() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    std::fs::remove_file(env.root().join(".armadai/automations/fmt.yaml")).unwrap();
+    std::fs::write(
+        env.root().join(".armadai/project.yaml"),
+        "schema_version: 1\ncoordinator: lead\n",
+    )
+    .unwrap();
+    let dry = env.ok(&["link", "--dry-run", "--json"]);
+    assert!(
+        env.root().join(".claude/settings.json").is_file(),
+        "dry run removes nothing"
+    );
+    let real = env.ok(&["link", "--json"]);
+    assert_eq!(dry, real);
+    assert!(real.contains("no hook is left"), "{real}");
+}
+
+/// "edited since the last link" holds on every later run, not the first only.
+#[test]
+fn an_edited_output_stays_reported_as_edited() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    std::fs::write(env.root().join(".claude/agents/dev.md"), "mine\n").unwrap();
+    for _ in 0..2 {
+        let out = env.ok(&["link"]);
+        assert!(
+            out.contains("agent dev: not-compiled (edited since the last link"),
+            "{out}"
+        );
+    }
+    let (ok, out, _) = env.run(&["unlink"]);
+    assert!(
+        ok && out.contains("content differs from what link wrote"),
+        "{out}"
+    );
+    assert!(env.root().join(".claude/agents/dev.md").is_file());
+}
+
+/// A default output that resolves onto the project root is refused without
+/// blaming an `--output` nobody passed.
+#[cfg(unix)]
+#[test]
+fn a_default_output_onto_the_root_names_where_it_comes_from() {
+    let env = Env::new(PROJECT);
+    std::os::unix::fs::symlink(env.root(), env.root().join(".claude")).unwrap();
+    let (ok, _, err) = env.run(&["link"]);
+    assert!(!ok, "{err}");
+    assert!(
+        !err.contains("--output") && err.contains(".claude"),
+        "{err}"
+    );
+}

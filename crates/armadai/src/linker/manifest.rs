@@ -693,6 +693,20 @@ pub fn remove_target(root: &Path, target: &str) -> std::io::Result<()> {
     std::fs::write(manifest_path(root), yaml)
 }
 
+/// The one decision `write_files` and `link --dry-run` share: a file that exists
+/// with other bytes is left in place, unless `--force`, or unless it is still
+/// exactly what link wrote last time (`previous_digest`), i.e. link's own output.
+pub fn left_in_place(
+    path: &Path,
+    content: &[u8],
+    force: bool,
+    previous_digest: Option<&String>,
+) -> bool {
+    !force
+        && std::fs::read(path).is_ok_and(|disk| disk != content)
+        && !previous_digest.is_some_and(|d| check_digest(d, path) == DigestCheck::Matches)
+}
+
 /// Add `entries` to `target`'s record (an entry already recorded at the same path
 /// is kept as is). Used for the files `--agents` left out of a link.
 pub fn append_entries(
@@ -860,19 +874,25 @@ pub fn write_files(
                 continue;
             }
 
-            // Still exactly what `link` wrote last time (per the previous
-            // manifest): link's own output, stale against a changed source —
-            // rewritten below, never left behind with a `compiled` report.
-            let still_own_output = previous_digests
-                .get(&relative_path)
-                .is_some_and(|old_digest| check_digest(old_digest, &path) == DigestCheck::Matches);
-            if !still_own_output {
-                manifest_entries.push(ManifestEntry {
-                    path: relative_path,
-                    produced_by,
-                    outcome: Outcome::Skipped,
-                    digest: None,
-                });
+            if left_in_place(&path, &content, force, previous_digests.get(&relative_path)) {
+                // a file link wrote and the user edited stays recorded as link's
+                // (its digest no longer matches): "edited since the last link", and
+                // unlink keeps it as "content differs"; anything else is the user's
+                let entry = match previous_digests.get(&relative_path) {
+                    Some(d) => ManifestEntry {
+                        path: relative_path,
+                        produced_by,
+                        outcome: Outcome::Created,
+                        digest: Some(d.clone()),
+                    },
+                    None => ManifestEntry {
+                        path: relative_path,
+                        produced_by,
+                        outcome: Outcome::Skipped,
+                        digest: None,
+                    },
+                };
+                manifest_entries.push(entry);
                 outcomes.push(FileOutcome::SkippedExisting(path));
                 continue;
             }

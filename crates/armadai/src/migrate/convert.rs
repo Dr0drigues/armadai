@@ -374,6 +374,15 @@ fn convert_link(
     }
 }
 
+/// Agents Claude Code provides itself: free agents that need no warning.
+const CLAUDE_BUILT_INS: [&str; 5] = [
+    "Explore",
+    "Plan",
+    "general-purpose",
+    "statusline-setup",
+    "claude-code-guide",
+];
+
 fn convert_orchestration(
     o: &armadai_core::orchestration::OrchestrationConfig,
     resolve: &dyn Fn(&str) -> Option<String>,
@@ -456,10 +465,10 @@ fn convert_orchestration(
                 id
             }
             None => {
-                if !armadai_model::is_valid_id(f) {
+                if !armadai_model::is_valid_id(f) && !CLAUDE_BUILT_INS.contains(&f.as_str()) {
                     r.warn(format!(
-                        "orchestration.free_agents: `{f}` is neither a project agent nor a valid \
-                         id: kept as is (fine for an agent the target provides, such as Explore)"
+                        "orchestration.free_agents: `{f}` is neither a project agent, an agent \
+                         Claude Code provides, nor a valid id: kept as is"
                     ));
                 }
                 f.clone()

@@ -154,13 +154,20 @@ pub fn check_destination(root: &Path, trust: &Path, rel: &Path) -> anyhow::Resul
 /// An output directory link may write and unlink may clean: anywhere (a `--output`
 /// may leave the project for one run) except the project root itself, its sources
 /// (`.armadai/`) and `.git/`, lexically and through symbolic links.
-pub fn check_output(root: &Path, output: &Path) -> anyhow::Result<()> {
+/// `from_flag`: the folder came from `--output` (else from `outputs` or the
+/// target's default), so the message names where it comes from.
+pub fn check_output(root: &Path, output: &Path, from_flag: bool) -> anyhow::Result<()> {
     use crate::linker::manifest::resolve_real;
     let base = resolve_real(root, Path::new("."));
     let out = resolve_real(root, output);
     if out == base || out.strip_prefix(&base).is_ok_and(into_sources) || into_sources(output) {
+        let what = if from_flag {
+            "--output"
+        } else {
+            "output folder (from `outputs` of project.yaml or the target's default)"
+        };
         bail!(
-            "--output {} would write into the project root, `.armadai/` or `.git/`",
+            "{what} {} resolves to the project root, `.armadai/` or `.git/`",
             output.display()
         );
     }

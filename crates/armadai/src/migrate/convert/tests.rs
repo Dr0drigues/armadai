@@ -439,6 +439,7 @@ fn orchestration_becomes_a_flow_and_policy() {
             "Core Lead".into(),
             "Explore".into(),
             "general-purpose".into(),
+            "Some Helper".into(),
         ],
         max_depth: Some(3),
         ..Default::default()
@@ -465,7 +466,13 @@ fn orchestration_becomes_a_flow_and_policy() {
     // `Explore` is Claude Code's own agent: kept, not dropped; a title is renamed
     assert_eq!(
         p.manifest.policy.free_agents,
-        ["tester", "core-lead", "Explore", "general-purpose"]
+        [
+            "tester",
+            "core-lead",
+            "Explore",
+            "general-purpose",
+            "Some Helper"
+        ]
     );
     assert!(
         r.warnings
@@ -477,11 +484,12 @@ fn orchestration_becomes_a_flow_and_policy() {
     assert!(
         r.warnings
             .iter()
-            .any(|w| w.contains("`Explore`") && w.contains("kept as is")),
+            .any(|w| w.contains("`Some Helper`") && w.contains("kept as is")),
         "{:?}",
         r.warnings
     );
-    for quiet in ["`tester`", "`general-purpose`"] {
+    // Claude Code's own agents are known: no warning
+    for quiet in ["`tester`", "`general-purpose`", "`Explore`"] {
         assert!(
             !r.warnings.iter().any(|w| w.contains(quiet)),
             "{:?}",

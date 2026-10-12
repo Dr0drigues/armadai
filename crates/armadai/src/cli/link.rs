@@ -82,6 +82,11 @@ pub fn output_of(target: &str, output: Option<&Path>, project: &Project) -> Path
         .unwrap_or_else(|| PathBuf::from(compile::default_output(target)))
 }
 
+/// A path compared as a case-insensitive file system would.
+fn folded(p: &Path) -> String {
+    p.to_string_lossy().to_lowercase()
+}
+
 fn prepare(
     project: &Project,
     root: &Path,
@@ -89,7 +94,7 @@ fn prepare(
     output: Option<&Path>,
     agents: Option<&[String]>,
 ) -> anyhow::Result<Prepared> {
-    compile::check_output(root, &output_of(target, output, project))?;
+    compile::check_output(root, &output_of(target, output, project), output.is_some())?;
     let plan = compile::compiler_for(target)?.compile(project, root)?;
     let mut p = Prepared {
         target: target.to_string(),
@@ -158,14 +163,17 @@ fn prepare(
     let native_dir = root.join(".armadai/native").join(target);
     if native_dir.is_dir() {
         // everything the project produces, `--agents` or not
-        let generated: BTreeSet<PathBuf> = (p.all_produced.iter().cloned())
+        // compared case-insensitively: on macOS `.CLAUDE/agents/DEV.md` is the
+        // generated `.claude/agents/dev.md`
+        let mut generated: BTreeSet<String> = (p.all_produced.iter().cloned())
             .chain(p.blocks.iter().map(|(r, _)| r.clone()))
             .chain(p.settings.iter().map(|(r, _, _)| r.clone()))
+            .map(|r| folded(&r))
             .collect();
         for (path, content) in read_tree(&native_dir, &root.join(".armadai"))? {
             compile::check_destination(root, Path::new("."), &path)
                 .map_err(|e| anyhow::anyhow!("native file: {e}"))?;
-            if generated.contains(&path) {
+            if !generated.insert(folded(&path)) {
                 bail!(
                     "native file .armadai/native/{target}/{} collides with a file ArmadAI \
                      generates; nothing was written",
@@ -328,13 +336,26 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
         .push(&target, element, Status::NotCompiled, Some(&reason));
 }
 
+/// Whether undoing the previous settings patch removes the settings.json link
+/// created (its record says created, and nothing else would be left in it).
+fn settings_file_goes(root: &Path, prev: &PatchedFile) -> bool {
+    let PatchKind::SettingsHooks(owned) = &prev.kind else {
+        return false;
+    };
+    prev.created
+        && std::fs::read_to_string(root.join(&prev.path))
+            .ok()
+            .and_then(|t| claude_settings::remove_entries(&t, owned).ok())
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .is_some_and(|v| v.as_object().is_some_and(|m| m.is_empty()))
+}
+
+const SETTINGS_GONE: &str = "removed: link created it and no hook is left";
+
 /// The `--dry-run` side of `write_files`' decision: the files a real run would
 /// leave in place (they exist with other bytes, are not link's previous output,
 /// and `--force` is not given), reported exactly as the real run reports them.
 fn simulate_skips(root: &Path, p: &mut Prepared, force: bool) {
-    if force {
-        return;
-    }
     let previous: std::collections::BTreeMap<PathBuf, String> =
         (p.previous.iter().flat_map(|t| &t.entries))
             .filter(|e| e.outcome == Outcome::Created)
@@ -343,13 +364,7 @@ fn simulate_skips(root: &Path, p: &mut Prepared, force: bool) {
     let skipped: Vec<PathBuf> = (p.artifacts.iter())
         .map(|a| (root.join(p.rel(a)), p.rel(a), &a.content))
         .filter(|(path, rel, content)| {
-            let Ok(disk) = std::fs::read(path) else {
-                return false;
-            };
-            disk != **content
-                && !previous
-                    .get(rel)
-                    .is_some_and(|d| manifest::check_digest(d, path) == DigestCheck::Matches)
+            manifest::left_in_place(path, content, force, previous.get(rel))
         })
         .map(|(path, _, _)| path)
         .collect();
@@ -397,13 +412,14 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
         let prev = p.previous_patch(&rel).cloned();
         if hooks.is_empty() && keys.is_empty() {
             if let Some(prev) = &prev {
+                let goes = settings_file_goes(root, prev);
                 patch::remove_patch(root, &p.output_dir, prev)?;
-                if prev.created && !root.join(&prev.path).exists() {
+                if goes {
                     p.report.push(
                         &p.target,
                         prev.path.display().to_string(),
                         Status::Compiled,
-                        Some("removed: link created it and no hook is left"),
+                        Some(SETTINGS_GONE),
                     );
                 }
             }
@@ -512,6 +528,17 @@ pub async fn execute(
             let produced = p.all_produced.clone();
             remove_stale(&root, p, &produced, true);
             simulate_skips(&root, p, force);
+            if let Some((rel, hooks, keys)) = &p.settings
+                && hooks.is_empty()
+                && keys.is_empty()
+                && let Some(prev) = p.previous_patch(rel)
+                && settings_file_goes(&root, prev)
+            {
+                let element = prev.path.display().to_string();
+                let target = p.target.clone();
+                p.report
+                    .push(&target, element, Status::Compiled, Some(SETTINGS_GONE));
+            }
         }
         for p in &prepared {
             lines.push(format!(
