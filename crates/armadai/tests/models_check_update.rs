@@ -209,3 +209,42 @@ fn copy(from: &Path, to: &Path) {
         }
     }
 }
+
+/// A file whose rewrite would not match its structure is refused, never
+/// reported as updated; the project still reports the deprecated id.
+#[test]
+fn an_unsafe_rewrite_is_refused_not_reported_as_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path());
+    let tricky = "---\ndescription: |\n  model: gpt-4-turbo\nnative:\n  codex:\n    model: gpt-4-turbo\n---\nB\n";
+    std::fs::write(root.join(".armadai/agents/dev.md"), tricky).unwrap();
+    let (ok, out) = armadai(dir.path(), &root, &["models", "update"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("could not safely rewrite"), "{out}");
+    assert!(!out.contains("model(s) updated"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(root.join(".armadai/agents/dev.md")).unwrap(),
+        tricky
+    );
+}
+
+/// A write that fails halfway restores the files already written.
+#[cfg(unix)]
+#[test]
+fn a_failed_write_restores_the_files_already_written() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path());
+    // `a` (written first) and `dev` (read-only, its write fails)
+    std::fs::write(root.join(".armadai/agents/a.md"), DEV).unwrap();
+    let dev = root.join(".armadai/agents/dev.md");
+    std::fs::set_permissions(&dev, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let (ok, out) = armadai(dir.path(), &root, &["models", "update"]);
+    std::fs::set_permissions(&dev, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(!ok, "{out}");
+    assert_eq!(
+        std::fs::read_to_string(root.join(".armadai/agents/a.md")).unwrap(),
+        DEV
+    );
+    assert_eq!(std::fs::read_to_string(&dev).unwrap(), DEV);
+}

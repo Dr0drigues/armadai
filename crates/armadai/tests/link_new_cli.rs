@@ -902,6 +902,7 @@ fn native_collisions_ignore_case() {
         for args in [&["link"][..], &["link", "--force"][..], &["link"][..]] {
             let (ok, _, err) = env.run(args);
             assert!(!ok && err.contains("collides"), "{bad} {args:?}: {err}");
+            assert!(err.contains("ignoring case"), "{err}");
         }
         assert!(!env.root().join(".claude/agents/dev.md").exists(), "{bad}");
     }

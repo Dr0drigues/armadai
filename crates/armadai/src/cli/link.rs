@@ -176,7 +176,8 @@ fn prepare(
             if !generated.insert(folded(&path)) {
                 bail!(
                     "native file .armadai/native/{target}/{} collides with a file ArmadAI \
-                     generates; nothing was written",
+                     generates (paths are compared ignoring case, also on a case-sensitive \
+                     file system, so the project links the same everywhere); nothing was written",
                     path.display()
                 );
             }

@@ -134,45 +134,88 @@ fn replace_model_values(front: &str, current: &str, replacement: &str) -> (Strin
     (out, n)
 }
 
-/// Replace the deprecated ids of every agent of `root`, in memory first: written
-/// only when each replacement landed on its `model:` value and the project still
-/// validates; the previous files are restored otherwise.
+/// Rewrite the frontmatter `yaml` for each `(current, replacement)`, then check the
+/// result against the YAML structure: it must equal the parsed original where only
+/// the `native.<target>.model` values equal to a deprecated id were replaced, and
+/// the text must have changed exactly those values. Anything else (an id in a block
+/// description, a quoted string, a deeper `model:` key, a value on the next line)
+/// is refused rather than half-done.
+fn rewrite_front(yaml: &str, pairs: &[(String, String)]) -> anyhow::Result<(String, usize)> {
+    use serde_yaml_ng::Value;
+    let refuse = || anyhow::anyhow!("could not safely rewrite; edit native.<target>.model by hand");
+    let mut front = yaml.to_string();
+    let mut hits = 0;
+    for (current, replacement) in pairs {
+        let (next, n) = replace_model_values(&front, current, replacement);
+        front = next;
+        hits += n;
+    }
+    let before: Value = serde_yaml_ng::from_str(yaml).map_err(|_| refuse())?;
+    let after: Value = serde_yaml_ng::from_str(&front).map_err(|_| refuse())?;
+    let mut expected = before.clone();
+    let mut substituted = 0;
+    if let Some(native) = expected.get_mut("native").and_then(Value::as_mapping_mut) {
+        for (_, target) in native.iter_mut() {
+            let Some(model) = target.get_mut("model") else {
+                continue;
+            };
+            if let Some((_, r)) = pairs.iter().find(|(c, _)| model.as_str() == Some(c)) {
+                *model = Value::String(r.clone());
+                substituted += 1;
+            }
+        }
+    }
+    if after != expected || hits != substituted {
+        return Err(refuse());
+    }
+    Ok((front, hits))
+}
+
+/// Replace the deprecated ids of every agent of `root`, in memory first: a file
+/// whose rewrite does not match its structure is refused (nothing written for it);
+/// the others are written, and all restored if a write fails or the project would
+/// no longer validate.
 fn apply(root: &Path, findings: &[Finding]) -> anyhow::Result<usize> {
     let mut by_agent: std::collections::BTreeMap<&str, Vec<&Finding>> = Default::default();
     for f in findings.iter().filter(|f| f.rewritable()) {
         by_agent.entry(&f.agent).or_default().push(f);
     }
     let mut planned = Vec::new();
+    let mut refused = Vec::new();
     for (agent, fs) in &by_agent {
         let path = root.join(".armadai/agents").join(format!("{agent}.md"));
         let text = std::fs::read_to_string(&path)?;
         let (yaml, _, _) = armadai_model::split_frontmatter(&text)
             .ok_or_else(|| anyhow::anyhow!("{}: no frontmatter", path.display()))?;
         let start = yaml.as_ptr() as usize - text.as_ptr() as usize;
-        let mut front = yaml.to_string();
-        let mut seen = std::collections::BTreeSet::new();
-        // the same id pinned for two targets is one replacement of both
-        for f in fs.iter().filter(|f| seen.insert(f.current.as_str())) {
-            let (next, hits) = replace_model_values(&front, &f.current, &f.replacement);
-            if hits == 0 {
-                anyhow::bail!(
-                    "{}: `{}` not found as a `model:` value; nothing was rewritten",
-                    path.display(),
-                    f.current
-                );
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for f in fs {
+            if !pairs.iter().any(|(c, _)| *c == f.current) {
+                pairs.push((f.current.clone(), f.replacement.clone()));
             }
-            front = next;
         }
-        let new = format!("{}{front}{}", &text[..start], &text[start + yaml.len()..]);
-        planned.push((path, text, new, fs.len()));
+        match rewrite_front(yaml, &pairs) {
+            Ok((front, n)) => {
+                let new = format!("{}{front}{}", &text[..start], &text[start + yaml.len()..]);
+                planned.push((path, text, new, n));
+            }
+            Err(e) => refused.push(format!("{}: {e}", path.display())),
+        }
     }
-    for (path, _, new, _) in &planned {
-        std::fs::write(path, new)?;
-    }
-    if armadai_model::load_checked(root).is_err() {
-        for (path, old, _, _) in &planned {
+    let restore = |upto: usize| -> anyhow::Result<()> {
+        for (path, old, _, _) in &planned[..upto] {
             std::fs::write(path, old)?;
         }
+        Ok(())
+    };
+    for (i, (path, _, new, _)) in planned.iter().enumerate() {
+        if let Err(e) = std::fs::write(path, new) {
+            restore(i)?;
+            anyhow::bail!("{}: {e}; nothing was rewritten", path.display());
+        }
+    }
+    if armadai_model::load_checked(root).is_err() {
+        restore(planned.len())?;
         anyhow::bail!(
             "{}: the project would no longer validate; nothing was rewritten",
             root.display()
@@ -186,6 +229,9 @@ fn apply(root: &Path, findings: &[Finding]) -> anyhow::Result<usize> {
             "{o}  updated {}: {count} replacement(s){o:#}",
             path.display()
         );
+    }
+    if !refused.is_empty() {
+        anyhow::bail!("{}", refused.join("\n"));
     }
     Ok(n)
 }
@@ -291,10 +337,10 @@ fn run(all: bool, prune: bool, update: bool) -> anyhow::Result<()> {
     if found == 0 {
         let o = crate::cli::style::ok();
         anstream::println!("{o}All models are up to date.{o:#}");
-    } else if update {
+    } else if update && updated > 0 {
         let o = crate::cli::style::ok();
         anstream::println!("{o}\n{updated} model(s) updated.{o:#}");
-    } else {
+    } else if !update {
         let w = crate::cli::style::warn();
         let all_flag = if all { " --all" } else { "" };
         anstream::println!(
@@ -336,7 +382,36 @@ fn list() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::replace_model_values;
+    use super::{replace_model_values, rewrite_front};
+
+    fn pairs() -> Vec<(String, String)> {
+        vec![("gpt-4-turbo".into(), "gpt-4o".into())]
+    }
+
+    /// Text that only looks like a `model:` key is never rewritten: the file is
+    /// refused rather than reported as updated.
+    #[test]
+    fn a_rewrite_that_does_not_match_the_structure_is_refused() {
+        for front in [
+            "description: |\n  model: gpt-4-turbo\nnative:\n  codex:\n    model: gpt-4-turbo\n",
+            "description: \"see, model: gpt-4-turbo, then\"\nnative:\n  codex:\n    model: gpt-4-turbo\n",
+            "description: d\nnative:\n  codex:\n    model: gpt-4-turbo\n    extra:\n      model: gpt-4-turbo\n",
+            "description: d\nnative:\n  codex:\n    model:\n      gpt-4-turbo\n",
+            // a comment after a comma: same structure, but its text would change
+            "description: d\nnative:\n  codex:\n    model: gpt-4-turbo\n    temperature: 1 # see, model: gpt-4-turbo\n",
+        ] {
+            let err = rewrite_front(front, &pairs()).unwrap_err().to_string();
+            assert!(err.contains("could not safely rewrite"), "{front}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_flow_value_after_a_comma_is_rewritten() {
+        let front = "description: d\nnative:\n  codex: { temperature: 1, model: gpt-4-turbo }\n";
+        let (out, n) = rewrite_front(front, &pairs()).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(out, front.replace("gpt-4-turbo", "gpt-4o"));
+    }
 
     #[test]
     fn only_model_values_are_replaced_as_whole_tokens() {
