@@ -90,3 +90,7 @@ Structure : pour chaque cible, une liste `{ element, status, reason }` avec `sta
 | R3 | Le gate bloque à tort et se fait désinstaller | Sortie vide en cas de doute (contrat actuel), message de refus actionnable |
 | R4 | Retrait d'`extract` surprend | Annoncé dans CHANGELOG ; restaurable depuis le tag `pre-v1-declaratif` |
 | R5 | Régression silencieuse des 3 autres cibles | Étalons par cible, rapport `not-compiled` |
+
+## 9. Révisions de la revue indépendante (PR #465)
+
+Les décisions R-B1…R-I11 du plan (`plans/2026-10-12-step2-link-claude.md`, section « Révisions ») complètent et corrigent cette spec : fichiers patchés hors `write_files` (`settings.json`, `CLAUDE.md` racine), `disallowedTools` au lieu de `tools`, gate à sémantique d'appelant et alias `Task`, entrées périmées, `.armadai/.gitignore`, modèles déterministes, inventaire des commandes. En cas de contradiction avec §3–§6, le plan prime. Corrections de texte : `--json` est une option nouvelle ; R2 = « fusion tracée par le manifeste » (pas de marqueur) ; `unlink` est modifié (§6).
