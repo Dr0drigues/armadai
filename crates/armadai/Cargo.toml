@@ -4,7 +4,7 @@ version = "1.0.0-rc.5"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "ArmadAI — AI agent orchestrator. Define, manage and run specialized agents from Markdown files."
+description = "ArmadAI — declarative agent teams. Describe agents once in Markdown or YAML, compile them for Claude Code, Codex, OpenCode and Copilot."
 default-run = "armadai"
 
 [[bin]]

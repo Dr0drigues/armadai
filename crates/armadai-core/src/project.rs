@@ -359,7 +359,8 @@ pub fn resolve_agent(agent_ref: &AgentRef, project_root: &Path) -> anyhow::Resul
                 Ok(path)
             } else {
                 anyhow::bail!(
-                    "Registry agent '{registry}' not found at {}. Run `armadai sync` first.",
+                    "Registry agent '{registry}' not found at {}. The command that filled this cache was removed; \
+                     reference the agent by `name:` or `path:` instead.",
                     path.display()
                 );
             }
