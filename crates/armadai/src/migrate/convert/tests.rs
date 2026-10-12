@@ -59,6 +59,8 @@ fn old(agents: Vec<Agent>) -> OldProject {
         prompts: Vec::new(),
         skills: Vec::new(),
         declared_descriptions: BTreeMap::new(),
+        leftovers: BTreeMap::new(),
+        fragment_sources: Vec::new(),
         load_warnings: Vec::new(),
     }
 }
@@ -119,11 +121,11 @@ fn empty_or_non_ascii_h1_gets_a_numbered_id() {
     let (p, _, r) = convert(&old(vec![agent("Développeur"), agent("日本"), agent("")]));
     assert_eq!(
         p.agents.keys().collect::<Vec<_>>(),
-        ["agent-2", "agent-3", "dveloppeur"]
+        ["agent-2", "agent-3", "developpeur"]
     );
     assert_eq!(
         r.warnings.iter().filter(|w| w.contains("renamed")).count(),
-        2
+        3
     );
     assert_valid(&p);
 }
@@ -568,4 +570,70 @@ fn orchestration_names_resolve_by_file_stem_too() {
     }));
     let (p, _, _) = convert(&o);
     assert_eq!(p.flows["orchestration"].links[0].from, "dev-lead");
+}
+
+#[test]
+fn leftover_text_is_appended_verbatim_and_reported() {
+    let a = agent("Dev");
+    let mut o = old(vec![a.clone()]);
+    o.leftovers.insert(
+        a.source.clone(),
+        crate::migrate::leftover::Leftover {
+            kept: vec![
+                ("preamble".into(), "Intro.".into()),
+                ("## Examples".into(), "## Examples\n\nEx.".into()),
+            ],
+            unknown_metadata: vec!["flavour".into()],
+        },
+    );
+    let (p, _, r) = convert(&o);
+    assert_eq!(
+        p.agents["dev"].body,
+        "You are Dev.\nMore.\n\n## Instructions\n\nDo it.\n\nIntro.\n\n## Examples\n\nEx."
+    );
+    for label in ["preamble", "## Examples"] {
+        assert!(
+            r.warnings
+                .contains(&format!("agent `dev`: kept verbatim: {label}")),
+            "{:?}",
+            r.warnings
+        );
+    }
+    assert!(dropped(&r, "dev").contains(&"metadata.flavour".to_string()));
+}
+
+#[test]
+fn provider_and_derived_descriptions_are_grouped_in_the_report() {
+    let names = ["A", "B", "C", "D"];
+    let (_, _, r) = convert(&old(names.iter().map(|n| agent(n)).collect()));
+    let out = r.render();
+    assert!(out.contains("provider: dropped for 4 agents"), "{out}");
+    assert!(!out.contains("a: provider"), "{out}");
+    assert!(
+        out.contains(
+            "description derived from the first line of the prompt for 4 agents: a, b, c, d"
+        ),
+        "{out}"
+    );
+    let (_, _, r) = convert(&old(vec![agent("A")]));
+    assert!(
+        r.render()
+            .contains("agent `a`: description derived from the first line of its prompt"),
+        "{}",
+        r.render()
+    );
+}
+
+#[test]
+fn common_accents_are_transliterated_and_the_rename_reported() {
+    let (p, _, r) = convert(&old(vec![agent("Développeur Œuvre"), agent("Revue")]));
+    assert!(p.agents.contains_key("developpeur-oeuvre"));
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("`Développeur Œuvre` renamed to `developpeur-oeuvre`")),
+        "{:?}",
+        r.warnings
+    );
+    assert!(!r.warnings.iter().any(|w| w.contains("`Revue` renamed")));
 }

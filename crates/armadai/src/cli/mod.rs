@@ -122,7 +122,9 @@ pub enum Command {
             Reads the legacy config (.armadai/config.yaml, armadai.yaml or armadai.yml), its \
             agents, declared agents, prompts and skills, and writes the new format under \
             .armadai/. The legacy files are first copied to .armadai/.migrated/<timestamp>/, \
-            then removed from .armadai/ (files elsewhere are left in place). The report lists \
+            then removed: .armadai/ legacy content and the config file that was read (a root \
+            armadai.yaml/armadai.yml is removed when it is the one read). Other files are left \
+            in place and reported. The report lists \
             the files written, every dropped field with its reason, and the warnings.\n\n\
             Note: 'armadai link' reads the new format only from step 2 of the v1 work.",
         after_help = "Examples:\n  \
@@ -137,7 +139,8 @@ pub enum Command {
         /// Convert and validate without writing anything; print the report
         #[arg(long)]
         dry_run: bool,
-        /// Migrate again although .armadai/project.yaml already exists
+        /// Migrate again although .armadai/project.yaml already exists; the legacy
+        /// project must first be restored (e.g. from .armadai/.migrated/<timestamp>/)
         #[arg(long)]
         force: bool,
     },

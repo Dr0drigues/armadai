@@ -41,11 +41,27 @@ impl Report {
             .map(|p| p.display().to_string())
             .collect();
         written.sort();
+        // one line for the field every legacy agent has
+        let providers = self
+            .dropped
+            .iter()
+            .filter(|d| d.field == "provider")
+            .count();
         let mut dropped: Vec<String> = self
             .dropped
             .iter()
+            .filter(|d| d.field != "provider")
             .map(|d| format!("{}: {} ({})", d.subject, d.field, d.reason))
             .collect();
+        if providers > 0 {
+            let reason = (self.dropped.iter())
+                .find(|d| d.field == "provider")
+                .map_or("", |d| d.reason.as_str());
+            let s = if providers > 1 { "s" } else { "" };
+            dropped.push(format!(
+                "provider: dropped for {providers} agent{s} ({reason})"
+            ));
+        }
         dropped.sort();
         dropped.dedup();
         let mut warnings = self.warnings.clone();
@@ -99,7 +115,7 @@ mod tests {
         assert_eq!(a.render(), b.render());
         assert_eq!(
             a.render(),
-            "Written (2):\n  a\n  b\nDropped (2):\n  a: timeout (r)\n  z: provider (r)\n\
+            "Written (2):\n  a\n  b\nDropped (2):\n  a: timeout (r)\n  provider: dropped for 1 agent (r)\n\
              Warnings (2):\n  w1\n  w2\n"
         );
     }

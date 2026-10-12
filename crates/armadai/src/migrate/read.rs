@@ -9,6 +9,8 @@ use armadai_core::project::{AgentRef, ProjectConfig};
 use armadai_core::prompt::Prompt;
 use armadai_core::{agent_decl, agent_source, parser, project};
 
+use super::leftover::{Leftover, leftover};
+
 /// Legacy config files, in the order the legacy loader prefers them.
 pub const CONFIG_FILES: [&str; 3] = [".armadai/config.yaml", "armadai.yaml", "armadai.yml"];
 
@@ -29,6 +31,10 @@ pub struct OldProject {
     pub skills: Vec<OldSkill>,
     /// Declared agent name -> its `description:` in `agents.yaml`.
     pub declared_descriptions: BTreeMap<String, String>,
+    /// Agent `.md` source -> the text the legacy parser left out of it.
+    pub leftovers: BTreeMap<PathBuf, Leftover>,
+    /// Prompt fragments composed into declared agents.
+    pub fragment_sources: Vec<PathBuf>,
     pub load_warnings: Vec<String>,
 }
 
@@ -65,9 +71,16 @@ pub fn read_old(root: &Path) -> anyhow::Result<OldProject> {
         }
     }
     let mut agents = Vec::new();
+    let mut leftovers = BTreeMap::new();
     for p in &paths {
         match parser::parse_agent_file(p) {
-            Ok(a) => agents.push(a),
+            Ok(a) => {
+                // the parser read it a moment ago: a failure here is a real I/O error
+                let raw = std::fs::read_to_string(p)
+                    .with_context(|| format!("cannot read {}", p.display()))?;
+                leftovers.insert(p.clone(), leftover(&raw));
+                agents.push(a)
+            }
             Err(e) => warnings.push(format!(
                 "agent not migrated: failed to parse {}: {e:#}",
                 p.display()
@@ -78,6 +91,7 @@ pub fn read_old(root: &Path) -> anyhow::Result<OldProject> {
     // Declared agents. Unlike `agent_source::load_all_agents`, a slug collision does
     // not drop an agent here: `convert` renames it instead, so nothing is lost.
     let mut declared_descriptions = BTreeMap::new();
+    let mut fragment_sources: Vec<PathBuf> = Vec::new();
     let decls_path = agent_source::declarations_path(&root);
     if decls_path.is_file() {
         let decls = agent_decl::load(&decls_path)?;
@@ -97,6 +111,16 @@ pub fn read_old(root: &Path) -> anyhow::Result<OldProject> {
             });
             match built {
                 Ok(a) => {
+                    for step in &d.prompt {
+                        let name = match step {
+                            agent_decl::PromptStep::Plain(n) => n,
+                            agent_decl::PromptStep::Parameterised { fragment, .. } => fragment,
+                        };
+                        let used = fragments.iter().find(|f| &f.name == name);
+                        if let Some(f) = used.filter(|f| !fragment_sources.contains(&f.source)) {
+                            fragment_sources.push(f.source.clone());
+                        }
+                    }
                     if let Some(desc) = &d.description {
                         declared_descriptions.insert(d.name.clone(), desc.clone());
                     }
@@ -144,6 +168,8 @@ pub fn read_old(root: &Path) -> anyhow::Result<OldProject> {
         prompts,
         skills,
         declared_descriptions,
+        leftovers,
+        fragment_sources,
         load_warnings: warnings,
     })
 }

@@ -30,13 +30,14 @@ const MAX_SKILL_DESCRIPTION: usize = 1024;
 const ORCHESTRATION_FLOW: &str = "orchestration";
 const NO_ENGINE: &str = "the execution engine was removed";
 const NO_READER: &str = "no reader in the new format";
+pub const PROVIDER_REASON: &str = "the target tool picks its own provider";
 
 pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
     let mut r = Report::default();
     r.warnings.extend(old.load_warnings.iter().cloned());
     r.warn("YAML comments of the legacy files are not preserved; review the backup");
     r.warn(
-        "fields not understood by the legacy loader are not detected (it ignores them); \
+        "unknown keys of the legacy YAML files (config, agents.yaml) are not detected (the legacy loader ignores them); \
          review the backup",
     );
 
@@ -44,6 +45,7 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
     let mut taken = BTreeSet::new();
     let mut agents = BTreeMap::new();
     let mut ids: Vec<(String, &OldAgent)> = Vec::new();
+    let mut derived = Vec::new();
     for (i, a) in old.agents.iter().enumerate() {
         let id = unique_id(&a.name, &format!("agent-{}", i + 1), &mut taken, &mut r);
         if !a.source.starts_with(&old.root) {
@@ -52,8 +54,25 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
                 a.source.display()
             ));
         }
-        agents.insert(id.clone(), convert_agent(&id, a, old, &mut r));
+        let (agent, was_derived) = convert_agent(&id, a, old, &mut r);
+        if was_derived {
+            derived.push(id.clone());
+        }
+        agents.insert(id.clone(), agent);
         ids.push((id, a));
+    }
+    if derived.len() <= 3 {
+        for id in &derived {
+            r.warn(format!(
+                "agent `{id}`: description derived from the first line of its prompt"
+            ));
+        }
+    } else {
+        r.warn(format!(
+            "description derived from the first line of the prompt for {} agents: {}",
+            derived.len(),
+            derived.join(", ")
+        ));
     }
     let resolve = |reference: &str| -> Option<String> {
         ids.iter()
@@ -133,7 +152,7 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
 
 /// `[a-z0-9][a-z0-9-]{0,63}` from `name`, unique within `taken`; a rename is reported.
 fn unique_id(name: &str, fallback: &str, taken: &mut BTreeSet<String>, r: &mut Report) -> String {
-    let mut base: String = slugify(name).chars().take(64).collect();
+    let mut base: String = slugify(&transliterate(name)).chars().take(64).collect();
     base = base.trim_end_matches('-').to_string();
     if base.is_empty() {
         base = fallback.to_string();
@@ -153,20 +172,54 @@ fn unique_id(name: &str, fallback: &str, taken: &mut BTreeSet<String>, r: &mut R
     id
 }
 
+/// Common Latin accents folded to ASCII, so `slugify` keeps the letter instead of dropping it.
+fn transliterate(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.to_lowercase().chars() {
+        match c {
+            'é' | 'è' | 'ê' | 'ë' => out.push('e'),
+            'à' | 'â' | 'ä' => out.push('a'),
+            'î' | 'ï' => out.push('i'),
+            'ô' | 'ö' => out.push('o'),
+            'ù' | 'û' | 'ü' => out.push('u'),
+            'ç' => out.push('c'),
+            'œ' => out.push_str("oe"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// First non-empty line of `text`, cut to `max` characters.
 fn first_line(text: &str, max: usize) -> Option<String> {
     let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
     Some(line.chars().take(max).collect())
 }
 
-fn convert_agent(id: &str, a: &OldAgent, old: &OldProject, r: &mut Report) -> Agent {
-    let body = a.composed_prompt();
+/// The agent, and whether its description was derived.
+fn convert_agent(id: &str, a: &OldAgent, old: &OldProject, r: &mut Report) -> (Agent, bool) {
+    let mut body = a.composed_prompt();
+    if let Some(l) = old.leftovers.get(&a.source) {
+        for (label, text) in &l.kept {
+            if !body.is_empty() {
+                body.push_str("\n\n");
+            }
+            body.push_str(text);
+            r.warn(format!("agent `{id}`: kept verbatim: {label}"));
+        }
+        for key in &l.unknown_metadata {
+            r.drop(
+                id,
+                &format!("metadata.{key}"),
+                "ignored by the legacy loader",
+            );
+        }
+    }
+    let mut derived = false;
     let description = match old.declared_descriptions.get(&a.name) {
         Some(d) if !d.trim().is_empty() => d.clone(),
         _ => {
-            r.warn(format!(
-                "agent `{id}`: description derived from the first line of its prompt"
-            ));
+            derived = true;
             first_line(&body, MAX_DERIVED_DESCRIPTION).unwrap_or_else(|| a.name.clone())
         }
     };
@@ -190,11 +243,7 @@ fn convert_agent(id: &str, a: &OldAgent, old: &OldProject, r: &mut Report) -> Ag
     };
     convert_model(id, &m.provider, m.model.as_deref(), &mut front, r);
 
-    r.drop(
-        id,
-        "provider",
-        format!("`{}`: the target tool picks its own provider", m.provider),
-    );
+    r.drop(id, "provider", PROVIDER_REASON);
     let present = [
         ("command", m.command.is_some(), NO_READER),
         ("args", m.args.is_some(), NO_READER),
@@ -217,7 +266,7 @@ fn convert_agent(id: &str, a: &OldAgent, old: &OldProject, r: &mut Report) -> Ag
             r.drop(id, field, reason);
         }
     }
-    Agent { front, body }
+    (Agent { front, body }, derived)
 }
 
 fn convert_model(

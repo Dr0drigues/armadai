@@ -122,3 +122,17 @@ fn new_format_never_shows_the_invitation() {
     let out = validate(&dir, &[]).success().get_output().stdout.clone();
     assert!(!String::from_utf8_lossy(&out).contains("legacy format"));
 }
+
+#[test]
+fn json_on_a_legacy_project_warns_on_stderr_only() {
+    let dir = project(&[("armadai.yaml", "agents: []\n")]);
+    let a = validate(&dir, &["--json"]);
+    let out = String::from_utf8_lossy(&a.get_output().stdout).into_owned();
+    let err = String::from_utf8_lossy(&a.get_output().stderr).into_owned();
+    assert!(
+        err.contains("--json only applies to new-format projects"),
+        "{err}"
+    );
+    assert!(!out.contains("--json"), "{out}");
+    assert!(out.trim_end().ends_with(INVITE), "{out}");
+}

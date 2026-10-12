@@ -1,13 +1,14 @@
 //! `armadai migrate`: a legacy project converted to the canonical `.armadai/` model.
 
 pub mod convert;
+pub mod leftover;
 pub mod read;
 pub mod report;
 pub mod write;
 
 use std::path::Path;
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 
 use convert::SkillCopy;
 use read::OldProject;
@@ -17,7 +18,7 @@ type Convert = fn(&OldProject) -> (armadai_model::Project, Vec<SkillCopy>, Repor
 
 /// Migrate the legacy project at `root`. With `dry_run`, nothing under `root` changes.
 pub fn run(root: &Path, dry_run: bool, force: bool) -> anyhow::Result<Report> {
-    run_with(root, dry_run, force, convert::convert)
+    run_with(root, dry_run, force, convert::convert, |_| {})
 }
 
 fn rendered_errors(dir: &Path) -> Option<String> {
@@ -26,7 +27,14 @@ fn rendered_errors(dir: &Path) -> Option<String> {
         .then(|| ds.iter().map(|d| d.render()).collect::<Vec<_>>().join("\n"))
 }
 
-fn run_with(root: &Path, dry_run: bool, force: bool, conv: Convert) -> anyhow::Result<Report> {
+/// `after_write` runs once the new files are written (a test seam; `run` passes a no-op).
+fn run_with(
+    root: &Path,
+    dry_run: bool,
+    force: bool,
+    conv: Convert,
+    after_write: fn(&Path),
+) -> anyhow::Result<Report> {
     if root.join(".armadai/project.yaml").exists() && !force {
         bail!(
             "{} is already migrated (use --force to redo it)",
@@ -56,8 +64,16 @@ fn run_with(root: &Path, dry_run: bool, force: bool, conv: Convert) -> anyhow::R
         .unwrap_or(0);
     let backup = write::backup(&root, &plan, secs)?;
     report.backup = Some(backup.clone());
-    write::remove_legacy(&root, &plan)?;
-    report.written = write::write_all(&project, &copies, &root, &root, &root.join(&backup))?;
+    let interrupted = || {
+        format!(
+            "migration interrupted; the previous project is in {}",
+            backup.display()
+        )
+    };
+    write::remove_legacy(&root, &plan).with_context(interrupted)?;
+    report.written = write::write_all(&project, &copies, &root, &root, &root.join(&backup))
+        .with_context(interrupted)?;
+    after_write(&root);
     if let Some(errors) = rendered_errors(&root) {
         bail!(
             "the migrated project does not validate; the previous project is in {}:\n{errors}",
@@ -141,7 +157,7 @@ mod tests {
             std::fs::copy(src.join(f), dir.path().join(".armadai").join(f)).unwrap();
         }
         let before = tree(dir.path());
-        let e = run_with(dir.path(), false, false, invalid)
+        let e = run_with(dir.path(), false, false, invalid, |_| {})
             .unwrap_err()
             .to_string();
         assert!(
@@ -149,6 +165,41 @@ mod tests {
             "{e}"
         );
         assert_eq!(tree(dir.path()), before);
+    }
+
+    #[test]
+    fn an_output_that_does_not_validate_fails_and_names_the_backup() {
+        let _iso = armadai_core::test_support::IsolatedConfigDir::enter();
+        let dir = tempfile::tempdir().unwrap();
+        let src = fixture("demo-rust-team").join(".armadai");
+        std::fs::create_dir_all(dir.path().join(".armadai/agents")).unwrap();
+        for f in ["config.yaml", "agents/rust-reviewer.md"] {
+            std::fs::copy(src.join(f), dir.path().join(".armadai").join(f)).unwrap();
+        }
+        let corrupt = |root: &Path| {
+            std::fs::create_dir_all(root.join(".armadai/flows")).unwrap();
+            std::fs::write(
+                root.join(".armadai/flows/bad.yaml"),
+                "steps:\n  a: { agent: ghost }\n",
+            )
+            .unwrap();
+        };
+        let e = run_with(dir.path(), false, false, convert::convert, corrupt)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("does not validate")
+                && e.contains("the previous project is in .armadai/.migrated/"),
+            "{e}"
+        );
+        let migrated = dir.path().join(".armadai/.migrated");
+        let backup = std::fs::read_dir(&migrated)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(backup.join(".armadai/config.yaml").is_file());
     }
 
     #[test]

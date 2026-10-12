@@ -58,6 +58,9 @@ pub async fn execute(path: Option<PathBuf>, json: bool) -> anyhow::Result<()> {
     if target_path.join(".armadai/project.yaml").is_file() {
         return execute_new(&target_path, json);
     }
+    if json {
+        eprintln!("warning: --json only applies to new-format projects; ignored");
+    }
 
     // Auto-detect mode
     let pack_yaml = target_path.join("pack.yaml");

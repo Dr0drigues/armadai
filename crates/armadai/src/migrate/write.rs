@@ -51,20 +51,31 @@ fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
 pub fn plan(old: &OldProject, copies: &[SkillCopy]) -> Plan {
     let root = &old.root;
     let mut plan = Plan::default();
-    let replaced = CONFIG_FILES
-        .iter()
-        .chain(REPLACED.iter())
-        .map(PathBuf::from)
+    // only the config file actually read goes; another one is left, reported below
+    let config = rel(root, &old.config_file);
+    let replaced = std::iter::once(config.clone())
+        .chain(REPLACED.iter().map(PathBuf::from))
         .filter(|p| root.join(p).exists());
     for p in replaced {
         plan.backup.push(p.clone());
         plan.remove.push(p);
+    }
+    for other in CONFIG_FILES.iter().map(PathBuf::from) {
+        if other != config && root.join(&other).is_file() {
+            plan.warnings.push(format!(
+                "legacy file left in place: {} (not read: {} takes precedence)",
+                other.display(),
+                config.display()
+            ));
+            plan.backup.push(other);
+        }
     }
 
     // every source the conversion read from inside the project
     let mut sources: Vec<PathBuf> = old.agents.iter().map(|a| a.source.clone()).collect();
     sources.extend(old.prompts.iter().map(|p| p.source.clone()));
     sources.extend(copies.iter().map(|c| c.from.clone()));
+    sources.extend(old.fragment_sources.iter().cloned());
     let removed = |p: &Path| plan.remove.iter().any(|r| p.starts_with(root.join(r)));
     let mut left = Vec::new();
     for s in sources.iter().filter(|s| s.starts_with(root)) {
