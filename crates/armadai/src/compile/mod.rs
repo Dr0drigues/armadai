@@ -3,8 +3,6 @@
 //! A compiler only plans: it returns the files to write and the conformance report.
 //! Writing goes through `linker::manifest` (whole files) and `compile::patch`
 //! (files shared with the user, such as `.claude/settings.json`).
-// Temporary: not wired into `link` until step 2's Task 6, which removes this allow.
-#![allow(dead_code)]
 
 pub mod claude;
 pub mod claude_settings;
@@ -25,7 +23,7 @@ pub enum ArtifactKind {
     Agent,
     Skill,
     Instructions,
-    Settings,
+    /// Copied from `.armadai/native/<target>/`; its path is relative to the project root.
     Native,
 }
 
@@ -84,8 +82,60 @@ pub fn read_tree(dir: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>)>> {
     Ok(out)
 }
 
+/// The compiler of a link target.
+pub fn compiler_for(target: &str) -> anyhow::Result<Box<dyn Compiler>> {
+    Ok(match target {
+        "claude" => Box::new(claude::ClaudeCompiler),
+        "codex" => Box::new(legacy_targets::LegacyCompiler { target: "codex" }),
+        "copilot" => Box::new(legacy_targets::LegacyCompiler { target: "copilot" }),
+        "opencode" => Box::new(legacy_targets::LegacyCompiler { target: "opencode" }),
+        _ => bail!(
+            "Unknown link target: '{target}'. {}",
+            crate::linker::supported_targets_sentence()
+        ),
+    })
+}
+
+/// Where a target writes when `--output` and `outputs` say nothing.
+pub fn default_output(target: &str) -> &'static str {
+    match target {
+        "codex" => ".codex",
+        "copilot" => ".github",
+        "opencode" => ".opencode",
+        _ => ".claude",
+    }
+}
+
+/// Files of the legacy format: a project holding one of them and no
+/// `.armadai/project.yaml` must be migrated first.
+const LEGACY_CONFIGS: [&str; 3] = [".armadai/config.yaml", "armadai.yaml", "armadai.yml"];
+
+/// The nearest ancestor of `cwd` holding `.armadai/project.yaml`, without crossing a
+/// `.git` boundary. A legacy project found first is an error asking for `migrate`.
+pub fn find_project(cwd: &Path) -> anyhow::Result<PathBuf> {
+    let mut dir = Some(cwd);
+    while let Some(d) = dir {
+        if d.join(".armadai/project.yaml").is_file() {
+            return Ok(d.to_path_buf());
+        }
+        if LEGACY_CONFIGS.iter().any(|c| d.join(c).is_file()) {
+            bail!(
+                "{} uses the legacy format, run `armadai migrate`",
+                d.display()
+            );
+        }
+        if d.join(".git").exists() {
+            break;
+        }
+        dir = d.parent();
+    }
+    bail!(
+        "no ArmadAI project found (.armadai/project.yaml); run `armadai init --project`, \
+         or `armadai migrate` for a legacy project"
+    )
+}
+
 pub trait Compiler {
-    fn target(&self) -> &'static str;
     /// `root` is the project root (the directory holding `.armadai/`).
     fn compile(&self, project: &Project, root: &Path) -> anyhow::Result<Plan>;
 }

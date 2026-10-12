@@ -60,17 +60,8 @@ pub fn link_agents(project: &Project, target: &str) -> Vec<LinkAgent> {
             output_format: None,
             context: None,
             description: Some(a.front.description.clone()),
-            tags: a.front.tags.clone(),
-            stacks: Vec::new(),
-            scope: Vec::new(),
             model: model_for(a, target),
-            model_fallback: Vec::new(),
             temperature: a.front.temperature.unwrap_or(0.7),
-            provider: match target {
-                "claude" => Some("anthropic".into()),
-                "codex" => Some("openai".into()),
-                _ => None,
-            },
         })
         .collect()
 }
@@ -80,10 +71,6 @@ pub struct LegacyCompiler {
 }
 
 impl Compiler for LegacyCompiler {
-    fn target(&self) -> &'static str {
-        self.target
-    }
-
     fn compile(&self, project: &Project, root: &Path) -> anyhow::Result<Plan> {
         let t = self.target;
         let linker = create_linker(t)?;
@@ -93,7 +80,7 @@ impl Compiler for LegacyCompiler {
             Some(agents.remove(i))
         });
         let mut plan = Plan::default();
-        let files = linker.generate(&agents, coordinator.as_ref(), &[]);
+        let files = linker.generate(&agents, coordinator.as_ref());
         let default_dir = Path::new(linker.default_output_dir());
         for (i, f) in files.into_iter().enumerate() {
             // linkers emit one file per agent, in order, then the coordinator's file

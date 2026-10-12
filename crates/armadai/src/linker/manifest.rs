@@ -70,10 +70,10 @@ impl ProducedBy {
         }
     }
 
-    pub fn prompt(name: impl Into<String>) -> Self {
+    pub fn native(path: impl Into<String>) -> Self {
         Self {
-            kind: ProducedByKind::Prompt,
-            name: name.into(),
+            kind: ProducedByKind::Native,
+            name: path.into(),
         }
     }
 }
@@ -85,6 +85,10 @@ pub enum ProducedByKind {
     Coordinator,
     Skill,
     Prompt,
+    /// A file copied as is from `.armadai/native/<target>/`, relative to the
+    /// project root (not the target's root). An older binary reads a manifest
+    /// holding this value as unusable (`Lookup::Fallback`).
+    Native,
 }
 
 /// `Created`: `link` wrote this path, **or** found it already present with
@@ -625,6 +629,17 @@ fn read(root: &Path) -> Option<Manifest> {
     Some(manifest)
 }
 
+/// Create `<root>/.armadai/.gitignore` when it is missing: `.armadai/` is versioned,
+/// but the link manifest and migration backups describe this machine only.
+pub fn ensure_gitignore(root: &Path) -> std::io::Result<()> {
+    let path = root.join(".armadai/.gitignore");
+    if path.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(root.join(".armadai"))?;
+    std::fs::write(path, "link-manifest.yaml\n.migrated/\n")
+}
+
 /// Replace `target`'s data with `root`/`created_dirs`/`entries`, leaving
 /// every other target's data in the manifest untouched (design §3/§8:
 /// grouped by target, full replacement within one target only — a project
@@ -742,7 +757,7 @@ pub fn write_files(
     target_name: &str,
     output_dir: &Path,
     target_root: &Path,
-    files: Vec<(PathBuf, String, ProducedBy)>,
+    files: Vec<(PathBuf, Vec<u8>, ProducedBy)>,
     force: bool,
     patched: &[PatchedFile],
 ) -> std::io::Result<Vec<FileOutcome>> {
@@ -777,14 +792,14 @@ pub fn write_files(
             // stranger's to leave alone (design review R6 — see
             // `Outcome`'s own doc).
             let matches_expected = std::fs::read(&path)
-                .map(|actual| actual == content.as_bytes())
+                .map(|actual| actual == content)
                 .unwrap_or(false);
             if matches_expected {
                 manifest_entries.push(ManifestEntry {
                     path: relative_path,
                     produced_by,
                     outcome: Outcome::Created,
-                    digest: Some(digest_of(content.as_bytes())),
+                    digest: Some(digest_of(&content)),
                 });
                 outcomes.push(FileOutcome::UpToDate(path));
                 continue;
@@ -841,7 +856,7 @@ pub fn write_files(
             path: relative_path,
             produced_by,
             outcome: Outcome::Created,
-            digest: Some(digest_of(content.as_bytes())),
+            digest: Some(digest_of(&content)),
         });
         outcomes.push(FileOutcome::Wrote(path));
     }
@@ -1259,7 +1274,11 @@ mod tests {
             "claude",
             Path::new(".claude"),
             &target_root,
-            vec![(path.clone(), content.clone(), ProducedBy::agent("solo"))],
+            vec![(
+                path.clone(),
+                content.clone().into_bytes(),
+                ProducedBy::agent("solo"),
+            )],
             false,
             &[],
         )
@@ -1309,7 +1328,7 @@ mod tests {
             "claude",
             Path::new(".claude"),
             &target_root,
-            vec![(path.clone(), "hello".to_string(), ProducedBy::agent("solo"))],
+            vec![(path.clone(), b"hello".to_vec(), ProducedBy::agent("solo"))],
             false,
             &[],
         )
@@ -1355,7 +1374,7 @@ mod tests {
             &target_root,
             vec![(
                 path.clone(),
-                "# generated content\n".to_string(),
+                b"# generated content\n".to_vec(),
                 ProducedBy::agent("solo"),
             )],
             false,
@@ -1400,7 +1419,11 @@ mod tests {
             "claude",
             Path::new(".claude"),
             &target_root,
-            vec![(path.clone(), new_content.clone(), ProducedBy::agent("solo"))],
+            vec![(
+                path.clone(),
+                new_content.clone().into_bytes(),
+                ProducedBy::agent("solo"),
+            )],
             true,
             &[],
         )
@@ -1440,7 +1463,7 @@ mod tests {
             "claude",
             Path::new(".claude"),
             &target_root,
-            vec![(path.clone(), "v1".to_string(), ProducedBy::agent("solo"))],
+            vec![(path.clone(), b"v1".to_vec(), ProducedBy::agent("solo"))],
             false,
             &[],
         )
@@ -1456,7 +1479,7 @@ mod tests {
             "claude",
             Path::new(".claude"),
             &target_root,
-            vec![(path.clone(), "v2".to_string(), ProducedBy::agent("solo"))],
+            vec![(path.clone(), b"v2".to_vec(), ProducedBy::agent("solo"))],
             false,
             &[],
         )
@@ -1868,7 +1891,11 @@ mod tests {
                 "claude",
                 Path::new(".claude"),
                 &target_root,
-                vec![(path.clone(), generated, ProducedBy::agent("solo"))],
+                vec![(
+                    path.clone(),
+                    generated.into_bytes(),
+                    ProducedBy::agent("solo"),
+                )],
                 false,
                 &[],
             )

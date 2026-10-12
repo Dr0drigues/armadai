@@ -10,20 +10,11 @@ use super::{LinkAgent, Linker, OutputFile, slugify};
 pub struct CopilotLinker;
 
 impl Linker for CopilotLinker {
-    fn name(&self) -> &str {
-        "copilot"
-    }
-
     fn default_output_dir(&self) -> &str {
         ".github"
     }
 
-    fn generate(
-        &self,
-        agents: &[LinkAgent],
-        coordinator: Option<&LinkAgent>,
-        _sources: &[String],
-    ) -> Vec<OutputFile> {
+    fn generate(&self, agents: &[LinkAgent], coordinator: Option<&LinkAgent>) -> Vec<OutputFile> {
         let mut files: Vec<OutputFile> = agents.iter().map(generate_agent_file).collect();
 
         if let Some(coord) = coordinator {
@@ -134,13 +125,8 @@ mod tests {
                     .trim()
                     .to_string(),
             ),
-            tags: vec![],
-            stacks: vec![],
-            scope: vec![],
             model: None,
-            model_fallback: vec![],
             temperature: 0.7,
-            provider: None,
         }
     }
 
@@ -148,7 +134,7 @@ mod tests {
     fn test_generate_simple_agent() {
         let linker = CopilotLinker;
         let agents = vec![make_agent("Code Reviewer", "You review code for bugs.")];
-        let files = linker.generate(&agents, None, &[]);
+        let files = linker.generate(&agents, None);
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -174,15 +160,10 @@ mod tests {
             output_format: Some("Markdown report.".to_string()),
             context: Some("Python project.".to_string()),
             description: Some("You are a test agent.".to_string()),
-            tags: vec![],
-            stacks: vec![],
-            scope: vec![],
             model: None,
-            model_fallback: vec![],
             temperature: 0.7,
-            provider: None,
         }];
-        let files = linker.generate(&agents, None, &[]);
+        let files = linker.generate(&agents, None);
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -206,7 +187,7 @@ mod tests {
     fn test_agent_md_extension() {
         let linker = CopilotLinker;
         let agents = vec![make_agent("my-agent", "A simple agent.")];
-        let files = linker.generate(&agents, None, &[]);
+        let files = linker.generate(&agents, None);
 
         // Must use .agent.md extension for Copilot
         assert_eq!(
@@ -229,7 +210,7 @@ mod tests {
             make_agent("Vigie", "You watch from the mast."),
             make_agent("Charpentier", "You repair the hull."),
         ];
-        let files = linker.generate(&agents, Some(&coordinator), &[]);
+        let files = linker.generate(&agents, Some(&coordinator));
 
         // 2 agent files + copilot-instructions.md
         assert_eq!(files.len(), 3);
@@ -269,13 +250,8 @@ mod tests {
             output_format: None,
             context: None,
             description: Some("You lead the team.".to_string()),
-            tags: vec![],
-            stacks: vec![],
-            scope: vec![],
             model: None,
-            model_fallback: vec![],
             temperature: 0.7,
-            provider: None,
         };
         let agents = vec![make_agent("Worker", "You do the work.")];
 

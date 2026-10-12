@@ -28,10 +28,6 @@ const MAIN: &str = "the coordinator runs as the main session (CLAUDE.md), not as
 pub struct ClaudeCompiler;
 
 impl Compiler for ClaudeCompiler {
-    fn target(&self) -> &'static str {
-        T
-    }
-
     fn compile(&self, project: &Project, root: &Path) -> anyhow::Result<Plan> {
         let mut plan = Plan::default();
         let coordinator = project.manifest.coordinator.as_deref();

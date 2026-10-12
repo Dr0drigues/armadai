@@ -1,5 +1,5 @@
 === .github/agents/dev.agent.md ===
-DEV_SYSTEM_MARKER — you write the code.
+Writes code: "small" functions
 
 DEV_SYSTEM_MARKER — you write the code.
 
@@ -7,12 +7,10 @@ DEV_SYSTEM_MARKER — you write the code.
 
 DEV_SUBSECTION_MARKER — small functions.
 
-## Instructions
-
-DEV_INSTRUCTIONS_MARKER — tests first.
-
 === .github/copilot-instructions.md ===
 LEAD_SYSTEM_MARKER — you coordinate the team.
+
+## Instructions
 
 LEAD_INSTRUCTIONS_MARKER — delegate, then synthesize.
 
@@ -20,7 +18,25 @@ LEAD_INSTRUCTIONS_MARKER — delegate, then synthesize.
 
 | Agent | Description |
 |-------|-------------|
-| dev | DEV_SYSTEM_MARKER — you write the code. |
+| dev | Writes code: "small" functions |
 
 To delegate to a specialized agent, mention `@<agent-name>` in your prompt.
 
+=== .github/skills/review/SKILL.md ===
+---
+name: review
+description: Review checklist
+---
+REVIEW_MARKER
+
+=== report ===
+copilot: agent dev: compiled
+copilot: agent dev capabilities: not-compiled (not supported by this target yet (step 4))
+copilot: agent dev skills: not-compiled (not supported by this target yet (step 4))
+copilot: agent dev tier: not-compiled (Copilot agent files carry no model)
+copilot: agent lead: compiled (coordinator, rendered into the instructions file)
+copilot: agent lead tier: not-compiled (Copilot agent files carry no model)
+copilot: automation fmt: not-compiled (not supported by this target yet (step 4))
+copilot: flow ship: not-compiled (not supported by this target yet (step 4))
+copilot: policy delegation=strict: not-compiled (no delegation gate for this target (step 4))
+copilot: skill review: compiled

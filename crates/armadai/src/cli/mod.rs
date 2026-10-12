@@ -184,69 +184,64 @@ pub enum Command {
             armadai models list"
     )]
     Models(models::ModelsAction),
-    /// Generate native config files for AI assistants
+    /// Compile the project (.armadai/) into native config files for AI assistants
     #[command(
-        long_about = "Generate native config files for AI assistants.\n\n\
-            Reads project config (.armadai/config.yaml or armadai.yaml) and generates \
-            target-specific configuration files (e.g. .claude/agents/*.md for Claude Code, \
-            .github/agents/*.agent.md for GitHub Copilot). One source format, any target.",
+        long_about = "Compile the project into native config files for AI assistants.\n\n\
+            Reads .armadai/project.yaml and its folders (agents, skills, flows, \
+            automations), validates them, and writes each target's files (e.g. \
+            .claude/agents/*.md, CLAUDE.md and .claude/settings.json hooks for Claude Code). \
+            Prints a conformance report: what each target compiled, approximated or \
+            could not compile. A legacy project must be migrated first (armadai migrate).",
         after_help = "Examples:\n  \
-            armadai link --target claude\n  \
-            armadai link --target copilot --dry-run\n  \
-            armadai link --target claude --agents code-reviewer test-writer\n  \
-            armadai link --target claude --output .claude/agents --force"
+            armadai link\n  \
+            armadai link --target claude --dry-run\n  \
+            armadai link --target claude codex\n  \
+            armadai link --target claude --agents reviewer tester\n  \
+            armadai link --json"
     )]
     Link {
-        /// Target AI assistant
-        #[arg(long, short, value_enum)]
-        target: Option<crate::linker::LinkTarget>,
-        /// Model id for every agent, on targets that pick one model for all (opencode, copilot)
-        #[arg(long, short = 'm')]
-        model: Option<String>,
-        /// Coordinator agent whose prompt becomes the main context file
-        #[arg(long, short = 'C')]
-        coordinator: Option<String>,
-        /// Preview generated files without writing
+        /// Targets (default: `targets` of project.yaml, else claude)
+        #[arg(long, short, value_enum, num_args = 1..)]
+        target: Vec<crate::linker::LinkTarget>,
+        /// Preview generated files and the report without writing
         #[arg(long)]
         dry_run: bool,
-        /// Overwrite existing files without confirmation
+        /// Overwrite existing files that differ from what link writes
         #[arg(long)]
         force: bool,
-        /// Output directory (overrides config and defaults)
+        /// Output directory (one target only; overrides `outputs` of project.yaml)
         #[arg(long, short)]
         output: Option<std::path::PathBuf>,
-        /// Only link specific agents (by name)
+        /// Only write these agents' files (ids); CLAUDE.md and hooks are unaffected
         #[arg(long, num_args = 1..)]
         agents: Option<Vec<String>>,
+        /// Print the conformance report as JSON on stdout, and nothing else
+        #[arg(long)]
+        json: bool,
     },
-    /// Remove generated config files for AI assistants (reverse of link)
+    /// Remove what `link` wrote (reverse of link)
     #[command(
-        long_about = "Remove generated config files for AI assistants.\n\n\
-            Reverses the effect of `armadai link` by deleting the generated files. \
-            Uses the same resolution logic as link to determine which files to remove.",
+        long_about = "Remove what `armadai link` wrote.\n\n\
+            Reads the link manifest (.armadai/link-manifest.yaml): removes the files link \
+            wrote that are still unchanged, and only the ArmadAI hooks and CLAUDE.md block \
+            from files shared with you. Without a manifest, removes only files whose content \
+            still equals what link would write now.",
         after_help = "Examples:\n  \
-            armadai unlink --target claude\n  \
+            armadai unlink\n  \
             armadai unlink --target copilot --dry-run\n  \
-            armadai unlink --target claude --with-config\n  \
-            armadai unlink --target claude --agents code-reviewer test-writer"
+            armadai unlink --target claude --agents reviewer tester"
     )]
     Unlink {
-        /// Target AI assistant
-        #[arg(long, short, value_enum)]
-        target: Option<crate::linker::LinkTarget>,
-        /// Coordinator agent whose prompt becomes the main context file
-        #[arg(long, short = 'C')]
-        coordinator: Option<String>,
-        /// Preview files that would be removed without deleting
+        /// Targets (default: `targets` of project.yaml, else claude)
+        #[arg(long, short, value_enum, num_args = 1..)]
+        target: Vec<crate::linker::LinkTarget>,
+        /// Preview what would be removed without deleting
         #[arg(long)]
         dry_run: bool,
-        /// Also remove the project config file (.armadai/config.yaml or armadai.yaml)
-        #[arg(long)]
-        with_config: bool,
         /// Output directory (must match the one used during link)
         #[arg(long, short)]
         output: Option<std::path::PathBuf>,
-        /// Only unlink specific agents (by name)
+        /// Only unlink these agents' files (ids)
         #[arg(long, num_args = 1..)]
         agents: Option<Vec<String>>,
     },
@@ -423,21 +418,18 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::Skills(action) => skills::execute(action).await,
         Command::Link {
             target,
-            model,
-            coordinator,
             dry_run,
             force,
             output,
             agents,
-        } => link::execute(target, model, coordinator, dry_run, force, output, agents).await,
+            json,
+        } => link::execute(target, dry_run, force, output, agents, json).await,
         Command::Unlink {
             target,
-            coordinator,
             dry_run,
-            with_config,
             output,
             agents,
-        } => unlink::execute(target, coordinator, dry_run, with_config, output, agents).await,
+        } => unlink::execute(target, dry_run, output, agents).await,
         Command::Init {
             force,
             project,

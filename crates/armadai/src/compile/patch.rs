@@ -68,6 +68,34 @@ fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
     result.with_context(|| format!("cannot write {}", path.display()))
 }
 
+/// Everything [`apply_settings`] would refuse (symbolic link, unreadable or invalid
+/// JSON, a native key clash), checked without writing: run before any write.
+pub fn preflight_settings(
+    root: &Path,
+    rel: &Path,
+    entries: &[HookEntry],
+    keys: &BTreeMap<String, Value>,
+    previous: Option<&PatchedFile>,
+) -> anyhow::Result<()> {
+    let path = root.join(rel);
+    let prev = match previous.map(|p| &p.kind) {
+        Some(PatchKind::SettingsHooks(o)) => o.clone(),
+        _ => Owned::default(),
+    };
+    merge_settings(read(&path)?.as_deref(), entries, keys, &prev)
+        .map(|_| ())
+        .with_context(|| path.display().to_string())
+}
+
+/// Everything [`apply_markdown_block`] would refuse, checked without writing.
+pub fn preflight_markdown(root: &Path, rel: &Path) -> anyhow::Result<()> {
+    let path = root.join(rel);
+    if let Some(t) = read(&path)? {
+        block_span(&t, &path)?;
+    }
+    Ok(())
+}
+
 /// Merge hook `entries` and native `keys` into `root/rel` (a settings.json).
 pub fn apply_settings(
     root: &Path,

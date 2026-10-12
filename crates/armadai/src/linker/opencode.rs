@@ -14,20 +14,11 @@ use super::{LinkAgent, Linker, OutputFile, slugify};
 pub struct OpencodeLinker;
 
 impl Linker for OpencodeLinker {
-    fn name(&self) -> &str {
-        "opencode"
-    }
-
     fn default_output_dir(&self) -> &str {
         ".opencode"
     }
 
-    fn generate(
-        &self,
-        agents: &[LinkAgent],
-        coordinator: Option<&LinkAgent>,
-        _sources: &[String],
-    ) -> Vec<OutputFile> {
+    fn generate(&self, agents: &[LinkAgent], coordinator: Option<&LinkAgent>) -> Vec<OutputFile> {
         if agents.is_empty() && coordinator.is_none() {
             return Vec::new();
         }
@@ -149,20 +140,14 @@ mod tests {
             output_format: None,
             context: None,
             description: Some(system_prompt.lines().next().unwrap_or("").to_string()),
-            tags: vec![],
-            stacks: vec![],
-            scope: vec![],
             model: None,
-            model_fallback: vec![],
             temperature: 0.7,
-            provider: None,
         }
     }
 
     #[test]
     fn test_name_and_default_output_dir() {
         let linker = OpencodeLinker;
-        assert_eq!(linker.name(), "opencode");
         assert_eq!(linker.default_output_dir(), ".opencode");
     }
 
@@ -170,7 +155,7 @@ mod tests {
     fn test_generate_simple_agent() {
         let linker = OpencodeLinker;
         let agents = vec![make_agent("Code Reviewer", "You review code for bugs.")];
-        let files = linker.generate(&agents, None, &[]);
+        let files = linker.generate(&agents, None);
 
         assert_eq!(files.len(), 1);
         let f = &files[0];
@@ -197,15 +182,10 @@ mod tests {
             output_format: None,
             context: None,
             description: Some("You are a test agent.".to_string()),
-            tags: vec![],
-            stacks: vec![],
-            scope: vec![],
             model: Some("anthropic/claude-sonnet-4-5".to_string()),
-            model_fallback: vec![],
             temperature: 0.3,
-            provider: None,
         }];
-        let files = linker.generate(&agents, None, &[]);
+        let files = linker.generate(&agents, None);
 
         let f = &files[0];
         assert!(f.content.contains("model: anthropic/claude-sonnet-4-5\n"));
@@ -216,7 +196,7 @@ mod tests {
     fn test_generate_agent_default_temperature_omitted() {
         let linker = OpencodeLinker;
         let agents = vec![make_agent("Agent", "Prompt.")];
-        let files = linker.generate(&agents, None, &[]);
+        let files = linker.generate(&agents, None);
 
         assert!(!files[0].content.contains("temperature:"));
     }
@@ -231,15 +211,10 @@ mod tests {
             output_format: Some("JSON output.".to_string()),
             context: Some("Rust project.".to_string()),
             description: Some("You are a full agent.".to_string()),
-            tags: vec!["test".to_string()],
-            stacks: vec!["rust".to_string()],
-            scope: vec![],
             model: Some("anthropic/claude-sonnet-4-5".to_string()),
-            model_fallback: vec![],
             temperature: 0.5,
-            provider: None,
         }];
-        let files = linker.generate(&agents, None, &[]);
+        let files = linker.generate(&agents, None);
 
         let f = &files[0];
         assert!(f.content.contains("mode: subagent\n"));
@@ -257,7 +232,7 @@ mod tests {
             make_agent("Code Reviewer", "You review code."),
             make_agent("Test Writer", "You write tests."),
         ];
-        let files = linker.generate(&agents, None, &[]);
+        let files = linker.generate(&agents, None);
 
         assert_eq!(files.len(), 2);
         assert!(
@@ -275,7 +250,7 @@ mod tests {
     #[test]
     fn test_generate_empty_agents() {
         let linker = OpencodeLinker;
-        let files = linker.generate(&[], None, &[]);
+        let files = linker.generate(&[], None);
         assert!(files.is_empty());
     }
 
@@ -287,7 +262,7 @@ mod tests {
             make_agent("Vigie", "You watch from the mast."),
             make_agent("Charpentier", "You repair the hull."),
         ];
-        let files = linker.generate(&agents, Some(&coordinator), &[]);
+        let files = linker.generate(&agents, Some(&coordinator));
 
         // 2 agent files + instructions.md
         assert_eq!(files.len(), 3);
@@ -326,13 +301,8 @@ mod tests {
             output_format: None,
             context: None,
             description: Some("You lead the team.".to_string()),
-            tags: vec![],
-            stacks: vec![],
-            scope: vec![],
             model: None,
-            model_fallback: vec![],
             temperature: 0.7,
-            provider: None,
         };
         let agents = vec![make_agent("Worker", "You do the work.")];
 
@@ -353,7 +323,7 @@ mod tests {
             "Escaper",
             "Agent with \"quotes\" and \\backslash.",
         )];
-        let files = linker.generate(&agents, None, &[]);
+        let files = linker.generate(&agents, None);
         assert!(
             files[0]
                 .content

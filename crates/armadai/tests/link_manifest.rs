@@ -137,22 +137,22 @@ mod tests {
     fn project_with_coordinator_and_two_members() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
-        let agents = root.join("agents");
+        let agents = root.join(".armadai/agents");
         std::fs::create_dir_all(&agents).unwrap();
         write_two_member_config(&root);
         std::fs::write(
             agents.join("coord.md"),
-            "# coord\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou coordinate.\n",
+            "---\ndescription: coord\n---\nYou coordinate.\n",
         )
         .unwrap();
         std::fs::write(
             agents.join("member-a.md"),
-            "# member-a\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou work A.\n",
+            "---\ndescription: member-a\n---\nYou work A.\n",
         )
         .unwrap();
         std::fs::write(
             agents.join("member-b.md"),
-            "# member-b\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou work B.\n",
+            "---\ndescription: member-b\n---\nYou work B.\n",
         )
         .unwrap();
         dir
@@ -160,47 +160,38 @@ mod tests {
 
     fn write_two_member_config(root: &std::path::Path) {
         std::fs::write(
-            root.join("armadai.yaml"),
-            "agents:\n  - name: coord\n  - name: member-a\n  - name: member-b\n\
-             link:\n  target: claude\n  coordinator: coord\n",
+            root.join(".armadai/project.yaml"),
+            "schema_version: 1\ncoordinator: coord\n",
         )
         .unwrap();
     }
 
-    /// Rewrite the project config so `member-b` is no longer declared —
-    /// simulating the agent having been removed from the fleet, while
-    /// `coord` and `member-a` remain (so `project_declares_agents` still
-    /// holds and the fallback path, when exercised, still has something to
-    /// regenerate).
+    /// Remove `member-b` from the project — simulating the agent having
+    /// been removed from the fleet, while `coord` and `member-a` remain.
     fn drop_member_b(root: &std::path::Path) {
-        std::fs::write(
-            root.join("armadai.yaml"),
-            "agents:\n  - name: coord\n  - name: member-a\n\
-             link:\n  target: claude\n  coordinator: coord\n",
-        )
-        .unwrap();
+        std::fs::remove_file(root.join(".armadai/agents/member-b.md")).unwrap();
     }
 
-    /// Case 1 (issue #338, design §6 table row 1): a hand-written
-    /// `.claude/CLAUDE.md` predates `link`, which skips it and records
-    /// `outcome: skipped` — the inverse of "did nothing" is "do nothing",
-    /// so `unlink` must never touch it. Reused control: the genuinely
-    /// generated `member-a.md`/`member-b.md` must still be reclaimed.
+    /// Case 1 (issue #338, design §6 table row 1): a hand-written file at a
+    /// path `link` generates (`.claude/agents/member-a.md`) predates `link`,
+    /// which skips it and records `outcome: skipped` — the inverse of "did
+    /// nothing" is "do nothing", so `unlink` must never touch it. Control: the
+    /// generated `member-b.md` and the root `CLAUDE.md` link created are still
+    /// reclaimed.
     ///
-    /// Mutation this catches: if `link`'s write loop recorded `created`
-    /// (or any outcome carrying a digest that happens to match the
-    /// hand-written content) instead of `skipped` for a path it left
-    /// alone, `unlink` would delete a file the user wrote by hand.
+    /// Mutation this catches: if `link`'s write loop recorded `created` for a
+    /// path it left alone, `unlink` would delete a file the user wrote by hand.
     #[test]
     fn case1_hand_written_file_recorded_as_skipped_survives_unlink() {
         let dir = project_with_coordinator_and_two_members();
         let root = dir.path().join("project");
         let config = isolated_config(dir.path());
 
-        let claude_md_dir = root.join(".claude");
-        std::fs::create_dir_all(&claude_md_dir).unwrap();
+        let agents_dir = root.join(".claude/agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
         let hand_written = "# My own notes\n\nDo not touch this file, it is mine.\n";
-        std::fs::write(claude_md_dir.join("CLAUDE.md"), hand_written).unwrap();
+        let mine = agents_dir.join("member-a.md");
+        std::fs::write(&mine, hand_written).unwrap();
 
         let (link_ok, _, link_stderr) =
             run_armadai(&root, &config, &["link", "--target", "claude"]);
@@ -208,37 +199,37 @@ mod tests {
         assert!(manifest_path(&root).is_file(), "link must write a manifest");
 
         let manifest = read_manifest(&root);
-        assert!(
-            manifest.contains("outcome: skipped"),
-            "the manifest must record CLAUDE.md as skipped: {manifest}"
+        assert_eq!(
+            outcome_for(&manifest, ".claude/agents/member-a.md"),
+            "skipped"
+        );
+        assert_eq!(
+            outcome_for(&manifest, ".claude/agents/member-b.md"),
+            "created"
         );
         assert!(
-            manifest.contains("outcome: created"),
-            "the manifest must record the generated member files as created: {manifest}"
+            root.join("CLAUDE.md").is_file(),
+            "the coordinator's CLAUDE.md"
         );
 
         let (unlink_ok, unlink_stdout, unlink_stderr) =
             run_armadai(&root, &config, &["unlink", "--target", "claude"]);
         assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
 
-        let claude_md_path = claude_md_dir.join("CLAUDE.md");
-        assert!(
-            claude_md_path.exists(),
-            "a hand-written CLAUDE.md recorded as skipped must never be deleted"
-        );
         assert_eq!(
-            std::fs::read_to_string(&claude_md_path).unwrap(),
+            std::fs::read_to_string(&mine).unwrap(),
             hand_written,
-            "the surviving file's content must be exactly what the user wrote"
+            "a hand-written file recorded as skipped must never be deleted"
         );
         assert!(
             unlink_stdout.contains("hand-written") || unlink_stdout.contains("skipped"),
             "unlink must report why the file was kept: stdout={unlink_stdout}"
         );
-
-        // Control: genuinely generated, untouched files are still reclaimed.
-        assert!(!root.join(".claude/agents/member-a.md").exists());
-        assert!(!root.join(".claude/agents/member-b.md").exists());
+        assert!(!agents_dir.join("member-b.md").exists());
+        assert!(
+            !root.join("CLAUDE.md").exists(),
+            "the CLAUDE.md link created is removed once its block is gone"
+        );
     }
 
     /// Case 2 (issue #338, design §6 table row 2 — the orphan): an agent
@@ -322,18 +313,14 @@ mod tests {
     fn project_with_a_skill() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
-        let agents = root.join("agents");
+        let agents = root.join(".armadai/agents");
         let skill_dir = root.join(".armadai/skills/notes");
         std::fs::create_dir_all(&agents).unwrap();
         std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            root.join("armadai.yaml"),
-            "agents:\n  - name: solo\nskills:\n  - name: notes\nlink:\n  target: claude\n",
-        )
-        .unwrap();
+        std::fs::write(root.join(".armadai/project.yaml"), "schema_version: 1\n").unwrap();
         std::fs::write(
             agents.join("solo.md"),
-            "# solo\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou work alone.\n",
+            "---\ndescription: solo\n---\nYou work alone.\n",
         )
         .unwrap();
         std::fs::write(
@@ -390,11 +377,7 @@ mod tests {
         // pass this same assertion for an unrelated reason (it still
         // finds the skill via the still-declared config) and this test
         // would not be proving what its name says.
-        std::fs::write(
-            root.join("armadai.yaml"),
-            "agents:\n  - name: solo\nlink:\n  target: claude\n",
-        )
-        .unwrap();
+        std::fs::remove_dir_all(root.join(".armadai/skills/notes")).unwrap();
 
         let (unlink_ok, _, unlink_stderr) =
             run_armadai(&root, &config, &["unlink", "--target", "claude"]);
@@ -432,11 +415,7 @@ mod tests {
         let copied_skill_md = skill_dest.join("SKILL.md");
         assert!(copied_skill_md.is_file());
 
-        std::fs::write(
-            root.join("armadai.yaml"),
-            "agents:\n  - name: solo\nlink:\n  target: claude\n",
-        )
-        .unwrap();
+        std::fs::remove_dir_all(root.join(".armadai/skills/notes")).unwrap();
         std::fs::remove_file(manifest_path(&root)).expect("manifest must exist to delete");
 
         let (unlink_ok, _, unlink_stderr) =
@@ -456,16 +435,12 @@ mod tests {
     fn project_minimal() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
-        let agents = root.join("agents");
+        let agents = root.join(".armadai/agents");
         std::fs::create_dir_all(&agents).unwrap();
-        std::fs::write(
-            root.join("armadai.yaml"),
-            "agents:\n  - name: solo\nlink:\n  target: claude\n",
-        )
-        .unwrap();
+        std::fs::write(root.join(".armadai/project.yaml"), "schema_version: 1\n").unwrap();
         std::fs::write(
             agents.join("solo.md"),
-            "# solo\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou work alone.\n",
+            "---\ndescription: solo\n---\nYou work alone.\n",
         )
         .unwrap();
         dir
@@ -586,15 +561,11 @@ mod tests {
         assert!(manifest.contains(".codex/agents/solo.toml"));
 
         // Expand the roster and relink claude only.
-        let agents_dir = root.join("agents");
-        std::fs::write(
-            root.join("armadai.yaml"),
-            "agents:\n  - name: solo\n  - name: helper\nlink:\n  target: claude\n",
-        )
-        .unwrap();
+        let agents_dir = root.join(".armadai/agents");
+        std::fs::write(root.join(".armadai/project.yaml"), "schema_version: 1\n").unwrap();
         std::fs::write(
             agents_dir.join("helper.md"),
-            "# helper\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou help.\n",
+            "---\ndescription: helper\n---\nYou help.\n",
         )
         .unwrap();
 
@@ -827,17 +798,12 @@ mod tests {
         );
     }
 
-    /// Important fix 2 (post-review): `--agents` must narrow to the named
-    /// agents' own files *and* the coordinator's — an unnamed agent's file
-    /// and the coordinator's context document must both be left alone,
-    /// matching what the fallback actually does (verified by the review:
-    /// filtering the roster before extracting the coordinator silently
-    /// drops the coordinator from consideration too).
+    /// `--agents` narrows `unlink` to the named agents' own files: an unnamed
+    /// agent's file and the files shared with the user (the root `CLAUDE.md`
+    /// block, the settings hooks) are left alone.
     ///
-    /// Mutation this catches: if `produced_by.kind == Coordinator` entries
-    /// were still unconditionally included regardless of `--agents` (the
-    /// pre-fix behaviour), `.claude/CLAUDE.md` would be deleted here even
-    /// though `--agents member-a` never named the coordinator.
+    /// Mutation this catches: patched files removed whatever the filter, or the
+    /// filter ignored for agent entries.
     #[test]
     fn unlink_agents_filter_leaves_the_coordinator_and_unmatched_agents_alone() {
         let dir = project_with_coordinator_and_two_members();
@@ -848,7 +814,7 @@ mod tests {
             run_armadai(&root, &config, &["link", "--target", "claude"]);
         assert!(link_ok, "link must succeed: stderr={link_stderr}");
 
-        let claude_md = root.join(".claude/CLAUDE.md");
+        let claude_md = root.join("CLAUDE.md");
         let member_a = root.join(".claude/agents/member-a.md");
         let member_b = root.join(".claude/agents/member-b.md");
         assert!(claude_md.is_file());
@@ -872,8 +838,7 @@ mod tests {
         );
         assert!(
             claude_md.exists(),
-            "the coordinator's file must survive a --agents filter that doesn't name the \
-             coordinator, matching the fallback's own behaviour"
+            "the coordinator's CLAUDE.md block must survive a --agents filter"
         );
     }
 
@@ -1134,12 +1099,10 @@ mod tests {
     }
 
     /// Companion to `unlink_agents_filter_leaves_the_coordinator_and_unmatched_agents_alone`,
-    /// pinning the filter from the other direction (a test gap the review
-    /// found: `--agents` appears only once in this suite, and only
-    /// asserted survival — a mutation that unconditionally excludes every
-    /// `Coordinator`-kind entry whenever `--agents` is set would pass
-    /// that test too). Naming the coordinator explicitly must still
-    /// remove its document.
+    /// pinning the filter from the other direction: the files of every named
+    /// agent are removed, and naming the coordinator (which has no agent file:
+    /// it lives in CLAUDE.md) still leaves its block, removed only by a plain
+    /// unlink (next test).
     #[test]
     fn unlink_agents_filter_including_the_coordinators_name_still_removes_it() {
         let dir = project_with_coordinator_and_two_members();
@@ -1150,21 +1113,20 @@ mod tests {
             run_armadai(&root, &config, &["link", "--target", "claude"]);
         assert!(link_ok, "link must succeed: stderr={link_stderr}");
 
-        let claude_md = root.join(".claude/CLAUDE.md");
-        assert!(claude_md.is_file());
-
         let (unlink_ok, _, unlink_stderr) = run_armadai(
             &root,
             &config,
-            &["unlink", "--target", "claude", "--agents", "coord"],
+            &[
+                "unlink", "--target", "claude", "--agents", "coord", "member-a", "member-b",
+            ],
         );
         assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
 
+        assert!(!root.join(".claude/agents/member-a.md").exists());
+        assert!(!root.join(".claude/agents/member-b.md").exists());
         assert!(
-            !claude_md.exists(),
-            "naming the coordinator explicitly in --agents must still remove its \
-             document — proves the filter checks the name, not a blanket exclusion \
-             of Coordinator-kind entries"
+            root.join("CLAUDE.md").is_file(),
+            "a filtered unlink keeps the block"
         );
     }
 
@@ -1180,7 +1142,7 @@ mod tests {
             run_armadai(&root, &config, &["link", "--target", "claude"]);
         assert!(link_ok, "link must succeed: stderr={link_stderr}");
 
-        let claude_md = root.join(".claude/CLAUDE.md");
+        let claude_md = root.join("CLAUDE.md");
         assert!(claude_md.is_file());
 
         let (unlink_ok, _, unlink_stderr) =
@@ -1653,9 +1615,8 @@ mod tests {
         // generate different content — but nobody touches the linked
         // file itself.
         std::fs::write(
-            root.join("agents/solo.md"),
-            "# solo\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou work \
-             alone, updated.\n",
+            root.join(".armadai/agents/solo.md"),
+            "---\ndescription: solo\n---\nYou work alone, updated.\n",
         )
         .unwrap();
 
@@ -1913,9 +1874,9 @@ mod tests {
         std::fs::remove_file(&solo_file).unwrap();
         std::os::unix::fs::symlink(root.join("does-not-exist.md"), &solo_file).unwrap();
 
-        // Drop the manifest so `unlink` takes the #342 fallback — the
-        // path this test is about.
-        std::fs::remove_dir_all(root.join(".armadai")).unwrap();
+        // Drop the manifest so `unlink` takes the fallback — the path this
+        // test is about.
+        std::fs::remove_file(manifest_path(&root)).unwrap();
 
         let (dry_ok, dry_stdout, dry_stderr) = run_armadai(
             &root,
@@ -1978,22 +1939,18 @@ mod tests {
         let root = dir.path().join("project");
         let config = isolated_config(dir.path());
 
-        let claude_dir = root.join(".claude");
+        let claude_dir = root.join(".claude/agents");
         std::fs::create_dir_all(&claude_dir).unwrap();
         let hand_written = "# My own notes\n\nDo not touch this file, it is mine.\n";
-        std::fs::write(claude_dir.join("CLAUDE.md"), hand_written).unwrap();
+        std::fs::write(claude_dir.join("member-a.md"), hand_written).unwrap();
 
         for pass in 1..=3 {
-            // Change the coordinator's source between passes so the
-            // content `link` would generate for CLAUDE.md differs every
-            // time — the situation the reclaim is about, applied to a file
-            // that is not link's to reclaim.
+            // Change member-a's source between passes so the content `link`
+            // would generate differs every time — the situation the reclaim
+            // is about, applied to a file that is not link's to reclaim.
             std::fs::write(
-                root.join("agents/coord.md"),
-                format!(
-                    "# coord\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\n\
-                     You coordinate, revision {pass}.\n"
-                ),
+                root.join(".armadai/agents/member-a.md"),
+                format!("---\ndescription: member-a\n---\nYou work A, revision {pass}.\n"),
             )
             .unwrap();
 
@@ -2006,7 +1963,7 @@ mod tests {
 
             let manifest = read_manifest(&root);
             assert_eq!(
-                outcome_for(&manifest, ".claude/CLAUDE.md"),
+                outcome_for(&manifest, ".claude/agents/member-a.md"),
                 "skipped",
                 "pass {pass}: a file link never wrote must stay recorded as \
                  hand-written, whatever the manifest already said: {manifest}"
@@ -2017,7 +1974,7 @@ mod tests {
                  write — that digest is what would authorise deleting it: {manifest}"
             );
             assert_eq!(
-                std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap(),
+                std::fs::read_to_string(claude_dir.join("member-a.md")).unwrap(),
                 hand_written,
                 "pass {pass}: the file itself must be untouched"
             );
@@ -2027,13 +1984,13 @@ mod tests {
             run_armadai(&root, &config, &["unlink", "--target", "claude"]);
         assert!(unlink_ok, "unlink must succeed: stderr={unlink_stderr}");
         assert_eq!(
-            std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap(),
+            std::fs::read_to_string(claude_dir.join("member-a.md")).unwrap(),
             hand_written,
             "three links later, the hand-written file must still be there, untouched"
         );
         // Control: the generated files are still reclaimed.
-        assert!(!root.join(".claude/agents/member-a.md").exists());
         assert!(!root.join(".claude/agents/member-b.md").exists());
+        assert!(!root.join("CLAUDE.md").exists());
     }
 
     // ── issue #348, third round ────────────────────────────────────────
@@ -2231,16 +2188,12 @@ mod tests {
         // `real/`, above the project root — nothing within the project is
         // a symlink.
         let root = dir.path().join("real/project");
-        let agents = root.join("agents");
+        let agents = root.join(".armadai/agents");
         std::fs::create_dir_all(&agents).unwrap();
-        std::fs::write(
-            root.join("armadai.yaml"),
-            "agents:\n  - name: solo\nlink:\n  target: claude\n",
-        )
-        .unwrap();
+        std::fs::write(root.join(".armadai/project.yaml"), "schema_version: 1\n").unwrap();
         std::fs::write(
             agents.join("solo.md"),
-            "# solo\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou work alone.\n",
+            "---\ndescription: solo\n---\nYou work alone.\n",
         )
         .unwrap();
         std::os::unix::fs::symlink("real", dir.path().join("alias")).unwrap();
@@ -2309,18 +2262,14 @@ mod tests {
     fn project_with_a_nested_skill() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
-        let agents = root.join("agents");
+        let agents = root.join(".armadai/agents");
         let skill_dir = root.join(".armadai/skills/notes");
         std::fs::create_dir_all(&agents).unwrap();
         std::fs::create_dir_all(skill_dir.join("refs")).unwrap();
-        std::fs::write(
-            root.join("armadai.yaml"),
-            "agents:\n  - name: solo\nskills:\n  - name: notes\nlink:\n  target: claude\n",
-        )
-        .unwrap();
+        std::fs::write(root.join(".armadai/project.yaml"), "schema_version: 1\n").unwrap();
         std::fs::write(
             agents.join("solo.md"),
-            "# solo\n\n## Metadata\n- provider: claude\n\n## System Prompt\n\nYou work alone.\n",
+            "---\ndescription: solo\n---\nYou work alone.\n",
         )
         .unwrap();
         std::fs::write(

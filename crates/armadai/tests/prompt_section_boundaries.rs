@@ -3,6 +3,9 @@
 //! `## System Prompt` / `## Instructions` / `## Output Format` truncated the
 //! prompt — silently, with no parse error.
 //!
+//! Since step 2, `link` reads the canonical model: a legacy agent reaches it
+//! through `migrate`, which parses it with the same legacy parser.
+//!
 //! These are wiring tests on purpose. The parser's own unit tests (in
 //! `armadai-core::parser::markdown`) prove the section boundary; they cannot
 //! prove that the un-truncated text actually reaches a model. `link` writes
@@ -31,6 +34,23 @@ mod tests {
     /// Isolate `~/.config/armadai` per project: `link`/`run` register the
     /// project and scan the global agent library, which on a developer machine
     /// holds real agents that would shadow the fixture.
+    /// `link` reads the canonical model: the legacy agent goes through
+    /// `migrate`, which parses it with the legacy parser this file guards.
+    fn migrate(root: &Path, dir: &Path) {
+        let out = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(root)
+            .env("ARMADAI_CONFIG_DIR", isolated_config(dir))
+            .arg("migrate")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "migrate failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     fn isolated_config(dir: &Path) -> PathBuf {
         let config = dir.join("config");
         std::fs::create_dir_all(&config).unwrap();
@@ -96,6 +116,7 @@ OUTPUTFORMAT_SUBSECTION_MARKER — one sentence.
             let dir = project_with_nested_agent();
             let root = dir.path().join("project");
 
+            migrate(&root, dir.path());
             let mut cmd = Command::cargo_bin("armadai").unwrap();
             cmd.current_dir(&root)
                 .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
@@ -154,6 +175,7 @@ OUTPUTFORMAT_SUBSECTION_MARKER — one sentence.
         let dir = project_with_nested_agent();
         let root = dir.path().join("project");
 
+        migrate(&root, dir.path());
         let mut cmd = Command::cargo_bin("armadai").unwrap();
         cmd.current_dir(&root)
             .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
@@ -209,6 +231,7 @@ OUTPUTFORMAT_SUBSECTION_MARKER — one sentence.
         .unwrap();
         std::fs::write(root.join("agents/debug-template.md"), &agent).unwrap();
 
+        migrate(&root, dir.path());
         let mut cmd = Command::cargo_bin("armadai").unwrap();
         cmd.current_dir(&root)
             .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
