@@ -85,8 +85,10 @@ cible. La sortie des quatre cibles sur un projet témoin est figée par un test 
 (`crates/armadai/tests/link_golden.rs`).
 
 Deux mécanismes de délégation coexistent, à ne pas confondre : le protocole de marqueurs
-`<!--ARMADAI_DELEGATE-->` injecté par les linkers dans le fichier racine, et le gate `PreToolUse`
-compilé depuis la topologie déclarée (`orchestration.policy`).
+`<!--ARMADAI_DELEGATE-->`, que `link` écrit encore dans le fichier racine mais que plus rien ne
+consomme ; et le gate `PreToolUse` (`armadai __claude-policy-gate`), qui lit `.armadai/config.yaml`
+(`orchestration.policy`) à l'exécution. Rien ne l'installe ni ne le génère : le hook s'ajoute à la
+main (voir `docs/wiki/policy-gate.md`).
 
 `OrchestrationPattern { Direct, Blackboard, Ring, Hierarchical, Auto }` et les champs
 `orchestration`, `triggers`, `ring_config` d'un agent sont des types de déclaration conservés pour

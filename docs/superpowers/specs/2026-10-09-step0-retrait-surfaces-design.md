@@ -1,6 +1,6 @@
 # Étape 0 — Retrait des surfaces d'exécution et redéfinition de l'équipe
 
-Date : 2026-10-09 · Statut : brouillon soumis à relecture · Étape précédente : étape -1 (CI d'audit réparée, Dependabot, terminée le 2026-10-08)
+Date : 2026-10-09 · Statut : appliquée (PR #442-#453, 2026-10-12) · Étape précédente : étape -1 (CI d'audit réparée, Dependabot, terminée le 2026-10-08)
 
 ## 1. Contexte et objectif
 
@@ -61,8 +61,8 @@ Chaque PR met à jour la CI en même temps que ses suppressions (une feature sup
 ## 4. Changements de comportement assumés
 
 1. **`armadai` sans sous-commande** affiche l'aide (`arg_required_else_help`) au lieu de lancer le shell. Choix par défaut, révocable.
-2. **Gemini n'est plus une cible** : `link --target gemini` et `unlink --target gemini` ne sont plus possibles. Un projet déjà lié à Gemini est à défaire avant la mise à jour, ou nettoyé à la main. Le chemin d'`unlink` par manifeste est générique, mais je n'ai pas vérifié ce qu'il fait d'un manifeste Gemini : à tester en P5.
-3. **`link` ne touche plus jamais le réseau.** La feature `providers-api` disparaît, donc la branche qui interrogeait le catalogue en ligne (`prompt_model_interactive` via `load_models_online`) est retirée. `models update` reste la seule commande réseau, explicite. `reqwest` reste une dépendance directe pour `starters_registry` et `models update`.
+2. **Gemini n'est plus une cible** : `link --target gemini` et `unlink --target gemini` ne sont plus possibles. Un projet déjà lié à Gemini est à défaire avant la mise à jour, ou nettoyé à la main. Résultat vérifié : `unlink --target gemini` est désormais refusé par clap (code de sortie 2, rien n'est supprimé) ; le nettoyage se fait à la main, comme l'indique `docs/wiki/link.md`.
+3. **`link` ne touche plus jamais le réseau.** La feature `providers-api` disparaît, donc la branche qui interrogeait le catalogue en ligne (`prompt_model_interactive` via `load_models_online`) est retirée. `models update` réécrit les ids dépréciés depuis la table embarquée, sans réseau. Seuls `init --pack` (pack absent localement, `starters_registry`), `skills sync`/`add` (git) et `update` (téléchargement GitHub Releases) accèdent au réseau. `reqwest` ne reste une dépendance directe du binaire que pour `starters_registry` ; `armadai-providers` n'en dépend plus et plus rien ne rafraîchit le cache models.dev (suivi : section 8).
 4. **Table de modèles de repli figée** : sans rafraîchissement, `link` résout `latest:*` avec `fallback_model_for_tier`, dont le contenu date (par exemple `claude-sonnet-4-5-20250929`) [L]. Le contenu de la table n'est **pas** mis à jour à l'étape 0 ; le suivi est inscrit en section 8 et doit être traité avant l'étape 2.
 5. Messages de `models.rs` (« run `armadai run` ») corrigés ; `models list/check --all` ne voit plus que les projets liés.
 
@@ -70,7 +70,7 @@ Chaque PR met à jour la CI en même temps que ses suppressions (une feature sup
 
 Vérifiables, chacun avec une commande ou une observation :
 
-1. Le tag `pre-v1-declaratif` existe sur le dernier commit d'avant P1.
+1. Le tag `pre-v1-declaratif` existe sur le dernier commit d'avant P1 (`9b02047`).
 2. Le test d'étalon de P0 (sortie de `link` pour Claude, Codex, OpenCode, Copilot sur un projet témoin) est **inchangé** après P1 à P6, hors suppression du cas Gemini. Il est écrit avant les suppressions et doit échouer si une sortie change (vérifié par mutation).
 3. `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings` et `cargo test` passent sans `--features`, ainsi que `cargo build -p armadai-core`.
 4. `cargo tree -i ratatui`, `-i axum`, `-i rusqlite` et `-i portable-pty` ne trouvent rien.
