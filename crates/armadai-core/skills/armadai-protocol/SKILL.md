@@ -1,13 +1,22 @@
 ---
 name: armadai-protocol
-description: Response protocol for ArmadAI shell — standardized markers for end-of-response detection and metadata
+description: ArmadAI response markers (END, DELEGATE, META) that armadai link writes into generated coordinator instructions — no longer consumed by ArmadAI
 version: "1.0.0"
 tools: []
 ---
 
 # ArmadAI Response Protocol
 
-You MUST follow this protocol for ALL your responses when running in ArmadAI shell mode.
+> **Status: no consumer.** `armadai link` still writes this protocol into the coordinator's root
+> instructions file it generates (`.claude/CLAUDE.md` and its equivalents for Codex, OpenCode and
+> Copilot). The ArmadAI shell relay that parsed these markers is no longer part of ArmadAI, so the
+> markers have **no automatic effect** today: nothing reads them, and emitting them changes
+> nothing in Claude Code, Codex, OpenCode or Copilot. The adapters that write them are to be
+> rewritten (planned); until then, treat this page as a description of what the generated files
+> contain, not of a working mechanism.
+
+The protocol, as written into the generated files, asks the agent to follow it for all its
+responses.
 
 ## Markers
 
@@ -19,7 +28,7 @@ When you have completely finished your response, end with this marker on its own
 <!--ARMADAI_END-->
 ```
 
-This marker signals to the shell that you have finished generating your response and that it is safe to proceed.
+This marker was meant to signal to the (removed) shell relay that the response was complete.
 
 ### Delegation
 
@@ -84,8 +93,11 @@ Please review the changes in src/core/agent.rs and verify test coverage.
 
 ## Why This Protocol?
 
-- **Deterministic parsing**: The shell can reliably detect when you've finished responding
+These were the reasons for the protocol when the shell relay existed; none of them applies while
+nothing consumes the markers.
+
+- **Deterministic parsing**: The shell relay could reliably detect the end of a response
 - **Streaming support**: No need to wait for timeout or guess when response is complete
 - **Metadata extraction**: Status, delegation info, and other data can be extracted without LLM parsing
 - **Clean output**: Markers are stripped for display, users see only your actual response
-- **Composability**: Multiple agents relayed through `armadai shell` can use the same marker protocol to signal delegation. This is a **shell-relay** mechanism only — it is unrelated to ArmadAI's core hierarchical orchestration engine (`armadai run --orchestrate` / `orchestration.enabled`), which uses its own `@agent-name: task` text protocol (see `agents/_coordinator.md` and the `armadai-orchestration-patterns` skill). Empirically, only Claude Code reliably emits these markers for sub-agent delegation.
+- **Composability**: Multiple agents relayed through the shell could use the same marker protocol to signal delegation. This was a **shell-relay** mechanism only. It is unrelated to the `orchestration:` declaration of the project config, which the Claude Code policy gate reads (see the `armadai-orchestration-patterns` skill). Empirically, only Claude Code reliably emitted these markers for sub-agent delegation.

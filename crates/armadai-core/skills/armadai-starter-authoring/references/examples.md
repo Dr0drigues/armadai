@@ -32,7 +32,7 @@ pirate-crew/
 ```
 
 **Key traits:**
-- Single coordinator (`capitaine`) with a Pipeline section listing all specialists
+- Single coordinator (`capitaine`) whose system prompt lists all specialists
 - Shared prompt (`code-nautique`) applied to all agents
 - Thematic naming for fun while maintaining clear roles
 - 4 agents — manageable team size
@@ -58,7 +58,7 @@ prompts:
 - Each agent is self-contained with clear purpose
 - Shared conventions via prompt
 
-## Pattern 3: Coordinator + Pipeline + Skill References
+## Pattern 3: Coordinator + Skill References
 
 **Pack: `armadai-authoring`** — The meta-pack for creating ArmadAI content.
 
@@ -71,7 +71,7 @@ skills: [armadai-agent-authoring, armadai-prompt-authoring, armadai-skill-author
 ```
 
 **Key traits:**
-- Coordinator (`authoring-lead`) with dispatch rules and pipeline
+- Coordinator (`authoring-lead`) with dispatch rules
 - Skills are **referenced, not bundled** — they are built-in to ArmadAI
 - Each builder agent is paired with its corresponding reference skill
 - Prompt applied to all builder agents for consistent conventions
@@ -116,9 +116,9 @@ my-pack/
     └── my-agent.md
 ```
 
-## Pattern 5: Orchestrated Pack with Hierarchical Config
+## Pattern 5: Pack with a Declared Delegation Topology
 
-**Pack: `code-analysis-rust`** — Generates orchestration config automatically on init.
+**Pack: `code-analysis-rust`** — `init --pack --project` writes its delegation topology into the project config.
 
 ```yaml
 name: code-analysis-rust
@@ -127,7 +127,7 @@ agents: [lead-analyst, rust-reviewer, rust-test-analyzer, rust-doc-writer, rust-
 prompts: [analysis-standards]
 ```
 
-When installed via `armadai init --pack code-analysis-rust`, the generated `config.yaml` includes:
+When installed via `armadai init --pack code-analysis-rust --project`, the generated `.armadai/config.yaml` includes:
 
 ```yaml
 orchestration:
@@ -145,7 +145,7 @@ orchestration:
 **Key traits:**
 - Coordinator tagged with `coordinator` → auto-detected
 - Non-coordinator agents grouped into a team automatically
-- Hierarchical pattern enables `@agent:` delegation at runtime
+- The block is a declaration, not an engine: `armadai validate` checks it, and the Claude Code policy gate can enforce it (`policy: strict`); `enabled: true` also makes `armadai link` validate it before writing anything, and `pattern` is descriptive only
 
 ## Full Pack Template
 
@@ -163,7 +163,7 @@ skills: [domain-knowledge]
 my-domain/
 ├── pack.yaml
 ├── agents/
-│   ├── domain-lead.md        # Coordinator with Pipeline
+│   ├── domain-lead.md        # Coordinator (tagged coordinator)
 │   ├── specialist-a.md
 │   ├── specialist-b.md
 │   └── specialist-c.md

@@ -64,7 +64,7 @@ TDD Red phase — writes failing tests for a feature specification.
 - Provider: `anthropic`
 - Temperature: `0.4`
 - Tags: `[tdd, test]`
-- Pipeline: chains to `tdd-green`
+- `## Pipeline` names `tdd-green` (parsed, unused since the execution engine was removed)
 
 ### `tdd-green`
 
@@ -73,7 +73,7 @@ TDD Green phase — writes minimal implementation to pass the failing tests.
 - Provider: `anthropic`
 - Temperature: `0.4`
 - Tags: `[tdd, implementation]`
-- Pipeline: chains to `tdd-refactor`
+- `## Pipeline` names `tdd-refactor` (parsed, unused since the execution engine was removed)
 
 ### `tdd-refactor`
 
@@ -103,7 +103,7 @@ Technical documentation writer. Produces clear, structured documentation.
 
 ### `cli-generic`
 
-CLI tool wrapper template. For agents that execute external commands.
+CLI tool wrapper template. It was meant for agents that executed an external command through the removed execution engine; its `command`, `args` and `timeout` fields are parsed but nothing uses them now.
 
 - Provider: `cli`
 - Tags: `[cli, tool]`

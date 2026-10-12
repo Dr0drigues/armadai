@@ -28,14 +28,13 @@ YAML-like key-value list defining the agent's configuration. Each field is on it
 - provider: anthropic
 - model: latest:pro
 - temperature: 0.5
-- max_tokens: 4096
 - tags: [review, quality]
 - stacks: [rust, typescript]
 ```
 
 #### Model Placeholders
 
-Instead of hardcoding model names, use `latest:*` placeholders that resolve to the best available model for each provider:
+Instead of hardcoding model names, use `latest:*` placeholders that `armadai link` resolves per target, offline, from the local model-catalogue cache or the embedded table (examples below; the actual ids depend on the cache):
 
 | Placeholder | Tier | Resolves to (examples) |
 |---|---|---|
@@ -47,20 +46,17 @@ Instead of hardcoding model names, use `latest:*` placeholders that resolve to t
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `provider` | string | **yes** | — | Provider backend: an API (`anthropic`, `openai`, `google`, `proxy`), a unified tool name (`claude`, `gemini`, `codex`, `copilot`, `opencode`, `gpt`, `aider`), or `cli` for any other binary |
-| `model` | string | for API providers | — | Model identifier or `latest:*` placeholder (e.g., `latest:pro`, `latest:fast`) |
-| `command` | string | for `cli` provider | — | CLI command to execute |
-| `args` | string[] | no | — | Arguments for CLI command: `[--flag, value]` |
-| `temperature` | float | no | `0.7` | Sampling temperature, range `0.0` to `2.0` |
-| `max_tokens` | integer | no | — | Maximum tokens in response |
-| `timeout` | integer | no | — | Timeout in seconds (mainly for CLI provider) |
+| `provider` | string | **yes** | — | Required for the agent to load. Names the vendor whose model catalogue resolves a `latest:*` tier: `claude`/`anthropic` (Anthropic), `gemini`/`google` (Google), `gpt`/`aider`/`codex`/`openai` (OpenAI); any other value uses the built-in Anthropic defaults |
+| `model` | string | no | — | Model identifier or `latest:*` placeholder (e.g., `latest:pro`, `latest:fast`), written into the generated agent file after tier resolution |
+| `temperature` | float | no | `0.7` | Sampling temperature; written by the OpenCode target when it differs from `0.7` |
 | `tags` | string[] | no | `[]` | Categorization tags: `[review, security, coordinator]` |
 | `stacks` | string[] | no | `[]` | Technology stacks: `[rust, java, python]` |
-| `scope` | string[] | no | `[]` | File glob patterns this agent operates on: `[src/**/*.rs, tests/]` |
-| `model_fallback` | string[] | no | `[]` | Fallback models tried in order if primary fails |
-| `cost_limit` | float | no | — | Maximum cost in USD per run |
-| `rate_limit` | string | no | — | Rate limiting spec (e.g., `10/min`) |
-| `context_window` | integer | no | — | Override context window size in tokens |
+| `scope` | string[] | no | `[]` | File glob patterns this agent focuses on: `[src/**/*.rs, tests/]` (parsed; not written by any target) |
+| `model_fallback` | string[] | no | `[]` | Fallback models; checked and rewritten by `armadai models` like `model` |
+
+`command`, `args`, `max_tokens`, `timeout`, `cost_limit`, `rate_limit`, `context_window` and `mode`
+are still parsed for compatibility, but they configured the removed execution engine and nothing
+uses them now.
 
 #### List Syntax
 
@@ -68,9 +64,8 @@ Lists use bracket notation: `[item1, item2, "item with spaces"]`. Quotes are opt
 
 #### Validation Rules
 
-- **CLI provider**: `command` field is required
-- **API providers** (`anthropic`, `openai`, `google`, `proxy`): `model` field is required
-- **Temperature**: Must be between `0.0` and `2.0`
+- **`provider`** is required
+- A value that does not parse (e.g. `temperature: warm`) makes the whole file fail to load
 
 ### `## System Prompt`
 
@@ -124,17 +119,11 @@ Additional context or background information injected into the agent.
 This project uses the Axum web framework with SQLite storage.
 ```
 
-### `## Pipeline`
+### Engine-only sections
 
-Defines agent chaining — which agents run after this one completes.
-
-```markdown
-## Pipeline
-- test-writer
-- code-reviewer
-```
-
-Each entry is the name of another agent. The output of the current agent is passed as input to the next agent in sequence.
+`## Pipeline`, `## Triggers` and `## Ring Config` are still parsed, but they configured the
+removed execution engine (agent chaining, Blackboard, Ring) and nothing uses them now. Any other
+`##` heading is dropped by the parser.
 
 ## Complete Minimal Example
 
