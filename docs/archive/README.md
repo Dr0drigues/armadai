@@ -18,4 +18,6 @@ Layout:
 - `superpowers/specs/`, `superpowers/plans/`: specs and plans of the execution era, plus the
   gaveldrop migration logs.
 - `scripts/`: [`migrate-v0-to-v1.sh`](scripts/migrate-v0-to-v1.sh), the v0 to v1 agent migration helper.
+- `examples/`: [`gemini-cli-demo.md`](examples/gemini-cli-demo.md), the former `examples/DEMO.md`
+  (a Gemini CLI demo; Gemini is no longer a target).
 - `PARALLEL_DELEGATION.md`, `v1-backlog.md`, `unsafe-audit-2026-04-01.md`: standalone notes.
