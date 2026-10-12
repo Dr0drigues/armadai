@@ -3,10 +3,12 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
-use armadai_model::{Agent, AgentFront, Cap, Flow, Project, Tier};
+use armadai_model::{Agent, AgentFront, Cap, Delegation, Flow, Project, Tier};
 use serde_yaml_ng::{Mapping, Value};
 
-use super::{Artifact, ArtifactKind, BLOCK_BEGIN, Compiler, Plan, Report, Status, read_tree};
+use super::{
+    Artifact, ArtifactKind, BLOCK_BEGIN, Compiler, Plan, Report, Status, claude_settings, read_tree,
+};
 use crate::linker::manifest::ProducedBy;
 
 const T: &str = "claude";
@@ -64,6 +66,37 @@ impl Compiler for ClaudeCompiler {
                 .push(T, format!("skill {id}"), Status::Compiled, None);
         }
         plan.artifacts.sort_by(|a, b| a.path.cmp(&b.path));
+
+        // computed here so a native collision fails the compilation, before any write
+        claude_settings::hook_entries(project)?;
+        for (id, a) in &project.automations {
+            let reason = format!(
+                "hook {} in .claude/settings.json",
+                claude_settings::event_name(a.event)
+            );
+            plan.report.push(
+                T,
+                format!("automation {id}"),
+                Status::Compiled,
+                Some(&reason),
+            );
+        }
+        if !claude_settings::native_settings(project)?.is_empty() {
+            plan.report.push(
+                T,
+                "project native",
+                Status::Compiled,
+                Some("merged into .claude/settings.json"),
+            );
+        }
+        if project.manifest.policy.delegation == Delegation::Strict {
+            plan.report.push(
+                T,
+                "policy delegation=strict",
+                Status::Compiled,
+                Some("enforced: delegation topology, by the PreToolUse gate"),
+            );
+        }
 
         match coordinator {
             Some(c) => {
@@ -657,6 +690,50 @@ mod tests {
         assert_eq!(line(&plan, "CLAUDE.md").status, Status::Approximated);
         let plan = compile(&team()).unwrap();
         assert!(!plan.report.lines.iter().any(|l| l.element == "CLAUDE.md"));
+    }
+
+    #[test]
+    fn strict_policy_and_automations_are_reported() {
+        let mut files = team();
+        files[0] = (
+            ".armadai/project.yaml",
+            b"schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\nnative:\n  claude:\n    model: opus\n",
+        );
+        files.push((
+            ".armadai/automations/fmt.yaml",
+            b"event: after-tool\nrun: cargo fmt\n",
+        ));
+        let plan = compile(&files).unwrap();
+        let gate = line(&plan, "policy delegation=strict");
+        assert_eq!(gate.status, Status::Compiled);
+        assert!(
+            gate.reason
+                .as_deref()
+                .unwrap()
+                .contains("enforced: delegation topology")
+        );
+        let auto = line(&plan, "automation fmt");
+        assert_eq!(auto.status, Status::Compiled);
+        assert!(auto.reason.as_deref().unwrap().contains("PostToolUse"));
+        assert_eq!(line(&plan, "project native").status, Status::Compiled);
+        assert!(
+            !compile(&team())
+                .unwrap()
+                .report
+                .lines
+                .iter()
+                .any(|l| l.element.starts_with("policy"))
+        );
+    }
+
+    #[test]
+    fn a_hook_native_collision_fails_the_compilation() {
+        let mut files = team();
+        files.push((
+            ".armadai/automations/x.yaml",
+            b"event: on-stop\nrun: x\nnative:\n  claude:\n    type: http\n",
+        ));
+        assert!(compile(&files).unwrap_err().to_string().contains("`type`"));
     }
 
     #[test]

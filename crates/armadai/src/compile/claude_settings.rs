@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, bail};
-use armadai_model::{Event, Project};
+use armadai_model::{Delegation, Event, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -71,7 +71,8 @@ fn native_map(v: Option<&serde_yaml_ng::Value>, what: &str) -> anyhow::Result<Ma
     }
 }
 
-/// One entry per automation, sorted by automation id. `native.claude.matcher` becomes the
+/// One entry per automation, sorted by automation id, then the delegation gate
+/// when `policy.delegation` is `strict`. `native.claude.matcher` becomes the
 /// group matcher; any other native key goes into the handler (`type`/`command` = error).
 pub fn hook_entries(project: &Project) -> anyhow::Result<Vec<HookEntry>> {
     let mut out = Vec::new();
@@ -96,7 +97,21 @@ pub fn hook_entries(project: &Project) -> anyhow::Result<Vec<HookEntry>> {
             native: native.into_iter().collect(),
         });
     }
+    if project.manifest.policy.delegation == Delegation::Strict {
+        out.push(gate_entry());
+    }
     Ok(out)
+}
+
+/// The delegation gate: `Agent` and its former name `Task` (an exact-name list
+/// for Claude Code's matcher, not a regex).
+pub fn gate_entry() -> HookEntry {
+    HookEntry {
+        event: "PreToolUse".into(),
+        matcher: Some("Agent|Task".into()),
+        command: "armadai __claude-policy-gate".into(),
+        native: BTreeMap::new(),
+    }
 }
 
 /// Top-level settings keys from the manifest's `native.claude` (`hooks` is generated).
@@ -397,6 +412,32 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("`command`"), "{err}");
+    }
+
+    fn manifest_only(manifest: &str) -> Vec<HookEntry> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(dir.path().join(".armadai/project.yaml"), manifest).unwrap();
+        let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
+        hook_entries(&p).unwrap()
+    }
+
+    #[test]
+    fn strict_delegation_installs_the_gate_on_agent_and_task() {
+        let es = manifest_only("schema_version: 1\npolicy:\n  delegation: strict\n");
+        assert_eq!(
+            es,
+            vec![HookEntry {
+                event: "PreToolUse".into(),
+                matcher: Some("Agent|Task".into()),
+                command: "armadai __claude-policy-gate".into(),
+                native: BTreeMap::new(),
+            }]
+        );
+        assert!(
+            manifest_only("schema_version: 1\n").is_empty(),
+            "off: no gate"
+        );
     }
 
     #[test]

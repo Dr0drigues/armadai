@@ -16,13 +16,19 @@ mod tests {
     /// corrupt the verdict — and a warning about an unparsable config is
     /// exactly the kind of thing that ends up there by accident.
     fn strict_project(dir: &std::path::Path) {
-        std::fs::create_dir_all(dir.join(".armadai")).unwrap();
+        std::fs::create_dir_all(dir.join(".armadai/agents")).unwrap();
         std::fs::write(
-            dir.join(".armadai/config.yaml"),
-            "orchestration:\n  policy: strict\n  coordinator: dev-lead\n  \
-             teams:\n    - agents: [qa-specialist]\n",
+            dir.join(".armadai/project.yaml"),
+            "schema_version: 1\ncoordinator: dev-lead\npolicy:\n  delegation: strict\n",
         )
         .unwrap();
+        for a in ["dev-lead", "qa-specialist"] {
+            std::fs::write(
+                dir.join(format!(".armadai/agents/{a}.md")),
+                "---\ndescription: d\n---\nB\n",
+            )
+            .unwrap();
+        }
     }
 
     fn gate_payload(dir: &std::path::Path, target: &str) -> String {
@@ -74,28 +80,28 @@ mod tests {
     }
 
     #[test]
-    fn an_unparsable_config_warns_on_stderr_and_leaves_stdout_clean() {
+    fn an_invalid_project_warns_on_stderr_and_leaves_stdout_clean() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
-        // `Off` capitalised: a realistic typo in `policy:`.
+        strict_project(dir.path());
+        // `Strict` capitalised: a realistic typo in `policy.delegation`.
         std::fs::write(
-            dir.path().join(".armadai/config.yaml"),
-            "orchestration:\n  policy: Off\n  coordinator: dev-lead\n",
+            dir.path().join(".armadai/project.yaml"),
+            "schema_version: 1\npolicy:\n  delegation: Strict\n",
         )
         .unwrap();
 
         let mut cmd = Command::cargo_bin("armadai").unwrap();
         cmd.arg("__claude-policy-gate")
-            .env("RUST_LOG", "armadai_core=warn")
             .write_stdin(gate_payload(dir.path(), "qa-specialist"));
         let out = cmd.output().unwrap();
 
+        assert!(out.status.success());
         assert!(
             String::from_utf8_lossy(&out.stdout).trim().is_empty(),
-            "a config we could not read is not a verdict"
+            "a project we could not read is not a verdict"
         );
         assert!(
-            String::from_utf8_lossy(&out.stderr).contains("unparsable"),
+            String::from_utf8_lossy(&out.stderr).contains("gate is inactive"),
             "the typo must be reported somewhere, or the gate disappears in \
              silence:\n{}",
             String::from_utf8_lossy(&out.stderr)
