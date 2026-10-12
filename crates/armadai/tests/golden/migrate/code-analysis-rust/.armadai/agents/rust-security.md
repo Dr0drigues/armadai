@@ -1,5 +1,5 @@
 ---
-description: You are a Rust security auditor. You analyze code and dependencies for security vulnerabilities.
+description: You are a Rust security auditor.
 title: Rust Security
 tier: pro
 temperature: 0.2

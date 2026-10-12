@@ -14,7 +14,7 @@ Dropped (6):
   review-checklist: version (not part of the skill standard)
 Warnings (4):
   YAML comments of the legacy files are not preserved; review the backup
-  agent `cli-specialist`: description derived from the first line of its prompt
-  agent `release-notes`: description derived from the first line of its prompt
+  agent `cli-specialist`: description derived from the first sentence of its prompt
+  agent `release-notes`: description derived from the first sentence of its prompt
   unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
 Note: run 'armadai link' to compile the migrated project; the previous project is in .armadai/.migrated/<timestamp>/.

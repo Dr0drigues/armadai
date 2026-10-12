@@ -1,5 +1,5 @@
 ---
-description: You are a Rust testing specialist. You analyze test suites for coverage, quality, and reliability.
+description: You are a Rust testing specialist.
 title: Rust Test Analyzer
 tier: pro
 temperature: 0.3

@@ -1,5 +1,5 @@
 ---
-description: You are a Rust testing expert. You write comprehensive unit tests using `#[cfg(test)]` modules.
+description: You are a Rust testing expert.
 title: Rust Test Writer
 tier: pro
 temperature: 0.3

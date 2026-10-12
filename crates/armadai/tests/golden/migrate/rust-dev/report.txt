@@ -16,8 +16,8 @@ Dropped (9):
   test-writer: stacks (no reader in the new format)
 Warnings (5):
   YAML comments of the legacy files are not preserved; review the backup
-  agent `code-reviewer`: description derived from the first line of its prompt
-  agent `debug`: description derived from the first line of its prompt
-  agent `test-writer`: description derived from the first line of its prompt
+  agent `code-reviewer`: description derived from the first sentence of its prompt
+  agent `debug`: description derived from the first sentence of its prompt
+  agent `test-writer`: description derived from the first sentence of its prompt
   unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
 Note: run 'armadai link' to compile the migrated project; the previous project is in .armadai/.migrated/<timestamp>/.

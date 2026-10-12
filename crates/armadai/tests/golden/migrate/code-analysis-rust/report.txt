@@ -34,7 +34,7 @@ Dropped (23):
 Warnings (10):
   YAML comments of the legacy files are not preserved; review the backup
   agent `lead-analyst`: kept verbatim: ## Delegation Protocol
-  description derived from the first line of the prompt for 5 agents: lead-analyst, rust-reviewer, rust-test-analyzer, rust-doc-writer, rust-security
+  description derived from the first sentence of the prompt for 5 agents: lead-analyst, rust-reviewer, rust-test-analyzer, rust-doc-writer, rust-security
   legacy file left in place: agents/lead-analyst.md
   legacy file left in place: agents/rust-doc-writer.md
   legacy file left in place: agents/rust-reviewer.md

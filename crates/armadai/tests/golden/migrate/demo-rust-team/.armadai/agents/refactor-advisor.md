@@ -1,5 +1,5 @@
 ---
-description: You are a Rust refactoring specialist. You identify code smells and suggest
+description: You are a Rust refactoring specialist.
 title: Refactor Advisor
 tier: pro
 temperature: 0.5

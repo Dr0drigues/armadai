@@ -64,12 +64,12 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
     if derived.len() <= 3 {
         for id in &derived {
             r.warn(format!(
-                "agent `{id}`: description derived from the first line of its prompt"
+                "agent `{id}`: description derived from the first sentence of its prompt"
             ));
         }
     } else {
         r.warn(format!(
-            "description derived from the first line of the prompt for {} agents: {}",
+            "description derived from the first sentence of the prompt for {} agents: {}",
             derived.len(),
             derived.join(", ")
         ));
@@ -190,10 +190,30 @@ fn transliterate(name: &str) -> String {
     out
 }
 
-/// First non-empty line of `text`, cut to `max` characters.
+/// First sentence of the first paragraph of `text`, on one line. Longer than
+/// `max` characters: cut at the last space and ended with `…`.
 fn first_line(text: &str, max: usize) -> Option<String> {
-    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
-    Some(line.chars().take(max).collect())
+    let para = text.trim_start().split("\n\n").next()?;
+    let one_line = para.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.is_empty() {
+        return None;
+    }
+    let bytes = one_line.as_bytes();
+    let end = (0..bytes.len())
+        .find(|&i| {
+            matches!(bytes[i], b'.' | b'?' | b'!') && bytes.get(i + 1).is_none_or(|b| *b == b' ')
+        })
+        .map_or(one_line.len(), |i| i + 1);
+    let sentence = &one_line[..end];
+    if sentence.chars().count() <= max {
+        return Some(sentence.to_string());
+    }
+    let head: String = sentence.chars().take(max + 1).collect();
+    let cut = head.rfind(' ').map_or_else(
+        || sentence.chars().take(max).collect(),
+        |i| head[..i].to_string(),
+    );
+    Some(format!("{cut}…"))
 }
 
 /// The agent, and whether its description was derived.
@@ -492,7 +512,7 @@ fn skill_description(id: &str, declared: Option<&str>, body: &str, r: &mut Repor
         Some(d) => d.to_string(),
         None => {
             r.warn(format!(
-                "skill `{id}`: description derived from the first line of its body"
+                "skill `{id}`: description derived from the first sentence of its body"
             ));
             first_line(body, MAX_DERIVED_DESCRIPTION).unwrap_or_else(|| id.to_string())
         }

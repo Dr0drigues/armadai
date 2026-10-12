@@ -1,5 +1,5 @@
 ---
-description: You are a Rust documentation specialist. You review and improve documentation across the project.
+description: You are a Rust documentation specialist.
 title: Rust Doc Writer
 tier: pro
 temperature: 0.5

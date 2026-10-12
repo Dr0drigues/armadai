@@ -1,5 +1,5 @@
 ---
-description: You are a senior Rust code reviewer. You focus on correctness, safety, and idiomatic Rust.
+description: You are a senior Rust code reviewer.
 title: Rust Reviewer
 tier: pro
 temperature: 0.3
