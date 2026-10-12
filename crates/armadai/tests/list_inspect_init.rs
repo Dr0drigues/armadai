@@ -209,3 +209,15 @@ fn skills_list_reads_the_project_skills_folder() {
     assert!(ok, "{err}");
     assert!(out.contains("notes"), "{out}");
 }
+
+/// `armadai init` (the user configuration) creates no agent or prompt library:
+/// nothing reads one any more but `migrate`, for a legacy project that already has it.
+#[test]
+fn init_creates_no_user_library() {
+    let env = Env::new(&[]);
+    let (ok, out, err) = env.run(&["init"]);
+    assert!(ok, "{out}{err}");
+    let config = env.dir.path().join("config");
+    assert!(config.join("providers.yaml").is_file(), "{out}");
+    assert!(!config.join("agents").exists() && !config.join("prompts").exists());
+}

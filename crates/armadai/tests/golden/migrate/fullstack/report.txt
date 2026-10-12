@@ -32,10 +32,11 @@ Dropped (24):
   provider: dropped for 6 agents (the target tool picks its own provider)
   test-writer: max_tokens (no reader in the new format)
   test-writer: stacks (no reader in the new format)
-Warnings (5):
+Warnings (6):
   YAML comments of the legacy files are not preserved; review the backup
   description derived from the first sentence of the prompt for 6 agents: code-reviewer, test-writer, doc-generator, claude-cli-reviewer, echo-reviewer, gemini-reviewer
   link target `gemini` is not supported: no default target written
   orchestration references unknown agent `ghost-agent`: omitted from the flow
+  orchestration.free_agents: `Explore` is neither a project agent nor a valid id: kept as is (fine for an agent the target provides, such as Explore)
   unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
 Note: run 'armadai link' to compile the migrated project; the previous project is in .armadai/.migrated/<timestamp>/.

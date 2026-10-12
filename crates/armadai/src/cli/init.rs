@@ -46,14 +46,6 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     anstream::println!("{m}  config:    {}{m:#}", config_path.display());
     anstream::println!("{m}  providers: {}{m:#}", providers_path.display());
     anstream::println!(
-        "{m}  agents:    {}{m:#}",
-        config::user_agents_dir().display()
-    );
-    anstream::println!(
-        "{m}  prompts:   {}{m:#}",
-        config::user_prompts_dir().display()
-    );
-    anstream::println!(
         "{m}  skills:    {}{m:#}",
         config::user_skills_dir().display()
     );

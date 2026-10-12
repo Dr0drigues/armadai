@@ -21,16 +21,17 @@ use clap::{CommandFactory, Parser, Subcommand};
     about = "Declarative agent teams, compiled for Claude Code, Codex, OpenCode and Copilot",
     long_about = "Declarative agent teams — describe them once, compile them for Claude Code, Codex, \
         OpenCode and Copilot.\n\n\
-        Agents are Markdown files (with metadata, system prompt, and optional instructions) or \
-        entries of a declarative YAML file.\n\
-        `armadai link` writes the native configuration files of the target assistant; ArmadAI \
-        does not run agents itself. An agent's `provider:` (Claude, GPT, Gemini…) only selects \
-        the model catalogue used to resolve its `latest:*` tier.",
+        A project is a `.armadai/` folder: project.yaml, one Markdown file per agent (YAML \
+        frontmatter, prompt as the body), skills, flows and automations.\n\
+        `armadai link` writes the native configuration files of each target assistant and a \
+        conformance report; ArmadAI does not run agents itself. A legacy project is converted \
+        once with `armadai migrate`.",
     version,
     arg_required_else_help = true,
     after_help = "Examples:\n  \
+        armadai init --project\n  \
         armadai new my-agent --template dev-review --stack rust\n  \
-        armadai list --tags dev --stack rust\n  \
+        armadai list --tags dev\n  \
         armadai link --target claude\n\n\
         Documentation: https://github.com/Dr0drigues/armadai"
 )]
@@ -228,7 +229,7 @@ pub enum Command {
     #[command(
         long_about = "Initialize ArmadAI configuration.\n\n\
             Creates ~/.config/armadai/ with default config.yaml, providers.yaml, \
-            and subdirectories (agents/, prompts/, skills/, and registry/, the \
+            skills/ (skills installed by `armadai skills add`) and registry/ (the \
             cache for remote starter packs).\n\n\
             Use --project to create an empty project: .armadai/project.yaml, agents/, \
             skills/, flows/, automations/ and .armadai/.gitignore. Use --pack to create \

@@ -446,7 +446,25 @@ fn convert_orchestration(
     };
     for f in &o.free_agents {
         // not a project agent: a built-in of the target (Claude Code's `Explore`), kept
-        let id = resolve(f).unwrap_or_else(|| f.clone());
+        let id = match resolve(f) {
+            Some(id) => {
+                if id != *f {
+                    r.warn(format!(
+                        "orchestration.free_agents: `{f}` renamed to `{id}`"
+                    ));
+                }
+                id
+            }
+            None => {
+                if !armadai_model::is_valid_id(f) {
+                    r.warn(format!(
+                        "orchestration.free_agents: `{f}` is neither a project agent nor a valid \
+                         id: kept as is (fine for an agent the target provides, such as Explore)"
+                    ));
+                }
+                f.clone()
+            }
+        };
         if !policy.free_agents.contains(&id) {
             policy.free_agents.push(id);
         }

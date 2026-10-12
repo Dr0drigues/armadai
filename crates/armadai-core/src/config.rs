@@ -75,13 +75,9 @@ pub fn registries_config_path() -> PathBuf {
 
 /// Create the full directory tree under the config root.
 pub fn ensure_config_dirs() -> anyhow::Result<()> {
-    let dirs = [
-        config_dir(),
-        user_agents_dir(),
-        user_prompts_dir(),
-        user_skills_dir(),
-        registry_cache_dir(),
-    ];
+    // no agents/ nor prompts/ library: only `migrate` reads one, for a legacy
+    // project that already has it
+    let dirs = [config_dir(), user_skills_dir(), registry_cache_dir()];
     for dir in &dirs {
         std::fs::create_dir_all(dir)?;
     }

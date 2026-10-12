@@ -156,12 +156,12 @@ what `armadai link` and the other kept commands do with each.
 | `provider` | string | Yes | Required to load the agent. Names the vendor whose model catalogue resolves a `latest:*` tier (see [Providers and models](providers.md)) |
 | `model` | string | No | Written into the generated agent file (Claude Code, Codex, OpenCode), after tier resolution |
 | `temperature` | float | No (default `0.7`) | Written by the OpenCode target when it differs from `0.7` |
-| `tags` | list | No | Filtering in `armadai list --tags` |
-| `stacks` | list | No | Filtering in `armadai list --stack` |
-| `model_fallback` | list | No | Checked and rewritten by `armadai models` like `model`. Plural alias `model_fallbacks` accepted |
+| `tags` | list | No | Kept by `migrate` as the agent's `tags` |
+| `stacks` | list | No | Dropped by `migrate` (no stacks in the project format) |
+| `model_fallback` | list | No | Dropped by `migrate`. Plural alias `model_fallbacks` accepted |
 | `scope` | list | No | Parsed; not written by any target |
 | `orchestration` | string | No | Parsed (`direct`, `blackboard`, `ring`, `hierarchical`, `auto`); no kept command reads this per-agent field. It is not the project config's `orchestration.pattern`, which `link` reads (see [Policy gate](policy-gate.md)) |
-| `command`, `args`, `max_tokens`, `timeout`, `cost_limit`, `rate_limit`, `context_window`, `mode` | — | No | Parsed for compatibility; they configured the removed execution engine and nothing executes them (`armadai inspect` still displays `command`, `args`, `max_tokens`, `timeout`) |
+| `command`, `args`, `max_tokens`, `timeout`, `cost_limit`, `rate_limit`, `context_window`, `mode` | — | No | Parsed for compatibility; they configured the removed execution engine and nothing executes them (`migrate` drops them and says so) |
 
 A value that does not parse (e.g. `temperature: warm`) still makes the whole file fail to load.
 The model of these fields will be replaced by a versioned schema (planned, see the
@@ -198,14 +198,11 @@ All `.md` files in `agents/` and subdirectories are loaded recursively.
 ## Validation
 
 ```bash
-# Validate the project config in the current directory
-armadai validate
+# Validate a starter pack
+armadai validate path/to/pack
 
-# Validate a starter pack or another project
-armadai validate path/to/pack-or-project
-
-# Show how one agent was parsed
-armadai inspect code-reviewer
+# See how a legacy project would be converted, without writing anything
+armadai migrate --dry-run
 ```
 
 `validate` checks that every agent, prompt and skill the config (or `pack.yaml`) references can be
