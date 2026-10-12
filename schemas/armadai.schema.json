@@ -70,11 +70,11 @@
         {
           "type": "object",
           "title": "Registry agent",
-          "description": "Agent fetched from the awesome-copilot community registry.",
+          "description": "Agent read from the local registry cache (~/.config/armadai/registry/). The command that filled this cache (armadai registry) was removed; only an existing cache is read.",
           "properties": {
             "registry": {
               "type": "string",
-              "description": "Registry identifier (e.g. 'official/security'). Run 'armadai registry sync' first.",
+              "description": "Registry identifier (e.g. 'official/security'), resolved as a file in the local registry cache.",
               "examples": ["official/security"]
             }
           },
@@ -174,12 +174,12 @@
           "type": "string",
           "title": "Link target",
           "description": "Target AI CLI tool to generate configuration for.",
-          "enum": ["claude", "copilot", "gemini", "opencode"]
+          "enum": ["claude", "codex", "copilot", "opencode"]
         },
         "coordinator": {
           "type": "string",
           "title": "Coordinator agent",
-          "description": "Name of the agent to use as coordinator/orchestrator.",
+          "description": "Name of the agent whose prompt is written into the target's root instructions file (e.g. .claude/CLAUDE.md). Matched against the agent's title slug.",
           "examples": ["lead-analyst"]
         },
         "overrides": {
@@ -224,11 +224,13 @@
     "OrchestrationConfig": {
       "type": "object",
       "title": "Orchestration Configuration",
-      "description": "Multi-agent orchestration settings.",
+      "description": "Declared delegation topology. ArmadAI does not execute it: armadai validate checks it, armadai link validates it when enabled is true, and the Claude Code policy gate enforces it when policy is strict. The engine limits (pattern, max_*, timeout, consensus_threshold, token_budget, cost_limit) are parsed but no longer used.",
       "properties": {
-        "enabled": { "type": "boolean", "default": false },
-        "pattern": { "type": "string", "enum": ["direct", "blackboard", "ring", "hierarchical", "auto"] },
+        "enabled": { "type": "boolean", "default": false, "description": "Makes armadai link validate this block before writing anything." },
+        "policy": { "type": "string", "enum": ["off", "strict"], "default": "off", "description": "Claude Code policy gate: strict refuses any delegation the declared topology does not allow." },
+        "pattern": { "type": "string", "enum": ["direct", "blackboard", "ring", "hierarchical", "auto"], "description": "Descriptive only: the execution engine that ran these patterns was removed." },
         "coordinator": { "type": "string" },
+        "free_agents": { "type": "array", "items": { "type": "string" }, "description": "Assistance agents reachable from anywhere under policy: strict (e.g. Explore, Plan)." },
         "teams": {
           "type": "array",
           "items": {
@@ -253,23 +255,23 @@
     "ShellConfig": {
       "type": "object",
       "title": "Shell Configuration",
-      "description": "Interactive shell settings for armadai shell.",
+      "description": "Settings of the removed armadai shell. Still accepted, ignored.",
       "properties": {
         "default_provider": {
           "type": "string",
-          "description": "Default CLI tool (gemini, claude, aider, codex)."
+          "description": "Default CLI tool of the removed shell. Ignored."
         },
         "default_model": {
           "type": "string",
           "description": "Default model tier (latest:fast, latest:pro, latest:max) or concrete model name.",
-          "examples": ["latest:pro", "latest:fast", "gemini-2.5-flash"]
+          "examples": ["latest:pro", "latest:fast"]
         },
         "timeout": { "type": "integer", "minimum": 1, "default": 120, "description": "CLI timeout in seconds." },
         "max_history": { "type": "integer", "minimum": 1, "default": 5, "description": "Max conversation turns to keep in prompt context." },
         "auto_save": { "type": "boolean", "default": true, "description": "Auto-save sessions after each turn." },
         "tandem": {
           "type": "array",
-          "description": "Providers for tandem mode (parallel execution).",
+          "description": "Providers of the removed shell tandem mode. Ignored.",
           "items": { "$ref": "#/$defs/ShellProviderEntry" }
         },
         "pipeline": { "$ref": "#/$defs/ShellPipelineConfig" }
@@ -280,7 +282,7 @@
       "type": "object",
       "description": "An entry for shell tandem/pipeline — either a provider (direct CLI) or an agent (from the project's agents: list).",
       "properties": {
-        "provider": { "type": "string", "description": "CLI tool name (gemini, claude, aider, codex). Ignored when agent: is set." },
+        "provider": { "type": "string", "description": "CLI tool name used by the removed shell. Ignored." },
         "model": { "type": "string", "description": "Model tier (latest:fast/pro/max) or concrete model name. Ignored when agent: is set." },
         "agent": { "type": "string", "description": "Agent name (from the project's agents: list). When set, loads the agent's system prompt and uses its metadata provider/model." }
       },

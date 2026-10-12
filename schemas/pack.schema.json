@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/Dr0drigues/armadai/master/schemas/pack.schema.json",
   "title": "ArmadAI Starter Pack Configuration",
-  "description": "Configuration file for ArmadAI starter packs (pack.yaml). Defines a curated bundle of agents, prompts, skills, and optional orchestration.",
+  "description": "Configuration file for ArmadAI starter packs (pack.yaml). Defines a curated bundle of agents, prompts and skills.",
   "type": "object",
   "properties": {
     "name": {
       "type": "string",
       "title": "Pack name",
       "description": "Unique identifier for this starter pack (e.g. 'rust-dev', 'pirate-crew'). Used as the directory name when installed.",
-      "examples": ["rust-dev", "orchestration-demo", "pirate-crew"]
+      "examples": ["rust-dev", "armadai-authoring", "pirate-crew"]
     },
     "description": {
       "type": "string",
@@ -51,7 +51,7 @@
     "OrchestrationConfig": {
       "type": "object",
       "title": "Orchestration Configuration",
-      "description": "Optional configuration for multi-agent orchestration patterns (hierarchical, blackboard, ring, or direct). When specified in a pack, these settings are inherited by projects that install the pack.",
+      "description": "Not read by ArmadAI: the pack loader ignores this key, and nothing is inherited by projects that install the pack. For a pack whose agent is tagged coordinator, armadai init --pack <name> --project writes an orchestration block (a declaration consumed by armadai validate and the Claude Code policy gate) into the project config instead. Kept so that existing pack.yaml files still validate.",
       "properties": {
         "enabled": {
           "type": "boolean",
@@ -62,7 +62,7 @@
         "pattern": {
           "type": "string",
           "title": "Orchestration pattern",
-          "description": "Pattern for multi-agent execution: direct (single agent), blackboard (shared state), ring (token-passing), hierarchical (pyramid topology), or auto (auto-detect).",
+          "description": "Pattern of the removed execution engine (direct, blackboard, ring, hierarchical, auto). Not read.",
           "enum": ["direct", "blackboard", "ring", "hierarchical", "auto"],
           "default": "direct"
         },
