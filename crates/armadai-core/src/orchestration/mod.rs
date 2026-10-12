@@ -116,14 +116,14 @@ pub struct OrchestrationConfig {
     /// Team topology (hierarchical only).
     pub teams: Vec<TeamConfig>,
 
-    /// C8: named agent routes (route name → agent names). Selected via
-    /// `--route <name>`. Empty = no routes configured.
+    /// C8: named agent routes (route name → agent names). Still parsed;
+    /// no command selects a route since `run --route` was removed.
     #[serde(default)]
     pub routes: std::collections::BTreeMap<String, Vec<String>>,
 
     /// How strictly the declared topology is enforced by the Claude Code
-    /// policy gate. Independent of `enabled`, which governs the
-    /// `run --orchestrate` engine. Defaults to `off`.
+    /// policy gate. Independent of `enabled`, which makes `link` validate
+    /// this config (`validate_config`). Defaults to `off`.
     #[serde(default)]
     pub policy: policy::PolicyMode,
 
@@ -133,20 +133,21 @@ pub struct OrchestrationConfig {
     #[serde(default)]
     pub free_agents: Vec<String>,
 
-    // ── Shared limits (all patterns) ───────────────────────────
-    /// Max delegation depth (default: 5).
+    // ── Engine limits ──────────────────────────────────────────
+    // The fields below were limits of the execution engine removed in
+    // step 0. They are still parsed so existing configs keep loading, but
+    // no command reads them.
+    /// Max delegation depth.
     pub max_depth: Option<u32>,
 
-    /// Max total iterations across all agents (default: 50).
+    /// Max total iterations across all agents.
     pub max_iterations: Option<u32>,
 
-    /// Max number of delegations executed concurrently within a single
-    /// parallel fan-out batch (default: 4). Consumed by patterns that opt into
-    /// `Action::InvokeParallel` (hierarchical, Lot 2).
+    /// Max number of delegations executed concurrently.
     #[serde(default)]
     pub max_concurrency: Option<u32>,
 
-    /// Global timeout in seconds (default: 300).
+    /// Global timeout in seconds.
     pub timeout: Option<u64>,
 
     // ── PR #91 parameters (blackboard/ring) ────────────────────
@@ -164,24 +165,6 @@ pub struct OrchestrationConfig {
 
     /// Global cost budget in USD (no default, optional enforcement).
     pub cost_limit: Option<f64>,
-}
-
-impl OrchestrationConfig {
-    pub fn max_depth(&self) -> u32 {
-        self.max_depth.unwrap_or(5)
-    }
-
-    pub fn max_iterations(&self) -> u32 {
-        self.max_iterations.unwrap_or(50)
-    }
-
-    pub fn max_concurrency(&self) -> usize {
-        self.max_concurrency.unwrap_or(4) as usize
-    }
-
-    pub fn timeout_secs(&self) -> u64 {
-        self.timeout.unwrap_or(300)
-    }
 }
 
 /// A team definition within the hierarchical topology.
@@ -537,9 +520,9 @@ consensus_threshold: 0.85
         assert_eq!(config.teams[0].lead.as_deref(), Some("java-lead"));
         assert_eq!(config.teams[0].agents.len(), 2);
         assert!(config.teams[1].lead.is_none());
-        assert_eq!(config.max_depth(), 3);
-        assert_eq!(config.max_iterations(), 100);
-        assert_eq!(config.timeout_secs(), 600);
+        assert_eq!(config.max_depth, Some(3));
+        assert_eq!(config.max_iterations, Some(100));
+        assert_eq!(config.timeout, Some(600));
         assert_eq!(config.max_rounds, Some(10));
         assert_eq!(config.consensus_threshold, Some(0.85));
     }
@@ -552,9 +535,7 @@ consensus_threshold: 0.85
         assert_eq!(config.pattern, OrchestrationPattern::Blackboard);
         assert!(config.coordinator.is_none());
         assert!(config.teams.is_empty());
-        assert_eq!(config.max_depth(), 5);
-        assert_eq!(config.max_iterations(), 50);
-        assert_eq!(config.timeout_secs(), 300);
+        assert!(config.max_depth.is_none());
     }
 
     #[test]
@@ -686,20 +667,5 @@ teams:
             ..Default::default()
         };
         assert!(validate_config(&config).is_ok());
-    }
-
-    #[test]
-    fn max_concurrency_defaults_to_four() {
-        let cfg = OrchestrationConfig::default();
-        assert_eq!(cfg.max_concurrency(), 4);
-    }
-
-    #[test]
-    fn max_concurrency_honors_override() {
-        let cfg = OrchestrationConfig {
-            max_concurrency: Some(8),
-            ..OrchestrationConfig::default()
-        };
-        assert_eq!(cfg.max_concurrency(), 8);
     }
 }

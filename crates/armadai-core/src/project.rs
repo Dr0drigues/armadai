@@ -25,8 +25,8 @@ const PROJECT_FILENAMES: &[&str] = &["armadai.yaml", "armadai.yml"];
 #[serde(default)]
 pub struct ProjectDefaults {
     pub mode: Option<AgentMode>,
-    /// Orchestration config overrides (applied when --orchestrate is used).
-    /// PR #91: Blackboard/Ring defaults. Extended for Hierarchical.
+    /// Orchestration config overrides. Still parsed, read by no command
+    /// since the execution engine was removed (step 0).
     pub orchestration: Option<OrchestrationDefaults>,
 }
 
@@ -61,90 +61,16 @@ pub struct ProjectConfig {
     pub defaults: ProjectDefaults,
     /// Top-level orchestration configuration (teams, coordinator, pattern).
     pub orchestration: Option<Box<OrchestrationConfig>>,
-    /// Shell configuration (default provider, tandem, pipeline).
-    pub shell: Option<ShellConfig>,
     /// Dynamic model-router rules (thresholds, keywords, tags, budget cap)
     /// for `latest:auto` agents. See `crate::routing::RoutingRules`.
-    /// Consumed in `cli::run::execute` to build the `RoutingRules` passed to
-    /// `run_single_agent` for `latest:auto` model resolution.
+    /// Still parsed; no command reads it since `armadai run` was removed.
     pub routing: Option<crate::routing::RoutingRules>,
-    /// Project-level custom registry sources (agents/skills/models), merged
-    /// with the user-level `~/.config/armadai/registries.yaml` and built-in
-    /// defaults. See `crate::registries`. Consumed by
-    /// `registry::sync::effective_sources`, `skills_registry::cache::effective_sources`
-    /// and `model_registry::fetch`'s source resolution (B2 Lot A Task 2).
+    /// Project-level custom registry sources, merged with the user-level
+    /// `~/.config/armadai/registries.yaml` and built-in defaults. See
+    /// `crate::registries`. Consumed by `skills_registry::cache::effective_sources`
+    /// and `starters_registry::effective_starter_sources`.
     #[serde(default)]
     pub registries: Option<crate::registries::RegistriesConfig>,
-}
-
-// ---------------------------------------------------------------------------
-// Shell configuration (the `shell:` section of armadai.yaml)
-// ---------------------------------------------------------------------------
-//
-// These types are the data model only; the bin-side `shell::config` module
-// re-exports them and adds the model-resolution helpers that depend on the
-// linker (`resolve_shell_model`, `default_model_for_provider`,
-// `model_cli_args`) — those stay in the bin since they reach into
-// `crate::linker::model_resolution`, which is not part of core.
-
-/// Shell configuration section from armadai.yaml.
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct ShellConfig {
-    pub default_provider: Option<String>,
-    pub default_model: Option<String>,
-    pub timeout: Option<u64>,
-    pub max_history: Option<usize>,
-    pub auto_save: Option<bool>,
-    pub tandem: Vec<ShellProviderEntry>,
-    pub pipeline: Option<ShellPipelineConfig>,
-}
-
-/// A single entry in tandem or pipeline stages.
-///
-/// Two usage modes:
-/// - **Provider mode**: `provider:` + optional `model:` — invokes the CLI directly
-///   with a system prompt defined at the step level
-/// - **Agent mode**: `agent:` — loads a project agent (from `agents:` list), uses its
-///   system prompt, metadata provider/model, and adds the step's `prompt:` as extra context
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ShellProviderEntry {
-    #[serde(default)]
-    pub provider: String,
-    pub model: Option<String>,
-    /// Agent name (from the project's `agents:` list) — when set, loads the agent's
-    /// system prompt and metadata. Takes precedence over `provider`/`model` for config
-    /// (the agent's metadata defines the actual provider used).
-    pub agent: Option<String>,
-}
-
-/// Pipeline configuration with named, ordered steps.
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub struct ShellPipelineConfig {
-    pub steps: Vec<PipelineStep>,
-}
-
-/// A single pipeline step with a name, role prompt, and providers.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PipelineStep {
-    pub name: String,
-    pub prompt: Option<String>,
-    pub providers: Vec<ShellProviderEntry>,
-}
-
-impl ShellConfig {
-    pub fn effective_timeout(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.timeout.unwrap_or(120))
-    }
-
-    pub fn effective_max_history(&self) -> usize {
-        self.max_history.unwrap_or(5)
-    }
-
-    pub fn effective_auto_save(&self) -> bool {
-        self.auto_save.unwrap_or(true)
-    }
 }
 
 /// Reference to an agent — resolved at runtime.

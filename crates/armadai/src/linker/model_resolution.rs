@@ -1,7 +1,5 @@
 use super::LinkAgent;
-use armadai_core::model_resolution::{
-    ModelTier, fallback_model_for_tier, resolve_model_for_tier, resolve_routed_tier,
-};
+use armadai_core::model_resolution::{ModelTier, resolve_model_for_tier, resolve_routed_tier};
 
 /// Classification of link targets.
 pub enum TargetKind {
@@ -25,22 +23,9 @@ pub fn classify_target(target: &str) -> TargetKind {
 
 /// Parse a `latest` placeholder into a tier.
 ///
-/// Re-exported from core, where it moved in #376 so the `armadai run` path
-/// resolves the exact same tier table this linker does — an alias that
-/// `link` honours and `run` sends verbatim to the provider was that issue.
+/// Re-exported from core, where it moved in #376 so every caller resolves
+/// the exact same tier table this linker does.
 pub use armadai_core::model_resolution::parse_latest_placeholder;
-
-/// Hardcoded fallback model for a given provider (defaults to Pro tier).
-#[allow(dead_code)]
-pub fn fallback_model(provider: &str) -> &'static str {
-    fallback_model_for_tier(provider, ModelTier::Pro)
-}
-
-/// Resolve the best model for a provider (defaults to Pro tier).
-#[allow(dead_code)]
-pub fn resolve_best_model_cached(provider: &str) -> String {
-    resolve_model_for_tier(provider, ModelTier::Pro)
-}
 
 // ── Remap functions ──────────────────────────────────────────────
 
@@ -135,6 +120,7 @@ pub fn prompt_model_interactive() -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use armadai_core::model_resolution::fallback_model_for_tier;
 
     fn make_agent(name: &str, model: Option<&str>) -> LinkAgent {
         LinkAgent {
@@ -206,16 +192,6 @@ mod tests {
             classify_target("some-tool"),
             TargetKind::Orchestrator
         ));
-    }
-
-    // ── Fallback models ──────────────────────────────────────────
-
-    #[test]
-    fn test_fallback_models() {
-        assert_eq!(fallback_model("anthropic"), "claude-sonnet-4-5-20250929");
-        assert_eq!(fallback_model("google"), "gemini-2.5-pro");
-        assert_eq!(fallback_model("openai"), "gpt-4o");
-        assert_eq!(fallback_model("unknown"), "claude-sonnet-4-5-20250929");
     }
 
     // ── Remap functions ──────────────────────────────────────────

@@ -1,7 +1,6 @@
 pub mod agent;
 pub mod agent_decl;
 pub mod agent_source;
-#[allow(dead_code)]
 pub mod config;
 pub mod dependency_resolver;
 pub(crate) mod embedded;

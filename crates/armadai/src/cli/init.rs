@@ -69,7 +69,7 @@ fn init_global(force: bool) -> anyhow::Result<()> {
         config::user_skills_dir().display()
     );
     anstream::println!(
-        "{m}  registry:  {}{m:#}",
+        "{m}  registry:  {} (remote starter-pack cache){m:#}",
         config::registry_cache_dir().display()
     );
     if skills_installed > 0 {
