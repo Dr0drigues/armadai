@@ -679,6 +679,20 @@ pub fn write_target(
     std::fs::write(path, yaml)
 }
 
+/// Forget `target` (after `unlink`); the manifest file goes once no target is left.
+pub fn remove_target(root: &Path, target: &str) -> std::io::Result<()> {
+    let Some(mut manifest) = read(root) else {
+        return Ok(());
+    };
+    manifest.targets.remove(target);
+    if manifest.targets.is_empty() {
+        return std::fs::remove_file(manifest_path(root));
+    }
+    let yaml = serde_yaml_ng::to_string(&manifest)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(manifest_path(root), yaml)
+}
+
 /// Add `entries` to `target`'s record (an entry already recorded at the same path
 /// is kept as is). Used for the files `--agents` left out of a link.
 pub fn append_entries(
@@ -807,7 +821,12 @@ pub fn write_files(
 
     let mut outcomes = Vec::with_capacity(files.len());
     let mut manifest_entries: Vec<ManifestEntry> = Vec::with_capacity(files.len());
-    let mut created_dirs: Vec<PathBuf> = Vec::new();
+    // directories an earlier link created stay recorded: a relink finds them
+    // existing and creates none, yet they are still link's to clean up
+    let mut created_dirs: Vec<PathBuf> = match lookup_target(root, target_name) {
+        Lookup::Found(t) => t.created_dirs,
+        Lookup::Fallback => Vec::new(),
+    };
 
     for (path, content, produced_by) in files {
         let relative_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
@@ -854,8 +873,12 @@ pub fn write_files(
                 // Never record the target's own root, or anything above
                 // it — only its descendants are ever eligible for
                 // `unlink` to remove later.
-                if created.starts_with(target_root) && created != target_root {
-                    created_dirs.push(created.strip_prefix(root).unwrap_or(&created).to_path_buf());
+                let rel = created.strip_prefix(root).unwrap_or(&created).to_path_buf();
+                if created.starts_with(target_root)
+                    && created != target_root
+                    && !created_dirs.contains(&rel)
+                {
+                    created_dirs.push(rel);
                 }
             }
         }

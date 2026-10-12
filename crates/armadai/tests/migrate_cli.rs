@@ -159,7 +159,7 @@ fn report_lists_written_dropped_warnings_and_the_backup() {
         "Warnings (",
         "YAML comments",
         "not detected",
-        "Note: 'armadai link' reads the new format",
+        "Note: run 'armadai link'",
         ".armadai/.migrated/",
     ] {
         assert!(out.contains(needle), "{needle}:\n{out}");

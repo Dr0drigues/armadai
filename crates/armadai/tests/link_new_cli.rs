@@ -644,3 +644,73 @@ fn a_linked_skill_or_native_root_leaving_the_sources_is_refused() {
         );
     }
 }
+
+#[test]
+fn relinking_keeps_the_record_of_created_directories() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    env.ok(&["link"]);
+    env.ok(&["unlink"]);
+    for dir in [".claude/agents", ".claude/skills"] {
+        assert!(!env.root().join(dir).exists(), "{dir} left behind");
+    }
+}
+
+#[test]
+fn unlink_forgets_the_target() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    env.ok(&["unlink"]);
+    let manifest = env.root().join(".armadai/link-manifest.yaml");
+    let text = std::fs::read_to_string(&manifest).unwrap_or_default();
+    assert!(!text.contains("claude:"), "{text}");
+}
+
+#[test]
+fn a_native_file_cannot_write_into_git() {
+    let mut files = PROJECT.to_vec();
+    files.push((".armadai/native/claude/.git/hooks/pre-commit", "evil\n"));
+    let env = Env::new(&files);
+    let (ok, _, err) = env.run(&["link"]);
+    assert!(!ok && err.contains(".git"), "{err}");
+}
+
+#[test]
+fn dry_run_shows_the_stale_files() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    std::fs::remove_file(env.root().join(".armadai/agents/dev.md")).unwrap();
+    std::fs::write(
+        env.root().join(".armadai/flows/ship.yaml"),
+        "steps:\n  plan: { agent: lead }\n",
+    )
+    .unwrap();
+    let out = env.ok(&["link", "--dry-run"]);
+    assert!(out.contains("stale .claude/agents/dev.md"), "{out}");
+    assert!(
+        env.root().join(".claude/agents/dev.md").is_file(),
+        "dry run removes nothing"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn executable_skill_files_stay_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut files = PROJECT.to_vec();
+    files.push((".armadai/skills/notes/run.sh", "#!/bin/sh\n"));
+    let env = Env::new(&files);
+    let src = env.root().join(".armadai/skills/notes/run.sh");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+    env.ok(&["link"]);
+    let mode = std::fs::metadata(env.root().join(".claude/skills/notes/run.sh"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert!(mode & 0o111 != 0, "{mode:o}");
+    let plain = std::fs::metadata(env.root().join(".claude/skills/notes/SKILL.md"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert!(plain & 0o111 == 0, "{plain:o}");
+}

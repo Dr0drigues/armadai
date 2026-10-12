@@ -340,8 +340,20 @@ fn one_line(s: &str) -> String {
 fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
     let mut out = lead.body.trim_end().to_string();
     out.push_str("\n\n## Delegation\n\nDelegate with the Agent tool, naming the subagent by its id.\n\n### Agents\n\n");
+    // under a strict policy, say which agents the gate will not let the main
+    // session reach rather than list them as if it would
+    let strict = project.manifest.policy.delegation == Delegation::Strict;
+    let allowed = crate::claude_adapter::policy_gate::allowed_targets(project, None);
     for (id, a) in project.agents.iter().filter(|(id, _)| *id != coordinator) {
-        out.push_str(&format!("- `{id}`: {}\n", one_line(&a.front.description)));
+        let note = if strict && !allowed.contains(id) {
+            " (not delegable under `policy.delegation: strict`: in no flow and not a free agent)"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "- `{id}`: {}{note}\n",
+            one_line(&a.front.description)
+        ));
     }
     for (fid, flow) in &project.flows {
         out.push_str(&flow_section(fid, flow));
@@ -871,6 +883,26 @@ mod tests {
                 "{kind}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn under_strict_an_agent_the_gate_refuses_is_marked_in_claude_md() {
+        let mut files = team();
+        files[0] = (
+            ".armadai/project.yaml",
+            b"schema_version: 1\ncoordinator: lead\npolicy:\n  delegation: strict\n",
+        );
+        files.push((
+            ".armadai/agents/doc.md",
+            b"---\ndescription: Docs\n---\nB\n",
+        ));
+        let plan = compile(&files).unwrap();
+        let block = &plan.blocks[0].1;
+        assert!(block.contains("`doc`: Docs (not delegable"), "{block}");
+        assert!(
+            !block.contains("`dev`: Writes code (not delegable"),
+            "{block}"
+        );
     }
 
     #[test]

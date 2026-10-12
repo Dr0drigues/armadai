@@ -117,7 +117,7 @@ pub enum Command {
             armadai.yaml/armadai.yml is removed when it is the one read). Other files are left \
             in place and reported. The report lists \
             the files written, every dropped field with its reason, and the warnings.\n\n\
-            Note: 'armadai link' reads the new format only from step 2 of the v1 work.",
+            Then run 'armadai link' to compile the migrated project.",
         after_help = "Examples:\n  \
             armadai migrate --dry-run\n  \
             armadai migrate\n  \

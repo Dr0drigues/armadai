@@ -1,13 +1,9 @@
 # Project format
 
-A project in the new format is a `.armadai/` directory whose manifest, `.armadai/project.yaml`,
-**defines** it: when that file exists, `armadai validate` checks the new format; otherwise it
-validates the legacy format (`.armadai/config.yaml`, `armadai.yaml`, `armadai.yml`) and suggests
-`armadai migrate`.
-
-> **Transitional state.** `armadai link` still reads the legacy format. It reads this one from
-> step 2 of the v1 work. Until then, a migrated project can be validated but not linked; the
-> legacy project stays in `.armadai/.migrated/<timestamp>/` (see [Migrating](#migrating-a-legacy-project)).
+A project is a `.armadai/` directory whose manifest, `.armadai/project.yaml`, **defines** it.
+Every project command (`link`, `unlink`, `list`, `inspect`, `validate`, `new`) reads this
+format only; a legacy project (`.armadai/config.yaml`, `armadai.yaml`, `armadai.yml`) is refused
+with "legacy format, run `armadai migrate`" (see [Migrating](#migrating-a-legacy-project)).
 
 ```
 .armadai/
@@ -16,7 +12,7 @@ validates the legacy format (`.armadai/config.yaml`, `armadai.yaml`, `armadai.ym
   skills/<id>/SKILL.md    # cross-tool skill standard, folder copied as is
   flows/<id>.yaml
   automations/<id>.yaml
-  native/<target>/<path>  # files copied as is (read from step 2)
+  native/<target>/<path>  # files copied as is by link
 ```
 
 Every file is strict YAML: an unknown key, a duplicate key or a value outside its domain is an

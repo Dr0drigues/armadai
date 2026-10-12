@@ -162,8 +162,11 @@ fn prepare(
             .chain(p.settings.iter().map(|(r, _, _)| r.clone()))
             .collect();
         for (path, content) in read_tree(&native_dir, &root.join(".armadai"))? {
-            if path.starts_with(".armadai") {
-                bail!("native file {} would write into .armadai/", path.display());
+            if path.starts_with(".armadai") || path.starts_with(".git") {
+                bail!(
+                    "native file {} would write into .armadai/ or .git/",
+                    path.display()
+                );
             }
             if generated.contains(&path) {
                 bail!(
@@ -205,7 +208,7 @@ fn prepare(
 
 /// Files the previous link wrote that this one no longer produces: removed while
 /// still exactly what link wrote, otherwise left in place and reported.
-fn remove_stale(root: &Path, p: &mut Prepared, produced: &BTreeSet<PathBuf>) {
+fn remove_stale(root: &Path, p: &mut Prepared, produced: &BTreeSet<PathBuf>, dry_run: bool) {
     let Some(prev) = &p.previous else { return };
     let mut lines = Vec::new();
     for e in &prev.entries {
@@ -224,7 +227,13 @@ fn remove_stale(root: &Path, p: &mut Prepared, produced: &BTreeSet<PathBuf>) {
             && (e.digest.as_deref())
                 .is_some_and(|d| manifest::check_digest(d, &path) == DigestCheck::Matches);
         let element = format!("stale {}", e.path.display());
-        if own && std::fs::remove_file(&path).is_ok() {
+        if own && dry_run {
+            lines.push((
+                element,
+                Status::Compiled,
+                "would be removed: no longer produced",
+            ));
+        } else if own && std::fs::remove_file(&path).is_ok() {
             lines.push((element, Status::Compiled, "removed: no longer produced"));
         } else {
             lines.push((
@@ -238,6 +247,36 @@ fn remove_stale(root: &Path, p: &mut Prepared, produced: &BTreeSet<PathBuf>) {
         p.report.push(&p.target, element, status, Some(reason));
     }
 }
+
+/// Skill and native files keep the executable bit of their source (scripts).
+#[cfg(unix)]
+fn copy_executable_bits(root: &Path, p: &Prepared) {
+    use std::os::unix::fs::PermissionsExt;
+    for a in &p.artifacts {
+        let source = match a.kind {
+            ArtifactKind::Skill => a
+                .path
+                .strip_prefix("skills")
+                .ok()
+                .map(|rest| root.join(".armadai/skills").join(rest)),
+            ArtifactKind::Native => {
+                Some(root.join(".armadai/native").join(&p.target).join(&a.path))
+            }
+            _ => None,
+        };
+        let exec = source
+            .and_then(|s| std::fs::metadata(s).ok())
+            .is_some_and(|m| m.permissions().mode() & 0o111 != 0);
+        let dest = root.join(p.rel(a));
+        if let (true, Ok(m)) = (exec, std::fs::metadata(&dest)) {
+            let mode = m.permissions().mode() | ((m.permissions().mode() & 0o444) >> 2);
+            let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(mode));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn copy_executable_bits(_: &Path, _: &Prepared) {}
 
 /// A file link left in place is not compiled: its element's report line says so
 /// (never `compiled` for a file link did not write).
@@ -326,7 +365,7 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
         })
         .collect();
     let produced = p.all_produced.clone();
-    remove_stale(root, p, &produced);
+    remove_stale(root, p, &produced, false);
 
     let target_root = root.join(&p.output_dir);
     let outcomes = manifest::write_files(
@@ -338,6 +377,8 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
         force,
         &patched,
     )?;
+    copy_executable_bits(root, p);
+
     // files `--agents` left out stay recorded as they were
     let written: BTreeSet<PathBuf> = p.artifacts.iter().map(|a| p.rel(a)).collect();
     let kept: Vec<manifest::ManifestEntry> = (p.previous.iter().flat_map(|t| &t.entries))
@@ -386,6 +427,10 @@ pub async fn execute(
 
     let mut lines = Vec::new();
     if dry_run {
+        for p in &mut prepared {
+            let produced = p.all_produced.clone();
+            remove_stale(&root, p, &produced, true);
+        }
         for p in &prepared {
             lines.push(format!(
                 "Dry run — files that would be generated for '{}':",

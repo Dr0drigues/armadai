@@ -356,6 +356,11 @@ fn unlink_from_manifest(
              {KEPT_FILE_REASONS}. Remove them by hand if you no longer want them.{m:#}"
         );
     }
+    // undone: the record goes too (kept files are no longer link's), unless a
+    // refusal left something of link's in place; `--agents` undid only a part
+    if untrusted == 0 && agents_filter.is_none() {
+        linker::manifest::remove_target(root, target_name)?;
+    }
     if untrusted > 0 {
         let e = crate::cli::style::err();
         // Deliberately not a single blanket cause here (issue #348, 2nd
