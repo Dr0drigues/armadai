@@ -136,7 +136,14 @@ pub struct Link {
 #[serde(untagged)]
 pub enum SeqItem {
     Agent(String),
-    Explicit { id: String, agent: String },
+    Explicit(SeqExplicit),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SeqExplicit {
+    pub id: String,
+    pub agent: String,
 }
 
 /// Raw flow as read from `flows/<id>.yaml`.

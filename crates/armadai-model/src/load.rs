@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 
 use crate::SCHEMA_VERSION;
-use crate::diag::{Diagnostic, Severity};
+use crate::diag::{Diagnostic, Severity, locate, locate_key};
 use crate::types::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +63,7 @@ pub struct Loaded {
 /// Split `---\n<yaml>\n---\n<body>`. Returns the yaml, the body and the 1-based
 /// line of the first yaml character. Handles `\r\n`.
 pub fn split_frontmatter(text: &str) -> Option<(&str, &str, usize)> {
+    let text = text.trim_start_matches('\u{feff}');
     let mut lines = text.split_inclusive('\n');
     if lines.next()?.trim_end() != "---" {
         return None;
@@ -78,13 +79,12 @@ pub fn split_frontmatter(text: &str) -> Option<(&str, &str, usize)> {
     None
 }
 
-/// Expand the `sequence` shortcut into steps and consecutive links.
-pub fn expand_sequence(items: &[SeqItem]) -> (BTreeMap<String, Step>, Vec<Link>) {
-    let mut steps = BTreeMap::new();
-    let mut order = Vec::new();
+/// (step id, agent) of every sequence item; repeated agents get `-2`, `-3`, ...
+fn sequence_ids(items: &[SeqItem]) -> Vec<(String, String)> {
     let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
-    for item in items {
-        let (id, agent) = match item {
+    items
+        .iter()
+        .map(|item| match item {
             SeqItem::Agent(a) => {
                 let n = seen.entry(a.as_str()).or_insert(0);
                 *n += 1;
@@ -97,23 +97,45 @@ pub fn expand_sequence(items: &[SeqItem]) -> (BTreeMap<String, Step>, Vec<Link>)
                     a.clone(),
                 )
             }
-            SeqItem::Explicit { id, agent } => (id.clone(), agent.clone()),
-        };
-        steps.insert(
-            id.clone(),
-            Step {
-                agent,
-                states: Vec::new(),
-                on_failure: None,
-            },
-        );
-        order.push(id);
+            SeqItem::Explicit(e) => (e.id.clone(), e.agent.clone()),
+        })
+        .collect()
+}
+
+/// Step ids that the sequence defines more than once (they would overwrite each other).
+pub fn sequence_duplicates(items: &[SeqItem]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut dups = Vec::new();
+    for (id, _) in sequence_ids(items) {
+        if !seen.insert(id.clone()) && !dups.contains(&id) {
+            dups.push(id);
+        }
     }
-    let links = order
+    dups
+}
+
+/// Expand the `sequence` shortcut into steps and consecutive links.
+/// Duplicate ids overwrite: check [`sequence_duplicates`] first.
+pub fn expand_sequence(items: &[SeqItem]) -> (BTreeMap<String, Step>, Vec<Link>) {
+    let ids = sequence_ids(items);
+    let steps = ids
+        .iter()
+        .map(|(id, agent)| {
+            (
+                id.clone(),
+                Step {
+                    agent: agent.clone(),
+                    states: Vec::new(),
+                    on_failure: None,
+                },
+            )
+        })
+        .collect();
+    let links = ids
         .windows(2)
         .map(|w| Link {
-            from: w[0].clone(),
-            to: w[1].clone(),
+            from: w[0].0.clone(),
+            to: w[1].0.clone(),
             when: None,
         })
         .collect();
@@ -131,7 +153,7 @@ impl Ctx {
         severity: Severity,
         code: &'static str,
         file: &Path,
-        line: Option<usize>,
+        pos: (Option<usize>, Option<usize>),
         message: String,
     ) {
         self.diagnostics.push(Diagnostic {
@@ -139,28 +161,62 @@ impl Ctx {
             code,
             file: file.to_path_buf(),
             path: String::new(),
-            line,
-            column: None,
+            line: pos.0,
+            column: pos.1,
             message,
             hint: None,
         });
     }
 
-    fn error(&mut self, code: &'static str, file: &Path, line: Option<usize>, message: String) {
-        self.diag(Severity::Error, code, file, line, message);
+    fn error(
+        &mut self,
+        code: &'static str,
+        file: &Path,
+        pos: (Option<usize>, Option<usize>),
+        message: String,
+    ) {
+        self.diag(Severity::Error, code, file, pos, message);
+    }
+
+    /// True for `.yaml`; a `.yml` file is skipped with an `ignored-file` warning.
+    fn is_yaml(&mut self, p: &Path) -> bool {
+        match p.extension().and_then(|e| e.to_str()) {
+            Some("yaml") => true,
+            Some("yml") => {
+                self.ignored(p, "`.yml` is not loaded, rename it to `.yaml`");
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn ignored(&mut self, file: &Path, message: &str) {
+        self.diag(
+            Severity::Warning,
+            "ignored-file",
+            file,
+            (None, None),
+            message.into(),
+        );
     }
 
     /// Read a file, recording origins; I/O and UTF-8 failures become diagnostics.
     fn read(&mut self, kind: Kind, id: &str, path: &Path) -> Option<String> {
         match std::fs::read_to_string(path) {
             Ok(t) => {
+                let t = t.trim_start_matches('\u{feff}').to_string();
                 self.origins
                     .files
                     .insert((kind, id.to_string()), (path.to_path_buf(), t.clone()));
                 Some(t)
             }
             Err(e) => {
-                self.error("invalid-yaml", path, None, format!("cannot read file: {e}"));
+                self.error(
+                    "invalid-yaml",
+                    path,
+                    (None, None),
+                    format!("cannot read file: {e}"),
+                );
                 None
             }
         }
@@ -174,57 +230,69 @@ impl Ctx {
         line_offset: usize,
     ) -> Option<T> {
         if yaml.trim().is_empty() {
-            self.error("invalid-yaml", file, None, "file is empty".into());
+            self.error(
+                "invalid-yaml",
+                file,
+                (Some(line_offset + 1), Some(1)),
+                "file is empty".into(),
+            );
             return None;
         }
-        match serde_yaml_ng::from_str(yaml) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                let loc = e.location();
-                self.diagnostics.push(Diagnostic {
-                    severity: Severity::Error,
-                    code: "invalid-yaml",
-                    file: file.to_path_buf(),
-                    path: String::new(),
-                    line: loc.as_ref().map(|l| l.line() + line_offset),
-                    column: loc.as_ref().map(|l| l.column()),
-                    message: e.to_string(),
-                    hint: None,
-                });
-                None
-            }
+        // The untyped pass rejects duplicate keys anywhere, including in free maps
+        // (`steps`, `outputs`, `native`, `metadata`) where typed deserialization keeps the last.
+        let err = match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml) {
+            Ok(_) => match serde_yaml_ng::from_str(yaml) {
+                Ok(v) => return Some(v),
+                Err(e) => e,
+            },
+            Err(e) => e,
+        };
+        let loc = err.location();
+        let mut message = err.to_string();
+        // the position lives in the line/column fields
+        if let Some(i) = message.rfind(" at line ") {
+            message.truncate(i);
         }
+        self.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            code: "invalid-yaml",
+            file: file.to_path_buf(),
+            path: String::new(),
+            line: loc.as_ref().map(|l| l.line() + line_offset),
+            column: loc.as_ref().map(|l| l.column()),
+            message,
+            hint: None,
+        });
+        None
     }
 
     /// Frontmatter + body of a markdown file, with diagnostics on malformed input.
     fn frontmatter<'a>(&mut self, text: &'a str, file: &Path) -> Option<(&'a str, &'a str, usize)> {
         let parts = split_frontmatter(text);
         if parts.is_none() {
-            if text.starts_with("---") {
+            if text
+                .trim_start_matches('\u{feff}')
+                .lines()
+                .next()
+                .is_some_and(|l| l.trim_end() == "---")
+            {
                 self.error(
                     "unclosed-frontmatter",
                     file,
-                    Some(1),
+                    (Some(1), Some(1)),
                     "frontmatter is not closed by a second `---`".into(),
                 );
             } else {
                 self.error(
                     "missing-frontmatter",
                     file,
-                    Some(1),
+                    (Some(1), Some(1)),
                     "file must start with a `---` frontmatter".into(),
                 );
             }
         }
         parts
     }
-}
-
-/// 1-based line of the first line starting with `key:`.
-fn key_line(text: &str, key: &str) -> Option<usize> {
-    text.lines()
-        .position(|l| l.strip_prefix(key).is_some_and(|r| r.starts_with(':')))
-        .map(|i| i + 1)
 }
 
 /// Sorted entries of `dir` (empty when it does not exist).
@@ -259,7 +327,10 @@ pub fn load_project(root: &Path) -> Loaded {
                     cx.error(
                         "unsupported-schema-version",
                         &manifest_path,
-                        key_line(&text, "schema_version"),
+                        {
+                            let (l, c) = locate_key(&text, "schema_version");
+                            (l.or(Some(1)), c.or(Some(1)))
+                        },
                         format!(
                             "schema_version {} is not supported (expected {SCHEMA_VERSION})",
                             m.schema_version
@@ -273,7 +344,7 @@ pub fn load_project(root: &Path) -> Loaded {
         cx.error(
             "missing-manifest",
             &manifest_path,
-            None,
+            (None, None),
             "`.armadai/project.yaml` not found".into(),
         );
         None
@@ -306,6 +377,9 @@ pub fn load_project(root: &Path) -> Loaded {
     for dir in sorted(&base.join("skills")) {
         let p = dir.join("SKILL.md");
         if !p.is_file() {
+            if dir.is_dir() {
+                cx.ignored(&dir, "skill folder without a `SKILL.md`");
+            }
             continue;
         }
         let id = dir
@@ -335,7 +409,10 @@ pub fn load_project(root: &Path) -> Loaded {
                         Severity::Warning,
                         "unknown-skill-key",
                         &p,
-                        key_line(yaml, k).map(|l| l + first - 1),
+                        {
+                            let (l, c) = locate_key(yaml, k);
+                            (l.map(|l| l + first - 1), c)
+                        },
                         format!("unknown skill frontmatter key `{k}`"),
                     );
                 }
@@ -352,7 +429,7 @@ pub fn load_project(root: &Path) -> Loaded {
 
     let mut flows = BTreeMap::new();
     for p in sorted(&base.join("flows")) {
-        if p.extension().is_none_or(|e| e != "yaml") {
+        if !cx.is_yaml(&p) {
             continue;
         }
         let id = stem(&p);
@@ -368,8 +445,16 @@ pub fn load_project(root: &Path) -> Loaded {
             cx.error(
                 "sequence-and-steps",
                 &p,
-                key_line(&text, "sequence"),
+                locate_key(&text, "sequence"),
                 "`sequence` is exclusive with `steps`/`links`".into(),
+            );
+            continue;
+        } else if let Some(dup) = sequence_duplicates(&raw.sequence).first() {
+            cx.error(
+                "duplicate-step",
+                &p,
+                locate(&text, dup),
+                format!("step id `{dup}` is defined more than once in `sequence`"),
             );
             continue;
         } else {
@@ -387,7 +472,7 @@ pub fn load_project(root: &Path) -> Loaded {
 
     let mut automations = BTreeMap::new();
     for p in sorted(&base.join("automations")) {
-        if p.extension().is_none_or(|e| e != "yaml") {
+        if !cx.is_yaml(&p) {
             continue;
         }
         let id = stem(&p);

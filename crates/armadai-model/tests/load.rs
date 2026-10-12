@@ -56,13 +56,15 @@ fn unsupported_schema_version() {
 #[test]
 fn missing_frontmatter() {
     let dir = project(&[M, (".armadai/agents/dev.md", "just a body\n")]);
-    find(&load_project(dir.path()), "missing-frontmatter");
+    let l = load_project(dir.path());
+    assert_eq!(find(&l, "missing-frontmatter").line, Some(1));
 }
 
 #[test]
 fn unclosed_frontmatter() {
     let dir = project(&[M, (".armadai/agents/dev.md", "---\ndescription: x\nbody\n")]);
-    find(&load_project(dir.path()), "unclosed-frontmatter");
+    let l = load_project(dir.path());
+    assert_eq!(find(&l, "unclosed-frontmatter").line, Some(1));
 }
 
 #[test]
@@ -181,4 +183,251 @@ fn diagnostic_renders_position_and_hint() {
         ..d
     };
     assert_eq!(d.render(), "a.yaml: error[x]: m");
+}
+
+fn errors_for(files: &[(&str, &str)], code: &str) -> Vec<Diagnostic> {
+    let dir = project(files);
+    load_project(dir.path())
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.code == code)
+        .collect()
+}
+
+#[test]
+fn duplicate_keys_in_free_maps_are_rejected() {
+    for (file, text, line) in [
+        (
+            ".armadai/flows/f.yaml",
+            "steps:\n  a: { agent: x }\n  a: { agent: y }\n",
+            2,
+        ),
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\noutputs:\n  claude: a\n  claude: b\n",
+            3,
+        ),
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\nnative:\n  claude: {}\n  claude: {}\n",
+            3,
+        ),
+    ] {
+        let ds = errors_for(&[M, (file, text)], "invalid-yaml");
+        assert_eq!(ds.len(), 1, "{file}: {ds:?}");
+        assert_eq!(ds[0].line, Some(line), "{file}");
+    }
+}
+
+#[test]
+fn duplicate_metadata_key_in_skill_is_rejected() {
+    let ds = errors_for(
+        &[
+            M,
+            (
+                ".armadai/skills/s/SKILL.md",
+                "---\nname: s\nmetadata:\n  k: a\n  k: b\n---\n",
+            ),
+        ],
+        "invalid-yaml",
+    );
+    // serde_yaml_ng reports the first definition of the duplicated key
+    assert_eq!(ds[0].line, Some(4));
+}
+
+#[test]
+fn duplicate_sequence_step_id_is_an_error_not_an_overwrite() {
+    let ds = errors_for(
+        &[
+            M,
+            (
+                ".armadai/flows/f.yaml",
+                "sequence:\n  - { id: x, agent: a }\n  - { id: x, agent: b }\n",
+            ),
+        ],
+        "duplicate-step",
+    );
+    assert_eq!((ds[0].line, ds[0].column), (Some(2), Some(11)));
+}
+
+#[test]
+fn explicit_sequence_form_keeps_its_id() {
+    let dir = project(&[
+        M,
+        (
+            ".armadai/flows/f.yaml",
+            "sequence:\n  - { id: first, agent: a }\n  - b\n",
+        ),
+    ]);
+    let p = load_project(dir.path()).project.unwrap();
+    assert_eq!(p.flows["f"].steps["first"].agent, "a");
+    assert_eq!(p.flows["f"].links[0].from, "first");
+    assert_eq!(p.flows["f"].links[0].to, "b");
+}
+
+#[test]
+fn unknown_key_in_explicit_sequence_item_is_rejected() {
+    let ds = errors_for(
+        &[
+            M,
+            (
+                ".armadai/flows/f.yaml",
+                "sequence:\n  - { id: x, agent: a, bogus: 1 }\n",
+            ),
+        ],
+        "invalid-yaml",
+    );
+    assert_eq!(ds.len(), 1);
+}
+
+#[test]
+fn serde_position_suffix_is_not_in_the_message() {
+    let dir = project(&[
+        M,
+        (
+            ".armadai/agents/dev.md",
+            "---\ndescription: ok\ntier: huge\n---\n",
+        ),
+    ]);
+    let l = load_project(dir.path());
+    let d = find(&l, "invalid-yaml");
+    assert!(!d.message.contains(" at line "), "{}", d.message);
+    assert_eq!(d.column, Some(7));
+}
+
+#[test]
+fn flows_and_automations_are_filtered_and_sorted() {
+    for dir_name in ["flows", "automations"] {
+        let f = |n: &str| format!(".armadai/{dir_name}/{n}");
+        let (z, a, m, t, y) = (
+            f("zed.yaml"),
+            f("alpha.yaml"),
+            f("mid.yaml"),
+            f("notes.txt"),
+            f("old.yml"),
+        );
+        let dir = project(&[
+            M,
+            (&z, ""),
+            (&a, ""),
+            (&m, ""),
+            (&t, "ignored"),
+            (&y, "x: 1"),
+        ]);
+        let l = load_project(dir.path());
+        let files: Vec<_> = l
+            .diagnostics
+            .iter()
+            .map(|d| {
+                (
+                    d.code,
+                    d.file.file_name().unwrap().to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            files,
+            [
+                ("invalid-yaml", "alpha.yaml".to_string()),
+                ("invalid-yaml", "mid.yaml".to_string()),
+                ("ignored-file", "old.yml".to_string()),
+                ("invalid-yaml", "zed.yaml".to_string()),
+            ],
+            "{dir_name}"
+        );
+    }
+}
+
+#[test]
+fn automations_load() {
+    let dir = project(&[
+        M,
+        (
+            ".armadai/automations/check.yaml",
+            "event: before-tool\nrun: ./c.sh\n",
+        ),
+    ]);
+    let p = load_project(dir.path()).project.unwrap();
+    assert_eq!(p.automations["check"].event, Event::BeforeTool);
+    assert_eq!(p.automations["check"].run, "./c.sh");
+}
+
+#[test]
+fn skill_folder_without_skill_md_warns() {
+    let dir = project(&[M, (".armadai/skills/empty/README.md", "x")]);
+    let l = load_project(dir.path());
+    let d = find(&l, "ignored-file");
+    assert_eq!(d.severity, Severity::Warning);
+    assert!(d.file.ends_with("skills/empty"));
+}
+
+#[test]
+fn empty_frontmatter_falls_back_to_its_line() {
+    let ds = errors_for(
+        &[M, (".armadai/agents/dev.md", "---\n---\nBody\n")],
+        "invalid-yaml",
+    );
+    assert_eq!(ds[0].line, Some(2));
+}
+
+#[test]
+fn schema_version_position_survives_spacing_and_flow_style() {
+    for (text, line) in [
+        ("name: x\nschema_version : 2\n", 2),
+        ("{schema_version: 2}\n", 1),
+    ] {
+        let ds = errors_for(
+            &[(".armadai/project.yaml", text)],
+            "unsupported-schema-version",
+        );
+        assert_eq!(ds[0].line, Some(line), "{text}");
+    }
+    let ds = errors_for(
+        &[(".armadai/project.yaml", "schema_version: 2\n")],
+        "unsupported-schema-version",
+    );
+    assert_eq!((ds[0].line, ds[0].column), (Some(1), Some(1)));
+}
+
+#[test]
+fn bom_is_tolerated_and_four_dashes_is_not_a_frontmatter() {
+    let dir = project(&[
+        (".armadai/project.yaml", "\u{feff}schema_version: 1\n"),
+        (
+            ".armadai/agents/dev.md",
+            "\u{feff}---\ndescription: ok\n---\n",
+        ),
+    ]);
+    let l = load_project(dir.path());
+    assert!(l.diagnostics.is_empty(), "{:?}", l.diagnostics);
+    let ds = errors_for(
+        &[
+            M,
+            (".armadai/agents/dev.md", "----\ndescription: x\n----\n"),
+        ],
+        "missing-frontmatter",
+    );
+    assert_eq!(ds.len(), 1);
+}
+
+#[test]
+fn undiscoverable_schema_version_key_falls_back_to_line_one() {
+    let ds = errors_for(
+        &[(".armadai/project.yaml", "? schema_version\n: 2\n")],
+        "unsupported-schema-version",
+    );
+    assert_eq!((ds[0].line, ds[0].column), (Some(1), Some(1)));
+}
+
+#[test]
+fn bom_does_not_shift_columns_and_split_tolerates_it() {
+    let ds = errors_for(
+        &[(".armadai/project.yaml", "\u{feff}schema_version: 2\n")],
+        "unsupported-schema-version",
+    );
+    assert_eq!((ds[0].line, ds[0].column), (Some(1), Some(1)));
+    assert_eq!(
+        split_frontmatter("\u{feff}---\na: 1\n---\nB\n"),
+        Some(("a: 1\n", "B\n", 2))
+    );
 }
