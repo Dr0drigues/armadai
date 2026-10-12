@@ -1,107 +1,86 @@
-# Link Command
+# Link
 
-The `armadai link` command compiles your ArmadAI agent definitions into the native configuration
-files of an AI assistant. It never touches the network.
+`armadai link` compiles the project (`.armadai/project.yaml` and its folders, see
+[Project format](project-format.md)) into the native files of each target, and prints a
+**conformance report**: for every declared element and target, whether it was `compiled`,
+`approximated` (with the reason) or `not-compiled` (with the reason). Nothing is degraded in
+silence. `link` never reaches the network.
+
+A legacy project (`.armadai/config.yaml`, `armadai.yaml`, `armadai.yml`) is refused with
+"legacy format, run `armadai migrate`".
 
 ## Usage
 
 ```bash
-armadai link --target <target>            # Generate config for one assistant
-armadai link --target <target> --dry-run  # Preview: writes no files and no manifest
-armadai link --target <target> --force    # Overwrite existing files
-
-armadai unlink --target <target>            # Remove what link wrote, and only that
-armadai unlink --target <target> --dry-run  # Preview the removals, same guards, same exit code
+armadai link                         # targets of project.yaml, else claude
+armadai link --target claude codex   # several targets
+armadai link --dry-run               # the plan and the report, nothing written
+armadai link --json                  # the report alone, as JSON, on stdout
+armadai link --agents reviewer       # only these agents' files (CLAUDE.md and hooks unaffected)
+armadai link --output tools/claude   # one target, another output folder
+armadai link --force                 # overwrite files link did not write
 ```
 
-Without `--target`, `link` uses `link.target` from the project config. Other options:
-`--agents <names…>` (link only some agents), `--coordinator <name>` (see below), `--model <id>`
-(see [Providers and models](providers.md)), `--output <dir>` (override the output directory).
+| Option | Meaning |
+|---|---|
+| `--target` | Targets (`claude`, `codex`, `copilot`, `opencode`); default: `targets` of project.yaml, else `claude` |
+| `--output` | Output folder of a single target (default: `outputs.<target>`, else `.claude`, `.codex`, `.github`, `.opencode`). It may leave the project for one run, never into `.armadai/`, `.git/` or onto the project root |
+| `--agents` | Write only these agents' files; each one left out gets a `skipped (--agents)` line. Never removes the other agents' files |
+| `--dry-run` | Print the files, the stale files a real run would remove, and the report; write nothing |
+| `--json` | Print the report as a JSON array of `{target, element, status, reason}` and nothing else |
+| `--force` | Overwrite a file that exists and was not written by link |
 
-## Supported Targets
+## Pipeline
 
-| Assistant | Target | Generated Files |
-|---|---|---|
-| Claude Code | `claude` | `.claude/agents/<agent>.md` (+ `.claude/CLAUDE.md` for the coordinator) |
-| Codex | `codex` | `.codex/agents/<agent>.toml` + `.codex/config.toml` + `.codex/AGENTS.md` |
-| OpenCode | `opencode` | `.opencode/agents/<agent>.md` (+ `.opencode/instructions.md` for the coordinator) |
-| GitHub Copilot | `copilot` | `.github/agents/<agent>.agent.md` (+ `.github/copilot-instructions.md` for the coordinator) |
+1. Load and validate the project: any error stops before the first write.
+2. One plan per target: whole files, the root `CLAUDE.md` block, the settings hooks.
+3. `.armadai/native/<target>/<path>` files are copied as is to `<project>/<path>` (`--output`
+   does not move them). A native file colliding with a generated one, a link leaving the
+   sources, or a path into `.armadai/` or `.git/` is an error and nothing is written.
+4. Files shared with you (`CLAUDE.md`, `settings.json`) are checked before any write: a symbolic
+   link, invalid JSON or an unterminated ArmadAI block is an error.
+5. Writes, then the report.
 
-In each target's directory, `link` also copies the prompts and skills the project lists, under
-`prompts/` and `skills/` (see [Skills & Prompts](skills-prompts.md#how-prompts-and-skills-are-linked)).
+Every target is planned and checked before the first write.
 
-The exact output of the four targets on a reference project is pinned by a golden test
-(`crates/armadai/tests/link_golden.rs`, outputs in `crates/armadai/tests/golden/link/`).
+## Claude Code
 
-## How It Works
+| Declared | Produced |
+|---|---|
+| agent `<id>` | `.claude/agents/<id>.md`: `name`, `description`, `model` (tier `fast`/`pro`/`max` -> `haiku`/`sonnet`/`opus`, or `native.claude.model`; omitted without a tier), `disallowedTools` for `deny` capabilities, `skills`, then `native.claude` keys |
+| skill `<id>` | `.claude/skills/<id>/`, every file byte for byte (executable bit kept) |
+| coordinator | the root `CLAUDE.md`: the coordinator's prompt and a generated `## Delegation` section (agents, flows, steps, states, transitions), between `<!-- armadai:begin -->` and `<!-- armadai:end -->`. An existing `CLAUDE.md` keeps its content; the block is appended or replaced in place |
+| automation | `.claude/settings.json` hooks: `session-start` -> `SessionStart`, `session-end` -> `SessionEnd`, `before-tool` -> `PreToolUse`, `after-tool` -> `PostToolUse`, `on-prompt` -> `UserPromptSubmit`, `on-stop` -> `Stop`; `native.claude.matcher` is the group matcher, other `native.claude` keys go into the handler |
+| `policy.delegation: strict` | a `PreToolUse` hook on `Agent|Task` running `armadai __claude-policy-gate` (see [Policy gate](policy-gate.md)) |
+| `native.claude` of project.yaml | top-level keys of `settings.json` |
 
-1. **Load** — reads the project config (`.armadai/config.yaml`, or the legacy `armadai.yaml`)
-2. **Resolve** — resolves the agents it lists (project-local files, user library, and
-   `.armadai/agents.yaml` declarations), plus its prompts and skills
-3. **Transform** — converts each agent to the target's native format, resolving its model
-4. **Write** — writes the files and records them in `.armadai/link-manifest.yaml`
+Capabilities never produce `tools` (Claude Code's inheritance is kept): `deny` adds the tools to
+`disallowedTools` (`read`: Read, Grep, Glob; `write`: Edit, Write, NotebookEdit; `shell`: Bash;
+`web`: WebFetch, WebSearch; `delegate`: Agent); `allow` is the default; `ask` is reported
+`approximated` (Claude Code asks per project or session, not per agent).
 
-A project linked this way is also registered for `armadai models check --all`.
+`settings.json` is merged, never overwritten: your keys, hooks and permissions are kept, in their
+order; a hook identical to one link would add is left to you and reported. The file is rewritten
+only when its value changes, and the JSON layout is then normalised (reported). Flows are
+guidance in `CLAUDE.md`; under `strict`, the delegation topology is enforced by the gate.
 
-### Agent-to-Format Mapping
+## Codex, Copilot, OpenCode
 
-| ArmadAI field | Claude Code | Codex | OpenCode | Copilot |
-|---|---|---|---|---|
-| Agent name (H1) | file name + `name:` | file name + `[agents.<name>]` in `config.toml` | file name | file name |
-| First line of System Prompt | `description:` | `description` in `config.toml` | `description:` | first line of the file |
-| Composed prompt (System Prompt, Instructions, Output Format, Context) | Markdown body | `developer_instructions` | Markdown body | Markdown body |
-| Model | `model:` | `model` | `model:` | — |
-| Temperature | — | — | `temperature:` (when not `0.7`) | — |
+Their output is the one of the former linkers, fed from the canonical model: one agent file per
+agent, the coordinator in the target's instructions file (`AGENTS.md`,
+`copilot-instructions.md`, `instructions.md`), skills copied. Flows, automations, capabilities,
+agent skills and the policy are reported `not-compiled` for now. Models are chosen offline, from
+the static tier table: `native.<target>.model`, else for Codex the tier (default `pro`) as an
+OpenAI model, for OpenCode the tier as an Anthropic model (no tier: no model); Copilot files carry
+no model.
 
-### The Coordinator
+## Files link did not write
 
-`link.coordinator` in the project config (or `--coordinator`) names one agent of the roster: the
-one whose prompt becomes the target's root instructions file (`.claude/CLAUDE.md`,
-`.opencode/instructions.md`, …) instead of a per-agent file, followed by a team roster. It is
-matched against each agent's **H1 title** — the `# Name` heading of its Markdown file — or that
-title's slug, case-insensitively. So `coordinator: dev-lead` resolves an agent titled `Dev Lead`,
-the same folding the linker uses to name files on disk.
-
-`link.coordinator` is matched against the **title**, *not* against the key used in `agents:` or
-in `orchestration.coordinator`, which are a separate namespace. When the two differ — a roster
-entry `- name: lead` on a file titled `# Dev Lead` — `coordinator: lead` matches nothing; that is
-reported (see below), and the field to correct is the title, not the key.
-
-`unlink` applies that identical rule whenever it has to regenerate (the no-manifest fallback
-below). Through the manifest the question never arises: `link`'s own attribution is what `unlink`
-reads back.
-
-A `link.coordinator` matching no agent is not an error — the target simply gets no root
-instructions file, and `unlink` removes none. It is reported, though, by `link`, `unlink` and
-`armadai validate`:
-
-```text
-  warn: link.coordinator 'dev-led' matches no agent — no root instructions file (.claude/CLAUDE.md and its equivalents) is written or removed for it.
-        It is matched against an agent's H1 title, or that title's slug — not the `agents:` key, which is a separate namespace.
-        Titles in this roster: Worker, Dev Lead.
-```
-
-The question asked is always *"does this reference name an agent the project declares?"* — never
-*"did this particular command find it?"*. `--agents` narrows what gets written, so
-`armadai link --agents Worker` writes no root instructions file for a coordinator it was not asked
-for; but the configuration is untouched by your filter, so nothing is reported.
-
-`armadai validate` answers the same question, on the same criterion — with one restriction: if
-any agent of the roster failed to load, the check stands down instead of guessing, says so, and
-lists what stopped it:
-
-```text
-WARN  armadai.yaml:link.coordinator: link.coordinator 'ghost' was not checked: part of the roster failed to load, so the titles available here are not the titles `link` would see and "matches no agent" would be a guess.
-  Resolve these first, then re-run `armadai validate`:
-  - Agent 'ghost' not found in …
-```
-
-## Conflict Detection
-
-By default, `armadai link` warns before overwriting existing files. Use `--force` to skip
-confirmation, or `--dry-run` to preview first. A pre-existing file whose content differs from what
-would be generated is left untouched and recorded as `skipped` in the link manifest (below), which
-is what keeps `armadai unlink` from ever removing it.
+A file that exists with other bytes is left alone unless `--force`: its report line becomes
+`not-compiled (file exists and was not written by link (use --force): <path>)`. A file still
+exactly what link wrote last time (per the manifest) is link's own output and is rewritten when
+its source changed. A file the previous link wrote and that is no longer produced is removed
+while unchanged (`stale … removed`), else left in place and reported.
 
 ## The Link Manifest
 
@@ -110,9 +89,12 @@ target's output root, the directories `link` itself created, and one entry per f
 `produced_by`, its `outcome` (`created` or `skipped`), and — for `created` — the `sha256:` digest
 of the bytes written.
 
-`armadai unlink` reads that manifest and applies the inverse of each recorded outcome, so it
-removes exactly what `link` produced and nothing else — including files whose agent has since been
-removed from the project config, which is the case no amount of regeneration can recover.
+It also records the files `link` **patched** rather than wrote whole (`patched`): the ArmadAI
+block of the root `CLAUDE.md` and the hooks (and `native.claude` keys) it added to
+`<output>/settings.json`, as exact values. `armadai unlink` reads that manifest and applies the
+inverse of each recorded outcome, so it removes exactly what `link` produced and nothing else —
+including files whose agent has since been removed from the project, which is the case no amount
+of regeneration can recover — then forgets the target.
 
 The manifest is data on disk, so `unlink` treats it as untrusted input: it re-derives the target's
 output directory from the project config and refuses the manifest wholesale if the two disagree,
@@ -121,10 +103,10 @@ root, onto that root itself, or that corresponds to no file `link` recorded crea
 
 `--dry-run` writes no manifest. When no usable manifest exists — a fresh clone, a deleted
 `.armadai/`, or a project linked before the manifest existed — `unlink` says so and falls back to a
-content-match guard: it regenerates what `link` would write today and removes a file only when its
-bytes still match byte for byte. In that degraded mode a file linked with different options (an
-explicit `--model`, or an interactive answer) is kept rather than reclaimed; re-run `link` to write
-a manifest.
+content-match guard: it recompiles the project and removes a file only when its bytes still match
+what `link` would write now, byte for byte. It never touches `settings.json` nor `CLAUDE.md` in
+that mode ("hooks/CLAUDE.md block not removed: no manifest"): without the record, nothing there
+is provably link's. Re-run `link` to write a manifest.
 
 ## Unlink Output
 
@@ -154,7 +136,6 @@ deliberately does not mirror: whether a recorded directory is still empty on dis
 checks that *after* deleting the files inside it, so the preview reports directories as "eligible
 for cleanup" rather than "will be removed".
 
-`unlink --with-config` also removes the project config file.
 
 ## A project linked to Gemini
 
@@ -167,8 +148,8 @@ its `gemini:` entry under `targets:` in `.armadai/link-manifest.yaml`. Clean it 
    `outcome: skipped`: those are hand-written files `link` found and never wrote. Then remove the
    now-empty directories listed in that block's `created_dirs`.
 2. Remove the `gemini:` block under `targets:` of `.armadai/link-manifest.yaml`.
-3. If `.armadai/config.yaml` sets `link.target: gemini`, change it to another target: otherwise
-   a bare `armadai link` fails with "Unknown link target".
+3. If `.armadai/project.yaml` lists `gemini` under `targets`, remove it (the validator reports
+   it as `unknown-target`).
 
 Until you do, the `gemini:` entry is left alone: `link` and `unlink` on the other targets keep
 working with it in place. Alternatively, run `armadai unlink --target gemini` with the previous
@@ -176,8 +157,6 @@ version before upgrading.
 
 ## See Also
 
-- [Getting Started](getting-started.md) — installation and first steps
-- [Agent Format](agent-format.md) — agent Markdown file reference
-- [Providers and models](providers.md) — how `link` chooses the model it writes
-- [Skills & Prompts](skills-prompts.md) — composable prompts and skills
+- [Project format](project-format.md) — the files `link` reads
 - [Policy gate](policy-gate.md) — enforcing the declared topology in Claude Code
+- [Getting Started](getting-started.md) — installation and first steps

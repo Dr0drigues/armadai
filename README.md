@@ -55,8 +55,8 @@ curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.s
 Options: `INSTALL_DIR=~/.local/bin` (default), `VERSION=v0.1.0` (default: latest).
 
 ```bash
-armadai init --pack rust-dev --project      # install a starter pack and declare its agents in .armadai/config.yaml
-armadai link --target claude --dry-run      # preview the generated files
+armadai init --pack rust-dev                # a project (.armadai/) from a starter pack
+armadai link --target claude --dry-run      # preview the files and the conformance report
 armadai link --target claude                # write them
 ```
 
@@ -69,59 +69,46 @@ Running `armadai` without a subcommand prints the help.
 
 | Command | Description |
 |---|---|
-| `armadai link --target <t> [--dry-run]` | Generate native config files for an assistant |
-| `armadai unlink --target <t> [--dry-run]` | Remove what `link` wrote, and only that |
-| `armadai list [--tags t] [--stack s]` | List available agents |
-| `armadai inspect <agent>` | Show an agent's parsed configuration |
-| `armadai validate [path]` | Validate a starter pack or project config |
+| `armadai link [--target t…] [--dry-run] [--json]` | Compile the project into native files, with a conformance report |
+| `armadai unlink [--target t…] [--dry-run]` | Remove what `link` wrote, and only that |
+| `armadai list [--tags t]` | List the project's agents, skills, flows, automations |
+| `armadai inspect <agent>` | Show one agent of the project |
+| `armadai validate [path]` | Validate the project (or a starter pack) |
+| `armadai migrate` | Convert a legacy project to `.armadai/project.yaml` |
 | `armadai new --template <tpl> <name>` | Create an agent from a template (`-i` for a wizard) |
-| `armadai init [--project] [--pack <name>]` | Initialize the user or project configuration, install a starter pack |
-| `armadai prompts list/show` | Manage composable prompts |
+| `armadai init [--project] [--pack <name>]` | Initialize the user configuration, or a project (empty or from a starter pack) |
 | `armadai skills list/show/sync/search/add/info` | Manage and discover skills |
-| `armadai extract` | Extract agents, prompts and skills with their dependencies |
 | `armadai models check/update/list` | Check and rewrite deprecated model ids, list linked projects |
 | `armadai config providers/secrets/starters-dir` | Provider status, SOPS + age secrets, custom starter directories |
 | `armadai update` | Self-update to the latest release |
 | `armadai completion <shell>` | Generate shell completions |
 
-## Agent Format
+## Project Format
 
-Each agent is a Markdown file in `agents/` (or `.armadai/agents/`):
+A project is a `.armadai/` folder: `project.yaml` (targets, coordinator, policy), one Markdown
+file per agent with a YAML frontmatter, skills, flows and automations.
 
 ```markdown
-# Code Reviewer
-
-## Metadata
-- provider: claude
-- model: latest:pro
-- temperature: 0.3
-- tags: [dev, review, quality]
-- stacks: [rust, typescript, java]
-
-## System Prompt
-
+---
+description: Reviews code for bugs, security and style
+tier: pro
+tags: [dev, review]
+capabilities:
+  shell: deny
+---
 You are an expert code reviewer...
-
-## Instructions
-
-1. Understand the context of the change
-2. Identify bugs, security issues, performance problems
-
-## Output Format
-
-Structured review: bugs, security, performance, style.
 ```
 
-See the [Agent Format](docs/wiki/agent-format.md) page for the full section reference.
+See [Project format](docs/wiki/project-format.md) for every file and diagnostic, and
+[Link](docs/wiki/link.md) for what each target receives.
 
 ## Starter Packs
 
-Install curated bundles of agents, prompts and skills:
+Start a project from a curated bundle of agents and skills:
 
 ```bash
-armadai init --pack rust-dev              # Rust essentials (3 agents + conventions prompt)
+armadai init --pack rust-dev              # Rust essentials (3 agents + conventions skill)
 armadai init --pack fullstack             # General-purpose pack (6 agents)
-armadai init --pack rust-dev --project    # Install the pack and create the project config
 ```
 
 See [Starter Packs](docs/wiki/starter-packs.md) for the full list and their contents.
@@ -131,10 +118,10 @@ See [Starter Packs](docs/wiki/starter-packs.md) for the full list and their cont
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the technical documentation.
 
 ```
-agent definitions (.md / agents.yaml) + prompts + skills + project config
+.armadai/ (project.yaml, agents, skills, flows, automations, native)
         │
         ▼
-armadai (native binary): parse → validate → one linker per target
+armadai (native binary): load → validate → one plan per target → conformance report
         │
         ▼
 native files for Claude Code · Codex · OpenCode · Copilot  (+ .armadai/link-manifest.yaml)
@@ -148,12 +135,13 @@ What the declarative refocus removed, and what comes next, is specified in
 Full documentation lives in [`docs/wiki/`](docs/wiki/):
 
 - [Getting Started](docs/wiki/getting-started.md)
-- [Agent format](docs/wiki/agent-format.md)
-- [Declarative agents](docs/wiki/declarative-agents.md)
+- [Project format](docs/wiki/project-format.md)
 - [Link](docs/wiki/link.md)
+- [Policy gate](docs/wiki/policy-gate.md)
+- Legacy format (read by `migrate`): [Agent format](docs/wiki/agent-format.md),
+  [Declarative agents](docs/wiki/declarative-agents.md)
 - [Providers and models](docs/wiki/providers.md)
 - [Skills & Prompts](docs/wiki/skills-prompts.md)
-- [Policy gate](docs/wiki/policy-gate.md)
 
 Documents describing the former execution engine are kept, unmaintained, in
 [`docs/archive/`](docs/archive/README.md).

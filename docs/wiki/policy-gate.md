@@ -1,105 +1,95 @@
 # Policy gate: enforcing a declared topology
 
-A project can declare who delegates to whom in `.armadai/config.yaml`. Without a gate, that
+A project declares who delegates to whom in its flows (`.armadai/flows/`). Without a gate, that
 declaration governs nothing inside a Claude Code session: the model reads it, can quote it back
 verbatim, and still routes elsewhere. Measured on ArmadAI itself, the declared coordinator received
 9 delegations out of 520.
 
-The policy gate turns that declaration into a rule Claude Code has to obey, through a `PreToolUse`
-hook on the delegation tool.
+The policy gate turns the flows into a rule Claude Code has to obey, through a `PreToolUse` hook
+on the delegation tool (`Agent`, and its former name `Task`).
 
 ## What it enforces
 
 ```yaml
-orchestration:
-  policy: strict            # off | strict — default: off
-  coordinator: dev-lead
-  teams:
-    - agents: [schema-specialist, adapter-specialist, cli-specialist, qa-specialist]
+# .armadai/project.yaml
+schema_version: 1
+coordinator: lead
+policy:
+  delegation: strict        # off | strict — default: off
   free_agents: [Explore, Plan]
 ```
 
-- the main thread may reach **only** `coordinator`;
-- the coordinator may reach team leads, and the agents of lead-less teams;
-- a lead may reach **its own** team;
-- a plain specialist does not sub-delegate;
-- `free_agents` are reachable from anywhere — they are assistance agents, outside the topology;
-- **anything not declared is refused.**
+Under `strict`, a delegation is allowed when:
 
-That last line is the whole design. There is no built-in exemption list: if you use an agent, you
-declare it, and declaring it is what makes the config an honest description of your fleet. Claude
-Code's own built-ins (`general-purpose`, `Explore`, `Plan`) are not special — declare the ones you
-want.
+- from the **main session**: with a coordinator, the main session *is* the coordinator (it lives
+  in `CLAUDE.md`) and drives the flows, so it may reach every agent of a flow step; without a
+  coordinator, the agents of entry steps only (no incoming link nor `on_failure`). An agent run
+  with `claude --agent <coordinator>` counts as the main session;
+- from an **agent X**: the agents of the steps a step of X leads to, by a link or `on_failure`;
+- the target is in `free_agents`, from anywhere — project agents, or agents Claude Code provides
+  itself (`Explore`, `Plan`, `general-purpose`: the validator only warns, `unknown-free-agent`);
+- **anything else is refused.**
 
-A refusal names the permitted target, which is what lets the model rewrite its call rather than
+An `Agent` call without `subagent_type` (or with an empty one) is judged as the implicit
+`general-purpose` agent: omitting the target is not a way around the policy.
+
+A refusal names the permitted targets, which is what lets the model rewrite its call rather than
 retry blindly:
 
 ```
-the declared topology allows only [dev-lead] from the main thread; hand the work to one of
-those, or declare 'qa-specialist' in orchestration.teams or orchestration.free_agents
+the declared flows allow only [Explore, dev, qa] from the main thread; hand the work to one of
+those, or add `doc` to policy.free_agents in .armadai/project.yaml
 ```
 
-`policy` is independent of `enabled` and `pattern`; the gate reads `policy` alone. `enabled` and
-`pattern` used to drive the removed execution engine; nothing executes any pattern now. Today,
-`enabled: true` with `pattern: hierarchical` (what `armadai init --pack <name> --project`
-writes) makes `armadai link` check the block's structure before writing anything: a coordinator
-is present, there is at least one team, no agent or lead appears twice, the coordinator is not
-inside a team, and a team with its own `pattern` has a `lead`. With any other `pattern`, `link`
-skips that check, and a team-level `pattern` under a non-hierarchical root makes `link` fail.
-Only `armadai validate` checks that the coordinator, leads and team members are declared agents.
-
-## Migrating a project
-
-Turning on `strict` before declaring what you actually use will refuse most of your delegations.
-Start from an inventory of the sub-agents your sessions actually call — the agents in
-`.claude/agents/`, plus the Claude Code built-ins you rely on — declare each of them in `teams` or
-`free_agents`, and only then switch `policy` to `strict`.
-
-(The former `armadai audit` command produced that inventory as rule `U02`. It now lives, frozen
-and unmaintained, in `frozen/armadai-audit/`, outside the product.)
+Under `strict`, the generated `CLAUDE.md` marks the agents the gate will refuse from the main
+session ("not delegable"), and the conformance report says
+`policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)`.
 
 ## Installing the hook
 
-Not yet automated. Add it to `.claude/settings.json` (shared) or `.claude/settings.local.json`
-(yours only):
+`armadai link --target claude` installs it in `<output>/settings.json` (`.claude/settings.json` by
+default) when `policy.delegation` is `strict`, and removes it once the policy is `off` again:
 
 ```json
 { "hooks": { "PreToolUse": [ { "matcher": "Agent|Task",
   "hooks": [ { "type": "command", "command": "armadai __claude-policy-gate" } ] } ] } }
 ```
 
-Prefer `armadai` resolved from your `PATH` over an absolute path into a build directory.
+The hook runs `armadai` from your `PATH`.
+
+## Migrating a project
+
+Turning on `strict` before declaring what you actually use will refuse most of your delegations.
+Start from an inventory of the sub-agents your sessions actually call — the agents in
+`.armadai/agents/`, plus the Claude Code built-ins you rely on — put them in flows or in
+`free_agents`, and only then switch `policy.delegation` to `strict`. `armadai migrate` turns a
+legacy `orchestration:` section (teams, `policy`, `free_agents`) into a flow and this policy.
 
 ## Two things to know before relying on it
 
 **An unreachable gate allows everything, silently.** If the command cannot run — binary not
-installed, repository moved, `target/` cleaned — Claude Code receives no opinion and lets the call
-through. The failure direction is the safe one, but it is invisible: nothing distinguishes "no
-violation" from "no gate". If refusals stop appearing when you expect them, check that the command
-still resolves.
+installed or not on the `PATH` — Claude Code receives no opinion and goes on with its normal
+permission flow. The failure direction is the safe one, but it is invisible: if refusals stop
+appearing when you expect them, check that the command still resolves.
 
-**A worktree needs the main checkout.** `.armadai/` is gitignored, so it only exists in your main
-checkout. A session opened in a git worktree resolves its config by following the worktree's
-`gitdir:` back to that checkout — if you keep your config somewhere unusual, the gate goes quiet
-there.
+**An invalid or legacy project disables the gate, with a warning on stderr.** A project that does
+not validate ("… is invalid, the delegation gate is inactive") or a legacy one ("legacy format,
+run armadai migrate; gate inactive") yields no verdict; stdout stays empty.
 
-**The policy is local, not shared.** The hook can be committed, but the topology it enforces lives
-in `.armadai/config.yaml`, which this project does not version. Two developers can therefore run
-the same gate under different rules, or none.
+The gate finds the project from the session's directory upwards (without crossing a `.git`
+boundary), and from a git worktree falls back to the main checkout when the worktree has no
+`.armadai/` of its own.
 
 ## Limits
 
-The gate judges whether a delegation is *permitted*, never whether it is *apt*: sending a CLI task
-to the QA specialist is allowed if the topology allows it. It cannot see which files a sub-agent will
-touch, nor track a budget or a depth across calls — those need other interception points and
-persistent state.
+The gate judges whether a delegation is *permitted*, never whether it is *apt*. It cannot see
+which files a sub-agent will touch, nor track a budget or a depth across calls — those need other
+interception points and persistent state. Flow states and `on_failure` are guidance in
+`CLAUDE.md`; the gate applies the links only.
 
-It is specific to Claude Code. ArmadAI generates no equivalent for the other link targets (codex,
-copilot, opencode), so nothing portable is offered here. The gate is to be rewritten on the links
-of the flow graph (planned, see the
-[step 0 spec](https://github.com/Dr0drigues/armadai/blob/master/docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md),
-section 2.2); until then it works as described on this page.
+It is specific to Claude Code: Codex, Copilot and OpenCode receive no equivalent (their report
+says `not-compiled`).
 
-Every uncertainty resolves to *allowed*: unreadable payload or config, no declared coordinator,
-`policy: off`. A gate that refuses because it failed to understand is a gate you uninstall the same
-day.
+Every uncertainty resolves to *no opinion*: unreadable payload or project, a tool other than
+`Agent`/`Task`, `policy.delegation: off`. A gate that refuses because it failed to understand is a
+gate you uninstall the same day.

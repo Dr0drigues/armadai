@@ -1,5 +1,10 @@
 # Declarative agents
 
+> **Legacy format.** This page describes the format of projects before v1 (`.armadai/config.yaml`,
+> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and
+> internally by `armadai new` (templates) and `armadai init --pack` (starter packs). Projects use
+> the [Project format](project-format.md).
+
 A project can declare its agents in `.armadai/agents.yaml` instead of writing each one as a
 Markdown file. The YAML is parsed into the same `Agent` struct the `.md` parser produces — same
 linker, same everything downstream. Nothing changes for a project that never creates the file.

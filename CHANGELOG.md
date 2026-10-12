@@ -2,6 +2,29 @@
 
 ### Changed (step 2: link on the canonical model)
 
+- **`armadai link` compiles `.armadai/project.yaml`** (see `docs/wiki/link.md`): one plan per
+  target, every target checked before the first write, and a **conformance report** for each
+  declared element (`compiled` / `approximated` / `not-compiled`, with the reason), as text or
+  with `--json` (the report alone on stdout). `--dry-run` writes nothing, stale files included.
+  A legacy project is refused: "legacy format, run `armadai migrate`".
+- **Claude Code adapter**: subagents (`model` from the tier, `disallowedTools` for denied
+  capabilities, `skills`), skills copied byte for byte, the coordinator in a block of the root
+  `CLAUDE.md` (your content kept), automations as hooks merged into `.claude/settings.json` (your
+  keys kept, nothing duplicated), `native` files and keys.
+- **The delegation gate reads the flows** and is installed by `link` under
+  `policy.delegation: strict` (see `docs/wiki/policy-gate.md`); `free_agents` may name Claude
+  Code's own agents (`Explore`, `Plan`, `general-purpose`).
+- Codex, Copilot and OpenCode keep their output, fed from the model; models come from the static
+  tier table, never from a prompt or the local cache.
+- `unlink` undoes the patched files too, and without a manifest never touches `settings.json`
+  nor `CLAUDE.md`. Files link did not write are never overwritten without `--force`, and say so
+  in the report; a file link still owns is rewritten when its source changed.
+- The link manifest gains `patched` and a `native` kind: an older binary reads a manifest
+  holding them as unusable and falls back to its content guard.
+- `link`, `migrate` and `init` create `.armadai/.gitignore` (`link-manifest.yaml`,
+  `.migrated/`): `.armadai/` is now meant to be versioned.
+- `outputs` values must stay inside the project, outside `.armadai/` and `.git/`
+  (`bad-output`).
 - `list`, `inspect` and `validate` read `.armadai/project.yaml` only; a legacy project gets
   "legacy format, run `armadai migrate`" (exit 1). `list` shows agents, skills, flows and
   automations (`--stack` and `--global` removed: no stacks in the model, no user library).
@@ -12,6 +35,11 @@
 
 ### Removed (step 2)
 
+- `link --coordinator` and `link --model` (the coordinator and the tiers are declared in the
+  project), `unlink --coordinator` and `unlink --with-config` (`project.yaml` is your source, not
+  link output).
+- The hand-written `schemas/armadai.schema.json` of the legacy `armadai.yaml` (#456): use the
+  generated `schemas/v1/`.
 - **`armadai extract`**: it extracted agents, prompts and skills out of the user library, which
   the canonical model no longer has (C11).
 - **`armadai prompts`**: prompts are no longer a concept of the model (C6); `migrate` folds them

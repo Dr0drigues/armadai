@@ -56,55 +56,46 @@ Running `armadai` without a subcommand prints the help.
 
 ## A first project
 
-The shortest path to generated files is a starter pack:
-
 ```bash
 cd my-project
-armadai init --pack rust-dev --project     # install the pack, declare its agents in .armadai/config.yaml
-armadai link --target claude --dry-run     # preview what would be written
-armadai link --target claude               # write .claude/agents/*.md
+armadai init --project          # .armadai/project.yaml, agents/, skills/, flows/, automations/
+armadai new reviewer --template dev-review
+armadai validate                # file:line:column diagnostics, exit 1 on error
+armadai link --dry-run          # the files and the conformance report, nothing written
+armadai link                    # write them (Claude Code by default)
+```
+
+Or start from a starter pack, converted into a project:
+
+```bash
+armadai init --pack rust-dev
+armadai link --target claude
 ```
 
 `link` accepts `claude`, `codex`, `opencode` and `copilot`. See [Link](link.md) for what each
-target receives, and for `unlink`, which removes exactly what `link` wrote.
+target receives and for the conformance report, and for `unlink`, which removes exactly what
+`link` wrote. Available packs: `rust-dev`, `fullstack`, `code-analysis-rust`,
+`code-analysis-web`, `armadai-authoring`, `armadai-dev`, `pirate-crew` (see
+[Starter Packs](starter-packs.md)).
 
-> `init --pack … --project` writes `link.target` only when it can infer a supported target from
-> the pack's agents (their `provider:`, read in file-name order; `anthropic` maps to `claude`).
-> Otherwise it writes none and says so: pass `armadai link --target <target>` or set
-> `link.target` yourself.
-
-Available packs: `rust-dev`, `fullstack`, `code-analysis-rust`, `code-analysis-web`,
-`armadai-authoring`, `armadai-dev`, `pirate-crew`. See
-[Starter Packs](starter-packs.md) for details.
+A project in the legacy format (`.armadai/config.yaml`, `armadai.yaml`) is converted once with
+`armadai migrate` (see [Project format](project-format.md#migrating-a-legacy-project)); every
+other project command refuses it.
 
 ## Writing your own agent
 
-An agent is a Markdown file (see [Agent Format](agent-format.md)). Put it in `.armadai/agents/`
-or `agents/`, then reference it from `.armadai/config.yaml`:
-
-```yaml
-agents:
-  - name: my-assistant                      # from ~/.config/armadai/agents/
-  - path: .armadai/agents/my-assistant.md   # or a project-local file
-```
-
-`armadai new <name> --template <tpl>` creates one from a template, in `.armadai/agents/` or
-`agents/` when the project has one, otherwise in your user library. The templates are built into
-the binary; files in `templates/` (current directory) or `~/.config/armadai/templates/` override
-them (see [Templates](templates.md)). A project can also declare agents in `.armadai/agents.yaml` — see
-[Declarative agents](declarative-agents.md).
+An agent is `.armadai/agents/<id>.md`: a YAML frontmatter (`description`, optionally `tier`,
+`tags`, `skills`, `capabilities`, `native`) and the prompt as the body. See
+[Project format](project-format.md). `armadai new <id> --template <tpl>` creates one from a
+template (built into the binary; files in `templates/` or `~/.config/armadai/templates/` override
+them, see [Templates](templates.md)).
 
 ## Verify Setup
 
 ```bash
-# List all available agents
-armadai list
-
-# Validate the project config (or a starter pack directory)
-armadai validate
-
-# Inspect a specific agent
-armadai inspect my-assistant
+armadai list                 # agents, skills, flows, automations
+armadai inspect reviewer     # one agent
+armadai validate             # the whole project
 ```
 
 ## Shell Completion
@@ -142,40 +133,20 @@ armadai skills list
 
 ## Project Structure
 
-ArmadAI uses a `.armadai/` directory as the canonical project configuration location:
-
 ```
 .armadai/
-├── config.yaml         # Project configuration (agents, prompts, skills, link settings)
-├── agents/             # Project-local agent definitions (.md files)
-├── prompts/            # Project-local prompt fragments (.md files)
-├── skills/             # Project-local skills (directories with SKILL.md)
-├── starters/           # Project-local starter packs
-└── link-manifest.yaml  # Written by `armadai link`: what it created, for `unlink`
+├── project.yaml        # the manifest: targets, outputs, coordinator, policy, native
+├── agents/<id>.md      # agents
+├── skills/<id>/        # skills (SKILL.md and their files)
+├── flows/<id>.yaml     # who hands work to whom
+├── automations/<id>.yaml  # hooks
+├── native/<target>/    # files copied as is by link
+├── .gitignore          # link-manifest.yaml, .migrated/ (machine-local)
+└── link-manifest.yaml  # written by `armadai link`: what it wrote, for `unlink`
 ```
 
-Create this structure with:
-
-```bash
-armadai init --project
-```
-
-### Legacy format
-
-The older `armadai.yaml` at the repository root is still supported for backwards compatibility. When ArmadAI detects `armadai.yaml` without a `.armadai/` directory, it prints a migration hint:
-
-```
-hint: armadai.yaml detected in /path/to/project. Consider migrating to
-.armadai/config.yaml. Run `armadai init --project` to create the new structure.
-```
-
-### Resolution order
-
-Resources (agents, prompts, skills) are resolved in this order:
-
-1. `.armadai/{type}/` — project-local (preferred)
-2. `{type}/` — legacy root-level directories
-3. `~/.config/armadai/{type}/` — user library
+`.armadai/` is versioned, except what `.armadai/.gitignore` lists. Full reference:
+[Project format](project-format.md).
 
 ## IDE Support
 
@@ -191,9 +162,8 @@ frontmatter), `skill.schema.json`, `flow.schema.json`, `automation.schema.json`.
 
 ## Next Steps
 
-- [Agent Format](agent-format.md) — full reference for agent Markdown files
-- [Link](link.md) — generating native configs for Claude Code, Codex, OpenCode and Copilot
-- [Providers and models](providers.md) — the `provider` and `model` fields as `link` uses them
+- [Project format](project-format.md) — every file of a project, the diagnostics, migration
+- [Link](link.md) — native files for Claude Code, Codex, OpenCode and Copilot, and the report
+- [Policy gate](policy-gate.md) — enforcing the declared flows in Claude Code
 - [Templates](templates.md) — available templates and how to create your own
 - [Starter Packs](starter-packs.md) — curated agent bundles for quick setup
-- [Skills & Prompts](skills-prompts.md) — composable prompt fragments and skills
