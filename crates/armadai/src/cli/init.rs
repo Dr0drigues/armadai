@@ -1,3 +1,4 @@
+use crate::linker::{LinkTarget, supported_target_names};
 use armadai_core::config;
 use armadai_core::starter::{StarterPack, find_pack_dir, list_available_packs};
 
@@ -236,7 +237,7 @@ fn init_project() -> anyhow::Result<()> {
 /// Generate YAML content for an armadai project pre-configured with a starter pack.
 pub fn generate_project_yaml(pack: &StarterPack, pack_name: &str) -> String {
     // Detect provider and coordinator from the pack's agent files
-    let link_target = detect_pack_provider(pack_name);
+    let link_target = detect_pack_link_target(pack_name);
     let coordinator_name = detect_pack_coordinator(pack, pack_name);
 
     let mut content = String::from(
@@ -341,7 +342,16 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
         "\n{o}Created .armadai/config.yaml with pack{o:#} {a}'{}'{a:#} {o}agents{o:#}",
         pack.name
     );
-    anstream::println!("{m}  Run `armadai link` to generate target config files.{m:#}");
+    if pack_link_target_missing(&content) {
+        let w = crate::cli::style::warn();
+        anstream::println!(
+            "{w}  No link target could be inferred from the pack's agents.{w:#}\n\
+             {m}  Run `armadai link --target <{}>` to generate target config files.{m:#}",
+            supported_target_names().join("|")
+        );
+    } else {
+        anstream::println!("{m}  Run `armadai link` to generate target config files.{m:#}");
+    }
 
     // Check for deprecated models in newly created project
     if let Some((root, _)) = armadai_core::project::find_project_config() {
@@ -349,6 +359,11 @@ fn init_project_with_pack(pack: &StarterPack, pack_name: &str) -> anyhow::Result
     }
 
     Ok(())
+}
+
+/// True when the generated project config carries no `link.target`.
+fn pack_link_target_missing(yaml: &str) -> bool {
+    !yaml.lines().any(|l| l.starts_with("  target: "))
 }
 
 /// Detect a coordinator agent from a pack by scanning agent files for a
@@ -382,32 +397,62 @@ fn detect_pack_coordinator(pack: &StarterPack, pack_name: &str) -> Option<String
     None
 }
 
-/// Try to detect the primary provider used by a pack's agents.
-fn detect_pack_provider(pack_name: &str) -> Option<String> {
+/// Map an agent `provider:` value to a supported link target, if it names one.
+///
+/// Only a supported target name is kept as is; `anthropic` (the vendor of
+/// Claude Code) maps to `claude`. Anything else (`google`, `gemini`, `cli`,
+/// `openai`, ...) says nothing about which tool to link and yields `None`.
+fn link_target_for_provider(provider: &str) -> Option<String> {
+    let provider = provider.trim();
+    if provider == "anthropic" {
+        return Some(LinkTarget::Claude.as_str().to_string());
+    }
+    supported_target_names()
+        .into_iter()
+        .find(|name| *name == provider)
+        .map(str::to_string)
+}
+
+/// Pick the link target from the providers of a pack's agents, given in
+/// agent-file order: the first provider that maps to a supported target wins.
+fn pick_link_target(providers: &[String]) -> Option<String> {
+    providers.iter().find_map(|p| link_target_for_provider(p))
+}
+
+/// Read the `provider:` of every agent file in `agents_dir`, ordered by file
+/// name so the result never depends on `read_dir` order.
+fn read_agent_providers(agents_dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(agents_dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "md"))
+        .collect();
+    files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    files
+        .iter()
+        .filter_map(|path| {
+            let content = std::fs::read_to_string(path).ok()?;
+            content.lines().find_map(|line| {
+                let provider = line
+                    .trim()
+                    .trim_start_matches("- ")
+                    .strip_prefix("provider:")?
+                    .trim();
+                (!provider.is_empty()).then(|| provider.to_string())
+            })
+        })
+        .collect()
+}
+
+/// Infer the link target of a pack from its agents, or `None` when no agent
+/// names a supported target.
+fn detect_pack_link_target(pack_name: &str) -> Option<String> {
     let agents_dir = resolve_pack_dir(pack_name)?.join("agents");
-    if !agents_dir.is_dir() {
-        return None;
-    }
-
-    let entries = std::fs::read_dir(&agents_dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "md")
-            && let Ok(content) = std::fs::read_to_string(&path)
-        {
-            for line in content.lines() {
-                let trimmed = line.trim().trim_start_matches("- ");
-                if let Some(provider) = trimmed.strip_prefix("provider:") {
-                    let provider = provider.trim();
-                    if !provider.is_empty() {
-                        return Some(provider.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    None
+    pick_link_target(&read_agent_providers(&agents_dir))
 }
 
 fn write_if_missing_or_force(
@@ -433,6 +478,85 @@ fn write_if_missing_or_force(
 
 #[cfg(test)]
 mod tests {
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn link_target_for_provider_maps_only_supported_targets_and_anthropic() {
+        assert_eq!(
+            link_target_for_provider("anthropic").as_deref(),
+            Some("claude")
+        );
+        for t in ["claude", "codex", "copilot", "opencode"] {
+            assert_eq!(link_target_for_provider(t).as_deref(), Some(t));
+        }
+        for p in ["google", "gemini", "cli", "openai", "gpt", ""] {
+            assert_eq!(link_target_for_provider(p), None, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn pick_link_target_first_valid_in_order_wins() {
+        assert_eq!(pick_link_target(&[]), None);
+        assert_eq!(pick_link_target(&strs(&["google", "cli", "gemini"])), None);
+        assert_eq!(
+            pick_link_target(&strs(&["cli", "anthropic", "codex"])).as_deref(),
+            Some("claude")
+        );
+        assert_eq!(
+            pick_link_target(&strs(&["google", "codex", "claude"])).as_deref(),
+            Some("codex")
+        );
+    }
+
+    #[test]
+    fn read_agent_providers_follows_sorted_file_names() {
+        let dir = tempfile::tempdir().unwrap();
+        // Created in the reverse of the sorted order.
+        for (file, provider) in [("c.md", "codex"), ("b.md", "google"), ("a.md", "copilot")] {
+            std::fs::write(
+                dir.path().join(file),
+                format!("# x\n\n## Metadata\n- provider: {provider}\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.path().join("0.txt"), "provider: opencode\n").unwrap();
+        let providers = read_agent_providers(dir.path());
+        assert_eq!(providers, strs(&["copilot", "google", "codex"]));
+        assert_eq!(pick_link_target(&providers).as_deref(), Some("copilot"));
+    }
+
+    #[test]
+    fn embedded_packs_never_yield_an_invalid_link_target() {
+        let starters =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../armadai-core/starters");
+        let supported = supported_target_names();
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&starters).unwrap().flatten() {
+            let dir = entry.path();
+            if !dir.join("pack.yaml").is_file() {
+                continue;
+            }
+            seen += 1;
+            let pack = StarterPack::load(&dir).unwrap();
+            let yaml = generate_project_yaml(&pack, dir.to_str().unwrap());
+            let targets: Vec<&str> = yaml
+                .lines()
+                .filter_map(|l| l.strip_prefix("  target: "))
+                .collect();
+            assert!(targets.len() <= 1, "{}: {targets:?}", pack.name);
+            for t in targets {
+                assert!(
+                    supported.contains(&t.trim()),
+                    "{}: invalid link.target {t:?}",
+                    pack.name
+                );
+            }
+        }
+        assert!(seen >= 7, "expected the embedded packs, saw {seen}");
+    }
+
     use super::*;
 
     #[test]
