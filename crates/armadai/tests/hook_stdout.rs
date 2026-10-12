@@ -63,6 +63,26 @@ mod tests {
     }
 
     #[test]
+    fn a_legacy_project_warns_on_stderr_and_leaves_stdout_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(dir.path().join(".armadai/config.yaml"), "agents: []\n").unwrap();
+        let out = Command::cargo_bin("armadai")
+            .unwrap()
+            .arg("__claude-policy-gate")
+            .write_stdin(gate_payload(dir.path(), "qa-specialist"))
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).trim().is_empty());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("legacy format, run armadai migrate; gate inactive"),
+            "{stderr}"
+        );
+    }
+
+    #[test]
     fn policy_gate_stdout_stays_empty_when_it_has_no_opinion() {
         let dir = tempfile::tempdir().unwrap();
         // No config at all: nothing to enforce, so nothing to say.

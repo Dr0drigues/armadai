@@ -48,6 +48,21 @@ fn find_root(cwd: &Path) -> Option<PathBuf> {
     None
 }
 
+/// The nearest ancestor of `cwd` holding a legacy project file (no `.git` crossing).
+fn legacy_root(cwd: &Path) -> Option<PathBuf> {
+    let mut dir = Some(cwd);
+    while let Some(d) = dir {
+        if (crate::compile::LEGACY_CONFIGS.iter()).any(|c| d.join(c).is_file()) {
+            return Some(d.to_path_buf());
+        }
+        if d.join(".git").exists() {
+            return None;
+        }
+        dir = d.parent();
+    }
+    None
+}
+
 /// The project for `cwd`, reaching into the main checkout when `cwd` sits in a git
 /// worktree that has no `.armadai/` of its own (an untracked or older checkout).
 fn resolve_project(cwd: &Path) -> Option<PathBuf> {
@@ -161,7 +176,16 @@ pub fn decide(raw: &str) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty());
     let cwd = v.get("cwd").and_then(Value::as_str)?;
-    let root = resolve_project(Path::new(cwd))?;
+    let Some(root) = resolve_project(Path::new(cwd)) else {
+        // an unmigrated project would otherwise lose its gate in silence
+        if let Some(legacy) = legacy_root(Path::new(cwd)) {
+            eprintln!(
+                "armadai policy gate: {} uses the legacy format, run armadai migrate; gate inactive",
+                legacy.display()
+            );
+        }
+        return None;
+    };
     let project = match armadai_model::load_checked(&root) {
         Ok((p, _)) => p,
         Err(ds) => {
@@ -235,7 +259,7 @@ mod tests {
         .to_string()
     }
 
-    const AGENTS: [&str; 6] = ["lead", "dev", "qa", "doc", "helper", "general-purpose"];
+    const AGENTS: [&str; 5] = ["lead", "dev", "qa", "doc", "helper"];
 
     /// `lead` coordinates; flow ship: build(dev) -> test(qa); `doc` is in no flow.
     /// `Explore` is a Claude Code built-in, not a project agent: allowed as a free agent.
@@ -355,6 +379,7 @@ mod tests {
     }
 
     #[test]
+    /// `general-purpose` is Claude Code's own agent: a free agent, not a project one.
     fn an_implicit_target_passes_when_it_is_declared() {
         let dir = tempfile::tempdir().unwrap();
         write_project(
@@ -416,6 +441,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_project(dir.path(), "schema_version: 1\ncoordinator: lead\n");
         assert!(decide(&payload("", "doc", dir.path())).is_none());
+    }
+
+    #[test]
+    fn an_empty_subagent_type_is_the_implicit_target() {
+        let dir = strict();
+        let r = reason(decide(&payload("", "", dir.path())));
+        assert!(r.contains("general-purpose"), "{r}");
+    }
+
+    #[test]
+    fn a_legacy_project_yields_no_opinion() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(dir.path().join(".armadai/config.yaml"), "agents: []\n").unwrap();
+        assert!(decide(&payload("", "doc", dir.path())).is_none());
+        assert!(legacy_root(dir.path()).is_some());
+        assert!(legacy_root(tempfile::tempdir().unwrap().path()).is_none());
     }
 
     #[test]
