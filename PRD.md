@@ -1,3 +1,7 @@
+> **Historical document.** This is a product requirements document of the pre-refocus ArmadAI
+> (execution engine, storage, rate limits). It is kept for reference and not maintained; for the
+> current, declarative product start from the [README](README.md).
+
 # PRD — Centralized Configuration (`~/.config/armadai/`)
 
 ## Problem

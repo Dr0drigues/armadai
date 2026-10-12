@@ -19,17 +19,21 @@ use clap::{CommandFactory, Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "armadai",
-    about = "AI agent orchestrator",
-    long_about = "AI agent orchestrator — define and manage specialized agents from Markdown files.\n\n\
-        Each agent is a .md file in agents/ with metadata, system prompt, and optional instructions.\n\
-        Supports any LLM provider (Claude, GPT, Gemini) via CLI tools or API.",
+    about = "Declarative agent teams, compiled for Claude Code, Codex, OpenCode and Copilot",
+    long_about = "Declarative agent teams — describe them once, compile them for Claude Code, Codex, \
+        OpenCode and Copilot.\n\n\
+        Agents are Markdown files (with metadata, system prompt, and optional instructions) or \
+        entries of a declarative YAML file.\n\
+        `armadai link` writes the native configuration files of the target assistant; ArmadAI \
+        does not run agents itself. An agent's `provider:` (Claude, GPT, Gemini…) only selects \
+        the model catalogue used to resolve its `latest:*` tier.",
     version,
     arg_required_else_help = true,
     after_help = "Examples:\n  \
         armadai new my-agent --template dev-review --stack rust\n  \
         armadai list --tags dev --stack rust\n  \
         armadai link --target claude\n\n\
-        Documentation: https://github.com/Dr0drigues/swarm-festai"
+        Documentation: https://github.com/Dr0drigues/armadai"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -96,7 +100,7 @@ pub enum Command {
         long_about = "Validate starter pack or project config.\n\n\
             Auto-detects whether the target is a starter pack (pack.yaml) or project \
             (armadai.yaml / .armadai/config.yaml) and runs the appropriate validation. \
-            Checks agent/prompt/skill references, orchestration config, and trigger sections.",
+            Checks agent/prompt/skill references, the orchestration declaration, and trigger sections.",
         after_help = "Examples:\n  \
             armadai validate\n  \
             armadai validate starters/armadai-authoring\n  \
@@ -162,7 +166,7 @@ pub enum Command {
         /// Target AI assistant
         #[arg(long, short, value_enum)]
         target: Option<crate::linker::LinkTarget>,
-        /// Model to use in generated configs (for orchestrator targets like copilot/opencode)
+        /// Model id for every agent, on targets that pick one model for all (opencode, copilot)
         #[arg(long, short = 'm')]
         model: Option<String>,
         /// Coordinator agent whose prompt becomes the main context file

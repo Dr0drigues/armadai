@@ -71,46 +71,23 @@ A specialist focuses on one domain. Keep it narrow and deep:
 - scope: [src/**/*.java]
 ```
 
-## Cost Control
-
-### `cost_limit`
-
-Set a per-run budget to prevent runaway costs:
-
-```markdown
-- cost_limit: 0.50
-```
+## Model Fallbacks
 
 ### `model_fallback`
 
-Define cheaper fallback models tried in order if the primary model fails or exceeds limits:
+Declare fallback models alongside the primary one:
 
 ```markdown
 - model: latest:max
 - model_fallback: [latest:pro, latest:fast]
 ```
 
-The system tries each model in sequence until one succeeds.
-
-## Pipeline Chaining
-
-Use `## Pipeline` to chain agents sequentially. The output of one agent becomes the input of the next:
-
-```markdown
-## Pipeline
-- test-writer
-- code-reviewer
-```
-
-Pipeline tips:
-- Keep each agent focused on one transformation
-- The first agent in the chain receives the user's original input
-- Subsequent agents receive the previous agent's output
-- Use consistent output formats between chained agents
+`armadai models` checks and rewrites `model_fallback` entries like `model`. No kept command tries
+them in sequence: that was the removed execution engine.
 
 ## Scope Patterns
 
-The `scope` field restricts which files an agent operates on (used by linkers):
+The `scope` field declares which files an agent focuses on:
 
 ```markdown
 - scope: [src/**/*.rs, tests/**/*.rs]
@@ -118,15 +95,11 @@ The `scope` field restricts which files an agent operates on (used by linkers):
 - scope: [docs/]
 ```
 
-Use glob patterns. This is informational — the agent won't automatically filter files, but linkers and tools use this metadata.
+Use glob patterns. This is informational: it is parsed, but no link target writes it today, and the agent won't automatically filter files.
 
-## Orchestration Sections
+## Delegation in a Coordinator
 
-ArmadAI supports 4 orchestration patterns. Agents can participate in orchestration by adding optional sections:
-
-### Hierarchical (Coordinator → Specialists)
-
-The coordinator uses `@agent-name: task` delegation protocol in its system prompt:
+The coordinator names its team and how it delegates in its system prompt:
 
 ```markdown
 ## System Prompt
@@ -140,31 +113,17 @@ Your team:
 To delegate, use: `@agent-name: description of the task`
 ```
 
-### Blackboard (Parallel Reactive)
+ArmadAI does not execute agents: the delegation happens in the assistant the agents are linked to.
+Who may delegate to whom can be declared in the `orchestration:` block of the project config and
+enforced in Claude Code by the policy gate (see the `armadai-orchestration-patterns` skill).
 
-Add a `## Triggers` section to reactive agents:
+## Engine-only Sections
 
-```markdown
-## Triggers
-- requires: [initial_analysis]
-- excludes: []
-- min_round: 1
-- max_round: 3
-- priority: 5
-```
-
-### Ring (Token-Passing Consensus)
-
-Add a `## Ring Config` section:
-
-```markdown
-## Ring Config
-- role: reviewer
-- position: 2
-- vote_weight: 1.0
-```
-
-Roles: `proposer` (generates initial proposal), `reviewer` (evaluates and refines), `validator` (final approval).
+`## Pipeline`, `## Triggers` and `## Ring Config`, and the metadata keys `command`, `args`,
+`max_tokens`, `timeout`, `cost_limit`, `rate_limit`, `context_window` and `mode`, configured the
+removed execution engine (pipelines, Blackboard, Ring, per-run budgets). They are still parsed for
+compatibility, but nothing executes them (`armadai validate` still checks the syntax of
+`## Triggers`): do not add them to new agents.
 
 ## Common Anti-Patterns
 

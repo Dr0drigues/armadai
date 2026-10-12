@@ -55,7 +55,8 @@ fails to load, on both sides. `defaults` has no `scope` field — `scope` is per
 agent that omits it simply has none.
 
 The format also accepts `command`, `args`, `max_tokens` and `timeout`, like the `.md` metadata;
-they configured the removed execution engine and no command uses them now (see
+they configured the removed execution engine and nothing executes them; `armadai inspect`
+still displays them (see
 [Agent format](agent-format.md#metadata-required)).
 
 ## The `.md` format is not going away

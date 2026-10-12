@@ -6,7 +6,7 @@ provides a step-by-step procedure for migrating an existing environment
 `.armadai/`).
 
 A partial automation script is available:
-[`scripts/migrate-v0-to-v1.sh`](../../scripts/migrate-v0-to-v1.sh). It only
+[`scripts/migrate-v0-to-v1.sh`](../scripts/migrate-v0-to-v1.sh). It only
 covers mechanical, deterministic migrations (see below) — read this guide
 before running it, especially for anything related to `fleet`.
 

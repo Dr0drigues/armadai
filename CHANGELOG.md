@@ -26,6 +26,8 @@ unreleased changes since rc.5 are not itemised here.
   `armadai-fake` crate (#444, #445, #446, #450).
 - **The gaveldrop e2e suite** and the `run_*` integration tests (#444).
 - `docker-compose.yml` (#446).
+- The embedded starter pack `orchestration-demo` (a demo of the removed engine's patterns) and
+  the built-in skill `armadai-shell-config` (the removed shell's configuration).
 
 ### Changed
 
@@ -43,6 +45,17 @@ unreleased changes since rc.5 are not itemised here.
   the declarative scope (#451).
 - Documentation rewritten for the declarative scope; documents of the execution era moved to
   `docs/archive/`.
+- Content shipped in the binary aligned with the declarative scope: the `armadai-dev` pack follows
+  the redefined team (`schema-specialist`, `adapter-specialist` replace `core-specialist`,
+  `provider-specialist`; `ui-specialist` removed); the `armadai-authoring` pack and the built-in
+  authoring skills no longer describe `run`, the shell or the engine patterns;
+  `armadai-orchestration-patterns` describes the `orchestration:` block as a declaration for the
+  policy gate; `armadai-protocol` states that nothing consumes its markers any more. The top-level
+  `--help` describes the declarative product. `scripts/migrate-v0-to-v1.sh` moved to
+  `docs/archive/scripts/`.
+- `schemas/armadai.schema.json`: the `link.target` enum lists the supported targets (`codex`
+  added, `gemini` removed), `orchestration.policy` and `orchestration.free_agents` are accepted,
+  and the fields of the removed engine and shell are described as unused.
 
 ### Migration notes
 
@@ -58,7 +71,9 @@ unreleased changes since rc.5 are not itemised here.
   fallback table, whose content is dated (e.g. `claude-sonnet-4-5-20250929` for Anthropic Pro).
 - **Agent metadata** used only by the execution engine (`command`, `args`, `max_tokens`,
   `timeout`, `cost_limit`, `rate_limit`, `context_window`, `mode`, `## Pipeline`,
-  `## Triggers`, `## Ring Config`) is still parsed but no longer used.
+  `## Triggers`, `## Ring Config`) is still parsed, but nothing executes it (`armadai inspect`
+  still displays `command`, `args`, `max_tokens` and `timeout`, and `armadai validate` still
+  checks the syntax of `## Triggers`).
 - **Contributors**: the agent team and the project instructions were redefined (5 agents:
   `dev-lead`, `schema-specialist`, `adapter-specialist`, `cli-specialist`, `qa-specialist`);
   the build has no feature flags.

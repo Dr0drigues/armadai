@@ -556,6 +556,37 @@ mod tests {
         assert_eq!(slugify("a--b__c  d"), "a-b-c-d");
     }
 
+    /// `schemas/armadai.schema.json` is maintained by hand; its `link.target`
+    /// enum once listed a removed target (`gemini`) and missed a supported one
+    /// (`codex`). Pin it to the targets `link` actually accepts.
+    #[test]
+    fn schema_link_target_enum_matches_supported_targets() {
+        use clap::ValueEnum;
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../schemas/armadai.schema.json"
+        );
+        let schema: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let mut in_schema: Vec<String> =
+            schema["$defs"]["LinkConfig"]["properties"]["target"]["enum"]
+                .as_array()
+                .expect("LinkConfig.target.enum must be an array")
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+        let mut supported: Vec<String> = LinkTarget::value_variants()
+            .iter()
+            .map(|t| t.as_str().to_string())
+            .collect();
+        in_schema.sort();
+        supported.sort();
+        assert_eq!(in_schema, supported);
+        for t in &supported {
+            assert!(create_linker(t).is_ok(), "{t} has no linker");
+        }
+    }
+
     #[test]
     fn test_create_linker_claude() {
         assert!(create_linker("claude").is_ok());

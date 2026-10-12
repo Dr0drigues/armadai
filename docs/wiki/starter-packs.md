@@ -23,9 +23,10 @@ This copies the pack's agents, prompts and skills into your user library
 
 ## Available Packs
 
-The packs below ship embedded in the binary. Their content predates the declarative refocus: some
-agents and prompts (notably `armadai-dev`, `orchestration-demo` and parts of `armadai-authoring`)
-still refer to the removed execution engine, and are kept as shipped until they are revised.
+The seven packs below ship embedded in the binary. `armadai-dev` and `armadai-authoring` were
+revised for the declarative refocus. The three CLI example agents of `fullstack`
+(`claude-cli-reviewer`, `echo-reviewer`, `gemini-reviewer`) were written for the removed execution
+engine: their `command`/`args` fields are parsed (and shown by `armadai inspect`) but nothing executes them.
 
 ### rust-dev
 
@@ -70,26 +71,17 @@ ArmadAI authoring pack — design, create, review and test agents, prompts, skil
 |---|---|
 | Agent | `authoring-lead` (coordinator), `authoring-architect`, `agent-builder`, `prompt-builder`, `skill-builder`, `starter-builder`, `authoring-reviewer`, `authoring-tester` |
 | Prompt | `armadai-conventions`, `armadai-v012-updates` |
-| Skill | `armadai-agent-authoring`, `armadai-prompt-authoring`, `armadai-skill-authoring`, `armadai-starter-authoring`, `armadai-orchestration-patterns`, `armadai-shell-config` |
+| Skill | `armadai-agent-authoring`, `armadai-prompt-authoring`, `armadai-skill-authoring`, `armadai-starter-authoring`, `armadai-orchestration-patterns` |
 
 ### armadai-dev
 
-The former development team of ArmadAI itself, with hierarchical delegation.
+A Rust development team modelled on ArmadAI's own: a dev lead delegating to specialists of the
+declaration model, the target adapters, the CLI, QA and releases.
 
 | Type | Name |
 |---|---|
-| Agent | `dev-lead`, `core-specialist`, `provider-specialist`, `cli-specialist`, `ui-specialist`, `qa-specialist`, `release-manager` |
+| Agent | `dev-lead` (coordinator), `schema-specialist`, `adapter-specialist`, `cli-specialist`, `qa-specialist`, `release-manager` |
 | Prompt | `rust-conventions` |
-
-### orchestration-demo
-
-A minimal team written to illustrate the Hierarchical, Blackboard and Ring patterns of the removed
-engine.
-
-| Type | Name |
-|---|---|
-| Agent | `demo-coordinator`, `demo-analyst`, `demo-reviewer`, `demo-writer` |
-| Prompt | `demo-conventions` |
 
 ### pirate-crew
 

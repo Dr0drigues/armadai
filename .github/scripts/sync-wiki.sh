@@ -86,7 +86,7 @@ fi
 # Home.md — the wiki's landing page, listing every synced page.
 {
     printf '# ArmadAI Wiki\n\n'
-    printf 'AI agent fleet orchestrator — define, manage and run specialized agents from Markdown files.\n\n'
+    printf 'Declarative agent teams — describe them once, compile them for Claude Code, Codex, OpenCode and Copilot.\n\n'
     printf '## Pages\n\n'
     for filename in "${SRC_FILES[@]}"; do
         page="$(wiki_page_name "$filename")"

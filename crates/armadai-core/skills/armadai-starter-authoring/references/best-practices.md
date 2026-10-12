@@ -23,7 +23,6 @@ lead-analyst → rust-reviewer
 The coordinator should:
 - List all team members and their specialties in its system prompt
 - Define clear dispatch rules
-- Include a `## Pipeline` section listing downstream agents
 - Use a slightly higher temperature (0.4) than specialists (0.2-0.3) for flexible routing
 
 ### Include a Shared Prompt
@@ -67,11 +66,11 @@ Including too many agents dilutes the pack's focus and makes coordination harder
 
 ## Orchestration Configuration
 
-When a starter pack includes a coordinator agent (tagged `coordinator`), `armadai init --pack` automatically generates an `orchestration:` block in the project config.
+When a starter pack includes a coordinator agent (tagged `coordinator`), `armadai init --pack <name> --project` writes `link.coordinator` and an `orchestration:` block (coordinator + one team of the other agents) into the project config. The block is a declaration: `armadai validate` checks it and the Claude Code policy gate can enforce it (`policy: strict`); ArmadAI does not execute agents.
 
-### Coordinator Design for Orchestration
+### Coordinator Design
 
-Coordinators should use the `@agent-name: task` delegation protocol:
+Coordinators should name their team and their delegations (`@agent-name: task`) in their system prompt:
 
 ```markdown
 ## System Prompt
@@ -85,23 +84,16 @@ Your team:
 To delegate: `@agent-name: description of the task`
 ```
 
-### Choosing a Pattern
-
-| Pattern | When to use | Agent requirements |
-|---------|------------|-------------------|
-| Hierarchical | Coordinator dispatches to specialists | Coordinator with `@agent:` protocol |
-| Blackboard | Parallel reactive processing | Agents with `## Triggers` section |
-| Ring | Sequential review with consensus | Agents with `## Ring Config` section |
-| Direct | Single agent, no coordination | No special requirements |
-
-For most starter packs with a coordinator, **Hierarchical** is the default and best choice.
+The Blackboard and Ring patterns, and the `## Triggers` and `## Ring Config` sections they used,
+belonged to the removed execution engine: they are still parsed, but nothing executes them
+(`armadai validate` still checks the syntax of `## Triggers`).
 
 ## Testing Your Pack
 
 Before publishing a starter pack:
 
 1. Run `armadai init --pack <name>` in a clean environment
-2. Verify all agents are installed: `armadai list`
-3. Test each agent individually: `armadai run <agent-name>`
+2. Verify all agents are installed: `armadai list`, and that the pack validates: `armadai validate <pack-dir>`
+3. Link the pack (`armadai link --target <target>`) and test each agent in the linked assistant
 4. Test the coordinator's dispatch logic with various request types
 5. Verify prompts are correctly applied to their target agents

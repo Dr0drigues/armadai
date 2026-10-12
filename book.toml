@@ -1,6 +1,6 @@
 [book]
 title = "ArmadAI"
-description = "AI agent orchestrator — pont de commandement"
+description = "Declarative agent teams — pont de commandement"
 authors = ["Dimitri Rodrigues-Oliveira"]
 language = "en"
 src = "docs/wiki"

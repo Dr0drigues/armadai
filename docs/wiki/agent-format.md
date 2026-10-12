@@ -39,7 +39,8 @@ Extra context for the agent.
 
 The parser also accepts `## Pipeline`, `## Triggers` and `## Ring Config`. They configured the
 removed execution engine; they are still parsed (an unparsable value there still fails the file,
-see below) but no command uses them any more.
+see below) but nothing executes them; `armadai validate` still checks the syntax of
+`## Triggers`.
 
 ## Sections Reference
 
@@ -154,8 +155,8 @@ what `armadai link` and the other kept commands do with each.
 | `stacks` | list | No | Filtering in `armadai list --stack` |
 | `model_fallback` | list | No | Checked and rewritten by `armadai models` like `model`. Plural alias `model_fallbacks` accepted |
 | `scope` | list | No | Parsed; not written by any target |
-| `orchestration` | string | No | Parsed (`direct`, `blackboard`, `ring`, `hierarchical`, `auto`); descriptive only |
-| `command`, `args`, `max_tokens`, `timeout`, `cost_limit`, `rate_limit`, `context_window`, `mode` | — | No | Parsed for compatibility; they configured the removed execution engine and nothing uses them now |
+| `orchestration` | string | No | Parsed (`direct`, `blackboard`, `ring`, `hierarchical`, `auto`); no kept command reads this per-agent field. It is not the project config's `orchestration.pattern`, which `link` reads (see [Policy gate](policy-gate.md)) |
+| `command`, `args`, `max_tokens`, `timeout`, `cost_limit`, `rate_limit`, `context_window`, `mode` | — | No | Parsed for compatibility; they configured the removed execution engine and nothing executes them (`armadai inspect` still displays `command`, `args`, `max_tokens`, `timeout`) |
 
 A value that does not parse (e.g. `temperature: warm`) still makes the whole file fail to load.
 The model of these fields will be replaced by a versioned schema (planned, see the
