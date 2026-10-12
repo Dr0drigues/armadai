@@ -1,5 +1,5 @@
 ---
-description: Tu es un ingenieur test expert. Tu ecris des tests complets et bien
+description: Tu es un ingenieur test expert.
 title: Test Writer
 tier: pro
 temperature: 0.3

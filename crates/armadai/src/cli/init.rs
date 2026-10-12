@@ -234,13 +234,8 @@ fn init_project() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Generate YAML content for an armadai project pre-configured with a starter pack.
-#[cfg(test)]
-pub fn generate_project_yaml(pack: &StarterPack, pack_name: &str) -> String {
-    generate_project_yaml_with_target(pack, pack_name).0
-}
-
-/// Like [`generate_project_yaml`], also returning the inferred `link.target`
+/// Generate YAML content for an armadai project pre-configured with a starter pack,
+/// also returning the inferred `link.target`
 /// (`None` when no agent of the pack names a supported target).
 fn generate_project_yaml_with_target(
     pack: &StarterPack,
@@ -567,7 +562,7 @@ mod tests {
             }
             seen += 1;
             let pack = StarterPack::load(&dir).unwrap();
-            let yaml = generate_project_yaml(&pack, dir.to_str().unwrap());
+            let yaml = generate_project_yaml_with_target(&pack, dir.to_str().unwrap()).0;
             let targets: Vec<&str> = yaml
                 .lines()
                 .filter_map(|l| l.strip_prefix("  target: "))

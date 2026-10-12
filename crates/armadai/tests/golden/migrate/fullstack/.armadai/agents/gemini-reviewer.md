@@ -1,5 +1,5 @@
 ---
-description: You are an expert code reviewer. Analyze code for bugs, security vulnerabilities,
+description: You are an expert code reviewer.
 title: Gemini Reviewer
 tags:
 - dev

@@ -1,5 +1,5 @@
 ---
-description: Tu es un expert en revue de code. Tu analyses le code en profondeur
+description: Tu es un expert en revue de code.
 title: Code Reviewer
 tier: pro
 temperature: 0.3

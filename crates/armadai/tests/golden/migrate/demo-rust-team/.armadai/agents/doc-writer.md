@@ -1,5 +1,5 @@
 ---
-description: You are a Rust documentation expert. You write clear, complete `///` doc comments
+description: You are a Rust documentation expert.
 title: Doc Writer
 tier: pro
 temperature: 0.5

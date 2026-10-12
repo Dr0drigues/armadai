@@ -1,5 +1,5 @@
 ---
-description: Tu es un redacteur technique expert. Tu generes de la documentation
+description: Tu es un redacteur technique expert.
 title: Doc Generator
 tier: pro
 temperature: 0.5

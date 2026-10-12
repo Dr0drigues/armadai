@@ -1,5 +1,5 @@
 ---
-description: You are the Release Manager for a Rust project. You own the release process, semantic versioning, git tag management, and branch synchronization. Your responsibilities include validating release readi
+description: You are the Release Manager for a Rust project.
 title: Release Manager
 tier: max
 temperature: 0.3
