@@ -169,12 +169,6 @@ pub(crate) fn extract_embedded_dir(dir: &Dir<'_>, dest: &Path) -> anyhow::Result
     Ok(())
 }
 
-/// Read a file as UTF-8 text, returning `None` if the file can't be read or isn't valid UTF-8.
-pub fn read_text_file(path: &Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
-    String::from_utf8(bytes).ok()
-}
-
 /// Scan a directory for skill subdirectories (each containing a `SKILL.md`).
 pub fn load_all_skills(dir: &Path) -> Vec<Skill> {
     let mut skills = Vec::new();

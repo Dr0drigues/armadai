@@ -49,24 +49,6 @@ pub fn config_dir() -> PathBuf {
 /// `core::model_resolution`. Single source of truth for the two readers.
 pub const MODELS_CACHE_FILE: &str = "models-cache.json";
 
-/// Return the ArmadAI data root directory (for persistent storage, e.g. SQLite).
-///
-/// Resolution order:
-/// 1. `$XDG_DATA_HOME/armadai`
-/// 2. `$HOME/.local/share/armadai`
-///
-/// Unlike `config_dir()`, this is NOT overridable via `$ARMADAI_CONFIG_DIR` —
-/// config and data are separate XDG concerns.
-pub fn data_dir() -> PathBuf {
-    let data_base = std::env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".local").join("share")
-        });
-    data_base.join("armadai")
-}
-
 pub fn user_agents_dir() -> PathBuf {
     config_dir().join("agents")
 }
@@ -124,116 +106,14 @@ pub fn ensure_config_dirs() -> anyhow::Result<()> {
 // UserConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// `~/.config/armadai/config.yaml`. Only `starters_dirs` is read (by the
+/// starter-pack lookup and `armadai config starters-dir`); keys written by
+/// earlier versions (`defaults`, `storage`, `rate_limits`, `costs`,
+/// `logging`) are ignored on load, not rejected.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct UserConfig {
-    pub defaults: DefaultsConfig,
-    pub storage: StorageConfig,
-    pub rate_limits: HashMap<String, u32>,
-    pub costs: CostsConfig,
-    pub logging: LoggingConfig,
-    #[serde(default)]
     pub starters_dirs: Vec<String>,
-}
-
-impl Default for UserConfig {
-    fn default() -> Self {
-        Self {
-            defaults: DefaultsConfig::default(),
-            storage: StorageConfig::default(),
-            rate_limits: [
-                ("anthropic".to_string(), 50),
-                ("openai".to_string(), 60),
-                ("google".to_string(), 60),
-                ("proxy".to_string(), 100),
-            ]
-            .into_iter()
-            .collect(),
-            costs: CostsConfig::default(),
-            logging: LoggingConfig::default(),
-            starters_dirs: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct DefaultsConfig {
-    pub provider: String,
-    pub model: String,
-    pub temperature: f32,
-    pub max_tokens: u32,
-    pub timeout: u64,
-}
-
-impl Default for DefaultsConfig {
-    fn default() -> Self {
-        Self {
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-5-20250929".to_string(),
-            temperature: 0.7,
-            max_tokens: 4096,
-            timeout: 120,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct StorageConfig {
-    pub mode: String,
-    pub path: String,
-}
-
-impl Default for StorageConfig {
-    fn default() -> Self {
-        Self {
-            mode: "embedded".to_string(),
-            // Absolute path so History/Costs are shared across CWDs (was
-            // "data/armadai.sqlite", relative to the CWD — a different DB per
-            // directory, meaning `armadai run` and `armadai tui` only saw the
-            // same data when launched from the same directory). Explicit
-            // `storage.path` in an existing config.yaml is unaffected.
-            path: data_dir()
-                .join("armadai.sqlite")
-                .to_string_lossy()
-                .into_owned(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct CostsConfig {
-    pub enabled: bool,
-    pub daily_alert: f64,
-}
-
-impl Default for CostsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            daily_alert: 10.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct LoggingConfig {
-    pub level: String,
-    pub output: String,
-    pub file_path: String,
-}
-
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            level: "info".to_string(),
-            output: "stdout".to_string(),
-            file_path: "logs/armadai.log".to_string(),
-        }
-    }
 }
 
 /// Load user config from `~/.config/armadai/config.yaml`.
@@ -255,22 +135,6 @@ pub fn save_user_config(config: &UserConfig) -> anyhow::Result<()> {
     let yaml = serde_yaml_ng::to_string(config)?;
     std::fs::write(&path, yaml)?;
     Ok(())
-}
-
-/// Apply environment variable overrides on top of a loaded config.
-pub fn with_env_overrides(mut config: UserConfig) -> UserConfig {
-    if let Ok(val) = std::env::var("ARMADAI_PROVIDER") {
-        config.defaults.provider = val;
-    }
-    if let Ok(val) = std::env::var("ARMADAI_MODEL") {
-        config.defaults.model = val;
-    }
-    if let Ok(val) = std::env::var("ARMADAI_TEMPERATURE")
-        && let Ok(t) = val.parse::<f32>()
-    {
-        config.defaults.temperature = t;
-    }
-    config
 }
 
 // ---------------------------------------------------------------------------
@@ -384,34 +248,10 @@ pub fn check_migration_hint() {
 pub const DEFAULT_CONFIG_YAML: &str = "\
 # ArmadAI user configuration
 
-defaults:
-  provider: anthropic
-  model: claude-sonnet-4-5-20250929
-  temperature: 0.7
-  max_tokens: 4096
-  timeout: 120
-
-storage:
-  mode: embedded
-  # `path` intentionally omitted: defaults to an absolute, shared location
-  # (~/.local/share/armadai/armadai.sqlite, or $XDG_DATA_HOME/armadai if set)
-  # so History/Costs are consistent regardless of CWD. Set explicitly here to
-  # override.
-
-rate_limits:
-  anthropic: 50
-  openai: 60
-  google: 60
-  proxy: 100
-
-costs:
-  enabled: true
-  daily_alert: 10.0
-
-logging:
-  level: info
-  output: stdout
-  file_path: logs/armadai.log
+# Extra directories searched for starter packs (`armadai init --pack`),
+# after the project and user ones. Manage with `armadai config starters-dir`.
+# starters_dirs:
+#   - /path/to/my/starters
 ";
 
 pub const DEFAULT_PROVIDERS_YAML: &str = "\
@@ -456,32 +296,63 @@ mod tests {
     #[test]
     fn test_default_user_config() {
         let cfg = UserConfig::default();
-        assert_eq!(cfg.defaults.provider, "anthropic");
-        assert_eq!(cfg.defaults.model, "claude-sonnet-4-5-20250929");
-        assert!((cfg.defaults.temperature - 0.7).abs() < f32::EPSILON);
-        assert_eq!(cfg.defaults.max_tokens, 4096);
-        assert_eq!(cfg.defaults.timeout, 120);
-        assert_eq!(cfg.storage.mode, "embedded");
-        assert!(cfg.costs.enabled);
-        assert!((cfg.costs.daily_alert - 10.0).abs() < f64::EPSILON);
-        assert_eq!(cfg.logging.level, "info");
-    }
-
-    #[test]
-    fn test_partial_deserialize() {
-        let yaml = "defaults:\n  provider: openai\n";
-        let cfg: UserConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.defaults.provider, "openai");
-        // Other fields keep defaults
-        assert_eq!(cfg.defaults.max_tokens, 4096);
-        assert_eq!(cfg.storage.mode, "embedded");
+        assert!(cfg.starters_dirs.is_empty());
     }
 
     #[test]
     fn test_empty_deserialize() {
         let yaml = "";
         let cfg: UserConfig = serde_yaml_ng::from_str(yaml).unwrap_or_default();
-        assert_eq!(cfg.defaults.provider, "anthropic");
+        assert!(cfg.starters_dirs.is_empty());
+    }
+
+    /// Config files written by earlier versions carry keys nothing reads any
+    /// more (`config.yaml`: `defaults`, `storage`, `rate_limits`, `costs`,
+    /// `logging`; `armadai.yaml`: `shell`). They must still parse — and keep
+    /// the keys that are read — rather than fail: `load_user_config` falls
+    /// back to defaults on a parse error, which would silently drop
+    /// `starters_dirs`, and an unparsable project config is skipped whole.
+    #[test]
+    fn old_style_config_files_still_parse() {
+        let user_yaml = "\
+defaults:
+  provider: anthropic
+  model: claude-sonnet-4-5-20250929
+  temperature: 0.7
+storage:
+  mode: embedded
+  path: /tmp/armadai.sqlite
+rate_limits:
+  anthropic: 50
+costs:
+  enabled: true
+  daily_alert: 10.0
+logging:
+  level: info
+starters_dirs:
+  - /opt/starters
+";
+        let user: UserConfig =
+            serde_yaml_ng::from_str(user_yaml).expect("an old-style config.yaml must still parse");
+        assert_eq!(user.starters_dirs, vec!["/opt/starters".to_string()]);
+
+        let project_yaml = "\
+agents:
+  - name: reviewer
+shell:
+  default_provider: claude
+  timeout: 60
+  tandem:
+    - provider: claude
+  pipeline:
+    steps:
+      - name: review
+        providers:
+          - provider: claude
+";
+        let project: crate::project::ProjectConfig = serde_yaml_ng::from_str(project_yaml)
+            .expect("an old-style armadai.yaml with `shell:` must still parse");
+        assert_eq!(project.agents.len(), 1);
     }
 
     #[test]
@@ -525,44 +396,6 @@ providers:
             Some("https://api.anthropic.com/v1")
         );
         assert_eq!(anthropic.models.len(), 1);
-    }
-
-    #[test]
-    fn test_env_overrides() {
-        let cfg = UserConfig::default();
-        // Save originals
-        let orig_provider = std::env::var("ARMADAI_PROVIDER").ok();
-        let orig_model = std::env::var("ARMADAI_MODEL").ok();
-        let orig_temp = std::env::var("ARMADAI_TEMPERATURE").ok();
-
-        // SAFETY: This test modifies the global environment which is unsafe in Rust 2024.
-        // These specific env vars are only used in this test, but parallel test execution
-        // can still cause races. Safe for single-threaded test runs.
-        unsafe {
-            std::env::set_var("ARMADAI_PROVIDER", "openai");
-            std::env::set_var("ARMADAI_MODEL", "gpt-4o");
-            std::env::set_var("ARMADAI_TEMPERATURE", "0.3");
-        }
-
-        let cfg = with_env_overrides(cfg);
-        assert_eq!(cfg.defaults.provider, "openai");
-        assert_eq!(cfg.defaults.model, "gpt-4o");
-        assert!((cfg.defaults.temperature - 0.3).abs() < f32::EPSILON);
-
-        // Restore
-        // SAFETY: Restoring original env state at end of test scope.
-        unsafe {
-            for (var, orig) in [
-                ("ARMADAI_PROVIDER", orig_provider),
-                ("ARMADAI_MODEL", orig_model),
-                ("ARMADAI_TEMPERATURE", orig_temp),
-            ] {
-                match orig {
-                    Some(v) => std::env::set_var(var, v),
-                    None => std::env::remove_var(var),
-                }
-            }
-        }
     }
 
     #[test]

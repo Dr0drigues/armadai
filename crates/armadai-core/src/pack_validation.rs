@@ -257,8 +257,8 @@ pub fn validate_project_config(project_root: &Path) -> Vec<ValidationIssue> {
     // only fires for that redundant `- declared: x` spelling) — so an
     // orchestration `coordinator`/`teams[].lead`/`teams[].agents` naming a
     // declared-but-not-relisted agent must count as known here too, or this
-    // reports a project `list`, `link`, `inspect` and `run --orchestrate`
-    // all resolve fine as invalid. Guarded the same way
+    // reports a project `list`, `link` and `inspect` all resolve fine as
+    // invalid. Guarded the same way
     // `model_updater::check_project` guards its own declarations scan.
     let decls_path = super::agent_source::declarations_path(project_root);
     if decls_path.is_file()
@@ -774,7 +774,7 @@ orchestration:
     /// — must count as known to `orchestration.coordinator`/`teams[].lead`/
     /// `teams[].agents`. Before this fix, `agent_names` was built from
     /// `config.agents` alone, so this reported three false ERRORs for a
-    /// project `list`/`link`/`inspect`/`run --orchestrate` all resolve fine.
+    /// project `list`/`link`/`inspect` all resolve fine.
     #[test]
     fn test_validate_project_config_resolves_declared_only_orchestration_agents() {
         let dir = tempfile::tempdir().unwrap();

@@ -74,6 +74,14 @@ unreleased changes since rc.5 are not itemised here.
   `## Triggers`, `## Ring Config`) is still parsed, but nothing executes it (`armadai inspect`
   still displays `command`, `args`, `max_tokens` and `timeout`, and `armadai validate` still
   checks the syntax of `## Triggers`).
+- **Starters and skills extracted by earlier versions** (for example
+  `~/.config/armadai/starters/orchestration-demo` or `~/.config/armadai/skills/armadai-shell-config`)
+  are not removed by the update and stay usable; they describe removed features, so delete them
+  by hand.
+- **`~/.config/armadai/config.yaml`**: only `starters_dirs` is read. The `defaults`, `storage`,
+  `rate_limits`, `costs` and `logging` keys written by earlier versions of `armadai init` are
+  ignored (the file still loads), and `armadai config starters-dir add`/`remove` rewrites the file
+  without them. `armadai init` now writes a commented `starters_dirs` example only.
 - **Contributors**: the agent team and the project instructions were redefined (5 agents:
   `dev-lead`, `schema-specialist`, `adapter-specialist`, `cli-specialist`, `qa-specialist`);
   the build has no feature flags.

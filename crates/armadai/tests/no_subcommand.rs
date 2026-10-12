@@ -24,9 +24,21 @@ mod tests {
             text.contains("Usage:"),
             "expected the help on no subcommand, got:\n{text}"
         );
+        // The full help, not a bare usage error: only the help lists the
+        // subcommands under `Commands:`.
+        assert!(
+            text.contains("Commands:"),
+            "expected the full help with its command list, got:\n{text}"
+        );
         assert!(
             text.contains("link"),
             "the help must list the kept commands, got:\n{text}"
+        );
+        // clap's `arg_required_else_help` exits with 2 after printing the help.
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "unexpected exit status, output:\n{text}"
         );
         assert!(
             !text.contains("panicked"),

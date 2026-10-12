@@ -220,7 +220,8 @@ pub enum Command {
     #[command(
         long_about = "Initialize ArmadAI configuration.\n\n\
             Creates ~/.config/armadai/ with default config.yaml, providers.yaml, \
-            and subdirectories (agents/, prompts/, skills/, registry/).\n\n\
+            and subdirectories (agents/, prompts/, skills/, and registry/, the \
+            cache for remote starter packs).\n\n\
             Use --project to create a .armadai/ directory with config.yaml and \
             subdirectories (agents/, prompts/, skills/, starters/).",
         after_help = "Examples:\n  \

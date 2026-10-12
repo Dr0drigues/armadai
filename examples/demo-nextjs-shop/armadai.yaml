@@ -17,5 +17,5 @@ sources: []
 
 # Linker configuration
 link:
-  target: gemini
+  target: claude
   coordinator: capitaine

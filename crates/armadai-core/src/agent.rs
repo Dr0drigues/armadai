@@ -306,20 +306,6 @@ impl Agent {
         )
     }
 
-    /// Replace every section with a single, already-composed prompt.
-    ///
-    /// For the callers that must append something *after* the whole prompt
-    /// (`run`'s guided mode) while the composition itself happens further
-    /// down, inside an engine: folding here and clearing the folded sections
-    /// is what keeps the engine from composing them a second time, so
-    /// [`Agent::composed_prompt`] stays idempotent across the hand-off.
-    pub fn set_composed_prompt(&mut self, prompt: String) {
-        self.system_prompt = prompt;
-        self.instructions = None;
-        self.output_format = None;
-        self.context = None;
-    }
-
     /// Load all agents from the given directory (recursively).
     pub fn load_all(agents_dir: &std::path::Path) -> anyhow::Result<Vec<Agent>> {
         let mut agents = Vec::new();
@@ -330,17 +316,6 @@ impl Agent {
             tracing::debug!("{msg}");
         }
         Ok(agents)
-    }
-
-    /// Load all agents, returning both the agents and any skipped-file messages.
-    pub fn load_all_with_skipped(
-        agents_dir: &std::path::Path,
-    ) -> anyhow::Result<(Vec<Agent>, Vec<String>)> {
-        let mut agents = Vec::new();
-        let mut skipped = Vec::new();
-        Self::load_from_dir(agents_dir, &mut agents, &mut skipped)?;
-        agents.sort_by_key(|a| a.name.to_lowercase());
-        Ok((agents, skipped))
     }
 
     fn load_from_dir(
@@ -494,49 +469,6 @@ mod tests {
             compose_agent_prompt("SYS\n\n", Some("INST"), None, None),
             "SYS\n\n## Instructions\n\nINST"
         );
-    }
-
-    /// `set_composed_prompt` must make `composed_prompt` idempotent: it is
-    /// what stops `run`'s guided mode from having its sections composed a
-    /// second time inside the engine.
-    ///
-    /// The fixture carries all three optional sections deliberately. With
-    /// only `instructions` set it exercised one of the three fields the
-    /// method has to clear, and clearing just that one kept it green.
-    #[test]
-    fn set_composed_prompt_makes_composition_idempotent() {
-        let mut agent = Agent {
-            name: "a".to_string(),
-            source: PathBuf::new(),
-            metadata: AgentMetadata {
-                provider: "cli".to_string(),
-                model: None,
-                command: None,
-                args: None,
-                temperature: default_temperature(),
-                max_tokens: None,
-                timeout: None,
-                tags: Vec::new(),
-                stacks: Vec::new(),
-                scope: Vec::new(),
-                model_fallback: Vec::new(),
-                cost_limit: None,
-                rate_limit: None,
-                context_window: None,
-                mode: None,
-                orchestration: None,
-                triggers: None,
-                ring_config: None,
-            },
-            system_prompt: "SYS".to_string(),
-            instructions: Some("INST".to_string()),
-            output_format: Some("OUT".to_string()),
-            pipeline: None,
-            context: Some("CTX".to_string()),
-        };
-        let once = agent.composed_prompt();
-        agent.set_composed_prompt(once.clone());
-        assert_eq!(agent.composed_prompt(), once);
     }
 
     /// An agent may declare `## System Prompt` and leave its body empty — the

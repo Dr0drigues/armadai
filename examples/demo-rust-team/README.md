@@ -23,44 +23,20 @@ The `.armadai/config.yaml` file declares the project agents. Agent files live in
 
 ## Usage
 
-### Single agent
+ArmadAI does not run the agents: it compiles them into the native files of a coding assistant,
+which then runs them.
 
 ```bash
-# Code review
-armadai run rust-reviewer @sample-code/user_service.rs
+# Check the agent definitions
+armadai validate
 
-# Generate tests
-armadai run rust-test-writer @sample-code/user_service.rs
-
-# Security audit
-armadai run security-auditor @sample-code/user_service.rs
-
-# Generate documentation
-armadai run doc-writer @sample-code/user_service.rs
-
-# Refactoring suggestions
-armadai run refactor-advisor @sample-code/user_service.rs
+# Generate the Claude Code subagents (.claude/agents/)
+armadai link --target claude
 ```
 
-### Pipeline (chained agents)
-
-```bash
-# Review then generate tests for the findings
-armadai run --pipe rust-reviewer rust-test-writer sample-code/user_service.rs
-
-# Full quality pass: review → security → refactor
-armadai run --pipe rust-reviewer security-auditor refactor-advisor @sample-code/user_service.rs
-```
-
-### Piping with stdin
-
-```bash
-# Pipe code from another command
-cat sample-code/user_service.rs | armadai run rust-reviewer
-
-# Pipe a git diff
-git diff HEAD~1 | armadai run rust-reviewer
-```
+Then open the project in Claude Code (`claude`) and ask, for example, for a review of
+`sample-code/user_service.rs`: the generated agents (`rust-reviewer`, `security-auditor`, ...)
+are available as Claude Code subagents.
 
 ### Check for deprecated models
 
@@ -72,15 +48,14 @@ armadai models check
 armadai models update
 ```
 
-## Generate native configs
+## Other targets
 
 ```bash
-# Generate configs for Claude Code
-armadai link --target claude
-
 # Preview without writing
-armadai link --target gemini --dry-run
+armadai link --target codex --dry-run
 ```
+
+The supported targets are `claude`, `codex`, `opencode` and `copilot`.
 
 ## Expected output
 

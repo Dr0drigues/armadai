@@ -1,14 +1,11 @@
 //! Custom registry sources configuration and resolution.
 //!
-//! ArmadAI ships with default registry URLs baked into `registry::sync`
-//! (`DEFAULT_REGISTRY_URL`), `skills_registry::sync` (`default_skill_sources`) and
-//! formerly `model_registry::fetch` (`MODELS_DEV_URL`, removed with the
-//! online model-catalogue refresh). This module is the socle
-//! (B2 Lot A / Task 1) that lets users and projects declare *additional*
-//! registry sources via a `registries:` section in
-//! `~/.config/armadai/registries.yaml` (user) and/or `armadai.yaml`
-//! (project). Wiring this into the actual registries (Task 2) and exposing
-//! it via the CLI (Task 3) are handled separately.
+//! ArmadAI ships with default skill sources baked into
+//! `skills_registry::sync` (`default_sources`). This module lets users and
+//! projects declare *additional* registry sources via a `registries:`
+//! section in `~/.config/armadai/registries.yaml` (user) and/or
+//! `armadai.yaml` (project). Consumed by `skills_registry::cache` (skills)
+//! and `starters_registry` (starter packs).
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -68,7 +65,6 @@ pub struct RegistriesConfig {
 /// Which registry kind is being resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistryKind {
-    Agents,
     Skills,
     Models,
     Starters,
@@ -77,7 +73,6 @@ pub enum RegistryKind {
 impl RegistryKind {
     fn sources(self, config: &RegistriesConfig) -> &[RegistrySource] {
         match self {
-            RegistryKind::Agents => &config.agents,
             RegistryKind::Skills => &config.skills,
             RegistryKind::Models => &config.models,
             RegistryKind::Starters => &config.starters,
@@ -133,8 +128,8 @@ pub fn resolved_sources(
 ///
 /// This is the single sanitization scheme shared by every consumer that
 /// needs to turn an arbitrary registry source URL into a directory or file
-/// name: `registry::sync::source_key` (per-source clone directories) and
-/// the starter registry cache delegate here. Before this, each maintained its own ad
+/// name: the starter registry cache (`starters_registry::source_cache_dir`)
+/// delegates here. Before this, each maintained its own ad
 /// hoc sanitization, neither of which was collision-resistant (see B2 Task 2
 /// review, minor finding).
 ///
@@ -248,7 +243,7 @@ registries:
     fn resolved_sources_defaults_only_when_user_and_project_empty() {
         let user = RegistriesConfig::default();
         let result = resolved_sources(
-            RegistryKind::Agents,
+            RegistryKind::Skills,
             &["https://default.example/a"],
             &user,
             None,
@@ -259,7 +254,7 @@ registries:
     #[test]
     fn resolved_sources_merges_and_dedupes_preserving_order() {
         let user = RegistriesConfig {
-            agents: vec![
+            skills: vec![
                 RegistrySource {
                     url: "https://default.example/a".to_string(),
                     kind: None,
@@ -272,7 +267,7 @@ registries:
             ..Default::default()
         };
         let project = RegistriesConfig {
-            agents: vec![
+            skills: vec![
                 RegistrySource {
                     url: "https://user.example/b".to_string(),
                     kind: None,
@@ -286,7 +281,7 @@ registries:
         };
 
         let result = resolved_sources(
-            RegistryKind::Agents,
+            RegistryKind::Skills,
             &["https://default.example/a"],
             &user,
             Some(&project),
@@ -312,7 +307,7 @@ registries:
             ..Default::default()
         };
         let result = resolved_sources(
-            RegistryKind::Agents,
+            RegistryKind::Starters,
             &["https://default.example/a"],
             &user,
             None,

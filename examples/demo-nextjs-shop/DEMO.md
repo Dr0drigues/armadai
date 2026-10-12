@@ -10,16 +10,17 @@ cd examples/demo-nextjs-shop
 armadai init --project --pack pirate-crew
 ```
 
-2. Générer le GEMINI.md
+2. Générer la configuration Claude Code (`.claude/CLAUDE.md` et `.claude/agents/`)
 
 ```sh
-armadai link --target gemini
+armadai validate
+armadai link --target claude
 ```
 
-3. Lancer gemini et demander une revue
+3. Lancer Claude Code et demander une revue
 
 ```
-$ gemini 
+$ claude
 
 "Fais une revue de code du fichier src/app/api/auth/route.ts"
 ```
@@ -27,7 +28,7 @@ $ gemini
 4. Ou demander des tests
 
 ```
-$ gemini
+$ claude
 
 "Écris les tests manquants pour src/lib/auth.ts"
 ```
@@ -35,7 +36,7 @@ $ gemini
 5. Ou demander de la doc
 
 ```
-$gemini
+$ claude
 
 "Génère la documentation d'API pour les routes dans src/app/api/"
 ```
