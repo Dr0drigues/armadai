@@ -101,6 +101,10 @@ fn list_dir_entries(dir: &Path) -> Vec<PathBuf> {
     entries
 }
 
+/// The built-in skills ArmadAI extracted, one name per line, at the root of the user
+/// skills folder: what it may remove once a newer binary no longer ships them.
+pub const EXTRACTED_REGISTRY: &str = ".armadai-extracted";
+
 /// Install embedded built-in skills to `~/.config/armadai/skills/`.
 ///
 /// Copies entire skill directories (SKILL.md + references/) from the
@@ -131,28 +135,40 @@ pub fn install_embedded_skills(force: bool) -> anyhow::Result<usize> {
             .unwrap_or("unknown");
         let dest = dst_root.join(skill_name);
 
-        if dest.exists() && !force && !super::embedded::needs_update(&dest, skill_dir) {
-            continue;
+        if super::embedded::ensure(skill_dir, &dest, force)? {
+            count += 1;
         }
-
-        super::embedded::refresh(skill_dir, &dest)?;
-        count += 1;
     }
 
-    // a built-in skill a previous binary extracted (it holds the marker) and this one
-    // no longer ships: removed; a skill without the marker is the user's, kept
-    let shipped: Vec<_> = (EMBEDDED_SKILLS.dirs())
-        .filter_map(|d| d.path().file_name().map(|n| n.to_owned()))
+    // a built-in skill this binary no longer ships is removed only when ArmadAI
+    // recorded it as extracted (the registry) AND its folder still says it is ours
+    // (a marker naming it): never on a marker alone, never a user's folder
+    let shipped: Vec<String> = (EMBEDDED_SKILLS.dirs())
+        .filter(|d| d.get_file(d.path().join("SKILL.md")).is_some())
+        .filter_map(|d| {
+            d.path()
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
         .collect();
-    for e in std::fs::read_dir(&dst_root)?.flatten() {
-        let path = e.path();
-        if path.join(".armadai-version").is_file()
-            && !shipped.iter().any(|n| *n == e.file_name())
-            && std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir())
-        {
+    let registry = dst_root.join(EXTRACTED_REGISTRY);
+    let recorded = std::fs::read_to_string(&registry).unwrap_or_default();
+    for name in recorded
+        .lines()
+        .filter(|n| !n.is_empty() && !shipped.iter().any(|s| s == n))
+    {
+        let path = dst_root.join(name);
+        // a registry line is a folder name, never a path
+        let plain = !name.starts_with('.') && !name.contains(['/', '\\']);
+        if plain && super::embedded::managed(&path) {
             std::fs::remove_dir_all(&path)?;
         }
     }
+    let ours: Vec<&str> = (shipped.iter())
+        .filter(|n| super::embedded::managed(&dst_root.join(n)))
+        .map(String::as_str)
+        .collect();
+    std::fs::write(&registry, ours.join("\n") + "\n")?;
 
     Ok(count)
 }
@@ -337,25 +353,68 @@ mod tests {
                 .exists()
         );
 
-        // a stale built-in skill is removed, a user's skill is kept, and a
-        // re-extraction replaces the old files
-        let stale = skills_dir.join("armadai-prompt-authoring");
-        std::fs::create_dir_all(&stale).unwrap();
-        std::fs::write(stale.join(".armadai-version"), "0.0.1").unwrap();
-        let mine = skills_dir.join("mine");
-        std::fs::create_dir_all(&mine).unwrap();
-        std::fs::write(mine.join("SKILL.md"), "x").unwrap();
-        let old = skills_dir.join("armadai-agent-authoring/references/old.md");
-        std::fs::write(&old, "old").unwrap();
+        let reg = skills_dir.join(EXTRACTED_REGISTRY);
+        assert!(
+            std::fs::read_to_string(&reg)
+                .unwrap()
+                .contains("armadai-agent-authoring\n")
+        );
+        let put = |p: &std::path::Path, text: &str| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        // a retired built-in skill: recorded AND marked with its own name -> removed
+        let retired = skills_dir.join("armadai-prompt-authoring");
+        put(
+            &retired.join(".armadai-version"),
+            "0.0.1 x\narmadai-prompt-authoring\n",
+        );
+        // marked but never recorded -> kept; recorded but no marker naming it -> kept
+        let unrecorded = skills_dir.join("old-builtin");
+        put(
+            &unrecorded.join(".armadai-version"),
+            "0.0.1 x\nold-builtin\n",
+        );
+        let unmarked = skills_dir.join("recorded-only");
+        put(&unmarked.join("SKILL.md"), "mine");
+        // a user's copy of a built-in skill, its marker copied along -> kept
+        let copy = skills_dir.join("my-copy");
+        put(
+            &copy.join(".armadai-version"),
+            "0.0.1 x\narmadai-agent-authoring\n",
+        );
+        // a user's note in an unmanaged built-in folder -> kept
+        let note = skills_dir.join("armadai-skill-authoring/my-notes.md");
+        put(&note, "mine");
         std::fs::write(
-            skills_dir.join("armadai-agent-authoring/.armadai-version"),
+            skills_dir.join("armadai-skill-authoring/.armadai-version"),
             "0.0.1",
         )
         .unwrap();
+        // a stale file of a managed built-in folder -> removed
+        let old = skills_dir.join("armadai-agent-authoring/references/old.md");
+        put(&old, "old");
+        std::fs::write(
+            skills_dir.join("armadai-agent-authoring/.armadai-version"),
+            "0.0.1 x\narmadai-agent-authoring\n",
+        )
+        .unwrap();
+        let mut recorded = std::fs::read_to_string(&reg).unwrap();
+        recorded.push_str("armadai-prompt-authoring\nrecorded-only\n../escape\n");
+        std::fs::write(&reg, recorded).unwrap();
+
         install_embedded_skills(false).unwrap();
-        assert!(!stale.exists());
-        assert!(mine.join("SKILL.md").is_file());
+        assert!(!retired.exists());
+        assert!(unrecorded.exists());
+        assert!(unmarked.join("SKILL.md").is_file());
+        assert!(copy.exists());
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "mine");
         assert!(!old.exists());
+        assert!(
+            !std::fs::read_to_string(&reg)
+                .unwrap()
+                .contains("armadai-prompt-authoring")
+        );
 
         // Verify references are copied
         assert!(

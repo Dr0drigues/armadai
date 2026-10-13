@@ -87,16 +87,24 @@ exist and parse).
 ## Embedded Versioning
 
 The packs embedded in the binary are extracted to `~/.config/armadai/starters/<pack>/` on first
-use. **These folders are managed by ArmadAI**: each holds a `.armadai-version` marker (the binary
-version and a fingerprint of the embedded content), and whenever another binary finds a different
-marker (a new version, or a development build with other content) it extracts the pack next to
-the old one and swaps it in: nothing of a previous version survives, and edits made there are
-lost. Put your own packs in another starter directory (below), or under a name no embedded pack
-uses. The marker is never copied into a project.
+use, and the built-in skills to `~/.config/armadai/skills/<skill>/` by `armadai init`. Each
+extracted folder holds a `.armadai-version` marker: the binary version, a fingerprint of the
+embedded content, and the name of the folder ArmadAI created. What is guaranteed:
 
-Built-in skills (`~/.config/armadai/skills/`, installed by `armadai init`) follow the same rule,
-and a built-in skill a newer binary no longer ships (such as `armadai-prompt-authoring`) is
-removed; a skill without the marker is yours and is never touched.
+- A folder is **replaced whole** (extracted next to it, then swapped in by renames, so it is never
+  missing) only when its marker exists and names that very folder: a folder ArmadAI created and
+  still recognizes. Files you added there are then lost: put your own packs in another starter
+  directory (below), under another name.
+- Any other folder of the same name (no marker, a marker from an older binary, or a marker that
+  names another folder, as in a renamed copy) only gets the embedded files written over it;
+  **nothing is removed** from it.
+- A built-in skill a newer binary no longer ships is removed only if ArmadAI recorded it as
+  extracted (`~/.config/armadai/skills/.armadai-extracted`, rewritten at each `armadai init`)
+  **and** its folder's marker still names it. A folder you made, or a copy you renamed, is never
+  removed. (A skill extracted before this registry existed, such as an old
+  `armadai-prompt-authoring`, is therefore left in place: remove it by hand.)
+- Re-extraction happens when the marker differs from the binary: another version, or a
+  development build with other content. The marker is never copied into a project.
 
 ## Creating Custom Packs
 

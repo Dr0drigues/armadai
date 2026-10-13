@@ -80,9 +80,7 @@ pub fn builtin_starters_dir() -> PathBuf {
             && let Some(name) = dir.path().file_name().and_then(|n| n.to_str())
         {
             let dest = config_starters.join(name);
-            if (!dest.exists() || super::embedded::needs_update(&dest, dir))
-                && let Err(e) = super::embedded::refresh(dir, &dest)
-            {
+            if let Err(e) = super::embedded::ensure(dir, &dest, false) {
                 tracing::warn!("Failed to extract embedded starter '{}': {:?}", name, e);
             }
         }
@@ -424,29 +422,6 @@ description: Minimal pack
         }
         assert_eq!(seen, EMBEDDED_STARTERS.dirs().count());
         assert_eq!(seen, 7);
-    }
-
-    /// A pack extracted by an older binary is replaced, not written over (R-B2;
-    /// lost in the packs rewrite, restored).
-    #[test]
-    fn a_re_extracted_pack_keeps_no_stale_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dest = tmp.path().join("rust-dev");
-        std::fs::create_dir_all(dest.join("prompts")).unwrap();
-        std::fs::write(dest.join("prompts/old.md"), "stale").unwrap();
-        std::fs::write(dest.join(".armadai-version"), "0.0.1").unwrap();
-        let dir = EMBEDDED_STARTERS.get_dir("rust-dev").unwrap();
-        assert!(super::super::embedded::needs_update(&dest, dir));
-        super::super::embedded::refresh(dir, &dest).unwrap();
-        assert!(!dest.join("prompts/old.md").exists());
-        assert!(dest.join("pack.yaml").is_file());
-        assert!(!super::super::embedded::needs_update(&dest, dir));
-        let names: Vec<_> = std::fs::read_dir(tmp.path())
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name())
-            .collect();
-        assert_eq!(names, ["rust-dev"], "no scratch folder left");
     }
 
     #[test]
