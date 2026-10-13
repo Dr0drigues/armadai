@@ -51,6 +51,11 @@ pub(crate) fn managed(dest: &Path) -> bool {
 /// (unless `force`); a managed or absent folder is replaced whole; any other folder
 /// only gets the embedded files written over. Returns whether anything was written.
 pub(crate) fn ensure(dir: &Dir<'_>, dest: &Path, force: bool) -> anyhow::Result<bool> {
+    // a link at the name (dangling or not) is replaced, never written through
+    if std::fs::symlink_metadata(dest).is_ok_and(|m| m.file_type().is_symlink()) {
+        std::fs::remove_file(dest)
+            .map_err(|e| anyhow::anyhow!("removing the link {}: {e}", dest.display()))?;
+    }
     let exists = std::fs::symlink_metadata(dest).is_ok();
     if exists && !force && marker_lines(dest).first().map(String::as_str) == Some(&stamp(dir)) {
         return Ok(false);
@@ -324,6 +329,35 @@ mod tests {
         );
         assert_eq!(names(&parent), ["rust-dev"]);
         assert!(dest.join("pack.yaml").is_file());
+    }
+
+    /// A symbolic link at the name of an embedded folder, dangling or not, is
+    /// replaced by the extraction, never written through.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_the_name_is_replaced_not_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        for target in [tmp.path().join("nowhere"), outside.clone()] {
+            let dest = tmp.path().join("rust-dev");
+            let _ = std::fs::remove_file(&dest);
+            let _ = std::fs::remove_dir_all(&dest);
+            std::os::unix::fs::symlink(&target, &dest).unwrap();
+            ensure(pack("rust-dev"), &dest, false).unwrap();
+            let meta = std::fs::symlink_metadata(&dest).unwrap();
+            assert!(
+                meta.is_dir() && !meta.file_type().is_symlink(),
+                "{target:?}"
+            );
+            assert!(dest.join("pack.yaml").is_file());
+            assert_eq!(
+                std::fs::read_dir(&outside).unwrap().count(),
+                0,
+                "written through"
+            );
+            assert!(!tmp.path().join("nowhere").exists());
+        }
     }
 
     /// No marker, or a marker naming another folder (a renamed copy): the user's
