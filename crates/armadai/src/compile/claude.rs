@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
-use armadai_model::{Agent, AgentFront, Cap, Delegation, Flow, Project, Tier};
-use serde_yaml_ng::{Mapping, Value};
+use armadai_model::{Agent, AgentFront, Cap, Delegation, Flow, NativeValue, Project, Tier};
+use serde_json::{Map, Value};
 
 use super::{
     Artifact, ArtifactKind, BLOCK_BEGIN, BLOCK_END, Compiler, Plan, Report, Status, claude_settings,
@@ -317,7 +317,7 @@ fn coordinator_lines(r: &mut Report, id: &str, f: &AgentFront) {
 
 fn agent_file(id: &str, agent: &Agent, r: &mut Report) -> anyhow::Result<String> {
     let f = &agent.front;
-    let mut m = Mapping::new();
+    let mut m = Map::new();
     m.insert("name".into(), id.into());
     m.insert("description".into(), f.description.as_str().into());
     if let Some(t) = f.tier {
@@ -343,7 +343,7 @@ fn agent_file(id: &str, agent: &Agent, r: &mut Report) -> anyhow::Result<String>
     }
     if !f.skills.is_empty() {
         let list: Vec<Value> = f.skills.iter().map(|s| s.as_str().into()).collect();
-        m.insert("skills".into(), Value::Sequence(list));
+        m.insert("skills".into(), Value::Array(list));
         r.push(
             T,
             format!("agent {id} skills"),
@@ -352,14 +352,13 @@ fn agent_file(id: &str, agent: &Agent, r: &mut Report) -> anyhow::Result<String>
         );
     }
     if let Some(native) = f.native.get(T) {
-        let Value::Mapping(native) = native else {
+        let Some(native) = native.as_object() else {
             bail!("agent `{id}`: native.claude must be a mapping");
         };
         for (k, v) in native {
-            let key = k.as_str().unwrap_or_default();
             // `model` is the documented override of the tier; any other generated key wins nothing
-            if key != "model" && m.contains_key(k) {
-                bail!("agent `{id}`: native.claude key `{key}` collides with a generated key");
+            if k != "model" && m.contains_key(k) {
+                bail!("agent `{id}`: native.claude key `{k}` collides with a generated key");
             }
             m.insert(k.clone(), v.clone());
         }
@@ -370,7 +369,8 @@ fn agent_file(id: &str, agent: &Agent, r: &mut Report) -> anyhow::Result<String>
             Some("merged into the subagent frontmatter"),
         );
     }
-    let yaml = serde_yaml_ng::to_string(&m).context("subagent frontmatter")?;
+    let yaml = armadai_model::yaml::to_string(&NativeValue(Value::Object(m)))
+        .context("subagent frontmatter")?;
     let mut out = format!("---\n{yaml}---\n{}", agent.body);
     if !out.ends_with('\n') {
         out.push('\n');
@@ -481,10 +481,10 @@ mod tests {
         String::from_utf8(artifact(plan, path).content.clone()).unwrap()
     }
 
-    fn front(plan: &Plan, path: &str) -> serde_yaml_ng::Mapping {
+    fn front(plan: &Plan, path: &str) -> serde_json::Map<String, serde_json::Value> {
         let t = text(plan, path);
         let (yaml, _, _) = armadai_model::split_frontmatter(&t).unwrap();
-        serde_yaml_ng::from_str(yaml).unwrap()
+        armadai_model::yaml::from_str(yaml).unwrap()
     }
 
     fn line<'a>(plan: &'a Plan, element: &str) -> &'a crate::compile::report::ReportLine {
@@ -644,10 +644,7 @@ mod tests {
             .get("skills")
             .cloned()
             .unwrap();
-        assert_eq!(
-            skills,
-            serde_yaml_ng::from_str::<serde_yaml_ng::Value>("[lint]").unwrap()
-        );
+        assert_eq!(skills, serde_json::json!(["lint"]));
         assert_eq!(line(&plan, "agent dev skills").status, Status::Compiled);
         for e in ["agents temperature", "agents tags", "agents title"] {
             assert_eq!(line(&plan, e).status, Status::NotCompiled, "{e}");

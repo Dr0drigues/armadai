@@ -9,7 +9,7 @@ use crate::types::{Automation, FlowFile, Manifest};
 
 fn yaml<T: Serialize>(v: &T) -> String {
     // Our types hold only strings, numbers and YAML values: serialization cannot fail.
-    serde_yaml_ng::to_string(v).expect("canonical types serialize to YAML")
+    crate::yaml::to_string(v).expect("canonical types serialize to YAML")
 }
 
 fn with_frontmatter<T: Serialize>(front: &T, body: &str) -> String {

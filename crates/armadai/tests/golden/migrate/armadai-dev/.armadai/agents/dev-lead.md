@@ -1,5 +1,5 @@
 ---
-description: 'You are the Development Lead for a Rust project with a modular architecture: a declaration model, one adapter per target, and a CLI.'
+description: "You are the Development Lead for a Rust project with a modular architecture: a declaration model, one adapter per target, and a CLI."
 title: Dev Lead
 tier: max
 tags:

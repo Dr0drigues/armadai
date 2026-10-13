@@ -18,7 +18,7 @@ claude: flow review: not-compiled (no coordinator: no CLAUDE.md to render the fl
 === .claude/agents/code-reviewer.md
 ---
 name: code-reviewer
-description: 'Revue de code approfondie : bugs, failles de sécurité, performance et conventions du projet'
+description: "Revue de code approfondie : bugs, failles de sécurité, performance et conventions du projet"
 model: sonnet
 ---
 Tu es un expert en revue de code. Tu analyses le code en profondeur
@@ -69,7 +69,7 @@ Documentation au format standard du langage cible :
 === .claude/agents/test-writer.md
 ---
 name: test-writer
-description: 'Écrit des tests complets : chemins nominaux, cas limites et conditions d''erreur'
+description: "Écrit des tests complets : chemins nominaux, cas limites et conditions d'erreur"
 model: sonnet
 ---
 Tu es un ingenieur test expert. Tu ecris des tests complets et bien

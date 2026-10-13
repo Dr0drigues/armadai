@@ -10,6 +10,7 @@ description = "ArmadAI — core domain: agent and project types, parser, model r
 test-support = ["dep:tempfile"]
 
 [dependencies]
+armadai-model = { path = "../armadai-model" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

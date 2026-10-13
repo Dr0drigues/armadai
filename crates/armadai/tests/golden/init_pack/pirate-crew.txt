@@ -27,7 +27,7 @@ claude: skill code-nautique: compiled
 === .claude/agents/cartographe.md
 ---
 name: cartographe
-description: 'Cartographe : rédige et améliore la documentation pour que chacun navigue dans le code'
+description: "Cartographe : rédige et améliore la documentation pour que chacun navigue dans le code"
 model: sonnet
 skills:
 - code-nautique
@@ -63,7 +63,7 @@ Inclus des blocs de code avec le langage annote pour la coloration syntaxique.
 === .claude/agents/charpentier.md
 ---
 name: charpentier
-description: 'Charpentier : écrit des tests solides qui empêchent le code de prendre l''eau'
+description: "Charpentier : écrit des tests solides qui empêchent le code de prendre l'eau"
 model: sonnet
 skills:
 - code-nautique
@@ -99,7 +99,7 @@ Chaque groupe de tests est precede d'un commentaire expliquant la strategie.
 === .claude/agents/vigie.md
 ---
 name: vigie
-description: 'Vigie : revue de code, repère bugs, failles de sécurité et problèmes de performance avant qu''ils ne frappent'
+description: "Vigie : revue de code, repère bugs, failles de sécurité et problèmes de performance avant qu'ils ne frappent"
 model: sonnet
 skills:
 - code-nautique

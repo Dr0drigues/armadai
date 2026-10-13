@@ -99,7 +99,7 @@ fn write_is_idempotent_byte_for_byte() {
 #[test]
 fn body_without_trailing_newline_gets_one() {
     let agent = Agent {
-        front: serde_yaml_ng::from_str("description: d\n").unwrap(),
+        front: armadai_model::yaml::from_str("description: d\n").unwrap(),
         body: "no newline".into(),
     };
     assert_eq!(

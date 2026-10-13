@@ -156,8 +156,8 @@ impl Compiler for LegacyCompiler {
                     Some("Copilot agent files carry no model"),
                 );
             }
-            let native = f.native.get(t).and_then(|n| n.as_mapping());
-            if native.is_some_and(|n| n.keys().any(|k| k.as_str() != Some("model"))) {
+            let native = f.native.get(t).and_then(|n| n.as_object());
+            if native.is_some_and(|n| n.keys().any(|k| k != "model")) {
                 r.push(
                     t,
                     format!("agent {id} native"),

@@ -30,7 +30,7 @@ Transitions:
 === .claude/agents/dev.md ===
 ---
 name: dev
-description: 'Writes code: "small" functions'
+description: "Writes code: \"small\" functions"
 model: sonnet
 disallowedTools: WebFetch, WebSearch
 skills:

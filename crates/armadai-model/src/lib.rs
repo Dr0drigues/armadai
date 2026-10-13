@@ -8,6 +8,7 @@ pub mod schema;
 pub mod templates;
 pub mod types;
 pub mod write;
+pub mod yaml;
 pub use check::{check, entry_steps, has_errors, is_valid_id, load_checked, validate};
 pub use diag::{Diagnostic, Severity, locate, locate_key};
 pub use load::*;

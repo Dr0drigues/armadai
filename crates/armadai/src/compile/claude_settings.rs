@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, bail};
-use armadai_model::{Delegation, Event, Project};
+use armadai_model::{Delegation, Event, NativeValue, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -59,15 +59,11 @@ pub fn event_name(e: Event) -> &'static str {
     }
 }
 
-fn native_map(v: Option<&serde_yaml_ng::Value>, what: &str) -> anyhow::Result<Map<String, Value>> {
-    match v {
+fn native_map(v: Option<&NativeValue>, what: &str) -> anyhow::Result<Map<String, Value>> {
+    match v.map(|v| &v.0) {
         None => Ok(Map::new()),
-        Some(v) => {
-            match serde_json::to_value(v).with_context(|| format!("{what}: native.claude"))? {
-                Value::Object(m) => Ok(m),
-                _ => bail!("{what}: native.claude must be a mapping"),
-            }
-        }
+        Some(Value::Object(m)) => Ok(m.clone()),
+        Some(_) => bail!("{what}: native.claude must be a mapping"),
     }
 }
 

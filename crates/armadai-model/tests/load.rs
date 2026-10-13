@@ -200,19 +200,20 @@ fn duplicate_keys_in_free_maps_are_rejected() {
         (
             ".armadai/flows/f.yaml",
             "steps:\n  a: { agent: x }\n  a: { agent: y }\n",
-            2,
+            3,
         ),
         (
             ".armadai/project.yaml",
             "schema_version: 1\noutputs:\n  claude: a\n  claude: b\n",
-            3,
+            4,
         ),
         (
             ".armadai/project.yaml",
             "schema_version: 1\nnative:\n  claude: {}\n  claude: {}\n",
-            3,
+            4,
         ),
     ] {
+        // the position is the second (offending) occurrence
         let ds = errors_for(&[M, (file, text)], "invalid-yaml");
         assert_eq!(ds.len(), 1, "{file}: {ds:?}");
         assert_eq!(ds[0].line, Some(line), "{file}");
@@ -231,8 +232,8 @@ fn duplicate_metadata_key_in_skill_is_rejected() {
         ],
         "invalid-yaml",
     );
-    // serde_yaml_ng reports the first definition of the duplicated key
-    assert_eq!(ds[0].line, Some(4));
+    // the position is the second (offending) occurrence
+    assert_eq!(ds[0].line, Some(5));
 }
 
 #[test]

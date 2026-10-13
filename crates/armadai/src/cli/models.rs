@@ -141,7 +141,7 @@ fn replace_model_values(front: &str, current: &str, replacement: &str) -> (Strin
 /// description, a quoted string, a deeper `model:` key, a value on the next line)
 /// is refused rather than half-done.
 fn rewrite_front(yaml: &str, pairs: &[(String, String)]) -> anyhow::Result<(String, usize)> {
-    use serde_yaml_ng::Value;
+    use serde_json::Value;
     let refuse = || anyhow::anyhow!("could not safely rewrite; edit native.<target>.model by hand");
     let mut front = yaml.to_string();
     let mut hits = 0;
@@ -150,11 +150,11 @@ fn rewrite_front(yaml: &str, pairs: &[(String, String)]) -> anyhow::Result<(Stri
         front = next;
         hits += n;
     }
-    let before: Value = serde_yaml_ng::from_str(yaml).map_err(|_| refuse())?;
-    let after: Value = serde_yaml_ng::from_str(&front).map_err(|_| refuse())?;
+    let before: Value = armadai_model::yaml::from_str(yaml).map_err(|_| refuse())?;
+    let after: Value = armadai_model::yaml::from_str(&front).map_err(|_| refuse())?;
     let mut expected = before.clone();
     let mut substituted = 0;
-    if let Some(native) = expected.get_mut("native").and_then(Value::as_mapping_mut) {
+    if let Some(native) = expected.get_mut("native").and_then(Value::as_object_mut) {
         for (_, target) in native.iter_mut() {
             let Some(model) = target.get_mut("model") else {
                 continue;
@@ -397,6 +397,8 @@ mod tests {
             "description: \"see, model: gpt-4-turbo, then\"\nnative:\n  codex:\n    model: gpt-4-turbo\n",
             "description: d\nnative:\n  codex:\n    model: gpt-4-turbo\n    extra:\n      model: gpt-4-turbo\n",
             "description: d\nnative:\n  codex:\n    model:\n      gpt-4-turbo\n",
+            // one missed value balanced by one wrong hit: the counts agree, the structure does not
+            "description: d\nnative:\n  codex:\n    model:\n      gpt-4-turbo\n  claude:\n    extra:\n      model: gpt-4-turbo\n",
             // a comment after a comma: same structure, but its text would change
             "description: d\nnative:\n  codex:\n    model: gpt-4-turbo\n    temperature: 1 # see, model: gpt-4-turbo\n",
         ] {
