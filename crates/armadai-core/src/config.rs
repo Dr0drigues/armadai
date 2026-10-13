@@ -98,14 +98,45 @@ pub struct UserConfig {
     pub starters_dirs: Vec<String>,
 }
 
-/// Load user config from `~/.config/armadai/config.yaml`.
-/// Returns defaults if the file doesn't exist.
-pub fn load_user_config() -> UserConfig {
-    let path = config_file_path();
-    match std::fs::read_to_string(&path) {
-        Ok(content) => armadai_model::yaml::from_str(&content).unwrap_or_default(),
-        Err(_) => UserConfig::default(),
+/// Parse a user file: `Ok(None)` when it is missing, empty or only comments; an error
+/// naming the file when it exists but does not read.
+pub fn read_user_yaml<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<Option<T>> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => anyhow::bail!("cannot read {}: {e}", path.display()),
+    };
+    armadai_model::yaml::from_str::<Option<T>>(&content).map_err(|e| {
+        anyhow::anyhow!(
+            "{} does not read: {e}; fix it or move it away",
+            path.display()
+        )
+    })
+}
+
+/// Print `msg` as a warning, once per process.
+pub fn warn_once(msg: String) {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if !seen.contains(&msg) {
+        eprintln!("warning: {msg}");
+        seen.push(msg);
     }
+}
+
+/// Load user config from `~/.config/armadai/config.yaml`, for a write: an existing file
+/// that does not read is an error, never replaced by defaults.
+pub fn try_load_user_config() -> anyhow::Result<UserConfig> {
+    Ok(read_user_yaml(&config_file_path())?.unwrap_or_default())
+}
+
+/// Load user config for reading only: defaults if the file is missing, defaults and a
+/// warning if it does not read.
+pub fn load_user_config() -> UserConfig {
+    try_load_user_config().unwrap_or_else(|e| {
+        warn_once(format!("{e:#}; using no custom starter directory"));
+        UserConfig::default()
+    })
 }
 
 /// Save user config back to `~/.config/armadai/config.yaml`.
@@ -139,18 +170,15 @@ pub struct ProviderConfig {
 /// falling back to project-local `config/providers.yaml`, then defaults.
 pub fn load_providers_config() -> ProvidersConfig {
     // Try global config first
-    let global_path = providers_file_path();
-    if let Ok(content) = std::fs::read_to_string(&global_path)
-        && let Ok(cfg) = armadai_model::yaml::from_str(&content)
-    {
-        return cfg;
-    }
-    // Fallback to project-local
-    let local_path = Path::new("config/providers.yaml");
-    if let Ok(content) = std::fs::read_to_string(local_path)
-        && let Ok(cfg) = armadai_model::yaml::from_str(&content)
-    {
-        return cfg;
+    for path in [
+        providers_file_path(),
+        PathBuf::from("config/providers.yaml"),
+    ] {
+        match read_user_yaml(&path) {
+            Ok(Some(cfg)) => return cfg,
+            Ok(None) => {}
+            Err(e) => warn_once(format!("{e:#}; ignored")),
+        }
     }
     ProvidersConfig::default()
 }
@@ -324,6 +352,25 @@ shell:
         let project: crate::project::ProjectConfig = armadai_model::yaml::from_str(project_yaml)
             .expect("an old-style armadai.yaml with `shell:` must still parse");
         assert_eq!(project.agents.len(), 1);
+    }
+
+    #[test]
+    fn a_user_file_reads_as_missing_when_absent_empty_or_comments_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("providers.yaml");
+        assert!(read_user_yaml::<ProvidersConfig>(&path).unwrap().is_none());
+        for text in ["", "# none yet\n"] {
+            std::fs::write(&path, text).unwrap();
+            assert!(
+                read_user_yaml::<ProvidersConfig>(&path).unwrap().is_none(),
+                "{text:?}"
+            );
+        }
+        std::fs::write(&path, "providers: {}\nproviders: {}\n").unwrap();
+        let e = read_user_yaml::<ProvidersConfig>(&path)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("providers.yaml") && e.contains("line 2"), "{e}");
     }
 
     #[test]
