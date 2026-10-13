@@ -304,6 +304,19 @@ pub fn create_flow(id: &str, flow: &armadai_model::Flow, force: bool) -> anyhow:
         force,
         &armadai_model::render_flow(flow),
     )?;
+    let root = crate::compile::find_project(&std::env::current_dir()?)?;
+    let manifest = armadai_model::load_project(&root)
+        .project
+        .map(|p| p.manifest);
+    if manifest.is_some_and(|m| {
+        m.coordinator.is_none() && m.policy.delegation != armadai_model::Delegation::Strict
+    }) {
+        let w = crate::cli::style::warn();
+        anstream::eprintln!(
+            "{w}warning: this flow is guidance only: link renders it nowhere until you set a \
+             coordinator or policy strict (.armadai/project.yaml){w:#}"
+        );
+    }
     let m = crate::cli::style::muted();
     anstream::println!("{m}  See it: armadai graph {id}{m:#}");
     Ok(())

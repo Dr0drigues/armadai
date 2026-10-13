@@ -437,3 +437,24 @@ fn new_flow_fan_out_sends_the_lead_to_every_agent() {
     );
     assert!(env.diagnostics().is_empty(), "{:?}", env.diagnostics());
 }
+
+/// A flow is guidance only while the project has neither a coordinator nor a strict
+/// policy: said at creation, without blocking it.
+#[test]
+fn a_flow_link_renders_nowhere_is_announced() {
+    let warning = "this flow is guidance only: link renders it nowhere until you set a \
+                   coordinator or policy strict";
+    let env = Env::new(AGENTS);
+    let (ok, _, err) = env.run(&["new", "flow", "ship", "--agents", "dev,qa"]);
+    assert!(ok && err.contains(warning), "{err}");
+    for manifest in [
+        "schema_version: 1\ncoordinator: lead\n",
+        "schema_version: 1\npolicy:\n  delegation: strict\n",
+    ] {
+        let mut files = AGENTS.to_vec();
+        files[0] = (".armadai/project.yaml", manifest);
+        let env = Env::new(&files);
+        let (ok, _, err) = env.run(&["new", "flow", "ship", "--agents", "dev,qa"]);
+        assert!(ok && !err.contains("guidance only"), "{manifest}: {err}");
+    }
+}
