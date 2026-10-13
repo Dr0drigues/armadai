@@ -75,7 +75,8 @@ Running `armadai` without a subcommand prints the help.
 | `armadai inspect <agent>` | Show one agent of the project |
 | `armadai validate [path]` | Validate the project (or a starter pack) |
 | `armadai migrate` | Convert a legacy project to `.armadai/project.yaml` |
-| `armadai new --template <tpl> <name>` | Create an agent from a template (`-i` for a wizard) |
+| `armadai new agent\|flow\|automation\|skill <id>` | Create an element of the project (agent templates, flow templates) |
+| `armadai graph [flow]` | Print a flow as Mermaid |
 | `armadai init [--project] [--pack <name>]` | Initialize the user configuration, or a project (empty or from a starter pack) |
 | `armadai skills list/show/sync/search/add/info` | Manage and discover skills |
 | `armadai models check/update/list` | Check and rewrite deprecated model ids, list linked projects |

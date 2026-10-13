@@ -39,41 +39,274 @@ fn template_names_from(templates_dir: &Path) -> Vec<String> {
     names
 }
 
-pub async fn execute(
-    name: Option<String>,
-    template: String,
-    stack: Option<String>,
-    description: Option<String>,
-    interactive: bool,
-) -> anyhow::Result<()> {
-    if interactive {
-        anyhow::bail!("interactive mode is not available yet; pass the options");
-    }
-    let name =
-        name.ok_or_else(|| anyhow::anyhow!("Agent name is required (or use --interactive)"))?;
-    let paths = AppPaths::resolve();
-    let output_path = agent_destination(&name)?;
-    let Some(source) = load_template_from(&paths.templates_dir, &template) else {
-        let e = crate::cli::style::err();
-        anstream::eprintln!("{e}Template '{template}' not found.{e:#}\n");
-        list_templates(&paths.templates_dir)?;
-        anyhow::bail!("Use --template <name> with one of the templates above");
-    };
-    let opts = AgentOptions {
-        description,
-        stack,
-        ..AgentOptions::default()
-    };
-    let (agent, remaining) = agent_from_template(&name, &template, &source, &opts)?;
-    if let Some(dir) = output_path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&output_path, armadai_model::render_agent(&name, &agent))?;
+/// `armadai new <kind>`.
+#[derive(clap::Subcommand)]
+pub enum NewCommand {
+    /// Create an agent from a template (.armadai/agents/<id>.md)
+    #[command(after_help = "Examples:\n  \
+        armadai new agent reviewer --template dev-review --stack rust\n  \
+        armadai new agent scanner --template security-review -d \"audit OWASP top 10\" --tier max")]
+    Agent {
+        /// Agent id: lowercase letters, digits and hyphens (its file name)
+        id: Option<String>,
+        /// Template to start from
+        #[arg(long, short, default_value = "basic", value_parser = template_value_parser())]
+        template: String,
+        /// Description (replaces the template's; also fills {{description}})
+        #[arg(long, short)]
+        description: Option<String>,
+        /// Tech stack (fills {{stack}})
+        #[arg(long, short)]
+        stack: Option<String>,
+        /// Model tier: fast, pro or max
+        #[arg(long, value_parser = parse_tier)]
+        tier: Option<armadai_model::Tier>,
+        /// Skills of the project the agent uses (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        skills: Vec<String>,
+        /// Replace an existing agent file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Create a flow from a template over agents of the project (.armadai/flows/<id>.yaml)
+    #[command(
+        long_about = "Create a flow from a template over agents of the project \
+            (.armadai/flows/<id>.yaml); step ids are the agent ids.\n\n\
+            Templates (agents in the order given):\n  \
+            pipeline           a -> b -> c ... (2 agents or more)\n  \
+            review-loop        author -> reviewer; `rejected` goes back to the author, \
+            `approved` on to the optional third agent (2 or 3 agents)\n  \
+            plan-build-verify  planner -> builder -> verifier; a failed verification goes back \
+            to the builder (3 agents)",
+        after_help = "Examples:\n  \
+            armadai new flow ship --agents planner,dev,qa\n  \
+            armadai new flow review --template review-loop --agents dev,reviewer\n  \
+            armadai graph review"
+    )]
+    Flow {
+        /// Flow id (its file name)
+        id: Option<String>,
+        /// Flow template: pipeline, review-loop or plan-build-verify
+        #[arg(long, short, default_value = "pipeline", value_parser = parse_flow_template)]
+        template: armadai_model::FlowTemplate,
+        /// Agents of the project, in order (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        agents: Vec<String>,
+        /// Description of the flow
+        #[arg(long, short)]
+        description: Option<String>,
+        /// Replace an existing flow file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Create an automation: a command run on an event (.armadai/automations/<id>.yaml)
+    #[command(after_help = "Examples:\n  \
+        armadai new automation fmt --event after-tool --run \"cargo fmt\"")]
+    Automation {
+        /// Automation id (its file name)
+        id: Option<String>,
+        /// session-start, session-end, before-tool, after-tool, on-prompt or on-stop
+        #[arg(long, value_parser = parse_event)]
+        event: Option<armadai_model::Event>,
+        /// Shell command to run
+        #[arg(long)]
+        run: Option<String>,
+        /// Description of the automation
+        #[arg(long, short)]
+        description: Option<String>,
+        /// Replace an existing automation file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Create a skill skeleton (.armadai/skills/<id>/SKILL.md)
+    #[command(after_help = "Examples:\n  \
+        armadai new skill release-notes --description \"Write release notes from the git log\"")]
+    Skill {
+        /// Skill id (its folder name)
+        id: Option<String>,
+        /// What the skill does and when to use it
+        #[arg(long, short)]
+        description: Option<String>,
+        /// Replace an existing SKILL.md
+        #[arg(long)]
+        force: bool,
+    },
+    /// The former `armadai new <name>`
+    #[command(external_subcommand)]
+    Former(Vec<String>),
+}
 
+fn parse_tier(s: &str) -> Result<armadai_model::Tier, String> {
+    serde_yaml_ng::from_str(s).map_err(|_| format!("`{s}` is not a tier (fast, pro, max)"))
+}
+
+fn parse_flow_template(s: &str) -> Result<armadai_model::FlowTemplate, String> {
+    s.parse()
+        .map_err(|e: armadai_model::TemplateError| e.to_string())
+}
+
+fn parse_event(s: &str) -> Result<armadai_model::Event, String> {
+    serde_yaml_ng::from_str(s).map_err(|_| {
+        format!(
+            "`{s}` is not an event (session-start, session-end, before-tool, after-tool, \
+             on-prompt, on-stop)"
+        )
+    })
+}
+
+fn required<T>(v: Option<T>, what: &str) -> anyhow::Result<T> {
+    v.ok_or_else(|| anyhow::anyhow!("{what} is required"))
+}
+
+pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
+    use crate::cli::new_target::Kind;
+    let Some(command) = command else {
+        use clap::CommandFactory;
+        let mut cli = crate::cli::Cli::command();
+        cli.build(); // gives the subcommand its `armadai new` usage line
+        cli.find_subcommand_mut("new")
+            .expect("new is a command")
+            .print_help()?;
+        return Ok(());
+    };
+    match command {
+        NewCommand::Agent {
+            id,
+            template,
+            description,
+            stack,
+            tier,
+            skills,
+            force,
+        } => {
+            let id = required(id, "an agent id")?;
+            crate::cli::new_target::check_id(&id)?;
+            let paths = AppPaths::resolve();
+            let source = load_template_from(&paths.templates_dir, &template)
+                .ok_or_else(|| anyhow::anyhow!("template `{template}` not found"))?;
+            let opts = AgentOptions {
+                description,
+                stack,
+                tier,
+                skills,
+            };
+            let (agent, remaining) = agent_from_template(&id, &template, &source, &opts)?;
+            create(
+                Kind::Agent,
+                &id,
+                force,
+                &armadai_model::render_agent(&id, &agent),
+            )?;
+            warn_placeholders(&remaining);
+            Ok(())
+        }
+        NewCommand::Flow {
+            id,
+            template,
+            agents,
+            description,
+            force,
+        } => {
+            let id = required(id, "a flow id")?;
+            crate::cli::new_target::check_id(&id)?;
+            if agents.is_empty() {
+                anyhow::bail!("--agents is required: the agents of the project, in order");
+            }
+            // an agent the project lacks is the validator's `unknown-agent`: undone (T8)
+            let flow = armadai_model::flow_from_template(template, &agents, description)?;
+            create(Kind::Flow, &id, force, &armadai_model::render_flow(&flow))?;
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}  See it: armadai graph {id}{m:#}");
+            Ok(())
+        }
+        NewCommand::Automation {
+            id,
+            event,
+            run,
+            description,
+            force,
+        } => {
+            let id = required(id, "an automation id")?;
+            let a = armadai_model::Automation {
+                event: required(event, "--event")?,
+                run: required(run, "--run")?,
+                description,
+                native: Default::default(),
+            };
+            create(
+                Kind::Automation,
+                &id,
+                force,
+                &armadai_model::render_automation(&a),
+            )
+        }
+        NewCommand::Skill {
+            id,
+            description,
+            force,
+        } => {
+            let id = required(id, "a skill id")?;
+            let skill = armadai_model::Skill {
+                front: armadai_model::SkillFront {
+                    name: Some(id.clone()),
+                    description: Some(required(description, "--description")?),
+                    ..Default::default()
+                },
+                body: format!(
+                    "# {}\n\nWhen to use this skill, then the steps to follow.\n",
+                    slug_to_title(&id)
+                ),
+            };
+            create(
+                Kind::Skill,
+                &id,
+                force,
+                &armadai_model::render_skill(&skill),
+            )
+        }
+        NewCommand::Former(args) => {
+            let name = args.first().map(String::as_str).unwrap_or("<id>");
+            anyhow::bail!(
+                "`armadai new <name>` became `armadai new agent <name>`: run \
+                 `armadai new agent {name}` (or `armadai new --help` for flows, \
+                 automations and skills)"
+            )
+        }
+    }
+}
+
+/// Write one file through the guard, then validate the project: a creation that
+/// introduces an error (a `(code, file)` absent before) is undone (T8).
+fn create(
+    kind: crate::cli::new_target::Kind,
+    id: &str,
+    force: bool,
+    content: &str,
+) -> anyhow::Result<()> {
+    let mut target = crate::cli::new_target::NewTarget::resolve(kind, id, force)?;
+    let key = |d: &armadai_model::Diagnostic| (d.code, d.file.clone());
+    let before: std::collections::BTreeSet<_> = (armadai_model::validate(&target.root).iter())
+        .map(key)
+        .collect();
+    target.write(content)?;
+    let introduced: Vec<armadai_model::Diagnostic> = armadai_model::validate(&target.root)
+        .into_iter()
+        .filter(|d| !before.contains(&key(d)))
+        .collect();
+    let w = crate::cli::style::warn();
+    for d in &introduced {
+        anstream::eprintln!("{w}{}{w:#}", d.render());
+    }
+    let display = target.display.clone();
+    if armadai_model::has_errors(&introduced) {
+        target.undo()?;
+        anyhow::bail!(
+            "{} would make the project invalid; nothing was written",
+            display.display()
+        );
+    }
     let o = crate::cli::style::ok();
-    let m = crate::cli::style::muted();
-    anstream::println!("{o}Agent created:{o:#} {m}{}{m:#}", output_path.display());
-    warn_placeholders(&remaining);
+    anstream::println!("{o}Created{o:#} {}", display.display());
     Ok(())
 }
 
@@ -86,21 +319,6 @@ fn warn_placeholders(remaining: &[String]) {
     for p in remaining {
         anstream::eprintln!("{w}    - {{{{{p}}}}}{w:#}");
     }
-}
-
-/// `.armadai/agents/<name>.md` of the project at or above the current directory;
-/// refused for an invalid id or an agent that already exists.
-fn agent_destination(name: &str) -> anyhow::Result<std::path::PathBuf> {
-    if !armadai_model::is_valid_id(name) {
-        anyhow::bail!("`{name}` is not a valid agent id ([a-z0-9][a-z0-9-]{{0,63}})");
-    }
-    let root = crate::compile::find_project(&std::env::current_dir()?)
-        .map_err(|e| anyhow::anyhow!("{e}\nCreate a project first: `armadai init --project`"))?;
-    let path = root.join(".armadai/agents").join(format!("{name}.md"));
-    if path.exists() {
-        anyhow::bail!("Agent '{name}' already exists at {}", path.display());
-    }
-    Ok(path)
 }
 
 /// What the user sets on top of a template; `None` keeps the template's value.
@@ -199,21 +417,6 @@ fn collect_template_names(templates_dir: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
-}
-
-fn list_templates(templates_dir: &Path) -> anyhow::Result<()> {
-    let h = crate::cli::style::header();
-    let m = crate::cli::style::muted();
-    anstream::println!("{h}Available templates:{h:#}");
-    for name in template_names_from(templates_dir) {
-        let a = crate::cli::style::accent();
-        anstream::println!("  - {a}{name}{a:#}");
-    }
-    anstream::println!(
-        "{m}  Built-in templates are overridden by a same-named file in {}{m:#}",
-        templates_dir.display()
-    );
-    Ok(())
 }
 
 #[cfg(test)]

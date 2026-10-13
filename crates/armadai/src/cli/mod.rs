@@ -7,6 +7,7 @@ mod list;
 mod migrate;
 mod models;
 pub(crate) mod new;
+mod new_target;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;
@@ -31,7 +32,7 @@ use clap::{CommandFactory, Parser, Subcommand};
     arg_required_else_help = true,
     after_help = "Examples:\n  \
         armadai init --project\n  \
-        armadai new my-agent --template dev-review --stack rust\n  \
+        armadai new agent my-agent --template dev-review --stack rust\n  \
         armadai list --tags dev\n  \
         armadai graph\n  \
         armadai link --target claude\n\n\
@@ -44,35 +45,26 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Create a new agent from a template
+    /// Create an agent, a flow, an automation or a skill
     #[command(
-        long_about = "Create a new agent from a template.\n\n\
-            Available templates: basic, dev-review, dev-test, planning, \
-            security-review, debug, tech-debt, tdd-red, tdd-green, tdd-refactor, tech-writer \
-            (built into the binary; a same-named file in ./templates or \
-            ~/.config/armadai/templates overrides one, and adds your own).\n\
-            The agent is written to .armadai/agents/<name>.md of the current project \
-            (armadai init --project first).",
+        long_about = "Create an agent, a flow, an automation or a skill in the project of the \
+            current directory (armadai init --project first).\n\n\
+            Each command writes one file under .armadai/, then validates the project: a \
+            creation that would introduce an error is undone and nothing is left behind. \
+            Ids are lowercase letters, digits and hyphens.\n\n\
+            Agent templates: basic, dev-review, dev-test, planning, security-review, debug, \
+            tech-debt, tdd-red, tdd-green, tdd-refactor, tech-writer (built into the binary; a \
+            same-named file in ./templates or ~/.config/armadai/templates overrides one, and \
+            adds your own). Flow templates: pipeline, review-loop, plan-build-verify.",
         after_help = "Examples:\n  \
-            armadai new my-assistant\n  \
-            armadai new reviewer --template dev-review --stack rust\n  \
-            armadai new scanner --template security-review -d \"audit OWASP top 10\""
+            armadai new agent reviewer --template dev-review --stack rust\n  \
+            armadai new flow review --template review-loop --agents dev,reviewer\n  \
+            armadai new automation fmt --event after-tool --run \"cargo fmt\"\n  \
+            armadai new skill release-notes --description \"Write release notes\""
     )]
     New {
-        /// Agent name (optional in interactive mode)
-        name: Option<String>,
-        /// Template to use
-        #[arg(long, short, default_value = "basic", value_parser = crate::cli::new::template_value_parser())]
-        template: String,
-        /// Tech stack (replaces {{stack}} placeholder)
-        #[arg(long, short)]
-        stack: Option<String>,
-        /// Agent description (replaces {{description}} placeholder)
-        #[arg(long, short)]
-        description: Option<String>,
-        /// Interactive creation wizard
-        #[arg(long, short = 'i')]
-        interactive: bool,
+        #[command(subcommand)]
+        what: Option<new::NewCommand>,
     },
     /// List the project's agents, skills, flows and automations
     #[command(after_help = "Examples:\n  \
@@ -378,13 +370,7 @@ fn strip_hidden_subcommands(script: &str, hidden: &[String]) -> String {
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Command::New {
-            name,
-            template,
-            stack,
-            description,
-            interactive,
-        } => new::execute(name, template, stack, description, interactive).await,
+        Command::New { what } => new::execute(what),
         Command::List { tags } => list::execute(tags).await,
         Command::Inspect { agent } => inspect::execute(agent).await,
         Command::Graph { flow, format } => graph::execute(flow, format),

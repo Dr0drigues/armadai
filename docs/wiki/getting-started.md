@@ -59,7 +59,10 @@ Running `armadai` without a subcommand prints the help.
 ```bash
 cd my-project
 armadai init --project          # .armadai/project.yaml, agents/, skills/, flows/, automations/
-armadai new reviewer --template dev-review
+armadai new agent dev --template dev-test
+armadai new agent reviewer --template dev-review
+armadai new flow review --template review-loop --agents dev,reviewer
+armadai graph review            # the flow as Mermaid
 armadai validate                # file:line:column diagnostics, exit 1 on error
 armadai link --dry-run          # the files and the conformance report, nothing written
 armadai link                    # write them (Claude Code by default)
@@ -86,7 +89,7 @@ other project command refuses it.
 
 An agent is `.armadai/agents/<id>.md`: a YAML frontmatter (`description`, optionally `tier`,
 `tags`, `skills`, `capabilities`, `native`) and the prompt as the body. See
-[Project format](project-format.md). `armadai new <id> --template <tpl>` creates one from a
+[Project format](project-format.md). `armadai new agent <id> --template <tpl>` creates one from a
 template (built into the binary; files in `templates/` or `~/.config/armadai/templates/` override
 them, see [Templates](templates.md)).
 

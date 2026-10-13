@@ -67,22 +67,42 @@ fn every_embedded_template_creates_a_parseable_agent_without_any_templates_dir()
     );
     for tpl in &templates {
         let name = format!("agent-{tpl}");
-        armadai(&s, &["new", &name, "--template", tpl]).success();
+        armadai(&s, &["new", "agent", &name, "--template", tpl]).success();
         let path = agent_path(&s, &name);
         assert!(path.exists(), "{tpl}: {} not created", path.display());
-        armadai_model::load_checked(&s.cwd).unwrap_or_else(|ds| {
-            panic!(
-                "{tpl}: the project no longer validates: {}",
-                ds.iter().map(|d| d.render()).collect::<Vec<_>>().join("\n")
-            )
-        });
+        let ds = armadai_model::validate(&s.cwd);
+        assert!(
+            ds.is_empty(),
+            "{tpl}: diagnostics: {}",
+            ds.iter().map(|d| d.render()).collect::<Vec<_>>().join("\n")
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("{{"),
+            "{tpl}: a placeholder is left:\n{text}"
+        );
     }
+}
+
+/// The templates are canonical: a frontmatter, no `## Pipeline` (flows replace it),
+/// no CLI relay template.
+#[test]
+fn the_template_files_are_canonical() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/templates");
+    for tpl in embedded_templates() {
+        let text = std::fs::read_to_string(format!("{dir}/{tpl}.md")).unwrap();
+        assert!(text.starts_with("---\ndescription: "), "{tpl}");
+        assert!(!text.contains("## Pipeline"), "{tpl}");
+        assert!(!text.contains("## Metadata"), "{tpl}");
+    }
+    assert_eq!(embedded_templates().len(), 11);
+    assert!(!embedded_templates().contains(&"cli-generic".to_string()));
 }
 
 #[test]
 fn default_template_works_with_no_flag() {
     let s = scratch();
-    armadai(&s, &["new", "my-agent"]).success();
+    armadai(&s, &["new", "agent", "my-agent"]).success();
     assert!(agent_path(&s, "my-agent").exists());
 }
 
@@ -97,7 +117,7 @@ fn project_templates_dir_overrides_the_embedded_template() {
     )
     .unwrap();
 
-    armadai(&s, &["new", "over", "--template", "basic"]).success();
+    armadai(&s, &["new", "agent", "over", "--template", "basic"]).success();
     let body = std::fs::read_to_string(agent_path(&s, "over")).unwrap();
     assert!(body.contains("PROJECT_OVERRIDE_MARKER"), "{body}");
 }
@@ -113,7 +133,7 @@ fn user_templates_dir_overrides_the_embedded_template() {
     )
     .unwrap();
 
-    armadai(&s, &["new", "over", "--template", "basic"]).success();
+    armadai(&s, &["new", "agent", "over", "--template", "basic"]).success();
     let body = std::fs::read_to_string(agent_path(&s, "over")).unwrap();
     assert!(body.contains("USER_OVERRIDE_MARKER"), "{body}");
 }
@@ -129,10 +149,10 @@ fn a_custom_template_is_offered_next_to_the_embedded_ones() {
     )
     .unwrap();
 
-    armadai(&s, &["new", "a", "--template", "mine"]).success();
+    armadai(&s, &["new", "agent", "a", "--template", "mine"]).success();
     let body = std::fs::read_to_string(agent_path(&s, "a")).unwrap();
     assert!(body.contains("MINE"), "{body}");
-    armadai(&s, &["new", "b", "--template", "dev-review"]).success();
+    armadai(&s, &["new", "agent", "b", "--template", "dev-review"]).success();
 }
 
 #[test]
@@ -145,7 +165,7 @@ fn a_legacy_format_template_is_a_clear_error() {
         "# {{name}}\n\n## Metadata\n- provider: anthropic\n\n## System Prompt\n\nOld\n",
     )
     .unwrap();
-    let out = armadai(&s, &["new", "old", "--template", "basic"]).failure();
+    let out = armadai(&s, &["new", "agent", "old", "--template", "basic"]).failure();
     let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
     assert!(
         err.contains("template basic uses the legacy format"),
@@ -158,7 +178,7 @@ fn a_legacy_format_template_is_a_clear_error() {
 fn new_outside_a_project_is_refused() {
     let s = scratch();
     std::fs::remove_dir_all(s.cwd.join(".armadai")).unwrap();
-    let out = armadai(&s, &["new", "lonely"]).failure();
+    let out = armadai(&s, &["new", "agent", "lonely"]).failure();
     let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
     assert!(err.contains("armadai init --project"), "{err}");
 }
@@ -166,15 +186,15 @@ fn new_outside_a_project_is_refused() {
 #[test]
 fn an_invalid_id_or_an_existing_agent_is_refused() {
     let s = scratch();
-    armadai(&s, &["new", "Bad_Name"]).failure();
-    armadai(&s, &["new", "dup"]).success();
-    armadai(&s, &["new", "dup"]).failure();
+    armadai(&s, &["new", "agent", "Bad_Name"]).failure();
+    armadai(&s, &["new", "agent", "dup"]).success();
+    armadai(&s, &["new", "agent", "dup"]).failure();
 }
 
 #[test]
 fn unknown_template_is_rejected_and_lists_the_available_ones() {
     let s = scratch();
-    let out = armadai(&s, &["new", "x", "--template", "nope"]).failure();
+    let out = armadai(&s, &["new", "agent", "x", "--template", "nope"]).failure();
     let o = out.get_output();
     let text = format!(
         "{}{}",
