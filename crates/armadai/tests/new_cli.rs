@@ -544,3 +544,52 @@ fn force_keeps_the_permissions_of_the_replaced_file() {
             .contains("Codes better")
     );
 }
+
+/// Undoing a forced creation over a read-only file gives the original back, bytes
+/// and mode, and leaves no backup behind.
+#[cfg(unix)]
+#[test]
+fn a_rolled_back_force_restores_a_read_only_original() {
+    use std::os::unix::fs::PermissionsExt;
+    for mode in [0o444, 0o400, 0o600] {
+        let env = Env::new(AGENTS);
+        let flow = env.root().join(".armadai/flows/f.yaml");
+        let original = "steps:\n  a: { agent: dev }\n";
+        std::fs::create_dir_all(flow.parent().unwrap()).unwrap();
+        std::fs::write(&flow, original).unwrap();
+        std::fs::set_permissions(&flow, std::fs::Permissions::from_mode(mode)).unwrap();
+        let err = env.fails(&["new", "flow", "f", "--agents", "dev,ghost", "--force"]);
+        assert!(err.contains("nothing was written"), "{mode:o}: {err}");
+        assert_eq!(
+            std::fs::read_to_string(&flow).unwrap(),
+            original,
+            "{mode:o}"
+        );
+        let got = std::fs::metadata(&flow).unwrap().permissions().mode() & 0o777;
+        assert_eq!(got, mode, "{mode:o}");
+        let left: Vec<_> = std::fs::read_dir(flow.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(left, ["f.yaml"], "{mode:o}: no backup left");
+        // a forced creation that succeeds leaves no backup either
+        env.ok(&["new", "flow", "f", "--agents", "dev,qa", "--force"]);
+        let left = std::fs::read_dir(flow.parent().unwrap()).unwrap().count();
+        assert_eq!(left, 1, "{mode:o}");
+        let got = std::fs::metadata(&flow).unwrap().permissions().mode() & 0o777;
+        assert_eq!(got, mode, "{mode:o}");
+    }
+}
+
+/// A backup left by an interrupted `--force` is never overwritten.
+#[test]
+fn a_leftover_backup_blocks_force() {
+    let env = Env::new(AGENTS);
+    let aside = env.root().join(".armadai/agents/dev.md.armadai-backup");
+    std::fs::write(&aside, "the only copy\n").unwrap();
+    let before = tree(&env.root());
+    let err = env.fails(&["new", "agent", "dev", "--force"]);
+    assert!(err.contains("dev.md.armadai-backup"), "{err}");
+    assert_eq!(tree(&env.root()), before);
+}

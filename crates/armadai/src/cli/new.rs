@@ -396,6 +396,7 @@ pub fn create(
             display.display()
         );
     }
+    target.commit()?;
     let o = crate::cli::style::ok();
     anstream::println!("{o}Created{o:#} {}", display.display());
     Ok(())

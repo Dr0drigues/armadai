@@ -61,8 +61,10 @@ pub struct NewTarget {
     pub path: PathBuf,
     /// The file, relative to the project root (for messages).
     pub display: PathBuf,
-    /// Content and permissions of the file it replaces (`--force`), restored by `undo`.
-    backup: Option<(Vec<u8>, std::fs::Permissions)>,
+    /// Under `--force`: where the replaced file is moved aside while the new one is
+    /// validated (`<file>.armadai-backup`, a name the loader ignores), and its
+    /// permissions. Moving keeps its bytes and mode; nothing is ever re-written.
+    backup: Option<(PathBuf, std::fs::Permissions)>,
     /// Folders `write` created, outermost first.
     created: Vec<PathBuf>,
 }
@@ -100,10 +102,19 @@ impl NewTarget {
                 "{} already exists (use --force to replace it)",
                 display.display()
             ),
-            Ok(m) => Some((
-                std::fs::read(&at).with_context(|| format!("reading {}", at.display()))?,
-                m.permissions(),
-            )),
+            Ok(m) => {
+                let mut name = at.file_name().context("a file has a name")?.to_owned();
+                name.push(".armadai-backup");
+                let aside = at.with_file_name(name);
+                if std::fs::symlink_metadata(&aside).is_ok() {
+                    bail!(
+                        "{} exists (a backup left by an interrupted `new --force`?): \
+                         restore or remove it first",
+                        aside.display()
+                    );
+                }
+                Some((aside, m.permissions()))
+            }
         };
         Ok(NewTarget {
             root,
@@ -136,8 +147,9 @@ impl NewTarget {
         if !parent.canonicalize()?.starts_with(&real_base) {
             bail!("{} leaves {}", self.display.display(), base.display());
         }
-        if self.backup.is_some() {
-            std::fs::remove_file(&self.path)?;
+        if let Some((aside, _)) = &self.backup {
+            std::fs::rename(&self.path, aside)
+                .with_context(|| format!("moving {} aside", self.path.display()))?;
         }
         let mut f = std::fs::OpenOptions::new()
             .write(true)
@@ -152,11 +164,34 @@ impl NewTarget {
         Ok(())
     }
 
+    /// The creation stands: drop the replaced file moved aside.
+    pub fn commit(self) -> anyhow::Result<()> {
+        if let Some((aside, _)) = &self.backup {
+            std::fs::remove_file(aside)
+                .with_context(|| format!("removing the backup {}", aside.display()))?;
+        }
+        Ok(())
+    }
+
     /// Put the tree back: the previous file (under `--force`), or nothing at all.
     pub fn undo(self) -> anyhow::Result<()> {
         match &self.backup {
-            // `write` gave the file the replaced one's permissions; writing keeps them
-            Some((bytes, _)) => std::fs::write(&self.path, bytes)?,
+            // the original was only moved: moving it back restores bytes and mode
+            Some((aside, _)) => {
+                let back = (|| {
+                    if std::fs::symlink_metadata(&self.path).is_ok() {
+                        std::fs::remove_file(&self.path)?;
+                    }
+                    std::fs::rename(aside, &self.path)
+                })();
+                back.with_context(|| {
+                    format!(
+                        "could not restore {}: the original is kept at {}",
+                        self.path.display(),
+                        aside.display()
+                    )
+                })?;
+            }
             None => {
                 if self.path.is_file() {
                     std::fs::remove_file(&self.path)?;
