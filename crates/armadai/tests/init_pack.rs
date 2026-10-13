@@ -515,7 +515,10 @@ fn no_pack_writes_through_a_linked_armadai() {
         .unwrap();
     let (ok, _, err) = env.init(&pack, &[]);
     assert!(
-        !ok && err.contains(".armadai is a dangling symbolic link"),
+        !ok && err.contains(&format!(
+            "{}/.armadai is a dangling symbolic link",
+            env.root().display()
+        )),
         "{err}"
     );
     assert!(!env.dir.path().join("nowhere").exists());
