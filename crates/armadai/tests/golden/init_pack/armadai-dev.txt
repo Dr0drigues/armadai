@@ -21,7 +21,7 @@ claude: agent cli-specialist skills: compiled (preloaded through the subagent `s
 claude: agent cli-specialist tags: not-compiled (informational, no Claude Code field)
 claude: agent cli-specialist temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent dev-lead: compiled (coordinator, rendered into CLAUDE.md)
-claude: agent dev-lead skills: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
+claude: agent dev-lead skills: approximated (skills are discovered project-wide from .claude/skills; the main session cannot preload them)
 claude: agent dev-lead tags: not-compiled (informational, no Claude Code field)
 claude: agent dev-lead tier: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
 claude: agent qa-specialist: compiled
@@ -228,6 +228,8 @@ description: Rust 2024 edition coding conventions, clippy strict mode, and featu
 === CLAUDE.md
 <!-- armadai:begin -->
 You are the Development Lead for a Rust project with a modular architecture: a declaration model, one adapter per target, and a CLI. Your role is to analyze incoming development requests, identify which modules are impacted, and delegate to the appropriate specialists: schema-specialist (model, parser, validation), adapter-specialist (one adapter per target, native formats), cli-specialist (commands, user workflows), qa-specialist (tests, CI, independent review) and release-manager (releases). You ensure full coverage (model + adapter + CLI + tests), and synthesize outputs from all specialists to highlight integration points. After delegation, you produce a clear summary of the work plan and cross-cutting concerns.
+
+Apply the `rust-conventions` skill (load it before planning a change): it holds the project's Rust conventions.
 
 ## Instructions
 

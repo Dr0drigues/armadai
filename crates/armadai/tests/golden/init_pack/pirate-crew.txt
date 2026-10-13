@@ -11,7 +11,7 @@ $ armadai link --target claude
 
 Conformance report:
 claude: agent capitaine: compiled (coordinator, rendered into CLAUDE.md)
-claude: agent capitaine skills: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
+claude: agent capitaine skills: approximated (skills are discovered project-wide from .claude/skills; the main session cannot preload them)
 claude: agent capitaine tags: not-compiled (informational, no Claude Code field)
 claude: agent capitaine temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent capitaine tier: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
@@ -173,6 +173,8 @@ description: Coding conventions with a nautical theme for the pirate crew
 <!-- armadai:begin -->
 Tu es le Capitaine du navire de developpement. Tu coordonnes ton equipage
 de specialistes pour mener a bien chaque mission de code.
+
+Applique la `code-nautique` skill (charge-la avant de repartir une mission) : les conventions de bord de l'equipage.
 
 Ton equipage :
 | Matelot | Role | Specialite |

@@ -253,11 +253,19 @@ fn coordinator_lines(r: &mut Report, id: &str, f: &AgentFront) {
     if f.tier.is_some() {
         fields.push("tier");
     }
-    if !f.skills.is_empty() {
-        fields.push("skills");
-    }
     if !f.native.is_empty() {
         fields.push("native");
+    }
+    if !f.skills.is_empty() {
+        r.push(
+            T,
+            format!("agent {id} skills"),
+            Status::Approximated,
+            Some(
+                "skills are discovered project-wide from .claude/skills; the main session \
+                 cannot preload them",
+            ),
+        );
     }
     for field in fields {
         r.push(
@@ -718,6 +726,31 @@ mod tests {
         assert_eq!(
             line(&plan, "agent lead capabilities").status,
             Status::NotCompiled
+        );
+    }
+
+    /// The main session cannot preload skills, but Claude Code discovers the project's
+    /// skills (`.claude/skills/`) by their description: approximated, not lost.
+    #[test]
+    fn coordinator_skills_are_approximated() {
+        let mut files = team();
+        files[1] = (
+            ".armadai/agents/lead.md",
+            b"---\ndescription: Leads\nskills: [lint]\n---\nYou lead the team.\n",
+        );
+        files.push((
+            ".armadai/skills/lint/SKILL.md",
+            b"---\nname: lint\ndescription: Lint\n---\nL\n",
+        ));
+        let plan = compile(&files).unwrap();
+        let l = line(&plan, "agent lead skills");
+        assert_eq!(l.status, Status::Approximated);
+        assert_eq!(
+            l.reason.as_deref(),
+            Some(
+                "skills are discovered project-wide from .claude/skills; the main session \
+                 cannot preload them"
+            )
         );
     }
 

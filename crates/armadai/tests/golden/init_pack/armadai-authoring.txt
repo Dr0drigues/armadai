@@ -22,7 +22,7 @@ claude: agent authoring-architect skills: compiled (preloaded through the subage
 claude: agent authoring-architect tags: not-compiled (informational, no Claude Code field)
 claude: agent authoring-architect temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent authoring-lead: compiled (coordinator, rendered into CLAUDE.md)
-claude: agent authoring-lead skills: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
+claude: agent authoring-lead skills: approximated (skills are discovered project-wide from .claude/skills; the main session cannot preload them)
 claude: agent authoring-lead tags: not-compiled (informational, no Claude Code field)
 claude: agent authoring-lead temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent authoring-lead tier: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
@@ -432,6 +432,8 @@ Lowercase, common vocabulary: a role (`coordinator`, `reviewer`, `writer`), a do
 <!-- armadai:begin -->
 You are the Authoring Lead. You coordinate a team that writes ArmadAI content in the canonical
 format (a `.armadai/` project: agents, skills, flows, automations) and starter packs.
+
+Apply the `armadai-conventions` skill (load it when you check or route content): naming, descriptions, quality bar.
 
 Your team:
 

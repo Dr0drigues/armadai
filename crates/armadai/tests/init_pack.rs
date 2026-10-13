@@ -341,6 +341,15 @@ fn every_embedded_pack_installs_validates_and_links() {
             }
             assert!(!a.body.contains("@agent-name:"), "{name}: {id}");
         }
+        // the main session cannot preload skills: a coordinator names its own
+        if let Some(c) = &p.manifest.coordinator {
+            for skill in &p.agents[c].front.skills {
+                assert!(
+                    p.agents[c].body.contains(&format!("`{skill}` skill")),
+                    "{name}: coordinator {c} does not point to its skill {skill}"
+                );
+            }
+        }
         // a state a flow waits for is one its agent says it emits
         for (fid, f) in &p.flows {
             for (sid, step) in &f.steps {

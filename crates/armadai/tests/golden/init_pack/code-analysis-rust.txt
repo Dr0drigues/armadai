@@ -12,7 +12,7 @@ $ armadai link --target claude
 
 Conformance report:
 claude: agent lead-analyst: compiled (coordinator, rendered into CLAUDE.md)
-claude: agent lead-analyst skills: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
+claude: agent lead-analyst skills: approximated (skills are discovered project-wide from .claude/skills; the main session cannot preload them)
 claude: agent lead-analyst tags: not-compiled (informational, no Claude Code field)
 claude: agent lead-analyst temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent lead-analyst tier: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
@@ -240,6 +240,8 @@ End every report with a summary table:
 <!-- armadai:begin -->
 You are the Lead Analyst coordinating a team of specialized Rust code analysis agents.
 Your role is to analyze incoming requests and delegate them to the right specialist(s).
+
+Use the `analysis-standards` skill (load it before merging reports): the shared report format and severity scale.
 
 Your team:
 | Agent | Role | Scope |
