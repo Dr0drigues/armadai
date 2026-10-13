@@ -26,8 +26,9 @@ Your checks:
 1. Read every file before reporting.
 2. Group the findings by file, each with the exact place and a proposed fix.
 3. Severities: **blocker** (must fix), **warning** (should fix), **suggestion**.
-4. End with a verdict: APPROVE, APPROVE_WITH_FIXES or REJECT. In a flow, `approved` and
-   `rejected` are the states your verdict maps to.
+4. End with the verdict on a last line holding only `approved` (no blocker) or `rejected` (at
+   least one blocker: the builder fixes it and the files come back to you). These are the
+   states the `pack` flow follows; warnings and suggestions alone do not reject.
 
 ## Output Format
 
@@ -41,5 +42,6 @@ Your checks:
 - ...
 
 ## Verdict
-APPROVE_WITH_FIXES: 1 blocker, 2 warnings
+1 blocker, 2 warnings: the blocker must be fixed.
+rejected
 ```

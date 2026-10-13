@@ -341,6 +341,19 @@ fn every_embedded_pack_installs_validates_and_links() {
             }
             assert!(!a.body.contains("@agent-name:"), "{name}: {id}");
         }
+        // a state a flow waits for is one its agent says it emits
+        for (fid, f) in &p.flows {
+            for (sid, step) in &f.steps {
+                let body = &p.agents[&step.agent].body;
+                for state in &step.states {
+                    assert!(
+                        body.contains(&format!("`{state}`")),
+                        "{name}: flow {fid} step {sid} waits for `{state}`, which agent {} never emits",
+                        step.agent
+                    );
+                }
+            }
+        }
         for cli in ["claude-cli-reviewer", "echo-reviewer", "gemini-reviewer"] {
             assert!(!p.agents.contains_key(cli), "{name}: {cli}");
         }

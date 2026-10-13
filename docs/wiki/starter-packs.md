@@ -48,8 +48,15 @@ The seven packs below ship embedded in the binary, all native.
 | `armadai-authoring` | `authoring-lead` (coordinator), `authoring-architect`, `agent-builder`, `skill-builder`, `starter-builder`, `authoring-reviewer`, `authoring-tester` | `authoring` (fan-out), `pack` (plan, build, review loop, test) | `armadai-conventions` |
 | `pirate-crew` | `capitaine` (coordinator), `vigie`, `charpentier`, `cartographe` | `mission` (fan-out) | `code-nautique` |
 
-`fullstack` has no coordinator: its `review` flow is guidance only until you set one or
-`policy.delegation: strict` (the conformance report of `link` says so). The authoring skills
+`fullstack` has no coordinator, on purpose: a coordinator becomes the main session itself
+(`CLAUDE.md` for Claude Code), and making `code-reviewer` that would turn every conversation in
+the repository into a code review. Its `review` flow is therefore guidance only (`link` reports
+it `not-compiled`): set `policy.delegation: strict` to have Claude Code enforce it (the main
+session then starts at `test-writer`), or add a lead agent of your own as `coordinator`.
+
+In the packs, an agent whose step a flow follows by state (`approved`, `rejected`) ends its
+answer with that state on a last line: `code-reviewer` (fullstack), `qa-specialist`
+(armadai-dev, for a release), `authoring-reviewer`. The authoring skills
 (`armadai-agent-authoring`, ...) are not in `armadai-authoring`: they are built into ArmadAI and
 installed in `~/.config/armadai/skills/` by `armadai init`; copy one into `.armadai/skills/` to
 give it to the agents.
