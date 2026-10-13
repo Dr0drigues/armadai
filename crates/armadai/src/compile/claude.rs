@@ -7,8 +7,7 @@ use armadai_model::{Agent, AgentFront, Cap, Delegation, Flow, Project, Tier};
 use serde_yaml_ng::{Mapping, Value};
 
 use super::{
-    Artifact, ArtifactKind, BLOCK_BEGIN, BLOCK_END, Compiler, Plan, Report, Status,
-    claude_settings, read_tree,
+    Artifact, ArtifactKind, BLOCK_BEGIN, BLOCK_END, Compiler, Plan, Report, Status, claude_settings,
 };
 use crate::linker::manifest::ProducedBy;
 
@@ -52,7 +51,16 @@ impl Compiler for ClaudeCompiler {
 
         for id in project.skills.keys() {
             let dir = root.join(".armadai/skills").join(id);
-            for (rel, content) in read_tree(&dir, &root.join(".armadai"))? {
+            let (files, backups) = super::read_tree_skipping(&dir, &root.join(".armadai"))?;
+            for rel in backups {
+                plan.report.push(
+                    T,
+                    format!("skill {id} {}", rel.display()),
+                    Status::NotCompiled,
+                    Some("stray backup ignored"),
+                );
+            }
+            for (rel, content) in files {
                 plan.artifacts.push(Artifact {
                     path: Path::new("skills").join(id).join(rel),
                     content,
@@ -819,6 +827,29 @@ mod tests {
                  cannot preload them"
             )
         );
+    }
+
+    /// A backup left by an interrupted `new --force` is never compiled, and said so.
+    #[test]
+    fn a_stray_backup_in_a_skill_is_ignored_and_reported() {
+        let plan = compile(&[
+            M,
+            (
+                ".armadai/skills/lint/SKILL.md",
+                b"---\nname: lint\ndescription: Lint\n---\nBody\n",
+            ),
+            (".armadai/skills/lint/SKILL.md.armadai-backup", b"old\n"),
+        ])
+        .unwrap();
+        assert!(
+            !plan
+                .artifacts
+                .iter()
+                .any(|a| a.path.to_string_lossy().contains("armadai-backup"))
+        );
+        let l = line(&plan, "skill lint SKILL.md.armadai-backup");
+        assert_eq!(l.status, Status::NotCompiled);
+        assert_eq!(l.reason.as_deref(), Some("stray backup ignored"));
     }
 
     /// A declared `start` is said in CLAUDE.md and in the report.

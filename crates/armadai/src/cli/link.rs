@@ -13,7 +13,7 @@ use armadai_model::Project;
 
 use crate::compile::claude_settings::{self, HookEntry};
 use crate::compile::patch::{self, PatchKind, PatchedFile};
-use crate::compile::{self, Artifact, ArtifactKind, Report, Status, read_tree};
+use crate::compile::{self, Artifact, ArtifactKind, Report, Status};
 use crate::linker::manifest::{self, DigestCheck, FileOutcome, Lookup, Outcome, ProducedBy};
 
 type Settings = (PathBuf, Vec<HookEntry>, BTreeMap<String, serde_json::Value>);
@@ -170,7 +170,16 @@ fn prepare(
             .chain(p.settings.iter().map(|(r, _, _)| r.clone()))
             .map(|r| folded(&r))
             .collect();
-        for (path, content) in read_tree(&native_dir, &root.join(".armadai"))? {
+        let (files, backups) = compile::read_tree_skipping(&native_dir, &root.join(".armadai"))?;
+        for rel in backups {
+            p.report.push(
+                target,
+                format!("native {}", rel.display()),
+                Status::NotCompiled,
+                Some("stray backup ignored"),
+            );
+        }
+        for (path, content) in files {
             compile::check_destination(root, Path::new("."), &path)
                 .map_err(|e| anyhow::anyhow!("native file: {e}"))?;
             if !generated.insert(folded(&path)) {
