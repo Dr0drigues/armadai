@@ -1,18 +1,19 @@
 ---
 name: armadai-skill-authoring
-description: Complete reference for authoring ArmadAI skills (Agent Skills open standard)
-version: "1.0"
-tools: []
+description: Complete reference for authoring skills of an ArmadAI project (.armadai/skills/<id>/SKILL.md, Agent Skills open standard)
+metadata:
+  version: "2.0"
 ---
 
 # ArmadAI Skill Authoring
 
-Complete reference for creating and maintaining ArmadAI skills following the Agent Skills open standard.
+A skill is shared knowledge an agent loads when a task calls for it: a folder
+`.armadai/skills/<id>/` with a `SKILL.md` entry point and optional `references/`, `scripts/`
+and `assets/`. `armadai link` copies the whole folder to each target. A former ArmadAI
+"prompt" (an instruction fragment injected with `apply_to`) is a skill now.
 
-Skills are structured knowledge packs that provide reference documentation, scripts, and assets to AI agents. Unlike prompts (composable instruction fragments), skills are self-contained directories with rich content organized by domain.
+See the `references/` directory:
 
-See the `references/` directory for detailed documentation:
-
-- **format.md** — SKILL.md specification and directory structure
-- **best-practices.md** — Guidelines for structuring skills effectively
-- **examples.md** — Real-world skill patterns and complete examples
+- **format.md** — the folder, the frontmatter, the checks of `armadai validate`
+- **best-practices.md** — scoping, writing a description, organizing references
+- **examples.md** — complete skills

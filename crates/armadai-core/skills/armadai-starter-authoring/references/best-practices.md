@@ -1,99 +1,14 @@
-# Starter Pack Best Practices
+# Starter pack best practices
 
-## Thematic Cohesion
-
-Each pack should serve a single domain or workflow. Users should understand what a pack does from its name and description alone.
-
-**Good**: `rust-dev` (Rust development), `code-analysis-web` (JS/TS code analysis)
-**Bad**: `misc-tools` (unclear scope), `agents-v2` (meaningless name)
-
-## Pack Composition
-
-### Include a Coordinator
-
-For packs with 3+ agents, include a **coordinator agent** that dispatches requests to specialists. This gives users a single entry point.
-
-```
-lead-analyst → rust-reviewer
-             → rust-test-analyzer
-             → rust-doc-writer
-             → rust-security
-```
-
-The coordinator should:
-- List all team members and their specialties in its system prompt
-- Define clear dispatch rules
-- Use a slightly higher temperature (0.4) than specialists (0.2-0.3) for flexible routing
-
-### Include a Shared Prompt
-
-Add a prompt with conventions shared across all agents in the pack. Apply it via `apply_to` to all specialist agents.
-
-This ensures consistent behavior (naming, formatting, quality standards) without duplicating instructions in every agent's system prompt.
-
-### Reference Built-in Skills
-
-When your pack's agents need knowledge provided by existing ArmadAI skills (e.g., `armadai-agent-authoring`), **reference them** in `pack.yaml` rather than bundling copies. Built-in skills are already installed by `armadai init` and referencing avoids duplication.
-
-```yaml
-# Good: reference built-in skill
-skills: [armadai-agent-authoring, armadai-prompt-authoring]
-
-# Only bundle skills that are custom to your pack
-```
-
-## Recommended Pack Size
-
-- **Minimum**: 2 agents + 1 prompt (a small focused team)
-- **Sweet spot**: 3-6 agents + 1-2 prompts (clear roles, manageable)
-- **Maximum**: 8-10 agents (beyond this, consider splitting into separate packs)
-
-Including too many agents dilutes the pack's focus and makes coordination harder.
-
-## Naming Guidelines
-
-- Pack name should describe the domain: `rust-dev`, `devops-team`, `data-pipeline`
-- Agent names should describe the role: `code-reviewer`, `test-writer`, `lead-analyst`
-- Avoid generic names: prefer `rust-security` over `security-agent`
-- Coordinators: use `lead`, `captain`, or domain-specific titles
-
-## Agent Design Within Packs
-
-- Each specialist should have a **focused scope** — one clear responsibility
-- Use `scope:` metadata to limit file patterns when relevant (e.g., `[src/**/*.rs]`)
-- Use `tags:` consistently across agents for prompt targeting
-- Set appropriate temperatures: analytical tasks (0.2-0.3), creative tasks (0.5-0.7)
-
-## Orchestration Configuration
-
-When a starter pack includes a coordinator agent (tagged `coordinator`), `armadai init --pack <name> --project` writes `link.coordinator` and an `orchestration:` block (coordinator + one team of the other agents) into the project config. The block is a declaration: `armadai validate` checks it and the Claude Code policy gate can enforce it (`policy: strict`); ArmadAI does not execute agents.
-
-### Coordinator Design
-
-Coordinators should name their team and their delegations (`@agent-name: task`) in their system prompt:
-
-```markdown
-## System Prompt
-
-Your team:
-| Agent | Role |
-|-------|------|
-| specialist-a | Does X |
-| specialist-b | Does Y |
-
-To delegate: `@agent-name: description of the task`
-```
-
-The Blackboard and Ring patterns, and the `## Triggers` and `## Ring Config` sections they used,
-belonged to the removed execution engine: they are still parsed, but nothing executes them
-(`armadai validate` still checks the syntax of `## Triggers`).
-
-## Testing Your Pack
-
-Before publishing a starter pack:
-
-1. Run `armadai init --pack <name>` in a clean environment
-2. Verify all agents are installed: `armadai list`, and that the pack validates: `armadai validate <pack-dir>`
-3. Link the pack (`armadai link --target <target>`) and test each agent in the linked assistant
-4. Test the coordinator's dispatch logic with various request types
-5. Verify prompts are correctly applied to their target agents
+- **One domain per pack**: a Rust team, a web analysis crew. 3 to 6 agents.
+- **Descriptions say when to use each agent**; prompts state what each does not do.
+- **Topology in flows**: a lead handing work out is a `fan-out` flow and the lead as
+  `coordinator`; a chain is a `pipeline`; a review with a way back is a `review-loop`. Add no
+  coordinator by default.
+- **Shared knowledge in skills**, listed in each agent's `skills:` (conventions, a report
+  format), not copied into every prompt.
+- **Automations sparingly**: each one runs a command in the user's repository; the install
+  lists them, keep them obvious (a formatter, a linter).
+- **No warning**: `armadai validate <pack>` shows 0 error(s), 0 warning(s).
+- **Ship no state**: no `link-manifest.yaml`, no generated `.claude/` files; they are not copied
+  anyway.

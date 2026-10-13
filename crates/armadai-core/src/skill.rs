@@ -319,7 +319,7 @@ mod tests {
         );
         assert!(
             skills_dir
-                .join("armadai-prompt-authoring")
+                .join("armadai-starter-authoring")
                 .join("SKILL.md")
                 .exists()
         );

@@ -1,106 +1,44 @@
-# Skill Examples
+# Skill examples
 
-## Example 1: Framework Reference Skill
+## Conventions shared by a team
 
-A comprehensive reference skill for a framework (like Platodin):
-
-```
-platodin-reference/
-├── SKILL.md
-└── references/
-    ├── overview.md
-    ├── web.md
-    ├── security.md
-    ├── mongo.md
-    ├── kafka.md
-    ├── webclient.md
-    ├── testing.md
-    └── configuration.md
-```
-
-**SKILL.md**:
+`.armadai/skills/rust-conventions/SKILL.md`:
 
 ```markdown
 ---
-name: platodin-reference
-description: Platodin framework reference (Spring Boot overlay v4.x)
-version: "4.0"
-tools: []
+name: rust-conventions
+description: Rust 2024 conventions of this project (errors, tests, clippy); use when writing or reviewing Rust
 ---
 
-# Platodin Reference
+# Rust conventions
 
-Complete reference documentation for the Platodin framework — a Spring Boot overlay for building APIs and event-driven applications.
-
-See the `references/` directory for module-specific documentation.
+- Errors: `anyhow` in binaries, `thiserror` in libraries; never `unwrap` outside tests.
+- Tests: unit tests next to the code, integration tests under `tests/`, `tempfile` for files.
+- `cargo clippy --all-targets -- -D warnings` passes.
 ```
 
-Each reference file covers one module with its API, configuration, and patterns.
+Each agent of the team lists it: `skills: [rust-conventions]`.
 
-## Example 2: CI Templates Skill
-
-A skill providing CI/CD pipeline templates and scripts:
+## A procedure with a script
 
 ```
-ci-templates-reference/
-├── SKILL.md
-├── references/
-│   ├── github-actions.md
-│   ├── gitlab-ci.md
-│   └── conventions.md
-├── scripts/
-│   ├── lint.sh
-│   └── deploy.sh
-└── assets/
-    ├── github-workflow.yaml
-    └── gitlab-ci.yaml
+.armadai/skills/release-notes/
+  SKILL.md
+  scripts/changes.sh        # git log --oneline <last-tag>..HEAD
+  references/style.md       # sections, tone, what to leave out
 ```
-
-**SKILL.md**:
 
 ```markdown
 ---
-name: ci-templates-reference
-description: CI/CD pipeline templates and conventions
-version: "2.0"
-tools:
-  - docker
-  - gh
+name: release-notes
+description: Writes release notes from the git log since the last tag; use when preparing a release
+metadata:
+  version: "1.0"
 ---
 
-# CI Templates Reference
+# Release notes
 
-Standardized CI/CD pipeline templates for GitHub Actions and GitLab CI.
-
-Includes ready-to-use workflow files in `assets/` and helper scripts in `scripts/`.
-
-See `references/` for detailed documentation of each CI platform and conventions.
+1. Run `scripts/changes.sh` for the commits since the last tag.
+2. Group them as `references/style.md` says (Added, Changed, Fixed, Removed).
+3. Write the notes; never invent a change the log does not show.
 ```
-
-## Example 3: Minimal Skill
-
-A skill with just a SKILL.md and one reference file:
-
-```
-code-standards/
-├── SKILL.md
-└── references/
-    └── standards.md
-```
-
-**SKILL.md**:
-
-```markdown
----
-name: code-standards
-description: Team coding standards and conventions
-version: "1.0"
-tools: []
----
-
-# Code Standards
-
-Team-wide coding standards. See `references/standards.md` for the full specification.
-```
-
-This pattern works well for single-topic knowledge packs that are too complex for a simple prompt file.
