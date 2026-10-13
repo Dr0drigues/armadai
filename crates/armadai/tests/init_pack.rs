@@ -145,6 +145,13 @@ fn a_native_pack_is_copied_by_its_white_list() {
         err.contains("automation fmt") && err.contains("cargo fmt"),
         "{err}"
     );
+    // a file inside a pack folder that is not installed is said so; root files are not
+    assert!(err.contains("ignored: agents/notes.txt"), "{err}");
+    assert!(!err.contains("ignored: README.md"), "{err}");
+    assert!(
+        out.contains("2 agent(s), 1 skill(s), 1 flow(s), 1 automation(s)"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -373,4 +380,83 @@ fn every_embedded_pack_installs_validates_and_links() {
         let (ok, out, err) = env.run(&["link", "--target", "claude"]);
         assert!(ok, "{name}: {out}\n{err}");
     }
+}
+
+/// Files of a pack folder that the white list leaves out are each reported.
+#[test]
+fn ignored_pack_files_are_reported() {
+    let env = Env::new();
+    let mut files = NATIVE.to_vec();
+    files.push(("flows/x.yml", "steps: {}\n"));
+    files.push(("prompts/p.md", "# p\n"));
+    let pack = env.pack("demo", &files);
+    let (ok, out, err) = env.init(&pack, &[]);
+    assert!(ok, "{out}\n{err}");
+    for f in ["flows/x.yml", "prompts/p.md", "agents/notes.txt"] {
+        assert!(err.contains(&format!("ignored: {f}")), "{f}: {err}");
+    }
+}
+
+/// Under --force the summary counts what was created, and what was kept; an
+/// automation already there is not announced; a skill already there is not mixed
+/// with the pack's.
+#[test]
+fn a_forced_merge_reports_exactly_what_it_did() {
+    let env = Env::new();
+    let pack = env.pack("demo", NATIVE);
+    for (p, c) in [
+        (".armadai/project.yaml", "schema_version: 1\n"),
+        (
+            ".armadai/agents/dev.md",
+            "---\ndescription: Mine\nskills: [notes]\n---\nMine.\n",
+        ),
+        (
+            ".armadai/automations/fmt.yaml",
+            "event: after-tool\nrun: mine\n",
+        ),
+        (
+            ".armadai/skills/notes/SKILL.md",
+            "---\nname: notes\ndescription: Mine\n---\nMine.\n",
+        ),
+    ] {
+        let path = env.root().join(p);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, c).unwrap();
+    }
+    let (ok, out, err) = env.init(&pack, &["--force"]);
+    assert!(ok, "{out}\n{err}");
+    assert!(
+        out.contains("1 agent(s), 0 skill(s), 1 flow(s), 0 automation(s)"),
+        "{out}"
+    );
+    assert!(out.contains("5 existing file(s) kept"), "{out}");
+    assert!(!err.contains("cargo fmt"), "{err}");
+    assert!(err.contains("skills/notes exists"), "{err}");
+    assert!(!env.root().join(".armadai/skills/notes/scripts").exists());
+}
+
+/// An install that passes the pack's own validation but breaks the project it
+/// lands in is undone: here the project's skill `notes` has no frontmatter, so the
+/// pack's `dev` agent would name a skill that does not load.
+#[test]
+fn an_install_introducing_an_error_is_rolled_back() {
+    let env = Env::new();
+    let pack = env.pack("demo", NATIVE);
+    for (p, c) in [
+        (".armadai/project.yaml", "schema_version: 1\n"),
+        (".armadai/skills/notes/SKILL.md", "no frontmatter\n"),
+    ] {
+        let path = env.root().join(p);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, c).unwrap();
+    }
+    let before = tree(&env.root());
+    let (ok, _, err) = env.init(&pack, &["--force"]);
+    assert!(!ok, "{err}");
+    assert!(
+        err.contains("(rolled back)") && err.contains("unknown skill `notes`"),
+        "{err}"
+    );
+    assert!(err.contains("would make the project invalid"), "{err}");
+    assert_eq!(tree(&env.root()), before);
 }

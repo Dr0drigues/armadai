@@ -27,9 +27,17 @@ fn listed(rel: &Path) -> bool {
     }
 }
 
-/// The files a native pack installs, as (path relative to `.armadai/`, bytes).
-pub fn files(pack_dir: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>)>> {
+/// A pack's files: those it installs, as (path relative to `.armadai/`, bytes), and
+/// those inside its folders the white list leaves out (top-level files such as
+/// `pack.yaml` or a README are expected and not listed).
+pub struct PackFiles {
+    pub files: Vec<(PathBuf, Vec<u8>)>,
+    pub ignored: Vec<PathBuf>,
+}
+
+pub fn files(pack_dir: &Path) -> anyhow::Result<PackFiles> {
     let mut out = Vec::new();
+    let mut ignored = Vec::new();
     let mut todo = vec![pack_dir.to_path_buf()];
     while let Some(dir) = todo.pop() {
         for e in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
@@ -46,11 +54,17 @@ pub fn files(pack_dir: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>)>> {
                 todo.push(path);
             } else if meta.is_file() && listed(&rel) {
                 out.push((rel, std::fs::read(&path)?));
+            } else if rel.components().count() > 1 {
+                ignored.push(rel);
             }
         }
     }
     out.sort();
-    Ok(out)
+    ignored.sort();
+    Ok(PackFiles {
+        files: out,
+        ignored,
+    })
 }
 
 /// The pack as a scratch project (`<tmp>/.armadai/`, the default `project.yaml`
@@ -136,7 +150,14 @@ impl Created {
 /// Install the native pack at `pack_dir` into `root/.armadai/`. Existing files are
 /// kept (one warning each); an existing `project.yaml` wins over the pack's.
 pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
-    let files = files(pack_dir)?;
+    let PackFiles { files, ignored } = files(pack_dir)?;
+    let w = crate::cli::style::warn();
+    for f in &ignored {
+        anstream::eprintln!(
+            "{w}  warn: ignored: {} (not part of a pack){w:#}",
+            f.display()
+        );
+    }
     let (tmp, ds) = stage(pack_dir, &files)?;
     if armadai_model::has_errors(&ds) {
         for d in &ds {
@@ -144,7 +165,6 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
         }
         bail!("pack '{name}' is invalid; nothing was written");
     }
-    let w = crate::cli::style::warn();
     let base = root.join(".armadai");
     let had_project = base.join("project.yaml").is_file();
     let key = |d: &armadai_model::Diagnostic| (d.code, d.file.clone());
@@ -155,6 +175,18 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
     };
 
     let mut created = Created::default();
+    let mut installed: Vec<&Path> = Vec::new();
+    let mut kept = 0;
+    let mut skills_kept = BTreeSet::new();
+    // the skill folders the project had before this install
+    let had_skill = |skill: &std::ffi::OsStr| {
+        std::fs::symlink_metadata(base.join("skills").join(skill)).is_ok()
+    };
+    let existing: BTreeSet<std::ffi::OsString> = (files.iter())
+        .filter_map(|(r, _)| r.starts_with("skills").then(|| r.iter().nth(1)).flatten())
+        .filter(|s| had_skill(s))
+        .map(|s| s.to_owned())
+        .collect();
     let result = (|| -> anyhow::Result<()> {
         for (rel, bytes) in &files {
             if rel == Path::new("project.yaml") && had_project {
@@ -162,13 +194,32 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
                     "{w}  warn: .armadai/project.yaml exists: the project.yaml of the pack is \
                      ignored (its targets, coordinator and policy are not applied){w:#}"
                 );
+                kept += 1;
+                continue;
+            }
+            // a skill is one folder: one the project has is never mixed with the pack's
+            if let Some(skill) = rel
+                .starts_with("skills")
+                .then(|| rel.iter().nth(1))
+                .flatten()
+                && existing.contains(skill)
+            {
+                if skills_kept.insert(skill.to_owned()) {
+                    anstream::eprintln!(
+                        "{w}  warn: skills/{} exists, kept (the pack's skill is not mixed in){w:#}",
+                        skill.to_string_lossy()
+                    );
+                }
+                kept += 1;
                 continue;
             }
             if std::fs::symlink_metadata(base.join(rel)).is_ok() {
                 anstream::eprintln!("{w}  warn: {} exists, kept{w:#}", rel.display());
+                kept += 1;
                 continue;
             }
             created.write(&base, rel, bytes)?;
+            installed.push(rel);
         }
         if !base.join("project.yaml").exists() {
             created.write(&base, Path::new("project.yaml"), DEFAULT_PROJECT.as_bytes())?;
@@ -194,7 +245,14 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
 
     // automations become hooks the target runs: never installed in silence
     if let Some(p) = armadai_model::load_project(tmp.path()).project {
-        for (id, a) in &p.automations {
+        let new = |id: &str| {
+            installed.contains(
+                &Path::new("automations")
+                    .join(format!("{id}.yaml"))
+                    .as_path(),
+            )
+        };
+        for (id, a) in p.automations.iter().filter(|(id, _)| new(id)) {
             let event = serde_yaml_ng::to_string(&a.event).unwrap_or_default();
             anstream::eprintln!(
                 "{w}  warn: automation {id} runs `{}` on {} (it becomes a hook of the target){w:#}",
@@ -204,9 +262,9 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
         }
     }
     let count = |dir: &str| {
-        (files.iter())
-            .filter(|(r, _)| r.starts_with(dir))
-            .filter(|(r, _)| dir != "skills" || r.ends_with("SKILL.md"))
+        (installed.iter())
+            .filter(|r| r.starts_with(dir))
+            .filter(|r| dir != "skills" || r.ends_with("SKILL.md"))
             .count()
     };
     let o = crate::cli::style::ok();
@@ -220,6 +278,9 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
         count("flows"),
         count("automations"),
     );
+    if kept > 0 {
+        anstream::println!("{m}  {kept} existing file(s) kept{m:#}");
+    }
     anstream::println!("{m}  Run `armadai link` to generate the target files.{m:#}");
     Ok(())
 }
