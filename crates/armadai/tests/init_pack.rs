@@ -586,3 +586,37 @@ fn a_legacy_extraction_does_not_break_init_pack() {
         .count();
     assert_eq!(count, 1);
 }
+
+/// A pack of the user's under an embedded name (no marker) is never touched: not by
+/// `config starters-dir list`, not by `init --pack`, which installs it (it masks the
+/// embedded pack, as `config starters-dir list` says).
+#[test]
+fn a_users_pack_with_an_embedded_name_is_never_rewritten() {
+    let env = Env::new();
+    let mine = env.dir.path().join("config/starters/fullstack");
+    for (p, c) in [
+        (
+            "pack.yaml",
+            "format: 1\nname: fullstack\ndescription: Mine\n",
+        ),
+        (
+            "agents/solo.md",
+            "---\ndescription: My only agent\n---\nSolo.\n",
+        ),
+    ] {
+        std::fs::create_dir_all(mine.join(p).parent().unwrap()).unwrap();
+        std::fs::write(mine.join(p), c).unwrap();
+    }
+    let before = tree(&mine);
+    let (ok, out, err) = env.run(&["config", "starters-dir", "list"]);
+    assert!(ok, "{out}\n{err}");
+    assert!(
+        format!("{out}{err}").contains("masks the embedded pack fullstack"),
+        "{out}\n{err}"
+    );
+    let (ok, out, err) = env.run(&["init", "--pack", "fullstack"]);
+    assert!(ok, "{out}\n{err}");
+    assert_eq!(tree(&mine), before, "the user's pack was written to");
+    assert!(env.root().join(".armadai/agents/solo.md").is_file());
+    assert!(!env.root().join(".armadai/agents/code-reviewer.md").exists());
+}

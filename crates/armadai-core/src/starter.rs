@@ -194,6 +194,18 @@ fn sync_extracted(dir: &Path, all: bool) {
     }
 }
 
+/// The user's folders, in the user starters folder, that carry an embedded pack's
+/// name: they mask that pack (`(name, folder)`).
+pub fn user_packs_masking_embedded() -> Vec<(String, PathBuf)> {
+    let user = user_starters_dir();
+    (EMBEDDED_STARTERS.dirs())
+        .filter(|d| d.get_file(d.path().join("pack.yaml")).is_some())
+        .filter_map(|d| d.path().file_name().and_then(|n| n.to_str()))
+        .map(|n| (n.to_string(), user.join(n)))
+        .filter(|(_, p)| super::embedded::owned_by_user(p))
+        .collect()
+}
+
 /// Discover pack directories under a fetched registry dir.
 ///
 /// Hybrid: an `armadai-starters.yaml` at the root RESTRICTS to its listed

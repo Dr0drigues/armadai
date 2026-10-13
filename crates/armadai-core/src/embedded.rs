@@ -47,21 +47,39 @@ pub(crate) fn managed(dest: &Path) -> bool {
         && marker_lines(dest).get(1).cloned() == name
 }
 
-/// Bring `dest` to the content of `dir`: nothing when its marker already says so
-/// (unless `force`); a managed or absent folder is replaced whole; any other folder
-/// only gets the embedded files written over. Returns whether anything was written.
-pub(crate) fn ensure(dir: &Dir<'_>, dest: &Path, force: bool) -> anyhow::Result<bool> {
-    // a link at the name (dangling or not) is replaced, never written through
-    if std::fs::symlink_metadata(dest).is_ok_and(|m| m.file_type().is_symlink()) {
-        std::fs::remove_file(dest)
-            .map_err(|e| anyhow::anyhow!("removing the link {}: {e}", dest.display()))?;
+/// Whether `dest` (present) belongs to the user: a symbolic link, no marker, or a
+/// marker that does not name it (a renamed copy). ArmadAI never writes, marks,
+/// replaces nor removes such a folder; it masks the embedded one of the same name.
+pub fn owned_by_user(dest: &Path) -> bool {
+    match std::fs::symlink_metadata(dest) {
+        Err(_) => false,
+        Ok(m) if m.file_type().is_symlink() => true,
+        Ok(_) => {
+            let lines = marker_lines(dest);
+            lines.len() != 1 && !managed(dest)
+        }
     }
-    let exists = std::fs::symlink_metadata(dest).is_ok();
-    if exists && !force && marker_lines(dest).first().map(String::as_str) == Some(&stamp(dir)) {
+}
+
+/// Bring `dest` to the content of `dir`, by the one ownership rule:
+/// - absent: extracted fresh;
+/// - ours (a two-line marker naming it): replaced whole when its stamp differs
+///   (or `force`);
+/// - a one-line marker (an older ArmadAI): moved aside once to
+///   `<name>.armadai-legacy-<secs>`, then extracted fresh;
+/// - anything else is the user's ([`owned_by_user`]): left as it is.
+///
+/// Returns whether anything was written.
+pub(crate) fn ensure(dir: &Dir<'_>, dest: &Path, force: bool) -> anyhow::Result<bool> {
+    if std::fs::symlink_metadata(dest).is_err() {
+        replace(dir, dest)?;
+        return Ok(true);
+    }
+    if owned_by_user(dest) {
         return Ok(false);
     }
     let lines = marker_lines(dest);
-    if exists && lines.len() == 1 {
+    if lines.len() == 1 {
         // extracted by a binary older than the named marker: ours, but holding
         // whatever it held (stale files, perhaps the user's): moved aside whole
         let secs = std::time::SystemTime::now()
@@ -84,16 +102,13 @@ pub(crate) fn ensure(dir: &Dir<'_>, dest: &Path, force: bool) -> anyhow::Result<
             aside.display()
         );
         replace(dir, dest)?;
-    } else if !exists || managed(dest) {
-        replace(dir, dest)?;
-    } else {
-        crate::skill::extract_embedded_dir(dir, dest)
-            .map_err(|e| anyhow::anyhow!("extracting into {}: {e:#}", dest.display()))?;
-        // a marker without a name: up to date, still not ours to remove
-        std::fs::write(dest.join(MARKER), format!("{}\n", stamp(dir)))
-            .map_err(|e| anyhow::anyhow!("writing {}: {e}", dest.join(MARKER).display()))?;
+        return Ok(true);
     }
-    Ok(true)
+    if force || lines.first().map(String::as_str) != Some(&stamp(dir)) {
+        replace(dir, dest)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Whether process `pid` still runs (never true for an absurd pid).
@@ -331,39 +346,33 @@ mod tests {
         assert!(dest.join("pack.yaml").is_file());
     }
 
-    /// A symbolic link at the name of an embedded folder, dangling or not, is
-    /// replaced by the extraction, never written through.
-    #[cfg(unix)]
-    #[test]
-    fn a_link_at_the_name_is_replaced_not_followed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let outside = tmp.path().join("outside");
-        std::fs::create_dir_all(&outside).unwrap();
-        for target in [tmp.path().join("nowhere"), outside.clone()] {
-            let dest = tmp.path().join("rust-dev");
-            let _ = std::fs::remove_file(&dest);
-            let _ = std::fs::remove_dir_all(&dest);
-            std::os::unix::fs::symlink(&target, &dest).unwrap();
-            ensure(pack("rust-dev"), &dest, false).unwrap();
-            let meta = std::fs::symlink_metadata(&dest).unwrap();
-            assert!(
-                meta.is_dir() && !meta.file_type().is_symlink(),
-                "{target:?}"
-            );
-            assert!(dest.join("pack.yaml").is_file());
-            assert_eq!(
-                std::fs::read_dir(&outside).unwrap().count(),
-                0,
-                "written through"
-            );
-            assert!(!tmp.path().join("nowhere").exists());
+    /// Every file under `dir` with its bytes, links as their target.
+    fn snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut todo = vec![dir.to_path_buf()];
+        while let Some(d) = todo.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                let rel = p.strip_prefix(dir).unwrap().to_string_lossy().into_owned();
+                let m = std::fs::symlink_metadata(&p).unwrap();
+                if m.file_type().is_symlink() {
+                    let t = std::fs::read_link(&p).unwrap();
+                    out.push((rel, t.to_string_lossy().as_bytes().to_vec()));
+                } else if m.is_dir() {
+                    todo.push(p);
+                } else {
+                    out.push((rel, std::fs::read(&p).unwrap()));
+                }
+            }
         }
+        out.sort();
+        out
     }
 
-    /// No marker, or a marker naming another folder (a renamed copy): the user's
-    /// files stay, nothing is moved.
+    /// A folder that is not ours (no marker, a marker naming another folder) is the
+    /// user's: never written, never marked, never removed; it masks the embedded one.
     #[test]
-    fn an_unmanaged_folder_keeps_the_users_files() {
+    fn a_folder_that_is_not_ours_is_never_touched() {
         for marker in [None, Some("0.0.1 x\nfullstack\n")] {
             let tmp = tempfile::tempdir().unwrap();
             let dest = tmp.path().join("rust-dev");
@@ -372,20 +381,34 @@ mod tests {
             if let Some(m) = marker {
                 std::fs::write(dest.join(MARKER), m).unwrap();
             }
-            assert!(
-                ensure(pack("rust-dev"), &dest, false).unwrap(),
-                "{marker:?}"
-            );
-            assert_eq!(
-                std::fs::read_to_string(dest.join("my-agent.md")).unwrap(),
-                "mine"
-            );
-            assert!(dest.join("pack.yaml").is_file(), "{marker:?}");
-            assert!(!managed(&dest), "{marker:?}: still not ours");
+            let before = snapshot(tmp.path());
             assert!(
                 !ensure(pack("rust-dev"), &dest, false).unwrap(),
-                "{marker:?}: up to date"
+                "{marker:?}"
             );
+            assert!(
+                !ensure(pack("rust-dev"), &dest, true).unwrap(),
+                "{marker:?} forced"
+            );
+            assert_eq!(snapshot(tmp.path()), before, "{marker:?}");
+        }
+    }
+
+    /// A symbolic link at the name, dangling or not, is the user's too: kept as is,
+    /// never followed.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_the_name_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        for target in [tmp.path().join("nowhere"), outside.clone()] {
+            let dest = tmp.path().join("rust-dev");
+            let _ = std::fs::remove_file(&dest);
+            std::os::unix::fs::symlink(&target, &dest).unwrap();
+            let before = snapshot(tmp.path());
+            assert!(!ensure(pack("rust-dev"), &dest, false).unwrap());
+            assert_eq!(snapshot(tmp.path()), before, "{target:?}");
         }
     }
 }

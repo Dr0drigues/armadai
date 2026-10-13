@@ -86,33 +86,28 @@ exist and parse).
 
 ## Embedded Versioning
 
-The packs embedded in the binary are extracted to `~/.config/armadai/starters/<pack>/` on first
-use, and the built-in skills to `~/.config/armadai/skills/<skill>/` by `armadai init`. Each
-extracted folder holds a `.armadai-version` marker: the binary version, a fingerprint of the
-embedded content, and the name of the folder ArmadAI created. What is guaranteed:
+The packs embedded in the binary are extracted to `~/.config/armadai/starters/<pack>/`, and the
+built-in skills to `~/.config/armadai/skills/<skill>/` by `armadai init`. Each extracted folder
+holds a `.armadai-version` marker: the binary version and a fingerprint of the embedded content
+on a first line, and the name of the folder on a second. One rule decides who owns a folder of an
+embedded name:
 
-- A folder is **replaced whole** (extracted next to it, then swapped in by renames, so it is never
-  missing) only when its marker exists and names that very folder: a folder ArmadAI created and
-  still recognizes. Files you added there are then lost: put your own packs in another starter
-  directory (below), under another name.
-- Any other folder of the same name (no marker, a marker from an older binary, or a marker that
-  names another folder, as in a renamed copy) only gets the embedded files written over it;
-  **nothing is removed** from it.
-- A built-in skill a newer binary no longer ships is removed only if ArmadAI recorded it as
-  extracted (`~/.config/armadai/skills/.armadai-extracted`, rewritten at each `armadai init`)
-  **and** its folder's marker still names it. A folder you made, or a copy you renamed, is never
-  removed. (A skill extracted before this registry existed, such as an old
-  `armadai-prompt-authoring`, is therefore left in place: remove it by hand.)
-- A folder extracted by a binary older than the named marker (its marker is a single line)
-  is **moved aside**, whole, to `<name>.armadai-legacy-<seconds>` next to it, then the current
-  content is extracted fresh; one line says where it went. Nothing is lost (your own files, if
-  any, are in the moved folder) and nothing stale stays: `init --pack` installs the current pack
-  even if an old extraction held agents the pack no longer ships. Such a folder is never offered
-  as a pack nor loaded as a skill; delete it by hand once you have checked it.
-- The packs already extracted in `~/.config/armadai/starters/` are brought up to date on every
-  pack lookup, so an old extraction there never shadows the embedded pack.
-- Re-extraction happens when the marker differs from the binary: another version, or a
-  development build with other content. The marker is never copied into a project.
+- **Absent**: extracted fresh.
+- **Ours** (a two-line marker naming that very folder): replaced whole when the binary's content
+  differs (extracted next to it, then swapped in by renames, so it is never missing). Do not keep
+  files of your own there.
+- **Extracted by an older ArmadAI** (a one-line marker): moved aside once, whole, to
+  `<name>.armadai-legacy-<seconds>` next to it, then extracted fresh; one line says where. Nothing
+  is lost and nothing stale stays. Such a folder is never offered as a pack nor loaded as a skill;
+  delete it by hand once checked.
+- **Yours** (no marker, a symbolic link, or a marker naming another folder, as in a renamed copy):
+  ArmadAI never writes, marks, replaces nor removes it. It **masks** the embedded pack or skill of
+  the same name: `init --pack <name>` installs your folder, and `armadai config starters-dir list`
+  says which embedded packs are masked. Rename or remove it to get the embedded one back.
+
+A built-in skill a newer binary no longer ships is removed only if ArmadAI recorded it as
+extracted (`~/.config/armadai/skills/.armadai-extracted`) **and** it is still ours by the rule
+above. The marker is never copied into a project.
 
 ## Creating Custom Packs
 
