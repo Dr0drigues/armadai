@@ -356,7 +356,8 @@ const SETTINGS_GONE: &str = "removed: link created it and no hook is left";
 /// The `--dry-run` side of `write_files`' decision: the files a real run would
 /// leave in place (they exist with other bytes, are not link's previous output,
 /// and `--force` is not given), reported exactly as the real run reports them.
-fn simulate_skips(root: &Path, p: &mut Prepared, force: bool) {
+/// Returns them, so the dry run never lists them among the files it would generate.
+fn simulate_skips(root: &Path, p: &mut Prepared, force: bool) -> BTreeSet<PathBuf> {
     let previous: std::collections::BTreeMap<PathBuf, String> =
         (p.previous.iter().flat_map(|t| &t.entries))
             .filter(|e| e.outcome == Outcome::Created)
@@ -369,9 +370,10 @@ fn simulate_skips(root: &Path, p: &mut Prepared, force: bool) {
         })
         .map(|(path, _, _)| path)
         .collect();
-    for path in skipped {
-        not_written(p, root, &path);
+    for path in &skipped {
+        not_written(p, root, path);
     }
+    skipped.into_iter().collect()
 }
 
 /// The bytes of `path`, `None` when absent: to tell a real patch from a no-op.
@@ -525,10 +527,11 @@ pub async fn execute(
 
     let mut lines = Vec::new();
     if dry_run {
+        let mut skips = Vec::new();
         for p in &mut prepared {
             let produced = p.all_produced.clone();
             remove_stale(&root, p, &produced, true);
-            simulate_skips(&root, p, force);
+            skips.push(simulate_skips(&root, p, force));
             if let Some((rel, hooks, keys)) = &p.settings
                 && hooks.is_empty()
                 && keys.is_empty()
@@ -541,13 +544,16 @@ pub async fn execute(
                     .push(&target, element, Status::Compiled, Some(SETTINGS_GONE));
             }
         }
-        for p in &prepared {
+        for (p, skipped) in prepared.iter().zip(&skips) {
             lines.push(format!(
                 "Dry run — files that would be generated for '{}':",
                 p.target
             ));
-            for a in &p.artifacts {
-                lines.push(format!("  {}", root.join(p.rel(a)).display()));
+            let (kept, written): (Vec<PathBuf>, Vec<PathBuf>) = (p.artifacts.iter())
+                .map(|a| root.join(p.rel(a)))
+                .partition(|path| skipped.contains(path));
+            for path in &written {
+                lines.push(format!("  {}", path.display()));
             }
             for (rel, _) in &p.blocks {
                 lines.push(format!("  {} (ArmadAI block)", root.join(rel).display()));
@@ -556,6 +562,16 @@ pub async fn execute(
                 && (!hooks.is_empty() || !keys.is_empty())
             {
                 lines.push(format!("  {} (hooks merged)", root.join(rel).display()));
+            }
+            if !kept.is_empty() {
+                lines.push(format!(
+                    "Files that would be skipped for '{}' (left in place, see the report; \
+                     use --force):",
+                    p.target
+                ));
+                for path in &kept {
+                    lines.push(format!("  {}", path.display()));
+                }
             }
         }
     } else {
