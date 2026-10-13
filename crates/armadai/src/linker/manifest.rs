@@ -1244,6 +1244,29 @@ mod tests {
         assert_eq!(owned.keys["anything"], serde_json::json!([1, 2]));
     }
 
+    /// Strings the old writer left unquoted because its reader kept them as text
+    /// (`1_000`, `0X1F`, `tRuE`) read back as the same strings, so unlink still
+    /// recognises the settings keys link wrote.
+    #[test]
+    fn text_that_looks_numeric_in_an_older_manifest_reads_back_as_text() {
+        use crate::compile::patch::PatchKind;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            manifest_path(dir.path()),
+            include_str!("../../tests/fixtures/link-manifest/text-numbers-by-70bfcd1.yaml"),
+        )
+        .unwrap();
+        let m = read(dir.path()).expect("an older manifest must still be read");
+        let PatchKind::SettingsHooks(owned) = &m.targets["claude"].patched[0].kind else {
+            panic!("expected the settings hooks");
+        };
+        assert_eq!(
+            owned.keys["ids"],
+            serde_json::json!(["1_000", "0123", "0X1F", "tRuE", 7])
+        );
+    }
+
     #[test]
     fn patched_files_round_trip_through_the_manifest() {
         use crate::compile::claude_settings::{HookEntry, Owned};

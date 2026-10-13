@@ -270,10 +270,8 @@ impl Ctx {
             Err(e) => e,
         };
         let loc = err.location();
-        // the position lives in the line/column fields; the advice on saphyr's options is not
-        // for the user
-        let message = strip_positions(&err.to_string())
-            .replace(", set DuplicateKeyPolicy in Options if acceptable", "");
+        // the position lives in the line/column fields
+        let message = strip_positions(&err.to_string());
         self.diagnostics.push(Diagnostic {
             severity: Severity::Error,
             code: "invalid-yaml",

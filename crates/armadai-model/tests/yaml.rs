@@ -57,7 +57,7 @@ fn native_numbers_are_written_as_plain_yaml_numbers() {
     let out = to_string(&m).unwrap();
     assert_eq!(
         out,
-        "schema_version: 1\nnative:\n  claude:\n    zeta: 1\n    big: 18446744073709551615\n    neg: -9223372036854775808\n    huge: 1.2345678901234568e+29\n    f: 0.1\n    list:\n    - 1\n    - two\n    - 3.5\n"
+        "schema_version: 1\nnative:\n  claude:\n    zeta: 1\n    big: 18446744073709551615\n    neg: -9223372036854775808\n    huge: \"123456789012345678901234567890\"\n    f: 0.1\n    list:\n    - 1\n    - two\n    - 3.5\n"
     );
     assert_eq!(from_str::<Manifest>(&out).unwrap().native, m.native);
 }
@@ -69,4 +69,86 @@ fn native_keeps_the_author_key_order() {
     let keys: Vec<&String> = m.native["claude"].as_object().unwrap().keys().collect();
     assert_eq!(keys, ["z", "a"]);
     assert_eq!(m.native["claude"], NativeValue(json!({"z": 1, "a": 2})));
+}
+
+/// Plain scalars the serde_yaml_ng reader kept as text stay text (measured over two
+/// million generated forms against it); canonical numbers and booleans keep their type.
+#[test]
+fn numeric_looking_text_the_old_reader_kept_stays_text() {
+    for s in [
+        "0123",
+        "-017",
+        "+08",
+        "00",
+        "1_000",
+        "-1_0",
+        "1_0.5",
+        "0X1F",
+        "0x1_F",
+        "0b1_0",
+        "0o1_7",
+        "0O17",
+        "0B10",
+        "tRuE",
+        "fAlSe",
+        "nUlL",
+        "1e400",
+        "-1e400",
+        "123456789012345678901234567890",
+        "18446744073709551616",
+        "-9223372036854775809",
+    ] {
+        let m: BTreeMap<String, Value> = from_str(&format!("k: {s}\n")).unwrap();
+        assert_eq!(m["k"], json!(s), "{s}");
+        let m: BTreeMap<String, Value> = from_str(&format!("k: [{s}, x]\n")).unwrap();
+        assert_eq!(m["k"], json!([s, "x"]), "flow {s}");
+        let m: BTreeMap<String, Value> = from_str(&format!("{s}: v\n")).unwrap();
+        assert!(m.contains_key(s), "key {s}: {m:?}");
+    }
+    let m: BTreeMap<String, Value> =
+        from_str("a: 0x1F\nb: 0o17\nc: 1000\nd: -10\ne: 1.5\nf: true\ng: null\nh: 0b10\ni: 1e3\n")
+            .unwrap();
+    assert_eq!(
+        Value::from_iter(m),
+        json!({"a": 31, "b": 15, "c": 1000, "d": -10, "e": 1.5, "f": true, "g": null, "h": 2, "i": 1000.0})
+    );
+}
+
+#[test]
+fn kept_text_survives_anchors_and_native_round_trips() {
+    let m: BTreeMap<String, Value> = from_str("a: &x 0123\nb: *x\n").unwrap();
+    assert_eq!(Value::from_iter(m), json!({"a": "0123", "b": "0123"}));
+    let src = "schema_version: 1\nnative:\n  claude:\n    ticket: 0123\n    n: 1_000\n";
+    let m: Manifest = from_str(src).unwrap();
+    assert_eq!(
+        m.native["claude"],
+        NativeValue(json!({"ticket": "0123", "n": "1_000"}))
+    );
+    let out = to_string(&m).unwrap();
+    assert_eq!(from_str::<Manifest>(&out).unwrap(), m);
+}
+
+#[test]
+fn kept_text_is_not_a_number_for_a_typed_field_and_keeps_its_position() {
+    let e = from_str::<Manifest>("schema_version: 01\n").unwrap_err();
+    assert_eq!(
+        e.location().map(|l| (l.line(), l.column())),
+        Some((1, 17)),
+        "{e}"
+    );
+}
+
+/// saphyr's advice to the programmer (`DuplicateKeyPolicy`, `Option<String>`) is not shown.
+#[test]
+fn messages_carry_no_advice_on_saphyr_or_rust_types() {
+    let e = from_str::<Manifest>("schema_version: 1\nname: a\nname: b\n").unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "duplicate mapping key: name at line 3, column 1"
+    );
+    let e = from_str::<armadai_model::AgentFront>("description: null\n").unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "cannot deserialize null into string at line 1, column 14"
+    );
 }

@@ -400,6 +400,25 @@ agents:
         }
     }
 
+    /// Variables are text: an unquoted `0123` or `1_000` keeps its spelling, as it did
+    /// with the previous YAML reader.
+    #[test]
+    fn numeric_looking_variables_keep_their_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("agents.yaml");
+        std::fs::write(
+            &p,
+            "agents:\n  - name: x\n    prompt:\n      - review: { ticket: 0123, n: 1_000 }\n",
+        )
+        .unwrap();
+        let d = load(&p).unwrap();
+        let PromptStep::Parameterised { vars, .. } = &d.agents[0].prompt[0] else {
+            panic!("expected a parameterised step");
+        };
+        assert_eq!(vars["ticket"], "0123");
+        assert_eq!(vars["n"], "1_000");
+    }
+
     #[test]
     fn a_step_with_several_keys_is_rejected() {
         // `{ a: {...}, b: {...} }` is ambiguous: which fragment is it?

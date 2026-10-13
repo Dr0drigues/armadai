@@ -1,0 +1,26 @@
+version: 1
+targets:
+  claude:
+    linked_at: 2026-10-13T13:09:51Z
+    root: .claude
+    created_dirs:
+    - .claude/agents
+    entries:
+    - path: .claude/agents/a.md
+      produced_by:
+        kind: agent
+        name: a
+      outcome: created
+      digest: sha256:a5e52c74cb514555161dcc031234182e1e537147d09d88dd61e1f2a8aacc5e4f
+    patched:
+    - path: .claude/settings.json
+      kind:
+        type: settings-hooks
+        keys:
+          ids:
+          - 1_000
+          - '0123'
+          - 0X1F
+          - tRuE
+          - $serde_json::private::Number: '7'
+      created: true
