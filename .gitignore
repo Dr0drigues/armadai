@@ -33,9 +33,9 @@ config/
 .claude/*
 !.claude/CLAUDE.md
 !.claude/agents/
+!.claude/settings.json
 
-# ArmadAI project-local config
-.armadai/
+# ArmadAI project: .armadai/ is versioned (link state is ignored by .armadai/.gitignore)
 
 # Session state (not shipped)
 docs/SESSION-STATE.md
