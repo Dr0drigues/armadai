@@ -1,4 +1,5 @@
 mod config;
+mod graph;
 pub mod init;
 mod inspect;
 mod link;
@@ -32,6 +33,7 @@ use clap::{CommandFactory, Parser, Subcommand};
         armadai init --project\n  \
         armadai new my-agent --template dev-review --stack rust\n  \
         armadai list --tags dev\n  \
+        armadai graph\n  \
         armadai link --target claude\n\n\
         Documentation: https://github.com/Dr0drigues/armadai"
 )]
@@ -90,6 +92,26 @@ pub enum Command {
     Inspect {
         /// Agent id (its file name under .armadai/agents/)
         agent: String,
+    },
+    /// Print the graph of a flow (or of every flow) as Mermaid
+    #[command(
+        long_about = "Print the graph of a flow as Mermaid (flowchart TD) on stdout, and \
+            nothing else: redirect it to a .mmd file or paste it into a Markdown ```mermaid \
+            block.\n\n\
+            Without a flow, every flow of the project is printed, one diagram each, opened by \
+            a `%% flow: <id>` comment and separated by a blank line (Mermaid renders one \
+            diagram per document: take them one at a time). Conditional links are labelled \
+            with their state; failure paths (`when: failed`, `on_failure`) are dotted.",
+        after_help = "Examples:\n  \
+            armadai graph review > review.mmd\n  \
+            armadai graph"
+    )]
+    Graph {
+        /// Flow id (its file name under .armadai/flows/); every flow when omitted
+        flow: Option<String>,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = graph::GraphFormat::Mermaid)]
+        format: graph::GraphFormat,
     },
     /// Validate the project (.armadai/) or a starter pack
     #[command(
@@ -367,6 +389,7 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
         } => new::execute(name, template, stack, description, interactive).await,
         Command::List { tags } => list::execute(tags).await,
         Command::Inspect { agent } => inspect::execute(agent).await,
+        Command::Graph { flow, format } => graph::execute(flow, format),
         Command::Validate { path, json } => validate::execute(path, json).await,
         Command::Migrate {
             path,
@@ -494,6 +517,7 @@ mod tests {
             "new",
             "list",
             "inspect",
+            "graph",
             "validate",
             "config",
             "models",
