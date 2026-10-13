@@ -179,16 +179,32 @@ fn skipped(path: &Path) -> bool {
 /// extraction is moved aside first): a stale copy in the user starters folder must
 /// never shadow the embedded pack, even when the embedded set is read from elsewhere.
 fn sync_extracted(dir: &Path, all: bool) {
-    let r = super::embedded::with_lock(dir, || {
-        sync_extracted_locked(dir, all);
-        Ok(())
-    });
+    // once per folder and process: one lookup can read the starter folders many times
+    static DONE: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    {
+        let mut done = DONE.lock().unwrap_or_else(|e| e.into_inner());
+        if done.iter().any(|d| d == dir) {
+            return;
+        }
+        done.push(dir.to_path_buf());
+    }
+    let r = super::embedded::with_lock(dir, || sync_extracted_locked(dir, all));
     if let Err(e) = r {
-        tracing::warn!("{e:#}");
+        tracing::debug!("{e:#}");
+        let text = format!("{e:#}");
+        if text.contains("Permission denied") || text.contains("Read-only") {
+            eprintln!(
+                "cannot refresh the embedded packs (read-only config); using the previous \
+                 extraction"
+            );
+        } else {
+            eprintln!("cannot refresh the embedded packs ({text}); using the previous extraction");
+        }
     }
 }
 
-fn sync_extracted_locked(dir: &Path, all: bool) {
+fn sync_extracted_locked(dir: &Path, all: bool) -> anyhow::Result<()> {
+    let mut first = None;
     for pack in EMBEDDED_STARTERS.dirs() {
         if pack.get_file(pack.path().join("pack.yaml")).is_some()
             && let Some(name) = pack.path().file_name().and_then(|n| n.to_str())
@@ -198,10 +214,11 @@ fn sync_extracted_locked(dir: &Path, all: bool) {
                 continue;
             }
             if let Err(e) = super::embedded::ensure(pack, &dest, false) {
-                tracing::warn!("Failed to extract embedded starter '{}': {:?}", name, e);
+                first.get_or_insert(e);
             }
         }
     }
+    first.map_or(Ok(()), Err)
 }
 
 /// The user's folders, in the user starters folder, that carry an embedded pack's

@@ -620,3 +620,31 @@ fn a_users_pack_with_an_embedded_name_is_never_rewritten() {
     assert!(env.root().join(".armadai/agents/solo.md").is_file());
     assert!(!env.root().join(".armadai/agents/code-reviewer.md").exists());
 }
+
+/// A configuration folder ArmadAI cannot write: the stale extraction is not used in
+/// silence, and the warning comes once per command.
+#[cfg(unix)]
+#[test]
+fn a_read_only_config_says_once_that_packs_are_not_refreshed() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let starters = env.dir.path().join("config/starters");
+    let old = starters.join("fullstack");
+    for (p, c) in [
+        (".armadai-version", "1.0.0-rc.2"),
+        ("pack.yaml", "format: 1\nname: fullstack\ndescription: d\n"),
+        ("agents/gemini-reviewer.md", "# Gemini Reviewer\n"),
+    ] {
+        std::fs::create_dir_all(old.join(p).parent().unwrap()).unwrap();
+        std::fs::write(old.join(p), c).unwrap();
+    }
+    std::fs::set_permissions(&starters, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let (_, _, err) = env.run(&["init", "--pack", "fullstack"]);
+    // an unknown pack reads the starter folders twice (lookup, then the list)
+    let (_, _, err2) = env.run(&["init", "--pack", "no-such-pack"]);
+    std::fs::set_permissions(&starters, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let warning =
+        "cannot refresh the embedded packs (read-only config); using the previous extraction";
+    assert_eq!(err.matches(warning).count(), 1, "{err}");
+    assert_eq!(err2.matches(warning).count(), 1, "{err2}");
+}
