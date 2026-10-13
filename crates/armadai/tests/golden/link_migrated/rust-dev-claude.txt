@@ -137,15 +137,9 @@ description: Rust coding conventions and best practices
 
 === report ===
 claude: agent code-reviewer: compiled
-claude: agent code-reviewer tags: not-compiled (informational, no Claude Code field)
-claude: agent code-reviewer temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent code-reviewer title: not-compiled (Claude Code names a subagent by its id)
 claude: agent debug: compiled
-claude: agent debug tags: not-compiled (informational, no Claude Code field)
-claude: agent debug temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent debug title: not-compiled (Claude Code names a subagent by its id)
 claude: agent test-writer: compiled
-claude: agent test-writer tags: not-compiled (informational, no Claude Code field)
-claude: agent test-writer temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent test-writer title: not-compiled (Claude Code names a subagent by its id)
+claude: agents tags: not-compiled (informational, no Claude Code field; 3 agents: code-reviewer, debug, test-writer)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 3 agents: code-reviewer, debug, test-writer)
+claude: agents title: not-compiled (Claude Code names a subagent by its id; 3 agents: code-reviewer, debug, test-writer)
 claude: skill rust-conventions: compiled

@@ -34,8 +34,8 @@ impl Compiler for ClaudeCompiler {
         let coordinator = project.manifest.coordinator.as_deref();
         let strict = project.manifest.policy.delegation == Delegation::Strict;
 
+        informational(&mut plan.report, project);
         for (id, agent) in &project.agents {
-            informational(&mut plan.report, id, &agent.front);
             if Some(id.as_str()) == coordinator {
                 coordinator_lines(&mut plan.report, id, &agent.front);
                 continue;
@@ -217,30 +217,42 @@ fn cap_str(c: Cap) -> &'static str {
     }
 }
 
-/// Lines for fields Claude Code subagents have no place for.
-fn informational(r: &mut Report, id: &str, f: &AgentFront) {
-    if f.temperature.is_some() {
-        r.push(
-            T,
-            format!("agent {id} temperature"),
-            Status::NotCompiled,
-            Some("no equivalent in Claude Code subagents"),
+/// Lines for fields Claude Code subagents have no place for: one per field, naming
+/// every agent that sets it (one line per agent was noise in every report).
+fn informational(r: &mut Report, project: &Project) {
+    type IsSet = fn(&AgentFront) -> bool;
+    let fields: [(&str, &str, IsSet); 3] = [
+        (
+            "temperature",
+            "no equivalent in Claude Code subagents",
+            |f| f.temperature.is_some(),
+        ),
+        ("tags", "informational, no Claude Code field", |f| {
+            !f.tags.is_empty()
+        }),
+        ("title", "Claude Code names a subagent by its id", |f| {
+            f.title.is_some()
+        }),
+    ];
+    for (field, why, set) in fields {
+        let ids: Vec<&str> = (project.agents.iter())
+            .filter(|(_, a)| set(&a.front))
+            .map(|(id, _)| id.as_str())
+            .collect();
+        if ids.is_empty() {
+            continue;
+        }
+        let n = ids.len();
+        let reason = format!(
+            "{why}; {n} agent{}: {}",
+            if n == 1 { "" } else { "s" },
+            ids.join(", ")
         );
-    }
-    if !f.tags.is_empty() {
         r.push(
             T,
-            format!("agent {id} tags"),
+            format!("agents {field}"),
             Status::NotCompiled,
-            Some("informational, no Claude Code field"),
-        );
-    }
-    if f.title.is_some() {
-        r.push(
-            T,
-            format!("agent {id} title"),
-            Status::NotCompiled,
-            Some("Claude Code names a subagent by its id"),
+            Some(&reason),
         );
     }
 }
@@ -608,9 +620,43 @@ mod tests {
             serde_yaml_ng::from_str::<serde_yaml_ng::Value>("[lint]").unwrap()
         );
         assert_eq!(line(&plan, "agent dev skills").status, Status::Compiled);
-        for e in ["agent dev temperature", "agent dev tags", "agent dev title"] {
+        for e in ["agents temperature", "agents tags", "agents title"] {
             assert_eq!(line(&plan, e).status, Status::NotCompiled, "{e}");
         }
+    }
+
+    /// One line per informational field, for every agent that sets it.
+    #[test]
+    fn informational_fields_are_one_line_each() {
+        let plan = compile(&[
+            M,
+            (
+                ".armadai/agents/dev.md",
+                b"---\ndescription: d\ntemperature: 0.2\ntags: [x]\n---\nB\n",
+            ),
+            (
+                ".armadai/agents/qa.md",
+                b"---\ndescription: d\ntemperature: 0.3\n---\nB\n",
+            ),
+        ])
+        .unwrap();
+        let t = line(&plan, "agents temperature");
+        assert_eq!(
+            t.reason.as_deref(),
+            Some("no equivalent in Claude Code subagents; 2 agents: dev, qa")
+        );
+        assert_eq!(
+            line(&plan, "agents tags").reason.as_deref(),
+            Some("informational, no Claude Code field; 1 agent: dev")
+        );
+        assert_eq!(
+            plan.report
+                .lines
+                .iter()
+                .filter(|l| l.element.ends_with("temperature"))
+                .count(),
+            1
+        );
     }
 
     #[test]

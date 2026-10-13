@@ -11,15 +11,11 @@ $ armadai link --target claude
 Conformance report:
 claude: agent code-reviewer: compiled
 claude: agent code-reviewer skills: compiled (preloaded through the subagent `skills` field)
-claude: agent code-reviewer tags: not-compiled (informational, no Claude Code field)
-claude: agent code-reviewer temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent debug: compiled
-claude: agent debug tags: not-compiled (informational, no Claude Code field)
-claude: agent debug temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent test-writer: compiled
 claude: agent test-writer skills: compiled (preloaded through the subagent `skills` field)
-claude: agent test-writer tags: not-compiled (informational, no Claude Code field)
-claude: agent test-writer temperature: not-compiled (no equivalent in Claude Code subagents)
+claude: agents tags: not-compiled (informational, no Claude Code field; 3 agents: code-reviewer, debug, test-writer)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 3 agents: code-reviewer, debug, test-writer)
 claude: skill rust-conventions: compiled
 
 === .claude/agents/code-reviewer.md

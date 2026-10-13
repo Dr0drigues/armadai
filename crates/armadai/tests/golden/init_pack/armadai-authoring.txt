@@ -15,33 +15,21 @@ $ armadai link --target claude
 Conformance report:
 claude: agent agent-builder: compiled
 claude: agent agent-builder skills: compiled (preloaded through the subagent `skills` field)
-claude: agent agent-builder tags: not-compiled (informational, no Claude Code field)
-claude: agent agent-builder temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent authoring-architect: compiled
 claude: agent authoring-architect skills: compiled (preloaded through the subagent `skills` field)
-claude: agent authoring-architect tags: not-compiled (informational, no Claude Code field)
-claude: agent authoring-architect temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent authoring-lead: compiled (coordinator, rendered into CLAUDE.md)
 claude: agent authoring-lead skills: approximated (skills are discovered project-wide from .claude/skills; the main session cannot preload them)
-claude: agent authoring-lead tags: not-compiled (informational, no Claude Code field)
-claude: agent authoring-lead temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent authoring-lead tier: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
 claude: agent authoring-reviewer: compiled
 claude: agent authoring-reviewer skills: compiled (preloaded through the subagent `skills` field)
-claude: agent authoring-reviewer tags: not-compiled (informational, no Claude Code field)
-claude: agent authoring-reviewer temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent authoring-tester: compiled
 claude: agent authoring-tester skills: compiled (preloaded through the subagent `skills` field)
-claude: agent authoring-tester tags: not-compiled (informational, no Claude Code field)
-claude: agent authoring-tester temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent skill-builder: compiled
 claude: agent skill-builder skills: compiled (preloaded through the subagent `skills` field)
-claude: agent skill-builder tags: not-compiled (informational, no Claude Code field)
-claude: agent skill-builder temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent starter-builder: compiled
 claude: agent starter-builder skills: compiled (preloaded through the subagent `skills` field)
-claude: agent starter-builder tags: not-compiled (informational, no Claude Code field)
-claude: agent starter-builder temperature: not-compiled (no equivalent in Claude Code subagents)
+claude: agents tags: not-compiled (informational, no Claude Code field; 7 agents: agent-builder, authoring-architect, authoring-lead, authoring-reviewer, authoring-tester, skill-builder, starter-builder)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 7 agents: agent-builder, authoring-architect, authoring-lead, authoring-reviewer, authoring-tester, skill-builder, starter-builder)
 claude: flow authoring: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: flow pack: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: flow pack step review: approximated (states and on_failure rendered as guidance)

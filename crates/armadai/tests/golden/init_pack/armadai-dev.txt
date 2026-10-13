@@ -14,28 +14,19 @@ $ armadai link --target claude
 Conformance report:
 claude: agent adapter-specialist: compiled
 claude: agent adapter-specialist skills: compiled (preloaded through the subagent `skills` field)
-claude: agent adapter-specialist tags: not-compiled (informational, no Claude Code field)
-claude: agent adapter-specialist temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent cli-specialist: compiled
 claude: agent cli-specialist skills: compiled (preloaded through the subagent `skills` field)
-claude: agent cli-specialist tags: not-compiled (informational, no Claude Code field)
-claude: agent cli-specialist temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent dev-lead: compiled (coordinator, rendered into CLAUDE.md)
 claude: agent dev-lead skills: approximated (skills are discovered project-wide from .claude/skills; the main session cannot preload them)
-claude: agent dev-lead tags: not-compiled (informational, no Claude Code field)
 claude: agent dev-lead tier: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
 claude: agent qa-specialist: compiled
 claude: agent qa-specialist skills: compiled (preloaded through the subagent `skills` field)
-claude: agent qa-specialist tags: not-compiled (informational, no Claude Code field)
-claude: agent qa-specialist temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent release-manager: compiled
 claude: agent release-manager skills: compiled (preloaded through the subagent `skills` field)
-claude: agent release-manager tags: not-compiled (informational, no Claude Code field)
-claude: agent release-manager temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent schema-specialist: compiled
 claude: agent schema-specialist skills: compiled (preloaded through the subagent `skills` field)
-claude: agent schema-specialist tags: not-compiled (informational, no Claude Code field)
-claude: agent schema-specialist temperature: not-compiled (no equivalent in Claude Code subagents)
+claude: agents tags: not-compiled (informational, no Claude Code field; 6 agents: adapter-specialist, cli-specialist, dev-lead, qa-specialist, release-manager, schema-specialist)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: adapter-specialist, cli-specialist, qa-specialist, release-manager, schema-specialist)
 claude: flow delivery: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: flow release: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: flow release step qa: approximated (states and on_failure rendered as guidance)

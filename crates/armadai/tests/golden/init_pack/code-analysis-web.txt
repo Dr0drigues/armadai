@@ -13,25 +13,17 @@ $ armadai link --target claude
 Conformance report:
 claude: agent lead-analyst: compiled (coordinator, rendered into CLAUDE.md)
 claude: agent lead-analyst skills: approximated (skills are discovered project-wide from .claude/skills; the main session cannot preload them)
-claude: agent lead-analyst tags: not-compiled (informational, no Claude Code field)
-claude: agent lead-analyst temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent lead-analyst tier: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
 claude: agent web-doc-writer: compiled
 claude: agent web-doc-writer skills: compiled (preloaded through the subagent `skills` field)
-claude: agent web-doc-writer tags: not-compiled (informational, no Claude Code field)
-claude: agent web-doc-writer temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent web-reviewer: compiled
 claude: agent web-reviewer skills: compiled (preloaded through the subagent `skills` field)
-claude: agent web-reviewer tags: not-compiled (informational, no Claude Code field)
-claude: agent web-reviewer temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent web-security: compiled
 claude: agent web-security skills: compiled (preloaded through the subagent `skills` field)
-claude: agent web-security tags: not-compiled (informational, no Claude Code field)
-claude: agent web-security temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent web-test-analyzer: compiled
 claude: agent web-test-analyzer skills: compiled (preloaded through the subagent `skills` field)
-claude: agent web-test-analyzer tags: not-compiled (informational, no Claude Code field)
-claude: agent web-test-analyzer temperature: not-compiled (no equivalent in Claude Code subagents)
+claude: agents tags: not-compiled (informational, no Claude Code field; 5 agents: lead-analyst, web-doc-writer, web-reviewer, web-security, web-test-analyzer)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: lead-analyst, web-doc-writer, web-reviewer, web-security, web-test-analyzer)
 claude: flow analysis: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: skill analysis-standards: compiled
 

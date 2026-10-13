@@ -9,14 +9,10 @@ $ armadai link --target claude
 
 Conformance report:
 claude: agent code-reviewer: compiled
-claude: agent code-reviewer tags: not-compiled (informational, no Claude Code field)
-claude: agent code-reviewer temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent doc-generator: compiled
-claude: agent doc-generator tags: not-compiled (informational, no Claude Code field)
-claude: agent doc-generator temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent test-writer: compiled
-claude: agent test-writer tags: not-compiled (informational, no Claude Code field)
-claude: agent test-writer temperature: not-compiled (no equivalent in Claude Code subagents)
+claude: agents tags: not-compiled (informational, no Claude Code field; 3 agents: code-reviewer, doc-generator, test-writer)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 3 agents: code-reviewer, doc-generator, test-writer)
 claude: flow review: not-compiled (no coordinator: no CLAUDE.md to render the flow into)
 
 === .claude/agents/code-reviewer.md

@@ -12,21 +12,15 @@ $ armadai link --target claude
 Conformance report:
 claude: agent capitaine: compiled (coordinator, rendered into CLAUDE.md)
 claude: agent capitaine skills: approximated (skills are discovered project-wide from .claude/skills; the main session cannot preload them)
-claude: agent capitaine tags: not-compiled (informational, no Claude Code field)
-claude: agent capitaine temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent capitaine tier: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
 claude: agent cartographe: compiled
 claude: agent cartographe skills: compiled (preloaded through the subagent `skills` field)
-claude: agent cartographe tags: not-compiled (informational, no Claude Code field)
-claude: agent cartographe temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent charpentier: compiled
 claude: agent charpentier skills: compiled (preloaded through the subagent `skills` field)
-claude: agent charpentier tags: not-compiled (informational, no Claude Code field)
-claude: agent charpentier temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent vigie: compiled
 claude: agent vigie skills: compiled (preloaded through the subagent `skills` field)
-claude: agent vigie tags: not-compiled (informational, no Claude Code field)
-claude: agent vigie temperature: not-compiled (no equivalent in Claude Code subagents)
+claude: agents tags: not-compiled (informational, no Claude Code field; 4 agents: capitaine, cartographe, charpentier, vigie)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 4 agents: capitaine, cartographe, charpentier, vigie)
 claude: flow mission: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: skill code-nautique: compiled
 
