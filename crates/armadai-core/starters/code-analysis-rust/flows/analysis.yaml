@@ -1,0 +1,12 @@
+description: "The lead analyst splits an analysis between the four specialists and merges their reports"
+steps:
+  lead-analyst: { agent: lead-analyst }
+  rust-reviewer: { agent: rust-reviewer }
+  rust-test-analyzer: { agent: rust-test-analyzer }
+  rust-doc-writer: { agent: rust-doc-writer }
+  rust-security: { agent: rust-security }
+links:
+  - { from: lead-analyst, to: rust-reviewer }
+  - { from: lead-analyst, to: rust-test-analyzer }
+  - { from: lead-analyst, to: rust-doc-writer }
+  - { from: lead-analyst, to: rust-security }

@@ -1,10 +1,3 @@
+format: 1
 name: code-analysis-rust
-description: "Code analysis crew for Rust projects — coordinator with scoped specialists"
-agents:
-  - lead-analyst
-  - rust-reviewer
-  - rust-test-analyzer
-  - rust-doc-writer
-  - rust-security
-prompts:
-  - analysis-standards
+description: "Code analysis crew for Rust projects: a lead analyst and four scoped specialists (code, tests, docs, security)"

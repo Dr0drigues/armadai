@@ -1,0 +1,12 @@
+description: The dev lead hands each part of a change to its specialist (model, adapters, CLI, tests)
+steps:
+  lead: { agent: dev-lead }
+  schema: { agent: schema-specialist }
+  adapter: { agent: adapter-specialist }
+  cli: { agent: cli-specialist }
+  qa: { agent: qa-specialist }
+links:
+  - { from: lead, to: schema }
+  - { from: lead, to: adapter }
+  - { from: lead, to: cli }
+  - { from: lead, to: qa }

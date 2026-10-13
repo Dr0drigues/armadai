@@ -1,9 +1,6 @@
 ---
 name: rust-conventions
 description: Rust coding conventions and best practices
-apply_to:
-  - code-reviewer
-  - test-writer
 ---
 # Rust Conventions
 

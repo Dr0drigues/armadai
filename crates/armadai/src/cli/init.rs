@@ -479,46 +479,6 @@ mod tests {
         assert_eq!(pick_link_target(&providers).as_deref(), Some("copilot"));
     }
 
-    /// Every embedded pack becomes a canonical project that validates (review
-    /// R-I9), with its skill folders whole and only supported targets.
-    #[test]
-    fn every_embedded_pack_becomes_a_valid_canonical_project() {
-        let starters =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../armadai-core/starters");
-        let supported = supported_target_names();
-        let mut seen = 0;
-        for entry in std::fs::read_dir(&starters).unwrap().flatten() {
-            let dir = entry.path();
-            if !dir.join("pack.yaml").is_file() {
-                continue;
-            }
-            seen += 1;
-            let pack = StarterPack::load(&dir).unwrap();
-            let out = tempfile::tempdir().unwrap();
-            init_project_from_pack(out.path(), dir.to_str().unwrap(), false)
-                .unwrap_or_else(|e| panic!("{}: {e:#}", pack.name));
-            let (p, _) = armadai_model::load_checked(out.path())
-                .unwrap_or_else(|ds| panic!("{}: {ds:?}", pack.name));
-            assert_eq!(p.agents.len(), pack.agents.len(), "{}", pack.name);
-            for t in &p.manifest.targets {
-                assert!(supported.contains(&t.as_str()), "{}: {t}", pack.name);
-            }
-            for s in pack
-                .skills
-                .iter()
-                .filter(|s| dir.join("skills").join(s).is_dir())
-            {
-                for f in crate::compile::read_tree(&dir.join("skills").join(s), &dir).unwrap() {
-                    let copied = out.path().join(".armadai/skills").join(s).join(&f.0);
-                    assert!(copied.is_file(), "{}: {} lost", pack.name, copied.display());
-                }
-            }
-            assert!(!out.path().join(".armadai/.migrated").exists());
-            assert!(out.path().join(".armadai/.gitignore").is_file());
-        }
-        assert!(seen >= 7, "expected the embedded packs, saw {seen}");
-    }
-
     use super::*;
 
     #[test]

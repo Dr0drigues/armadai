@@ -1,0 +1,11 @@
+description: A pack is planned, assembled, reviewed until approved, then given a test plan
+steps:
+  plan: { agent: authoring-architect }
+  build: { agent: starter-builder }
+  review: { agent: authoring-reviewer, states: [approved, rejected] }
+  test: { agent: authoring-tester }
+links:
+  - { from: plan, to: build }
+  - { from: build, to: review }
+  - { from: review, to: build, when: rejected }
+  - { from: review, to: test, when: approved }

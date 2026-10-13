@@ -306,3 +306,49 @@ fn a_failed_install_leaves_the_project_as_it_was() {
     assert!(!ok, "{err}");
     assert_eq!(tree(&env.root()), before);
 }
+
+/// Every embedded pack installs as a project with no diagnostic at all, links for
+/// Claude Code, and holds no CLI relay agent (spec criterion 1).
+#[test]
+fn every_embedded_pack_installs_validates_and_links() {
+    let starters = Path::new(env!("CARGO_MANIFEST_DIR")).join("../armadai-core/starters");
+    let mut packs: Vec<PathBuf> = std::fs::read_dir(&starters)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("pack.yaml").is_file())
+        .collect();
+    packs.sort();
+    assert_eq!(packs.len(), 7);
+    for pack in packs {
+        let name = pack.file_name().unwrap().to_string_lossy().into_owned();
+        let env = Env::new();
+        let (ok, out, err) = env.run(&["init", "--pack", &name]);
+        assert!(ok, "{name}: {out}\n{err}");
+        assert!(!format!("{out}{err}").contains("legacy pack"), "{name}");
+        let ds = armadai_model::validate(&env.root());
+        assert!(ds.is_empty(), "{name}: {ds:?}");
+        let (p, _) = armadai_model::load_checked(&env.root()).unwrap();
+        assert!(!p.agents.is_empty(), "{name}");
+        for (id, a) in &p.agents {
+            assert!(
+                a.body.trim().len() > 100,
+                "{name}: agent {id} has no real prompt"
+            );
+            // legacy sections as headings (a reviewer may quote them as text)
+            for legacy in ["## System Prompt", "## Metadata", "## Pipeline"] {
+                assert!(!a.body.lines().any(|l| l.trim() == legacy), "{name}: {id}");
+            }
+            assert!(!a.body.contains("@agent-name:"), "{name}: {id}");
+        }
+        for cli in ["claude-cli-reviewer", "echo-reviewer", "gemini-reviewer"] {
+            assert!(!p.agents.contains_key(cli), "{name}: {cli}");
+        }
+        assert!(
+            !env.root().join(".armadai/.armadai-version").exists(),
+            "{name}"
+        );
+        let (ok, out, err) = env.run(&["link", "--target", "claude"]);
+        assert!(ok, "{name}: {out}\n{err}");
+    }
+}

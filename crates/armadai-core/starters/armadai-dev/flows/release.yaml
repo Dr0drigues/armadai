@@ -1,0 +1,8 @@
+description: A release is cut only once QA has approved the branch; a rejection goes back to the dev lead
+steps:
+  qa: { agent: qa-specialist, states: [approved, rejected] }
+  release: { agent: release-manager }
+  lead: { agent: dev-lead }
+links:
+  - { from: qa, to: release, when: approved }
+  - { from: qa, to: lead, when: rejected }

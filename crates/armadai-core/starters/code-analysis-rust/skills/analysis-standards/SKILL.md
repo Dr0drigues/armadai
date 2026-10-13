@@ -1,7 +1,6 @@
 ---
 name: analysis-standards
 description: Shared output format and reporting conventions for code analysis agents
-apply_to: [analysis]
 ---
 
 # Analysis Standards

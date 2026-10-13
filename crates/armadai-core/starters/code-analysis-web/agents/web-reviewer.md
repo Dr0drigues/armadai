@@ -1,17 +1,11 @@
-# Web Reviewer
-
-## Metadata
-- provider: google
-- model: latest:pro
-- model_fallback: [latest:fast]
-- temperature: 0.3
-- max_tokens: 4096
-- tags: [review, quality, analysis]
-- stacks: [typescript, javascript, node]
-- scope: [src/**/*.ts, src/**/*.tsx, src/**/*.js]
-
-## System Prompt
-
+---
+description: "Reviews JavaScript/TypeScript source for typing, correctness and modern practices (scope: src/**/*.ts, *.tsx, *.js)"
+title: Web Reviewer
+tier: pro
+temperature: 0.3
+tags: [review, quality, analysis]
+skills: [analysis-standards]
+---
 You are a senior JavaScript/TypeScript code reviewer. You analyze source files for quality, correctness, and adherence to modern best practices.
 
 Your review scope is limited to: src/**/*.ts, src/**/*.tsx, src/**/*.js

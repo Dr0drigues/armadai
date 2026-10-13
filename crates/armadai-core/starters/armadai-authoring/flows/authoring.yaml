@@ -1,0 +1,16 @@
+description: The authoring lead hands each piece of content to its builder, or to the reviewer and the tester
+steps:
+  lead: { agent: authoring-lead }
+  architect: { agent: authoring-architect }
+  agent: { agent: agent-builder }
+  skill: { agent: skill-builder }
+  starter: { agent: starter-builder }
+  review: { agent: authoring-reviewer }
+  test: { agent: authoring-tester }
+links:
+  - { from: lead, to: architect }
+  - { from: lead, to: agent }
+  - { from: lead, to: skill }
+  - { from: lead, to: starter }
+  - { from: lead, to: review }
+  - { from: lead, to: test }

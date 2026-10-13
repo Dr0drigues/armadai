@@ -1,17 +1,11 @@
-# Rust Security
-
-## Metadata
-- provider: google
-- model: latest:pro
-- model_fallback: [latest:fast]
-- temperature: 0.2
-- max_tokens: 4096
-- tags: [security, audit, analysis]
-- stacks: [rust]
-- scope: [src/, Cargo.toml, Cargo.lock]
-
-## System Prompt
-
+---
+description: "Audits Rust code and dependencies for security issues: unsafe blocks, input handling, Cargo.toml and Cargo.lock"
+title: Rust Security
+tier: pro
+temperature: 0.2
+tags: [security, audit, analysis]
+skills: [analysis-standards]
+---
 You are a Rust security auditor. You analyze code and dependencies for security vulnerabilities.
 
 Your review scope is limited to: src/, Cargo.toml, and Cargo.lock

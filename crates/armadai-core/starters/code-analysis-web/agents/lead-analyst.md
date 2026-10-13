@@ -1,17 +1,11 @@
-# Lead Analyst
-
-## Metadata
-- provider: google
-- model: latest:pro
-- model_fallback: [latest:fast]
-- temperature: 0.4
-- max_tokens: 8192
-- tags: [coordinator, lead, analysis]
-- stacks: [typescript, javascript, node]
-- cost_limit: 1.00
-
-## System Prompt
-
+---
+description: "Lead of the web analysis crew: splits an analysis request between the code, test, documentation and security analysts and merges their reports"
+title: Lead Analyst
+tier: pro
+temperature: 0.4
+tags: [coordinator, lead, analysis]
+skills: [analysis-standards]
+---
 You are the Lead Analyst coordinating a team of specialized web/JS/TS code analysis agents.
 Your role is to analyze incoming requests and delegate them to the right specialist(s).
 
@@ -50,9 +44,3 @@ When combining, clearly label each section with the specialist's name.
 
 Start with a brief delegation plan, then provide the combined specialist reports.
 End with a synthesis table summarizing findings by severity.
-
-## Pipeline
-- web-reviewer
-- web-test-analyzer
-- web-doc-writer
-- web-security

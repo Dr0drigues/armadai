@@ -1,11 +1,6 @@
 ---
 name: code-nautique
 description: Coding conventions with a nautical theme for the pirate crew
-apply_to:
-  - capitaine
-  - vigie
-  - charpentier
-  - cartographe
 ---
 # Code Nautique — Conventions de Bord
 

@@ -422,16 +422,12 @@ description: Minimal pack
         );
     }
 
-    /// Every pack embedded in the binary must be installable as shipped: it
-    /// validates (every agent and prompt it lists exists and parses, every
-    /// `apply_to` names one of its agents), and every skill it lists exists either
-    /// bundled in the pack or as an embedded built-in skill. `validate_pack`
-    /// skips unbundled skills (they may be built-in), so a pack still naming
-    /// a deleted built-in skill would otherwise pass in silence.
+    /// Every pack embedded in the binary is native (`format: 1`), named after its
+    /// folder, with no legacy `prompts/`; its content is validated end to end by the
+    /// binary's `init_pack` tests.
     #[test]
-    fn every_embedded_pack_validates_and_its_skills_exist() {
+    fn every_embedded_pack_is_native() {
         let starters = Path::new(env!("CARGO_MANIFEST_DIR")).join("starters");
-        let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills");
         let mut seen = 0;
         for entry in std::fs::read_dir(&starters).unwrap() {
             let dir = entry.unwrap().path();
@@ -439,56 +435,15 @@ description: Minimal pack
                 continue;
             }
             seen += 1;
-            // One known, pre-existing issue is tolerated: the two
-            // code-analysis packs apply their prompt to `analysis`, which
-            // names no agent. Anything else (missing file, unparsable file,
-            // `apply_to` naming a removed agent) fails.
-            let pack_name = dir.file_name().unwrap().to_string_lossy().into_owned();
-            let known_issue = |location: &str| {
-                matches!(
-                    pack_name.as_str(),
-                    "code-analysis-rust" | "code-analysis-web"
-                ) && location == "prompts/analysis-standards.md:apply_to['analysis']"
-            };
-            let errors: Vec<_> = crate::pack_validation::validate_pack(&dir)
-                .into_iter()
-                .filter(|i| !known_issue(&i.location))
-                .map(|i| format!("{}: {}", i.location, i.message))
-                .collect();
-            assert!(errors.is_empty(), "{}: {errors:?}", dir.display());
             let pack = StarterPack::load(&dir).unwrap();
-            for skill in &pack.skills {
-                let bundled = dir.join("skills").join(skill).join("SKILL.md");
-                let builtin = skills.join(skill).join("SKILL.md");
-                assert!(
-                    bundled.is_file() || builtin.is_file(),
-                    "{}: skill '{skill}' is neither bundled nor built-in",
-                    dir.display()
-                );
-            }
+            assert_eq!(pack.format, Some(1), "{}", dir.display());
+            assert_eq!(dir.file_name().unwrap().to_str(), Some(pack.name.as_str()));
+            assert!(pack.agents.is_empty() && pack.prompts.is_empty() && pack.skills.is_empty());
+            assert!(!dir.join("prompts").exists(), "{}", dir.display());
+            assert!(dir.join("agents").is_dir(), "{}", dir.display());
         }
         assert_eq!(seen, EMBEDDED_STARTERS.dirs().count());
-    }
-
-    /// A pack extracted by an older binary is replaced, not written over.
-    #[test]
-    fn a_re_extracted_pack_keeps_no_stale_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dest = tmp.path().join("rust-dev");
-        std::fs::create_dir_all(dest.join("prompts")).unwrap();
-        std::fs::write(dest.join("prompts/old.md"), "stale").unwrap();
-        std::fs::write(dest.join(".armadai-version"), "0.0.1").unwrap();
-        let dir = EMBEDDED_STARTERS.get_dir("rust-dev").unwrap();
-        refresh_extracted(dir, &dest).unwrap();
-        assert!(!dest.join("prompts/old.md").exists());
-        assert!(dest.join("pack.yaml").is_file());
-        assert!(!super::super::embedded::needs_update(&dest));
-        let names: Vec<_> = std::fs::read_dir(tmp.path())
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name())
-            .collect();
-        assert_eq!(names, ["rust-dev"], "no scratch folder left");
+        assert_eq!(seen, 7);
     }
 
     #[test]
