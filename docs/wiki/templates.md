@@ -18,7 +18,8 @@ need a terminal; in a script, pass the options.
 ```bash
 armadai new agent rust-reviewer --template dev-review --stack rust
 armadai new agent sec-reviewer --template security-review -d "Audits the payment code" --tier max
-armadai new agent helper --skills release-notes          # skills of the project
+armadai new skill release-notes --description "Write release notes from the git log"
+armadai new agent helper --skills release-notes          # a skill of the project
 ```
 
 | Template | Purpose |
@@ -70,6 +71,7 @@ Your role: {{description}}.
 ## Flow templates
 
 ```bash
+for a in planner dev qa reviewer release lead backend frontend; do armadai new agent "$a"; done
 armadai new flow ship --agents planner,dev,qa                     # pipeline (default)
 armadai new flow review --template review-loop --agents dev,reviewer,release
 armadai new flow feature --template plan-build-verify --agents planner,dev,qa

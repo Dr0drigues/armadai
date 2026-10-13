@@ -48,6 +48,8 @@ starters/<nom>/
 - `pipeline` : `a → b → c` (`sequence`).
 - `review-loop` (≥ 2 agents : auteur, relecteur, [livreur]) : auteur → relecteur ; relecteur `states: [approved, rejected]` ; `rejected` → auteur ; `approved` → livreur (absent : fin).
 - `plan-build-verify` (3 agents) : planificateur → constructeur → vérificateur ; vérificateur `on_failure` → constructeur.
+- `fan-out` (≥ 2 agents : un chef + N ≥ 1) : chef → chaque autre agent (`done`), dans l'ordre donné ; ajouté après le dogfooding (un chef qui distribue à ses spécialistes, que `pipeline` ne sait pas dire).
+- `review-loop` écrit `start: <auteur>` (l'auteur a le lien `rejected` entrant) ; un flow peut déclarer `start` pour lever l'ambiguïté de son entrée (`ambiguous-entry`).
 Nombre d'agents inadéquat = erreur claire.
 
 ### 3.4 Mermaid

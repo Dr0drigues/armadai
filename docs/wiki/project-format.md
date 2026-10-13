@@ -115,13 +115,17 @@ automations. Only its keys are checked (they must be supported targets); its con
 
 ```bash
 armadai init --project                  # an empty project
-armadai init --pack rust-dev            # or a starter pack, copied (see Starter packs)
+armadai new skill rust-conventions --description "Rust conventions of this project"
+armadai new agent dev --template dev-test --stack rust --skills rust-conventions
 armadai new agent reviewer --template dev-review --stack rust
 armadai new flow review --template review-loop --agents dev,reviewer
 armadai new automation fmt --event after-tool --run "cargo fmt"
-armadai new skill release-notes --description "Write release notes from the git log"
-armadai new                             # a guided menu (needs a terminal)
+armadai validate
 ```
+
+Or start from a starter pack (`armadai init --pack rust-dev`, see
+[Starter packs](starter-packs.md)), and `armadai new` alone for a guided menu (it needs a
+terminal).
 
 Each `armadai new` command writes one file, never through a symbolic link and never over an
 existing file without `--force`, then validates the project: a creation that would introduce an

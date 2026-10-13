@@ -160,20 +160,22 @@ armadai skills info webapp-testing
 
 Displays metadata from the registry index and the SKILL.md content.
 
-## How prompts and skills are linked
+## How skills are linked (canonical format)
 
-`armadai link` copies every prompt and skill the project config lists into the target's output
-directory, verbatim, and records each file in the link manifest:
+In a project in the [Project format](project-format.md), skills live in
+`.armadai/skills/<id>/` (a legacy project's prompts become skills when `armadai migrate` converts
+it). `armadai link` copies each skill folder whole, byte for byte, into the target's output
+directory and records each file in the link manifest:
 
-| Target | Prompts | Skills |
-|---|---|---|
-| Claude Code | `.claude/prompts/<name>.md` | `.claude/skills/<name>/` |
-| Codex | `.codex/prompts/<name>.md` | `.codex/skills/<name>/` |
-| OpenCode | `.opencode/prompts/<name>.md` | `.opencode/skills/<name>/` |
-| Copilot | `.github/prompts/<name>.md` | `.github/skills/<name>/` |
+| Target | Skills |
+|---|---|
+| Claude Code | `.claude/skills/<id>/` (an agent listing it in `skills:` preloads it; the main session discovers it by its description) |
+| Codex | `.codex/skills/<id>/` |
+| OpenCode | `.opencode/skills/<id>/` |
+| Copilot | `.github/skills/<id>/` |
 
-The prompts are not inlined into the agents' own files. Whether each assistant reads a file from
-these locations is up to that assistant.
+The conformance report of `link` says, per target, how each skill and each agent's `skills:` were
+rendered. Prompts no longer exist in the canonical format: there is no `prompts/` output.
 
 ## See Also
 
