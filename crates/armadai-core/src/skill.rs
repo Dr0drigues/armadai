@@ -114,6 +114,11 @@ pub const EXTRACTED_REGISTRY: &str = ".armadai-extracted";
 pub fn install_embedded_skills(force: bool) -> anyhow::Result<usize> {
     let dst_root = user_skills_dir();
     std::fs::create_dir_all(&dst_root)?;
+    super::embedded::with_lock(&dst_root, || install_locked(&dst_root, force))
+}
+
+fn install_locked(dst_root: &Path, force: bool) -> anyhow::Result<usize> {
+    let dst_root = dst_root.to_path_buf();
 
     let mut count = 0;
 

@@ -111,6 +111,51 @@ pub(crate) fn ensure(dir: &Dir<'_>, dest: &Path, force: bool) -> anyhow::Result<
     Ok(false)
 }
 
+/// The lock file serialising extractions into one folder.
+pub(crate) const LOCK: &str = ".armadai-extract.lock";
+
+/// Run `f` holding the exclusive extraction lock of `parent`
+/// (`<parent>/.armadai-extract.lock`, `flock`): reading markers, migrating and
+/// extracting are one step for concurrent armadai processes (and threads). The lock
+/// file is opened close-on-exec and never through a symbolic link.
+pub(crate) fn with_lock<T>(
+    parent: &Path,
+    f: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::io::AsRawFd;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("creating {}: {e}", parent.display()))?;
+        let path = parent.join(LOCK);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(|e| anyhow::anyhow!("opening the lock {}: {e}", path.display()))?;
+        // SAFETY: a valid descriptor, held by `file` for the whole call
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            anyhow::bail!(
+                "locking {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            );
+        }
+        let r = f();
+        drop(file); // closing releases the lock
+        r
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        f()
+    }
+}
+
 /// Whether process `pid` still runs (never true for an absurd pid).
 fn alive(pid: u32) -> bool {
     #[cfg(unix)]
@@ -367,6 +412,51 @@ mod tests {
         }
         out.sort();
         out
+    }
+
+    /// Concurrent synchronisations of the same folders (other commands of the same
+    /// user at once) serialise on the lock: one legacy copy, no error.
+    #[test]
+    fn concurrent_synchronisations_do_not_race() {
+        for _round in 0..10 {
+            let tmp = tempfile::tempdir().unwrap();
+            let dest = tmp.path().join("rust-dev");
+            std::fs::create_dir_all(&dest).unwrap();
+            std::fs::write(dest.join(MARKER), "1.0.0-rc.2").unwrap();
+            std::fs::write(dest.join("old.md"), "old").unwrap();
+            let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let (parent, dest, start) =
+                        (tmp.path().to_path_buf(), dest.clone(), start.clone());
+                    std::thread::spawn(move || {
+                        start.wait();
+                        with_lock(&parent, || ensure(pack("rust-dev"), &dest, false))
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap().unwrap();
+            }
+            let legacy = names(tmp.path())
+                .into_iter()
+                .filter(|n| n.contains(".armadai-legacy-"))
+                .count();
+            assert_eq!(legacy, 1, "{:?}", names(tmp.path()));
+            assert!(managed(&dest));
+        }
+    }
+
+    /// The lock file is never opened through a symbolic link.
+    #[cfg(unix)]
+    #[test]
+    fn the_lock_is_never_taken_through_a_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("elsewhere");
+        std::os::unix::fs::symlink(&target, tmp.path().join(LOCK)).unwrap();
+        let r = with_lock(tmp.path(), || Ok(()));
+        assert!(r.is_err());
+        assert!(!target.exists());
     }
 
     /// A folder that is not ours (no marker, a marker naming another folder) is the

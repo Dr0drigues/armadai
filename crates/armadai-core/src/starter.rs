@@ -179,6 +179,16 @@ fn skipped(path: &Path) -> bool {
 /// extraction is moved aside first): a stale copy in the user starters folder must
 /// never shadow the embedded pack, even when the embedded set is read from elsewhere.
 fn sync_extracted(dir: &Path, all: bool) {
+    let r = super::embedded::with_lock(dir, || {
+        sync_extracted_locked(dir, all);
+        Ok(())
+    });
+    if let Err(e) = r {
+        tracing::warn!("{e:#}");
+    }
+}
+
+fn sync_extracted_locked(dir: &Path, all: bool) {
     for pack in EMBEDDED_STARTERS.dirs() {
         if pack.get_file(pack.path().join("pack.yaml")).is_some()
             && let Some(name) = pack.path().file_name().and_then(|n| n.to_str())
