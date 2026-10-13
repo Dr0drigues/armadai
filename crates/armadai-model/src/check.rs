@@ -517,15 +517,15 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 None,
             );
         } else {
-            // every step has an incoming link: the entry is the heuristic's guess
-            if f.start.is_none() && steps.iter().all(|s| edges.iter().any(|(_, to)| to == s)) {
+            // an entry the heuristic took although a link leads to it: only a guess
+            if f.start.is_none() && entries.iter().any(|e| edges.iter().any(|(_, to)| to == e)) {
                 o.emit(
                     at,
                     Severity::Warning,
                     "ambiguous-entry",
                     None,
                     format!(
-                        "every step has an incoming link: the flow is taken to begin at {}; \
+                        "an entry step has an incoming link: the flow is taken to begin at {}; \
                          declare `start:` to say where the flow begins",
                         entries.join(", ")
                     ),

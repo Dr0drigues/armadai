@@ -468,6 +468,21 @@ fn start_overrides_the_heuristic() {
     assert_eq!(entry_steps(&flow_of(&started)), ["write"]);
 }
 
+/// An isolated step does not hide the ambiguity: the heuristic also takes `x`,
+/// which has an incoming link, as an entry (the gate would start there, not at `w`).
+#[test]
+fn an_entry_with_an_incoming_link_is_ambiguous_even_beside_a_clean_one() {
+    let body = "steps:\n  w: { agent: dev }\n  r: { agent: dev, states: [rejected] }\n  x: { agent: dev }\n  i: { agent: dev }\nlinks:\n  - { from: w, to: r }\n  - { from: r, to: x, when: rejected }\n  - { from: x, to: w }\n";
+    assert_eq!(entry_steps(&flow_of(body)), ["i", "x"]);
+    let d = only(&flow(body), "ambiguous-entry");
+    assert!(d.message.contains('x'), "{d:?}");
+    assert!(
+        flow(&format!("start: w\n{body}"))
+            .iter()
+            .all(|d| d.code != "ambiguous-entry")
+    );
+}
+
 /// `start` must name a step of the flow.
 #[test]
 fn an_unknown_start_is_an_error_on_its_token() {

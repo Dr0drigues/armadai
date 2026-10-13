@@ -90,8 +90,8 @@ links:
 - `start: <step>` declares where the flow begins: it is then the only entry step. Without it, an
   **entry step** is one no unconditional link (`when` absent or `done`) leads to; a conditional
   link or an `on_failure` back to it does not count, and the `approved` end of a loop is not an
-  entry (see `no-entry-step` below). When every step has an incoming link, that guess is warned
-  (`ambiguous-entry`): declare `start:`. The `review-loop` template writes it. Without a coordinator, Claude Code's
+  entry (see `no-entry-step` below). When an entry found that way has an incoming link of any
+  kind, the guess is warned (`ambiguous-entry`): declare `start:`. The `review-loop` template writes it. Without a coordinator, Claude Code's
   [policy gate](policy-gate.md) lets the main session reach the entry steps only.
 - The steps are written sorted by id (`armadai new flow` too); their order means nothing, the
   links carry it.
@@ -208,8 +208,8 @@ warning on stderr.
 | `self-link` | error | A link, or `on_failure`, goes from a step to itself | Point it at another step |
 | `duplicate-link` | error | The same link is declared twice | Remove one |
 | `duplicate-failure-path` | error | A step has more than one failure path | Keep either `on_failure` or one `when: failed` link |
-| `no-entry-step` | warning | No step is an entry, so the flow can never start (without `start`). An entry step has no incoming *unconditional* link (`when` absent or `done`): a conditional link (`when: rejected`, `when: failed`) or an `on_failure` leading back to it does not count. Among such steps, one that another reaches without reaching it back (the `approved` end of a review loop) is not an entry | Make one link into the first step conditional, or remove it |
-| `ambiguous-entry` | warning | Every step has an incoming link and the flow declares no `start`: its entry is only the guess above | Declare `start: <step>` to say where the flow begins |
+| `no-entry-step` | warning | No step is an entry, so the flow can never start (without `start`). An entry step has no incoming *unconditional* link (`when` absent or `done`): a conditional link (`when: rejected`, `when: failed`) or an `on_failure` leading back to it does not count. Among such steps, one that another reaches without reaching it back (the `approved` end of a review loop) is not an entry | Declare `start: <step>`, or make one link into the first step conditional |
+| `ambiguous-entry` | warning | The flow declares no `start` and a step the guess above takes as an entry has an incoming link (of any kind): where the flow begins is only a guess (an entry with no incoming link at all is not warned) | Declare `start: <step>` to say where the flow begins |
 | `unreachable-step` | warning | A step cannot be reached from any entry step (every link and `on_failure` counts here) | Link it, or remove it |
 | `empty-command` | error | An automation's `run` is empty | Give the command to run |
 
