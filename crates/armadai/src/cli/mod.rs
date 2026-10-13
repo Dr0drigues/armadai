@@ -35,8 +35,9 @@ use clap::{CommandFactory, Parser, Subcommand};
     after_help = "Examples:\n  \
         armadai init --project\n  \
         armadai new agent my-agent --template dev-review --stack rust\n  \
-        armadai list --tags dev\n  \
-        armadai graph\n  \
+        armadai init --pack rust-dev\n  \
+        armadai new flow review --template review-loop --agents dev,reviewer\n  \
+        armadai graph review\n  \
         armadai link --target claude\n\n\
         Documentation: https://github.com/Dr0drigues/armadai"
 )]
@@ -244,16 +245,21 @@ pub enum Command {
     #[command(
         long_about = "Initialize ArmadAI configuration.\n\n\
             Creates ~/.config/armadai/ with default config.yaml, providers.yaml, \
-            skills/ (skills installed by `armadai skills add`) and registry/ (the \
-            cache for remote starter packs).\n\n\
+            skills/ (the built-in authoring skills, and skills installed by \
+            `armadai skills add`) and registry/ (the cache for remote starter packs).\n\n\
             Use --project to create an empty project: .armadai/project.yaml, agents/, \
-            skills/, flows/, automations/ and .armadai/.gitignore. Use --pack to create \
-            the project from a starter pack instead (converted like `armadai migrate`).",
+            skills/, flows/, automations/ and .armadai/.gitignore.\n\n\
+            Use --pack to create the project from a starter pack instead. A native pack \
+            (`format: 1` in its pack.yaml) is validated, then copied: project.yaml, agents/, \
+            skills/, flows/ and automations/; its automations are listed (they become \
+            hooks). A pack without `format` is the legacy format, converted like \
+            `armadai migrate`. With --force, a pack is merged into an existing project: an \
+            existing file is kept, and so is the existing project.yaml.",
         after_help = "Examples:\n  \
             armadai init\n  \
-            armadai init --force\n  \
             armadai init --project\n  \
             armadai init --pack rust-dev\n  \
+            armadai init --pack ./my-pack\n  \
             armadai init --pack fullstack --force"
     )]
     Init {

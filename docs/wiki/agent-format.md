@@ -1,9 +1,10 @@
 # Agent Format
 
 > **Legacy format.** This page describes the format of projects before v1 (`.armadai/config.yaml`,
-> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and
-> internally by `armadai new` (templates) and `armadai init --pack` (starter packs). Projects use
-> the [Project format](project-format.md).
+> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and by
+> `armadai init --pack` for a starter pack in the legacy format (a `pack.yaml` without
+> `format: 1`). Projects, agent templates and the built-in packs use the
+> [Project format](project-format.md).
 
 Agents are defined as Markdown files in `.armadai/agents/` or `agents/` (or in your user library,
 `~/.config/armadai/agents/`). Each file represents one specialized agent; `armadai link` compiles it

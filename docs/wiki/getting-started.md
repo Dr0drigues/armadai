@@ -68,7 +68,7 @@ armadai link --dry-run          # the files and the conformance report, nothing 
 armadai link                    # write them (Claude Code by default)
 ```
 
-Or start from a starter pack, converted into a project:
+Or start from a starter pack, copied into the project:
 
 ```bash
 armadai init --pack rust-dev

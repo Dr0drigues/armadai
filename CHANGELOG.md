@@ -1,5 +1,46 @@
 ## Unreleased
 
+### Changed (step 3: guided creation, native starters)
+
+- **`armadai new` takes a kind**: `new agent|flow|automation|skill <id>` with options
+  (`--template`, `--description`, `--stack`, `--tier`, `--skills`, `--agents`, `--event`,
+  `--run`, `--force`), `-i` for one kind in a terminal, and a guided menu for `armadai new` alone.
+  Every creation writes one file under `.armadai/` (strict id, Windows device names refused, no
+  symbolic link followed, no overwrite without `--force`), then validates the project: a creation
+  that introduces an error is undone. The former `armadai new <name>` is refused with "use
+  `armadai new agent <name>`".
+- **Agent templates are canonical** (11, a frontmatter with a default description): description,
+  tier and skills are set on the parsed frontmatter, placeholders rendered in the body only; a
+  template in the legacy format is a clear error. `new` no longer goes through `migrate`.
+- **Starter packs are native** (`format: 1` in `pack.yaml`): `init --pack` validates the pack,
+  copies it by a white list (any symbolic link refused), keeps existing files, lists the pack's
+  automations, and undoes an install that would break the project. A pack without `format` is
+  still converted (legacy). `validate <pack>` validates a native pack. The 7 built-in packs are
+  rewritten (descriptions saying when to use each agent, prompts become skills given to the
+  agents, real flows); `armadai-authoring` and the built-in authoring skills teach the canonical
+  format.
+- **Entry steps**: a step no unconditional link leads to (a `rejected` or `on_failure` way back
+  does not count, the `approved` end of a loop is not an entry); one definition for the validator
+  and the Claude Code gate, so a review loop no longer warns `no-entry-step`.
+- The gate never offers the coordinator as a delegation target (it is no sub-agent).
+- `link --dry-run` lists the files it would skip and the files already up to date apart from the
+  ones it would generate.
+- Re-extracted embedded packs replace the previous version instead of being written over.
+
+### Added (step 3)
+
+- `armadai graph [flow]`: the flow(s) as Mermaid on stdout (`flowchart TD`, one diagram per flow).
+- Flow templates `pipeline`, `review-loop`, `plan-build-verify`, `fan-out` (`new flow --template`).
+- `new flow` warns that a flow is guidance only when the project has neither a coordinator nor a
+  strict policy.
+
+### Removed (step 3)
+
+- The `cli-generic` agent template, the `## Pipeline` sections of the TDD templates (documented
+  as a flow), the three CLI relay agents of `fullstack` (`claude-cli-reviewer`, `echo-reviewer`,
+  `gemini-reviewer`), the `prompt-builder` agent and `armadai-v012-updates` of
+  `armadai-authoring`, the built-in `armadai-prompt-authoring` skill (a prompt is a skill now).
+
 ### Changed (step 2: link on the canonical model)
 
 - **`armadai link` compiles `.armadai/project.yaml`** (see `docs/wiki/link.md`): one plan per

@@ -5,112 +5,88 @@
 
 ## What is an ArmadAI Agent?
 
-An ArmadAI agent is a Markdown file (`.md`) that defines an AI specialist: a role, a system prompt
-and a few metadata fields. Agents live in `.armadai/agents/`, `agents/` or the user library
-(`~/.config/armadai/agents/`). ArmadAI does not run them: `armadai link --target <t>` compiles
-them into the native agent files of Claude Code, Codex, OpenCode or Copilot, and that assistant
-runs them.
+An ArmadAI agent is one Markdown file, `.armadai/agents/<id>.md` of a project (a folder holding
+`.armadai/project.yaml`): a YAML frontmatter, then the prompt as the body. ArmadAI does not run
+it: `armadai link --target <t>` compiles it into the native agent file of Claude Code, Codex,
+OpenCode or Copilot, and that assistant runs it.
+
+The quickest start is a command, then an edit of the file it writes:
+
+```bash
+armadai new agent rust-reviewer --template dev-review --stack rust
+armadai new agent -i        # guided, in a terminal
+```
 
 ## Agent File Format
 
 ```markdown
-# Agent Display Name
-
-## Metadata
-- provider: <provider>
-- model: <model>
-- temperature: <0.0 - 2.0>
-- tags: [tag1, tag2]
-- stacks: [rust, python]
-
-## System Prompt
-
-<The system prompt defining the agent's role and behavior.>
+---
+description: <when to use this agent, one specific sentence>
+tier: pro
+temperature: 0.3
+tags: [tag1, tag2]
+skills: [skill-id]
+capabilities:
+  write: deny
+---
+<The prompt: the agent's role, what it does and does not do.>
 
 ## Instructions
 
-<Optional step-by-step instructions.>
+<Optional steps.>
 
 ## Output Format
 
-<Optional description of expected output structure.>
+<Optional description of the expected output.>
 ```
 
-The first non-empty line of the system prompt becomes the agent's description in the generated
-files: make it a one-line summary of the role.
+Frontmatter keys (any other key is an error):
 
-## The `provider` field
+| Key | Required | Value |
+|---|---|---|
+| `description` | yes | When to use the agent: the assistant picks a sub-agent by it |
+| `title` | no | Display name |
+| `tier` | no | `fast`, `pro` (default choice) or `max`; resolved to a model per target |
+| `temperature` | no | A number; only targets that have the setting use it |
+| `tags` | no | Lowercase words |
+| `skills` | no | Ids of skills of the project (`.armadai/skills/<id>/SKILL.md`) |
+| `capabilities` | no | `read`, `write`, `shell`, `web`, `delegate`: `allow`, `ask` or `deny` |
+| `native` | no | Per-target keys passed as is (`claude`, `codex`, `copilot`, `opencode`) |
 
-`provider` is required. It names the vendor whose model catalogue resolves a `latest:*`
-placeholder:
+## Tier and temperature
 
-| Provider | Model vendor |
-|----------|--------------|
-| `claude` or `anthropic` | Anthropic |
-| `gpt`, `openai`, `codex` or `aider` | OpenAI |
-| `gemini` or `google` | Google |
-
-## Models
-
-Prefer `latest:*` placeholders to hardcoded model names:
-
-| Placeholder | Tier |
+| Tier | Use |
 |---|---|
-| `latest` or `latest:pro` | Balanced (default) |
-| `latest:fast` | Fast / cheap |
-| `latest:max` | Most capable |
+| `fast` | Lookups, transformations, cost-sensitive work |
+| `pro` | Analysis, generation, review (the default choice) |
+| `max` | Complex reasoning, architecture, critical reviews |
 
-`link --target claude` always writes an Anthropic model and `link --target codex` an OpenAI model,
-whatever the agent says; see the wiki page `docs/wiki/providers.md` for the exact rules.
-
-## Temperature Guide
-
-| Preset | Value | Best for |
-|--------|-------|----------|
-| Focused | 0.2 | Code review, analysis, factual tasks |
-| Balanced | 0.5 | General-purpose, moderate creativity |
-| Creative | 0.7 | Writing, brainstorming, ideation |
-
-Range: 0.0 (deterministic) to 2.0 (maximum randomness). Only the OpenCode target writes it.
+Temperature: 0.2 for review and analysis, 0.5 for general work, 0.7 for writing and ideas.
 
 ## Creation Flow
 
-When helping a user create an ArmadAI agent, ask these questions in order:
+When helping a user create an ArmadAI agent, ask in order:
 
-1. **Name**: What should the agent be called? (slug format: `my-agent-name`)
-2. **Provider**: Which model vendor? (claude, gpt, gemini)
-3. **Model**: Which tier or model? (suggest a `latest:*` placeholder)
-4. **Temperature**: What creativity level? (Focused 0.2 / Balanced 0.5 / Creative 0.7)
-5. **Tags**: Categories for filtering? (comma-separated, e.g. `dev, review`)
-6. **Stacks**: Tech stacks? (comma-separated, e.g. `rust, typescript`)
-7. **System prompt**: What is the agent's role and expertise?
-8. **Instructions**: Step-by-step process? (optional)
-9. **Output format**: Expected output structure? (optional)
-
-## Naming Convention
-
-- Use kebab-case: `code-reviewer`, `test-writer`, `doc-generator`
-- Only letters, digits, and hyphens
-- The H1 heading is the display name: `# Code Reviewer`; its slug names the generated files
-  (`.claude/agents/code-reviewer.md`)
+1. **Id**: kebab-case (`code-reviewer`): lowercase letters, digits, hyphens, at most 64.
+2. **Description**: when should the assistant use this agent?
+3. **Tier**: fast, pro or max.
+4. **Prompt**: the role and expertise, what it must not do.
+5. **Instructions** and **output format** (optional).
+6. **Skills** of the project it uses, **capabilities** to restrict (optional).
 
 ## Complete Example
 
+`.armadai/agents/rust-reviewer.md`:
+
 ```markdown
-# Rust Code Reviewer
-
-## Metadata
-- provider: claude
-- model: latest:pro
-- temperature: 0.3
-- tags: [dev, review, quality]
-- stacks: [rust]
-
-## System Prompt
-
+---
+description: Reviews Rust code for bugs, unsafe patterns, performance and idioms
+tier: pro
+temperature: 0.3
+tags: [rust, review]
+---
 You are an expert Rust code reviewer. You analyze code for bugs, unsafe patterns,
-performance issues, and idiomatic Rust violations. You provide constructive feedback
-with specific line references and concrete fix suggestions.
+performance issues and idiomatic Rust violations; you do not rewrite the code.
 
 ## Instructions
 
@@ -118,26 +94,27 @@ with specific line references and concrete fix suggestions.
 2. Check for common Rust pitfalls (unwrap abuse, unnecessary clones, lifetime issues)
 3. Identify potential panics and error handling gaps
 4. Evaluate performance (unnecessary allocations, missing iterators)
-5. Verify adherence to Rust idioms and conventions
 
 ## Output Format
 
 Structured review with sections:
-- **Critical**: Must-fix issues (bugs, panics, UB)
-- **Warning**: Should-fix issues (performance, bad patterns)
-- **Info**: Style and readability suggestions
+- **Critical**: must-fix issues (bugs, panics, UB)
+- **Warning**: should-fix issues (performance, bad patterns)
+- **Info**: style and readability suggestions
 
 Each item: severity, location, description, suggested fix.
 ```
 
 ## Validation and linking
 
-After creating the file, reference it in `.armadai/config.yaml` (`agents: [{ name: rust-code-reviewer }]`
-or `- path: .armadai/agents/rust-code-reviewer.md`), then:
+Nothing needs to list the file: every `.md` under `.armadai/agents/` is an agent of the project.
 
 ```bash
-armadai inspect rust-code-reviewer          # show how the file was parsed
-armadai validate                            # check the project config and its references
-armadai link --target claude --dry-run      # preview the generated files
+armadai validate                            # file:line:column diagnostics
+armadai inspect rust-reviewer               # the agent as ArmadAI reads it
+armadai link --target claude --dry-run      # preview the generated files and the report
 armadai link --target claude                # write them
 ```
+
+To chain agents, write a flow: `armadai new flow review --template review-loop --agents
+dev,rust-reviewer`, and see it with `armadai graph review`.

@@ -1,7 +1,7 @@
 # Project format
 
 A project is a `.armadai/` directory whose manifest, `.armadai/project.yaml`, **defines** it.
-Every project command (`link`, `unlink`, `list`, `inspect`, `validate`, `new`) reads this
+Every project command (`link`, `unlink`, `list`, `inspect`, `validate`, `new`, `graph`) reads this
 format only; a legacy project (`.armadai/config.yaml`, `armadai.yaml`, `armadai.yml`) is refused
 with "legacy format, run `armadai migrate`" (see [Migrating](#migrating-a-legacy-project)).
 
@@ -86,6 +86,12 @@ links:
 - `on_failure: <step>` is a `when: failed` link; a step has at most one failure path.
 - Loops are allowed; a link from a step to itself is an error.
 - Only `.yaml` is loaded: a `.yml` file is ignored with a warning.
+- An **entry step** is one no unconditional link (`when` absent or `done`) leads to; a conditional
+  link or an `on_failure` back to it does not count, and the `approved` end of a loop is not an
+  entry (see `no-entry-step` below). Without a coordinator, Claude Code's
+  [policy gate](policy-gate.md) lets the main session reach the entry steps only.
+- The steps are written sorted by id (`armadai new flow` too); their order means nothing, the
+  links carry it.
 
 ## `automations/<id>.yaml`
 
@@ -101,6 +107,54 @@ native: {}              # optional, opaque
 A map `{ claude|codex|copilot|opencode: <free YAML> }` accepted on the manifest, agents and
 automations. Only its keys are checked (they must be supported targets); its content is
 "native, not checked".
+
+## Creating a project
+
+```bash
+armadai init --project                  # an empty project
+armadai init --pack rust-dev            # or a starter pack, copied (see Starter packs)
+armadai new agent reviewer --template dev-review --stack rust
+armadai new flow review --template review-loop --agents dev,reviewer
+armadai new automation fmt --event after-tool --run "cargo fmt"
+armadai new skill release-notes --description "Write release notes from the git log"
+armadai new                             # a guided menu (needs a terminal)
+```
+
+Each `armadai new` command writes one file, never through a symbolic link and never over an
+existing file without `--force`, then validates the project: a creation that would introduce an
+error is undone (the folders it created removed, a file `--force` replaced put back), and its
+diagnostics are marked "(rolled back)". Ids are refused, never rewritten, when they do not match
+`[a-z0-9][a-z0-9-]{0,63}` or name a Windows device (`con`, `nul`, `com1`…). Agent and flow
+templates: see [Templates](templates.md). A flow created in a project with neither a coordinator
+nor `policy.delegation: strict` is guidance only, and `new flow` says so.
+
+## Seeing a flow: `armadai graph`
+
+```bash
+armadai graph review > review.mmd     # one flow
+armadai graph                         # every flow
+```
+
+`graph` prints Mermaid, and nothing else, on stdout:
+
+```
+%% flow: review
+flowchart TD
+  n_dev["dev"]
+  n_reviewer["reviewer"]
+  n_dev --> n_reviewer
+  n_reviewer -->|"rejected"| n_dev
+  n_reviewer -.->|"failed"| n_dev
+```
+
+- One node per step, `n_` followed by the step id (other characters than `[A-Za-z0-9_]` become
+  `_`); its label is the agent, or `step (agent)` when they differ.
+- `done` links are plain arrows, other states are labelled, failure paths (`when: failed`,
+  `on_failure`) are dotted.
+- Without a flow id, every flow is printed, one diagram each, separated by a blank line: Mermaid
+  reads one diagram per document, so render them one at a time.
+- An unknown flow lists the flows; an invalid project prints its diagnostics on stderr and exits
+  with 1.
 
 ## Validation
 

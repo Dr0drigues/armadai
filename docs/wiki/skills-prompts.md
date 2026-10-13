@@ -1,9 +1,10 @@
 # Skills & Prompts
 
 > **Legacy format.** This page describes the format of projects before v1 (`.armadai/config.yaml`,
-> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and
-> internally by `armadai new` (templates) and `armadai init --pack` (starter packs). Projects use
-> the [Project format](project-format.md).
+> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and by
+> `armadai init --pack` for a starter pack in the legacy format (a `pack.yaml` without
+> `format: 1`). Projects, agent templates and the built-in packs use the
+> [Project format](project-format.md).
 
 ArmadAI supports reusable **prompts** (Markdown fragments with optional frontmatter) and
 **skills** (capabilities following the Agent Skills standard). A project lists the ones it uses in
@@ -45,7 +46,7 @@ apply_to:
 
 1. **Project-local** — `.armadai/prompts/`, or referenced via `path:` in the project config
 2. **User library** — `~/.config/armadai/prompts/<name>.md`
-3. **Starter packs** — converted with the pack by `armadai init --pack`
+3. **Starter packs** — a legacy pack's prompts are converted into skills by `armadai init --pack`
 
 ### Usage in the project config
 
@@ -91,11 +92,11 @@ description: Expert code review with security analysis
 ### Built-in Skills
 
 ArmadAI ships built-in skills that `armadai init` installs into `~/.config/armadai/skills/`:
-`armadai-agent-authoring`, `armadai-prompt-authoring`, `armadai-skill-authoring`,
-`armadai-starter-authoring`, `armadai-orchestration-patterns` and `zsh-env-authoring`.
-
-`armadai-orchestration-patterns` describes the `orchestration:` block as a declaration, checked by
-`armadai validate` and enforced in Claude Code by the [policy gate](policy-gate.md).
+`armadai-agent-authoring`, `armadai-skill-authoring`, `armadai-starter-authoring`,
+`armadai-orchestration-patterns` and `zsh-env-authoring`. The four `armadai-*` skills describe
+the canonical format (agents, skills, native packs, flows and the [policy gate](policy-gate.md));
+copy one into `.armadai/skills/` to give it to the agents of a project. In the canonical format a
+former prompt is a skill.
 
 Built-in skills are re-installed when the binary version changes (tracked via `.armadai-version`
 marker files).
