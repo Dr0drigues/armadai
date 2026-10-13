@@ -77,7 +77,9 @@ armadai new flow delivery --template fan-out --agents lead,backend,frontend,qa
 armadai graph review
 ```
 
-The agents must exist in the project; step ids are the agent ids, in the order given.
+The agents must exist in the project; step ids are the agent ids. The order given is the order
+of the links; in the written file the `steps` are listed alphabetically (the model keeps them in
+a sorted map), which changes nothing to the flow: its `links` carry the order.
 
 | Template | Agents | Shape |
 |---|---|---|
