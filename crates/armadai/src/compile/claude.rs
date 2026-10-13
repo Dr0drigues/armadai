@@ -155,6 +155,16 @@ impl Compiler for ClaudeCompiler {
                             "rendered as guidance in CLAUDE.md, not enforced"
                         }),
                     );
+                    if let Some(start) = &flow.start {
+                        plan.report.push(
+                            T,
+                            format!("flow {fid} start"),
+                            Status::Approximated,
+                            Some(&format!(
+                                "Start: `{start}`, rendered as guidance in CLAUDE.md"
+                            )),
+                        );
+                    }
                     for (sid, s) in &flow.steps {
                         if !s.states.is_empty() || s.on_failure.is_some() {
                             plan.report.push(
@@ -182,6 +192,14 @@ impl Compiler for ClaudeCompiler {
                     };
                     plan.report
                         .push(T, format!("flow {fid}"), status, Some(reason));
+                    if let (true, Some(start)) = (strict, &project.flows[fid].start) {
+                        plan.report.push(
+                            T,
+                            format!("flow {fid} start"),
+                            Status::Compiled,
+                            Some(&format!("the gate starts the main session at `{start}`")),
+                        );
+                    }
                 }
             }
         }
@@ -385,6 +403,9 @@ fn flow_section(fid: &str, flow: &Flow) -> String {
     let mut out = format!("\n### Flow `{fid}`\n\n");
     if let Some(d) = &flow.description {
         out.push_str(&format!("{}\n\n", one_line(d)));
+    }
+    if let Some(start) = &flow.start {
+        out.push_str(&format!("Start: `{start}`\n\n"));
     }
     out.push_str("Steps:\n\n");
     for (sid, s) in &flow.steps {
@@ -798,6 +819,33 @@ mod tests {
                  cannot preload them"
             )
         );
+    }
+
+    /// A declared `start` is said in CLAUDE.md and in the report.
+    #[test]
+    fn a_declared_start_is_rendered_and_reported() {
+        let mut files = team();
+        files.retain(|(p, _)| *p != FLOW.0);
+        files.push((
+            ".armadai/flows/ship.yaml",
+            b"start: plan\nsteps:\n  plan: { agent: lead }\n  build: { agent: dev }\nlinks:\n  - { from: plan, to: build }\n  - { from: build, to: plan, when: failed }\n",
+        ));
+        let plan = compile(&files).unwrap();
+        assert!(
+            plan.blocks[0].1.contains("Start: `plan`\n"),
+            "{}",
+            plan.blocks[0].1
+        );
+        let l = line(&plan, "flow ship start");
+        assert_eq!(l.status, Status::Approximated);
+        assert!(l.reason.as_deref().unwrap().contains("`plan`"), "{l:?}");
+        // without a coordinator, under strict, the gate applies it
+        files[0] = (
+            ".armadai/project.yaml",
+            b"schema_version: 1\npolicy:\n  delegation: strict\n",
+        );
+        let plan = compile(&files).unwrap();
+        assert_eq!(line(&plan, "flow ship start").status, Status::Compiled);
     }
 
     #[test]
