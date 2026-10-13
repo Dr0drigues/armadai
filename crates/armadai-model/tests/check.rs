@@ -414,16 +414,58 @@ fn pure_loop_has_no_entry_step() {
     assert!(!ds.iter().any(|d| d.code == "unreachable-step"));
 }
 
+/// An entry step has no incoming *unconditional* link (`when` absent or `done`):
+/// a failure path back to it does not make it a non-entry.
 #[test]
-fn on_failure_counts_as_a_link() {
-    // b's failure path leads back to a, so a has an incoming link: no entry step.
+fn a_failure_path_back_keeps_the_entry_step() {
     let ds = flow(
         "steps:\n  a: { agent: dev }\n  b: { agent: dev, on_failure: a }\nlinks:\n  - { from: a, to: b }\n",
     );
-    only(&ds, "no-entry-step");
+    assert!(ds.is_empty(), "{ds:?}");
+    let ds = flow(
+        "steps:\n  a: { agent: dev }\n  b: { agent: dev }\nlinks:\n  - { from: a, to: b }\n  - { from: b, to: a, when: failed }\n",
+    );
+    assert!(ds.is_empty(), "{ds:?}");
     // ...and a step reached only through on_failure is reachable.
     let ds = flow("steps:\n  a: { agent: dev, on_failure: c }\n  c: { agent: dev }\n");
     assert!(ds.is_empty(), "{ds:?}");
+}
+
+/// The review-loop shape: the rejected path back to the author is conditional.
+#[test]
+fn a_review_loop_has_its_author_as_entry() {
+    let body = "steps:\n  write: { agent: dev }\n  review: { agent: dev, states: [approved, rejected] }\n  ship: { agent: dev }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: write, when: rejected }\n  - { from: review, to: ship, when: approved }\n";
+    assert!(flow(body).is_empty(), "{:?}", flow(body));
+    let f = load_project(project(&[M, DEV, (".armadai/flows/f.yaml", body)]).path())
+        .project
+        .unwrap()
+        .flows
+        .remove("f")
+        .unwrap();
+    assert_eq!(entry_steps(&f), ["write"]);
+}
+
+/// Two steps linked to each other only conditionally: either may start the flow.
+#[test]
+fn mutually_conditional_steps_are_both_entries() {
+    let body = "steps:\n  a: { agent: dev, states: [x] }\n  b: { agent: dev, states: [y] }\nlinks:\n  - { from: a, to: b, when: x }\n  - { from: b, to: a, when: y }\n";
+    assert!(flow(body).is_empty(), "{:?}", flow(body));
+    let f = load_project(project(&[M, DEV, (".armadai/flows/f.yaml", body)]).path())
+        .project
+        .unwrap()
+        .flows
+        .remove("f")
+        .unwrap();
+    assert_eq!(entry_steps(&f), ["a", "b"]);
+}
+
+/// A loop of unconditional links, even with `done` spelled out, never starts.
+#[test]
+fn a_done_loop_has_no_entry_step() {
+    let ds = flow(
+        "steps:\n  a: { agent: dev }\n  b: { agent: dev }\nlinks:\n  - { from: a, to: b, when: done }\n  - { from: b, to: a }\n",
+    );
+    only(&ds, "no-entry-step");
 }
 
 #[test]

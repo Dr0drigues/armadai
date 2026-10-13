@@ -108,7 +108,7 @@ const IMPLICIT_SUBAGENT: &str = "general-purpose";
 ///
 /// - Main thread: with a coordinator, it IS the coordinator (it lives in
 ///   `CLAUDE.md`) and drives the flows: every step agent. Without one, the
-///   agents of entry steps (no incoming link nor `on_failure`).
+///   agents of entry steps (`armadai_model::entry_steps`, the validator's own).
 /// - The coordinator as `--agent`: same as the main thread.
 /// - Agent X: the agents of the steps a step of X leads to (link or `on_failure`).
 /// - `policy.free_agents`: always.
@@ -132,9 +132,10 @@ pub fn allowed_targets(project: &Project, caller: Option<&str>) -> BTreeSet<Stri
                     .filter_map(|(sid, s)| s.on_failure.as_deref().map(|t| (sid.as_str(), t))),
             )
             .collect();
+        let entries = armadai_model::entry_steps(flow);
         for (sid, step) in &flow.steps {
             let reached = if main {
-                coordinator.is_some() || !edges.iter().any(|(_, to)| to == sid)
+                coordinator.is_some() || entries.contains(sid)
             } else {
                 edges.iter().any(|(from, to)| {
                     to == sid
@@ -365,6 +366,27 @@ mod tests {
         );
         assert!(decide(&payload("", "dev", dir.path())).is_none());
         assert!(decide(&payload("", "qa", dir.path())).is_some());
+    }
+
+    /// Without a coordinator the main thread starts a review loop at its author:
+    /// the `rejected` path back does not hide the entry, and the `approved`
+    /// step is where the loop ends, not a way in.
+    #[test]
+    fn without_a_coordinator_a_review_loop_starts_at_its_author() {
+        let dir = tempfile::tempdir().unwrap();
+        write_project(
+            dir.path(),
+            "schema_version: 1\npolicy:\n  delegation: strict\n",
+        );
+        std::fs::remove_file(dir.path().join(".armadai/flows/ship.yaml")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/flows/review.yaml"),
+            "steps:\n  write: { agent: dev }\n  review: { agent: qa, states: [approved, rejected] }\n  ship: { agent: doc }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: write, when: rejected }\n  - { from: review, to: ship, when: approved }\n",
+        )
+        .unwrap();
+        assert!(decide(&payload("", "dev", dir.path())).is_none());
+        let r = reason(decide(&payload("", "doc", dir.path())));
+        assert!(r.contains("[dev]"), "{r}");
     }
 
     #[test]

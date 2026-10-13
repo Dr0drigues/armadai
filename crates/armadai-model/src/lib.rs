@@ -6,7 +6,7 @@ pub mod load;
 pub mod schema;
 pub mod types;
 pub mod write;
-pub use check::{check, has_errors, is_valid_id, load_checked, validate};
+pub use check::{check, entry_steps, has_errors, is_valid_id, load_checked, validate};
 pub use diag::{Diagnostic, Severity, locate, locate_key};
 pub use load::*;
 pub use schema::schemas;

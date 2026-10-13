@@ -147,8 +147,8 @@ warning on stderr.
 | `self-link` | error | A link, or `on_failure`, goes from a step to itself | Point it at another step |
 | `duplicate-link` | error | The same link is declared twice | Remove one |
 | `duplicate-failure-path` | error | A step has more than one failure path | Keep either `on_failure` or one `when: failed` link |
-| `no-entry-step` | warning | Every step has an incoming link: the flow can never start | Remove a link into the first step |
-| `unreachable-step` | warning | A step cannot be reached from any entry step | Link it, or remove it |
+| `no-entry-step` | warning | No step is an entry, so the flow can never start. An entry step has no incoming *unconditional* link (`when` absent or `done`): a conditional link (`when: rejected`, `when: failed`) or an `on_failure` leading back to it does not count. Among such steps, one that another reaches without reaching it back (the `approved` end of a review loop) is not an entry | Make one link into the first step conditional, or remove it |
+| `unreachable-step` | warning | A step cannot be reached from any entry step (every link and `on_failure` counts here) | Link it, or remove it |
 | `empty-command` | error | An automation's `run` is empty | Give the command to run |
 
 ## Migrating a legacy project

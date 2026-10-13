@@ -70,6 +70,56 @@ fn edit_distance(a: &str, b: &str) -> usize {
     d[a.len()][b.len()]
 }
 
+/// The steps a flow starts from. A candidate is a step no unconditional link
+/// (`when` absent or `done`) leads to: a conditional link (`when: rejected`,
+/// `when: failed`) and `on_failure` never make a step a non-entry by themselves.
+/// Among the candidates, one another candidate reaches (by any edge) without being
+/// reached back is not an entry: `ship`, reached from `write` only `when:
+/// approved`, is where a review loop ends, not where it starts.
+/// Links naming an unknown step are ignored (reported elsewhere).
+pub fn entry_steps(flow: &crate::load::Flow) -> Vec<String> {
+    let known = |l: &&crate::types::Link| {
+        flow.steps.contains_key(&l.from) && flow.steps.contains_key(&l.to)
+    };
+    let into: BTreeSet<&str> = (flow.links.iter().filter(known))
+        .filter(|l| l.when.as_deref().is_none_or(|w| w == "done"))
+        .map(|l| l.to.as_str())
+        .collect();
+    let edges: Vec<(&str, &str)> = (flow.links.iter().filter(known))
+        .map(|l| (l.from.as_str(), l.to.as_str()))
+        .chain(flow.steps.iter().filter_map(|(sid, s)| {
+            (s.on_failure.as_deref())
+                .filter(|t| flow.steps.contains_key(*t))
+                .map(|t| (sid.as_str(), t))
+        }))
+        .collect();
+    let reach = |from: &str| -> BTreeSet<&str> {
+        let mut seen = BTreeSet::new();
+        let mut todo = vec![from];
+        while let Some(s) = todo.pop() {
+            for (_, to) in edges.iter().filter(|(f, _)| *f == s) {
+                if seen.insert(*to) {
+                    todo.push(to);
+                }
+            }
+        }
+        seen
+    };
+    let candidates: Vec<&str> = (flow.steps.keys().map(String::as_str))
+        .filter(|s| !into.contains(s))
+        .collect();
+    let reached: BTreeMap<&str, BTreeSet<&str>> =
+        candidates.iter().map(|c| (*c, reach(c))).collect();
+    (candidates.iter())
+        .filter(|c| {
+            !candidates
+                .iter()
+                .any(|d| d != *c && reached[d].contains(*c) && !reached[*c].contains(d))
+        })
+        .map(|c| c.to_string())
+        .collect()
+}
+
 /// "did you mean" when an id is within edit distance 2, else the known ids.
 fn hint_for(token: &str, known: &BTreeSet<&str>) -> Option<String> {
     // closest id (ties: alphabetical, the set is sorted), within a bound that grows with length
@@ -429,7 +479,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
             );
         }
 
-        // reachability; `on_failure` counts as a link
+        // reachability from the entry steps; every edge counts, `on_failure` included
         let mut edges: Vec<(&str, &str)> = f
             .links
             .iter()
@@ -441,18 +491,15 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 edges.push((sid, t));
             }
         }
-        let entries: Vec<&str> = steps
-            .iter()
-            .copied()
-            .filter(|s| !edges.iter().any(|(_, to)| to == s))
-            .collect();
+        let entry_ids = entry_steps(f);
+        let entries: Vec<&str> = entry_ids.iter().map(String::as_str).collect();
         if entries.is_empty() {
             o.emit(
                 at,
                 Severity::Warning,
                 "no-entry-step",
                 None,
-                "every step has an incoming link: the flow can never start".into(),
+                "every step has an incoming unconditional link: the flow can never start".into(),
                 None,
             );
         } else {
