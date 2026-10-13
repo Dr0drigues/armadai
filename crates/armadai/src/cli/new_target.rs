@@ -53,6 +53,12 @@ pub fn check_id(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test hook: fail `write` right after the original was moved aside.
+    static FAIL_AFTER_ASIDE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 #[derive(Debug)]
 pub struct NewTarget {
     /// The project root (holding `.armadai/`).
@@ -125,8 +131,17 @@ impl NewTarget {
         })
     }
 
-    /// Create the missing folders, then the file with `content`.
+    /// Create the missing folders, then the file with `content`. A failure puts the
+    /// tree back first (the original, under `--force`; the folders it created).
     pub fn write(&mut self, content: &str) -> anyhow::Result<()> {
+        let r = self.write_inner(content);
+        if r.is_err() {
+            self.rollback()?;
+        }
+        r
+    }
+
+    fn write_inner(&mut self, content: &str) -> anyhow::Result<()> {
         let base = self.root.join(".armadai");
         let parent = self
             .path
@@ -150,6 +165,10 @@ impl NewTarget {
         if let Some((aside, _)) = &self.backup {
             std::fs::rename(&self.path, aside)
                 .with_context(|| format!("moving {} aside", self.path.display()))?;
+        }
+        #[cfg(test)]
+        if FAIL_AFTER_ASIDE.with(|f| f.get()) {
+            bail!("simulated failure after the move aside");
         }
         let mut f = std::fs::OpenOptions::new()
             .write(true)
@@ -175,7 +194,13 @@ impl NewTarget {
 
     /// Put the tree back: the previous file (under `--force`), or nothing at all.
     pub fn undo(self) -> anyhow::Result<()> {
+        self.rollback()
+    }
+
+    fn rollback(&self) -> anyhow::Result<()> {
         match &self.backup {
+            // not moved aside yet: the original is where it was, untouched
+            Some((aside, _)) if std::fs::symlink_metadata(aside).is_err() => {}
             // the original was only moved: moving it back restores bytes and mode
             Some((aside, _)) => {
                 let back = (|| {
@@ -197,7 +222,9 @@ impl NewTarget {
                     std::fs::remove_file(&self.path)?;
                 }
                 for dir in self.created.iter().rev() {
-                    std::fs::remove_dir(dir)?;
+                    if dir.exists() {
+                        std::fs::remove_dir(dir)?;
+                    }
                 }
             }
         }
@@ -208,6 +235,55 @@ impl NewTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn project_with_dev(text: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai/agents")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/project.yaml"),
+            "schema_version: 1\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".armadai/agents/dev.md"), text).unwrap();
+        dir
+    }
+
+    fn files_of(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir.join(".armadai/agents"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// A write that fails after the original was moved aside, then the undo the
+    /// caller runs: the original is back.
+    #[test]
+    fn a_write_failing_after_the_move_is_undone() {
+        let dir = project_with_dev("orig\n");
+        let mut t = NewTarget::resolve_in(dir.path(), Kind::Agent, "dev", true).unwrap();
+        FAIL_AFTER_ASIDE.with(|f| f.set(true));
+        let r = t.write("new\n");
+        FAIL_AFTER_ASIDE.with(|f| f.set(false));
+        assert!(r.is_err());
+        // `write` put the original back itself, before reporting the failure
+        let path = dir.path().join(".armadai/agents/dev.md");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "orig\n");
+        assert_eq!(files_of(dir.path()), ["dev.md"]);
+    }
+
+    /// An undo before anything was moved never deletes the original.
+    #[test]
+    fn an_undo_before_the_write_keeps_the_original() {
+        let dir = project_with_dev("orig\n");
+        let t = NewTarget::resolve_in(dir.path(), Kind::Agent, "dev", true).unwrap();
+        t.undo().unwrap();
+        let path = dir.path().join(".armadai/agents/dev.md");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "orig\n");
+    }
 
     #[test]
     fn windows_reserved_names() {
