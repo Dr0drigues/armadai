@@ -1,10 +1,8 @@
 use std::path::Path;
 
-use dialoguer::{Confirm, Input, Select};
 use include_dir::{Dir, include_dir};
 
 use armadai_core::config::AppPaths;
-use armadai_providers::factory::api_backend_for_tool;
 
 /// Agent templates shipped inside the binary, so `armadai new` works on a
 /// fresh machine. A same-named file in the templates directory overrides them.
@@ -49,69 +47,45 @@ pub async fn execute(
     interactive: bool,
 ) -> anyhow::Result<()> {
     if interactive {
-        return interactive_create().await;
+        anyhow::bail!("interactive mode is not available yet; pass the options");
     }
-
     let name =
         name.ok_or_else(|| anyhow::anyhow!("Agent name is required (or use --interactive)"))?;
-    template_create(&name, &template, stack.as_deref(), description.as_deref())
-}
-
-/// Classic template-based creation (non-interactive)
-fn template_create(
-    name: &str,
-    template: &str,
-    stack: Option<&str>,
-    description: Option<&str>,
-) -> anyhow::Result<()> {
     let paths = AppPaths::resolve();
-    let templates_dir = &paths.templates_dir;
-    let output_path = agent_destination(name)?;
-
-    // Load template. Through the CLI clap rejects unknown names first; this
-    // listing is kept for programmatic callers.
-    let Some(template_source) = load_template_from(templates_dir, template) else {
+    let output_path = agent_destination(&name)?;
+    let Some(source) = load_template_from(&paths.templates_dir, &template) else {
         let e = crate::cli::style::err();
         anstream::eprintln!("{e}Template '{template}' not found.{e:#}\n");
-        list_templates(templates_dir)?;
+        list_templates(&paths.templates_dir)?;
         anyhow::bail!("Use --template <name> with one of the templates above");
     };
-
-    let title = slug_to_title(name);
-    let mut vars = std::collections::BTreeMap::new();
-    vars.insert("name".to_string(), title.clone());
-    // Replace model placeholder with default
-    vars.insert("model".to_string(), "latest:pro".to_string());
-    if let Some(desc) = description {
-        vars.insert("description".to_string(), desc.to_string());
+    let opts = AgentOptions {
+        description,
+        stack,
+        ..AgentOptions::default()
+    };
+    let (agent, remaining) = agent_from_template(&name, &template, &source, &opts)?;
+    if let Some(dir) = output_path.parent() {
+        std::fs::create_dir_all(dir)?;
     }
-    if let Some(s) = stack {
-        vars.insert("stack".to_string(), s.to_string());
-    }
-
-    let (content, remaining) = armadai_core::template::render_lenient(&template_source, &vars);
-
-    write_canonical_agent(name, &content, &output_path)?;
+    std::fs::write(&output_path, armadai_model::render_agent(&name, &agent))?;
 
     let o = crate::cli::style::ok();
     let m = crate::cli::style::muted();
-    let a = crate::cli::style::accent();
     anstream::println!("{o}Agent created:{o:#} {m}{}{m:#}", output_path.display());
-    anstream::println!("{m}  Template: {template}{m:#}");
-    anstream::println!("{m}  Name:{m:#} {a}{title}{a:#}");
-
-    if !remaining.is_empty() {
-        let w = crate::cli::style::warn();
-        anstream::println!(
-            "\n{w}  Note: the following placeholders need to be filled in manually:{w:#}"
-        );
-        for placeholder_name in &remaining {
-            let placeholder = format!("{{{{{placeholder_name}}}}}");
-            anstream::println!("{w}    - {placeholder}{w:#}");
-        }
-    }
-
+    warn_placeholders(&remaining);
     Ok(())
+}
+
+fn warn_placeholders(remaining: &[String]) {
+    if remaining.is_empty() {
+        return;
+    }
+    let w = crate::cli::style::warn();
+    anstream::eprintln!("{w}  Note: these placeholders are left for you to fill in:{w:#}");
+    for p in remaining {
+        anstream::eprintln!("{w}    - {{{{{p}}}}}{w:#}");
+    }
 }
 
 /// `.armadai/agents/<name>.md` of the project at or above the current directory;
@@ -129,439 +103,56 @@ fn agent_destination(name: &str) -> anyhow::Result<std::path::PathBuf> {
     Ok(path)
 }
 
-/// The rendered template is a legacy agent: it goes through the same converter
-/// as `migrate` (legacy parser, then the canonical writer), in a scratch project,
-/// and lands at `dest` in the canonical format (review R-I9).
-fn write_canonical_agent(name: &str, legacy: &str, dest: &Path) -> anyhow::Result<()> {
-    let tmp = tempfile::tempdir()?;
-    std::fs::write(tmp.path().join(format!("{name}.md")), legacy)?;
-    std::fs::write(
-        tmp.path().join("armadai.yaml"),
-        format!("agents:\n  - path: {name}.md\n"),
-    )?;
-    crate::migrate::run(tmp.path(), false, false)?;
-    let agents = tmp.path().join(".armadai/agents");
-    let converted = std::fs::read_dir(&agents)?
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| p.extension().is_some_and(|e| e == "md"))
-        .ok_or_else(|| anyhow::anyhow!("the template did not convert into an agent"))?;
-    if let Some(dir) = dest.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::copy(converted, dest)?;
-    Ok(())
+/// What the user sets on top of a template; `None` keeps the template's value.
+#[derive(Debug, Default, Clone)]
+pub struct AgentOptions {
+    pub description: Option<String>,
+    pub stack: Option<String>,
+    pub tier: Option<armadai_model::Tier>,
+    pub skills: Vec<String>,
 }
 
-/// Interactive agent creation wizard
-async fn interactive_create() -> anyhow::Result<()> {
-    let paths = AppPaths::resolve();
-    let templates_dir = &paths.templates_dir;
+/// What `{{stack}}` reads when no stack is given.
+const DEFAULT_STACK: &str = "this project's stack";
 
-    let h = crate::cli::style::header();
-    anstream::println!("{h}🧙 ArmadAI Agent Creation Wizard{h:#}\n");
-
-    // 1. Agent name
-    let name: String = Input::new()
-        .with_prompt("Agent name (slug, e.g. my-reviewer)")
-        .validate_with(|input: &String| -> Result<(), String> {
-            if input.is_empty() {
-                return Err("Name cannot be empty".into());
-            }
-            if !armadai_model::is_valid_id(input) {
-                return Err("Use lowercase letters, digits and hyphens".into());
-            }
-            Ok(())
-        })
-        .interact_text()?;
-
-    let output_path = agent_destination(&name)?;
-
-    // 2. Template selection
-    let mut template_names = template_names_from(templates_dir);
-    template_names.insert(0, "from scratch".to_string());
-
-    let template_idx = Select::new()
-        .with_prompt("Template")
-        .items(&template_names)
-        .default(0)
-        .interact()?;
-
-    let from_scratch = template_idx == 0;
-    let chosen_template = if from_scratch {
-        None
-    } else {
-        Some(&template_names[template_idx])
+/// The agent a canonical template gives for `id`, plus the placeholders left in
+/// its body. `description`, `tier` and `skills` are set on the parsed frontmatter
+/// (never by substitution in the YAML); `{{name}}`, `{{description}}` and
+/// `{{stack}}` are rendered in the body only.
+pub fn agent_from_template(
+    id: &str,
+    template: &str,
+    source: &str,
+    opts: &AgentOptions,
+) -> anyhow::Result<(armadai_model::Agent, Vec<String>)> {
+    let Some((yaml, body, _)) = armadai_model::split_frontmatter(source) else {
+        anyhow::bail!(
+            "template {template} uses the legacy format; rewrite it with a YAML frontmatter \
+             (see the built-in templates) or run armadai migrate on a project"
+        );
     };
-
-    // 3. Provider
-    let provider_idx = Select::new()
-        .with_prompt("Provider")
-        .items(WIZARD_PROVIDER_CHOICES)
-        .default(0)
-        .interact()?;
-    let provider = WIZARD_PROVIDER_CHOICES[provider_idx];
-
-    // 4. Model (filtered by provider)
-    let model = prompt_model(provider).await?;
-
-    // 5. Temperature
-    let temp_presets = [
-        "Focused (0.2)",
-        "Balanced (0.5)",
-        "Creative (0.7)",
-        "Custom",
-    ];
-    let temp_idx = Select::new()
-        .with_prompt("Temperature")
-        .items(temp_presets)
-        .default(1)
-        .interact()?;
-    let temperature: f32 = match temp_idx {
-        0 => 0.2,
-        1 => 0.5,
-        2 => 0.7,
-        _ => Input::new()
-            .with_prompt("Temperature (0.0 - 2.0)")
-            .default(0.5)
-            .validate_with(|input: &f32| {
-                if (0.0..=2.0).contains(input) {
-                    Ok(())
-                } else {
-                    Err("Must be between 0.0 and 2.0")
-                }
-            })
-            .interact_text()?,
-    };
-
-    // 6. Max tokens
-    let set_max_tokens = Confirm::new()
-        .with_prompt("Set max tokens?")
-        .default(false)
-        .interact()?;
-    let max_tokens: Option<u32> = if set_max_tokens {
-        Some(
-            Input::new()
-                .with_prompt("Max tokens")
-                .default(4096u32)
-                .interact_text()?,
-        )
-    } else {
-        None
-    };
-
-    // 7. Tags
-    let tags_input: String = Input::new()
-        .with_prompt("Tags (comma-separated, e.g. dev,review)")
-        .default("general".to_string())
-        .interact_text()?;
-    let tags = parse_comma_list(&tags_input);
-
-    // 8. Stacks
-    let stacks_input: String = Input::new()
-        .with_prompt("Stacks (comma-separated, e.g. rust,python)")
-        .allow_empty(true)
-        .interact_text()?;
-    let stacks = parse_comma_list(&stacks_input);
-
-    // 9. System prompt
-    let system_prompt: String = Input::new()
-        .with_prompt("System prompt")
-        .default("You are a helpful assistant.".to_string())
-        .interact_text()?;
-
-    // 10. Instructions (optional)
-    let add_instructions = Confirm::new()
-        .with_prompt("Add instructions?")
-        .default(false)
-        .interact()?;
-    let instructions = if add_instructions {
-        let text: String = Input::new().with_prompt("Instructions").interact_text()?;
-        Some(text)
-    } else {
-        None
-    };
-
-    // 11. Output format (optional)
-    let add_output_format = Confirm::new()
-        .with_prompt("Add output format?")
-        .default(false)
-        .interact()?;
-    let output_format = if add_output_format {
-        let text: String = Input::new().with_prompt("Output format").interact_text()?;
-        Some(text)
-    } else {
-        None
-    };
-
-    // Generate content
-    let content = if let Some(tpl_name) = chosen_template {
-        let mut content = load_template_from(templates_dir, tpl_name)
-            .ok_or_else(|| anyhow::anyhow!("Template '{tpl_name}' not found"))?;
-        let title = slug_to_title(&name);
-        // Through the shared `template` module, not a hand-rolled
-        // `replace("{{name}}", ..)` — that exact shape is what let a
-        // `{{ name }}` (spaced) placeholder in a template ship
-        // unsubstituted (see `template.rs`'s `render`/`render_lenient`):
-        // building the literal `{{name}}` string to search for agrees with
-        // neither a template author's spacing nor with how
-        // `placeholders()`/`render` itself recognises a placeholder.
-        let mut vars = std::collections::BTreeMap::new();
-        vars.insert("name".to_string(), title);
-        vars.insert("description".to_string(), system_prompt.clone());
-        if let Some(first_stack) = stacks.first() {
-            vars.insert("stack".to_string(), first_stack.clone());
+    let mut front: armadai_model::AgentFront = serde_yaml_ng::from_str(yaml)
+        .map_err(|e| anyhow::anyhow!("template {template} has an invalid frontmatter: {e}"))?;
+    match &opts.description {
+        Some(d) => front.description = d.clone(),
+        None if front.description.contains("{{") || front.description.trim().is_empty() => {
+            anyhow::bail!("template {template} has no default description: pass --description")
         }
-        let (rendered, _remaining) = armadai_core::template::render_lenient(&content, &vars);
-        content = rendered;
-        // Overwrite metadata section with user choices
-        overwrite_metadata(
-            &content,
-            provider,
-            model.as_deref(),
-            temperature,
-            max_tokens,
-            &tags,
-            &stacks,
-        )
-    } else {
-        generate_from_scratch(&AgentParams {
-            name: &name,
-            provider,
-            model: model.as_deref(),
-            temperature,
-            max_tokens,
-            tags: &tags,
-            stacks: &stacks,
-            system_prompt: &system_prompt,
-            instructions: instructions.as_deref(),
-            output_format: output_format.as_deref(),
-        })
-    };
-
-    write_canonical_agent(&name, &content, &output_path)?;
-
-    let o = crate::cli::style::ok();
-    let m = crate::cli::style::muted();
-    let a = crate::cli::style::accent();
-    anstream::println!("\n{o}Agent created:{o:#} {m}{}{m:#}", output_path.display());
-    anstream::println!("{m}  Name:{m:#} {a}{}{a:#}", slug_to_title(&name));
-    anstream::println!("{m}  Provider: {provider}{m:#}");
-    if let Some(ref model_name) = model {
-        anstream::println!("{m}  Model: {model_name}{m:#}");
+        None => {}
     }
-
-    Ok(())
-}
-
-/// The `provider:` values `armadai new -i` offers.
-///
-/// These are agent `provider:` names (LLM tools and API vendors), not link
-/// targets: `gemini` stays here because an agent may still declare it, even
-/// though `armadai link` no longer writes a Gemini config.
-///
-/// Order is UX, not inventory: the unified tool names first (`claude` is the
-/// default), then the explicit API providers, then the generic escape hatch.
-/// Six of the seven unified names spawn a CLI; `gpt` sits with them because
-/// it is a unified name, but it is API-only (issue #402).
-pub(crate) const WIZARD_PROVIDER_CHOICES: &[&str] = &[
-    "claude",
-    "gemini",
-    "codex",
-    "copilot",
-    "opencode",
-    "gpt",
-    "aider",
-    "anthropic",
-    "openai",
-    "google",
-    "proxy",
-    "cli",
-];
-
-/// Prompt for model based on provider.
-/// Tries the local models.dev cache first (no network), falls back to providers.yaml.
-async fn prompt_model(provider: &str) -> anyhow::Result<Option<String>> {
-    // CLI provider doesn't need a model
-    if provider == "cli" {
-        return Ok(None);
+    if opts.tier.is_some() {
+        front.tier = opts.tier;
     }
-
-    let backend = api_backend_for_tool(provider).unwrap_or(provider);
-
-    // Try models.dev cache only (no network)
-    if let Some(entries) = armadai_providers::model_registry::fetch::load_models(backend)
-        && !entries.is_empty()
-    {
-        return prompt_from_registry_entries(&entries);
+    if !opts.skills.is_empty() {
+        front.skills = opts.skills.clone();
     }
-
-    // Fallback to providers.yaml
-    let models = load_provider_models(backend);
-    if models.is_empty() {
-        let model: String = Input::new()
-            .with_prompt("Model name")
-            .allow_empty(true)
-            .interact_text()?;
-        return Ok(if model.is_empty() { None } else { Some(model) });
-    }
-
-    let mut items: Vec<String> = models;
-    items.push("(custom)".to_string());
-
-    let idx = Select::new()
-        .with_prompt("Model")
-        .items(&items)
-        .default(0)
-        .interact()?;
-
-    if idx == items.len() - 1 {
-        let model: String = Input::new()
-            .with_prompt("Custom model name")
-            .interact_text()?;
-        Ok(Some(model))
-    } else {
-        Ok(Some(items[idx].clone()))
-    }
-}
-
-/// Display models from the registry with enriched labels (context window, cost).
-fn prompt_from_registry_entries(
-    entries: &[armadai_providers::model_registry::ModelEntry],
-) -> anyhow::Result<Option<String>> {
-    let labels: Vec<String> = entries.iter().map(|e| e.display_label()).collect();
-    let mut items = labels;
-    items.push("(custom)".to_string());
-
-    let idx = Select::new()
-        .with_prompt("Model")
-        .items(&items)
-        .default(0)
-        .interact()?;
-
-    if idx == items.len() - 1 {
-        let model: String = Input::new()
-            .with_prompt("Custom model name")
-            .interact_text()?;
-        Ok(Some(model))
-    } else {
-        Ok(Some(entries[idx].id.clone()))
-    }
-}
-
-/// Load model list for a given API backend from providers config.
-fn load_provider_models(backend: &str) -> Vec<String> {
-    let cfg = armadai_core::config::load_providers_config();
-    cfg.providers
-        .get(backend)
-        .map(|p| p.models.clone())
-        .unwrap_or_default()
-}
-
-/// Overwrite the ## Metadata section in a template with user choices.
-fn overwrite_metadata(
-    content: &str,
-    provider: &str,
-    model: Option<&str>,
-    temperature: f32,
-    max_tokens: Option<u32>,
-    tags: &[String],
-    stacks: &[String],
-) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    let mut in_metadata = false;
-    let mut metadata_written = false;
-
-    for line in content.lines() {
-        if line.starts_with("## Metadata") {
-            in_metadata = true;
-            lines.push(line.to_string());
-            // Write new metadata
-            lines.push(format!("- provider: {provider}"));
-            if let Some(m) = model {
-                lines.push(format!("- model: {m}"));
-            }
-            lines.push(format!("- temperature: {temperature}"));
-            if let Some(mt) = max_tokens {
-                lines.push(format!("- max_tokens: {mt}"));
-            }
-            if !tags.is_empty() {
-                lines.push(format!("- tags: [{}]", tags.join(", ")));
-            }
-            if !stacks.is_empty() {
-                lines.push(format!("- stacks: [{}]", stacks.join(", ")));
-            }
-            metadata_written = true;
-            continue;
-        }
-
-        if in_metadata {
-            // Skip old metadata lines until next section or blank line before section
-            if line.starts_with("## ") {
-                in_metadata = false;
-                lines.push(String::new());
-                lines.push(line.to_string());
-            }
-            // Skip metadata lines (starting with -)
-            continue;
-        }
-
-        lines.push(line.to_string());
-    }
-
-    if !metadata_written {
-        // Fallback: just return original
-        return content.to_string();
-    }
-
-    lines.join("\n") + "\n"
-}
-
-/// Parameters for generating an agent from scratch.
-pub struct AgentParams<'a> {
-    pub name: &'a str,
-    pub provider: &'a str,
-    pub model: Option<&'a str>,
-    pub temperature: f32,
-    pub max_tokens: Option<u32>,
-    pub tags: &'a [String],
-    pub stacks: &'a [String],
-    pub system_prompt: &'a str,
-    pub instructions: Option<&'a str>,
-    pub output_format: Option<&'a str>,
-}
-
-/// Generate a complete agent markdown file from scratch.
-pub fn generate_from_scratch(params: &AgentParams<'_>) -> String {
-    let title = slug_to_title(params.name);
-    let mut md = format!("# {title}\n\n## Metadata\n");
-
-    md.push_str(&format!("- provider: {}\n", params.provider));
-    if let Some(m) = params.model {
-        md.push_str(&format!("- model: {m}\n"));
-    }
-    md.push_str(&format!("- temperature: {}\n", params.temperature));
-    if let Some(mt) = params.max_tokens {
-        md.push_str(&format!("- max_tokens: {mt}\n"));
-    }
-    if !params.tags.is_empty() {
-        md.push_str(&format!("- tags: [{}]\n", params.tags.join(", ")));
-    }
-    if !params.stacks.is_empty() {
-        md.push_str(&format!("- stacks: [{}]\n", params.stacks.join(", ")));
-    }
-
-    md.push_str(&format!("\n## System Prompt\n\n{}\n", params.system_prompt));
-
-    if let Some(inst) = params.instructions {
-        md.push_str(&format!("\n## Instructions\n\n{inst}\n"));
-    }
-
-    if let Some(fmt) = params.output_format {
-        md.push_str(&format!("\n## Output Format\n\n{fmt}\n"));
-    }
-
-    md
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("name".to_string(), slug_to_title(id));
+    vars.insert("description".to_string(), front.description.clone());
+    let stack = opts.stack.as_deref().unwrap_or(DEFAULT_STACK);
+    vars.insert("stack".to_string(), stack.to_string());
+    let (body, remaining) = armadai_core::template::render_lenient(body, &vars);
+    Ok((armadai_model::Agent { front, body }, remaining))
 }
 
 /// Convert a slug like "my-agent" to title case "My Agent".
@@ -576,15 +167,6 @@ pub fn slug_to_title(slug: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// Parse a comma-separated string into a list of trimmed, non-empty strings.
-pub fn parse_comma_list(input: &str) -> Vec<String> {
-    input
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 /// Clap value parser that provides completion for available template names.
@@ -639,72 +221,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    #[tokio::test]
-    async fn new_basic_agent() {
-        let dir = tempfile::tempdir().unwrap();
-        let templates = dir.path().join("templates");
-        let agents = dir.path().join("agents");
-        fs::create_dir_all(&templates).unwrap();
-
-        fs::write(
-            templates.join("basic.md"),
-            "# {{name}}\n\n## Metadata\n- provider: anthropic\n\n## System Prompt\n\n{{description}}\n",
-        )
-        .unwrap();
-
-        // We need to work from the temp dir, so test the logic directly
-        let template_path = templates.join("basic.md");
-        let output_path = agents.join("my-agent.md");
-        let mut content = fs::read_to_string(&template_path).unwrap();
-        content = content.replace("{{name}}", "My Agent");
-        content = content.replace("{{description}}", "A test agent");
-        fs::create_dir_all(&agents).unwrap();
-        fs::write(&output_path, &content).unwrap();
-
-        let result = fs::read_to_string(&output_path).unwrap();
-        assert!(result.contains("# My Agent"));
-        assert!(result.contains("A test agent"));
-        assert!(!result.contains("{{name}}"));
-    }
-
-    #[test]
-    fn test_generate_from_scratch() {
-        let tags = vec!["dev".to_string(), "test".to_string()];
-        let stacks = vec!["rust".to_string()];
-        let md = generate_from_scratch(&AgentParams {
-            name: "test-agent",
-            provider: "claude",
-            model: Some("claude-sonnet-4-5-20250929"),
-            temperature: 0.5,
-            max_tokens: Some(4096),
-            tags: &tags,
-            stacks: &stacks,
-            system_prompt: "You are a test assistant.",
-            instructions: Some("1. Read code\n2. Write tests"),
-            output_format: Some("Markdown with code blocks"),
-        });
-
-        assert!(md.contains("# Test Agent"));
-        assert!(md.contains("- provider: claude"));
-        assert!(md.contains("- model: claude-sonnet-4-5-20250929"));
-        assert!(md.contains("- temperature: 0.5"));
-        assert!(md.contains("- max_tokens: 4096"));
-        assert!(md.contains("- tags: [dev, test]"));
-        assert!(md.contains("- stacks: [rust]"));
-        assert!(md.contains("## System Prompt"));
-        assert!(md.contains("You are a test assistant."));
-        assert!(md.contains("## Instructions"));
-        assert!(md.contains("## Output Format"));
-
-        // Verify parseable by the parser
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test-agent.md");
-        std::fs::write(&path, &md).unwrap();
-        let agent = armadai_core::parser::parse_agent_file(&path).unwrap();
-        assert_eq!(agent.name, "Test Agent");
-        assert_eq!(agent.metadata.provider, "claude");
-    }
-
     #[test]
     fn load_template_falls_back_to_embedded_when_dir_is_missing() {
         let dir = tempfile::tempdir().unwrap();
@@ -740,7 +256,7 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
-        assert_eq!(names.len(), 13);
+        assert_eq!(names.len(), 12);
     }
 
     #[test]
@@ -748,15 +264,98 @@ mod tests {
         let on_disk =
             collect_template_names(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates")));
         assert_eq!(template_names_from(Path::new("/nonexistent")), on_disk);
-        assert_eq!(on_disk.len(), 12);
+        assert_eq!(on_disk.len(), 11);
+    }
+
+    /// A project holding only `agent` as `.armadai/agents/<id>.md`: its diagnostics.
+    fn diagnostics_of(id: &str, agent: &armadai_model::Agent) -> Vec<armadai_model::Diagnostic> {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".armadai/agents")).unwrap();
+        fs::write(
+            dir.path().join(".armadai/project.yaml"),
+            "schema_version: 1\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(format!(".armadai/agents/{id}.md")),
+            armadai_model::render_agent(id, agent),
+        )
+        .unwrap();
+        armadai_model::validate(dir.path())
     }
 
     #[test]
-    fn test_parse_comma_list() {
-        assert_eq!(parse_comma_list("a, b, c"), vec!["a", "b", "c"]);
-        assert_eq!(parse_comma_list("single"), vec!["single"]);
-        assert_eq!(parse_comma_list(""), Vec::<String>::new());
-        assert_eq!(parse_comma_list(" a , , b "), vec!["a", "b"]);
+    fn every_embedded_template_gives_a_clean_agent_without_options() {
+        for name in template_names_from(Path::new("/nonexistent")) {
+            let source = embedded_template(&name).unwrap();
+            let (agent, left) =
+                agent_from_template("my-agent", &name, source, &AgentOptions::default()).unwrap();
+            let text = armadai_model::render_agent("my-agent", &agent);
+            assert!(!text.contains("{{"), "{name}: {text}");
+            assert!(left.is_empty(), "{name}: {left:?}");
+            assert!(!agent.front.description.trim().is_empty(), "{name}");
+            assert!(!agent.body.contains("## Pipeline"), "{name}");
+            assert!(agent.front.tier.is_some(), "{name}");
+            let ds = diagnostics_of("my-agent", &agent);
+            assert!(ds.is_empty(), "{name}: {ds:?}");
+        }
+    }
+
+    #[test]
+    fn options_are_set_on_the_frontmatter_not_substituted_into_it() {
+        // YAML-hostile text: a substitution into the frontmatter would break it
+        let hostile = "audits: \"payments\" # and {{stack}}\n- more";
+        let opts = AgentOptions {
+            description: Some(hostile.into()),
+            stack: Some("rust".into()),
+            tier: Some(armadai_model::Tier::Max),
+            skills: vec!["notes".into()],
+        };
+        let (agent, _) =
+            agent_from_template("a", "basic", embedded_template("basic").unwrap(), &opts).unwrap();
+        assert_eq!(agent.front.description, hostile);
+        assert_eq!(agent.front.tier, Some(armadai_model::Tier::Max));
+        assert_eq!(agent.front.skills, ["notes"]);
+        assert!(agent.body.contains(hostile), "{}", agent.body);
+        let text = armadai_model::render_agent("a", &agent);
+        let (yaml, _, _) = armadai_model::split_frontmatter(&text).unwrap();
+        let back: armadai_model::AgentFront = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(back, agent.front);
+
+        let (agent, _) = agent_from_template(
+            "a",
+            "dev-review",
+            embedded_template("dev-review").unwrap(),
+            &opts,
+        )
+        .unwrap();
+        assert!(agent.body.contains("working on rust"), "{}", agent.body);
+    }
+
+    #[test]
+    fn a_legacy_template_is_a_clear_error() {
+        let legacy = "# {{name}}\n\n## Metadata\n- provider: anthropic\n\n## System Prompt\n\nHi\n";
+        let e = agent_from_template("a", "mine", legacy, &AgentOptions::default()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("template mine uses the legacy format"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_template_without_a_default_description_needs_one() {
+        let t = "---\ndescription: \"{{description}}\"\n---\nBody {{description}}\n";
+        let e = agent_from_template("a", "mine", t, &AgentOptions::default()).unwrap_err();
+        assert!(e.to_string().contains("--description"), "{e}");
+        let opts = AgentOptions {
+            description: Some("Does things".into()),
+            ..AgentOptions::default()
+        };
+        let (agent, _) = agent_from_template("a", "mine", t, &opts).unwrap();
+        let text = armadai_model::render_agent("a", &agent);
+        assert!(!text.contains("{{description}}"), "{text}");
+        assert!(text.contains("Body Does things"), "{text}");
     }
 
     #[test]

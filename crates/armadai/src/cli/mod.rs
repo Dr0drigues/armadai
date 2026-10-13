@@ -47,18 +47,16 @@ pub enum Command {
     /// Create a new agent from a template
     #[command(
         long_about = "Create a new agent from a template.\n\n\
-            Available templates: basic, dev-review, dev-test, cli-generic, planning, \
+            Available templates: basic, dev-review, dev-test, planning, \
             security-review, debug, tech-debt, tdd-red, tdd-green, tdd-refactor, tech-writer \
             (built into the binary; a same-named file in ./templates or \
             ~/.config/armadai/templates overrides one, and adds your own).\n\
-            The agent is converted to the canonical format and written to \
-            .armadai/agents/<name>.md of the current project (armadai init --project first).\n\n\
-            Use --interactive (-i) for a guided step-by-step creation wizard.",
+            The agent is written to .armadai/agents/<name>.md of the current project \
+            (armadai init --project first).",
         after_help = "Examples:\n  \
             armadai new my-assistant\n  \
             armadai new reviewer --template dev-review --stack rust\n  \
-            armadai new scanner --template security-review -d \"audit OWASP top 10\"\n  \
-            armadai new -i"
+            armadai new scanner --template security-review -d \"audit OWASP top 10\""
     )]
     New {
         /// Agent name (optional in interactive mode)

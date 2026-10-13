@@ -62,7 +62,7 @@ fn every_embedded_template_creates_a_parseable_agent_without_any_templates_dir()
 
     let templates = embedded_templates();
     assert!(
-        templates.len() >= 12,
+        templates.len() >= 11,
         "expected the shipped templates, saw {templates:?}"
     );
     for tpl in &templates {
@@ -93,7 +93,7 @@ fn project_templates_dir_overrides_the_embedded_template() {
     std::fs::create_dir_all(&tpl_dir).unwrap();
     std::fs::write(
         tpl_dir.join("basic.md"),
-        "# {{name}}\n\n## Metadata\n\n- provider: anthropic\n- model: {{model}}\n\n## System Prompt\n\nPROJECT_OVERRIDE_MARKER\n",
+        "---\ndescription: Mine\n---\nPROJECT_OVERRIDE_MARKER\n",
     )
     .unwrap();
 
@@ -109,7 +109,7 @@ fn user_templates_dir_overrides_the_embedded_template() {
     std::fs::create_dir_all(&tpl_dir).unwrap();
     std::fs::write(
         tpl_dir.join("basic.md"),
-        "# {{name}}\n\n## Metadata\n\n- provider: anthropic\n- model: {{model}}\n\n## System Prompt\n\nUSER_OVERRIDE_MARKER\n",
+        "---\ndescription: Mine\n---\nUSER_OVERRIDE_MARKER\n",
     )
     .unwrap();
 
@@ -125,7 +125,7 @@ fn a_custom_template_is_offered_next_to_the_embedded_ones() {
     std::fs::create_dir_all(&tpl_dir).unwrap();
     std::fs::write(
         tpl_dir.join("mine.md"),
-        "# {{name}}\n\n## Metadata\n\n- provider: anthropic\n- model: {{model}}\n\n## System Prompt\n\nMINE\n",
+        "---\ndescription: Mine\n---\nMINE\n",
     )
     .unwrap();
 
@@ -133,6 +133,25 @@ fn a_custom_template_is_offered_next_to_the_embedded_ones() {
     let body = std::fs::read_to_string(agent_path(&s, "a")).unwrap();
     assert!(body.contains("MINE"), "{body}");
     armadai(&s, &["new", "b", "--template", "dev-review"]).success();
+}
+
+#[test]
+fn a_legacy_format_template_is_a_clear_error() {
+    let s = scratch();
+    let tpl_dir = s.cwd.join("templates");
+    std::fs::create_dir_all(&tpl_dir).unwrap();
+    std::fs::write(
+        tpl_dir.join("basic.md"),
+        "# {{name}}\n\n## Metadata\n- provider: anthropic\n\n## System Prompt\n\nOld\n",
+    )
+    .unwrap();
+    let out = armadai(&s, &["new", "old", "--template", "basic"]).failure();
+    let err = String::from_utf8_lossy(&out.get_output().stderr).into_owned();
+    assert!(
+        err.contains("template basic uses the legacy format"),
+        "{err}"
+    );
+    assert!(!agent_path(&s, "old").exists());
 }
 
 #[test]
