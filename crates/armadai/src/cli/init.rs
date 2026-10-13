@@ -245,6 +245,7 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
         );
     };
     let pack = StarterPack::load(&pack_dir)?;
+    no_link_at(&root.join(".armadai"))?;
     match pack.format {
         Some(1) => return super::native_pack::install(root, &pack_dir, &pack.name),
         Some(n) => anyhow::bail!(
@@ -257,6 +258,25 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
     materialize_pack(&pack_dir, &pack, pack_name, tmp.path())?;
     let report = crate::migrate::run(tmp.path(), false, false)?;
     let built = tmp.path().join(".armadai");
+    // every destination, before the first write: never through a symbolic link
+    let mut todo = vec![built.clone()];
+    while let Some(dir) = todo.pop() {
+        for e in std::fs::read_dir(&dir)? {
+            let path = e?.path();
+            let rel = path.strip_prefix(&built)?;
+            if rel.starts_with(".migrated") {
+                continue;
+            }
+            let mut at = root.join(".armadai");
+            for c in rel.components() {
+                at.push(c);
+                no_link_at(&at)?;
+            }
+            if path.is_dir() {
+                todo.push(path);
+            }
+        }
+    }
     for e in std::fs::read_dir(&built)? {
         let e = e?;
         if e.file_name() == ".migrated" {
@@ -293,6 +313,27 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
         anstream::eprintln!("{s}  warn: {w}{s:#}");
     }
     anstream::println!("{m}  Run `armadai link` to generate the target files.{m:#}");
+    Ok(())
+}
+
+/// Refuse a destination that is a symbolic link (dangling or not): a pack never
+/// writes through one.
+fn no_link_at(path: &Path) -> anyhow::Result<()> {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        if !path.exists() {
+            anyhow::bail!(
+                "{} is a dangling symbolic link: remove it, or create what it points to",
+                path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |n| n.to_string_lossy().into_owned()
+                )
+            );
+        }
+        anyhow::bail!(
+            "{} is a symbolic link: refusing to write a pack through it",
+            path.display()
+        );
+    }
     Ok(())
 }
 

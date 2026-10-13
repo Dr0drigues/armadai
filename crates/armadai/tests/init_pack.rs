@@ -460,3 +460,62 @@ fn an_install_introducing_an_error_is_rolled_back() {
     assert!(err.contains("would make the project invalid"), "{err}");
     assert_eq!(tree(&env.root()), before);
 }
+
+fn legacy_pack(env: &Env) -> PathBuf {
+    env.pack(
+        "old",
+        &[
+            ("pack.yaml", "name: old\ndescription: Old\nagents: [dev]\n"),
+            (
+                "agents/dev.md",
+                "# Dev\n\n## Metadata\n- provider: anthropic\n\n## System Prompt\n\nYou code.\n",
+            ),
+        ],
+    )
+}
+
+/// A legacy pack never writes through a linked `.armadai` or `.armadai/agents`,
+/// nor does a native one; a dangling `.armadai` link is named as such.
+#[cfg(unix)]
+#[test]
+fn no_pack_writes_through_a_linked_armadai() {
+    for (link, native) in [
+        (".armadai", false),
+        (".armadai/agents", false),
+        (".armadai", true),
+    ] {
+        let env = Env::new();
+        let pack = if native {
+            env.pack("demo", NATIVE)
+        } else {
+            legacy_pack(&env)
+        };
+        let outside = env.dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(env.root().join(".armadai")).unwrap();
+        if link == ".armadai" {
+            std::fs::remove_dir(env.root().join(".armadai")).unwrap();
+        }
+        std::os::unix::fs::symlink(&outside, env.root().join(link)).unwrap();
+        let (ok, _, err) = env.init(&pack, &[]);
+        assert!(
+            !ok && err.contains("symbolic link"),
+            "{link} {native}: {err}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&outside).unwrap().count(),
+            0,
+            "{link} {native}"
+        );
+    }
+    let env = Env::new();
+    let pack = legacy_pack(&env);
+    std::os::unix::fs::symlink(env.dir.path().join("nowhere"), env.root().join(".armadai"))
+        .unwrap();
+    let (ok, _, err) = env.init(&pack, &[]);
+    assert!(
+        !ok && err.contains(".armadai is a dangling symbolic link"),
+        "{err}"
+    );
+    assert!(!env.dir.path().join("nowhere").exists());
+}
