@@ -131,14 +131,27 @@ pub fn install_embedded_skills(force: bool) -> anyhow::Result<usize> {
             .unwrap_or("unknown");
         let dest = dst_root.join(skill_name);
 
-        if dest.exists() && !force && !super::embedded::needs_update(&dest) {
+        if dest.exists() && !force && !super::embedded::needs_update(&dest, skill_dir) {
             continue;
         }
 
-        // Copy all files recursively
-        extract_embedded_dir(skill_dir, &dest)?;
-        super::embedded::write_version_marker(&dest);
+        super::embedded::refresh(skill_dir, &dest)?;
         count += 1;
+    }
+
+    // a built-in skill a previous binary extracted (it holds the marker) and this one
+    // no longer ships: removed; a skill without the marker is the user's, kept
+    let shipped: Vec<_> = (EMBEDDED_SKILLS.dirs())
+        .filter_map(|d| d.path().file_name().map(|n| n.to_owned()))
+        .collect();
+    for e in std::fs::read_dir(&dst_root)?.flatten() {
+        let path = e.path();
+        if path.join(".armadai-version").is_file()
+            && !shipped.iter().any(|n| *n == e.file_name())
+            && std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir())
+        {
+            std::fs::remove_dir_all(&path)?;
+        }
     }
 
     Ok(count)
@@ -323,6 +336,26 @@ mod tests {
                 .join("SKILL.md")
                 .exists()
         );
+
+        // a stale built-in skill is removed, a user's skill is kept, and a
+        // re-extraction replaces the old files
+        let stale = skills_dir.join("armadai-prompt-authoring");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join(".armadai-version"), "0.0.1").unwrap();
+        let mine = skills_dir.join("mine");
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::write(mine.join("SKILL.md"), "x").unwrap();
+        let old = skills_dir.join("armadai-agent-authoring/references/old.md");
+        std::fs::write(&old, "old").unwrap();
+        std::fs::write(
+            skills_dir.join("armadai-agent-authoring/.armadai-version"),
+            "0.0.1",
+        )
+        .unwrap();
+        install_embedded_skills(false).unwrap();
+        assert!(!stale.exists());
+        assert!(mine.join("SKILL.md").is_file());
+        assert!(!old.exists());
 
         // Verify references are copied
         assert!(

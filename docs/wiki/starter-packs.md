@@ -86,10 +86,17 @@ exist and parse).
 
 ## Embedded Versioning
 
-Starter packs embedded in the binary are extracted to `~/.config/armadai/starters/` on first use,
-with a `.armadai-version` marker. When the binary changes, each pack is extracted next to the old
-one and swapped in, so nothing of a previous version survives. The marker is never copied into a
-project. The same version mechanism applies to built-in skills.
+The packs embedded in the binary are extracted to `~/.config/armadai/starters/<pack>/` on first
+use. **These folders are managed by ArmadAI**: each holds a `.armadai-version` marker (the binary
+version and a fingerprint of the embedded content), and whenever another binary finds a different
+marker (a new version, or a development build with other content) it extracts the pack next to
+the old one and swaps it in: nothing of a previous version survives, and edits made there are
+lost. Put your own packs in another starter directory (below), or under a name no embedded pack
+uses. The marker is never copied into a project.
+
+Built-in skills (`~/.config/armadai/skills/`, installed by `armadai init`) follow the same rule,
+and a built-in skill a newer binary no longer ships (such as `armadai-prompt-authoring`) is
+removed; a skill without the marker is yours and is never touched.
 
 ## Creating Custom Packs
 
