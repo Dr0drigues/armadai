@@ -96,6 +96,13 @@
       },
       "type": "array"
     },
+    "start": {
+      "description": "The step the flow begins with; needed when every step has an incoming link",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "steps": {
       "additionalProperties": {
         "$ref": "#/$defs/Step"

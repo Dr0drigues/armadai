@@ -1,4 +1,5 @@
 description: "Tests ecrits, puis relus : un refus renvoie au redacteur des tests, une approbation passe a la documentation"
+start: test-writer
 steps:
   test-writer: { agent: test-writer }
   code-reviewer: { agent: code-reviewer, states: [approved, rejected] }

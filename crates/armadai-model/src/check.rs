@@ -70,7 +70,8 @@ fn edit_distance(a: &str, b: &str) -> usize {
     d[a.len()][b.len()]
 }
 
-/// The steps a flow starts from. A candidate is a step no unconditional link
+/// The steps a flow starts from: `start` when the flow declares it. Otherwise a
+/// heuristic: a candidate is a step no unconditional link
 /// (`when` absent or `done`) leads to: a conditional link (`when: rejected`,
 /// `when: failed`) and `on_failure` never make a step a non-entry by themselves.
 /// Among the candidates, one another candidate reaches (by any edge) without being
@@ -78,6 +79,15 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// approved`, is where a review loop ends, not where it starts.
 /// Links naming an unknown step are ignored (reported elsewhere).
 pub fn entry_steps(flow: &crate::load::Flow) -> Vec<String> {
+    // a declared start is the entry, and the only one (an unknown one: none)
+    if let Some(s) = &flow.start {
+        return flow
+            .steps
+            .contains_key(s)
+            .then(|| s.clone())
+            .into_iter()
+            .collect();
+    }
     let known = |l: &&crate::types::Link| {
         flow.steps.contains_key(&l.from) && flow.steps.contains_key(&l.to)
     };
@@ -491,6 +501,10 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 edges.push((sid, t));
             }
         }
+        if let Some(s) = f.start.as_deref().filter(|s| !steps.contains(s)) {
+            o.unknown_ref(at, "unknown-step", "step", s, &steps);
+            continue;
+        }
         let entry_ids = entry_steps(f);
         let entries: Vec<&str> = entry_ids.iter().map(String::as_str).collect();
         if entries.is_empty() {
@@ -503,6 +517,21 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 None,
             );
         } else {
+            // every step has an incoming link: the entry is the heuristic's guess
+            if f.start.is_none() && steps.iter().all(|s| edges.iter().any(|(_, to)| to == s)) {
+                o.emit(
+                    at,
+                    Severity::Warning,
+                    "ambiguous-entry",
+                    None,
+                    format!(
+                        "every step has an incoming link: the flow is taken to begin at {}; \
+                         declare `start:` to say where the flow begins",
+                        entries.join(", ")
+                    ),
+                    None,
+                );
+            }
             let mut reached: BTreeSet<&str> = entries.iter().copied().collect();
             let mut todo = entries;
             while let Some(s) = todo.pop() {

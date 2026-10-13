@@ -27,6 +27,7 @@ fn link(from: &str, to: &str, when: Option<&str>) -> Link {
 fn flow(steps: &[(&str, Step)], links: Vec<Link>) -> Flow {
     Flow {
         description: None,
+        start: None,
         steps: steps
             .iter()
             .map(|(id, s)| (id.to_string(), s.clone()))

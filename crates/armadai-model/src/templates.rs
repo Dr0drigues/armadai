@@ -138,8 +138,11 @@ pub fn flow_from_template(
         }
         FlowTemplate::FanOut => agents[1..].iter().map(|b| link(a(0), b, None)).collect(),
     };
+    // review-loop: the author has an incoming link (`rejected`): say where it begins
+    let start = (t == FlowTemplate::ReviewLoop).then(|| agents[0].clone());
     Ok(Flow {
         description,
+        start,
         steps,
         links,
     })

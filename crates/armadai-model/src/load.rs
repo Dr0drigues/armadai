@@ -25,6 +25,8 @@ pub struct Skill {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Flow {
     pub description: Option<String>,
+    /// The declared entry step (`start:`), when the flow says where it begins.
+    pub start: Option<String>,
     pub steps: BTreeMap<String, Step>,
     pub links: Vec<Link>,
 }
@@ -476,6 +478,7 @@ pub fn load_project(root: &Path) -> Loaded {
             id,
             Flow {
                 description: raw.description,
+                start: raw.start,
                 steps,
                 links,
             },

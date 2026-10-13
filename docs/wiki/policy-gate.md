@@ -23,7 +23,7 @@ Under `strict`, a delegation is allowed when:
 
 - from the **main session**: with a coordinator, the main session *is* the coordinator (it lives
   in `CLAUDE.md`) and drives the flows, so it may reach every agent of a flow step; without a
-  coordinator, the agents of entry steps only (the validator's definition, see
+  coordinator, the agents of entry steps only (the flow's `start` when declared, else the validator's definition, see
   [`no-entry-step`](project-format.md)). An agent run with `claude --agent <coordinator>` counts
   as the main session;
 - from an **agent X**: the agents of the steps a step of X leads to, by a link or `on_failure`;

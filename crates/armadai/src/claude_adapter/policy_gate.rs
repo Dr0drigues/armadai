@@ -389,6 +389,26 @@ mod tests {
         assert!(r.contains("[dev]"), "{r}");
     }
 
+    /// The review's counter-example: a cycle holding an unconditional link
+    /// (`fix -> write`). With `start: write` the main thread starts at `dev`.
+    #[test]
+    fn a_declared_start_is_where_the_main_thread_begins() {
+        let dir = tempfile::tempdir().unwrap();
+        write_project(
+            dir.path(),
+            "schema_version: 1\npolicy:\n  delegation: strict\n",
+        );
+        std::fs::remove_file(dir.path().join(".armadai/flows/ship.yaml")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/flows/fix.yaml"),
+            "start: write\nsteps:\n  write: { agent: dev }\n  review: { agent: qa, states: [rejected] }\n  fix: { agent: doc }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: fix, when: rejected }\n  - { from: fix, to: write }\n",
+        )
+        .unwrap();
+        assert!(decide(&payload("", "dev", dir.path())).is_none());
+        let r = reason(decide(&payload("", "doc", dir.path())));
+        assert!(r.contains("[dev]"), "{r}");
+    }
+
     #[test]
     fn on_failure_counts_as_a_path() {
         let dir = strict();

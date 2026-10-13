@@ -153,6 +153,11 @@ pub struct SeqExplicit {
 pub struct FlowFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "The step the flow begins with; needed when every step has an incoming link"
+    )]
+    pub start: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub steps: BTreeMap<String, Step>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
