@@ -207,6 +207,10 @@ pub fn load_all_skills(dir: &Path) -> Vec<Skill> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || crate::starter::is_legacy_copy(&name) {
+            continue;
+        }
         if path.is_dir() && path.join("SKILL.md").is_file() {
             match Skill::load(&path) {
                 Ok(s) => skills.push(s),
@@ -383,11 +387,15 @@ mod tests {
             &copy.join(".armadai-version"),
             "0.0.1 x\narmadai-agent-authoring\n",
         );
-        // a user's note in an unmanaged built-in folder -> kept
+        // a user's note in a built-in folder without marker -> kept in place
         let note = skills_dir.join("armadai-skill-authoring/my-notes.md");
         put(&note, "mine");
+        std::fs::remove_file(skills_dir.join("armadai-skill-authoring/.armadai-version")).unwrap();
+        // a legacy extraction (one-line marker) -> moved aside with the user's note
+        let legacy_note = skills_dir.join("armadai-starter-authoring/my-notes.md");
+        put(&legacy_note, "mine too");
         std::fs::write(
-            skills_dir.join("armadai-skill-authoring/.armadai-version"),
+            skills_dir.join("armadai-starter-authoring/.armadai-version"),
             "0.0.1",
         )
         .unwrap();
@@ -409,6 +417,32 @@ mod tests {
         assert!(unmarked.join("SKILL.md").is_file());
         assert!(copy.exists());
         assert_eq!(std::fs::read_to_string(&note).unwrap(), "mine");
+        assert!(!legacy_note.exists());
+        let moved: Vec<_> = std::fs::read_dir(&skills_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("armadai-starter-authoring.armadai-legacy-")
+            })
+            .collect();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(moved[0].path().join("my-notes.md")).unwrap(),
+            "mine too"
+        );
+        let loaded = load_all_skills(&skills_dir);
+        assert_eq!(
+            (loaded.iter())
+                .filter(|s| s
+                    .source
+                    .to_string_lossy()
+                    .contains("armadai-starter-authoring"))
+                .count(),
+            1,
+            "a legacy copy is no skill"
+        );
         assert!(!old.exists());
         assert!(
             !std::fs::read_to_string(&reg)

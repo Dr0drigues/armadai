@@ -103,6 +103,14 @@ embedded content, and the name of the folder ArmadAI created. What is guaranteed
   **and** its folder's marker still names it. A folder you made, or a copy you renamed, is never
   removed. (A skill extracted before this registry existed, such as an old
   `armadai-prompt-authoring`, is therefore left in place: remove it by hand.)
+- A folder extracted by a binary older than the named marker (its marker is a single line)
+  is **moved aside**, whole, to `<name>.armadai-legacy-<seconds>` next to it, then the current
+  content is extracted fresh; one line says where it went. Nothing is lost (your own files, if
+  any, are in the moved folder) and nothing stale stays: `init --pack` installs the current pack
+  even if an old extraction held agents the pack no longer ships. Such a folder is never offered
+  as a pack nor loaded as a skill; delete it by hand once you have checked it.
+- The packs already extracted in `~/.config/armadai/starters/` are brought up to date on every
+  pack lookup, so an old extraction there never shadows the embedded pack.
 - Re-extraction happens when the marker differs from the binary: another version, or a
   development build with other content. The marker is never copied into a project.
 

@@ -55,7 +55,31 @@ pub(crate) fn ensure(dir: &Dir<'_>, dest: &Path, force: bool) -> anyhow::Result<
     if exists && !force && marker_lines(dest).first().map(String::as_str) == Some(&stamp(dir)) {
         return Ok(false);
     }
-    if !exists || managed(dest) {
+    let lines = marker_lines(dest);
+    if exists && lines.len() == 1 {
+        // extracted by a binary older than the named marker: ours, but holding
+        // whatever it held (stale files, perhaps the user's): moved aside whole
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let name = dest
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut aside = dest.with_file_name(format!("{name}.armadai-legacy-{secs}"));
+        let mut n = 1;
+        while std::fs::symlink_metadata(&aside).is_ok() {
+            n += 1;
+            aside = dest.with_file_name(format!("{name}.armadai-legacy-{secs}-{n}"));
+        }
+        std::fs::rename(dest, &aside)
+            .map_err(|e| anyhow::anyhow!("moving {} aside: {e}", dest.display()))?;
+        eprintln!(
+            "moved the previous extraction of {name} to {}; your own files, if any, are in it",
+            aside.display()
+        );
+        replace(dir, dest)?;
+    } else if !exists || managed(dest) {
         replace(dir, dest)?;
     } else {
         crate::skill::extract_embedded_dir(dir, dest)?;
@@ -142,11 +166,52 @@ mod tests {
         assert_eq!(names(tmp.path()), ["rust-dev"]);
     }
 
-    /// No marker, an old version-only marker, or a marker naming another folder (a
-    /// renamed copy): the user's files stay.
+    /// An extraction by a binary older than the named marker (one line: a version,
+    /// maybe a fingerprint) is moved aside whole, then extracted fresh: nothing lost,
+    /// nothing stale left. Once.
+    #[test]
+    fn a_legacy_extraction_is_moved_aside_then_extracted_fresh() {
+        for marker in ["1.0.0-rc.2", "1.0.0-rc.5 abc123"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dest = tmp.path().join("rust-dev");
+            std::fs::create_dir_all(dest.join("agents")).unwrap();
+            std::fs::write(dest.join(MARKER), marker).unwrap();
+            std::fs::write(dest.join("agents/removed.md"), "# Old\n").unwrap();
+            std::fs::write(dest.join("my-notes.md"), "mine").unwrap();
+            assert!(ensure(pack("rust-dev"), &dest, false).unwrap(), "{marker}");
+            assert!(
+                !dest.join("agents/removed.md").exists(),
+                "{marker}: stale left"
+            );
+            assert!(managed(&dest), "{marker}");
+            let legacy: Vec<_> = names(tmp.path())
+                .into_iter()
+                .filter(|n| n.starts_with("rust-dev.armadai-legacy-"))
+                .collect();
+            assert_eq!(legacy.len(), 1, "{marker}: {:?}", names(tmp.path()));
+            let kept = tmp.path().join(&legacy[0]);
+            assert_eq!(
+                std::fs::read_to_string(kept.join("my-notes.md")).unwrap(),
+                "mine"
+            );
+            assert!(kept.join("agents/removed.md").is_file());
+            // a second run moves nothing more
+            ensure(pack("rust-dev"), &dest, false).unwrap();
+            ensure(pack("fullstack"), &dest, false).unwrap();
+            assert_eq!(
+                names(tmp.path()).len(),
+                2,
+                "{marker}: {:?}",
+                names(tmp.path())
+            );
+        }
+    }
+
+    /// No marker, or a marker naming another folder (a renamed copy): the user's
+    /// files stay, nothing is moved.
     #[test]
     fn an_unmanaged_folder_keeps_the_users_files() {
-        for marker in [None, Some("0.0.1"), Some("0.0.1 x\nfullstack\n")] {
+        for marker in [None, Some("0.0.1 x\nfullstack\n")] {
             let tmp = tempfile::tempdir().unwrap();
             let dest = tmp.path().join("rust-dev");
             std::fs::create_dir_all(&dest).unwrap();

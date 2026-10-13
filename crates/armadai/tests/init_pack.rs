@@ -520,3 +520,66 @@ fn no_pack_writes_through_a_linked_armadai() {
     );
     assert!(!env.dir.path().join("nowhere").exists());
 }
+
+/// The report's case: `fullstack` extracted under `~/.config/armadai/starters/` by a
+/// binary older than the named marker, with an agent the pack no longer ships (no
+/// frontmatter). `init --pack fullstack` installs the current pack, and the old
+/// extraction is kept aside with the user's files.
+#[test]
+fn a_legacy_extraction_does_not_break_init_pack() {
+    let env = Env::new();
+    let old = env.dir.path().join("config/starters/fullstack");
+    for (p, c) in [
+        (".armadai-version", "1.0.0-rc.2"),
+        ("pack.yaml", "format: 1\nname: fullstack\ndescription: d\n"),
+        (
+            "agents/gemini-reviewer.md",
+            "# Gemini Reviewer\n\n## Metadata\n- provider: gemini\n",
+        ),
+        ("my-notes.md", "mine"),
+    ] {
+        std::fs::create_dir_all(old.join(p).parent().unwrap()).unwrap();
+        std::fs::write(old.join(p), c).unwrap();
+    }
+    let (ok, out, err) = env.run(&["init", "--pack", "fullstack"]);
+    assert!(ok, "{out}\n{err}");
+    assert!(
+        err.contains("moved the previous extraction of fullstack"),
+        "{err}"
+    );
+    assert!(
+        !env.root()
+            .join(".armadai/agents/gemini-reviewer.md")
+            .exists()
+    );
+    let starters = env.dir.path().join("config/starters");
+    let legacy: Vec<_> = std::fs::read_dir(&starters)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().contains("fullstack.armadai-legacy-"))
+        .collect();
+    assert_eq!(legacy.len(), 1, "{legacy:?}");
+    assert_eq!(
+        std::fs::read_to_string(legacy[0].join("my-notes.md")).unwrap(),
+        "mine"
+    );
+    // a second init in another folder moves nothing more
+    let other = env.dir.path().join("other");
+    std::fs::create_dir_all(other.join(".git")).unwrap();
+    let out = Command::cargo_bin("armadai")
+        .unwrap()
+        .current_dir(&other)
+        .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+        .env("HOME", env.dir.path())
+        .args(["init", "--pack", "fullstack"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let count = std::fs::read_dir(&starters)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains("armadai-legacy-"))
+        .count();
+    assert_eq!(count, 1);
+}
