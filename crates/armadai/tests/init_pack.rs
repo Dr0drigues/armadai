@@ -352,7 +352,8 @@ fn every_embedded_pack_installs_validates_and_links() {
         if let Some(c) = &p.manifest.coordinator {
             for skill in &p.agents[c].front.skills {
                 assert!(
-                    p.agents[c].body.contains(&format!("`{skill}` skill")),
+                    p.agents[c].body.contains(&format!("`{skill}` skill"))
+                        || p.agents[c].body.contains(&format!("skill `{skill}`")),
                     "{name}: coordinator {c} does not point to its skill {skill}"
                 );
             }
