@@ -112,6 +112,7 @@ dependencies = [
  "anyhow",
  "dialoguer",
  "include_dir",
+ "libc",
  "pulldown-cmark",
  "serde",
  "serde_json",

@@ -82,40 +82,120 @@ pub(crate) fn ensure(dir: &Dir<'_>, dest: &Path, force: bool) -> anyhow::Result<
     } else if !exists || managed(dest) {
         replace(dir, dest)?;
     } else {
-        crate::skill::extract_embedded_dir(dir, dest)?;
+        crate::skill::extract_embedded_dir(dir, dest)
+            .map_err(|e| anyhow::anyhow!("extracting into {}: {e:#}", dest.display()))?;
         // a marker without a name: up to date, still not ours to remove
-        std::fs::write(dest.join(MARKER), format!("{}\n", stamp(dir)))?;
+        std::fs::write(dest.join(MARKER), format!("{}\n", stamp(dir)))
+            .map_err(|e| anyhow::anyhow!("writing {}: {e}", dest.join(MARKER).display()))?;
     }
     Ok(true)
 }
 
+/// Whether process `pid` still runs (never true for an absurd pid).
+fn alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        // SAFETY: signal 0 only checks that the process exists; nothing is sent
+        let r = unsafe { libc::kill(pid, 0) };
+        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true // no cheap check: rely on the age alone
+    }
+}
+
+/// Remove the temporaries of `name` another extraction left behind, when their
+/// process is gone or they are older than an hour.
+fn purge_orphans(parent: &Path, name: &str) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let me = std::process::id();
+    for e in entries.flatten() {
+        let file = e.file_name().to_string_lossy().into_owned();
+        let pid = [format!(".{name}.extracting."), format!(".{name}.old.")]
+            .iter()
+            .find_map(|p| {
+                file.strip_prefix(p.as_str())
+                    .and_then(|n| n.parse::<u32>().ok())
+            });
+        let Some(pid) = pid.filter(|p| *p != me) else {
+            continue;
+        };
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|d| d > std::time::Duration::from_secs(3600));
+        if !alive(pid) || old {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 /// Extract next to `dest`, then swap by renames (the old folder aside first), so an
-/// interruption never leaves `dest` missing nor half written.
+/// interruption never leaves `dest` missing nor half written. Temporaries are unique
+/// to this process and removed on failure; every error names its path.
 fn replace(dir: &Dir<'_>, dest: &Path) -> anyhow::Result<()> {
+    use anyhow::Context;
     let name = dest
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("{} has no name", dest.display()))?
         .to_string_lossy()
         .into_owned();
+    if let Some(parent) = dest.parent() {
+        purge_orphans(parent, &name);
+    }
     let pid = std::process::id();
     let fresh = dest.with_file_name(format!(".{name}.extracting.{pid}"));
     let old = dest.with_file_name(format!(".{name}.old.{pid}"));
     for scratch in [&fresh, &old] {
         if std::fs::symlink_metadata(scratch).is_ok() {
-            std::fs::remove_dir_all(scratch)?;
+            std::fs::remove_dir_all(scratch)
+                .with_context(|| format!("removing {}", scratch.display()))?;
         }
     }
-    crate::skill::extract_embedded_dir(dir, &fresh)?;
-    std::fs::write(fresh.join(MARKER), format!("{}\n{name}\n", stamp(dir)))?;
-    let had = std::fs::symlink_metadata(dest).is_ok();
-    if had {
-        std::fs::rename(dest, &old)?;
+    let swap = || -> anyhow::Result<()> {
+        crate::skill::extract_embedded_dir(dir, &fresh)
+            .with_context(|| format!("extracting into {}", fresh.display()))?;
+        std::fs::write(fresh.join(MARKER), format!("{}\n{name}\n", stamp(dir)))
+            .with_context(|| format!("writing {}", fresh.join(MARKER).display()))?;
+        let had = std::fs::symlink_metadata(dest).is_ok();
+        if had {
+            std::fs::rename(dest, &old)
+                .with_context(|| format!("moving {} aside to {}", dest.display(), old.display()))?;
+        }
+        if let Err(e) = std::fs::rename(&fresh, dest) {
+            // another process put the same content in place first: fine
+            if marker_lines(dest).first().map(String::as_str) == Some(&stamp(dir)) {
+                let _ = std::fs::remove_dir_all(&fresh);
+            } else {
+                if had {
+                    let _ = std::fs::rename(&old, dest);
+                }
+                return Err(e).with_context(|| format!("moving {} into place", dest.display()));
+            }
+        }
+        if had {
+            std::fs::remove_dir_all(&old).with_context(|| format!("removing {}", old.display()))?;
+        }
+        Ok(())
+    };
+    let r = swap();
+    if r.is_err() {
+        for scratch in [&fresh, &old] {
+            if scratch.exists() && dest.exists() {
+                let _ = std::fs::remove_dir_all(scratch);
+            }
+        }
     }
-    std::fs::rename(&fresh, dest)?;
-    if had {
-        std::fs::remove_dir_all(&old)?;
-    }
-    Ok(())
+    r
 }
 
 #[cfg(test)]
@@ -205,6 +285,45 @@ mod tests {
                 names(tmp.path())
             );
         }
+    }
+
+    /// Temporaries left by a process that is gone (or older than an hour) are
+    /// purged; those of a live process are left to it.
+    #[test]
+    fn orphan_temporaries_are_purged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("rust-dev");
+        let dead = 3_999_999u32; // above any pid_max: no such process
+        for t in [
+            format!(".rust-dev.extracting.{dead}"),
+            format!(".rust-dev.old.{dead}"),
+            ".rust-dev.extracting.1".to_string(), // pid 1 is alive
+        ] {
+            std::fs::create_dir_all(tmp.path().join(&t)).unwrap();
+        }
+        ensure(pack("rust-dev"), &dest, false).unwrap();
+        assert_eq!(names(tmp.path()), [".rust-dev.extracting.1", "rust-dev"]);
+    }
+
+    /// A failure names the path it failed on, and leaves no temporary behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_replacement_names_its_path_and_cleans_up() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("starters");
+        let dest = parent.join("rust-dev");
+        ensure(pack("rust-dev"), &dest, false).unwrap();
+        std::fs::write(dest.join(MARKER), "0.0.1 x\nrust-dev\n").unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let e = ensure(pack("rust-dev"), &dest, false).unwrap_err();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            format!("{e:#}").contains(&parent.display().to_string()),
+            "{e:#}"
+        );
+        assert_eq!(names(&parent), ["rust-dev"]);
+        assert!(dest.join("pack.yaml").is_file());
     }
 
     /// No marker, or a marker naming another folder (a renamed copy): the user's
