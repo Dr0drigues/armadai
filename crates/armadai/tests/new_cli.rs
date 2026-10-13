@@ -355,6 +355,10 @@ fn a_creation_that_breaks_the_project_is_undone() {
     let err = env.fails(&["new", "agent", "x", "--skills", "ghost"]);
     assert!(err.contains("unknown skill `ghost`"), "{err}");
     assert!(err.contains("nothing was written"), "{err}");
+    // the diagnostic names a file that no longer exists: said so
+    let at: Vec<&str> = err.lines().filter(|l| l.contains("agents/x.md:")).collect();
+    assert!(!at.is_empty(), "{err}");
+    assert!(at.iter().all(|l| l.starts_with("(rolled back) ")), "{err}");
     assert_eq!(tree(&env.root()), before, "agents/ itself is gone");
 
     let err = env.fails(&["new", "automation", "x", "--event", "on-stop", "--run", " "]);

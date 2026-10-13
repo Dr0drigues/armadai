@@ -355,11 +355,14 @@ pub fn create(
         .filter(|d| !before.contains(&key(d)))
         .collect();
     let w = crate::cli::style::warn();
-    for d in &introduced {
-        anstream::eprintln!("{w}{}{w:#}", d.render());
-    }
     let display = target.display.clone();
-    if armadai_model::has_errors(&introduced) {
+    let rolled_back = armadai_model::has_errors(&introduced);
+    for d in &introduced {
+        // the file a rolled-back diagnostic points at is gone: say so
+        let tag = if rolled_back { "(rolled back) " } else { "" };
+        anstream::eprintln!("{w}{tag}{}{w:#}", d.render());
+    }
+    if rolled_back {
         target.undo()?;
         anyhow::bail!(
             "{} would make the project invalid; nothing was written",
