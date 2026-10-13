@@ -61,8 +61,8 @@ pub struct NewTarget {
     pub path: PathBuf,
     /// The file, relative to the project root (for messages).
     pub display: PathBuf,
-    /// Content of the file it replaces (`--force`), restored by `undo`.
-    backup: Option<Vec<u8>>,
+    /// Content and permissions of the file it replaces (`--force`), restored by `undo`.
+    backup: Option<(Vec<u8>, std::fs::Permissions)>,
     /// Folders `write` created, outermost first.
     created: Vec<PathBuf>,
 }
@@ -79,10 +79,12 @@ impl NewTarget {
         let root = crate::compile::find_project(cwd)?;
         let rel = kind.rel(id);
         let base = root.join(".armadai");
-        // every component between `.armadai/` and the file, the file included
+        // `.armadai/` itself, then every component down to the file, the file included
         let mut at = base.clone();
-        for c in rel.components() {
-            at.push(c);
+        for c in std::iter::once(None).chain(rel.components().map(Some)) {
+            if let Some(c) = c {
+                at.push(c);
+            }
             if std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
                 bail!(
                     "refusing to write through the symbolic link {}",
@@ -98,7 +100,10 @@ impl NewTarget {
                 "{} already exists (use --force to replace it)",
                 display.display()
             ),
-            Ok(_) => Some(std::fs::read(&at).with_context(|| format!("reading {}", at.display()))?),
+            Ok(m) => Some((
+                std::fs::read(&at).with_context(|| format!("reading {}", at.display()))?,
+                m.permissions(),
+            )),
         };
         Ok(NewTarget {
             root,
@@ -140,13 +145,18 @@ impl NewTarget {
             .open(&self.path)
             .with_context(|| format!("creating {}", self.path.display()))?;
         f.write_all(content.as_bytes())?;
+        // the replaced file's permissions, not the umask's
+        if let Some((_, perms)) = &self.backup {
+            std::fs::set_permissions(&self.path, perms.clone())?;
+        }
         Ok(())
     }
 
     /// Put the tree back: the previous file (under `--force`), or nothing at all.
     pub fn undo(self) -> anyhow::Result<()> {
         match &self.backup {
-            Some(bytes) => std::fs::write(&self.path, bytes)?,
+            // `write` gave the file the replaced one's permissions; writing keeps them
+            Some((bytes, _)) => std::fs::write(&self.path, bytes)?,
             None => {
                 if self.path.is_file() {
                     std::fs::remove_file(&self.path)?;

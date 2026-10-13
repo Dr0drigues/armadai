@@ -502,3 +502,45 @@ fn missing_values_show_the_command_to_type() {
         "{help}"
     );
 }
+
+/// `.armadai` itself may not be a symbolic link either (as for `init --pack`).
+#[cfg(unix)]
+#[test]
+fn a_linked_armadai_folder_is_refused() {
+    let env = Env::new(&[]);
+    let outside = env.dir.path().join("elsewhere");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("project.yaml"), "schema_version: 1\n").unwrap();
+    std::os::unix::fs::symlink(&outside, env.root().join(".armadai")).unwrap();
+    let before = tree(&outside);
+    let err = env.fails(&["new", "agent", "x"]);
+    assert!(err.contains("symbolic link"), "{err}");
+    assert_eq!(tree(&outside), before);
+}
+
+/// `--force` keeps the permissions of the file it replaces, and so does its undo.
+#[cfg(unix)]
+#[test]
+fn force_keeps_the_permissions_of_the_replaced_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new(AGENTS);
+    let path = env.root().join(".armadai/agents/dev.md");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    env.ok(&[
+        "new",
+        "agent",
+        "dev",
+        "--force",
+        "--description",
+        "Codes better",
+    ]);
+    assert_eq!(mode(&path), 0o600);
+    env.fails(&["new", "agent", "dev", "--force", "--skills", "ghost"]);
+    assert_eq!(mode(&path), 0o600);
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("Codes better")
+    );
+}
