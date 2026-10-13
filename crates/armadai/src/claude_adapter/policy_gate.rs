@@ -112,6 +112,7 @@ const IMPLICIT_SUBAGENT: &str = "general-purpose";
 /// - The coordinator as `--agent`: same as the main thread.
 /// - Agent X: the agents of the steps a step of X leads to (link or `on_failure`).
 /// - `policy.free_agents`: always.
+/// - The coordinator never, as a step agent: it is no sub-agent.
 pub fn allowed_targets(project: &Project, caller: Option<&str>) -> BTreeSet<String> {
     let coordinator = project.manifest.coordinator.as_deref();
     let main = caller.is_none() || caller == coordinator;
@@ -143,7 +144,8 @@ pub fn allowed_targets(project: &Project, caller: Option<&str>) -> BTreeSet<Stri
                             .is_some_and(|s| Some(s.agent.as_str()) == caller)
                 })
             };
-            if reached {
+            // the coordinator lives in CLAUDE.md: never a sub-agent to delegate to
+            if reached && Some(step.agent.as_str()) != coordinator {
                 out.insert(step.agent.clone());
             }
         }
@@ -312,6 +314,22 @@ mod tests {
         let r = reason(decide(&payload("", "doc", dir.path())));
         assert!(r.contains("[Explore, dev, helper, qa]"), "{r}");
         assert!(r.contains("free_agents"), "{r}");
+    }
+
+    /// The coordinator lives in CLAUDE.md, it is no sub-agent: a step it runs is
+    /// never offered as a delegation target, from the main thread or an agent.
+    #[test]
+    fn the_coordinator_is_never_listed_as_a_target() {
+        let dir = strict();
+        std::fs::write(
+            dir.path().join(".armadai/flows/plan.yaml"),
+            "steps:\n  plan: { agent: lead }\n  build: { agent: dev }\n  review: { agent: lead }\nlinks:\n  - { from: plan, to: build }\n  - { from: build, to: review }\n",
+        )
+        .unwrap();
+        let r = reason(decide(&payload("", "doc", dir.path())));
+        assert!(r.contains("[Explore, dev, helper, qa]"), "{r}");
+        let r = reason(decide(&payload("dev", "doc", dir.path())));
+        assert!(!r.contains("lead"), "{r}");
     }
 
     #[test]
