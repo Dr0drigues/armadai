@@ -96,6 +96,23 @@ flowchart TD
     );
 }
 
+#[test]
+fn fan_out_golden() {
+    let f =
+        flow_from_template(FlowTemplate::FanOut, &ids(&["lead", "schema", "cli"]), None).unwrap();
+    assert_eq!(
+        flow_to_mermaid("delivery", &f),
+        "%% flow: delivery
+flowchart TD
+  n_cli[\"cli\"]
+  n_lead[\"lead\"]
+  n_schema[\"schema\"]
+  n_lead --> n_schema
+  n_lead --> n_cli
+"
+    );
+}
+
 /// `when: failed` is dotted like `on_failure`; `when: done` is a plain arrow;
 /// a step named apart from its agent shows both.
 #[test]

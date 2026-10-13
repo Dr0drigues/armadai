@@ -15,12 +15,15 @@ pub enum FlowTemplate {
     ReviewLoop,
     /// planner → builder → verifier; the verifier's failure goes back to the builder.
     PlanBuildVerify,
+    /// lead → each other agent (a lead handing work to its specialists).
+    FanOut,
 }
 
-pub const FLOW_TEMPLATES: [FlowTemplate; 3] = [
+pub const FLOW_TEMPLATES: [FlowTemplate; 4] = [
     FlowTemplate::Pipeline,
     FlowTemplate::ReviewLoop,
     FlowTemplate::PlanBuildVerify,
+    FlowTemplate::FanOut,
 ];
 
 impl FlowTemplate {
@@ -29,6 +32,7 @@ impl FlowTemplate {
             FlowTemplate::Pipeline => "pipeline",
             FlowTemplate::ReviewLoop => "review-loop",
             FlowTemplate::PlanBuildVerify => "plan-build-verify",
+            FlowTemplate::FanOut => "fan-out",
         }
     }
 
@@ -38,6 +42,7 @@ impl FlowTemplate {
             FlowTemplate::Pipeline => (2, None),
             FlowTemplate::ReviewLoop => (2, Some(3)),
             FlowTemplate::PlanBuildVerify => (3, Some(3)),
+            FlowTemplate::FanOut => (2, None),
         }
     }
 }
@@ -54,7 +59,9 @@ impl std::str::FromStr for FlowTemplate {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TemplateError {
-    #[error("unknown flow template `{0}` (known: pipeline, review-loop, plan-build-verify)")]
+    #[error(
+        "unknown flow template `{0}` (known: pipeline, review-loop, plan-build-verify, fan-out)"
+    )]
     UnknownTemplate(String),
     #[error("the {template} template needs at least {min} agents")]
     TooFewAgents { template: &'static str, min: usize },
@@ -129,6 +136,7 @@ pub fn flow_from_template(
             }
             vec![link(a(0), a(1), None), link(a(1), a(2), None)]
         }
+        FlowTemplate::FanOut => agents[1..].iter().map(|b| link(a(0), b, None)).collect(),
     };
     Ok(Flow {
         description,

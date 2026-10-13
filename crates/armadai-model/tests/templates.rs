@@ -40,7 +40,7 @@ fn names_round_trip() {
     }
     assert_eq!(
         FLOW_TEMPLATES.map(|t| t.as_str()),
-        ["pipeline", "review-loop", "plan-build-verify"]
+        ["pipeline", "review-loop", "plan-build-verify", "fan-out"]
     );
     let e = "loop".parse::<FlowTemplate>().unwrap_err();
     assert!(
@@ -52,7 +52,9 @@ fn names_round_trip() {
 
 #[test]
 fn every_template_validates_without_a_diagnostic() {
-    let cases: [(FlowTemplate, &[&str]); 5] = [
+    let cases: [(FlowTemplate, &[&str]); 7] = [
+        (FlowTemplate::FanOut, &["lead", "a"]),
+        (FlowTemplate::FanOut, &["lead", "a", "b", "c", "d"]),
         (FlowTemplate::Pipeline, &["a", "b"]),
         (FlowTemplate::Pipeline, &["a", "b", "c", "d"]),
         (FlowTemplate::ReviewLoop, &["dev", "rev"]),
@@ -116,6 +118,23 @@ fn plan_build_verify_retries_the_build_on_failure() {
     assert_eq!(f.steps["check"].on_failure.as_deref(), Some("build"));
     assert_eq!(f.steps["build"].on_failure, None);
     assert_eq!(entry_steps(&f), ["plan"]);
+}
+
+#[test]
+fn fan_out_sends_the_lead_to_every_agent() {
+    let f = flow_from_template(FlowTemplate::FanOut, &ids(&["lead", "b", "a"]), None).unwrap();
+    assert_eq!(f.links, [link("lead", "b", None), link("lead", "a", None)]);
+    assert!(
+        f.steps
+            .values()
+            .all(|s| s.states.is_empty() && s.on_failure.is_none())
+    );
+    assert_eq!(entry_steps(&f), ["lead"]);
+    let e = flow_from_template(FlowTemplate::FanOut, &ids(&["lead"]), None).unwrap_err();
+    assert!(
+        e.to_string().contains("fan-out") && e.to_string().contains("at least 2"),
+        "{e}"
+    );
 }
 
 #[test]

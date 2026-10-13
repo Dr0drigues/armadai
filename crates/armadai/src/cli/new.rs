@@ -80,7 +80,9 @@ pub enum NewCommand {
             review-loop        author -> reviewer; `rejected` goes back to the author, \
             `approved` on to the optional third agent (2 or 3 agents)\n  \
             plan-build-verify  planner -> builder -> verifier; a failed verification goes back \
-            to the builder (3 agents)",
+            to the builder (3 agents)\n  \
+            fan-out            lead -> each other agent: a lead handing work to its \
+            specialists (2 agents or more)",
         after_help = "Examples:\n  \
             armadai new flow ship --agents planner,dev,qa\n  \
             armadai new flow review --template review-loop --agents dev,reviewer\n  \
@@ -89,7 +91,7 @@ pub enum NewCommand {
     Flow {
         /// Flow id (its file name)
         id: Option<String>,
-        /// Flow template: pipeline, review-loop or plan-build-verify
+        /// Flow template: pipeline, review-loop, plan-build-verify or fan-out
         #[arg(long, short, default_value = "pipeline", value_parser = parse_flow_template)]
         template: armadai_model::FlowTemplate,
         /// Agents of the project, in order (comma-separated)

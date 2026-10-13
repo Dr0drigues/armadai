@@ -275,6 +275,7 @@ fn ask_flow(agents: &[String]) -> anyhow::Result<FlowAnswers> {
             "pipeline: a -> b -> c ... (2 agents or more)",
             "review-loop: author -> reviewer, rejected back, approved on (2 or 3 agents)",
             "plan-build-verify: planner -> builder -> verifier, failure back (3 agents)",
+            "fan-out: a lead -> each other agent (2 agents or more)",
         ])
         .default(0)
         .interact()?];

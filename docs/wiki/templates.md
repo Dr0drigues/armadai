@@ -73,6 +73,7 @@ Your role: {{description}}.
 armadai new flow ship --agents planner,dev,qa                     # pipeline (default)
 armadai new flow review --template review-loop --agents dev,reviewer,release
 armadai new flow feature --template plan-build-verify --agents planner,dev,qa
+armadai new flow delivery --template fan-out --agents lead,backend,frontend,qa
 armadai graph review
 ```
 
@@ -83,6 +84,7 @@ The agents must exist in the project; step ids are the agent ids, in the order g
 | `pipeline` | 2 or more | `a → b → c …` |
 | `review-loop` | 2 or 3 | author → reviewer; `rejected` goes back to the author, `approved` on to the third agent (none: the flow ends) |
 | `plan-build-verify` | 3 | planner → builder → verifier; a failed verification (`on_failure`) goes back to the builder |
+| `fan-out` | 2 or more | the first agent (a lead) → each other agent: a lead handing work to its specialists |
 
 `review-loop` with `dev,reviewer,release`, as `armadai graph` prints it:
 

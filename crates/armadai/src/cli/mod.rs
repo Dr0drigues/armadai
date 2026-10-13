@@ -57,7 +57,7 @@ pub enum Command {
             Agent templates: basic, dev-review, dev-test, planning, security-review, debug, \
             tech-debt, tdd-red, tdd-green, tdd-refactor, tech-writer (built into the binary; a \
             same-named file in ./templates or ~/.config/armadai/templates overrides one, and \
-            adds your own). Flow templates: pipeline, review-loop, plan-build-verify.",
+            adds your own). Flow templates: pipeline, review-loop, plan-build-verify, fan-out.",
         after_help = "Examples:\n  \
             armadai new agent reviewer --template dev-review --stack rust\n  \
             armadai new flow review --template review-loop --agents dev,reviewer\n  \

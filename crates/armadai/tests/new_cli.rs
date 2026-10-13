@@ -417,3 +417,23 @@ fn interactive_mode_without_a_terminal_is_a_clear_error() {
     }
     assert_eq!(tree(&env.root()), before);
 }
+
+#[test]
+fn new_flow_fan_out_sends_the_lead_to_every_agent() {
+    let env = Env::new(AGENTS);
+    env.ok(&[
+        "new",
+        "flow",
+        "delivery",
+        "--template",
+        "fan-out",
+        "--agents",
+        "lead,dev,qa",
+    ]);
+    let graph = env.ok(&["graph", "delivery"]);
+    assert!(
+        graph.contains("n_lead --> n_dev\n  n_lead --> n_qa"),
+        "{graph}"
+    );
+    assert!(env.diagnostics().is_empty(), "{:?}", env.diagnostics());
+}
