@@ -552,6 +552,14 @@ pub async fn execute(
             let (kept, written): (Vec<PathBuf>, Vec<PathBuf>) = (p.artifacts.iter())
                 .map(|a| root.join(p.rel(a)))
                 .partition(|path| skipped.contains(path));
+            // what the real run reports `up-to-date`: the same bytes are already there
+            let (same, written): (Vec<PathBuf>, Vec<PathBuf>) =
+                written.into_iter().partition(|path| {
+                    (p.artifacts.iter()).any(|a| {
+                        root.join(p.rel(a)) == *path
+                            && std::fs::read(path).is_ok_and(|b| b == a.content)
+                    })
+                });
             for path in &written {
                 lines.push(format!("  {}", path.display()));
             }
@@ -562,6 +570,15 @@ pub async fn execute(
                 && (!hooks.is_empty() || !keys.is_empty())
             {
                 lines.push(format!("  {} (hooks merged)", root.join(rel).display()));
+            }
+            if !same.is_empty() {
+                lines.push(format!(
+                    "Files unchanged for '{}' (already up to date):",
+                    p.target
+                ));
+                for path in &same {
+                    lines.push(format!("  {}", path.display()));
+                }
             }
             if !kept.is_empty() {
                 lines.push(format!(

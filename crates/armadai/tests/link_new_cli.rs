@@ -985,3 +985,25 @@ fn a_default_output_onto_the_root_names_where_it_comes_from() {
         "{err}"
     );
 }
+
+/// Files a real run would leave as they are are listed as unchanged, not generated.
+#[test]
+fn the_dry_run_lists_up_to_date_files_as_unchanged() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    std::fs::write(
+        env.root().join(".armadai/agents/dev.md"),
+        "---\ndescription: Writes code\n---\nYou write better code.\n",
+    )
+    .unwrap();
+    let out = env.ok(&["link", "--dry-run"]);
+    let generated = out.split("unchanged").next().unwrap();
+    assert!(generated.contains("agents/dev.md"), "{out}");
+    assert!(!generated.contains("SKILL.md"), "{out}");
+    let (_, unchanged) = out
+        .split_once("Files unchanged for 'claude'")
+        .unwrap_or_else(|| panic!("no unchanged section:\n{out}"));
+    let unchanged = unchanged.split("Conformance report").next().unwrap();
+    assert!(unchanged.contains("skills/notes/SKILL.md"), "{out}");
+    assert!(!unchanged.contains("agents/dev.md"), "{out}");
+}
