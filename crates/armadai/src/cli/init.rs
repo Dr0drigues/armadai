@@ -323,10 +323,7 @@ fn no_link_at(path: &Path) -> anyhow::Result<()> {
         if !path.exists() {
             anyhow::bail!(
                 "{} is a dangling symbolic link: remove it, or create what it points to",
-                path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |n| n.to_string_lossy().into_owned()
-                )
+                path.display()
             );
         }
         anyhow::bail!(
