@@ -325,7 +325,7 @@ mod tests {
         dev.front.tier = None;
         dev.front.native.insert(
             "opencode".into(),
-            serde_yaml_ng::from_str("model: openai/gpt-5").unwrap(),
+            armadai_model::yaml::from_str("model: openai/gpt-5").unwrap(),
         );
         let model = |t: &str| {
             link_agents(&p, t)

@@ -253,7 +253,7 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
             )
         };
         for (id, a) in p.automations.iter().filter(|(id, _)| new(id)) {
-            let event = serde_yaml_ng::to_string(&a.event).unwrap_or_default();
+            let event = armadai_model::yaml::to_string(&a.event).unwrap_or_default();
             anstream::eprintln!(
                 "{w}  warn: automation {id} runs `{}` on {} (it becomes a hook of the target){w:#}",
                 a.run,

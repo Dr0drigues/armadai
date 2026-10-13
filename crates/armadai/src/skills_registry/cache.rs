@@ -134,7 +134,7 @@ fn extract_skill_entry(
     let (fm_str, _body) = extract_frontmatter(&content);
 
     let fm: SkillFrontmatter = match fm_str {
-        Some(yaml) => serde_yaml_ng::from_str(yaml).unwrap_or_default(),
+        Some(yaml) => armadai_model::yaml::from_str(yaml).unwrap_or_default(),
         None => SkillFrontmatter::default(),
     };
 

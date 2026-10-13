@@ -622,7 +622,7 @@ pub fn lookup_target(root: &Path, target: &str) -> Lookup {
 /// manifest to salvage, only a usable one or none at all.
 fn read(root: &Path) -> Option<Manifest> {
     let raw = std::fs::read_to_string(manifest_path(root)).ok()?;
-    let manifest: Manifest = serde_yaml_ng::from_str(&raw).ok()?;
+    let manifest: Manifest = armadai_model::yaml::from_str(&raw).ok()?;
     if manifest.version != MANIFEST_VERSION {
         return None;
     }
@@ -687,7 +687,7 @@ pub fn write_target(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let yaml = serde_yaml_ng::to_string(&manifest)
+    let yaml = armadai_model::yaml::to_string(&manifest)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(path, yaml)
 }
@@ -701,7 +701,7 @@ pub fn remove_target(root: &Path, target: &str) -> std::io::Result<()> {
     if manifest.targets.is_empty() {
         return std::fs::remove_file(manifest_path(root));
     }
-    let yaml = serde_yaml_ng::to_string(&manifest)
+    let yaml = armadai_model::yaml::to_string(&manifest)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(manifest_path(root), yaml)
 }
@@ -741,7 +741,7 @@ pub fn append_entries(
             t.entries.push(e);
         }
     }
-    let yaml = serde_yaml_ng::to_string(&manifest)
+    let yaml = armadai_model::yaml::to_string(&manifest)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(manifest_path(root), yaml)
 }
@@ -1210,6 +1210,38 @@ mod tests {
             Lookup::Found(t) => assert!(t.patched.is_empty()),
             Lookup::Fallback => panic!("an older manifest must still be found"),
         }
+    }
+
+    /// A manifest written before serde-saphyr (master 70bfcd1, `link` of the four
+    /// targets on the model's `full` fixture) is read in full by this build.
+    #[test]
+    fn a_manifest_written_by_master_70bfcd1_still_reads() {
+        use crate::compile::patch::PatchKind;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai")).unwrap();
+        std::fs::write(
+            manifest_path(dir.path()),
+            include_str!("../../tests/fixtures/link-manifest/written-by-70bfcd1.yaml"),
+        )
+        .unwrap();
+        let m = read(dir.path()).expect("an older manifest must still be read");
+        assert_eq!(
+            m.targets.keys().collect::<Vec<_>>(),
+            ["claude", "codex", "copilot", "opencode"]
+        );
+        let claude = &m.targets["claude"];
+        assert_eq!(claude.linked_at, "2026-10-13T12:00:12Z");
+        assert_eq!(claude.entries.len(), 4);
+        assert_eq!(
+            claude.entries[0].digest.as_deref(),
+            Some("sha256:53d88015c2321c547650d83d77d5066277e24b1c03a884247ee394909fa7e5a6")
+        );
+        let PatchKind::SettingsHooks(owned) = &claude.patched[1].kind else {
+            panic!("expected the settings hooks");
+        };
+        assert_eq!(owned.entries.len(), 2);
+        // numbers were written as serde_json's private map: they read back as numbers
+        assert_eq!(owned.keys["anything"], serde_json::json!([1, 2]));
     }
 
     #[test]

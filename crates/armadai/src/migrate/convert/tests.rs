@@ -210,8 +210,8 @@ fn every_dead_field_is_reported() {
     m.context_window = Some(1000);
     m.mode = Some(armadai_core::agent::AgentMode::Guided);
     m.orchestration = Some(OrchestrationPattern::Ring);
-    m.triggers = Some(serde_yaml_ng::from_str("requires: [x]").unwrap());
-    m.ring_config = Some(serde_yaml_ng::from_str("role: proposer").unwrap());
+    m.triggers = Some(armadai_model::yaml::from_str("requires: [x]").unwrap());
+    m.ring_config = Some(armadai_model::yaml::from_str("role: proposer").unwrap());
     a.pipeline = Some(PipelineConfig {
         next: vec!["b".into()],
     });
@@ -560,7 +560,7 @@ fn self_links_are_never_produced() {
 #[test]
 fn project_level_dead_sections_are_reported() {
     let mut o = old(vec![agent("A")]);
-    o.config = serde_yaml_ng::from_str(
+    o.config = armadai_model::yaml::from_str(
         "sources: [x]\ndefaults: { mode: guided }\nrouting: {}\nregistries: {}\n",
     )
     .unwrap();

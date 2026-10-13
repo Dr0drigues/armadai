@@ -138,7 +138,7 @@ impl ProjectConfig {
     /// Load a project config from the given path.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        let config: ProjectConfig = serde_yaml_ng::from_str(&content)?;
+        let config: ProjectConfig = armadai_model::yaml::from_str(&content)?;
         Ok(config)
     }
 }
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn test_agent_ref_named() {
         let yaml = "- name: code-reviewer\n";
-        let refs: Vec<AgentRef> = serde_yaml_ng::from_str(yaml).unwrap();
+        let refs: Vec<AgentRef> = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(
             refs[0],
             AgentRef::Named {
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn test_agent_ref_registry() {
         let yaml = "- registry: official/security\n";
-        let refs: Vec<AgentRef> = serde_yaml_ng::from_str(yaml).unwrap();
+        let refs: Vec<AgentRef> = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(
             refs[0],
             AgentRef::Registry {
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn test_agent_ref_path() {
         let yaml = "- path: .armadai/agents/team.md\n";
-        let refs: Vec<AgentRef> = serde_yaml_ng::from_str(yaml).unwrap();
+        let refs: Vec<AgentRef> = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(
             refs[0],
             AgentRef::Path {
@@ -547,7 +547,7 @@ link:
     copilot:
       output: .github/agents/
 "#;
-        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: ProjectConfig = armadai_model::yaml::from_str(yaml).unwrap();
 
         assert_eq!(config.agents.len(), 3);
         assert_eq!(
@@ -596,21 +596,21 @@ link:
     #[test]
     fn test_defaults_mode_parsing() {
         let yaml = "defaults:\n  mode: guided\n";
-        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: ProjectConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(config.defaults.mode, Some(AgentMode::Guided));
     }
 
     #[test]
     fn test_defaults_absent_gives_default() {
         let yaml = "agents:\n  - name: my-agent\n";
-        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: ProjectConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert!(config.defaults.mode.is_none());
     }
 
     #[test]
     fn test_partial_config_deserialize() {
         let yaml = "agents:\n  - name: my-agent\n";
-        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: ProjectConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(config.agents.len(), 1);
         assert!(config.prompts.is_empty());
         assert!(config.skills.is_empty());
@@ -621,7 +621,7 @@ link:
     #[test]
     fn test_empty_config_deserialize() {
         let yaml = "";
-        let config: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap_or_default();
+        let config: ProjectConfig = armadai_model::yaml::from_str(yaml).unwrap_or_default();
         assert!(config.agents.is_empty());
         assert!(config.prompts.is_empty());
     }
@@ -634,7 +634,7 @@ routing:
   length_thresholds: { fast_max: 100, pro_max: 1000 }
   tags: { hot: max }
 "#;
-        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: ProjectConfig = armadai_model::yaml::from_str(yaml).unwrap();
         let r = cfg.routing.expect("routing present");
         assert_eq!(r.length_thresholds.fast_max, 100);
         assert_eq!(r.tags.get("hot").map(String::as_str), Some("max"));
@@ -645,7 +645,7 @@ routing:
     #[test]
     fn routing_absent_gives_none() {
         let yaml = "agents: []\n";
-        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: ProjectConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert!(cfg.routing.is_none());
     }
 
@@ -659,7 +659,7 @@ registries:
   skills:
     - url: https://example.com/skills.git
 "#;
-        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: ProjectConfig = armadai_model::yaml::from_str(yaml).unwrap();
         let r = cfg.registries.expect("registries present");
         assert_eq!(r.agents.len(), 1);
         assert_eq!(r.agents[0].url, "https://example.com/agents.git");
@@ -671,7 +671,7 @@ registries:
     #[test]
     fn registries_absent_gives_none() {
         let yaml = "agents: []\n";
-        let cfg: ProjectConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: ProjectConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert!(cfg.registries.is_none());
     }
 

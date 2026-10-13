@@ -103,7 +103,7 @@ pub struct UserConfig {
 pub fn load_user_config() -> UserConfig {
     let path = config_file_path();
     match std::fs::read_to_string(&path) {
-        Ok(content) => serde_yaml_ng::from_str(&content).unwrap_or_default(),
+        Ok(content) => armadai_model::yaml::from_str(&content).unwrap_or_default(),
         Err(_) => UserConfig::default(),
     }
 }
@@ -114,7 +114,7 @@ pub fn save_user_config(config: &UserConfig) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let yaml = serde_yaml_ng::to_string(config)?;
+    let yaml = armadai_model::yaml::to_string(config)?;
     std::fs::write(&path, yaml)?;
     Ok(())
 }
@@ -141,14 +141,14 @@ pub fn load_providers_config() -> ProvidersConfig {
     // Try global config first
     let global_path = providers_file_path();
     if let Ok(content) = std::fs::read_to_string(&global_path)
-        && let Ok(cfg) = serde_yaml_ng::from_str(&content)
+        && let Ok(cfg) = armadai_model::yaml::from_str(&content)
     {
         return cfg;
     }
     // Fallback to project-local
     let local_path = Path::new("config/providers.yaml");
     if let Ok(content) = std::fs::read_to_string(local_path)
-        && let Ok(cfg) = serde_yaml_ng::from_str(&content)
+        && let Ok(cfg) = armadai_model::yaml::from_str(&content)
     {
         return cfg;
     }
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn test_empty_deserialize() {
         let yaml = "";
-        let cfg: UserConfig = serde_yaml_ng::from_str(yaml).unwrap_or_default();
+        let cfg: UserConfig = armadai_model::yaml::from_str(yaml).unwrap_or_default();
         assert!(cfg.starters_dirs.is_empty());
     }
 
@@ -303,8 +303,8 @@ logging:
 starters_dirs:
   - /opt/starters
 ";
-        let user: UserConfig =
-            serde_yaml_ng::from_str(user_yaml).expect("an old-style config.yaml must still parse");
+        let user: UserConfig = armadai_model::yaml::from_str(user_yaml)
+            .expect("an old-style config.yaml must still parse");
         assert_eq!(user.starters_dirs, vec!["/opt/starters".to_string()]);
 
         let project_yaml = "\
@@ -321,7 +321,7 @@ shell:
         providers:
           - provider: claude
 ";
-        let project: crate::project::ProjectConfig = serde_yaml_ng::from_str(project_yaml)
+        let project: crate::project::ProjectConfig = armadai_model::yaml::from_str(project_yaml)
             .expect("an old-style armadai.yaml with `shell:` must still parse");
         assert_eq!(project.agents.len(), 1);
     }
@@ -358,7 +358,7 @@ providers:
     models:
       - gpt-4o
 "#;
-        let cfg: ProvidersConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: ProvidersConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.providers.len(), 2);
         assert!(cfg.providers.contains_key("anthropic"));
         let anthropic = &cfg.providers["anthropic"];

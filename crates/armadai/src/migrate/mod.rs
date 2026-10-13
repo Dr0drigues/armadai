@@ -132,7 +132,7 @@ mod tests {
     fn invalid(old: &OldProject) -> (armadai_model::Project, Vec<SkillCopy>, Report) {
         let (mut p, c, r) = convert::convert(old);
         let flow: armadai_model::FlowFile =
-            serde_yaml_ng::from_str("steps:\n  a: { agent: ghost }\n").unwrap();
+            armadai_model::yaml::from_str("steps:\n  a: { agent: ghost }\n").unwrap();
         p.flows.insert(
             "bad".into(),
             armadai_model::Flow {

@@ -41,7 +41,7 @@ impl StarterPack {
             anyhow::bail!("No pack.yaml found in {}", dir.display());
         }
         let content = std::fs::read_to_string(&pack_file)?;
-        let pack: StarterPack = serde_yaml_ng::from_str(&content)?;
+        let pack: StarterPack = armadai_model::yaml::from_str(&content)?;
         Ok(pack)
     }
 }
@@ -241,7 +241,7 @@ pub fn discover_packs(registry_dir: &Path) -> Vec<PathBuf> {
     let manifest_path = registry_dir.join("armadai-starters.yaml");
     if manifest_path.is_file()
         && let Ok(content) = std::fs::read_to_string(&manifest_path)
-        && let Ok(manifest) = serde_yaml_ng::from_str::<StartersManifest>(&content)
+        && let Ok(manifest) = armadai_model::yaml::from_str::<StartersManifest>(&content)
         && !manifest.packs.is_empty()
     {
         return manifest

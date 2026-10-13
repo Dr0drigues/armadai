@@ -550,7 +550,8 @@ agents:
     /// variant with its own single required field joins the set.
     #[test]
     fn a_named_entry_still_deserialises_as_named_not_declared() {
-        let refs: Vec<AgentRef> = serde_yaml_ng::from_str("- name: core-specialist\n").unwrap();
+        let refs: Vec<AgentRef> =
+            armadai_model::yaml::from_str("- name: core-specialist\n").unwrap();
         assert_eq!(refs.len(), 1);
         assert!(
             matches!(refs[0], AgentRef::Named { .. }),
@@ -658,7 +659,8 @@ agents:
     /// not to one of the other three variants.
     #[test]
     fn a_declared_entry_deserialises_as_declared() {
-        let refs: Vec<AgentRef> = serde_yaml_ng::from_str("- declared: core-specialist\n").unwrap();
+        let refs: Vec<AgentRef> =
+            armadai_model::yaml::from_str("- declared: core-specialist\n").unwrap();
         assert_eq!(refs.len(), 1);
         assert_eq!(
             refs[0],

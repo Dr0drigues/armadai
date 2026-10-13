@@ -512,7 +512,7 @@ timeout: 600
 max_rounds: 10
 consensus_threshold: 0.85
 "#;
-        let config: OrchestrationConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: OrchestrationConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert!(config.enabled);
         assert_eq!(config.pattern, OrchestrationPattern::Hierarchical);
         assert_eq!(config.coordinator.as_deref(), Some("boulanger-architect"));
@@ -530,7 +530,7 @@ consensus_threshold: 0.85
     #[test]
     fn test_deserialize_minimal_config() {
         let yaml = "enabled: true\npattern: blackboard\n";
-        let config: OrchestrationConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: OrchestrationConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert!(config.enabled);
         assert_eq!(config.pattern, OrchestrationPattern::Blackboard);
         assert!(config.coordinator.is_none());
@@ -547,7 +547,7 @@ routes:
   security-audit: [rust-security, rust-reviewer]
   frontend: [ui-specialist]
 "#;
-        let config: OrchestrationConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: OrchestrationConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(
             config.routes.get("security-audit").unwrap(),
             &vec!["rust-security".to_string(), "rust-reviewer".to_string()]
@@ -558,7 +558,7 @@ routes:
     #[test]
     fn test_orchestration_config_routes_default_empty() {
         let yaml = "enabled: true\npattern: blackboard\n";
-        let config: OrchestrationConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: OrchestrationConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert!(config.routes.is_empty());
     }
 
@@ -600,7 +600,7 @@ teams:
   - lead: doc-lead
     agents: [writer]
 "#;
-        let config: OrchestrationConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: OrchestrationConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(config.teams[0].pattern, Some(NestedPattern::Blackboard));
         assert_eq!(config.teams[0].max_rounds, Some(4));
         assert_eq!(config.teams[1].pattern, Some(NestedPattern::Ring));
