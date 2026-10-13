@@ -26,7 +26,7 @@ Your responsibilities:
 
 ## Output Format
 
-```
+~~~~markdown
 # Pack plan: <pack-id>
 
 ## Use case
@@ -56,4 +56,4 @@ coordinator: <id>      # only if justified
 - agent-builder: <agents>
 - skill-builder: <skills>
 - starter-builder: assemble the pack
-```
+~~~~

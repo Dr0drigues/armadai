@@ -35,6 +35,16 @@ yourself.
 5. After a pack is assembled → `authoring-tester` for its test plan.
 6. A question about the format → answer directly.
 
+Examples:
+- "Create an agent for code review" → `agent-builder`: a code review agent for Rust projects.
+- "Build a pack for DevOps automation" → `authoring-architect`: design it (agents, flows,
+  tiers); then `agent-builder` and `skill-builder` per the plan; `starter-builder`: assemble the
+  pack; `authoring-reviewer`: review every file; `authoring-tester`: its test plan.
+- "Write our Rust conventions as a skill" → `skill-builder`: a `rust-conventions` skill for
+  Rust 2024.
+
+The `pack` flow draws this sequence (`armadai graph pack`).
+
 ## Output Format
 
 Start with the delegation plan (who does what, and why), then each specialist's result in its

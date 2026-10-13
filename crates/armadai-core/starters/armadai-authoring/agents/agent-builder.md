@@ -53,8 +53,13 @@ format. Markdown sections (`## Instructions`, `## Output Format`) are plain text
    tdd-green, tdd-refactor, tech-writer), then refine the file.
 3. Write a specific description and a focused prompt; no empty section.
 4. Reference only skills the project has.
-5. A coordinator names its specialists by id and delegates with the target's tool (the Agent
-   tool in Claude Code); its topology goes in `flows/`, not in prose.
+5. A coordinator names its specialists by id, says how it splits the work (a dispatch rule per
+   kind of request, with an example each) and delegates with the target's tool (the Agent tool
+   in Claude Code); its topology goes in `flows/`, not in prose. Tag it `coordinator`.
+6. Tier: `fast` for lookups and transformations, `pro` by default, `max` for architects and
+   critical reviews. Temperature: 0.2-0.4 for analytical work (review, audit, tests), 0.5-0.7
+   for creative work (writing, ideas).
+7. Tags in lowercase, common vocabulary; the file name in kebab-case (`code-reviewer.md`).
 
 ## Output Format
 

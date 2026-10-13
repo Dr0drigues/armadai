@@ -45,7 +45,7 @@ Chaque point inclut : severite, localisation, suggestion de fix.
 === .claude/agents/debug.md
 ---
 name: debug
-description: 'Debugs a Rust failure systematically: reproduce, trace to the root cause, propose the minimal fix and its test'
+description: 'Débogue un échec Rust méthodiquement : reproduire, remonter à la cause racine, proposer le correctif minimal et son test'
 model: sonnet
 ---
 You are a systematic debugger. You follow a disciplined 4-phase process

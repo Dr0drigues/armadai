@@ -34,6 +34,13 @@ description: "What the team does, in one sentence"
 - A `pack.yaml` without `format` is the legacy format (an `agents:` list, `prompts/`), still
   converted at install; never write one.
 
+### Design guidelines
+
+- One pack = one domain or workflow; 3 to 6 agents is the sweet spot.
+- A coordinator only for a lead the others report to; sub-teams only past 6 agents or for
+  distinct domains (a lead of its own, a `fan-out` flow from it).
+- Shared conventions as one skill listed by every agent that needs them.
+
 ## Instructions
 
 1. Follow the architect's plan: the agents (from `agent-builder`), the skills (from

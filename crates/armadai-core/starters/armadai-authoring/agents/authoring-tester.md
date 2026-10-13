@@ -23,7 +23,7 @@ Your responsibilities:
 
 ## Output Format
 
-```markdown
+~~~~markdown
 # Test plan: <pack>
 
 ## Setup
@@ -46,4 +46,4 @@ armadai link
 - [ ] validate: no error, no warning
 - [ ] link writes the expected files, conformance report reviewed
 - [ ] every core test passes, out-of-scope prompts are declined
-```
+~~~~

@@ -91,8 +91,13 @@ format. Markdown sections (`## Instructions`, `## Output Format`) are plain text
    tdd-green, tdd-refactor, tech-writer), then refine the file.
 3. Write a specific description and a focused prompt; no empty section.
 4. Reference only skills the project has.
-5. A coordinator names its specialists by id and delegates with the target's tool (the Agent
-   tool in Claude Code); its topology goes in `flows/`, not in prose.
+5. A coordinator names its specialists by id, says how it splits the work (a dispatch rule per
+   kind of request, with an example each) and delegates with the target's tool (the Agent tool
+   in Claude Code); its topology goes in `flows/`, not in prose. Tag it `coordinator`.
+6. Tier: `fast` for lookups and transformations, `pro` by default, `max` for architects and
+   critical reviews. Temperature: 0.2-0.4 for analytical work (review, audit, tests), 0.5-0.7
+   for creative work (writing, ideas).
+7. Tags in lowercase, common vocabulary; the file name in kebab-case (`code-reviewer.md`).
 
 ## Output Format
 
@@ -129,7 +134,7 @@ Your responsibilities:
 
 ## Output Format
 
-```
+~~~~markdown
 # Pack plan: <pack-id>
 
 ## Use case
@@ -159,7 +164,7 @@ coordinator: <id>      # only if justified
 - agent-builder: <agents>
 - skill-builder: <skills>
 - starter-builder: assemble the pack
-```
+~~~~
 
 === .claude/agents/authoring-reviewer.md
 ---
@@ -236,7 +241,7 @@ Your responsibilities:
 
 ## Output Format
 
-```markdown
+~~~~markdown
 # Test plan: <pack>
 
 ## Setup
@@ -259,7 +264,7 @@ armadai link
 - [ ] validate: no error, no warning
 - [ ] link writes the expected files, conformance report reviewed
 - [ ] every core test passes, out-of-scope prompts are declined
-```
+~~~~
 
 === .claude/agents/skill-builder.md
 ---
@@ -349,6 +354,13 @@ description: "What the team does, in one sentence"
 - Every automation is listed to the user at install: it becomes a hook the target runs.
 - A `pack.yaml` without `format` is the legacy format (an `agents:` list, `prompts/`), still
   converted at install; never write one.
+
+### Design guidelines
+
+- One pack = one domain or workflow; 3 to 6 agents is the sweet spot.
+- A coordinator only for a lead the others report to; sub-teams only past 6 agents or for
+  distinct domains (a lead of its own, a `fan-out` flow from it).
+- Shared conventions as one skill listed by every agent that needs them.
 
 ## Instructions
 
@@ -448,6 +460,16 @@ yourself.
 5. After a pack is assembled → `authoring-tester` for its test plan.
 6. A question about the format → answer directly.
 
+Examples:
+- "Create an agent for code review" → `agent-builder`: a code review agent for Rust projects.
+- "Build a pack for DevOps automation" → `authoring-architect`: design it (agents, flows,
+  tiers); then `agent-builder` and `skill-builder` per the plan; `starter-builder`: assemble the
+  pack; `authoring-reviewer`: review every file; `authoring-tester`: its test plan.
+- "Write our Rust conventions as a skill" → `skill-builder`: a `rust-conventions` skill for
+  Rust 2024.
+
+The `pack` flow draws this sequence (`armadai graph pack`).
+
 ## Output Format
 
 Start with the delegation plan (who does what, and why), then each specialist's result in its
@@ -492,18 +514,23 @@ Transitions:
 
 ### Flow `pack`
 
-A pack is planned, assembled, reviewed until approved, then given a test plan
+A pack is planned, its agents and skills written, assembled, reviewed until approved, then given a test plan
 
 Steps:
 
+- `agents` (agent `agent-builder`)
 - `build` (agent `starter-builder`)
 - `plan` (agent `authoring-architect`)
 - `review` (agent `authoring-reviewer`, states: approved, rejected)
+- `skills` (agent `skill-builder`)
 - `test` (agent `authoring-tester`)
 
 Transitions:
 
-- `plan` -> `build`
+- `plan` -> `agents`
+- `plan` -> `skills`
+- `agents` -> `build`
+- `skills` -> `build`
 - `build` -> `review`
 - `review` -> `build` when `rejected`
 - `review` -> `test` when `approved`
