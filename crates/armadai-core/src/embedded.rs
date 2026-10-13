@@ -170,12 +170,12 @@ fn alive(pid: u32) -> bool {
     #[cfg(not(unix))]
     {
         let _ = pid;
-        true // no cheap check: rely on the age alone
+        true // no cheap check: never purge
     }
 }
 
 /// Remove the temporaries of `name` another extraction left behind, when their
-/// process is gone or they are older than an hour.
+/// process is gone. Never by age: a rename keeps the mtime of what it moves.
 fn purge_orphans(parent: &Path, name: &str) {
     let Ok(entries) = std::fs::read_dir(parent) else {
         return;
@@ -192,13 +192,7 @@ fn purge_orphans(parent: &Path, name: &str) {
         let Some(pid) = pid.filter(|p| *p != me) else {
             continue;
         };
-        let old = e
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.elapsed().ok())
-            .is_some_and(|d| d > std::time::Duration::from_secs(3600));
-        if !alive(pid) || old {
+        if !alive(pid) {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
@@ -368,6 +362,35 @@ mod tests {
         }
         ensure(pack("rust-dev"), &dest, false).unwrap();
         assert_eq!(names(tmp.path()), [".rust-dev.extracting.1", "rust-dev"]);
+    }
+
+    /// The age of a temporary says nothing (a rename keeps the mtime): one of a live
+    /// process stays however old; a name that does not parse is left alone.
+    #[cfg(unix)]
+    #[test]
+    fn orphans_are_judged_by_their_process_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let live = tmp.path().join(".rust-dev.old.1"); // pid 1 is alive
+        let odd = tmp.path().join(".rust-dev.old.abc");
+        for d in [&live, &odd] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let path = std::ffi::CString::new(live.to_str().unwrap()).unwrap();
+        let two_hours_ago = libc::timeval {
+            tv_sec: (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                - 7200) as libc::time_t,
+            tv_usec: 0,
+        };
+        // SAFETY: a valid C path and two valid timevals
+        assert_eq!(
+            unsafe { libc::utimes(path.as_ptr(), [two_hours_ago; 2].as_ptr()) },
+            0
+        );
+        ensure(pack("rust-dev"), &tmp.path().join("rust-dev"), false).unwrap();
+        assert!(live.exists() && odd.exists(), "{:?}", names(tmp.path()));
     }
 
     /// A failure names the path it failed on, and leaves no temporary behind.
