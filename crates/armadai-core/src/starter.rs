@@ -80,15 +80,34 @@ pub fn builtin_starters_dir() -> PathBuf {
             && let Some(name) = dir.path().file_name().and_then(|n| n.to_str())
         {
             let dest = config_starters.join(name);
-            if !dest.exists() || super::embedded::needs_update(&dest) {
-                if let Err(e) = crate::skill::extract_embedded_dir(dir, &dest) {
-                    tracing::warn!("Failed to extract embedded starter '{}': {:?}", name, e);
-                }
-                super::embedded::write_version_marker(&dest);
+            if (!dest.exists() || super::embedded::needs_update(&dest))
+                && let Err(e) = refresh_extracted(dir, &dest)
+            {
+                tracing::warn!("Failed to extract embedded starter '{}': {:?}", name, e);
             }
         }
     }
     config_starters
+}
+
+/// Extract the embedded pack `dir` to `dest`, replacing what an older binary left
+/// there: extracted next to it, then swapped in, so no file of the previous version
+/// (a removed agent, `prompts/`) survives.
+fn refresh_extracted(dir: &Dir<'_>, dest: &Path) -> anyhow::Result<()> {
+    let name = dest
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("{} has no name", dest.display()))?;
+    let fresh = dest.with_file_name(format!(".{}.extracting", name.to_string_lossy()));
+    if fresh.exists() {
+        std::fs::remove_dir_all(&fresh)?;
+    }
+    crate::skill::extract_embedded_dir(dir, &fresh)?;
+    super::embedded::write_version_marker(&fresh);
+    if dest.exists() {
+        std::fs::remove_dir_all(dest)?;
+    }
+    std::fs::rename(&fresh, dest)?;
+    Ok(())
 }
 
 /// Return all starter directories in priority order.
@@ -449,6 +468,27 @@ description: Minimal pack
             }
         }
         assert_eq!(seen, EMBEDDED_STARTERS.dirs().count());
+    }
+
+    /// A pack extracted by an older binary is replaced, not written over.
+    #[test]
+    fn a_re_extracted_pack_keeps_no_stale_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("rust-dev");
+        std::fs::create_dir_all(dest.join("prompts")).unwrap();
+        std::fs::write(dest.join("prompts/old.md"), "stale").unwrap();
+        std::fs::write(dest.join(".armadai-version"), "0.0.1").unwrap();
+        let dir = EMBEDDED_STARTERS.get_dir("rust-dev").unwrap();
+        refresh_extracted(dir, &dest).unwrap();
+        assert!(!dest.join("prompts/old.md").exists());
+        assert!(dest.join("pack.yaml").is_file());
+        assert!(!super::super::embedded::needs_update(&dest));
+        let names: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(names, ["rust-dev"], "no scratch folder left");
     }
 
     #[test]
