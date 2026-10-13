@@ -8,6 +8,7 @@ mod migrate;
 mod models;
 pub(crate) mod new;
 mod new_target;
+mod new_wizard;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;
@@ -51,7 +52,8 @@ pub enum Command {
             current directory (armadai init --project first).\n\n\
             Each command writes one file under .armadai/, then validates the project: a \
             creation that would introduce an error is undone and nothing is left behind. \
-            Ids are lowercase letters, digits and hyphens.\n\n\
+            Ids are lowercase letters, digits and hyphens. Without a kind, a guided menu \
+            opens (a terminal is needed); `-i` asks for every value of one kind.\n\n\
             Agent templates: basic, dev-review, dev-test, planning, security-review, debug, \
             tech-debt, tdd-red, tdd-green, tdd-refactor, tech-writer (built into the binary; a \
             same-named file in ./templates or ~/.config/armadai/templates overrides one, and \

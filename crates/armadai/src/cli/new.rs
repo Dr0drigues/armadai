@@ -25,7 +25,7 @@ fn load_template_from(templates_dir: &Path, name: &str) -> Option<String> {
 
 /// Sorted, de-duplicated names of the templates in `templates_dir` plus the
 /// embedded ones.
-fn template_names_from(templates_dir: &Path) -> Vec<String> {
+pub fn template_names_from(templates_dir: &Path) -> Vec<String> {
     let mut names = collect_template_names(templates_dir);
     names.extend(
         EMBEDDED_TEMPLATES
@@ -67,6 +67,9 @@ pub enum NewCommand {
         /// Replace an existing agent file
         #[arg(long)]
         force: bool,
+        /// Ask for every value in the terminal
+        #[arg(long, short = 'i')]
+        interactive: bool,
     },
     /// Create a flow from a template over agents of the project (.armadai/flows/<id>.yaml)
     #[command(
@@ -98,6 +101,9 @@ pub enum NewCommand {
         /// Replace an existing flow file
         #[arg(long)]
         force: bool,
+        /// Ask for every value in the terminal
+        #[arg(long, short = 'i')]
+        interactive: bool,
     },
     /// Create an automation: a command run on an event (.armadai/automations/<id>.yaml)
     #[command(after_help = "Examples:\n  \
@@ -117,6 +123,9 @@ pub enum NewCommand {
         /// Replace an existing automation file
         #[arg(long)]
         force: bool,
+        /// Ask for every value in the terminal
+        #[arg(long, short = 'i')]
+        interactive: bool,
     },
     /// Create a skill skeleton (.armadai/skills/<id>/SKILL.md)
     #[command(after_help = "Examples:\n  \
@@ -130,6 +139,9 @@ pub enum NewCommand {
         /// Replace an existing SKILL.md
         #[arg(long)]
         force: bool,
+        /// Ask for every value in the terminal
+        #[arg(long, short = 'i')]
+        interactive: bool,
     },
     /// The former `armadai new <name>`
     #[command(external_subcommand)]
@@ -160,16 +172,23 @@ fn required<T>(v: Option<T>, what: &str) -> anyhow::Result<T> {
 
 pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
     use crate::cli::new_target::Kind;
+    use crate::cli::new_wizard::{self, WizardKind};
     let Some(command) = command else {
-        use clap::CommandFactory;
-        let mut cli = crate::cli::Cli::command();
-        cli.build(); // gives the subcommand its `armadai new` usage line
-        cli.find_subcommand_mut("new")
-            .expect("new is a command")
-            .print_help()?;
-        return Ok(());
+        return new_wizard::run(None);
     };
     match command {
+        NewCommand::Agent {
+            interactive: true, ..
+        } => new_wizard::run(Some(WizardKind::Agent)),
+        NewCommand::Flow {
+            interactive: true, ..
+        } => new_wizard::run(Some(WizardKind::Flow)),
+        NewCommand::Automation {
+            interactive: true, ..
+        } => new_wizard::run(Some(WizardKind::Automation)),
+        NewCommand::Skill {
+            interactive: true, ..
+        } => new_wizard::run(Some(WizardKind::Skill)),
         NewCommand::Agent {
             id,
             template,
@@ -178,27 +197,16 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
             tier,
             skills,
             force,
+            ..
         } => {
-            let id = required(id, "an agent id")?;
-            crate::cli::new_target::check_id(&id)?;
-            let paths = AppPaths::resolve();
-            let source = load_template_from(&paths.templates_dir, &template)
-                .ok_or_else(|| anyhow::anyhow!("template `{template}` not found"))?;
             let opts = AgentOptions {
                 description,
                 stack,
                 tier,
                 skills,
+                ..AgentOptions::default()
             };
-            let (agent, remaining) = agent_from_template(&id, &template, &source, &opts)?;
-            create(
-                Kind::Agent,
-                &id,
-                force,
-                &armadai_model::render_agent(&id, &agent),
-            )?;
-            warn_placeholders(&remaining);
-            Ok(())
+            create_agent(&required(id, "an agent id")?, &template, &opts, force)
         }
         NewCommand::Flow {
             id,
@@ -206,6 +214,7 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
             agents,
             description,
             force,
+            ..
         } => {
             let id = required(id, "a flow id")?;
             crate::cli::new_target::check_id(&id)?;
@@ -214,10 +223,7 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
             }
             // an agent the project lacks is the validator's `unknown-agent`: undone (T8)
             let flow = armadai_model::flow_from_template(template, &agents, description)?;
-            create(Kind::Flow, &id, force, &armadai_model::render_flow(&flow))?;
-            let m = crate::cli::style::muted();
-            anstream::println!("{m}  See it: armadai graph {id}{m:#}");
-            Ok(())
+            create_flow(&id, &flow, force)
         }
         NewCommand::Automation {
             id,
@@ -225,6 +231,7 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
             run,
             description,
             force,
+            ..
         } => {
             let id = required(id, "an automation id")?;
             let a = armadai_model::Automation {
@@ -244,19 +251,10 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
             id,
             description,
             force,
+            ..
         } => {
             let id = required(id, "a skill id")?;
-            let skill = armadai_model::Skill {
-                front: armadai_model::SkillFront {
-                    name: Some(id.clone()),
-                    description: Some(required(description, "--description")?),
-                    ..Default::default()
-                },
-                body: format!(
-                    "# {}\n\nWhen to use this skill, then the steps to follow.\n",
-                    slug_to_title(&id)
-                ),
-            };
+            let skill = skill_skeleton(&id, required(description, "--description")?);
             create(
                 Kind::Skill,
                 &id,
@@ -275,9 +273,57 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
     }
 }
 
+/// The agent `id` from `template` with `opts`, written and validated.
+pub fn create_agent(
+    id: &str,
+    template: &str,
+    opts: &AgentOptions,
+    force: bool,
+) -> anyhow::Result<()> {
+    crate::cli::new_target::check_id(id)?;
+    let paths = AppPaths::resolve();
+    let source = load_template_from(&paths.templates_dir, template)
+        .ok_or_else(|| anyhow::anyhow!("template `{template}` not found"))?;
+    let (agent, remaining) = agent_from_template(id, template, &source, opts)?;
+    create(
+        crate::cli::new_target::Kind::Agent,
+        id,
+        force,
+        &armadai_model::render_agent(id, &agent),
+    )?;
+    warn_placeholders(&remaining);
+    Ok(())
+}
+
+pub fn create_flow(id: &str, flow: &armadai_model::Flow, force: bool) -> anyhow::Result<()> {
+    create(
+        crate::cli::new_target::Kind::Flow,
+        id,
+        force,
+        &armadai_model::render_flow(flow),
+    )?;
+    let m = crate::cli::style::muted();
+    anstream::println!("{m}  See it: armadai graph {id}{m:#}");
+    Ok(())
+}
+
+pub fn skill_skeleton(id: &str, description: String) -> armadai_model::Skill {
+    armadai_model::Skill {
+        front: armadai_model::SkillFront {
+            name: Some(id.to_string()),
+            description: Some(description),
+            ..Default::default()
+        },
+        body: format!(
+            "# {}\n\nWhen to use this skill, then the steps to follow.\n",
+            slug_to_title(id)
+        ),
+    }
+}
+
 /// Write one file through the guard, then validate the project: a creation that
 /// introduces an error (a `(code, file)` absent before) is undone (T8).
-fn create(
+pub fn create(
     kind: crate::cli::new_target::Kind,
     id: &str,
     force: bool,
@@ -328,6 +374,7 @@ pub struct AgentOptions {
     pub stack: Option<String>,
     pub tier: Option<armadai_model::Tier>,
     pub skills: Vec<String>,
+    pub capabilities: armadai_model::Capabilities,
 }
 
 /// What `{{stack}}` reads when no stack is given.
@@ -363,6 +410,9 @@ pub fn agent_from_template(
     }
     if !opts.skills.is_empty() {
         front.skills = opts.skills.clone();
+    }
+    if opts.capabilities != armadai_model::Capabilities::default() {
+        front.capabilities = opts.capabilities.clone();
     }
     let mut vars = std::collections::BTreeMap::new();
     vars.insert("name".to_string(), slug_to_title(id));
@@ -513,6 +563,7 @@ mod tests {
             stack: Some("rust".into()),
             tier: Some(armadai_model::Tier::Max),
             skills: vec!["notes".into()],
+            ..AgentOptions::default()
         };
         let (agent, _) =
             agent_from_template("a", "basic", embedded_template("basic").unwrap(), &opts).unwrap();

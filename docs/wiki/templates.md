@@ -8,6 +8,11 @@ validates the project: a creation that would introduce an error is undone, and n
 behind (a file replaced with `--force` is put back). Ids are lowercase letters, digits and hyphens
 (`[a-z0-9][a-z0-9-]{0,63}`); an id that is not one is refused, never rewritten.
 
+`armadai new` alone opens a guided menu, and `armadai new <kind> -i` asks for every value of
+one kind (agent: template, description, stack, tier, skills of the project, capabilities; flow:
+template, agents of the project and their order, with a Mermaid preview before writing). Both
+need a terminal; in a script, pass the options.
+
 ## Agent templates
 
 ```bash

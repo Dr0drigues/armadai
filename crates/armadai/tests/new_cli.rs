@@ -396,3 +396,24 @@ fn an_id_is_required_without_a_terminal() {
     let err = env.fails(&["new", "agent"]);
     assert!(err.contains("id"), "{err}");
 }
+
+/// The wizards need a terminal: without one, a clear error and nothing written.
+#[test]
+fn interactive_mode_without_a_terminal_is_a_clear_error() {
+    let env = Env::project();
+    let before = tree(&env.root());
+    for args in [
+        &["new"][..],
+        &["new", "agent", "-i"][..],
+        &["new", "flow", "--interactive"][..],
+        &["new", "automation", "-i"][..],
+        &["new", "skill", "-i"][..],
+    ] {
+        let err = env.fails(args);
+        assert!(
+            err.contains("interactive mode needs a terminal"),
+            "{args:?}: {err}"
+        );
+    }
+    assert_eq!(tree(&env.root()), before);
+}
