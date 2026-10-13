@@ -296,6 +296,22 @@ fn serde_position_suffix_is_not_in_the_message() {
     assert_eq!(d.column, Some(7));
 }
 
+/// The library's advice on its own options is not for the user.
+#[test]
+fn duplicate_key_message_names_the_key_only() {
+    let ds = errors_for(
+        &[
+            M,
+            (
+                ".armadai/agents/a.md",
+                "---\ndescription: d\ntier: pro\ntier: max\n---\n",
+            ),
+        ],
+        "invalid-yaml",
+    );
+    assert_eq!(ds[0].message, "duplicate mapping key: tier");
+}
+
 #[test]
 fn flows_and_automations_are_filtered_and_sorted() {
     for dir_name in ["flows", "automations"] {
