@@ -1,9 +1,10 @@
 # Declarative agents
 
 > **Legacy format.** This page describes the format of projects before v1 (`.armadai/config.yaml`,
-> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and
-> internally by `armadai new` (templates) and `armadai init --pack` (starter packs). Projects use
-> the [Project format](project-format.md).
+> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and by
+> `armadai init --pack` for a starter pack in the legacy format (a `pack.yaml` without
+> `format: 1`). Projects, agent templates and the built-in packs use the
+> [Project format](project-format.md).
 
 A project can declare its agents in `.armadai/agents.yaml` instead of writing each one as a
 Markdown file. The YAML is parsed into the same `Agent` struct the `.md` parser produces — same
@@ -93,7 +94,7 @@ prompt:
   - { project-architecture: { module: core } }
 ```
 
-Each fragment body goes through the same `{{var}}` substitution `armadai new` uses
+Each fragment body goes through the `{{var}}` substitution of the agent templates
 (`crates/armadai-core/src/template.rs`), then the rendered fragments are joined with a blank line,
 in the order declared. Every fragment body is trimmed first, so a fragment file's own trailing
 newline doesn't pile up into two or three blank lines at the join. Two variables are always
@@ -141,8 +142,8 @@ the check or to force one side to win.
 
 ## Who reads this format
 
-Since step 2 of v1, only `armadai migrate` reads it (and, internally, `armadai new` and
-`armadai init --pack`): it converts every declared agent into `.armadai/agents/<id>.md` with its
+Since step 2 of v1, only `armadai migrate` reads it (and `armadai init --pack` for a legacy
+pack): it converts every declared agent into `.armadai/agents/<id>.md` with its
 composed prompt, exactly like a file-backed one, and its report says what was dropped. `list`,
 `inspect`, `link`, `validate` and `models` read the [Project format](project-format.md) only.
 

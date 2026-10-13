@@ -215,23 +215,15 @@ OUTPUTFORMAT_SUBSECTION_MARKER — one sentence.
              this test no longer measures #392 and must be re-pointed"
         );
 
-        let agent = template
-            .replace("{{name}}", "debug-template")
-            .replace("{{model}}", "claude-sonnet-4-5-20250929")
-            .replace("{{stack}}", "rust");
+        // the templates are canonical since step 3: the file is an agent as is
+        let agent = template.replace("{{stack}}", "rust");
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
-        std::fs::create_dir_all(root.join("agents")).unwrap();
-        std::fs::create_dir_all(root.join(".armadai")).unwrap();
-        std::fs::write(
-            root.join(".armadai/config.yaml"),
-            "agents:\n  - path: agents/debug-template.md\n",
-        )
-        .unwrap();
-        std::fs::write(root.join("agents/debug-template.md"), &agent).unwrap();
+        std::fs::create_dir_all(root.join(".armadai/agents")).unwrap();
+        std::fs::write(root.join(".armadai/project.yaml"), "schema_version: 1\n").unwrap();
+        std::fs::write(root.join(".armadai/agents/debug-template.md"), &agent).unwrap();
 
-        migrate(&root, dir.path());
         let mut cmd = Command::cargo_bin("armadai").unwrap();
         cmd.current_dir(&root)
             .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))

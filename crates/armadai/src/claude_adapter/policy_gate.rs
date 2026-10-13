@@ -108,10 +108,11 @@ const IMPLICIT_SUBAGENT: &str = "general-purpose";
 ///
 /// - Main thread: with a coordinator, it IS the coordinator (it lives in
 ///   `CLAUDE.md`) and drives the flows: every step agent. Without one, the
-///   agents of entry steps (no incoming link nor `on_failure`).
+///   agents of entry steps (`armadai_model::entry_steps`, the validator's own).
 /// - The coordinator as `--agent`: same as the main thread.
 /// - Agent X: the agents of the steps a step of X leads to (link or `on_failure`).
 /// - `policy.free_agents`: always.
+/// - The coordinator never, as a step agent: it is no sub-agent.
 pub fn allowed_targets(project: &Project, caller: Option<&str>) -> BTreeSet<String> {
     let coordinator = project.manifest.coordinator.as_deref();
     let main = caller.is_none() || caller == coordinator;
@@ -131,9 +132,10 @@ pub fn allowed_targets(project: &Project, caller: Option<&str>) -> BTreeSet<Stri
                     .filter_map(|(sid, s)| s.on_failure.as_deref().map(|t| (sid.as_str(), t))),
             )
             .collect();
+        let entries = armadai_model::entry_steps(flow);
         for (sid, step) in &flow.steps {
             let reached = if main {
-                coordinator.is_some() || !edges.iter().any(|(_, to)| to == sid)
+                coordinator.is_some() || entries.contains(sid)
             } else {
                 edges.iter().any(|(from, to)| {
                     to == sid
@@ -143,7 +145,8 @@ pub fn allowed_targets(project: &Project, caller: Option<&str>) -> BTreeSet<Stri
                             .is_some_and(|s| Some(s.agent.as_str()) == caller)
                 })
             };
-            if reached {
+            // the coordinator lives in CLAUDE.md: never a sub-agent to delegate to
+            if reached && Some(step.agent.as_str()) != coordinator {
                 out.insert(step.agent.clone());
             }
         }
@@ -314,6 +317,22 @@ mod tests {
         assert!(r.contains("free_agents"), "{r}");
     }
 
+    /// The coordinator lives in CLAUDE.md, it is no sub-agent: a step it runs is
+    /// never offered as a delegation target, from the main thread or an agent.
+    #[test]
+    fn the_coordinator_is_never_listed_as_a_target() {
+        let dir = strict();
+        std::fs::write(
+            dir.path().join(".armadai/flows/plan.yaml"),
+            "steps:\n  plan: { agent: lead }\n  build: { agent: dev }\n  review: { agent: lead }\nlinks:\n  - { from: plan, to: build }\n  - { from: build, to: review }\n",
+        )
+        .unwrap();
+        let r = reason(decide(&payload("", "doc", dir.path())));
+        assert!(r.contains("[Explore, dev, helper, qa]"), "{r}");
+        let r = reason(decide(&payload("dev", "doc", dir.path())));
+        assert!(!r.contains("lead"), "{r}");
+    }
+
     #[test]
     fn a_step_reaches_only_its_successors() {
         let dir = strict();
@@ -347,6 +366,47 @@ mod tests {
         );
         assert!(decide(&payload("", "dev", dir.path())).is_none());
         assert!(decide(&payload("", "qa", dir.path())).is_some());
+    }
+
+    /// Without a coordinator the main thread starts a review loop at its author:
+    /// the `rejected` path back does not hide the entry, and the `approved`
+    /// step is where the loop ends, not a way in.
+    #[test]
+    fn without_a_coordinator_a_review_loop_starts_at_its_author() {
+        let dir = tempfile::tempdir().unwrap();
+        write_project(
+            dir.path(),
+            "schema_version: 1\npolicy:\n  delegation: strict\n",
+        );
+        std::fs::remove_file(dir.path().join(".armadai/flows/ship.yaml")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/flows/review.yaml"),
+            "steps:\n  write: { agent: dev }\n  review: { agent: qa, states: [approved, rejected] }\n  ship: { agent: doc }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: write, when: rejected }\n  - { from: review, to: ship, when: approved }\n",
+        )
+        .unwrap();
+        assert!(decide(&payload("", "dev", dir.path())).is_none());
+        let r = reason(decide(&payload("", "doc", dir.path())));
+        assert!(r.contains("[dev]"), "{r}");
+    }
+
+    /// The review's counter-example: a cycle holding an unconditional link
+    /// (`fix -> write`). With `start: write` the main thread starts at `dev`.
+    #[test]
+    fn a_declared_start_is_where_the_main_thread_begins() {
+        let dir = tempfile::tempdir().unwrap();
+        write_project(
+            dir.path(),
+            "schema_version: 1\npolicy:\n  delegation: strict\n",
+        );
+        std::fs::remove_file(dir.path().join(".armadai/flows/ship.yaml")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/flows/fix.yaml"),
+            "start: write\nsteps:\n  write: { agent: dev }\n  review: { agent: qa, states: [rejected] }\n  fix: { agent: doc }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: fix, when: rejected }\n  - { from: fix, to: write }\n",
+        )
+        .unwrap();
+        assert!(decide(&payload("", "dev", dir.path())).is_none());
+        let r = reason(decide(&payload("", "doc", dir.path())));
+        assert!(r.contains("[dev]"), "{r}");
     }
 
     #[test]

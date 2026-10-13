@@ -633,11 +633,24 @@ fn read(root: &Path) -> Option<Manifest> {
 /// but the link manifest and migration backups describe this machine only.
 pub fn ensure_gitignore(root: &Path) -> std::io::Result<()> {
     let path = root.join(".armadai/.gitignore");
-    if path.exists() {
-        return Ok(());
+    match std::fs::symlink_metadata(&path) {
+        Ok(m) if m.file_type().is_symlink() => {
+            return Err(std::io::Error::other(format!(
+                "{} is a symbolic link: refusing to write through it",
+                path.display()
+            )));
+        }
+        Ok(_) => return Ok(()),
+        Err(_) => {}
     }
     std::fs::create_dir_all(root.join(".armadai"))?;
-    std::fs::write(path, "link-manifest.yaml\n.migrated/\n")
+    // create_new: never through a link posed since
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?
+        .write_all(b"link-manifest.yaml\n.migrated/\n")
 }
 
 /// Replace `target`'s data with `root`/`created_dirs`/`entries`, leaving
@@ -951,6 +964,22 @@ pub fn write_files(
 
 #[cfg(test)]
 mod tests {
+    /// A `.armadai/.gitignore` that is a symbolic link is never written through,
+    /// dangling or not.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_gitignore_never_follows_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("p");
+        std::fs::create_dir_all(root.join(".armadai")).unwrap();
+        let outside = dir.path().join("outside");
+        std::os::unix::fs::symlink(&outside, root.join(".armadai/.gitignore")).unwrap();
+        assert!(super::ensure_gitignore(&root).is_err());
+        assert!(!outside.exists());
+        std::fs::write(&outside, "mine\n").unwrap();
+        assert!(super::ensure_gitignore(&root).is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "mine\n");
+    }
 
     /// Published SHA-256 vectors (FIPS 180-4 / RFC 6234). They are properties
     /// of the algorithm, not of the crate, so this test is what makes a sha2

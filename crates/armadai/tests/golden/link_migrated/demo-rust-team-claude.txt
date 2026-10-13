@@ -194,23 +194,11 @@ Recommendations summary.
 
 === report ===
 claude: agent doc-writer: compiled
-claude: agent doc-writer tags: not-compiled (informational, no Claude Code field)
-claude: agent doc-writer temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent doc-writer title: not-compiled (Claude Code names a subagent by its id)
 claude: agent refactor-advisor: compiled
-claude: agent refactor-advisor tags: not-compiled (informational, no Claude Code field)
-claude: agent refactor-advisor temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent refactor-advisor title: not-compiled (Claude Code names a subagent by its id)
 claude: agent rust-reviewer: compiled
-claude: agent rust-reviewer tags: not-compiled (informational, no Claude Code field)
-claude: agent rust-reviewer temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent rust-reviewer title: not-compiled (Claude Code names a subagent by its id)
 claude: agent rust-test-writer: compiled
-claude: agent rust-test-writer tags: not-compiled (informational, no Claude Code field)
-claude: agent rust-test-writer temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent rust-test-writer title: not-compiled (Claude Code names a subagent by its id)
 claude: agent security-auditor: compiled
-claude: agent security-auditor tags: not-compiled (informational, no Claude Code field)
-claude: agent security-auditor temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent security-auditor title: not-compiled (Claude Code names a subagent by its id)
+claude: agents tags: not-compiled (informational, no Claude Code field; 5 agents: doc-writer, refactor-advisor, rust-reviewer, rust-test-writer, security-auditor)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: doc-writer, refactor-advisor, rust-reviewer, rust-test-writer, security-auditor)
+claude: agents title: not-compiled (Claude Code names a subagent by its id; 5 agents: doc-writer, refactor-advisor, rust-reviewer, rust-test-writer, security-auditor)
 claude: flow orchestration: not-compiled (no coordinator: no CLAUDE.md to render the flow into)

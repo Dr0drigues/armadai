@@ -1,0 +1,16 @@
+description: A pack is planned, its agents and skills written, assembled, reviewed until approved, then given a test plan
+steps:
+  plan: { agent: authoring-architect }
+  agents: { agent: agent-builder }
+  skills: { agent: skill-builder }
+  build: { agent: starter-builder }
+  review: { agent: authoring-reviewer, states: [approved, rejected] }
+  test: { agent: authoring-tester }
+links:
+  - { from: plan, to: agents }
+  - { from: plan, to: skills }
+  - { from: agents, to: build }
+  - { from: skills, to: build }
+  - { from: build, to: review }
+  - { from: review, to: build, when: rejected }
+  - { from: review, to: test, when: approved }

@@ -1,99 +1,50 @@
-# Skill Format Specification
+# Skill format
 
-## Directory Structure
-
-Each skill is a directory containing a `SKILL.md` file and optional subdirectories:
+## Folder
 
 ```
-my-skill/
-├── SKILL.md              # Required — skill definition
-├── references/           # Optional — reference documentation files
-│   ├── overview.md
-│   ├── api.md
-│   └── patterns.md
-├── scripts/              # Optional — executable scripts
-│   ├── setup.sh
-│   └── validate.py
-└── assets/               # Optional — static files (configs, schemas, etc.)
-    └── schema.json
+.armadai/skills/<id>/
+  SKILL.md          # required
+  references/       # optional: detailed documents, one topic each
+  scripts/          # optional: executables (their executable bit is kept by link)
+  assets/           # optional: templates, schemas, data
 ```
 
-## SKILL.md Format
+The folder name is the id: `[a-z0-9][a-z0-9-]{0,63}`.
 
-The `SKILL.md` file has two parts: an optional YAML frontmatter and a Markdown body.
-
-### Frontmatter
-
-```yaml
----
-name: my-skill
-description: One-line description of what this skill provides
-version: "1.0"
-tools:
-  - docker
-  - kubectl
----
-```
-
-#### Frontmatter Fields
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `name` | string | no | Skill name. Falls back to directory name if omitted |
-| `description` | string | no | One-line description shown in `armadai skills list` |
-| `version` | string | no | Semantic version of the skill content |
-| `tools` | string[] | no | External tools this skill references or requires |
-
-All frontmatter fields are optional. A minimal `SKILL.md` can be just a Markdown body with no frontmatter.
-
-### Body
-
-The Markdown body provides an overview of the skill. It should:
-- Describe what the skill covers
-- Explain when to use it
-- Reference the `references/` directory for detailed content
+## SKILL.md
 
 ```markdown
-# My Skill
+---
+name: release-notes
+description: Writes release notes from the git log since the last tag; use when preparing a release
+---
 
-Overview of what this skill provides and when to use it.
+# Release notes
 
-See the `references/` directory for detailed documentation.
+How to collect the changes, group them and write the notes. See `references/style.md`.
 ```
 
-## Skill Location
+| Key | Required | Value |
+|---|---|---|
+| `name` | no | Equal to the folder name when present (`skill-name-mismatch` otherwise) |
+| `description` | yes | What it provides and when to use it, at most 1024 characters |
+| `license` | no | A license name or file |
+| `compatibility` | no | Free text |
+| `metadata` | no | A map of strings (e.g. `version: "1.0"`) |
 
-Skills are resolved in this order:
+Any other key (`allowed-tools`, ...) is kept as written and reported as a warning
+(`unknown-skill-key`): the format belongs to the targets, ArmadAI does not interpret it.
 
-1. **Project-local**: `<project>/skills/<name>/`
-2. **User library**: `~/.config/armadai/skills/<name>/`
+## Using a skill
 
-## Loading Behavior
+An agent lists it: `skills: [release-notes]` in its frontmatter. A skill the project lacks is an
+error (`unknown-skill`).
 
-When a skill is loaded (`Skill::load()`):
+## Commands
 
-1. Reads and parses `SKILL.md` (frontmatter + body)
-2. Lists all files in `scripts/` (non-recursive)
-3. Lists all files in `references/` (non-recursive)
-4. Lists all files in `assets/` (non-recursive)
-
-The file listings are sorted alphabetically.
-
-## Referencing Skills
-
-In `armadai.yaml`:
-
-```yaml
-skills:
-  # By name (resolved via project-local then user library)
-  - name: platodin-reference
-
-  # By explicit path
-  - path: .armadai/skills/my-custom-skill/
+```bash
+armadai new skill release-notes --description "Writes release notes from the git log"
+armadai validate
+armadai link
 ```
-
-## Naming Conventions
-
-- Directory names use **kebab-case**: `platodin-reference`, `docker-compose`
-- The `name` field in frontmatter should match the directory name
-- Reference files use descriptive kebab-case names: `overview.md`, `api-patterns.md`

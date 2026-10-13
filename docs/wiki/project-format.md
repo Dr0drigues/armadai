@@ -1,7 +1,7 @@
 # Project format
 
 A project is a `.armadai/` directory whose manifest, `.armadai/project.yaml`, **defines** it.
-Every project command (`link`, `unlink`, `list`, `inspect`, `validate`, `new`) reads this
+Every project command (`link`, `unlink`, `list`, `inspect`, `validate`, `new`, `graph`) reads this
 format only; a legacy project (`.armadai/config.yaml`, `armadai.yaml`, `armadai.yml`) is refused
 with "legacy format, run `armadai migrate`" (see [Migrating](#migrating-a-legacy-project)).
 
@@ -66,6 +66,7 @@ warnings. The folder's other files (scripts, references) are untouched.
 
 ```yaml
 description: From code to delivery
+start: first-draft                      # optional: the step the flow begins with
 steps:                                  # step id -> definition
   first-draft: { agent: developer }
   review:      { agent: reviewer, states: [approved, rejected], on_failure: fixes }
@@ -86,6 +87,14 @@ links:
 - `on_failure: <step>` is a `when: failed` link; a step has at most one failure path.
 - Loops are allowed; a link from a step to itself is an error.
 - Only `.yaml` is loaded: a `.yml` file is ignored with a warning.
+- `start: <step>` declares where the flow begins: it is then the only entry step. Without it, an
+  **entry step** is one no unconditional link (`when` absent or `done`) leads to; a conditional
+  link or an `on_failure` back to it does not count, and the `approved` end of a loop is not an
+  entry (see `no-entry-step` below). When an entry found that way has an incoming link of any
+  kind, the guess is warned (`ambiguous-entry`): declare `start:`. The `review-loop` template writes it. Without a coordinator, Claude Code's
+  [policy gate](policy-gate.md) lets the main session reach the entry steps only.
+- The steps are written sorted by id (`armadai new flow` too); their order means nothing, the
+  links carry it.
 
 ## `automations/<id>.yaml`
 
@@ -101,6 +110,58 @@ native: {}              # optional, opaque
 A map `{ claude|codex|copilot|opencode: <free YAML> }` accepted on the manifest, agents and
 automations. Only its keys are checked (they must be supported targets); its content is
 "native, not checked".
+
+## Creating a project
+
+```bash
+armadai init --project                  # an empty project
+armadai new skill rust-conventions --description "Rust conventions of this project"
+armadai new agent dev --template dev-test --stack rust --skills rust-conventions
+armadai new agent reviewer --template dev-review --stack rust
+armadai new flow review --template review-loop --agents dev,reviewer
+armadai new automation fmt --event after-tool --run "cargo fmt"
+armadai validate
+```
+
+Or start from a starter pack (`armadai init --pack rust-dev`, see
+[Starter packs](starter-packs.md)), and `armadai new` alone for a guided menu (it needs a
+terminal).
+
+Each `armadai new` command writes one file, never through a symbolic link and never over an
+existing file without `--force`, then validates the project: a creation that would introduce an
+error is undone (the folders it created removed, a file `--force` replaced put back), and its
+diagnostics are marked "(rolled back)". Ids are refused, never rewritten, when they do not match
+`[a-z0-9][a-z0-9-]{0,63}` or name a Windows device (`con`, `nul`, `com1`…). Agent and flow
+templates: see [Templates](templates.md). A flow created in a project with neither a coordinator
+nor `policy.delegation: strict` is guidance only, and `new flow` says so.
+
+## Seeing a flow: `armadai graph`
+
+```bash
+armadai graph review > review.mmd     # one flow
+armadai graph                         # every flow
+```
+
+`graph` prints Mermaid, and nothing else, on stdout:
+
+```
+%% flow: review
+flowchart TD
+  n_dev["dev"]
+  n_reviewer["reviewer"]
+  n_dev --> n_reviewer
+  n_reviewer -->|"rejected"| n_dev
+  n_reviewer -.->|"failed"| n_dev
+```
+
+- One node per step, `n_` followed by the step id (other characters than `[A-Za-z0-9_]` become
+  `_`); its label is the agent, or `step (agent)` when they differ.
+- `done` links are plain arrows, other states are labelled, failure paths (`when: failed`,
+  `on_failure`) are dotted.
+- Without a flow id, every flow is printed, one diagram each, separated by a blank line: Mermaid
+  reads one diagram per document, so render them one at a time.
+- An unknown flow lists the flows; an invalid project prints its diagnostics on stderr and exits
+  with 1.
 
 ## Validation
 
@@ -142,13 +203,14 @@ warning on stderr.
 | `unknown-skill-key` | warning | A skill's frontmatter has a key outside the standard | None needed if another tool uses it |
 | `empty-flow` | error | A flow has no step | Add steps or delete the file |
 | `duplicate-step-state` | error | `states` repeats a state or redeclares `done`/`failed` | Remove the duplicate |
-| `unknown-step` | error | A link's `from`/`to` or an `on_failure` names no step of the flow | Use an existing step id |
+| `unknown-step` | error | A link's `from`/`to`, an `on_failure` or `start` names no step of the flow | Use an existing step id |
 | `unknown-state` | error | A link's `when` is not a state of its `from` step | Add it to `states`, or use `done`/`failed` |
 | `self-link` | error | A link, or `on_failure`, goes from a step to itself | Point it at another step |
 | `duplicate-link` | error | The same link is declared twice | Remove one |
 | `duplicate-failure-path` | error | A step has more than one failure path | Keep either `on_failure` or one `when: failed` link |
-| `no-entry-step` | warning | Every step has an incoming link: the flow can never start | Remove a link into the first step |
-| `unreachable-step` | warning | A step cannot be reached from any entry step | Link it, or remove it |
+| `no-entry-step` | warning | No step is an entry, so the flow can never start (without `start`). An entry step has no incoming *unconditional* link (`when` absent or `done`): a conditional link (`when: rejected`, `when: failed`) or an `on_failure` leading back to it does not count. Among such steps, one that another reaches without reaching it back (the `approved` end of a review loop) is not an entry | Declare `start: <step>`, or make one link into the first step conditional |
+| `ambiguous-entry` | warning | The flow declares no `start` and a step the guess above takes as an entry has an incoming link (of any kind): where the flow begins is only a guess (an entry with no incoming link at all is not warned) | Declare `start: <step>` to say where the flow begins |
+| `unreachable-step` | warning | A step cannot be reached from any entry step (every link and `on_failure` counts here) | Link it, or remove it |
 | `empty-command` | error | An automation's `run` is empty | Give the command to run |
 
 ## Migrating a legacy project

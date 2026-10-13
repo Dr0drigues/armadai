@@ -37,6 +37,7 @@ pub fn render_skill(skill: &Skill) -> String {
 pub fn render_flow(f: &Flow) -> String {
     yaml(&FlowFile {
         description: f.description.clone(),
+        start: f.start.clone(),
         steps: f.steps.clone(),
         links: f.links.clone(),
         sequence: Vec::new(),

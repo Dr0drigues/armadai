@@ -1,18 +1,18 @@
 ---
 name: armadai-starter-authoring
-description: Complete reference for authoring ArmadAI starter packs (curated agent bundles)
-version: "1.0"
-tools: []
+description: Complete reference for authoring native ArmadAI starter packs (pack.yaml with format 1 and a canonical tree), installed by armadai init --pack
+metadata:
+  version: "2.0"
 ---
 
 # ArmadAI Starter Pack Authoring
 
-Complete reference for creating and maintaining ArmadAI starter packs — curated bundles that group agents, prompts, and skills into installable packages.
+A starter pack is a ready-made project: a `pack.yaml` with `format: 1` next to a canonical tree
+(agents, skills, flows, automations, an optional `project.yaml`). `armadai init --pack <name>`
+validates it, then copies it into `.armadai/`.
 
-Starter packs are the primary distribution unit for ArmadAI agent teams. They allow users to bootstrap a fully functional agent team with a single `armadai init --pack <name>` command.
+See the `references/` directory:
 
-See the `references/` directory for detailed documentation:
-
-- **format.md** — Starter pack structure, `pack.yaml` specification, and resolution order
-- **best-practices.md** — Guidelines for designing cohesive, effective starter packs
-- **examples.md** — Real-world patterns from existing built-in packs
+- **format.md** — the folder, `pack.yaml`, what is copied, where packs are found
+- **best-practices.md** — designing a cohesive team and its flows
+- **examples.md** — the built-in packs as patterns

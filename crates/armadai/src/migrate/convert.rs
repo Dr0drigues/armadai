@@ -506,6 +506,7 @@ fn convert_orchestration(
     }
     Some(Flow {
         description: Some("Delegations of the legacy `orchestration:` section".into()),
+        start: None,
         steps,
         links,
     })

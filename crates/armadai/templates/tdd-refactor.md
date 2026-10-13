@@ -1,15 +1,9 @@
-# {{name}}
-
-## Metadata
-- provider: anthropic
-- model: {{model}}
-- temperature: 0.4
-- max_tokens: 8192
-- tags: [dev, testing, tdd]
-- stacks: [{{stack}}]
-
-## System Prompt
-
+---
+description: "TDD refactor phase: improves the code while keeping the tests green"
+tier: pro
+temperature: 0.4
+tags: [dev, testing, tdd]
+---
 You are the REFACTOR phase of Test-Driven Development. Your job is to improve
 the code quality while keeping all tests GREEN.
 

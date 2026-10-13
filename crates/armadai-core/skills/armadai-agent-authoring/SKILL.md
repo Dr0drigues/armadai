@@ -1,19 +1,19 @@
 ---
 name: armadai-agent-authoring
-description: Complete reference for authoring ArmadAI agent definition files
-version: "1.0"
-tools: []
+description: Complete reference for authoring ArmadAI agents in the canonical format (.armadai/agents/<id>.md, YAML frontmatter and prompt)
+metadata:
+  version: "2.0"
 ---
 
 # ArmadAI Agent Authoring
 
-Complete reference for creating and maintaining ArmadAI agent `.md` definition files.
+An ArmadAI agent is one Markdown file, `.armadai/agents/<id>.md`: a strict YAML frontmatter
+(its description, tier, tags, skills, capabilities) and the prompt as the body. `armadai link`
+compiles it into each target's native sub-agent (Claude Code, Codex, OpenCode, Copilot).
 
-ArmadAI agents are Markdown files with structured sections that define how an AI agent behaves: its provider, model, system prompt, and optional instructions. This skill covers the format specification, best practices, available templates, and real-world examples.
+See the `references/` directory:
 
-See the `references/` directory for detailed documentation:
-
-- **format.md** — Complete specification of the agent `.md` file format
-- **best-practices.md** — Guidelines for writing effective system prompts and choosing parameters
-- **templates.md** — Catalog of the 12 built-in agent templates
-- **examples.md** — Real-world agent patterns and complete examples
+- **format.md** — the file format, every frontmatter key, the checks of `armadai validate`
+- **best-practices.md** — descriptions, prompts, tiers, coordinators and specialists
+- **templates.md** — the built-in templates of `armadai new agent`
+- **examples.md** — complete agents (a specialist, a coordinator with its flow, a read-only reviewer)

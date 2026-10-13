@@ -7,9 +7,13 @@ use armadai_core::pack_validation::{Severity, validate_pack};
 
 /// New format: `.armadai/project.yaml` present. Diagnostics come from `armadai-model`.
 fn execute_new(target_path: &std::path::Path, json: bool) -> anyhow::Result<()> {
-    use armadai_model::{Severity as S, has_errors, validate};
+    report(armadai_model::validate(target_path), json)
+}
 
-    let ds = validate(target_path);
+/// Print `ds` (text or JSON); an error fails the command.
+fn report(ds: Vec<armadai_model::Diagnostic>, json: bool) -> anyhow::Result<()> {
+    use armadai_model::{Severity as S, has_errors};
+
     let errors = ds.iter().filter(|d| d.severity == S::Error).count();
     let warnings = ds.len() - errors;
     if json {
@@ -54,6 +58,19 @@ pub async fn execute(path: Option<PathBuf>, json: bool) -> anyhow::Result<()> {
 
     if target_path.join(".armadai/project.yaml").is_file() {
         return execute_new(&target_path, json);
+    }
+    if let Ok(pack) = armadai_core::starter::StarterPack::load(&target_path)
+        && pack.format.is_some()
+    {
+        if pack.format != Some(1) {
+            anyhow::bail!("pack '{}' uses an unknown format", pack.name);
+        }
+        let pack = super::native_pack::files(&target_path)?;
+        for f in &pack.ignored {
+            eprintln!("warning: ignored: {} (not part of a pack)", f.display());
+        }
+        let (_tmp, ds) = super::native_pack::stage(&target_path, &pack.files)?;
+        return report(ds, json);
     }
     if json {
         eprintln!("warning: --json only applies to new-format projects; ignored");

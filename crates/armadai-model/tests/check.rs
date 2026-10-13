@@ -414,16 +414,99 @@ fn pure_loop_has_no_entry_step() {
     assert!(!ds.iter().any(|d| d.code == "unreachable-step"));
 }
 
+fn flow_of(body: &str) -> Flow {
+    load_project(project(&[M, DEV, (".armadai/flows/f.yaml", body)]).path())
+        .project
+        .unwrap()
+        .flows
+        .remove("f")
+        .unwrap()
+}
+
+/// An entry found by the heuristic only (every step has an incoming link) is
+/// ambiguous: warned, and `start:` settles it.
 #[test]
-fn on_failure_counts_as_a_link() {
-    // b's failure path leads back to a, so a has an incoming link: no entry step.
-    let ds = flow(
+fn a_failure_path_back_makes_the_entry_ambiguous_until_start_is_declared() {
+    for body in [
         "steps:\n  a: { agent: dev }\n  b: { agent: dev, on_failure: a }\nlinks:\n  - { from: a, to: b }\n",
-    );
-    only(&ds, "no-entry-step");
-    // ...and a step reached only through on_failure is reachable.
+        "steps:\n  a: { agent: dev }\n  b: { agent: dev }\nlinks:\n  - { from: a, to: b }\n  - { from: b, to: a, when: failed }\n",
+    ] {
+        let ds = flow(body);
+        let d = only(&ds, "ambiguous-entry");
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.message.contains("declare `start:`"), "{d:?}");
+        assert_eq!(ds.len(), 1, "{ds:?}");
+        assert_eq!(entry_steps(&flow_of(body)), ["a"]);
+        let ds = flow(&format!("start: a\n{body}"));
+        assert!(ds.is_empty(), "{ds:?}");
+    }
+    // a step with no incoming link at all is an entry beyond doubt
     let ds = flow("steps:\n  a: { agent: dev, on_failure: c }\n  c: { agent: dev }\n");
     assert!(ds.is_empty(), "{ds:?}");
+}
+
+/// The review-loop shape: the heuristic finds the author, `start` makes it certain.
+#[test]
+fn a_review_loop_has_its_author_as_entry() {
+    let body = "steps:\n  write: { agent: dev }\n  review: { agent: dev, states: [approved, rejected] }\n  ship: { agent: dev }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: write, when: rejected }\n  - { from: review, to: ship, when: approved }\n";
+    only(&flow(body), "ambiguous-entry");
+    assert_eq!(entry_steps(&flow_of(body)), ["write"]);
+    let started = format!("start: write\n{body}");
+    assert!(flow(&started).is_empty(), "{:?}", flow(&started));
+    assert_eq!(entry_steps(&flow_of(&started)), ["write"]);
+}
+
+/// The counter-example of the review: a cycle holding an unconditional link. The
+/// heuristic picks `fix`; `start` says where the flow really begins.
+#[test]
+fn start_overrides_the_heuristic() {
+    let body = "steps:\n  write: { agent: dev }\n  review: { agent: dev, states: [rejected] }\n  fix: { agent: dev }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: fix, when: rejected }\n  - { from: fix, to: write }\n";
+    only(&flow(body), "ambiguous-entry");
+    assert_eq!(entry_steps(&flow_of(body)), ["fix"]);
+    let started = format!("start: write\n{body}");
+    assert!(flow(&started).is_empty(), "{:?}", flow(&started));
+    assert_eq!(entry_steps(&flow_of(&started)), ["write"]);
+}
+
+/// An isolated step does not hide the ambiguity: the heuristic also takes `x`,
+/// which has an incoming link, as an entry (the gate would start there, not at `w`).
+#[test]
+fn an_entry_with_an_incoming_link_is_ambiguous_even_beside_a_clean_one() {
+    let body = "steps:\n  w: { agent: dev }\n  r: { agent: dev, states: [rejected] }\n  x: { agent: dev }\n  i: { agent: dev }\nlinks:\n  - { from: w, to: r }\n  - { from: r, to: x, when: rejected }\n  - { from: x, to: w }\n";
+    assert_eq!(entry_steps(&flow_of(body)), ["i", "x"]);
+    let d = only(&flow(body), "ambiguous-entry");
+    assert!(d.message.contains('x'), "{d:?}");
+    assert!(
+        flow(&format!("start: w\n{body}"))
+            .iter()
+            .all(|d| d.code != "ambiguous-entry")
+    );
+}
+
+/// `start` must name a step of the flow.
+#[test]
+fn an_unknown_start_is_an_error_on_its_token() {
+    let ds = flow("start: wirte\nsteps:\n  write: { agent: dev }\n");
+    let d = err(&ds, "unknown-step", (1, 8));
+    assert!(d.hint.unwrap().contains("did you mean `write`"));
+    assert!(entry_steps(&flow_of("start: wirte\nsteps:\n  write: { agent: dev }\n")).is_empty());
+}
+
+/// Two steps linked to each other only conditionally: either may start the flow.
+#[test]
+fn mutually_conditional_steps_are_both_entries() {
+    let body = "steps:\n  a: { agent: dev, states: [x] }\n  b: { agent: dev, states: [y] }\nlinks:\n  - { from: a, to: b, when: x }\n  - { from: b, to: a, when: y }\n";
+    only(&flow(body), "ambiguous-entry");
+    assert_eq!(entry_steps(&flow_of(body)), ["a", "b"]);
+}
+
+/// A loop of unconditional links, even with `done` spelled out, never starts.
+#[test]
+fn a_done_loop_has_no_entry_step() {
+    let ds = flow(
+        "steps:\n  a: { agent: dev }\n  b: { agent: dev }\nlinks:\n  - { from: a, to: b, when: done }\n  - { from: b, to: a }\n",
+    );
+    only(&ds, "no-entry-step");
 }
 
 #[test]

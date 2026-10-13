@@ -17,6 +17,10 @@ static EMBEDDED_STARTERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/starters");
 pub struct StarterPack {
     pub name: String,
     pub description: String,
+    /// `1`: a native pack (a canonical tree, copied). Absent: the legacy format
+    /// (`agents:`/`prompts:` lists, converted by `migrate`), whatever its origin.
+    #[serde(default)]
+    pub format: Option<u32>,
     #[serde(default)]
     pub agents: Vec<String>,
     #[serde(default)]
@@ -71,19 +75,7 @@ pub fn builtin_starters_dir() -> PathBuf {
     // Fallback: extract embedded starters to config dir (per-pack versioning)
     let config_starters = super::config::config_dir().join("starters");
     std::fs::create_dir_all(&config_starters).ok();
-    for dir in EMBEDDED_STARTERS.dirs() {
-        if dir.get_file(dir.path().join("pack.yaml")).is_some()
-            && let Some(name) = dir.path().file_name().and_then(|n| n.to_str())
-        {
-            let dest = config_starters.join(name);
-            if !dest.exists() || super::embedded::needs_update(&dest) {
-                if let Err(e) = crate::skill::extract_embedded_dir(dir, &dest) {
-                    tracing::warn!("Failed to extract embedded starter '{}': {:?}", name, e);
-                }
-                super::embedded::write_version_marker(&dest);
-            }
-        }
-    }
+    sync_extracted(&config_starters, true);
     config_starters
 }
 
@@ -110,8 +102,10 @@ pub fn all_starters_dirs() -> Vec<PathBuf> {
         dirs.push(project_starters.to_path_buf());
     }
 
-    // 3. User dir (only if different from builtin)
+    // 3. User dir (only if different from builtin); its extracted embedded packs are
+    // brought up to date first
     if user != builtin {
+        sync_extracted(&user, false);
         dirs.push(user);
     }
 
@@ -167,6 +161,78 @@ struct ManifestPack {
     path: String,
 }
 
+/// A folder the extraction migration moved aside (`<name>.armadai-legacy-<secs>`):
+/// kept for the user, never a pack nor a skill.
+pub fn is_legacy_copy(name: &str) -> bool {
+    name.contains(".armadai-legacy-")
+}
+
+/// A folder name a pack lookup skips: a legacy copy, or a hidden one (the
+/// extraction's own temporary folders start with a dot).
+fn skipped(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.') || is_legacy_copy(n))
+}
+
+/// Bring every embedded pack already extracted under `dir` up to date (a legacy
+/// extraction is moved aside first): a stale copy in the user starters folder must
+/// never shadow the embedded pack, even when the embedded set is read from elsewhere.
+fn sync_extracted(dir: &Path, all: bool) {
+    // once per folder and process: one lookup can read the starter folders many times
+    static DONE: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    {
+        let mut done = DONE.lock().unwrap_or_else(|e| e.into_inner());
+        if done.iter().any(|d| d == dir) {
+            return;
+        }
+        done.push(dir.to_path_buf());
+    }
+    let r = super::embedded::with_lock(dir, || sync_extracted_locked(dir, all));
+    if let Err(e) = r {
+        tracing::debug!("{e:#}");
+        let text = format!("{e:#}");
+        if text.contains("Permission denied") || text.contains("Read-only") {
+            eprintln!(
+                "cannot refresh the embedded packs (read-only config); using the previous \
+                 extraction"
+            );
+        } else {
+            eprintln!("cannot refresh the embedded packs ({text}); using the previous extraction");
+        }
+    }
+}
+
+fn sync_extracted_locked(dir: &Path, all: bool) -> anyhow::Result<()> {
+    let mut first = None;
+    for pack in EMBEDDED_STARTERS.dirs() {
+        if pack.get_file(pack.path().join("pack.yaml")).is_some()
+            && let Some(name) = pack.path().file_name().and_then(|n| n.to_str())
+        {
+            let dest = dir.join(name);
+            if !all && std::fs::symlink_metadata(&dest).is_err() {
+                continue;
+            }
+            if let Err(e) = super::embedded::ensure(pack, &dest, false) {
+                first.get_or_insert(e);
+            }
+        }
+    }
+    first.map_or(Ok(()), Err)
+}
+
+/// The user's folders, in the user starters folder, that carry an embedded pack's
+/// name: they mask that pack (`(name, folder)`).
+pub fn user_packs_masking_embedded() -> Vec<(String, PathBuf)> {
+    let user = user_starters_dir();
+    (EMBEDDED_STARTERS.dirs())
+        .filter(|d| d.get_file(d.path().join("pack.yaml")).is_some())
+        .filter_map(|d| d.path().file_name().and_then(|n| n.to_str()))
+        .map(|n| (n.to_string(), user.join(n)))
+        .filter(|(_, p)| super::embedded::owned_by_user(p))
+        .collect()
+}
+
 /// Discover pack directories under a fetched registry dir.
 ///
 /// Hybrid: an `armadai-starters.yaml` at the root RESTRICTS to its listed
@@ -201,6 +267,9 @@ pub fn discover_packs(registry_dir: &Path) -> Vec<PathBuf> {
 
 fn scan_for_packs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if depth > 4 {
+        return;
+    }
+    if depth > 0 && skipped(dir) {
         return;
     }
     if dir.join("pack.yaml").is_file() {
@@ -249,7 +318,7 @@ pub fn find_pack_dir(name: &str) -> Option<PathBuf> {
     let mut found: Option<PathBuf> = None;
     for dir in all_starters_dirs() {
         let candidate = dir.join(name);
-        if candidate.is_dir() && candidate.join("pack.yaml").is_file() {
+        if !skipped(&candidate) && candidate.is_dir() && candidate.join("pack.yaml").is_file() {
             found = Some(candidate);
         }
     }
@@ -295,6 +364,7 @@ pub fn list_available_packs() -> Vec<String> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir()
+                && !skipped(&path)
                 && path.join("pack.yaml").is_file()
                 && let Some(name) = path.file_name().and_then(|n| n.to_str())
             {
@@ -399,16 +469,12 @@ description: Minimal pack
         );
     }
 
-    /// Every pack embedded in the binary must be installable as shipped: it
-    /// validates (every agent and prompt it lists exists and parses, every
-    /// `apply_to` names one of its agents), and every skill it lists exists either
-    /// bundled in the pack or as an embedded built-in skill. `validate_pack`
-    /// skips unbundled skills (they may be built-in), so a pack still naming
-    /// a deleted built-in skill would otherwise pass in silence.
+    /// Every pack embedded in the binary is native (`format: 1`), named after its
+    /// folder, with no legacy `prompts/`; its content is validated end to end by the
+    /// binary's `init_pack` tests.
     #[test]
-    fn every_embedded_pack_validates_and_its_skills_exist() {
+    fn every_embedded_pack_is_native() {
         let starters = Path::new(env!("CARGO_MANIFEST_DIR")).join("starters");
-        let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills");
         let mut seen = 0;
         for entry in std::fs::read_dir(&starters).unwrap() {
             let dir = entry.unwrap().path();
@@ -416,35 +482,54 @@ description: Minimal pack
                 continue;
             }
             seen += 1;
-            // One known, pre-existing issue is tolerated: the two
-            // code-analysis packs apply their prompt to `analysis`, which
-            // names no agent. Anything else (missing file, unparsable file,
-            // `apply_to` naming a removed agent) fails.
-            let pack_name = dir.file_name().unwrap().to_string_lossy().into_owned();
-            let known_issue = |location: &str| {
-                matches!(
-                    pack_name.as_str(),
-                    "code-analysis-rust" | "code-analysis-web"
-                ) && location == "prompts/analysis-standards.md:apply_to['analysis']"
-            };
-            let errors: Vec<_> = crate::pack_validation::validate_pack(&dir)
-                .into_iter()
-                .filter(|i| !known_issue(&i.location))
-                .map(|i| format!("{}: {}", i.location, i.message))
-                .collect();
-            assert!(errors.is_empty(), "{}: {errors:?}", dir.display());
             let pack = StarterPack::load(&dir).unwrap();
-            for skill in &pack.skills {
-                let bundled = dir.join("skills").join(skill).join("SKILL.md");
-                let builtin = skills.join(skill).join("SKILL.md");
-                assert!(
-                    bundled.is_file() || builtin.is_file(),
-                    "{}: skill '{skill}' is neither bundled nor built-in",
-                    dir.display()
-                );
-            }
+            assert_eq!(pack.format, Some(1), "{}", dir.display());
+            assert_eq!(dir.file_name().unwrap().to_str(), Some(pack.name.as_str()));
+            assert!(pack.agents.is_empty() && pack.prompts.is_empty() && pack.skills.is_empty());
+            assert!(!dir.join("prompts").exists(), "{}", dir.display());
+            assert!(dir.join("agents").is_dir(), "{}", dir.display());
         }
         assert_eq!(seen, EMBEDDED_STARTERS.dirs().count());
+        assert_eq!(seen, 7);
+    }
+
+    /// A pack extracted by an older binary keeps no stale file (R-B2): a managed
+    /// folder (two-line marker) is replaced, a legacy one (one-line marker) moved
+    /// aside then extracted fresh.
+    #[test]
+    fn a_re_extracted_pack_keeps_no_stale_file() {
+        for marker in ["0.0.1 x\nrust-dev\n", "0.0.1"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dest = tmp.path().join("rust-dev");
+            std::fs::create_dir_all(dest.join("prompts")).unwrap();
+            std::fs::write(dest.join("prompts/old.md"), "stale").unwrap();
+            std::fs::write(dest.join(".armadai-version"), marker).unwrap();
+            let dir = EMBEDDED_STARTERS.get_dir("rust-dev").unwrap();
+            super::super::embedded::ensure(dir, &dest, false).unwrap();
+            assert!(!dest.join("prompts/old.md").exists(), "{marker}");
+            assert!(dest.join("pack.yaml").is_file(), "{marker}");
+        }
+    }
+
+    /// A folder moved aside by the migration is never offered as a pack.
+    #[test]
+    fn a_legacy_copy_is_not_a_pack() {
+        assert!(is_legacy_copy("fullstack.armadai-legacy-1760000000"));
+        assert!(!is_legacy_copy("fullstack"));
+        let tmp = tempfile::tempdir().unwrap();
+        for d in ["mine", "mine.armadai-legacy-1"] {
+            std::fs::create_dir_all(tmp.path().join(d)).unwrap();
+            std::fs::write(
+                tmp.path().join(d).join("pack.yaml"),
+                "name: x\ndescription: d\n",
+            )
+            .unwrap();
+        }
+        let found: Vec<_> = discover_packs(tmp.path())
+            .into_iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(found, ["mine"]);
     }
 
     #[test]

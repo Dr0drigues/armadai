@@ -1,0 +1,12 @@
+description: "The lead analyst splits an analysis between the four specialists and merges their reports"
+steps:
+  lead-analyst: { agent: lead-analyst }
+  web-reviewer: { agent: web-reviewer }
+  web-test-analyzer: { agent: web-test-analyzer }
+  web-doc-writer: { agent: web-doc-writer }
+  web-security: { agent: web-security }
+links:
+  - { from: lead-analyst, to: web-reviewer }
+  - { from: lead-analyst, to: web-test-analyzer }
+  - { from: lead-analyst, to: web-doc-writer }
+  - { from: lead-analyst, to: web-security }

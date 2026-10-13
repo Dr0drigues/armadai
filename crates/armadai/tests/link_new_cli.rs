@@ -865,6 +865,27 @@ fn the_dry_run_report_is_the_real_report() {
     );
 }
 
+/// The dry run lists a file it would leave in place as skipped, never among the
+/// files it would generate.
+#[test]
+fn the_dry_run_lists_a_skipped_file_as_skipped() {
+    let env = Env::new(PROJECT);
+    std::fs::create_dir_all(env.root().join(".claude/agents")).unwrap();
+    std::fs::write(env.root().join(".claude/agents/dev.md"), "mine\n").unwrap();
+    let out = env.ok(&["link", "--dry-run"]);
+    let (generated, skipped) = out
+        .split_once("would be skipped")
+        .unwrap_or_else(|| panic!("no skipped section:\n{out}"));
+    assert!(!generated.contains("agents/dev.md"), "{out}");
+    assert!(generated.contains("skills/notes/SKILL.md"), "{out}");
+    let skipped = skipped.split("Conformance report").next().unwrap();
+    assert!(skipped.contains("agents/dev.md"), "{out}");
+    assert!(!skipped.contains("SKILL.md"), "{out}");
+    // with --force nothing is skipped
+    let forced = env.ok(&["link", "--dry-run", "--force"]);
+    assert!(!forced.contains("would be skipped"), "{forced}");
+}
+
 /// A file link never wrote is told apart from one edited since the last link.
 #[test]
 fn a_file_link_never_wrote_is_reported_as_such() {
@@ -963,4 +984,26 @@ fn a_default_output_onto_the_root_names_where_it_comes_from() {
         !err.contains("--output") && err.contains(".claude"),
         "{err}"
     );
+}
+
+/// Files a real run would leave as they are are listed as unchanged, not generated.
+#[test]
+fn the_dry_run_lists_up_to_date_files_as_unchanged() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link"]);
+    std::fs::write(
+        env.root().join(".armadai/agents/dev.md"),
+        "---\ndescription: Writes code\n---\nYou write better code.\n",
+    )
+    .unwrap();
+    let out = env.ok(&["link", "--dry-run"]);
+    let generated = out.split("unchanged").next().unwrap();
+    assert!(generated.contains("agents/dev.md"), "{out}");
+    assert!(!generated.contains("SKILL.md"), "{out}");
+    let (_, unchanged) = out
+        .split_once("Files unchanged for 'claude'")
+        .unwrap_or_else(|| panic!("no unchanged section:\n{out}"));
+    let unchanged = unchanged.split("Conformance report").next().unwrap();
+    assert!(unchanged.contains("skills/notes/SKILL.md"), "{out}");
+    assert!(!unchanged.contains("agents/dev.md"), "{out}");
 }

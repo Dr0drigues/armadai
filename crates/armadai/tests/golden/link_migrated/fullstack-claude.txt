@@ -145,26 +145,14 @@ Transitions:
 
 === report ===
 claude: agent claude-cli-reviewer: compiled
-claude: agent claude-cli-reviewer tags: not-compiled (informational, no Claude Code field)
-claude: agent claude-cli-reviewer title: not-compiled (Claude Code names a subagent by its id)
 claude: agent code-reviewer: compiled (coordinator, rendered into CLAUDE.md)
-claude: agent code-reviewer tags: not-compiled (informational, no Claude Code field)
-claude: agent code-reviewer temperature: not-compiled (no equivalent in Claude Code subagents)
 claude: agent code-reviewer tier: not-compiled (the coordinator runs as the main session (CLAUDE.md), not as a subagent)
-claude: agent code-reviewer title: not-compiled (Claude Code names a subagent by its id)
 claude: agent doc-generator: compiled
-claude: agent doc-generator tags: not-compiled (informational, no Claude Code field)
-claude: agent doc-generator temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent doc-generator title: not-compiled (Claude Code names a subagent by its id)
 claude: agent echo-reviewer: compiled
-claude: agent echo-reviewer tags: not-compiled (informational, no Claude Code field)
-claude: agent echo-reviewer title: not-compiled (Claude Code names a subagent by its id)
 claude: agent gemini-reviewer: compiled
-claude: agent gemini-reviewer tags: not-compiled (informational, no Claude Code field)
-claude: agent gemini-reviewer title: not-compiled (Claude Code names a subagent by its id)
 claude: agent test-writer: compiled
-claude: agent test-writer tags: not-compiled (informational, no Claude Code field)
-claude: agent test-writer temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent test-writer title: not-compiled (Claude Code names a subagent by its id)
+claude: agents tags: not-compiled (informational, no Claude Code field; 6 agents: claude-cli-reviewer, code-reviewer, doc-generator, echo-reviewer, gemini-reviewer, test-writer)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 3 agents: code-reviewer, doc-generator, test-writer)
+claude: agents title: not-compiled (Claude Code names a subagent by its id; 6 agents: claude-cli-reviewer, code-reviewer, doc-generator, echo-reviewer, gemini-reviewer, test-writer)
 claude: flow orchestration: approximated (rendered as guidance in CLAUDE.md; delegation topology enforced by the gate)
 claude: policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)

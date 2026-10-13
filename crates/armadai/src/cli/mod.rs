@@ -1,11 +1,15 @@
 mod config;
+mod graph;
 pub mod init;
 mod inspect;
 mod link;
 mod list;
 mod migrate;
 mod models;
+mod native_pack;
 pub(crate) mod new;
+mod new_target;
+mod new_wizard;
 pub(crate) mod setup;
 mod skills;
 pub(crate) mod style;
@@ -30,8 +34,10 @@ use clap::{CommandFactory, Parser, Subcommand};
     arg_required_else_help = true,
     after_help = "Examples:\n  \
         armadai init --project\n  \
-        armadai new my-agent --template dev-review --stack rust\n  \
-        armadai list --tags dev\n  \
+        armadai new agent my-agent --template dev-review --stack rust\n  \
+        armadai init --pack rust-dev\n  \
+        armadai new flow review --template review-loop --agents dev,reviewer\n  \
+        armadai graph review\n  \
         armadai link --target claude\n\n\
         Documentation: https://github.com/Dr0drigues/armadai"
 )]
@@ -42,37 +48,27 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Create a new agent from a template
+    /// Create an agent, a flow, an automation or a skill
     #[command(
-        long_about = "Create a new agent from a template.\n\n\
-            Available templates: basic, dev-review, dev-test, cli-generic, planning, \
-            security-review, debug, tech-debt, tdd-red, tdd-green, tdd-refactor, tech-writer \
-            (built into the binary; a same-named file in ./templates or \
-            ~/.config/armadai/templates overrides one, and adds your own).\n\
-            The agent is converted to the canonical format and written to \
-            .armadai/agents/<name>.md of the current project (armadai init --project first).\n\n\
-            Use --interactive (-i) for a guided step-by-step creation wizard.",
+        long_about = "Create an agent, a flow, an automation or a skill in the project of the \
+            current directory (armadai init --project first).\n\n\
+            Each command writes one file under .armadai/, then validates the project: a \
+            creation that would introduce an error is undone and nothing is left behind. \
+            Ids are lowercase letters, digits and hyphens. Without a kind, a guided menu \
+            opens (a terminal is needed); `-i` asks for every value of one kind.\n\n\
+            Agent templates: basic, dev-review, dev-test, planning, security-review, debug, \
+            tech-debt, tdd-red, tdd-green, tdd-refactor, tech-writer (built into the binary; a \
+            same-named file in ./templates or ~/.config/armadai/templates overrides one, and \
+            adds your own). Flow templates: pipeline, review-loop, plan-build-verify, fan-out.",
         after_help = "Examples:\n  \
-            armadai new my-assistant\n  \
-            armadai new reviewer --template dev-review --stack rust\n  \
-            armadai new scanner --template security-review -d \"audit OWASP top 10\"\n  \
-            armadai new -i"
+            armadai new agent reviewer --template dev-review --stack rust\n  \
+            armadai new flow review --template review-loop --agents dev,reviewer\n  \
+            armadai new automation fmt --event after-tool --run \"cargo fmt\"\n  \
+            armadai new skill release-notes --description \"Write release notes\""
     )]
     New {
-        /// Agent name (optional in interactive mode)
-        name: Option<String>,
-        /// Template to use
-        #[arg(long, short, default_value = "basic", value_parser = crate::cli::new::template_value_parser())]
-        template: String,
-        /// Tech stack (replaces {{stack}} placeholder)
-        #[arg(long, short)]
-        stack: Option<String>,
-        /// Agent description (replaces {{description}} placeholder)
-        #[arg(long, short)]
-        description: Option<String>,
-        /// Interactive creation wizard
-        #[arg(long, short = 'i')]
-        interactive: bool,
+        #[command(subcommand)]
+        what: Option<new::NewCommand>,
     },
     /// List the project's agents, skills, flows and automations
     #[command(after_help = "Examples:\n  \
@@ -90,6 +86,26 @@ pub enum Command {
     Inspect {
         /// Agent id (its file name under .armadai/agents/)
         agent: String,
+    },
+    /// Print the graph of a flow (or of every flow) as Mermaid
+    #[command(
+        long_about = "Print the graph of a flow as Mermaid (flowchart TD) on stdout, and \
+            nothing else: redirect it to a .mmd file or paste it into a Markdown ```mermaid \
+            block.\n\n\
+            Without a flow, every flow of the project is printed, one diagram each, opened by \
+            a `%% flow: <id>` comment and separated by a blank line (Mermaid renders one \
+            diagram per document: take them one at a time). Conditional links are labelled \
+            with their state; failure paths (`when: failed`, `on_failure`) are dotted.",
+        after_help = "Examples:\n  \
+            armadai graph review > review.mmd\n  \
+            armadai graph"
+    )]
+    Graph {
+        /// Flow id (its file name under .armadai/flows/); every flow when omitted
+        flow: Option<String>,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = graph::GraphFormat::Mermaid)]
+        format: graph::GraphFormat,
     },
     /// Validate the project (.armadai/) or a starter pack
     #[command(
@@ -229,16 +245,21 @@ pub enum Command {
     #[command(
         long_about = "Initialize ArmadAI configuration.\n\n\
             Creates ~/.config/armadai/ with default config.yaml, providers.yaml, \
-            skills/ (skills installed by `armadai skills add`) and registry/ (the \
-            cache for remote starter packs).\n\n\
+            skills/ (the built-in authoring skills, and skills installed by \
+            `armadai skills add`) and registry/ (the cache for remote starter packs).\n\n\
             Use --project to create an empty project: .armadai/project.yaml, agents/, \
-            skills/, flows/, automations/ and .armadai/.gitignore. Use --pack to create \
-            the project from a starter pack instead (converted like `armadai migrate`).",
+            skills/, flows/, automations/ and .armadai/.gitignore.\n\n\
+            Use --pack to create the project from a starter pack instead. A native pack \
+            (`format: 1` in its pack.yaml) is validated, then copied: project.yaml, agents/, \
+            skills/, flows/ and automations/; its automations are listed (they become \
+            hooks). A pack without `format` is the legacy format, converted like \
+            `armadai migrate`. With --force, a pack is merged into an existing project: an \
+            existing file is kept, and so is the existing project.yaml.",
         after_help = "Examples:\n  \
             armadai init\n  \
-            armadai init --force\n  \
             armadai init --project\n  \
             armadai init --pack rust-dev\n  \
+            armadai init --pack ./my-pack\n  \
             armadai init --pack fullstack --force"
     )]
     Init {
@@ -358,15 +379,10 @@ fn strip_hidden_subcommands(script: &str, hidden: &[String]) -> String {
 
 pub async fn handle(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Command::New {
-            name,
-            template,
-            stack,
-            description,
-            interactive,
-        } => new::execute(name, template, stack, description, interactive).await,
+        Command::New { what } => new::execute(what),
         Command::List { tags } => list::execute(tags).await,
         Command::Inspect { agent } => inspect::execute(agent).await,
+        Command::Graph { flow, format } => graph::execute(flow, format),
         Command::Validate { path, json } => validate::execute(path, json).await,
         Command::Migrate {
             path,
@@ -494,6 +510,7 @@ mod tests {
             "new",
             "list",
             "inspect",
+            "graph",
             "validate",
             "config",
             "models",

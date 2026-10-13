@@ -101,6 +101,10 @@ fn list_dir_entries(dir: &Path) -> Vec<PathBuf> {
     entries
 }
 
+/// The built-in skills ArmadAI extracted, one name per line, at the root of the user
+/// skills folder: what it may remove once a newer binary no longer ships them.
+pub const EXTRACTED_REGISTRY: &str = ".armadai-extracted";
+
 /// Install embedded built-in skills to `~/.config/armadai/skills/`.
 ///
 /// Copies entire skill directories (SKILL.md + references/) from the
@@ -110,6 +114,11 @@ fn list_dir_entries(dir: &Path) -> Vec<PathBuf> {
 pub fn install_embedded_skills(force: bool) -> anyhow::Result<usize> {
     let dst_root = user_skills_dir();
     std::fs::create_dir_all(&dst_root)?;
+    super::embedded::with_lock(&dst_root, || install_locked(&dst_root, force))
+}
+
+fn install_locked(dst_root: &Path, force: bool) -> anyhow::Result<usize> {
+    let dst_root = dst_root.to_path_buf();
 
     let mut count = 0;
 
@@ -131,15 +140,40 @@ pub fn install_embedded_skills(force: bool) -> anyhow::Result<usize> {
             .unwrap_or("unknown");
         let dest = dst_root.join(skill_name);
 
-        if dest.exists() && !force && !super::embedded::needs_update(&dest) {
-            continue;
+        if super::embedded::ensure(skill_dir, &dest, force)? {
+            count += 1;
         }
-
-        // Copy all files recursively
-        extract_embedded_dir(skill_dir, &dest)?;
-        super::embedded::write_version_marker(&dest);
-        count += 1;
     }
+
+    // a built-in skill this binary no longer ships is removed only when ArmadAI
+    // recorded it as extracted (the registry) AND its folder still says it is ours
+    // (a marker naming it): never on a marker alone, never a user's folder
+    let shipped: Vec<String> = (EMBEDDED_SKILLS.dirs())
+        .filter(|d| d.get_file(d.path().join("SKILL.md")).is_some())
+        .filter_map(|d| {
+            d.path()
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .collect();
+    let registry = dst_root.join(EXTRACTED_REGISTRY);
+    let recorded = std::fs::read_to_string(&registry).unwrap_or_default();
+    for name in recorded
+        .lines()
+        .filter(|n| !n.is_empty() && !shipped.iter().any(|s| s == n))
+    {
+        let path = dst_root.join(name);
+        // a registry line is a folder name, never a path
+        let plain = !name.starts_with('.') && !name.contains(['/', '\\', ':']);
+        if plain && super::embedded::managed(&path) {
+            std::fs::remove_dir_all(&path)?;
+        }
+    }
+    let ours: Vec<&str> = (shipped.iter())
+        .filter(|n| super::embedded::managed(&dst_root.join(n)))
+        .map(String::as_str)
+        .collect();
+    std::fs::write(&registry, ours.join("\n") + "\n")?;
 
     Ok(count)
 }
@@ -178,6 +212,10 @@ pub fn load_all_skills(dir: &Path) -> Vec<Skill> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || crate::starter::is_legacy_copy(&name) {
+            continue;
+        }
         if path.is_dir() && path.join("SKILL.md").is_file() {
             match Skill::load(&path) {
                 Ok(s) => skills.push(s),
@@ -287,6 +325,48 @@ mod tests {
         assert!(skills.is_empty());
     }
 
+    /// The registry is the user's file system too: a line that is a path, or a
+    /// marked folder reached through a link, never leads to a removal.
+    #[cfg(unix)]
+    #[test]
+    fn a_registry_line_never_reaches_outside_the_skills_folder() {
+        let _guard = crate::test_support::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: serialised via `env_lock()`; restored below.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
+        }
+        let skills = dir.path().join("skills");
+        let put = |p: &std::path::Path, text: &str| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        // `../victim`, marked with the name the line resolves to
+        put(
+            &dir.path().join("victim/.armadai-version"),
+            "0.0.1 x\nvictim\n",
+        );
+        // a link at a recorded name, to a folder whose marker names that name
+        put(
+            &dir.path().join("real/linked/.armadai-version"),
+            "0.0.1 x\nlinked\n",
+        );
+        std::fs::create_dir_all(&skills).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real/linked"), skills.join("linked")).unwrap();
+        put(
+            &skills.join(EXTRACTED_REGISTRY),
+            "../victim\nlinked\nc:victim\na\\b\n",
+        );
+        install_embedded_skills(false).unwrap();
+        assert!(dir.path().join("victim").exists());
+        assert!(std::fs::symlink_metadata(skills.join("linked")).is_ok());
+        assert!(dir.path().join("real/linked/.armadai-version").exists());
+        // SAFETY: restoring the env at the end of the test.
+        unsafe {
+            std::env::remove_var("ARMADAI_CONFIG_DIR");
+        }
+    }
+
     #[test]
     fn test_install_embedded_skills() {
         let _guard = crate::test_support::env_lock();
@@ -319,9 +399,102 @@ mod tests {
         );
         assert!(
             skills_dir
-                .join("armadai-prompt-authoring")
+                .join("armadai-starter-authoring")
                 .join("SKILL.md")
                 .exists()
+        );
+
+        let reg = skills_dir.join(EXTRACTED_REGISTRY);
+        assert!(
+            std::fs::read_to_string(&reg)
+                .unwrap()
+                .contains("armadai-agent-authoring\n")
+        );
+        let put = |p: &std::path::Path, text: &str| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        // a retired built-in skill: recorded AND marked with its own name -> removed
+        let retired = skills_dir.join("armadai-prompt-authoring");
+        put(
+            &retired.join(".armadai-version"),
+            "0.0.1 x\narmadai-prompt-authoring\n",
+        );
+        // marked but never recorded -> kept; recorded but no marker naming it -> kept
+        let unrecorded = skills_dir.join("old-builtin");
+        put(
+            &unrecorded.join(".armadai-version"),
+            "0.0.1 x\nold-builtin\n",
+        );
+        let unmarked = skills_dir.join("recorded-only");
+        put(&unmarked.join("SKILL.md"), "mine");
+        // a user's copy of a built-in skill, its marker copied along -> kept
+        let copy = skills_dir.join("my-copy");
+        put(
+            &copy.join(".armadai-version"),
+            "0.0.1 x\narmadai-agent-authoring\n",
+        );
+        // a user's note in a built-in folder without marker -> kept in place
+        let note = skills_dir.join("armadai-skill-authoring/my-notes.md");
+        put(&note, "mine");
+        std::fs::remove_file(skills_dir.join("armadai-skill-authoring/.armadai-version")).unwrap();
+        // a legacy extraction (one-line marker) -> moved aside with the user's note
+        let legacy_note = skills_dir.join("armadai-starter-authoring/my-notes.md");
+        put(&legacy_note, "mine too");
+        std::fs::write(
+            skills_dir.join("armadai-starter-authoring/.armadai-version"),
+            "0.0.1",
+        )
+        .unwrap();
+        // a stale file of a managed built-in folder -> removed
+        let old = skills_dir.join("armadai-agent-authoring/references/old.md");
+        put(&old, "old");
+        std::fs::write(
+            skills_dir.join("armadai-agent-authoring/.armadai-version"),
+            "0.0.1 x\narmadai-agent-authoring\n",
+        )
+        .unwrap();
+        let mut recorded = std::fs::read_to_string(&reg).unwrap();
+        recorded.push_str("armadai-prompt-authoring\nrecorded-only\n../escape\n");
+        std::fs::write(&reg, recorded).unwrap();
+
+        install_embedded_skills(false).unwrap();
+        assert!(!retired.exists());
+        assert!(unrecorded.exists());
+        assert!(unmarked.join("SKILL.md").is_file());
+        assert!(copy.exists());
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "mine");
+        assert!(!legacy_note.exists());
+        let moved: Vec<_> = std::fs::read_dir(&skills_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("armadai-starter-authoring.armadai-legacy-")
+            })
+            .collect();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(moved[0].path().join("my-notes.md")).unwrap(),
+            "mine too"
+        );
+        let loaded = load_all_skills(&skills_dir);
+        assert_eq!(
+            (loaded.iter())
+                .filter(|s| s
+                    .source
+                    .to_string_lossy()
+                    .contains("armadai-starter-authoring"))
+                .count(),
+            1,
+            "a legacy copy is no skill"
+        );
+        assert!(!old.exists());
+        assert!(
+            !std::fs::read_to_string(&reg)
+                .unwrap()
+                .contains("armadai-prompt-authoring")
         );
 
         // Verify references are copied

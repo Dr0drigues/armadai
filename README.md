@@ -13,9 +13,10 @@
 
 ## Overview
 
-ArmadAI is a declarative compiler for AI agent teams. You describe your agents (Markdown files
-or a YAML declaration), the prompts and skills they share, and which agent coordinates the
-others; `armadai link` then writes the native configuration files of the assistant you use:
+ArmadAI is a declarative compiler for AI agent teams. You describe your agents (one Markdown
+file each, in `.armadai/`), the skills they share, the flows between them and which agent
+coordinates the others; `armadai link` then writes the native configuration files of the
+assistant you use:
 
 ```
 armadai link --target claude      # .claude/agents/*.md        (+ .claude/CLAUDE.md for a coordinator)
@@ -24,8 +25,7 @@ armadai link --target opencode    # .opencode/agents/*.md      (+ .opencode/inst
 armadai link --target copilot     # .github/agents/*.agent.md  (+ .github/copilot-instructions.md for a coordinator)
 ```
 
-The project's prompts and skills are copied alongside, under `prompts/` and `skills/` in the same
-directory.
+The project's skills are copied alongside, under `skills/` in the same directory.
 
 ArmadAI does not run agents: the assistant does. There is no execution engine, no TUI and no
 web UI, and `link` never touches the network.
@@ -34,14 +34,16 @@ web UI, and `link` never touches the network.
 
 - **One source, four targets** — the same definitions compile to Claude Code, Codex, OpenCode
   and GitHub Copilot.
-- **Markdown-based agents** — one `.md` file = one agent, human-readable and git-friendly; or
-  declare them in `.armadai/agents.yaml`.
-- **Composable prompts and skills** — reusable prompt fragments, and skills following the
-  `SKILL.md` standard.
+- **Markdown-based agents** — one `.md` file = one agent (YAML frontmatter, prompt as the
+  body), human-readable and git-friendly.
+- **Skills and flows** — skills following the `SKILL.md` standard; flows saying who hands work
+  to whom, drawn as Mermaid by `armadai graph`.
 - **Reversible** — `link` records what it wrote in a manifest, and `unlink` removes exactly that.
 - **Policy gate** — for Claude Code, a `PreToolUse` hook that enforces the declared delegation
   topology.
-- **Starter packs and templates** — curated bundles and agent templates to start from.
+- **Guided creation** — `armadai new agent|flow|automation|skill` (or a guided menu), agent
+  and flow templates, native starter packs; every creation is validated, and undone if it would
+  break the project.
 
 ## Quick Start
 
@@ -56,6 +58,9 @@ Options: `INSTALL_DIR=~/.local/bin` (default), `VERSION=v0.1.0` (default: latest
 
 ```bash
 armadai init --pack rust-dev                # a project (.armadai/) from a starter pack
+armadai new agent planner --template planning
+armadai new flow ship --agents planner,code-reviewer,test-writer
+armadai graph ship                          # the flow as Mermaid
 armadai link --target claude --dry-run      # preview the files and the conformance report
 armadai link --target claude                # write them
 ```
@@ -75,7 +80,8 @@ Running `armadai` without a subcommand prints the help.
 | `armadai inspect <agent>` | Show one agent of the project |
 | `armadai validate [path]` | Validate the project (or a starter pack) |
 | `armadai migrate` | Convert a legacy project to `.armadai/project.yaml` |
-| `armadai new --template <tpl> <name>` | Create an agent from a template (`-i` for a wizard) |
+| `armadai new agent\|flow\|automation\|skill <id>` | Create an element of the project (agent templates, flow templates) |
+| `armadai graph [flow]` | Print a flow as Mermaid |
 | `armadai init [--project] [--pack <name>]` | Initialize the user configuration, or a project (empty or from a starter pack) |
 | `armadai skills list/show/sync/search/add/info` | Manage and discover skills |
 | `armadai models check/update/list` | Check and rewrite deprecated model ids, list linked projects |
@@ -108,7 +114,8 @@ Start a project from a curated bundle of agents and skills:
 
 ```bash
 armadai init --pack rust-dev              # Rust essentials (3 agents + conventions skill)
-armadai init --pack fullstack             # General-purpose pack (6 agents)
+armadai init --pack fullstack             # tests, review and docs chained by a review loop (3 agents)
+armadai init --pack ./my-pack             # your own pack (a folder with pack.yaml, format: 1)
 ```
 
 See [Starter Packs](docs/wiki/starter-packs.md) for the full list and their contents.

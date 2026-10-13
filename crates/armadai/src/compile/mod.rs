@@ -57,6 +57,21 @@ pub const BLOCK_END: &str = "<!-- armadai:end -->";
 /// `dir` itself must resolve under `within` (the project's `.armadai/`): a skill or
 /// `native/<target>` folder that is a link leaving the sources is refused too.
 pub fn read_tree(dir: &Path, within: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<u8>)>> {
+    read_tree_skipping(dir, within).map(|(files, _)| files)
+}
+
+/// Files of a folder as (path relative to it, bytes).
+pub type Files = Vec<(PathBuf, Vec<u8>)>;
+
+/// A backup `new --force` moves aside (`<file>.armadai-backup`): never a source.
+pub fn is_backup(p: &Path) -> bool {
+    p.file_name()
+        .is_some_and(|n| n.to_string_lossy().ends_with(".armadai-backup"))
+}
+
+/// [`read_tree`], plus the stray backups it left out (relative to `dir`).
+pub fn read_tree_skipping(dir: &Path, within: &Path) -> anyhow::Result<(Files, Vec<PathBuf>)> {
+    let mut skipped = Vec::new();
     let base = dir
         .canonicalize()
         .with_context(|| format!("cannot read {}", dir.display()))?;
@@ -95,13 +110,18 @@ pub fn read_tree(dir: &Path, within: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<
             } else if !kind.is_file() {
                 bail!("{} is not a regular file", path.display());
             }
+            if is_backup(&path) {
+                skipped.push(path.strip_prefix(dir)?.to_path_buf());
+                continue;
+            }
             let bytes =
                 std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
             out.push((path.strip_prefix(dir)?.to_path_buf(), bytes));
         }
     }
     out.sort();
-    Ok(out)
+    skipped.sort();
+    Ok((out, skipped))
 }
 
 /// The first component of `rel` names `.git` or `.armadai`, in any case (on a

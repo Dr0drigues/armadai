@@ -376,6 +376,14 @@ async fn starters_dir_list() -> anyhow::Result<()> {
         let m = crate::cli::style::muted();
         anstream::println!("{m}  [{source}]{m:#} {}", dir.display());
     }
+    for (name, path) in armadai_core::starter::user_packs_masking_embedded() {
+        let w = crate::cli::style::warn();
+        anstream::println!(
+            "{w}  note: {} is your own folder: it masks the embedded pack {name} \
+             (ArmadAI never writes to it){w:#}",
+            path.display()
+        );
+    }
 
     Ok(())
 }

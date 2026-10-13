@@ -1,9 +1,10 @@
 # Providers and models
 
 > **Legacy format.** This page describes the format of projects before v1 (`.armadai/config.yaml`,
-> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and
-> internally by `armadai new` (templates) and `armadai init --pack` (starter packs). Projects use
-> the [Project format](project-format.md).
+> `armadai.yaml`). It is still read by `armadai migrate`, which converts such a project, and by
+> `armadai init --pack` for a starter pack in the legacy format (a `pack.yaml` without
+> `format: 1`). Projects, agent templates and the built-in packs use the
+> [Project format](project-format.md).
 
 ArmadAI no longer executes agents, so it has no execution providers: no API client, no CLI
 relay, no proxy. What remains of "providers" is the `provider:` and `model:` fields of an agent,
@@ -25,11 +26,6 @@ resolves a `latest:*` placeholder, on the targets that resolve per agent (see be
 
 `gemini` here is a model vendor name, not a link target: Gemini CLI is no longer a target of
 `armadai link`.
-
-The interactive wizard of `armadai new -i` uses a second, older tool-to-vendor table
-(`armadai-providers`' `factory.rs`) to pick which catalogue to list. It differs on two names:
-`codex` maps to no vendor there, and `proxy` maps to itself there but to no vendor in the table
-above.
 
 ## The `model` field and the `latest:*` placeholders
 

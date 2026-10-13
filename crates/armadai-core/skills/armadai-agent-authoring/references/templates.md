@@ -1,134 +1,48 @@
-# Built-in Agent Templates
+# Built-in agent templates
 
-ArmadAI ships with 12 templates used by `armadai new` to scaffold new agents. Each template uses placeholders: `{{name}}`, `{{description}}`, `{{stack}}`, `{{tags}}`.
+`armadai new agent <id> --template <name>` writes `.armadai/agents/<id>.md` from a template, then
+validates the project (a creation that would introduce an error is undone).
 
-## Template Catalog
+| Template | Default description | Tier |
+|---|---|---|
+| `basic` (default) | General-purpose assistant | pro |
+| `dev-review` | Reviews code changes for bugs, security, performance and style | pro |
+| `dev-test` | Writes thorough, maintainable tests for existing code | pro |
+| `planning` | Breaks a goal down into an implementation plan with tasks and risks | pro |
+| `security-review` | Audits code for security vulnerabilities and proposes fixes | pro |
+| `debug` | Finds the root cause of a bug and proposes a minimal fix | pro |
+| `tech-debt` | Finds tech debt and plans its remediation | pro |
+| `tdd-red` | TDD red phase: writes failing tests that specify the behaviour | pro |
+| `tdd-green` | TDD green phase: writes the minimal code that makes the failing tests pass | pro |
+| `tdd-refactor` | TDD refactor phase: improves the code while keeping the tests green | pro |
+| `tech-writer` | Writes and improves technical documentation | pro |
 
-### `basic`
-
-General-purpose agent template. Good starting point for any agent.
-
-- Provider: `anthropic`
-- Temperature: `0.7`
-- Sections: Metadata, System Prompt, Instructions, Output Format
-
-### `dev-review`
-
-Code review specialist. Analyzes code for bugs, security issues, and style.
-
-- Provider: `anthropic`
-- Temperature: `0.3`
-- Tags: `[review, quality]`
-- Sections: Metadata, System Prompt, Instructions, Output Format
-
-### `dev-test`
-
-Test writing agent. Generates unit tests for provided code.
-
-- Provider: `anthropic`
-- Temperature: `0.5`
-- Tags: `[test, quality]`
-- Sections: Metadata, System Prompt, Instructions, Output Format
-
-### `debug`
-
-Debugging specialist. Analyzes error traces and proposes fixes.
-
-- Provider: `anthropic`
-- Temperature: `0.3`
-- Tags: `[debug, fix]`
-- Sections: Metadata, System Prompt, Instructions, Output Format
-
-### `planning`
-
-Architecture and planning agent. Produces structured plans and design documents.
-
-- Provider: `anthropic`
-- Temperature: `0.5`
-- Tags: `[planning, architecture]`
-- Sections: Metadata, System Prompt, Instructions, Output Format
-
-### `security-review`
-
-Security audit specialist. Scans code for OWASP Top 10 and common vulnerabilities.
-
-- Provider: `anthropic`
-- Temperature: `0.2`
-- Tags: `[security, review]`
-- Sections: Metadata, System Prompt, Instructions, Output Format
-
-### `tdd-red`
-
-TDD Red phase — writes failing tests for a feature specification.
-
-- Provider: `anthropic`
-- Temperature: `0.4`
-- Tags: `[tdd, test]`
-- `## Pipeline` names `tdd-green` (parsed, unused since the execution engine was removed)
-
-### `tdd-green`
-
-TDD Green phase — writes minimal implementation to pass the failing tests.
-
-- Provider: `anthropic`
-- Temperature: `0.4`
-- Tags: `[tdd, implementation]`
-- `## Pipeline` names `tdd-refactor` (parsed, unused since the execution engine was removed)
-
-### `tdd-refactor`
-
-TDD Refactor phase — refactors the green implementation for quality and maintainability.
-
-- Provider: `anthropic`
-- Temperature: `0.5`
-- Tags: `[tdd, refactor]`
-
-### `tech-debt`
-
-Technical debt analysis agent. Identifies and prioritizes tech debt items.
-
-- Provider: `anthropic`
-- Temperature: `0.4`
-- Tags: `[tech-debt, analysis]`
-- Sections: Metadata, System Prompt, Instructions, Output Format
-
-### `tech-writer`
-
-Technical documentation writer. Produces clear, structured documentation.
-
-- Provider: `anthropic`
-- Temperature: `0.6`
-- Tags: `[docs, writing]`
-- Sections: Metadata, System Prompt, Instructions, Output Format
-
-### `cli-generic`
-
-CLI tool wrapper template. It was meant for agents that executed an external command through the removed execution engine; its `command`, `args` and `timeout` fields are parsed (and shown by `armadai inspect`) but nothing executes them.
-
-- Provider: `cli`
-- Tags: `[cli, tool]`
-- Fields: `command`, `args`, `timeout`
-
-## Usage
-
-Create a new agent from a template:
+## Options
 
 ```bash
-# Interactive mode (prompts for all fields)
-armadai new -i
-
-# Quick mode with template
-armadai new --name my-reviewer --template dev-review
-
-# With stack specification
-armadai new --name rust-reviewer --template dev-review --stack rust
+armadai new agent rust-reviewer --template dev-review --stack rust
+armadai new agent auditor --template security-review -d "Audits the payment code" --tier max
+armadai new agent helper --skills release-notes
+armadai new agent dev --force              # replace an existing file
 ```
 
-## Placeholder Reference
+- `--description` replaces the template's description (set on the frontmatter, never
+  substituted into the YAML) and fills `{{description}}` in the body.
+- `--stack` fills `{{stack}}` (default: "this project's stack").
+- `{{name}}` is the id, title-cased.
 
-| Placeholder | Description | Example |
-|---|---|---|
-| `{{name}}` | Agent name (kebab-case) | `code-reviewer` |
-| `{{description}}` | One-line description | `Reviews Rust code for quality` |
-| `{{stack}}` | Technology stack | `rust` |
-| `{{tags}}` | Comma-separated tags | `review, quality` |
+## The TDD cycle as a flow
+
+```bash
+armadai new agent red --template tdd-red --stack rust
+armadai new agent green --template tdd-green --stack rust
+armadai new agent refactor --template tdd-refactor --stack rust
+armadai new flow tdd --agents red,green,refactor
+```
+
+## Your own templates
+
+A file `<name>.md` in `templates/` (current directory) or `~/.config/armadai/templates/` adds a
+template, or overrides the built-in one of the same name. It is an agent file (frontmatter and
+body) with a real default `description`; `{{name}}`, `{{description}}` and `{{stack}}` are
+replaced in the body only. A template in the legacy format is refused with a clear error.

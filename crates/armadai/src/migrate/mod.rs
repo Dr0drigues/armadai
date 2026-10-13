@@ -137,6 +137,7 @@ mod tests {
             "bad".into(),
             armadai_model::Flow {
                 description: None,
+                start: None,
                 steps: flow.steps,
                 links: Vec::new(),
             },

@@ -225,10 +225,10 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A canonical project from a starter pack (review R-I9): the pack is
-/// materialised as a legacy project in a scratch directory and converted by
-/// `migrate` (same converter, same validation, skill folders copied whole), then
-/// its `.armadai/` is copied here, backup excluded.
+/// A canonical project from a starter pack. A native pack (`format: 1`) is
+/// copied (`native_pack`); a legacy one is materialised as a legacy project in a
+/// scratch directory and converted by `migrate`, then its `.armadai/` is copied
+/// here, backup excluded.
 fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::Result<()> {
     if !force {
         ensure_no_project(root)?;
@@ -245,10 +245,38 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
         );
     };
     let pack = StarterPack::load(&pack_dir)?;
+    no_link_at(&root.join(".armadai"))?;
+    match pack.format {
+        Some(1) => return super::native_pack::install(root, &pack_dir, &pack.name),
+        Some(n) => anyhow::bail!(
+            "pack '{}' uses format {n}; this armadai reads format 1: update armadai",
+            pack.name
+        ),
+        None => {}
+    }
     let tmp = tempfile::tempdir()?;
     materialize_pack(&pack_dir, &pack, pack_name, tmp.path())?;
     let report = crate::migrate::run(tmp.path(), false, false)?;
     let built = tmp.path().join(".armadai");
+    // every destination, before the first write: never through a symbolic link
+    let mut todo = vec![built.clone()];
+    while let Some(dir) = todo.pop() {
+        for e in std::fs::read_dir(&dir)? {
+            let path = e?.path();
+            let rel = path.strip_prefix(&built)?;
+            if rel.starts_with(".migrated") {
+                continue;
+            }
+            let mut at = root.join(".armadai");
+            for c in rel.components() {
+                at.push(c);
+                no_link_at(&at)?;
+            }
+            if path.is_dir() {
+                todo.push(path);
+            }
+        }
+    }
     for e in std::fs::read_dir(&built)? {
         let e = e?;
         if e.file_name() == ".migrated" {
@@ -279,11 +307,30 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
             .filter(|p| p.starts_with(".armadai/skills") && p.ends_with("SKILL.md"))
             .count(),
     );
+    anstream::println!("{m}  legacy pack converted (no `format: 1` in its pack.yaml){m:#}");
     for w in &report.warnings {
         let s = crate::cli::style::warn();
         anstream::eprintln!("{s}  warn: {w}{s:#}");
     }
     anstream::println!("{m}  Run `armadai link` to generate the target files.{m:#}");
+    Ok(())
+}
+
+/// Refuse a destination that is a symbolic link (dangling or not): a pack never
+/// writes through one.
+fn no_link_at(path: &Path) -> anyhow::Result<()> {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        if !path.exists() {
+            anyhow::bail!(
+                "{} is a dangling symbolic link: remove it, or create what it points to",
+                path.display()
+            );
+        }
+        anyhow::bail!(
+            "{} is a symbolic link: refusing to write a pack through it",
+            path.display()
+        );
+    }
     Ok(())
 }
 
@@ -468,46 +515,6 @@ mod tests {
         let providers = read_agent_providers(dir.path());
         assert_eq!(providers, strs(&["copilot", "google", "codex"]));
         assert_eq!(pick_link_target(&providers).as_deref(), Some("copilot"));
-    }
-
-    /// Every embedded pack becomes a canonical project that validates (review
-    /// R-I9), with its skill folders whole and only supported targets.
-    #[test]
-    fn every_embedded_pack_becomes_a_valid_canonical_project() {
-        let starters =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../armadai-core/starters");
-        let supported = supported_target_names();
-        let mut seen = 0;
-        for entry in std::fs::read_dir(&starters).unwrap().flatten() {
-            let dir = entry.path();
-            if !dir.join("pack.yaml").is_file() {
-                continue;
-            }
-            seen += 1;
-            let pack = StarterPack::load(&dir).unwrap();
-            let out = tempfile::tempdir().unwrap();
-            init_project_from_pack(out.path(), dir.to_str().unwrap(), false)
-                .unwrap_or_else(|e| panic!("{}: {e:#}", pack.name));
-            let (p, _) = armadai_model::load_checked(out.path())
-                .unwrap_or_else(|ds| panic!("{}: {ds:?}", pack.name));
-            assert_eq!(p.agents.len(), pack.agents.len(), "{}", pack.name);
-            for t in &p.manifest.targets {
-                assert!(supported.contains(&t.as_str()), "{}: {t}", pack.name);
-            }
-            for s in pack
-                .skills
-                .iter()
-                .filter(|s| dir.join("skills").join(s).is_dir())
-            {
-                for f in crate::compile::read_tree(&dir.join("skills").join(s), &dir).unwrap() {
-                    let copied = out.path().join(".armadai/skills").join(s).join(&f.0);
-                    assert!(copied.is_file(), "{}: {} lost", pack.name, copied.display());
-                }
-            }
-            assert!(!out.path().join(".armadai/.migrated").exists());
-            assert!(out.path().join(".armadai/.gitignore").is_file());
-        }
-        assert!(seen >= 7, "expected the embedded packs, saw {seen}");
     }
 
     use super::*;

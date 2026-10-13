@@ -1,106 +1,74 @@
 ---
 name: armadai-orchestration-patterns
-description: Reference for declaring an ArmadAI delegation topology (the orchestration block of the project config), as checked by armadai validate and enforced by the Claude Code policy gate
-version: 2.0.0
-tools: []
+description: Reference for declaring who hands work to whom in an ArmadAI project (flows, coordinator, policy), as drawn by armadai graph and enforced by the Claude Code gate
+metadata:
+  version: "3.0"
 ---
 
-# ArmadAI Orchestration Declarations
+# ArmadAI delegation topology
 
-ArmadAI does not execute agents: the agents run inside the assistant a project is linked to
-(Claude Code, Codex, OpenCode, Copilot). The `orchestration:` block of the project config
-(`.armadai/config.yaml` or `armadai.yaml`) is therefore a **declaration** of who delegates to
-whom, not an engine. Three things read it:
+ArmadAI does not run agents: they run inside the assistant the project is linked to. The
+topology is a **declaration** in three places of `.armadai/`:
 
-- `armadai validate` checks that the coordinator, the team leads and the team members are
-  declared agents (it ignores `pattern`).
-- `armadai link` checks the block's structure before writing, only when `enabled: true` and
-  `pattern: hierarchical` (see below).
-- The Claude Code policy gate (the `armadai __claude-policy-gate` `PreToolUse` hook) enforces it
-  when `policy: strict`. It is specific to Claude Code; nothing equivalent is generated for the
-  other targets.
+- `flows/<id>.yaml`: who hands work to whom;
+- `coordinator` in `project.yaml`: the agent that is the main session (`CLAUDE.md` for Claude
+  Code), not a sub-agent;
+- `policy` in `project.yaml`: whether Claude Code enforces the flows.
 
-The removed execution engine used to run five patterns (Direct, Blackboard, Ring, Hierarchical,
-Auto) with `armadai run --orchestrate`. That command no longer exists, and nothing executes any
-pattern now. The engine limits (`max_depth`, `max_iterations`, `max_concurrency`, `timeout`,
-`max_rounds`, `max_laps`, `consensus_threshold`, `token_budget`, `cost_limit`, `routes`) are
-still parsed, but nothing uses them. `pattern` (root and per team) is still read by `link`'s
-check:
-
-`enabled: true` with `pattern: hierarchical` (what `armadai init --pack <name> --project`
-writes) makes `armadai link` check the block's structure before writing anything: a coordinator
-is present, there is at least one team, no agent or lead appears twice, the coordinator is not
-inside a team, and a team with its own `pattern` has a `lead`. With any other `pattern`, `link`
-skips that check, and a team-level `pattern` under a non-hierarchical root makes `link` fail.
-Only `armadai validate` checks that the coordinator, leads and team members are declared agents.
-Nothing executes any pattern.
-
-## Declaring a topology
+## Flows
 
 ```yaml
-orchestration:
-  enabled: true             # with pattern: hierarchical, link checks the structure
-  pattern: hierarchical
-  policy: strict            # off | strict — default: off
-  coordinator: dev-lead
-  teams:
-    - agents: [schema-specialist, adapter-specialist, cli-specialist, qa-specialist]
+description: Write, review until approved, then ship
+steps:
+  write: { agent: dev }
+  review: { agent: reviewer, states: [approved, rejected], on_failure: write }
+  ship: { agent: release }
+links:
+  - { from: write, to: review }
+  - { from: review, to: write, when: rejected }
+  - { from: review, to: ship, when: approved }
+```
+
+- A step names an agent; its id may differ from the agent's.
+- `when` is `done` (the default), `failed` or one of the step's `states`.
+- `on_failure` (or one `when: failed` link) is the step's single failure path.
+- `sequence: [a, b, c]` is a short form of a chain.
+- An **entry** step is one no unconditional link leads to (a `when: rejected` or `on_failure` way
+  back does not count; the `approved` end of a loop is not an entry). A flow with no entry is
+  warned (`no-entry-step`), a step no entry reaches too (`unreachable-step`).
+
+Templates: `armadai new flow <id> --template pipeline|review-loop|plan-build-verify|fan-out
+--agents a,b,c`. `armadai graph [flow]` prints a flow as Mermaid.
+
+## Coordinator
+
+```yaml
+schema_version: 1
+coordinator: dev-lead
+```
+
+For Claude Code the coordinator's prompt becomes a block of the root `CLAUDE.md`, followed by the
+list of the other agents and a description of every flow. Without a coordinator, the flows are
+rendered nowhere (they stay a declaration, and `armadai new flow` says so) unless the policy is
+strict.
+
+## Policy
+
+```yaml
+policy:
+  delegation: strict          # off (default) | strict
   free_agents: [Explore, Plan]
 ```
 
-Under `policy: strict`:
+Under `strict`, `armadai link --target claude` installs a `PreToolUse` hook (the gate) that
+refuses a delegation the flows do not declare:
 
-- the main thread may reach **only** `coordinator`;
-- the coordinator may reach team leads, and the agents of lead-less teams;
-- a lead may reach **its own** team;
-- a plain specialist does not sub-delegate;
-- `free_agents` are reachable from anywhere — assistance agents, outside the topology;
-- **anything not declared is refused.**
+- the main session: with a coordinator, every agent of a flow step; without one, the agents of
+  the entry steps only;
+- an agent: the agents of the steps its own steps lead to (links and `on_failure`);
+- `free_agents`: from anywhere (project agents, or Claude Code's own `Explore`, `Plan`,
+  `general-purpose`);
+- the coordinator is never a target: it is no sub-agent.
 
-`policy` is independent of `enabled` and `pattern`: the gate reads `policy` alone. Every uncertainty (unreadable config, no
-coordinator, `policy: off`) resolves to *allowed*.
-
-## Sub-teams
-
-```yaml
-orchestration:
-  enabled: true
-  pattern: hierarchical
-  coordinator: architect
-  teams:
-    - agents: [cloud-expert, ops-expert]   # direct reports of the coordinator
-    - lead: java-lead                       # sub-team
-      agents: [java-architect, java-security, java-test]
-    - lead: node-lead                       # sub-team
-      agents: [node-architect, node-graphql]
-```
-
-When to use sub-teams:
-- More than ~6 specialists → group by domain
-- Distinct domains (e.g., testing team separate from dev team)
-- A domain needs its own coordination before synthesis
-
-## When to declare a coordinator
-
-| Situation | Declaration |
-|-----------|-------------|
-| One agent, or independent agents the user calls directly | no coordinator, no `orchestration:` block |
-| A coordinator that dispatches to specialists | `enabled: true`, `pattern: hierarchical`, `coordinator` + `teams` |
-| Many specialists, or distinct domains | the same, with `lead` sub-teams |
-
-The coordinator agent is tagged `coordinator`. For a pack with such an agent,
-`armadai init --pack <name> --project` writes `link.coordinator` and an `orchestration:` block
-(coordinator + one team of the other agents). `link.coordinator` is what makes `armadai link`
-write the coordinator's prompt into the target's root instructions file
-(`.claude/CLAUDE.md` and its equivalents).
-
-## Before switching to `policy: strict`
-
-Turning on `strict` before declaring what you actually use refuses most delegations. Declare every
-sub-agent your sessions call — the agents in `.claude/agents/` and the Claude Code built-ins you
-rely on — in `teams` or `free_agents` first.
-
-## Cross-references
-
-- `docs/wiki/policy-gate.md` — the policy gate, its hook and its limits
-- `docs/wiki/link.md` — the coordinator and the root instructions file
+The gate is specific to Claude Code; the other targets get the flows as guidance only, and the
+conformance report of `armadai link` says so.

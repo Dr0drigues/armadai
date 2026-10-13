@@ -1,16 +1,9 @@
-# {{name}}
-
-## Metadata
-- provider: anthropic
-- model: {{model}}
-- temperature: 0.7
-- max_tokens: 4096
-- tags: [general]
-- mode: guided
-
-## System Prompt
-
-You are a helpful assistant specialized in {{description}}.
+---
+description: General-purpose assistant
+tier: pro
+tags: [general]
+---
+You are a helpful assistant. Your role: {{description}}.
 
 ## Instructions
 

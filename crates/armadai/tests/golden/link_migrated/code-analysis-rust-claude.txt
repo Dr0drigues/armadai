@@ -246,24 +246,12 @@ End every report with a summary table:
 
 === report ===
 claude: agent lead-analyst: compiled
-claude: agent lead-analyst tags: not-compiled (informational, no Claude Code field)
-claude: agent lead-analyst temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent lead-analyst title: not-compiled (Claude Code names a subagent by its id)
 claude: agent rust-doc-writer: compiled
-claude: agent rust-doc-writer tags: not-compiled (informational, no Claude Code field)
-claude: agent rust-doc-writer temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent rust-doc-writer title: not-compiled (Claude Code names a subagent by its id)
 claude: agent rust-reviewer: compiled
-claude: agent rust-reviewer tags: not-compiled (informational, no Claude Code field)
-claude: agent rust-reviewer temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent rust-reviewer title: not-compiled (Claude Code names a subagent by its id)
 claude: agent rust-security: compiled
-claude: agent rust-security tags: not-compiled (informational, no Claude Code field)
-claude: agent rust-security temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent rust-security title: not-compiled (Claude Code names a subagent by its id)
 claude: agent rust-test-analyzer: compiled
-claude: agent rust-test-analyzer tags: not-compiled (informational, no Claude Code field)
-claude: agent rust-test-analyzer temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent rust-test-analyzer title: not-compiled (Claude Code names a subagent by its id)
+claude: agents tags: not-compiled (informational, no Claude Code field; 5 agents: lead-analyst, rust-doc-writer, rust-reviewer, rust-security, rust-test-analyzer)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: lead-analyst, rust-doc-writer, rust-reviewer, rust-security, rust-test-analyzer)
+claude: agents title: not-compiled (Claude Code names a subagent by its id; 5 agents: lead-analyst, rust-doc-writer, rust-reviewer, rust-security, rust-test-analyzer)
 claude: flow orchestration: not-compiled (no coordinator: no CLAUDE.md to render the flow into)
 claude: skill analysis-standards: compiled

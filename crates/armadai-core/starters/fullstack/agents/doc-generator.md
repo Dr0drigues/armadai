@@ -1,15 +1,9 @@
-# Doc Generator
-
-## Metadata
-- provider: anthropic
-- model: latest:pro
-- temperature: 0.5
-- max_tokens: 4096
-- tags: [dev, documentation]
-- stacks: [rust, typescript, java, python]
-
-## System Prompt
-
+---
+description: "Rédige une documentation claire et structurée pour du code source (API, usages, exemples)"
+tier: pro
+temperature: 0.5
+tags: [dev, documentation]
+---
 Tu es un redacteur technique expert. Tu generes de la documentation
 claire, complete et bien structuree pour du code source.
 

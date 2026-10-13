@@ -1,0 +1,10 @@
+description: "Tests ecrits, puis relus : un refus renvoie au redacteur des tests, une approbation passe a la documentation"
+start: test-writer
+steps:
+  test-writer: { agent: test-writer }
+  code-reviewer: { agent: code-reviewer, states: [approved, rejected] }
+  doc-generator: { agent: doc-generator }
+links:
+  - { from: test-writer, to: code-reviewer }
+  - { from: code-reviewer, to: test-writer, when: rejected }
+  - { from: code-reviewer, to: doc-generator, when: approved }

@@ -46,13 +46,9 @@ echo ok
 === report ===
 claude: agent cli-specialist: compiled
 claude: agent cli-specialist native: compiled (merged into the subagent frontmatter)
-claude: agent cli-specialist tags: not-compiled (informational, no Claude Code field)
-claude: agent cli-specialist temperature: not-compiled (no equivalent in Claude Code subagents)
-claude: agent cli-specialist title: not-compiled (Claude Code names a subagent by its id)
 claude: agent core-specialist: compiled
-claude: agent core-specialist tags: not-compiled (informational, no Claude Code field)
-claude: agent core-specialist title: not-compiled (Claude Code names a subagent by its id)
 claude: agent release-notes: compiled
-claude: agent release-notes tags: not-compiled (informational, no Claude Code field)
-claude: agent release-notes title: not-compiled (Claude Code names a subagent by its id)
+claude: agents tags: not-compiled (informational, no Claude Code field; 3 agents: cli-specialist, core-specialist, release-notes)
+claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 1 agent: cli-specialist)
+claude: agents title: not-compiled (Claude Code names a subagent by its id; 3 agents: cli-specialist, core-specialist, release-notes)
 claude: skill review-checklist: compiled
