@@ -1,6 +1,5 @@
 ---
 description: "Reviews JavaScript/TypeScript source for typing, correctness and modern practices (scope: src/**/*.ts, *.tsx, *.js)"
-title: Web Reviewer
 tier: pro
 temperature: 0.3
 tags: [review, quality, analysis]

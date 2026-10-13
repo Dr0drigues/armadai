@@ -1,6 +1,5 @@
 ---
 description: "Audits Rust code and dependencies for security issues: unsafe blocks, input handling, Cargo.toml and Cargo.lock"
-title: Rust Security
 tier: pro
 temperature: 0.2
 tags: [security, audit, analysis]

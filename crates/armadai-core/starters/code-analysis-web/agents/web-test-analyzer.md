@@ -1,6 +1,5 @@
 ---
 description: "Analyzes a JS/TS test suite for coverage gaps, weak assertions and flaky tests"
-title: Web Test Analyzer
 tier: pro
 temperature: 0.3
 tags: [test, quality, analysis]

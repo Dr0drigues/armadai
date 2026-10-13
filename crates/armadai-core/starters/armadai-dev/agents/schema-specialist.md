@@ -1,6 +1,5 @@
 ---
 description: "Owns the declaration model, its parser and its validator; use for any change to the format or its diagnostics"
-title: Schema Specialist
 tier: max
 temperature: 0.5
 tags: [schema, domain, parser]

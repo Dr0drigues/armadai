@@ -1,6 +1,5 @@
 ---
 description: "Revue de code approfondie : bugs, failles de sécurité, performance et conventions du projet"
-title: Code Reviewer
 tier: pro
 temperature: 0.3
 tags: [dev, review, quality]

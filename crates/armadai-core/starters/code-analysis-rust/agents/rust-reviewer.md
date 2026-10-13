@@ -1,6 +1,5 @@
 ---
 description: "Reviews Rust source for logic bugs, idioms, error handling and performance (scope: src/**/*.rs)"
-title: Rust Reviewer
 tier: pro
 temperature: 0.3
 tags: [review, quality, analysis]

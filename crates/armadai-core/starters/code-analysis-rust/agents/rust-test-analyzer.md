@@ -1,6 +1,5 @@
 ---
 description: "Analyzes a Rust test suite for coverage gaps, weak assertions and flaky tests (scope: src/ and tests/)"
-title: Rust Test Analyzer
 tier: pro
 temperature: 0.3
 tags: [test, quality, analysis]

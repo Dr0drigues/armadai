@@ -1,6 +1,5 @@
 ---
 description: "Debugs a Rust failure systematically: reproduce, trace to the root cause, propose the minimal fix and its test"
-title: Debug
 tier: pro
 temperature: 0.3
 tags: [dev, debug]

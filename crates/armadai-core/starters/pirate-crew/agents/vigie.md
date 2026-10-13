@@ -1,6 +1,5 @@
 ---
 description: "Vigie : revue de code, repère bugs, failles de sécurité et problèmes de performance avant qu'ils ne frappent"
-title: Vigie
 tier: pro
 temperature: 0.3
 tags: [review, security, quality, pirate]

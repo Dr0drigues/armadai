@@ -1,6 +1,5 @@
 ---
 description: "Reviews and improves the documentation of a JS/TS project (JSDoc/TSDoc, README, docs/)"
-title: Web Doc Writer
 tier: pro
 temperature: 0.5
 tags: [docs, documentation, analysis]

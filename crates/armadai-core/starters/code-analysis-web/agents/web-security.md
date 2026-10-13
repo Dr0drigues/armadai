@@ -1,6 +1,5 @@
 ---
 description: "Audits JS/TS code and dependencies for security issues: XSS, injection, secrets, package.json and lockfile"
-title: Web Security
 tier: pro
 temperature: 0.2
 tags: [security, audit, analysis]

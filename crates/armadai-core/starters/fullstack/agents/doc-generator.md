@@ -1,6 +1,5 @@
 ---
 description: "Rédige une documentation claire et structurée pour du code source (API, usages, exemples)"
-title: Doc Generator
 tier: pro
 temperature: 0.5
 tags: [dev, documentation]

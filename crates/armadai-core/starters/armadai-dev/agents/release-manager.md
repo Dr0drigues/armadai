@@ -1,6 +1,5 @@
 ---
 description: "Owns releases: readiness checks, semantic version, changelog, tags and branch sync; use only when cutting a release"
-title: Release Manager
 tier: max
 temperature: 0.3
 tags: [release, versioning, gitflow]

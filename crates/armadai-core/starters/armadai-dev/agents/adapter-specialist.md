@@ -1,6 +1,5 @@
 ---
 description: "Owns one adapter per target (Claude Code, Codex, OpenCode, Copilot) and their native formats; use for any change to what a target receives"
-title: Adapter Specialist
 tier: max
 temperature: 0.5
 tags: [adapters, linker, targets]

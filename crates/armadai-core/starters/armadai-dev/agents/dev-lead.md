@@ -1,6 +1,5 @@
 ---
 description: "Analyzes a development request, delegates it to the right specialists (model, adapters, CLI, QA, release) and returns one synthesis"
-title: Dev Lead
 tier: max
 tags: [coordinator, delegation, architecture]
 skills: [rust-conventions]

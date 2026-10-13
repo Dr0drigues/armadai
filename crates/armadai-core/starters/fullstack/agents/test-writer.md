@@ -1,6 +1,5 @@
 ---
 description: "Écrit des tests complets : chemins nominaux, cas limites et conditions d'erreur"
-title: Test Writer
 tier: pro
 temperature: 0.3
 tags: [dev, testing]

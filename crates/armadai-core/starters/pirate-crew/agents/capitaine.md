@@ -1,6 +1,5 @@
 ---
 description: "Capitaine de l'équipage : répartit chaque mission de code entre la vigie, le charpentier et le cartographe, puis en fait la synthèse"
-title: Capitaine
 tier: pro
 temperature: 0.4
 tags: [coordinator, lead, pirate]

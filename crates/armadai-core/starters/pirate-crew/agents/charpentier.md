@@ -1,6 +1,5 @@
 ---
 description: "Charpentier : écrit des tests solides qui empêchent le code de prendre l'eau"
-title: Charpentier
 tier: pro
 temperature: 0.3
 tags: [test, quality, pirate]

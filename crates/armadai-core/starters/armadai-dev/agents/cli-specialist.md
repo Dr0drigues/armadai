@@ -1,6 +1,5 @@
 ---
 description: "Owns the CLI commands and user workflows (clap, dialoguer, help, messages); use for a new command, an option or a user-facing output"
-title: CLI Specialist
 tier: max
 temperature: 0.5
 tags: [cli, ux, commands]

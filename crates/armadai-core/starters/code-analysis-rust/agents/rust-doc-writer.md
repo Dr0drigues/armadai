@@ -1,6 +1,5 @@
 ---
 description: "Reviews and improves the documentation of a Rust project (doc comments, README, docs/)"
-title: Rust Doc Writer
 tier: pro
 temperature: 0.5
 tags: [docs, documentation, analysis]

@@ -1,6 +1,5 @@
 ---
 description: "Owns the test strategy, CI and code quality; use to design tests, review a change independently or chase a flaky test"
-title: QA Specialist
 tier: max
 temperature: 0.3
 tags: [qa, testing, ci, quality]

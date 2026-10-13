@@ -1,6 +1,5 @@
 ---
 description: "Lead of the web analysis crew: splits an analysis request between the code, test, documentation and security analysts and merges their reports"
-title: Lead Analyst
 tier: pro
 temperature: 0.4
 tags: [coordinator, lead, analysis]

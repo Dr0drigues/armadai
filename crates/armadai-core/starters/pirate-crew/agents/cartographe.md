@@ -1,6 +1,5 @@
 ---
 description: "Cartographe : rédige et améliore la documentation pour que chacun navigue dans le code"
-title: Cartographe
 tier: pro
 temperature: 0.4
 tags: [docs, documentation, pirate]
