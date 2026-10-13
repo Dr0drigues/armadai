@@ -6,6 +6,7 @@ mod link;
 mod list;
 mod migrate;
 mod models;
+mod native_pack;
 pub(crate) mod new;
 mod new_target;
 mod new_wizard;

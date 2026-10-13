@@ -225,10 +225,10 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A canonical project from a starter pack (review R-I9): the pack is
-/// materialised as a legacy project in a scratch directory and converted by
-/// `migrate` (same converter, same validation, skill folders copied whole), then
-/// its `.armadai/` is copied here, backup excluded.
+/// A canonical project from a starter pack. A native pack (`format: 1`) is
+/// copied (`native_pack`); a legacy one is materialised as a legacy project in a
+/// scratch directory and converted by `migrate`, then its `.armadai/` is copied
+/// here, backup excluded.
 fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::Result<()> {
     if !force {
         ensure_no_project(root)?;
@@ -245,6 +245,14 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
         );
     };
     let pack = StarterPack::load(&pack_dir)?;
+    match pack.format {
+        Some(1) => return super::native_pack::install(root, &pack_dir, &pack.name),
+        Some(n) => anyhow::bail!(
+            "pack '{}' uses format {n}; this armadai reads format 1: update armadai",
+            pack.name
+        ),
+        None => {}
+    }
     let tmp = tempfile::tempdir()?;
     materialize_pack(&pack_dir, &pack, pack_name, tmp.path())?;
     let report = crate::migrate::run(tmp.path(), false, false)?;
@@ -279,6 +287,7 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
             .filter(|p| p.starts_with(".armadai/skills") && p.ends_with("SKILL.md"))
             .count(),
     );
+    anstream::println!("{m}  legacy pack converted (no `format: 1` in its pack.yaml){m:#}");
     for w in &report.warnings {
         let s = crate::cli::style::warn();
         anstream::eprintln!("{s}  warn: {w}{s:#}");

@@ -17,6 +17,10 @@ static EMBEDDED_STARTERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/starters");
 pub struct StarterPack {
     pub name: String,
     pub description: String,
+    /// `1`: a native pack (a canonical tree, copied). Absent: the legacy format
+    /// (`agents:`/`prompts:` lists, converted by `migrate`), whatever its origin.
+    #[serde(default)]
+    pub format: Option<u32>,
     #[serde(default)]
     pub agents: Vec<String>,
     #[serde(default)]
