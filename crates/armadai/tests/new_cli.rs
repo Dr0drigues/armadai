@@ -462,3 +462,43 @@ fn a_flow_link_renders_nowhere_is_announced() {
         assert!(ok && !err.contains("guidance only"), "{manifest}: {err}");
     }
 }
+
+/// A missing value says how to give it; the help says what is required.
+#[test]
+fn missing_values_show_the_command_to_type() {
+    let env = Env::new(AGENTS);
+    for (args, hint) in [
+        (
+            &["new", "flow"][..],
+            "a flow id is required: armadai new flow <id> --agents a,b",
+        ),
+        (
+            &["new", "flow", "f"][..],
+            "--agents is required: armadai new flow <id> --agents a,b",
+        ),
+        (
+            &["new", "agent"][..],
+            "an agent id is required: armadai new agent <id>",
+        ),
+        (
+            &["new", "automation", "a"][..],
+            "--event is required: armadai new automation <id> --event <event> --run <command>",
+        ),
+        (
+            &["new", "skill"][..],
+            "a skill id is required: armadai new skill <id> --description <text>",
+        ),
+    ] {
+        let err = env.fails(args);
+        assert!(err.contains(hint), "{args:?}: {err}");
+    }
+    let help = env.ok(&["new", "flow", "--help"]);
+    assert!(
+        help.contains("Flow id, its file name (required, unless -i)"),
+        "{help}"
+    );
+    assert!(
+        help.contains("comma-separated (required, unless -i)"),
+        "{help}"
+    );
+}

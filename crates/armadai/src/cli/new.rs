@@ -47,7 +47,7 @@ pub enum NewCommand {
         armadai new agent reviewer --template dev-review --stack rust\n  \
         armadai new agent scanner --template security-review -d \"audit OWASP top 10\" --tier max")]
     Agent {
-        /// Agent id: lowercase letters, digits and hyphens (its file name)
+        /// Agent id, its file name: lowercase letters, digits and hyphens (required, unless -i)
         id: Option<String>,
         /// Template to start from
         #[arg(long, short, default_value = "basic", value_parser = template_value_parser())]
@@ -89,12 +89,12 @@ pub enum NewCommand {
             armadai graph review"
     )]
     Flow {
-        /// Flow id (its file name)
+        /// Flow id, its file name (required, unless -i)
         id: Option<String>,
         /// Flow template: pipeline, review-loop, plan-build-verify or fan-out
         #[arg(long, short, default_value = "pipeline", value_parser = parse_flow_template)]
         template: armadai_model::FlowTemplate,
-        /// Agents of the project, in order (comma-separated)
+        /// Agents of the project, in order, comma-separated (required, unless -i)
         #[arg(long, value_delimiter = ',')]
         agents: Vec<String>,
         /// Description of the flow
@@ -111,12 +111,12 @@ pub enum NewCommand {
     #[command(after_help = "Examples:\n  \
         armadai new automation fmt --event after-tool --run \"cargo fmt\"")]
     Automation {
-        /// Automation id (its file name)
+        /// Automation id, its file name (required, unless -i)
         id: Option<String>,
-        /// session-start, session-end, before-tool, after-tool, on-prompt or on-stop
+        /// session-start, session-end, before-tool, after-tool, on-prompt or on-stop (required, unless -i)
         #[arg(long, value_parser = parse_event)]
         event: Option<armadai_model::Event>,
-        /// Shell command to run
+        /// Shell command to run (required, unless -i)
         #[arg(long)]
         run: Option<String>,
         /// Description of the automation
@@ -133,9 +133,9 @@ pub enum NewCommand {
     #[command(after_help = "Examples:\n  \
         armadai new skill release-notes --description \"Write release notes from the git log\"")]
     Skill {
-        /// Skill id (its folder name)
+        /// Skill id, its folder name (required, unless -i)
         id: Option<String>,
-        /// What the skill does and when to use it
+        /// What the skill does and when to use it (required, unless -i)
         #[arg(long, short)]
         description: Option<String>,
         /// Replace an existing SKILL.md
@@ -168,9 +168,13 @@ fn parse_event(s: &str) -> Result<armadai_model::Event, String> {
     })
 }
 
-fn required<T>(v: Option<T>, what: &str) -> anyhow::Result<T> {
-    v.ok_or_else(|| anyhow::anyhow!("{what} is required"))
+/// `v`, or the error `message` (which says how to give it).
+fn required<T>(v: Option<T>, message: &str) -> anyhow::Result<T> {
+    v.ok_or_else(|| anyhow::anyhow!("{message}"))
 }
+
+const AUTOMATION: &str =
+    "{} is required: armadai new automation <id> --event <event> --run <command>";
 
 pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
     use crate::cli::new_target::Kind;
@@ -208,7 +212,15 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
                 skills,
                 ..AgentOptions::default()
             };
-            create_agent(&required(id, "an agent id")?, &template, &opts, force)
+            create_agent(
+                &required(
+                    id,
+                    "an agent id is required: armadai new agent <id> [--template <template>]",
+                )?,
+                &template,
+                &opts,
+                force,
+            )
         }
         NewCommand::Flow {
             id,
@@ -218,10 +230,16 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
             force,
             ..
         } => {
-            let id = required(id, "a flow id")?;
+            let id = required(
+                id,
+                "a flow id is required: armadai new flow <id> --agents a,b",
+            )?;
             crate::cli::new_target::check_id(&id)?;
             if agents.is_empty() {
-                anyhow::bail!("--agents is required: the agents of the project, in order");
+                anyhow::bail!(
+                    "--agents is required: armadai new flow <id> --agents a,b (agents of the \
+                     project, in order)"
+                );
             }
             // an agent the project lacks is the validator's `unknown-agent`: undone (T8)
             let flow = armadai_model::flow_from_template(template, &agents, description)?;
@@ -235,10 +253,10 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
             force,
             ..
         } => {
-            let id = required(id, "an automation id")?;
+            let id = required(id, AUTOMATION.replace("{}", "an automation id").as_str())?;
             let a = armadai_model::Automation {
-                event: required(event, "--event")?,
-                run: required(run, "--run")?,
+                event: required(event, AUTOMATION.replace("{}", "--event").as_str())?,
+                run: required(run, AUTOMATION.replace("{}", "--run").as_str())?,
                 description,
                 native: Default::default(),
             };
@@ -255,8 +273,17 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
             force,
             ..
         } => {
-            let id = required(id, "a skill id")?;
-            let skill = skill_skeleton(&id, required(description, "--description")?);
+            let id = required(
+                id,
+                "a skill id is required: armadai new skill <id> --description <text>",
+            )?;
+            let skill = skill_skeleton(
+                &id,
+                required(
+                    description,
+                    "--description is required: armadai new skill <id> --description <text>",
+                )?,
+            );
             create(
                 Kind::Skill,
                 &id,
