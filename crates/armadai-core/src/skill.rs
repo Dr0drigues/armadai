@@ -159,7 +159,7 @@ pub fn install_embedded_skills(force: bool) -> anyhow::Result<usize> {
     {
         let path = dst_root.join(name);
         // a registry line is a folder name, never a path
-        let plain = !name.starts_with('.') && !name.contains(['/', '\\']);
+        let plain = !name.starts_with('.') && !name.contains(['/', '\\', ':']);
         if plain && super::embedded::managed(&path) {
             std::fs::remove_dir_all(&path)?;
         }
@@ -318,6 +318,48 @@ mod tests {
     fn test_load_all_skills_nonexistent_dir() {
         let skills = load_all_skills(Path::new("/nonexistent/dir"));
         assert!(skills.is_empty());
+    }
+
+    /// The registry is the user's file system too: a line that is a path, or a
+    /// marked folder reached through a link, never leads to a removal.
+    #[cfg(unix)]
+    #[test]
+    fn a_registry_line_never_reaches_outside_the_skills_folder() {
+        let _guard = crate::test_support::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: serialised via `env_lock()`; restored below.
+        unsafe {
+            std::env::set_var("ARMADAI_CONFIG_DIR", dir.path());
+        }
+        let skills = dir.path().join("skills");
+        let put = |p: &std::path::Path, text: &str| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        // `../victim`, marked with the name the line resolves to
+        put(
+            &dir.path().join("victim/.armadai-version"),
+            "0.0.1 x\nvictim\n",
+        );
+        // a link at a recorded name, to a folder whose marker names that name
+        put(
+            &dir.path().join("real/linked/.armadai-version"),
+            "0.0.1 x\nlinked\n",
+        );
+        std::fs::create_dir_all(&skills).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real/linked"), skills.join("linked")).unwrap();
+        put(
+            &skills.join(EXTRACTED_REGISTRY),
+            "../victim\nlinked\nc:victim\na\\b\n",
+        );
+        install_embedded_skills(false).unwrap();
+        assert!(dir.path().join("victim").exists());
+        assert!(std::fs::symlink_metadata(skills.join("linked")).is_ok());
+        assert!(dir.path().join("real/linked/.armadai-version").exists());
+        // SAFETY: restoring the env at the end of the test.
+        unsafe {
+            std::env::remove_var("ARMADAI_CONFIG_DIR");
+        }
     }
 
     #[test]
