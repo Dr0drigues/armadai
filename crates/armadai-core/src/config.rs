@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -61,10 +60,6 @@ pub fn skills_registry_dir() -> PathBuf {
 
 pub fn config_file_path() -> PathBuf {
     config_dir().join("config.yaml")
-}
-
-pub fn providers_file_path() -> PathBuf {
-    config_dir().join("providers.yaml")
 }
 
 /// Path to the user-level custom registries config
@@ -151,39 +146,6 @@ pub fn save_user_config(config: &UserConfig) -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// ProvidersConfig
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ProvidersConfig {
-    pub providers: HashMap<String, ProviderConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ProviderConfig {
-    pub base_url: Option<String>,
-    #[serde(default)]
-    pub models: Vec<String>,
-}
-
-/// Load providers config from `~/.config/armadai/providers.yaml`,
-/// falling back to project-local `config/providers.yaml`, then defaults.
-pub fn load_providers_config() -> ProvidersConfig {
-    // Try global config first
-    for path in [
-        providers_file_path(),
-        PathBuf::from("config/providers.yaml"),
-    ] {
-        match read_user_yaml(&path) {
-            Ok(Some(cfg)) => return cfg,
-            Ok(None) => {}
-            Err(e) => warn_once(format!("{e:#}; ignored")),
-        }
-    }
-    ProvidersConfig::default()
-}
-
-// ---------------------------------------------------------------------------
 // AppPaths — resolved paths for the current context
 // ---------------------------------------------------------------------------
 
@@ -192,7 +154,6 @@ pub fn load_providers_config() -> ProvidersConfig {
 pub struct AppPaths {
     pub agents_dir: PathBuf,
     pub templates_dir: PathBuf,
-    pub config_dir: PathBuf,
 }
 
 impl AppPaths {
@@ -201,8 +162,6 @@ impl AppPaths {
         let dotarmadai_agents = Path::new(".armadai/agents");
         let local_agents = Path::new("agents");
         let local_templates = Path::new("templates");
-        let dotarmadai_config = Path::new(".armadai");
-        let local_config = Path::new("config");
 
         Self {
             agents_dir: if dotarmadai_agents.exists() {
@@ -216,13 +175,6 @@ impl AppPaths {
                 local_templates.to_path_buf()
             } else {
                 config_dir().join("templates")
-            },
-            config_dir: if dotarmadai_config.exists() {
-                dotarmadai_config.to_path_buf()
-            } else if local_config.exists() {
-                local_config.to_path_buf()
-            } else {
-                config_dir()
             },
         }
     }
@@ -251,37 +203,6 @@ pub const DEFAULT_CONFIG_YAML: &str = "\
 # after the project and user ones. Manage with `armadai config starters-dir`.
 # starters_dirs:
 #   - /path/to/my/starters
-";
-
-pub const DEFAULT_PROVIDERS_YAML: &str = "\
-# Provider configurations (non-sensitive)
-# API keys go in environment variables or SOPS-encrypted files
-
-providers:
-  anthropic:
-    base_url: https://api.anthropic.com/v1
-    models:
-      - claude-opus-4-6
-      - claude-sonnet-4-5-20250929
-      - claude-haiku-4-5-20251001
-
-  openai:
-    base_url: https://api.openai.com/v1
-    models:
-      - gpt-4o
-      - gpt-4o-mini
-      - o1
-      - o3-mini
-
-  google:
-    base_url: https://generativelanguage.googleapis.com/v1beta
-    models:
-      - gemini-2.0-flash
-      - gemini-2.0-pro
-
-  proxy:
-    base_url: http://localhost:4000/v1
-    models: []
 ";
 
 // ---------------------------------------------------------------------------
@@ -357,20 +278,18 @@ shell:
     #[test]
     fn a_user_file_reads_as_missing_when_absent_empty_or_comments_only() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("providers.yaml");
-        assert!(read_user_yaml::<ProvidersConfig>(&path).unwrap().is_none());
+        let path = dir.path().join("config.yaml");
+        assert!(read_user_yaml::<UserConfig>(&path).unwrap().is_none());
         for text in ["", "# none yet\n"] {
             std::fs::write(&path, text).unwrap();
             assert!(
-                read_user_yaml::<ProvidersConfig>(&path).unwrap().is_none(),
+                read_user_yaml::<UserConfig>(&path).unwrap().is_none(),
                 "{text:?}"
             );
         }
-        std::fs::write(&path, "providers: {}\nproviders: {}\n").unwrap();
-        let e = read_user_yaml::<ProvidersConfig>(&path)
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("providers.yaml") && e.contains("line 2"), "{e}");
+        std::fs::write(&path, "starters_dirs: []\nstarters_dirs: []\n").unwrap();
+        let e = read_user_yaml::<UserConfig>(&path).unwrap_err().to_string();
+        assert!(e.contains("config.yaml") && e.contains("line 2"), "{e}");
     }
 
     #[test]
@@ -390,30 +309,6 @@ shell:
             Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
             None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
         }
-    }
-
-    #[test]
-    fn test_providers_config_deserialize() {
-        let yaml = r#"
-providers:
-  anthropic:
-    base_url: https://api.anthropic.com/v1
-    models:
-      - claude-sonnet-4-5-20250929
-  openai:
-    base_url: https://api.openai.com/v1
-    models:
-      - gpt-4o
-"#;
-        let cfg: ProvidersConfig = armadai_model::yaml::from_str(yaml).unwrap();
-        assert_eq!(cfg.providers.len(), 2);
-        assert!(cfg.providers.contains_key("anthropic"));
-        let anthropic = &cfg.providers["anthropic"];
-        assert_eq!(
-            anthropic.base_url.as_deref(),
-            Some("https://api.anthropic.com/v1")
-        );
-        assert_eq!(anthropic.models.len(), 1);
     }
 
     #[test]

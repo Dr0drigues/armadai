@@ -152,15 +152,11 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Manage providers and secrets
-    #[command(
-        long_about = "Manage providers and secrets.\n\n\
-            Configure API keys, view provider status, and manage SOPS + age encryption.",
-        after_help = "Examples:\n  \
-            armadai config providers\n  \
-            armadai config secrets init\n  \
-            armadai config secrets rotate"
-    )]
+    /// Manage the user configuration (custom starter pack directories)
+    #[command(after_help = "Examples:\n  \
+            armadai config starters-dir list\n  \
+            armadai config starters-dir add ~/my-starters\n  \
+            armadai config starters-dir remove ~/my-starters")]
     Config {
         #[command(subcommand)]
         action: config::ConfigAction,
@@ -244,7 +240,7 @@ pub enum Command {
     /// Initialize ArmadAI configuration
     #[command(
         long_about = "Initialize ArmadAI configuration.\n\n\
-            Creates ~/.config/armadai/ with default config.yaml, providers.yaml, \
+            Creates ~/.config/armadai/ with default config.yaml, \
             skills/ (the built-in authoring skills, and skills installed by \
             `armadai skills add`) and registry/ (the cache for remote starter packs).\n\n\
             Use --project to create an empty project: .armadai/project.yaml, agents/, \
