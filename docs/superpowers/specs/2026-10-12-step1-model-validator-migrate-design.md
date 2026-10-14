@@ -1,6 +1,6 @@
 # Étape 1 — Modèle canonique, validateur et `migrate`
 
-Date : 2026-10-12 · Statut : brouillon soumis à relecture · Suite de : `2026-10-09-step0-retrait-surfaces-design.md` (étape 0, terminée) · Décisions de conception : brainstorm des 2026-10-08/09 (mémoire `project_cap_v1_declaratif_2026-10-08`)
+Date : 2026-10-12 · Statut : mergée (#464) · Suite de : `2026-10-09-step0-retrait-surfaces-design.md` (étape 0, terminée) · Décisions de conception : brainstorm des 2026-10-08/09 (mémoire `project_cap_v1_declaratif_2026-10-08`)
 
 ## 1. Objectif
 

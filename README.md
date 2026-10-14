@@ -150,9 +150,6 @@ Full documentation lives in [`docs/wiki/`](docs/wiki/):
 - [Providers and models](docs/wiki/providers.md)
 - [Skills & Prompts](docs/wiki/skills-prompts.md)
 
-Documents describing the former execution engine are kept, unmaintained, in
-[`docs/archive/`](docs/archive/README.md).
-
 ## Development
 
 ### Setup

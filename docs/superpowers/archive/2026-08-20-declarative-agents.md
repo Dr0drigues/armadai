@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust edition 2024, `serde` / `serde_yaml_ng` (both already dependencies), `anyhow`.
 
-**Spec:** `docs/superpowers/specs/2026-08-20-declarative-agents-design.md`
+**Spec:** `docs/superpowers/archive/2026-08-20-declarative-agents-design.md`
 
 ## Global Constraints
 

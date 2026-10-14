@@ -1,6 +1,6 @@
 # Étape 2 — `link` sur le nouveau modèle, adaptateur Claude Code, rapport de conformité
 
-Date : 2026-10-12 · Statut : brouillon · Suite de : `2026-10-12-step1-model-validator-migrate-design.md` (étape 1, mergée #464) · Décisions de fond : brainstorm 2026-10-08/09 (mémoire `project_cap_v1_declaratif_2026-10-08`)
+Date : 2026-10-12 · Statut : mergée (#468) · Suite de : `2026-10-12-step1-model-validator-migrate-design.md` (étape 1, mergée #464) · Décisions de fond : brainstorm 2026-10-08/09 (mémoire `project_cap_v1_declaratif_2026-10-08`)
 
 ## 1. Objectif
 
@@ -93,4 +93,4 @@ Structure : pour chaque cible, une liste `{ element, status, reason }` avec `sta
 
 ## 9. Révisions de la revue indépendante (PR #465)
 
-Les décisions R-B1…R-I11 du plan (`plans/2026-10-12-step2-link-claude.md`, section « Révisions ») complètent et corrigent cette spec : fichiers patchés hors `write_files` (`settings.json`, `CLAUDE.md` racine), `disallowedTools` au lieu de `tools`, gate à sémantique d'appelant et alias `Task`, entrées périmées, `.armadai/.gitignore`, modèles déterministes, inventaire des commandes. En cas de contradiction avec §3–§6, le plan prime. Corrections de texte : `--json` est une option nouvelle ; R2 = « fusion tracée par le manifeste » (pas de marqueur) ; `unlink` est modifié (§6).
+Les décisions R-B1…R-I11 du plan (`../archive/2026-10-12-step2-link-claude.md`, section « Révisions ») complètent et corrigent cette spec : fichiers patchés hors `write_files` (`settings.json`, `CLAUDE.md` racine), `disallowedTools` au lieu de `tools`, gate à sémantique d'appelant et alias `Task`, entrées périmées, `.armadai/.gitignore`, modèles déterministes, inventaire des commandes. En cas de contradiction avec §3–§6, le plan prime. Corrections de texte : `--json` est une option nouvelle ; R2 = « fusion tracée par le manifeste » (pas de marqueur) ; `unlink` est modifié (§6).
