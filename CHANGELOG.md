@@ -6,7 +6,9 @@
   the `Dockerfile`, `schemas/pack.schema.json`, `docs/archive/` (recoverable from the tag
   `pre-v1-declaratif`), the `examples/orchestration-patterns/` and `examples/demo-rust-team/`
   examples (legacy format), the storage database committed in `examples/demo-nextjs-shop/`.
-- The built-in `zsh-env-authoring` skill, unrelated to ArmadAI, that `armadai init` installed.
+- The built-in `zsh-env-authoring` skill, unrelated to ArmadAI, that `armadai init` installed:
+  the next `armadai init` removes the copy it had installed in `~/.config/armadai/skills/`
+  (even if you edited it: copy it elsewhere first if you want to keep it).
 - `examples/demo-nextjs-shop` is now a canonical project (`.armadai/` from the `pirate-crew`
   pack); its tracked `.env` becomes a placeholder-only `.env.example`.
 - **Breaking:** `armadai config providers` and `armadai config secrets` (`init`, `rotate`) are
