@@ -52,16 +52,9 @@ pub struct AgentMetadata {
     pub temperature: f32,
     /// Max output tokens
     pub max_tokens: Option<u32>,
-    /// CLI provider timeout in seconds.
-    ///
-    /// Since #270, this bounds *inactivity* — the longest gap between two
-    /// consecutive lines of subprocess output — not the call's total
-    /// duration: a `CliProvider` call that keeps producing output survives
-    /// past this many seconds; one that goes fully silent for this long is
-    /// killed (see `armadai_providers::cli::CliProvider::complete`). Only
-    /// applies to CLI-backed providers (`provider: cli`, or a unified name
-    /// like `claude`/`gemini` resolving to its CLI); API providers ignore
-    /// this field.
+    /// Legacy `timeout` metadata, in seconds: bounded the inactivity of a CLI
+    /// provider call when ArmadAI still executed agents. Nothing enforces it
+    /// any more; it is only parsed so `migrate` can read old agent files.
     pub timeout: Option<u64>,
     /// Tags for filtering
     #[serde(default)]
@@ -102,10 +95,7 @@ pub fn default_temperature() -> f32 {
 ///
 /// Two names that differ only by case, or by which punctuation/whitespace
 /// they use as a separator, project to the same slug — which is exactly what
-/// the linker uses to name a file on disk. `agent_source::shadowing_conflict`
-/// compares slugs rather than raw names for the same reason: a declaration
-/// and a library file that fold to the same slug will overwrite each other
-/// at link time regardless of how differently they are spelled.
+/// the linker uses to name a file on disk.
 pub fn slugify(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -146,82 +136,6 @@ pub fn name_matches_reference(agent_name: &str, reference: &str) -> bool {
         || slugify(agent_name).eq_ignore_ascii_case(reference)
 }
 
-/// The project-config key that names the linker's coordinator. Spelled
-/// once, here, so the four surfaces that report on it (`link`, `unlink`,
-/// the shell's setup wizard, `validate`) cannot drift into naming four
-/// different keys — and so a user reading any of them is sent to the
-/// field that actually exists.
-pub const LINK_COORDINATOR_KEY: &str = "link.coordinator";
-
-/// Does `reference` designate an agent of `roster_titles`, and if not,
-/// what should the user be told (issue #371)?
-///
-/// **This is a statement about the configuration, not about an
-/// invocation.** `link.coordinator` either names an agent the project
-/// declares or it does not; that answer cannot depend on which subset of
-/// the roster a given command happens to be writing. Computing it as a
-/// side effect of the resolver — "did *this* call find the agent?" — is
-/// what made `armadai link --agents Worker` announce that a perfectly
-/// correct `coordinator: dev-lead` matched nothing, on the very same
-/// project where `armadai validate` reported no warning at all. So every
-/// caller passes the **declared** roster here, and passes whatever roster
-/// it is actually writing to the resolver, separately.
-///
-/// The failure this reports is silent by construction:
-/// [`name_matches_reference`] simply finds nothing, so `link` writes no
-/// root instructions file and `unlink` looks for none. Nothing is left on
-/// disk — the defect is symmetric, unlike #341 — so this message is the
-/// *only* observable, and every command emits this one text rather than
-/// its own.
-///
-/// It names the H1-title namespace on purpose. `link.coordinator` is
-/// matched against an agent's title (or that title's slug), never against
-/// the key used in `agents:` or in `orchestration.coordinator`, which are
-/// a separate namespace (`docs/wiki/link.md`); a message that sent the
-/// user to the roster key would have them correct the wrong field. Listing
-/// the titles actually available is what turns "no match" into something
-/// they can act on without opening every `.md`.
-///
-/// `origin` is the field the reference came from — [`LINK_COORDINATOR_KEY`]
-/// for the config, `--coordinator` for the CLI flag that overrides it.
-pub fn coordinator_no_match_warning(
-    origin: &str,
-    reference: &str,
-    roster_titles: &[String],
-) -> Option<String> {
-    if roster_titles
-        .iter()
-        .any(|title| name_matches_reference(title, reference))
-    {
-        return None;
-    }
-    Some(coordinator_no_match_message(
-        origin,
-        reference,
-        roster_titles,
-    ))
-}
-
-/// The wording of [`coordinator_no_match_warning`]'s report, kept private
-/// on purpose: a caller holding the formatter without the predicate is
-/// exactly how the "did this call resolve it?" coupling got written in the
-/// first place. There is no way to emit this text without first having
-/// asked the question against a roster.
-fn coordinator_no_match_message(origin: &str, reference: &str, roster_titles: &[String]) -> String {
-    let titles = if roster_titles.is_empty() {
-        "(none)".to_string()
-    } else {
-        roster_titles.join(", ")
-    };
-    format!(
-        "{origin} '{reference}' matches no agent — no root instructions file \
-         (.claude/CLAUDE.md and its equivalents) is written or removed for it.\n\
-         It is matched against an agent's H1 title, or that title's slug — not the \
-         `agents:` key, which is a separate namespace.\n\
-         Titles in this roster: {titles}."
-    )
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
     /// Agents to chain after this one
@@ -233,14 +147,11 @@ pub struct PipelineConfig {
 ///
 /// The parser splits an agent file into `system_prompt` / `instructions` /
 /// `output_format` / `context`, dropping the `##` headings on the way in.
-/// Every consumer that hands an agent to a model has to put them back
-/// together, and until #395 only the linkers did: `run` sent `system_prompt`
-/// alone, so an agent whose output rules lived in `## Output Format` obeyed
-/// them when linked into a native CLI and ignored them when run directly,
-/// with nothing saying so.
+/// Every consumer that writes an agent's prompt (`migrate`, and the
+/// Codex/Copilot/OpenCode linkers) has to put them back together.
 ///
-/// This is that single definition. Measured before hoisting it here: the five
-/// linkers (claude/codex/copilot/gemini/opencode) each carried their own copy
+/// This is that single definition (#395). Measured before hoisting it here:
+/// the linkers of the time each carried their own copy
 /// of this loop and produced byte-identical bodies for the same agent
 /// (md5 `15461e18a2577665048e85fa3c5667b9` on a four-section fixture) — only
 /// the surrounding wrapper (YAML frontmatter, TOML quoting) differed, which
@@ -255,8 +166,8 @@ pub struct PipelineConfig {
 /// is byte-identical to what the per-linker copies produced.
 ///
 /// A section present but empty still contributes its heading: that is what
-/// the linkers did before, and `run`/`link` staying byte-identical matters
-/// more than trimming a stray heading.
+/// the linkers did before, and staying byte-identical with them matters more
+/// than trimming a stray heading.
 ///
 /// No trailing newline is appended — callers that need one normalise
 /// afterwards, as the linkers already do for the file as a whole.
@@ -278,7 +189,7 @@ pub fn compose_agent_prompt(
     ] {
         let Some(body) = body else { continue };
         // One blank line before the heading — but never open the prompt with
-        // one, which is where the five linkers disagreed (see above).
+        // one, which is where the linkers of the time disagreed (see above).
         if !out.is_empty() && !out.ends_with("\n\n") {
             if !out.ends_with('\n') {
                 out.push('\n');
@@ -341,9 +252,8 @@ mod tests {
 
     /// Order and separators, pinned byte for byte.
     ///
-    /// `run` and `link` now share this function, so a change here moves both
-    /// at once and the wiring tests comparing them (`--test
-    /// run_sends_every_section`) would stay green through it. This is what
+    /// `migrate` and the linkers share this function, so a change here moves
+    /// them all at once and no test comparing them would notice. This is what
     /// makes reordering the sections, or changing how they are separated, a
     /// deliberate act rather than a silent one.
     #[test]
@@ -381,9 +291,9 @@ mod tests {
     }
 
     /// An agent may declare `## System Prompt` and leave its body empty — the
-    /// parser accepts it. The five linkers disagreed on that input: codex and
-    /// copilot opened the composed body with two blank lines, claude, gemini
-    /// and opencode with none. Folding them into one definition forces a
+    /// parser accepts it. The linkers of the time disagreed on that input:
+    /// codex and copilot opened the composed body with two blank lines, the
+    /// others with none. Folding them into one definition forces a
     /// choice, and this pins it: no leading blank line, because a prompt that
     /// opens on whitespace spends the model's first tokens on nothing.
     ///

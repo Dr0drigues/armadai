@@ -26,8 +26,6 @@ async fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    armadai_core::config::check_migration_hint();
-
     let args = cli::Cli::parse();
     cli::handle(args).await
 }

@@ -1,33 +1,32 @@
-//! Read-only access to the local models.dev catalogue cache
-//! (`~/.config/armadai/models-cache.json`). Nothing here reaches the network:
-//! refreshing the catalogue is not part of ArmadAI any more.
+//! FROZEN copy of `crates/armadai-providers/src/model_registry/` at commit
+//! eebd796 (the crate was then deleted), reduced to what rule A04 reads:
+//! the model IDs of the local models.dev catalogue cache
+//! (`~/.config/armadai/models-cache.json`). Not kept in sync.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use armadai_core::config::config_dir;
-
-use super::ModelEntry;
+use serde::Deserialize;
 
 const CACHE_FILE: &str = armadai_core::config::MODELS_CACHE_FILE;
 
+/// A model entry from the models.dev registry. The original also carried
+/// `name`, `cost` and `limit`; nothing here reads them, and serde ignores them.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelEntry {
+    pub id: String,
+}
+
 /// Cached registry: provider_id → Vec<ModelEntry>. Other keys in the file
 /// (e.g. `fetched_at`, written by earlier versions) are ignored.
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 struct CachedRegistry {
     providers: HashMap<String, Vec<ModelEntry>>,
 }
 
 fn cache_path() -> PathBuf {
     config_dir().join(CACHE_FILE)
-}
-
-/// Load models for a given provider from cache only (sync).
-/// Returns None only if the cache is missing/unreadable (ignores cache age —
-/// a stale catalog is still shown; see [`read_cache`]).
-pub fn load_models(provider: &str) -> Option<Vec<ModelEntry>> {
-    let cached = read_cache(&cache_path())?;
-    cached.providers.get(provider).cloned()
 }
 
 /// Load all providers from cache (sync).
@@ -66,9 +65,7 @@ mod tests {
 
         let loaded = read_cache(&path).expect("an epoch-old cache must still load");
         assert_eq!(loaded.providers.len(), 2);
-        let anthropic = &loaded.providers["anthropic"];
-        assert_eq!(anthropic[0].id, "claude-sonnet-4-5");
-        assert_eq!(anthropic[0].limit.as_ref().unwrap().context, Some(200_000));
+        assert_eq!(loaded.providers["anthropic"][0].id, "claude-sonnet-4-5");
         assert_eq!(loaded.providers["google"][0].id, "gemini-2.5-pro");
     }
 
@@ -87,14 +84,9 @@ mod tests {
     }
 
     #[test]
-    fn loaders_read_the_cache_in_the_config_dir() {
+    fn loader_reads_the_cache_in_the_config_dir() {
         let iso = armadai_core::test_support::IsolatedConfigDir::enter();
         std::fs::write(iso.config_dir().join(CACHE_FILE), CACHE_JSON).unwrap();
-
-        let google = load_models("google").expect("google is cached");
-        assert_eq!(google.len(), 1);
-        assert_eq!(google[0].id, "gemini-2.5-pro");
-        assert!(load_models("unknown").is_none());
 
         let all = load_all_providers_cached().expect("cache present");
         assert!(all.contains_key("anthropic") && all.contains_key("google"));
