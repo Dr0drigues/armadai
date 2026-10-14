@@ -4,7 +4,7 @@
 //! consumed by `cli::unlink::execute` instead of re-deriving the same facts
 //! by regenerating against the *current* config.
 //!
-//! See `docs/superpowers/specs/2026-08-24-link-manifest-design.md` for the
+//! See `docs/superpowers/archive/2026-08-24-link-manifest-design.md` for the
 //! full design (issue #338's second half); this module implements its §3
 //! format and the read/write contract of §5/§6, amended after a security
 //! review (see the spec's own amendment section) to add a per-target trust

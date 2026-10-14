@@ -1,5 +1,5 @@
 //! Black-box regressions for the link manifest (issue #338's second half,
-//! see `docs/superpowers/specs/2026-08-24-link-manifest-design.md`). Spawns
+//! see `docs/superpowers/archive/2026-08-24-link-manifest-design.md`). Spawns
 //! the real binary (like `unlink_content_guard.rs`) since the manifest is
 //! wired end to end through `cli::link::execute` (write) and
 //! `cli::unlink::execute` (consume).

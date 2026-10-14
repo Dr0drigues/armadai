@@ -124,3 +124,32 @@ fn new_format_never_shows_the_invitation() {
     let out = validate(&dir, &[]).success().get_output().stdout.clone();
     assert!(!String::from_utf8_lossy(&out).contains("legacy format"));
 }
+
+/// The pack path `validate --help` shows as an example exists and validates,
+/// run from the repository root as the example implies.
+#[test]
+fn the_help_example_pack_validates() {
+    let help = Command::cargo_bin("armadai")
+        .unwrap()
+        .args(["validate", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8_lossy(&help.stdout).into_owned();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let examples: Vec<&str> = help
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("armadai validate "))
+        .filter(|p| !p.starts_with('/'))
+        .collect();
+    assert!(!examples.is_empty(), "{help}");
+    for path in examples {
+        let cfg = tempfile::tempdir().unwrap();
+        Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(&root)
+            .env("ARMADAI_CONFIG_DIR", cfg.path())
+            .args(["validate", path])
+            .assert()
+            .success();
+    }
+}

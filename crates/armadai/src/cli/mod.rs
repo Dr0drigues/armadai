@@ -114,7 +114,7 @@ pub enum Command {
             (armadai migrate).",
         after_help = "Examples:\n  \
             armadai validate\n  \
-            armadai validate starters/armadai-authoring\n  \
+            armadai validate crates/armadai-core/starters/rust-dev\n  \
             armadai validate /path/to/project"
     )]
     Validate {
