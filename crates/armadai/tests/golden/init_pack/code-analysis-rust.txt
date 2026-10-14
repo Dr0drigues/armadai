@@ -64,7 +64,7 @@ For each finding, provide:
 === .claude/agents/rust-reviewer.md
 ---
 name: rust-reviewer
-description: 'Reviews Rust source for logic bugs, idioms, error handling and performance (scope: src/**/*.rs)'
+description: "Reviews Rust source for logic bugs, idioms, error handling and performance (scope: src/**/*.rs)"
 model: sonnet
 skills:
 - analysis-standards
@@ -98,7 +98,7 @@ For each finding, provide:
 === .claude/agents/rust-security.md
 ---
 name: rust-security
-description: 'Audits Rust code and dependencies for security issues: unsafe blocks, input handling, Cargo.toml and Cargo.lock'
+description: "Audits Rust code and dependencies for security issues: unsafe blocks, input handling, Cargo.toml and Cargo.lock"
 model: sonnet
 skills:
 - analysis-standards
@@ -136,7 +136,7 @@ For each finding, provide:
 === .claude/agents/rust-test-analyzer.md
 ---
 name: rust-test-analyzer
-description: 'Analyzes a Rust test suite for coverage gaps, weak assertions and flaky tests (scope: src/ and tests/)'
+description: "Analyzes a Rust test suite for coverage gaps, weak assertions and flaky tests (scope: src/ and tests/)"
 model: sonnet
 skills:
 - analysis-standards

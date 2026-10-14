@@ -310,7 +310,7 @@ async fn secrets_rotate() -> anyhow::Result<()> {
     anstream::println!("{m}Updated .sops.yaml with new public key.{m:#}");
 
     // 5. Re-encrypt secrets with new key
-    let yaml = serde_yaml_ng::to_string(&secrets)?;
+    let yaml = armadai_model::yaml::to_string(&secrets)?;
     std::fs::write(&sops_path, yaml)?;
 
     let encrypt = std::process::Command::new("sops")
@@ -390,7 +390,7 @@ async fn starters_dir_list() -> anyhow::Result<()> {
 
 /// Add a custom starter directory to config.yaml.
 async fn starters_dir_add(path: &str) -> anyhow::Result<()> {
-    let mut config = app_config::load_user_config();
+    let mut config = app_config::try_load_user_config()?;
 
     if config.starters_dirs.contains(&path.to_string()) {
         let m = crate::cli::style::muted();
@@ -413,7 +413,7 @@ async fn starters_dir_add(path: &str) -> anyhow::Result<()> {
 
 /// Remove a custom starter directory from config.yaml.
 async fn starters_dir_remove(path: &str) -> anyhow::Result<()> {
-    let mut config = app_config::load_user_config();
+    let mut config = app_config::try_load_user_config()?;
 
     let before = config.starters_dirs.len();
     config.starters_dirs.retain(|d| d != path);

@@ -156,8 +156,8 @@ impl Compiler for LegacyCompiler {
                     Some("Copilot agent files carry no model"),
                 );
             }
-            let native = f.native.get(t).and_then(|n| n.as_mapping());
-            if native.is_some_and(|n| n.keys().any(|k| k.as_str() != Some("model"))) {
+            let native = f.native.get(t).and_then(|n| n.as_object());
+            if native.is_some_and(|n| n.keys().any(|k| k != "model")) {
                 r.push(
                     t,
                     format!("agent {id} native"),
@@ -325,7 +325,7 @@ mod tests {
         dev.front.tier = None;
         dev.front.native.insert(
             "opencode".into(),
-            serde_yaml_ng::from_str("model: openai/gpt-5").unwrap(),
+            armadai_model::yaml::from_str("model: openai/gpt-5").unwrap(),
         );
         let model = |t: &str| {
             link_agents(&p, t)

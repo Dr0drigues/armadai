@@ -200,19 +200,20 @@ fn duplicate_keys_in_free_maps_are_rejected() {
         (
             ".armadai/flows/f.yaml",
             "steps:\n  a: { agent: x }\n  a: { agent: y }\n",
-            2,
+            3,
         ),
         (
             ".armadai/project.yaml",
             "schema_version: 1\noutputs:\n  claude: a\n  claude: b\n",
-            3,
+            4,
         ),
         (
             ".armadai/project.yaml",
             "schema_version: 1\nnative:\n  claude: {}\n  claude: {}\n",
-            3,
+            4,
         ),
     ] {
+        // the position is the second (offending) occurrence
         let ds = errors_for(&[M, (file, text)], "invalid-yaml");
         assert_eq!(ds.len(), 1, "{file}: {ds:?}");
         assert_eq!(ds[0].line, Some(line), "{file}");
@@ -231,8 +232,8 @@ fn duplicate_metadata_key_in_skill_is_rejected() {
         ],
         "invalid-yaml",
     );
-    // serde_yaml_ng reports the first definition of the duplicated key
-    assert_eq!(ds[0].line, Some(4));
+    // the position is the second (offending) occurrence
+    assert_eq!(ds[0].line, Some(5));
 }
 
 #[test]
@@ -293,6 +294,22 @@ fn serde_position_suffix_is_not_in_the_message() {
     let d = find(&l, "invalid-yaml");
     assert!(!d.message.contains(" at line "), "{}", d.message);
     assert_eq!(d.column, Some(7));
+}
+
+/// The library's advice on its own options is not for the user.
+#[test]
+fn duplicate_key_message_names_the_key_only() {
+    let ds = errors_for(
+        &[
+            M,
+            (
+                ".armadai/agents/a.md",
+                "---\ndescription: d\ntier: pro\ntier: max\n---\n",
+            ),
+        ],
+        "invalid-yaml",
+    );
+    assert_eq!(ds[0].message, "duplicate mapping key: tier");
 }
 
 #[test]

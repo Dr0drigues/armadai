@@ -151,7 +151,7 @@ pub enum NewCommand {
 }
 
 fn parse_tier(s: &str) -> Result<armadai_model::Tier, String> {
-    serde_yaml_ng::from_str(s).map_err(|_| format!("`{s}` is not a tier (fast, pro, max)"))
+    armadai_model::yaml::from_str(s).map_err(|_| format!("`{s}` is not a tier (fast, pro, max)"))
 }
 
 fn parse_flow_template(s: &str) -> Result<armadai_model::FlowTemplate, String> {
@@ -160,7 +160,7 @@ fn parse_flow_template(s: &str) -> Result<armadai_model::FlowTemplate, String> {
 }
 
 fn parse_event(s: &str) -> Result<armadai_model::Event, String> {
-    serde_yaml_ng::from_str(s).map_err(|_| {
+    armadai_model::yaml::from_str(s).map_err(|_| {
         format!(
             "`{s}` is not an event (session-start, session-end, before-tool, after-tool, \
              on-prompt, on-stop)"
@@ -442,7 +442,7 @@ pub fn agent_from_template(
              (see the built-in templates) or run armadai migrate on a project"
         );
     };
-    let mut front: armadai_model::AgentFront = serde_yaml_ng::from_str(yaml)
+    let mut front: armadai_model::AgentFront = armadai_model::yaml::from_str(yaml)
         .map_err(|e| anyhow::anyhow!("template {template} has an invalid frontmatter: {e}"))?;
     match &opts.description {
         Some(d) => front.description = d.clone(),
@@ -619,7 +619,7 @@ mod tests {
         assert!(agent.body.contains(hostile), "{}", agent.body);
         let text = armadai_model::render_agent("a", &agent);
         let (yaml, _, _) = armadai_model::split_frontmatter(&text).unwrap();
-        let back: armadai_model::AgentFront = serde_yaml_ng::from_str(yaml).unwrap();
+        let back: armadai_model::AgentFront = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(back, agent.front);
 
         let (agent, _) = agent_from_template(

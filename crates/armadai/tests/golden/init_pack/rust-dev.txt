@@ -21,7 +21,7 @@ claude: skill rust-conventions: compiled
 === .claude/agents/code-reviewer.md
 ---
 name: code-reviewer
-description: 'Revue de code Rust approfondie : bugs, failles de sécurité, performance et conventions du projet'
+description: "Revue de code Rust approfondie : bugs, failles de sécurité, performance et conventions du projet"
 model: sonnet
 skills:
 - rust-conventions
@@ -45,7 +45,7 @@ Chaque point inclut : severite, localisation, suggestion de fix.
 === .claude/agents/debug.md
 ---
 name: debug
-description: 'Débogue un échec Rust méthodiquement : reproduire, remonter à la cause racine, proposer le correctif minimal et son test'
+description: "Débogue un échec Rust méthodiquement : reproduire, remonter à la cause racine, proposer le correctif minimal et son test"
 model: sonnet
 ---
 You are a systematic debugger. You follow a disciplined 4-phase process
@@ -105,7 +105,7 @@ You always identify the root cause, not just the symptoms.
 === .claude/agents/test-writer.md
 ---
 name: test-writer
-description: 'Écrit des tests Rust complets : chemins nominaux, cas limites et conditions d''erreur'
+description: "Écrit des tests Rust complets : chemins nominaux, cas limites et conditions d'erreur"
 model: sonnet
 skills:
 - rust-conventions

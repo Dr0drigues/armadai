@@ -10,11 +10,11 @@ description = "ArmadAI — core domain: agent and project types, parser, model r
 test-support = ["dep:tempfile"]
 
 [dependencies]
+armadai-model = { path = "../armadai-model" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml_ng = { workspace = true }
 pulldown-cmark = { workspace = true }
 include_dir = { workspace = true }
 sha2 = { workspace = true }

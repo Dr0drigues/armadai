@@ -111,7 +111,7 @@ manager and a `rejected` one back to the dev lead.
 === .claude/agents/release-manager.md
 ---
 name: release-manager
-description: 'Owns releases: readiness checks, semantic version, changelog, tags and branch sync; use only when cutting a release'
+description: "Owns releases: readiness checks, semantic version, changelog, tags and branch sync; use only when cutting a release"
 model: opus
 skills:
 - rust-conventions

@@ -8,10 +8,13 @@ description = "Canonical ArmadAI project model: strict types, loader and validat
 
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
-serde_yaml_ng = { workspace = true }
+# preserve_order: `native` keeps the author's key order even when built alone
+serde_json = { workspace = true, features = ["preserve_order"] }
+serde-saphyr = { workspace = true }
 thiserror = { workspace = true }
 schemars = { workspace = true }
 
 [dev-dependencies]
+# the binary enables it: test NativeValue under the same number representation
+serde_json = { workspace = true, features = ["preserve_order", "arbitrary_precision"] }
 tempfile = { workspace = true }

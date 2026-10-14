@@ -91,7 +91,7 @@ mod tests {
         // Only `max` is overridden; `fast` is omitted from the YAML and must
         // keep its embedded default rather than becoming an empty vec.
         let yaml = "keywords:\n  max:\n    - custom-signal\n";
-        let r: RoutingRules = serde_yaml_ng::from_str(yaml).unwrap();
+        let r: RoutingRules = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(r.keywords.max, vec!["custom-signal".to_string()]);
         assert_eq!(
             r.keywords.fast,

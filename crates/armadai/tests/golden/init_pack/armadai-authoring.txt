@@ -38,7 +38,7 @@ claude: skill armadai-conventions: compiled
 === .claude/agents/agent-builder.md
 ---
 name: agent-builder
-description: 'Writes ArmadAI agent files in the canonical format (.armadai/agents/<id>.md): a strict YAML frontmatter and a focused prompt'
+description: "Writes ArmadAI agent files in the canonical format (.armadai/agents/<id>.md): a strict YAML frontmatter and a focused prompt"
 model: sonnet
 skills:
 - armadai-conventions
@@ -108,7 +108,7 @@ before overwriting an existing file.
 === .claude/agents/authoring-architect.md
 ---
 name: authoring-architect
-description: 'Designs a starter pack or an agent team before anything is written: the agents, their tiers, the flows between them and whether a coordinator fits'
+description: "Designs a starter pack or an agent team before anything is written: the agents, their tiers, the flows between them and whether a coordinator fits"
 model: opus
 skills:
 - armadai-conventions
@@ -218,7 +218,7 @@ rejected
 === .claude/agents/authoring-tester.md
 ---
 name: authoring-tester
-description: 'Writes the test plan of an ArmadAI pack: prompts per agent, expected behavior, delegation and link checks'
+description: "Writes the test plan of an ArmadAI pack: prompts per agent, expected behavior, delegation and link checks"
 model: sonnet
 skills:
 - armadai-conventions
@@ -321,7 +321,7 @@ Write each file with the `Write` tool (`SKILL.md` first, then the references), t
 === .claude/agents/starter-builder.md
 ---
 name: starter-builder
-description: 'Assembles a native ArmadAI starter pack (pack.yaml with format: 1, agents, skills, flows, automations) that init --pack installs as is'
+description: "Assembles a native ArmadAI starter pack (pack.yaml with format: 1, agents, skills, flows, automations) that init --pack installs as is"
 model: sonnet
 skills:
 - armadai-conventions

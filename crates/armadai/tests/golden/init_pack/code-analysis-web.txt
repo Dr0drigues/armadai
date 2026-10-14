@@ -64,7 +64,7 @@ For each finding, provide:
 === .claude/agents/web-reviewer.md
 ---
 name: web-reviewer
-description: 'Reviews JavaScript/TypeScript source for typing, correctness and modern practices (scope: src/**/*.ts, *.tsx, *.js)'
+description: "Reviews JavaScript/TypeScript source for typing, correctness and modern practices (scope: src/**/*.ts, *.tsx, *.js)"
 model: sonnet
 skills:
 - analysis-standards
@@ -99,7 +99,7 @@ For each finding, provide:
 === .claude/agents/web-security.md
 ---
 name: web-security
-description: 'Audits JS/TS code and dependencies for security issues: XSS, injection, secrets, package.json and lockfile'
+description: "Audits JS/TS code and dependencies for security issues: XSS, injection, secrets, package.json and lockfile"
 model: sonnet
 skills:
 - analysis-standards

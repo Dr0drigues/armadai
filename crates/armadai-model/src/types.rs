@@ -6,7 +6,77 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Opaque per-target block: `{ claude|codex|copilot|opencode: <free YAML> }`.
-pub type Native = BTreeMap<String, serde_yaml_ng::Value>;
+pub type Native = BTreeMap<String, NativeValue>;
+
+/// Free YAML held as JSON data. YAML-only constructs do not survive: tags (`!foo`) are
+/// refused on read, anchors and aliases are expanded.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(transparent)]
+pub struct NativeValue(pub serde_json::Value);
+
+impl std::ops::Deref for NativeValue {
+    type Target = serde_json::Value;
+    fn deref(&self) -> &serde_json::Value {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for NativeValue {
+    fn deref_mut(&mut self) -> &mut serde_json::Value {
+        &mut self.0
+    }
+}
+
+impl From<serde_json::Value> for NativeValue {
+    fn from(v: serde_json::Value) -> Self {
+        Self(v)
+    }
+}
+
+impl Serialize for NativeValue {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        PlainNumbers(&self.0).serialize(s)
+    }
+}
+
+/// Under `arbitrary_precision` (enabled by the binary) a JSON `Number` serializes as a
+/// private map: this writes it as a plain YAML number instead.
+struct PlainNumbers<'a>(&'a serde_json::Value);
+
+impl Serialize for PlainNumbers<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        use serde_json::Value;
+        match self.0 {
+            Value::Number(n) => {
+                if let Some(u) = n.as_u64() {
+                    s.serialize_u64(u)
+                } else if let Some(i) = n.as_i64() {
+                    s.serialize_i64(i)
+                } else if let Ok(i) = n.to_string().parse::<i128>() {
+                    s.serialize_i128(i)
+                } else {
+                    s.serialize_f64(n.as_f64().unwrap_or(f64::NAN))
+                }
+            }
+            Value::Array(a) => {
+                let mut q = s.serialize_seq(Some(a.len()))?;
+                for v in a {
+                    q.serialize_element(&PlainNumbers(v))?;
+                }
+                q.end()
+            }
+            Value::Object(m) => {
+                let mut q = s.serialize_map(Some(m.len()))?;
+                for (k, v) in m {
+                    q.serialize_entry(k, &PlainNumbers(v))?;
+                }
+                q.end()
+            }
+            v => v.serialize(s),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -206,22 +276,22 @@ pub struct SkillFront {
     /// Keys owned by other tools (`allowed-tools`, ...): kept so a rewrite loses nothing.
     #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(with = "BTreeMap<String, serde_json::Value>")]
-    pub extra: BTreeMap<String, serde_yaml_ng::Value>,
+    pub extra: BTreeMap<String, NativeValue>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse<T: serde::de::DeserializeOwned>(y: &str) -> Result<T, serde_yaml_ng::Error> {
-        serde_yaml_ng::from_str(y)
+    fn parse<T: serde::de::DeserializeOwned>(y: &str) -> Result<T, crate::yaml::Error> {
+        crate::yaml::from_str(y)
     }
 
     #[test]
     fn manifest_minimal_roundtrips() {
         let m: Manifest = parse("schema_version: 1\n").unwrap();
         assert_eq!(m.policy.delegation, Delegation::Off);
-        let out = serde_yaml_ng::to_string(&m).unwrap();
+        let out = crate::yaml::to_string(&m).unwrap();
         assert_eq!(out, "schema_version: 1\n");
     }
 

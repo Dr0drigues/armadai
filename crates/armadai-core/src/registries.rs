@@ -82,13 +82,15 @@ impl RegistryKind {
 
 /// Load the user-level registries config from
 /// `~/.config/armadai/registries.yaml`. Returns [`RegistriesConfig::default`]
-/// when the file is absent, unreadable, or fails to parse.
+/// when the file is absent, and also (with a warning) when it does not read.
 pub fn load_user_registries() -> RegistriesConfig {
     let path: PathBuf = registries_config_path();
-    match std::fs::read_to_string(&path) {
-        Ok(content) => serde_yaml_ng::from_str(&content).unwrap_or_default(),
-        Err(_) => RegistriesConfig::default(),
-    }
+    crate::config::read_user_yaml(&path)
+        .unwrap_or_else(|e| {
+            crate::config::warn_once(format!("{e:#}; using the built-in registries only"));
+            None
+        })
+        .unwrap_or_default()
 }
 
 /// Resolve the final ordered list of registry source URLs for `kind`.
@@ -191,7 +193,7 @@ registries:
   models:
     - url: https://example.com/models.json
 "#;
-        let wrapper: Wrapper = serde_yaml_ng::from_str(yaml).unwrap();
+        let wrapper: Wrapper = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(
             wrapper.registries.agents,
             vec![RegistrySource {
@@ -223,7 +225,7 @@ registries:
   agents:
     - url: https://example.com/agents.git
 "#;
-        let wrapper: Wrapper = serde_yaml_ng::from_str(yaml).unwrap();
+        let wrapper: Wrapper = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(wrapper.registries.agents.len(), 1);
         assert!(wrapper.registries.skills.is_empty());
         assert!(wrapper.registries.models.is_empty());
@@ -384,7 +386,7 @@ starters:
   - url: "https://interne/p"
     kind: archive
 "#;
-        let c: RegistriesConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let c: RegistriesConfig = armadai_model::yaml::from_str(yaml).unwrap();
         assert_eq!(c.starters[0].resolved_kind(), SourceKind::Git); // .git → git
         assert_eq!(c.starters[1].resolved_kind(), SourceKind::Archive); // .tar.gz → archive
         assert_eq!(c.starters[2].resolved_kind(), SourceKind::Archive); // explicit override

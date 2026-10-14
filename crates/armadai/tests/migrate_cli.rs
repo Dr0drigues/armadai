@@ -415,3 +415,27 @@ fn a_failure_after_the_backup_names_it() {
     );
     assert!(backup(&dir).join(".armadai/config.yaml").is_file());
 }
+
+/// A duplicated key is named with its position, without saphyr's advice on its options.
+#[test]
+fn a_duplicated_key_in_agents_yaml_is_reported_plainly() {
+    let dir = fixture("declarative");
+    let path = dir.path().join(".armadai/agents.yaml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replacen(
+            "  provider: claude\n",
+            "  provider: claude\n  provider: codex\n",
+            1,
+        ),
+    )
+    .unwrap();
+    let out = migrate(&dir, &[]).failure().get_output().stderr.clone();
+    let err = String::from_utf8_lossy(&out);
+    assert!(
+        err.contains("duplicate mapping key: provider at line 3, column 3"),
+        "{err}"
+    );
+    assert!(!err.contains("DuplicateKeyPolicy"), "{err}");
+}

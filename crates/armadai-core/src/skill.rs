@@ -51,7 +51,7 @@ impl Skill {
         let (fm_str, body) = extract_frontmatter(&content);
 
         let fm: SkillFrontmatter = match fm_str {
-            Some(yaml) => serde_yaml_ng::from_str(yaml)?,
+            Some(yaml) => armadai_model::yaml::from_str(yaml)?,
             None => SkillFrontmatter::default(),
         };
 

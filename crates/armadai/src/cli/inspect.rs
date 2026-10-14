@@ -40,7 +40,7 @@ pub async fn execute(id: String) -> anyhow::Result<()> {
     if !f.skills.is_empty() {
         field("Skills:", f.skills.join(", "));
     }
-    let caps = serde_yaml_ng::to_string(&f.capabilities)?;
+    let caps = armadai_model::yaml::to_string(&f.capabilities)?;
     if caps.trim() != "{}" {
         field("Capabilities:", caps.trim().replace('\n', ", "));
     }

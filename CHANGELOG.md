@@ -1,5 +1,26 @@
 ## Unreleased
 
+### Changed (YAML library, #467)
+
+- **YAML is read and written with serde-saphyr** instead of serde_yaml_ng, which pulled
+  `unsafe-libyaml` (RUSTSEC-2024-0449). Values read the same, with these differences:
+  - a duplicated key is refused everywhere, free maps (`native`, `metadata`, `steps`,
+    `outputs`) included, and reported at its second occurrence;
+  - an unknown tag (`!foo`, `!env`) is refused, also in `native`;
+  - `.inf`/`.nan` and number literals beyond `f64` are refused in a free (`native`) value;
+  - `null`/`~` where a string is required (e.g. `description: null`) is an error instead of
+    the text `null`;
+  - `!!binary` is base64-decoded; mappings nested deeper than 64 levels are refused (128
+    before);
+  - text the previous reader kept as text still is: `0123`, `1_000`, `0X1F`, `tRuE`, and
+    integers beyond 64 bits (kept as their exact text, never rounded); a typed number or
+    boolean field now accepts `1_000`, `0X10`, `0b1_0` and `tRuE` (refused before);
+  - long descriptions are written double-quoted instead of single-quoted.
+- `config starters-dir add|remove` refuses to rewrite a `config.yaml` that does not read
+  (it used to replace it with defaults, dropping the configured directories); reading an
+  unreadable `config.yaml`, `registries.yaml` or `providers.yaml` warns once instead of
+  silently using defaults.
+
 ### Changed (step 3: guided creation, native starters)
 
 - **`armadai new` takes a kind**: `new agent|flow|automation|skill <id>` with options

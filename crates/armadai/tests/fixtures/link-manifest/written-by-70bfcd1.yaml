@@ -1,0 +1,177 @@
+version: 1
+targets:
+  claude:
+    linked_at: 2026-10-13T12:00:12Z
+    root: .claude
+    created_dirs:
+    - .claude/agents
+    - .claude/skills/conventions-rust
+    - .claude/skills
+    entries:
+    - path: .claude/agents/developpeur.md
+      produced_by:
+        kind: agent
+        name: developpeur
+      outcome: created
+      digest: sha256:53d88015c2321c547650d83d77d5066277e24b1c03a884247ee394909fa7e5a6
+    - path: .claude/agents/explorer.md
+      produced_by:
+        kind: agent
+        name: explorer
+      outcome: created
+      digest: sha256:bd847dda4ecbc3740957440efdc8607f190157951e37df31fd478af0d98d8225
+    - path: .claude/agents/relecteur.md
+      produced_by:
+        kind: agent
+        name: relecteur
+      outcome: created
+      digest: sha256:3a3d6eed508c24f394f881652907271a946b9fa4a26a0f1b7bb9fb01e95368e7
+    - path: .claude/skills/conventions-rust/SKILL.md
+      produced_by:
+        kind: skill
+        name: conventions-rust
+      outcome: created
+      digest: sha256:61f0c45fbc2290b3db7c9b6ba5d1e40e02592984148ac2d06f94d2c970e5220a
+    patched:
+    - path: CLAUDE.md
+      kind:
+        type: markdown-block
+      created: true
+    - path: .claude/settings.json
+      kind:
+        type: settings-hooks
+        entries:
+        - event: PreToolUse
+          matcher: Bash
+          command: ./scripts/check.sh
+        - event: PreToolUse
+          matcher: Agent|Task
+          command: armadai __claude-policy-gate
+        keys:
+          anything:
+          - $serde_json::private::Number: '1'
+          - $serde_json::private::Number: '2'
+        containers:
+        - hooks
+        - hooks.PreToolUse
+      created: true
+  codex:
+    linked_at: 2026-10-13T12:00:12Z
+    root: .codex
+    created_dirs:
+    - .codex/agents
+    - .codex/skills/conventions-rust
+    - .codex/skills
+    entries:
+    - path: .codex/AGENTS.md
+      produced_by:
+        kind: coordinator
+        name: lead
+      outcome: created
+      digest: sha256:3561993436efa2fbc67355200d94db6e965acb2428399d86cd47cd1810efb0fa
+    - path: .codex/agents/developpeur.toml
+      produced_by:
+        kind: agent
+        name: developpeur
+      outcome: created
+      digest: sha256:c26e0cae8e3ae4c9ce77041dc241d4900be19d2198de89a5a52d9ebc190620ad
+    - path: .codex/agents/explorer.toml
+      produced_by:
+        kind: agent
+        name: explorer
+      outcome: created
+      digest: sha256:d6137830d7d94e279af66681703dd03d7b47fcf876e7a22c4f5560910e379e3e
+    - path: .codex/agents/relecteur.toml
+      produced_by:
+        kind: agent
+        name: relecteur
+      outcome: created
+      digest: sha256:2bb5f5f2c9622f9f090db8ca797cc4b5ced81e220d10ddfb6173fc9ff99564ef
+    - path: .codex/config.toml
+      produced_by:
+        kind: coordinator
+        name: lead
+      outcome: created
+      digest: sha256:40954d59af7669c9c875274af82eb66f045fee201ee95e1fc09be4ef0e431bb6
+    - path: .codex/skills/conventions-rust/SKILL.md
+      produced_by:
+        kind: skill
+        name: conventions-rust
+      outcome: created
+      digest: sha256:61f0c45fbc2290b3db7c9b6ba5d1e40e02592984148ac2d06f94d2c970e5220a
+  copilot:
+    linked_at: 2026-10-13T12:00:12Z
+    root: .github
+    created_dirs:
+    - .github/agents
+    - .github/skills/conventions-rust
+    - .github/skills
+    entries:
+    - path: .github/agents/developpeur.agent.md
+      produced_by:
+        kind: agent
+        name: developpeur
+      outcome: created
+      digest: sha256:23495660fe5fc5a460d06b7c37e9e8af51c60210eb52df999e290192614e059a
+    - path: .github/agents/explorer.agent.md
+      produced_by:
+        kind: agent
+        name: explorer
+      outcome: created
+      digest: sha256:8e61df0fe0d81d1862bd7fbc44facdd56c859d7f2c92db37d39233367223a57e
+    - path: .github/agents/relecteur.agent.md
+      produced_by:
+        kind: agent
+        name: relecteur
+      outcome: created
+      digest: sha256:e792f671ada405dbce9016f22ffe56ec8f5eb0ca39b9a3542db84e660dc96c96
+    - path: .github/copilot-instructions.md
+      produced_by:
+        kind: coordinator
+        name: lead
+      outcome: created
+      digest: sha256:21e612e9e09c429011e648b921ae9b371e17ecdffdd56a9b7afef6162c39aa5d
+    - path: .github/skills/conventions-rust/SKILL.md
+      produced_by:
+        kind: skill
+        name: conventions-rust
+      outcome: created
+      digest: sha256:61f0c45fbc2290b3db7c9b6ba5d1e40e02592984148ac2d06f94d2c970e5220a
+  opencode:
+    linked_at: 2026-10-13T12:00:12Z
+    root: .opencode
+    created_dirs:
+    - .opencode/agents
+    - .opencode/skills/conventions-rust
+    - .opencode/skills
+    entries:
+    - path: .opencode/agents/developpeur.md
+      produced_by:
+        kind: agent
+        name: developpeur
+      outcome: created
+      digest: sha256:9adbc7d3172b9dcc40e679690647372980f49f7cdeee674d5097c588af76f153
+    - path: .opencode/agents/explorer.md
+      produced_by:
+        kind: agent
+        name: explorer
+      outcome: created
+      digest: sha256:e705d38e38d96d1a1d93a0b0764c2c17c413add4ae8d1b051d8aaecad74ec43e
+    - path: .opencode/agents/relecteur.md
+      produced_by:
+        kind: agent
+        name: relecteur
+      outcome: created
+      digest: sha256:20b18ce0d4c15e4ab4d75f4d7712f84e4275a58c7bcc505a8153f71ef548c740
+    - path: .opencode/instructions.md
+      produced_by:
+        kind: coordinator
+        name: lead
+      outcome: created
+      digest: sha256:b0641755475e3ed4c84fbfde9de64657cc0a825d5bff2b326be4981ef0057f44
+    - path: .opencode/skills/conventions-rust/SKILL.md
+      produced_by:
+        kind: skill
+        name: conventions-rust
+      outcome: created
+      digest: sha256:61f0c45fbc2290b3db7c9b6ba5d1e40e02592984148ac2d06f94d2c970e5220a

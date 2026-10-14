@@ -144,7 +144,7 @@ pub fn expand_sequence(items: &[SeqItem]) -> (BTreeMap<String, Step>, Vec<Link>)
     (steps, links)
 }
 
-/// Remove every ` at line N column M` suffix, wherever it sits.
+/// Remove every ` at line N, column M` suffix, wherever it sits.
 fn strip_positions(msg: &str) -> String {
     let mut out = String::new();
     let mut rest = msg;
@@ -153,7 +153,7 @@ fn strip_positions(msg: &str) -> String {
         let digits = |s: &str| s.bytes().take_while(u8::is_ascii_digit).count();
         let n = digits(after);
         let tail = &after[n..];
-        match tail.strip_prefix(" column ") {
+        match tail.strip_prefix(", column ") {
             Some(t) if n > 0 && digits(t) > 0 => {
                 out.push_str(&rest[..i]);
                 rest = &t[digits(t)..];
@@ -264,13 +264,9 @@ impl Ctx {
             );
             return None;
         }
-        // The untyped pass rejects duplicate keys anywhere, including in free maps
-        // (`steps`, `outputs`, `native`, `metadata`) where typed deserialization keeps the last.
-        let err = match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml) {
-            Ok(_) => match serde_yaml_ng::from_str(yaml) {
-                Ok(v) => return Some(v),
-                Err(e) => e,
-            },
+        // duplicate keys are rejected everywhere, free maps included (see `crate::yaml`)
+        let err = match crate::yaml::from_str(yaml) {
+            Ok(v) => return Some(v),
             Err(e) => e,
         };
         let loc = err.location();
@@ -281,8 +277,8 @@ impl Ctx {
             code: "invalid-yaml",
             file: file.to_path_buf(),
             path: String::new(),
-            line: loc.as_ref().map(|l| l.line() + line_offset),
-            column: loc.as_ref().map(|l| l.column()),
+            line: loc.as_ref().map(|l| l.line() as usize + line_offset),
+            column: loc.as_ref().map(|l| l.column() as usize),
             message,
             hint: None,
         });
@@ -450,8 +446,8 @@ pub fn load_project(root: &Path) -> Loaded {
             continue;
         };
         let has = |k: &str| {
-            matches!(serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text),
-                Ok(serde_yaml_ng::Value::Mapping(m)) if m.contains_key(k))
+            matches!(crate::yaml::from_str::<BTreeMap<String, serde::de::IgnoredAny>>(&text),
+                Ok(m) if m.contains_key(k))
         };
         let (steps, links) = if !has("sequence") {
             (raw.steps, raw.links)
@@ -518,15 +514,21 @@ mod tests {
 
     #[test]
     fn strips_every_position_suffix_wherever_it_is() {
-        assert_eq!(strip_positions("bad value at line 3 column 7"), "bad value");
         assert_eq!(
-            strip_positions("a at line 1 column 2, then b at line 4 column 5"),
+            strip_positions("bad value at line 3, column 7"),
+            "bad value"
+        );
+        assert_eq!(
+            strip_positions("a at line 1, column 2, then b at line 4, column 5"),
             "a, then b"
         );
         assert_eq!(
             strip_positions("arrived at line speed"),
             "arrived at line speed"
         );
-        assert_eq!(strip_positions("at line 3 column x"), "at line 3 column x");
+        assert_eq!(
+            strip_positions("at line 3, column x"),
+            "at line 3, column x"
+        );
     }
 }

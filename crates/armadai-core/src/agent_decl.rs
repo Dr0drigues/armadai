@@ -82,7 +82,7 @@ pub struct DeclaredAgents {
     pub agents: Vec<AgentDecl>,
 }
 
-/// `Vec<serde_yaml_ng::Value>` rather than a `#[serde(untagged)]` enum: an
+/// `Vec<serde_json::Value>` rather than a `#[serde(untagged)]` enum: an
 /// untagged enum's "did not match any variant" error is raised inside
 /// `Vec::deserialize` itself, before this function ever runs, so it cannot be
 /// improved from here. Discriminating by hand lets every rejection say what
@@ -92,21 +92,18 @@ where
     D: serde::Deserializer<'de>,
 {
     use serde::de::Error;
-    let raw: Vec<serde_yaml_ng::Value> = Vec::deserialize(d)?;
+    let raw: Vec<serde_json::Value> = Vec::deserialize(d)?;
     raw.into_iter()
         .map(|step| match step {
-            serde_yaml_ng::Value::String(name) => Ok(PromptStep::Plain(name)),
-            serde_yaml_ng::Value::Mapping(map) => {
+            serde_json::Value::String(name) => Ok(PromptStep::Plain(name)),
+            serde_json::Value::Object(map) => {
                 // One key means one fragment. Zero or several keys leave no
                 // way to know which fragment the entry is about.
                 let mut it = map.into_iter();
                 match (it.next(), it.next()) {
-                    (Some((key, value)), None) => {
-                        let fragment = key.as_str().map(str::to_string).ok_or_else(|| {
-                            D::Error::custom("a prompt step's fragment name must be a string")
-                        })?;
+                    (Some((fragment, value)), None) => {
                         let vars: BTreeMap<String, String> =
-                            serde_yaml_ng::from_value(value).map_err(|e| {
+                            serde_json::from_value(value).map_err(|e| {
                                 D::Error::custom(format!(
                                     "a prompt step's variables for `{fragment}` must be a map of strings: {e}"
                                 ))
@@ -129,17 +126,14 @@ where
 /// A short, human-readable name for the kind of YAML value found, used to
 /// make a rejection actionable (e.g. "got a sequence" rather than a generic
 /// "invalid type" message).
-fn describe_yaml_shape(v: &serde_yaml_ng::Value) -> &'static str {
+fn describe_yaml_shape(v: &serde_json::Value) -> &'static str {
     match v {
-        serde_yaml_ng::Value::Null => "null",
-        serde_yaml_ng::Value::Bool(_) => "a boolean",
-        serde_yaml_ng::Value::Number(_) => "a number",
-        serde_yaml_ng::Value::String(_) => "a string",
-        serde_yaml_ng::Value::Sequence(_) => "a sequence",
-        serde_yaml_ng::Value::Mapping(_) => "a mapping",
-        serde_yaml_ng::Value::Tagged(_) => "a tagged value",
-        #[allow(unreachable_patterns)]
-        _ => "an unrecognised value",
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "a sequence",
+        serde_json::Value::Object(_) => "a mapping",
     }
 }
 
@@ -150,7 +144,7 @@ fn describe_yaml_shape(v: &serde_yaml_ng::Value) -> &'static str {
 pub fn load(path: &Path) -> anyhow::Result<DeclaredAgents> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
-    serde_yaml_ng::from_str(&raw)
+    armadai_model::yaml::from_str(&raw)
         .map_err(|e| anyhow::anyhow!("cannot parse {}: {e}", path.display()))
 }
 
@@ -406,6 +400,25 @@ agents:
         }
     }
 
+    /// Variables are text: an unquoted `0123` or `1_000` keeps its spelling, as it did
+    /// with the previous YAML reader.
+    #[test]
+    fn numeric_looking_variables_keep_their_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("agents.yaml");
+        std::fs::write(
+            &p,
+            "agents:\n  - name: x\n    prompt:\n      - review: { ticket: 0123, n: 1_000 }\n",
+        )
+        .unwrap();
+        let d = load(&p).unwrap();
+        let PromptStep::Parameterised { vars, .. } = &d.agents[0].prompt[0] else {
+            panic!("expected a parameterised step");
+        };
+        assert_eq!(vars["ticket"], "0123");
+        assert_eq!(vars["n"], "1_000");
+    }
+
     #[test]
     fn a_step_with_several_keys_is_rejected() {
         // `{ a: {...}, b: {...} }` is ambiguous: which fragment is it?
@@ -475,7 +488,7 @@ agents:
         std::fs::write(&p, "typo_top: 1\n").unwrap();
         let err = load(&p).unwrap_err().to_string();
         assert!(
-            err.contains("unknown field `typo_top`, expected `defaults` or `agents`"),
+            err.contains("unknown field `typo_top`, expected one of defaults, agents"),
             "the error must name the offending key: {err}"
         );
     }

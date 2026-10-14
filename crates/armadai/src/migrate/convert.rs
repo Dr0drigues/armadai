@@ -13,7 +13,7 @@ use armadai_model::{
     Agent, AgentFront, Delegation, Flow, Link, Manifest, Policy, Project, Skill, SkillFront, Step,
     TARGETS, Tier,
 };
-use serde_yaml_ng::{Mapping, Value};
+use serde_json::{Map, Value};
 
 use super::read::OldProject;
 use super::report::Report;
@@ -324,9 +324,8 @@ fn convert_model(
             return;
         }
     };
-    let mut block = Mapping::new();
-    block.insert("model".into(), model.into());
-    f.native.insert(target.to_string(), Value::Mapping(block));
+    let block = serde_json::json!({ "model": model });
+    f.native.insert(target.to_string(), block.into());
 }
 
 fn convert_link(
@@ -561,14 +560,14 @@ fn convert_skill(id: &str, text: &str, dir: &Path, r: &mut Report) -> (SkillFron
         Some((y, b, _)) => (y, b.to_string()),
         None => ("", text.to_string()),
     };
-    let mut map: Mapping = match serde_yaml_ng::from_str::<Option<Mapping>>(yaml) {
+    let mut map: Map<String, Value> = match armadai_model::yaml::from_str::<Option<_>>(yaml) {
         Ok(m) => m.unwrap_or_default(),
         Err(e) => {
             r.warn(format!(
                 "skill `{id}`: frontmatter of {} unreadable ({e}); only its body is kept",
                 dir.join("SKILL.md").display()
             ));
-            Mapping::new()
+            Map::new()
         }
     };
     for key in ["tools", "version"] {
@@ -592,7 +591,7 @@ fn convert_skill(id: &str, text: &str, dir: &Path, r: &mut Report) -> (SkillFron
     let declared = map.remove("description");
     let declared = declared.as_ref().and_then(Value::as_str);
     let description = skill_description(id, declared, &body, r);
-    let mut front: SkillFront = match serde_yaml_ng::from_value(Value::Mapping(map)) {
+    let mut front: SkillFront = match serde_json::from_value(Value::Object(map)) {
         Ok(f) => f,
         Err(e) => {
             r.warn(format!(
