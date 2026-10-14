@@ -13,7 +13,8 @@
   - `!!binary` is base64-decoded; mappings nested deeper than 64 levels are refused (128
     before);
   - text the previous reader kept as text still is: `0123`, `1_000`, `0X1F`, `tRuE`, and
-    integers beyond 64 bits (kept as their exact text, never rounded);
+    integers beyond 64 bits (kept as their exact text, never rounded); a typed number or
+    boolean field now accepts `1_000`, `0X10`, `0b1_0` and `tRuE` (refused before);
   - long descriptions are written double-quoted instead of single-quoted.
 - `config starters-dir add|remove` refuses to rewrite a `config.yaml` that does not read
   (it used to replace it with defaults, dropping the configured directories); reading an

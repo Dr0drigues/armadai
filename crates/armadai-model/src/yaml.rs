@@ -8,6 +8,9 @@
 //!   would read a number, a boolean or null: leading zeros (`0123`), `_` separators
 //!   (`1_000`), upper-case prefixes (`0X1F`), mixed-case `tRuE`/`nUlL`, and number
 //!   literals beyond 64-bit integers or `f64` (kept as their exact text, never rounded);
+//!   A typed number or boolean field still parses that text as saphyr does: `1_000`,
+//!   `0X10`, `0b1_0` and `tRuE` are accepted there (the previous reader refused them),
+//!   `0123` is not;
 //! - in a free (`native`) value `.inf`/`.nan` are refused (JSON data has no such number);
 //! - mappings nested deeper than 64 levels are refused (the previous reader allowed 128);
 //! - `!!binary` is base64-decoded (it was kept as its base64 text);
@@ -64,8 +67,8 @@ pub fn to_string<T: Serialize>(v: &T) -> Result<String, SerializeError> {
 }
 
 /// `s` with every plain, untagged scalar that the previous reader kept as text
-/// single-quoted, so saphyr reads it as text too. Quoting shifts the columns that follow
-/// on the same line by two. Input that does not parse is returned as is: saphyr reports it.
+/// single-quoted (`'` doubled), so saphyr reads it as text too. Quoting shifts the columns
+/// that follow on the same line by two, plus one per `'` in the scalar. Input that does not parse is returned as is: saphyr reports it.
 fn keep_text(s: &str) -> Cow<'_, str> {
     let mut spans = Vec::new();
     for ev in Parser::new_from_str(s) {
@@ -86,12 +89,12 @@ fn keep_text(s: &str) -> Cow<'_, str> {
     if spans.is_empty() {
         return Cow::Borrowed(s);
     }
-    let mut out = String::with_capacity(s.len() + 2 * spans.len());
+    let mut out = String::with_capacity(s.len() + 4 * spans.len());
     let mut at = 0;
     for (a, b) in spans {
         out.push_str(&s[at..a]);
         out.push('\'');
-        out.push_str(&s[a..b]);
+        out.push_str(&s[a..b].replace('\'', "''"));
         out.push('\'');
         at = b;
     }

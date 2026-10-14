@@ -129,7 +129,7 @@ fn kept_text_survives_anchors_and_native_round_trips() {
 }
 
 #[test]
-fn kept_text_is_not_a_number_for_a_typed_field_and_keeps_its_position() {
+fn a_leading_zero_integer_is_refused_by_a_typed_field_at_its_position() {
     let e = from_str::<Manifest>("schema_version: 01\n").unwrap_err();
     assert_eq!(
         e.location().map(|l| (l.line(), l.column())),
@@ -150,5 +150,47 @@ fn messages_carry_no_advice_on_saphyr_or_rust_types() {
     assert_eq!(
         e.to_string(),
         "cannot deserialize null into string at line 1, column 14"
+    );
+}
+
+/// A kept scalar may contain `'`: it is escaped, never cut short nor altered.
+#[test]
+fn kept_text_with_an_apostrophe_reads_unchanged() {
+    for (src, want) in [
+        (
+            "description: 2024_Q3 team's KPIs\n",
+            json!({"description": "2024_Q3 team's KPIs"}),
+        ),
+        ("v: 1_a''b\n", json!({"v": "1_a''b"})),
+        ("a: 1_0'\n", json!({"a": "1_0'"})),
+        ("k: [0_'#, z]\n", json!({"k": ["0_'#", "z"]})),
+    ] {
+        let m: BTreeMap<String, Value> = from_str(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+        assert_eq!(Value::from_iter(m), want, "{src:?}");
+    }
+}
+
+/// A typed number or boolean field reads the kept text as saphyr reads it: `1_000`,
+/// `0X10`, `0b1_0` and `tRuE` are accepted there (the previous reader refused them).
+#[test]
+fn typed_fields_accept_what_saphyr_parses_from_kept_text() {
+    #[derive(serde::Deserialize)]
+    struct T {
+        n: Vec<u32>,
+        b: bool,
+    }
+    let t: T = from_str("n: [1_000, 0X10, 0b1_0]\nb: tRuE\n").unwrap();
+    assert_eq!(t.n, [1000, 16, 2]);
+    assert!(t.b);
+}
+
+/// `true`, `True` and `TRUE` (and the same spellings of `false`, `null`) keep their type.
+#[test]
+fn canonical_spellings_of_booleans_and_null_keep_their_type() {
+    let m: BTreeMap<String, Value> =
+        from_str("a: True\nb: TRUE\nc: False\nd: FALSE\ne: Null\nf: NULL\ng: true\n").unwrap();
+    assert_eq!(
+        Value::from_iter(m),
+        json!({"a": true, "b": true, "c": false, "d": false, "e": null, "f": null, "g": true})
     );
 }
