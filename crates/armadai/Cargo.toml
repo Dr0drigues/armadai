@@ -15,7 +15,6 @@ path = "src/main.rs"
 # Workspace crates
 armadai-core = { path = "../armadai-core" }
 armadai-model = { path = "../armadai-model" }
-armadai-providers = { path = "../armadai-providers" }
 armadai-secrets = { path = "../armadai-secrets" }
 
 # Async runtime

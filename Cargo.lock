@@ -96,7 +96,6 @@ dependencies = [
  "anyhow",
  "armadai-core",
  "armadai-model",
- "armadai-providers",
  "armadai-secrets",
  "assert_cmd",
  "chrono",
@@ -143,16 +142,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
-]
-
-[[package]]
-name = "armadai-providers"
-version = "1.0.0-rc.5"
-dependencies = [
- "armadai-core",
- "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]

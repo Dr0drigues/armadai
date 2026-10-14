@@ -86,7 +86,6 @@ dependencies = [
  "anstyle",
  "anyhow",
  "armadai-core",
- "armadai-providers",
  "assert_cmd",
  "clap",
  "regex",
@@ -124,15 +123,6 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "thiserror",
-]
-
-[[package]]
-name = "armadai-providers"
-version = "1.0.0-rc.5"
-dependencies = [
- "armadai-core",
- "serde",
- "serde_json",
 ]
 
 [[package]]

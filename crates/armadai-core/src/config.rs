@@ -31,8 +31,8 @@ pub fn config_dir() -> PathBuf {
 }
 
 /// Filename of the shared models.dev catalogue cache under the config dir.
-/// Written by `armadai-providers`' model_registry; read (for IDs) by
-/// `core::model_resolution`. Single source of truth for the two readers.
+/// Written by earlier versions of ArmadAI (nothing writes it any more); read
+/// (for IDs) by `core::model_resolution`.
 pub const MODELS_CACHE_FILE: &str = "models-cache.json";
 
 pub fn user_agents_dir() -> PathBuf {

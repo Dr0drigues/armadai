@@ -52,16 +52,9 @@ pub struct AgentMetadata {
     pub temperature: f32,
     /// Max output tokens
     pub max_tokens: Option<u32>,
-    /// CLI provider timeout in seconds.
-    ///
-    /// Since #270, this bounds *inactivity* — the longest gap between two
-    /// consecutive lines of subprocess output — not the call's total
-    /// duration: a `CliProvider` call that keeps producing output survives
-    /// past this many seconds; one that goes fully silent for this long is
-    /// killed (see `armadai_providers::cli::CliProvider::complete`). Only
-    /// applies to CLI-backed providers (`provider: cli`, or a unified name
-    /// like `claude`/`gemini` resolving to its CLI); API providers ignore
-    /// this field.
+    /// Legacy `timeout` metadata, in seconds: bounded the inactivity of a CLI
+    /// provider call when ArmadAI still executed agents. Nothing enforces it
+    /// any more; it is only parsed so `migrate` can read old agent files.
     pub timeout: Option<u64>,
     /// Tags for filtering
     #[serde(default)]
