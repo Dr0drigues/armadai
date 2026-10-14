@@ -9,6 +9,20 @@
 - The built-in `zsh-env-authoring` skill, unrelated to ArmadAI, that `armadai init` installed.
 - `examples/demo-nextjs-shop` is now a canonical project (`.armadai/` from the `pirate-crew`
   pack); its tracked `.env` becomes a placeholder-only `.env.example`.
+- **Breaking:** `armadai config providers` and `armadai config secrets` (`init`, `rotate`) are
+  removed, with the `armadai-providers` and `armadai-secrets` crates: nothing reads provider
+  settings any more. `config` keeps only `starters-dir`. A script that calls the removed
+  commands now fails with `unrecognized subcommand`.
+- `armadai init` no longer writes `providers.yaml`; an existing `providers.yaml`,
+  `*.sops.yaml` or `.armadai/age-key.txt` is left in place and ignored.
+- The hint about a `config/settings.yaml` file (it advised `armadai init`, which migrates
+  nothing) is gone; the hint for a legacy `armadai.yaml` now advises `armadai migrate`.
+- Dead code of the former engine removed from `armadai-core` (agent-source loaders, the
+  orchestration config validator, the `./agents` and `./config` fallbacks, unused
+  dependencies `dialoguer` and `thiserror`); `armadai update` and the workspace metadata
+  point at `Dr0drigues/armadai`.
+- `frozen/armadai-audit` vendors the small model-registry cache reader it needed from the
+  removed `armadai-providers` crate (`src/vendored/model_registry.rs`).
 
 ### Changed (YAML library, #467)
 
@@ -28,7 +42,7 @@
   - long descriptions are written double-quoted instead of single-quoted.
 - `config starters-dir add|remove` refuses to rewrite a `config.yaml` that does not read
   (it used to replace it with defaults, dropping the configured directories); reading an
-  unreadable `config.yaml`, `registries.yaml` or `providers.yaml` warns once instead of
+  unreadable `config.yaml` or `registries.yaml` warns once instead of
   silently using defaults.
 
 ### Changed (step 3: guided creation, native starters)
@@ -254,6 +268,10 @@ the entry says so.
 ### Security
 
 - `rustls` upgraded to 0.23.46 to resolve RUSTSEC-2026-0346 to 0349 (#478).
+- `armadai config secrets init`, removed in this release, wrote the age private key to
+  `.armadai/age-key.txt` and the generated `.armadai/.gitignore` did not exclude it. If your
+  project has that file, make sure it was never committed (`git log --all -- .armadai/age-key.txt`);
+  if it was, rotate the key and re-encrypt what it protected.
 - `quinn-proto` upgraded to resolve RUSTSEC-2026-0338 to 0342 (#471).
 - `rustls` upgraded to resolve RUSTSEC-2026-0285 (#437).
 - The security audit workflow repaired (permissions and inputs) (#436).
