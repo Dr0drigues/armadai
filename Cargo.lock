@@ -96,8 +96,6 @@ dependencies = [
  "anyhow",
  "armadai-core",
  "armadai-model",
- "armadai-providers",
- "armadai-secrets",
  "assert_cmd",
  "chrono",
  "clap",
@@ -121,7 +119,6 @@ version = "1.0.0-rc.5"
 dependencies = [
  "anyhow",
  "armadai-model",
- "dialoguer",
  "include_dir",
  "libc",
  "pulldown-cmark",
@@ -129,7 +126,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror",
  "tracing",
 ]
 
@@ -143,26 +139,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
-]
-
-[[package]]
-name = "armadai-providers"
-version = "1.0.0-rc.5"
-dependencies = [
- "armadai-core",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "armadai-secrets"
-version = "1.0.0-rc.5"
-dependencies = [
- "anyhow",
- "armadai-model",
- "serde",
- "tracing",
 ]
 
 [[package]]

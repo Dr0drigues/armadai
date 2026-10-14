@@ -1,5 +1,8 @@
 use std::process::Command as ProcessCommand;
 
+/// The GitHub repository releases are downloaded from.
+const REPO: &str = "Dr0drigues/armadai";
+
 /// Self-update armadai by downloading the latest release binary.
 pub async fn execute() -> anyhow::Result<()> {
     let os = std::env::consts::OS;
@@ -13,7 +16,7 @@ pub async fn execute() -> anyhow::Result<()> {
         _ => anyhow::bail!("Unsupported platform: {os}/{arch}"),
     };
 
-    let repo = "Dr0drigues/swarm-festai";
+    let repo = REPO;
     let current_version = env!("CARGO_PKG_VERSION");
     let m = crate::cli::style::muted();
     anstream::println!("{m}Current version: v{current_version}{m:#}");
@@ -112,4 +115,16 @@ pub async fn execute() -> anyhow::Result<()> {
     super::setup::prompt_shell_setup();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// `update` downloads from the repository the package declares.
+    #[test]
+    fn update_uses_the_declared_repository() {
+        assert_eq!(
+            format!("https://github.com/{}", super::REPO),
+            env!("CARGO_PKG_REPOSITORY")
+        );
+    }
 }

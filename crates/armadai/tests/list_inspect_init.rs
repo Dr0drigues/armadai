@@ -212,12 +212,46 @@ fn skills_list_reads_the_project_skills_folder() {
 
 /// `armadai init` (the user configuration) creates no agent or prompt library:
 /// nothing reads one any more but `migrate`, for a legacy project that already has it.
+/// Nor a `providers.yaml`: nothing has read it since agents stopped running.
 #[test]
 fn init_creates_no_user_library() {
     let env = Env::new(&[]);
     let (ok, out, err) = env.run(&["init"]);
     assert!(ok, "{out}{err}");
     let config = env.dir.path().join("config");
-    assert!(config.join("providers.yaml").is_file(), "{out}");
+    assert!(config.join("config.yaml").is_file(), "{out}");
+    assert!(!config.join("providers.yaml").exists(), "{out}");
+    assert!(!out.contains("providers"), "{out}");
     assert!(!config.join("agents").exists() && !config.join("prompts").exists());
+}
+
+/// `config providers` and `config secrets` are gone: the first printed a file
+/// nothing reads, the second wrote an age private key under `.armadai/`, where a
+/// project would commit it. `starters-dir` stays.
+#[test]
+fn config_has_only_starters_dir() {
+    let env = Env::new(&[]);
+    for gone in [&["config", "providers"][..], &["config", "secrets", "init"]] {
+        let (ok, _, err) = env.run(gone);
+        assert!(
+            !ok && err.contains("unrecognized subcommand"),
+            "{gone:?}: {err}"
+        );
+    }
+    assert!(!env.root().join(".armadai/age-key.txt").exists());
+    let (ok, out, err) = env.run(&["config", "starters-dir", "list"]);
+    assert!(ok, "{out}{err}");
+}
+
+/// A `config/settings.yaml` (any third-party project may have one) no longer
+/// prints a hint to run `armadai init`, which migrated nothing.
+#[test]
+fn a_config_settings_yaml_prints_no_hint() {
+    let env = Env::new(&[("config/settings.yaml", "a: 1\n")]);
+    let (ok, out, err) = env.run(&["config", "starters-dir", "list"]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        !err.contains("settings.yaml") && !err.contains("hint"),
+        "{err}"
+    );
 }

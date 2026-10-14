@@ -4,7 +4,7 @@
 //! consumed by `cli::unlink::execute` instead of re-deriving the same facts
 //! by regenerating against the *current* config.
 //!
-//! See `docs/superpowers/specs/2026-08-24-link-manifest-design.md` for the
+//! See `docs/superpowers/archive/2026-08-24-link-manifest-design.md` for the
 //! full design (issue #338's second half); this module implements its §3
 //! format and the read/write contract of §5/§6, amended after a security
 //! review (see the spec's own amendment section) to add a per-target trust
@@ -776,8 +776,8 @@ pub fn create_dir_all_recording(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 
 /// One decision made while writing a target's linked files, as data rather
 /// than a side-effecting print call — so every caller can format it
-/// however it likes (`link`'s styled `anstream` lines, the shell wizard's
-/// plain ones) without re-deriving what happened.
+/// however it likes (`link`'s styled `anstream` lines) without re-deriving
+/// what happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileOutcome {
     /// Wrote (or, with `force`, overwrote) `path`.
@@ -801,7 +801,7 @@ pub enum FileOutcome {
 ///
 /// Two guarantees come from going through this function instead of a
 /// second hand-rolled loop — exactly the two issue #347 measured missing
-/// from the shell wizard's own copy:
+/// from the shell wizard's own copy (the wizard has since been removed):
 ///
 /// - **The exists-guard**: a pre-existing file whose content differs from
 ///   what would be written is left untouched unless `force` is set — the
@@ -1410,8 +1410,8 @@ mod tests {
     /// entry recorded as `created` with a digest of its actual content.
     ///
     /// Mutation this catches: if the manifest write were dropped from
-    /// this function (the exact defect #347 measured in the shell
-    /// wizard's independent copy of this loop), `lookup_target` below
+    /// this function (the exact defect #347 measured in the since-removed
+    /// shell wizard's independent copy of this loop), `lookup_target` below
     /// would return `Fallback` instead of `Found`.
     #[test]
     fn write_files_writes_a_fresh_file_and_records_it_created() {

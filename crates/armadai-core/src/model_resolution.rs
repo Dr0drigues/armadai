@@ -183,13 +183,6 @@ pub fn parse_latest_placeholder(model: &str) -> Option<ModelTier> {
 /// (#398 review, F1). A second private copy of this table elsewhere in the
 /// binary is how two subcommands once came to disagree on one agent file.
 ///
-/// Deliberately NOT `armadai_providers::factory::api_backend_for_tool`,
-/// which answers a different question — "if this CLI is missing, which API
-/// can I call instead?". `codex` has no such backend (issue #369) yet its
-/// models are named by OpenAI, so the two mappings differ on purpose. (Core
-/// could not depend on `armadai-providers` anyway: the dependency runs the
-/// other way.)
-///
 /// `None` — for `cli`, `proxy`, `copilot`, `opencode` and anything unknown
 /// — means "no vendor catalog names these models", not "use Anthropic's".
 /// See [`resolve_tier_placeholder`] for what callers do with it.
@@ -274,12 +267,7 @@ struct CachedModel {
 /// Read the model ids and prices for `provider` from the shared, on-disk
 /// models.dev cache (`<config_dir>/models-cache.json`), ignoring cache age.
 ///
-/// This is a minimal, dependency-free mirror of
-/// `armadai_providers::model_registry::fetch::load_models` (which also
-/// exposes the context window and the display name). Core reads the same
-/// cache file directly instead of depending on `armadai-providers`, which
-/// owns the richer `ModelEntry` used by the CLI listings. Returns `None` if
-/// the cache is missing/unreadable; callers fall back to
+/// Returns `None` if the cache is missing/unreadable; callers fall back to
 /// [`fallback_model_for_tier`].
 ///
 /// The price is read and the context window is not, on purpose: a tier is a

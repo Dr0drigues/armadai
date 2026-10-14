@@ -35,16 +35,11 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     let config_path = config::config_file_path();
     write_if_missing_or_force(&config_path, config::DEFAULT_CONFIG_YAML, force)?;
 
-    // Write providers.yaml
-    let providers_path = config::providers_file_path();
-    write_if_missing_or_force(&providers_path, config::DEFAULT_PROVIDERS_YAML, force)?;
-
     // Install built-in skills
     let skills_installed = armadai_core::skill::install_embedded_skills(force)?;
 
     anstream::println!("\n{o}ArmadAI initialized at{o:#} {m}{}{m:#}", dir.display());
     anstream::println!("{m}  config:    {}{m:#}", config_path.display());
-    anstream::println!("{m}  providers: {}{m:#}", providers_path.display());
     anstream::println!(
         "{m}  skills:    {}{m:#}",
         config::user_skills_dir().display()

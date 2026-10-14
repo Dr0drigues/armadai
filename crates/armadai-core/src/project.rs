@@ -63,7 +63,7 @@ pub struct ProjectConfig {
     pub orchestration: Option<Box<OrchestrationConfig>>,
     /// Dynamic model-router rules (thresholds, keywords, tags, budget cap)
     /// for `latest:auto` agents. See `crate::routing::RoutingRules`.
-    /// Still parsed; no command reads it since `armadai run` was removed.
+    /// Still parsed, only so `migrate` can report it as dropped.
     pub routing: Option<crate::routing::RoutingRules>,
     /// Project-level custom registry sources, merged with the user-level
     /// `~/.config/armadai/registries.yaml` and built-in defaults. See
@@ -88,11 +88,8 @@ pub enum AgentRef {
     },
     /// An agent declared in `.armadai/agents.yaml` rather than written as a
     /// file. `resolve_agent` below refuses this variant, because a declared
-    /// agent has no file of its own — `agent_source::load_all_agents` (a
-    /// whole project's fleet) and `agent_source::load_agent_by_name` (one
-    /// agent by name) are what actually turn it into an `Agent`, by
-    /// resolving it through the project's declarations directly rather than
-    /// through this function.
+    /// agent has no file of its own: `migrate` reads it from the project's
+    /// declarations directly.
     Declared {
         declared: String,
     },
@@ -202,18 +199,23 @@ pub fn find_project_config_from(start: &Path) -> Option<(PathBuf, ProjectConfig)
     }
 }
 
-/// Print a one-time hint suggesting migration to `.armadai/config.yaml`.
+/// Print, once per process, [`migration_hint`].
 fn check_dotarmadai_migration_hint(project_root: &Path, legacy_filename: &str) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static PRINTED: AtomicBool = AtomicBool::new(false);
     if !PRINTED.swap(true, Ordering::Relaxed) {
-        eprintln!(
-            "hint: {} detected in {}. Consider migrating to \
-             .armadai/config.yaml. Run `armadai init --project` to create the new structure.",
-            legacy_filename,
-            project_root.display()
-        );
+        eprintln!("{}", migration_hint(project_root, legacy_filename));
     }
+}
+
+/// `migrate` is what converts a legacy project config; `.armadai/config.yaml`
+/// is itself a legacy format, and `init --project` would start an empty project.
+fn migration_hint(project_root: &Path, legacy_filename: &str) -> String {
+    format!(
+        "hint: {legacy_filename} detected in {}: this is the legacy project format. \
+         Run `armadai migrate` to convert it to .armadai/project.yaml.",
+        project_root.display()
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -221,11 +223,6 @@ fn check_dotarmadai_migration_hint(project_root: &Path, legacy_filename: &str) {
 // ---------------------------------------------------------------------------
 
 /// Every directory a `.md` agent can be resolved from, in resolution order.
-///
-/// The single source of truth for that list: `resolve_agent`'s `Named` arm
-/// and `agent_source::shadowing_conflict` (the collision check
-/// `load_all_agents`/`load_agent_by_name` each call) both use this rather
-/// than keeping their own copy, so the two can never drift apart.
 pub fn library_dirs(project_root: &Path) -> Vec<PathBuf> {
     vec![
         // 1. .armadai/agents/ (preferred)
@@ -292,38 +289,14 @@ pub fn resolve_agent(agent_ref: &AgentRef, project_root: &Path) -> anyhow::Resul
             }
         }
         AgentRef::Declared { declared } => {
-            // User-facing text: this is reachable from `link`/`list`'s
-            // warning loop whenever `agents:` lists `- declared: x`
-            // explicitly (`resolve_all_agents` iterates every ref), so it
-            // must read as a fact about the project, never as an internal
-            // pointer to a different function — an earlier version named
-            // `agent_source::load_agent` here, which a user has no reason to
-            // know about and cannot act on.
+            // User-facing text: it must read as a fact about the project,
+            // never as an internal pointer to a different function.
             anyhow::bail!(
                 "agent '{declared}' is declared in {} rather than written as a file",
                 agent_source::declarations_path(project_root).display()
             );
         }
     }
-}
-
-/// Resolve all agent refs in the config, collecting paths.
-/// Returns resolved paths and skipped refs (with error messages).
-pub fn resolve_all_agents(
-    config: &ProjectConfig,
-    project_root: &Path,
-) -> (Vec<PathBuf>, Vec<String>) {
-    let mut resolved = Vec::new();
-    let mut errors = Vec::new();
-
-    for agent_ref in &config.agents {
-        match resolve_agent(agent_ref, project_root) {
-            Ok(path) => resolved.push(path),
-            Err(e) => errors.push(format!("{e}")),
-        }
-    }
-
-    (resolved, errors)
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +452,19 @@ pub fn resolve_all_skills(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hint sends a legacy `armadai.yaml` to `migrate`, not to the
+    /// `.armadai/config.yaml` format, which is legacy too.
+    #[test]
+    fn the_migration_hint_points_to_migrate() {
+        let hint = migration_hint(Path::new("/p"), "armadai.yaml");
+        assert!(hint.contains("armadai.yaml detected in /p"), "{hint}");
+        assert!(hint.contains("`armadai migrate`"), "{hint}");
+        assert!(
+            !hint.contains("config.yaml") && !hint.contains("init"),
+            "{hint}"
+        );
+    }
 
     #[test]
     fn test_agent_ref_named() {
@@ -780,31 +766,6 @@ sources:
             name: "nonexistent".to_string(),
         };
         assert!(resolve_agent(&agent_ref, dir.path()).is_err());
-    }
-
-    #[test]
-    fn test_resolve_all_agents() {
-        let dir = tempfile::tempdir().unwrap();
-        let agents_dir = dir.path().join("agents");
-        std::fs::create_dir_all(&agents_dir).unwrap();
-        std::fs::write(agents_dir.join("found.md"), "# Agent\n").unwrap();
-
-        let config = ProjectConfig {
-            agents: vec![
-                AgentRef::Named {
-                    name: "found".to_string(),
-                },
-                AgentRef::Named {
-                    name: "missing".to_string(),
-                },
-            ],
-            ..Default::default()
-        };
-
-        let (resolved, errors) = resolve_all_agents(&config, dir.path());
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("missing"));
     }
 
     #[test]

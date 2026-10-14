@@ -13,10 +13,10 @@ outside the product: this crate is **not a member of the root workspace**
 (it carries its own `[workspace]` table and is listed in the root `exclude`),
 so neither CI nor `cargo test` at the repository root compiles it.
 
-It still depends on `armadai-core` and `armadai-providers` (model catalogue
-cache reader only; that crate no longer has an HTTP client) by path. The handful of items it used from
-the `armadai` binary crate are frozen copies under `src/vendored/`, each
-naming its origin (commit `c486959`).
+It still depends on `armadai-core` by path. The handful of items it used from
+the `armadai` binary crate (commit `c486959`) and from the deleted
+`armadai-providers` crate (model catalogue cache reader, commit `eebd796`)
+are frozen copies under `src/vendored/`, each naming its origin.
 
 Known gap: `--deep` is still parsed, but the crate has no execution provider,
 so it fails with
@@ -30,8 +30,7 @@ cargo test
 cargo run -- --help          # armadai-audit [PATH] [--global] [--report FILE] ...
 ```
 
-Because nothing builds it automatically, a change to `armadai-core` or
-`armadai-providers` can break this crate silently. That is accepted: it is
+Because nothing builds it automatically, a change to `armadai-core` can break this crate silently. That is accepted: it is
 frozen, not maintained.
 
 ## Future

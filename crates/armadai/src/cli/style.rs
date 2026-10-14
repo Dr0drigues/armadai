@@ -111,7 +111,7 @@ mod tests {
         assert_eq!(
             indent_continuation(message, "        "),
             "first line.\n        second line.\n        third line.",
-            "the `  warn: ` alignment used by link, unlink and the shell wizard"
+            "the `  warn: ` alignment used by link and unlink"
         );
         assert_eq!(
             indent_continuation(message, "  "),
