@@ -92,8 +92,8 @@ description: Expert code review with security analysis
 ### Built-in Skills
 
 ArmadAI ships built-in skills that `armadai init` installs into `~/.config/armadai/skills/`:
-`armadai-agent-authoring`, `armadai-skill-authoring`, `armadai-starter-authoring`,
-`armadai-orchestration-patterns` and `zsh-env-authoring`. The four `armadai-*` skills describe
+`armadai-agent-authoring`, `armadai-skill-authoring`, `armadai-starter-authoring` and
+`armadai-orchestration-patterns`. These four skills describe
 the canonical format (agents, skills, native packs, flows and the [policy gate](policy-gate.md));
 copy one into `.armadai/skills/` to give it to the agents of a project. In the canonical format a
 former prompt is a skill.
