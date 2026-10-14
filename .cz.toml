@@ -1,14 +1,16 @@
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.1.0"
-version_provider = "cargo"
+version = "1.0.0-rc.5"
+version_provider = "commitizen"
+version_scheme = "semver2"
+# the crates whose version follows the release (armadai-model is versioned on its own)
+version_files = ["crates/armadai/Cargo.toml:^version", "crates/armadai-core/Cargo.toml:^version"]
 tag_format = "v$version"
 update_changelog_on_bump = true
 changelog_file = "CHANGELOG.md"
 changelog_incremental = true
 annotated_tag = true
 bump_message = "release: v$new_version"
-major_version_zero = true
 
 [tool.commitizen.customize]
 schema_pattern = "^(feat|fix|refactor|docs|test|chore|ci|perf|style|build|revert)(\\(.+\\))?!?: .+"
