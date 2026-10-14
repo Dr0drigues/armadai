@@ -88,9 +88,9 @@ fn parse_agent_content(content: &str, path: &Path) -> anyhow::Result<Agent> {
         // shipped `debug.md` template, `## Instructions` parsed as the empty
         // string because all four `### Phase N` blocks were cut off; on a
         // 3833-byte `agent-builder.md`, `## System Prompt` parsed to 211
-        // characters. `link` writes these fields verbatim and `run` sends
-        // `system_prompt` to the provider, so the truncation reached the
-        // model, silently and with no parse error.
+        // characters. `migrate` writes these fields verbatim into the new
+        // agent, so the truncation would reach the model, silently and with
+        // no parse error.
         let section_end = boundaries[i + 1..]
             .iter()
             .find(|(lvl, ..)| *lvl <= HeadingLevel::H2)

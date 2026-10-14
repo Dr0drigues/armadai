@@ -88,8 +88,8 @@ pub fn read_old(root: &Path) -> anyhow::Result<OldProject> {
         }
     }
 
-    // Declared agents. Unlike `agent_source::load_all_agents`, a slug collision does
-    // not drop an agent here: `convert` renames it instead, so nothing is lost.
+    // Declared agents. A slug collision does not drop an agent here: `convert`
+    // renames it instead, so nothing is lost.
     let mut declared_descriptions = BTreeMap::new();
     let mut fragment_sources: Vec<PathBuf> = Vec::new();
     let decls_path = agent_source::declarations_path(&root);
