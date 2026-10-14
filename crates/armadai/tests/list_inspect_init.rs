@@ -242,3 +242,16 @@ fn config_has_only_starters_dir() {
     let (ok, out, err) = env.run(&["config", "starters-dir", "list"]);
     assert!(ok, "{out}{err}");
 }
+
+/// A `config/settings.yaml` (any third-party project may have one) no longer
+/// prints a hint to run `armadai init`, which migrated nothing.
+#[test]
+fn a_config_settings_yaml_prints_no_hint() {
+    let env = Env::new(&[("config/settings.yaml", "a: 1\n")]);
+    let (ok, out, err) = env.run(&["config", "starters-dir", "list"]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        !err.contains("settings.yaml") && !err.contains("hint"),
+        "{err}"
+    );
+}

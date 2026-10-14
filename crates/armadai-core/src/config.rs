@@ -170,18 +170,6 @@ impl AppPaths {
     }
 }
 
-/// Check if a project-local `config/settings.yaml` exists and print a
-/// migration hint to stderr.
-pub fn check_migration_hint() {
-    let legacy = Path::new("config/settings.yaml");
-    if legacy.exists() {
-        eprintln!(
-            "hint: local config/settings.yaml detected. \
-             Consider running `armadai init` to migrate to ~/.config/armadai/"
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Default config file contents (for `armadai init`)
 // ---------------------------------------------------------------------------

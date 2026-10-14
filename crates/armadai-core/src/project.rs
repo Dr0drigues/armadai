@@ -199,18 +199,23 @@ pub fn find_project_config_from(start: &Path) -> Option<(PathBuf, ProjectConfig)
     }
 }
 
-/// Print a one-time hint suggesting migration to `.armadai/config.yaml`.
+/// Print, once per process, [`migration_hint`].
 fn check_dotarmadai_migration_hint(project_root: &Path, legacy_filename: &str) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static PRINTED: AtomicBool = AtomicBool::new(false);
     if !PRINTED.swap(true, Ordering::Relaxed) {
-        eprintln!(
-            "hint: {} detected in {}. Consider migrating to \
-             .armadai/config.yaml. Run `armadai init --project` to create the new structure.",
-            legacy_filename,
-            project_root.display()
-        );
+        eprintln!("{}", migration_hint(project_root, legacy_filename));
     }
+}
+
+/// `migrate` is what converts a legacy project config; `.armadai/config.yaml`
+/// is itself a legacy format, and `init --project` would start an empty project.
+fn migration_hint(project_root: &Path, legacy_filename: &str) -> String {
+    format!(
+        "hint: {legacy_filename} detected in {}: this is the legacy project format. \
+         Run `armadai migrate` to convert it to .armadai/project.yaml.",
+        project_root.display()
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +452,19 @@ pub fn resolve_all_skills(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hint sends a legacy `armadai.yaml` to `migrate`, not to the
+    /// `.armadai/config.yaml` format, which is legacy too.
+    #[test]
+    fn the_migration_hint_points_to_migrate() {
+        let hint = migration_hint(Path::new("/p"), "armadai.yaml");
+        assert!(hint.contains("armadai.yaml detected in /p"), "{hint}");
+        assert!(hint.contains("`armadai migrate`"), "{hint}");
+        assert!(
+            !hint.contains("config.yaml") && !hint.contains("init"),
+            "{hint}"
+        );
+    }
 
     #[test]
     fn test_agent_ref_named() {
