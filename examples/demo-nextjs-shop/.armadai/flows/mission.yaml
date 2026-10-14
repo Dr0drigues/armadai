@@ -1,0 +1,10 @@
+description: "Le capitaine confie chaque partie d'une mission a son matelot"
+steps:
+  capitaine: { agent: capitaine }
+  vigie: { agent: vigie }
+  charpentier: { agent: charpentier }
+  cartographe: { agent: cartographe }
+links:
+  - { from: capitaine, to: vigie }
+  - { from: capitaine, to: charpentier }
+  - { from: capitaine, to: cartographe }

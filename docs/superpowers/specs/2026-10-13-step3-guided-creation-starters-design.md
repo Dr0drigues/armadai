@@ -1,6 +1,6 @@
 # Étape 3 — Création guidée, starters natifs, modèles de flows, export Mermaid
 
-Date : 2026-10-13 · Statut : brouillon · Suite de : étapes 1 (#464) et 2 (#468) · Décisions de fond : brainstorm 2026-10-08/09 (mémoire `project_cap_v1_declaratif_2026-10-08`)
+Date : 2026-10-13 · Statut : mergée (#472) · Suite de : étapes 1 (#464) et 2 (#468) · Décisions de fond : brainstorm 2026-10-08/09 (mémoire `project_cap_v1_declaratif_2026-10-08`)
 
 ## 1. Objectif
 
@@ -85,4 +85,4 @@ Identifiants de nœuds assainis (`-` → `_`), étiquettes entre guillemets éch
 
 ## 6. Révisions de la revue indépendante
 
-Les décisions R-B1…R-m10 du plan (`plans/2026-10-13-step3-guided-creation-starters.md`, section « Révisions ») complètent et corrigent cette spec et priment en cas de contradiction : règle d'entrée d'un flow (étape sans lien entrant inconditionnel), extraction des starters par remplacement, garde d'écriture dédiée à `new`, annulation par comparaison avant/après avec restauration sous `--force`, modèles posés par la structure (pas de substitution YAML), détection du format de pack par `format: 1` dans `pack.yaml` pour toute origine, copie par liste blanche, réécriture manuelle du contenu d'`armadai-authoring`, `cli-generic` supprimé (11 modèles), Mermaid à nœuds préfixés `n_` et étiquettes `-->|"x"|`.
+Les décisions R-B1…R-m10 du plan (`../archive/2026-10-13-step3-guided-creation-starters.md`, section « Révisions ») complètent et corrigent cette spec et priment en cas de contradiction : règle d'entrée d'un flow (étape sans lien entrant inconditionnel), extraction des starters par remplacement, garde d'écriture dédiée à `new`, annulation par comparaison avant/après avec restauration sous `--force`, modèles posés par la structure (pas de substitution YAML), détection du format de pack par `format: 1` dans `pack.yaml` pour toute origine, copie par liste blanche, réécriture manuelle du contenu d'`armadai-authoring`, `cli-generic` supprimé (11 modèles), Mermaid à nœuds préfixés `n_` et étiquettes `-->|"x"|`.

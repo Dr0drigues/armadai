@@ -4,10 +4,12 @@ This file provides instructions for AI coding agents working on the ArmadAI proj
 
 ## Project Overview
 
-ArmadAI is a declarative compiler written in Rust (edition 2024). Agents, prompts and skills are
-described once (Markdown files or `.armadai/agents.yaml`), then `armadai link` compiles them into
-the native files of Claude Code, Codex, OpenCode and Copilot. ArmadAI does not run agents: there
-is no execution engine, no TUI and no web UI.
+ArmadAI is a declarative compiler written in Rust (edition 2024). A team is described once in
+`.armadai/` (`project.yaml`, one Markdown file per agent in `agents/`, `skills/`, `flows/`,
+`automations/`), then `armadai link` compiles it into the native files of Claude Code, Codex,
+OpenCode and Copilot. The legacy format (`.armadai/config.yaml`, `armadai.yaml`,
+`.armadai/agents.yaml`, prompts) is read only by `armadai migrate`. ArmadAI does not run agents:
+there is no execution engine, no TUI and no web UI.
 
 ## Build & Test
 
@@ -18,6 +20,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --no-fail-fast
 cargo build -p armadai-core   # the core builds standalone
+cargo build -p armadai-model  # so does the model
 
 # Run with debug logging
 RUST_LOG=armadai=debug cargo run -- <command>
@@ -39,17 +42,17 @@ RUST_LOG=armadai=debug cargo run -- <command>
 
 See ARCHITECTURE.md for full details. Workspace crates:
 
-- `crates/armadai-core` — the domain: agent model and parser (`agent.rs`, `agent_decl.rs`,
-  `agent_source.rs`, `parser/`), project config (`project.rs`), prompts, skills, starter packs
-  (embedded), model resolution, and the orchestration declaration types (`orchestration/`,
-  including the Claude Code `policy` gate).
-- `crates/armadai` — the binary: `cli/` (commands), `linker/` (one linker per target plus the
-  link manifest), `claude_adapter/` (the `__claude-policy-gate` hook), `skills_registry/`,
-  `starters_registry/`, `templates/`, and integration tests with the golden `link` outputs in
-  `tests/`.
-- `crates/armadai-providers` — read-only access to the local models.dev catalogue cache and the
-  tool-to-vendor table. No network access.
-- `crates/armadai-secrets` — SOPS + age secret management.
+- `crates/armadai-model` — the canonical project model, pure (no other workspace crate): types,
+  strict loader, validator with diagnostics, writer, JSON Schemas (`schemas/v1/`), flow templates,
+  Mermaid export.
+- `crates/armadai-core` — the legacy model and parser, read by `migrate` (`agent.rs`,
+  `agent_decl.rs`, `agent_source.rs`, `parser/`, `project.rs`, `orchestration/`), plus the
+  embedded skills and starter packs, the static model tier table and the linked-projects registry.
+- `crates/armadai` — the binary: `cli/` (commands), `compile/` (one plan per target, the Claude
+  Code adapter, the conformance report), `linker/` (the Codex, Copilot and OpenCode linkers and
+  the link manifest), `migrate/`, `claude_adapter/` (the `__claude-policy-gate` hook),
+  `skills_registry/`, `starters_registry/`, `templates/`, and integration tests with the golden
+  outputs in `tests/`.
 
 `frozen/armadai-audit/` holds the former `audit` command. It is outside the workspace and outside
 CI: do not build or edit it.

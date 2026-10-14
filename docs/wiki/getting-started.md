@@ -11,20 +11,22 @@ curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.s
 ```
 
 This downloads the latest release binary for your platform (Linux/macOS, x86_64/aarch64) and installs it to `~/.local/bin/`.
+The latest published release (`v1.0.0-rc.5`) predates the declarative refocus described here:
+until the next one, build [from source](#from-source).
 
 **Options** (via environment variables):
 
 | Variable | Default | Description |
 |---|---|---|
 | `INSTALL_DIR` | `~/.local/bin` | Where to install the binary |
-| `VERSION` | latest | Specific version to install (e.g. `v0.1.0`) |
+| `VERSION` | latest | Specific version to install (e.g. `v1.0.0-rc.5`) |
 
 ```bash
 # Custom install directory
 INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 
 # Specific version
-VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
+VERSION=v1.0.0-rc.5 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 ```
 
 ### From source
@@ -50,7 +52,6 @@ cargo install --path crates/armadai
 | Tool | Required | Purpose |
 |---|---|---|
 | Rust (recent stable) | To build from source | `.mise.toml` pins the toolchain the project uses |
-| SOPS + age | No | Encrypted secret management (`armadai config secrets`) |
 
 Running `armadai` without a subcommand prints the help.
 

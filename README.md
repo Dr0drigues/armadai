@@ -19,7 +19,7 @@ coordinates the others; `armadai link` then writes the native configuration file
 assistant you use:
 
 ```
-armadai link --target claude      # .claude/agents/*.md        (+ .claude/CLAUDE.md for a coordinator)
+armadai link --target claude      # .claude/agents/*.md        (+ a block in the root CLAUDE.md for a coordinator)
 armadai link --target codex       # .codex/agents/*.toml, .codex/config.toml, .codex/AGENTS.md
 armadai link --target opencode    # .opencode/agents/*.md      (+ .opencode/instructions.md for a coordinator)
 armadai link --target copilot     # .github/agents/*.agent.md  (+ .github/copilot-instructions.md for a coordinator)
@@ -54,7 +54,9 @@ web UI, and `link` never touches the network.
 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 ```
 
-Options: `INSTALL_DIR=~/.local/bin` (default), `VERSION=v0.1.0` (default: latest).
+Options: `INSTALL_DIR=~/.local/bin` (default), `VERSION=v1.0.0-rc.5` (default: latest).
+The latest published release (`v1.0.0-rc.5`) predates the declarative refocus: until the next
+one, [build from source](docs/wiki/getting-started.md#from-source) to get the commands below.
 
 ```bash
 armadai init --pack rust-dev                # a project (.armadai/) from a starter pack
@@ -85,7 +87,7 @@ Running `armadai` without a subcommand prints the help.
 | `armadai init [--project] [--pack <name>]` | Initialize the user configuration, or a project (empty or from a starter pack) |
 | `armadai skills list/show/sync/search/add/info` | Manage and discover skills |
 | `armadai models check/update/list` | Check and rewrite deprecated model ids, list linked projects |
-| `armadai config providers/secrets/starters-dir` | Provider status, SOPS + age secrets, custom starter directories |
+| `armadai config starters-dir list/add/remove` | Custom starter pack directories |
 | `armadai update` | Self-update to the latest release |
 | `armadai completion <shell>` | Generate shell completions |
 
@@ -143,15 +145,13 @@ Full documentation lives in [`docs/wiki/`](docs/wiki/):
 
 - [Getting Started](docs/wiki/getting-started.md)
 - [Project format](docs/wiki/project-format.md)
+- [Models](docs/wiki/models.md)
 - [Link](docs/wiki/link.md)
 - [Policy gate](docs/wiki/policy-gate.md)
-- Legacy format (read by `migrate`): [Agent format](docs/wiki/agent-format.md),
-  [Declarative agents](docs/wiki/declarative-agents.md)
-- [Providers and models](docs/wiki/providers.md)
-- [Skills & Prompts](docs/wiki/skills-prompts.md)
-
-Documents describing the former execution engine are kept, unmaintained, in
-[`docs/archive/`](docs/archive/README.md).
+- [Templates](docs/wiki/templates.md), [Starter packs](docs/wiki/starter-packs.md)
+- Legacy format, read only by `migrate`: [Agent format](docs/wiki/agent-format.md),
+  [Declarative agents](docs/wiki/declarative-agents.md),
+  [Providers and models](docs/wiki/providers.md), [Skills & Prompts](docs/wiki/skills-prompts.md)
 
 ## Development
 
@@ -201,7 +201,8 @@ docs: update README with new CLI commands
 refactor(linker): share the prompt composition
 ```
 
-Changelogs are generated automatically via `cz bump`.
+`CHANGELOG.md` is written by hand (its `Unreleased` section); `cz changelog --dry-run` drafts the
+release notes from the commits (`release.yml`).
 
 ## License
 
