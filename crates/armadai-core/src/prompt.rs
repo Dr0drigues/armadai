@@ -85,14 +85,6 @@ pub fn load_all_prompts(dir: &Path) -> Vec<Prompt> {
     prompts
 }
 
-/// Filter prompts that match a given agent name via `apply_to`.
-pub fn matching_prompts<'a>(prompts: &'a [Prompt], agent_name: &str) -> Vec<&'a Prompt> {
-    prompts
-        .iter()
-        .filter(|p| p.apply_to.iter().any(|a| a == agent_name || a == "*"))
-        .collect()
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -162,51 +154,5 @@ mod tests {
     fn test_load_all_prompts_nonexistent_dir() {
         let prompts = load_all_prompts(Path::new("/nonexistent/dir"));
         assert!(prompts.is_empty());
-    }
-
-    #[test]
-    fn test_matching_prompts() {
-        let prompts = vec![
-            Prompt {
-                name: "rust-style".to_string(),
-                description: None,
-                apply_to: vec!["code-reviewer".to_string()],
-                body: String::new(),
-                source: PathBuf::new(),
-            },
-            Prompt {
-                name: "global".to_string(),
-                description: None,
-                apply_to: vec!["*".to_string()],
-                body: String::new(),
-                source: PathBuf::new(),
-            },
-            Prompt {
-                name: "test-style".to_string(),
-                description: None,
-                apply_to: vec!["test-writer".to_string()],
-                body: String::new(),
-                source: PathBuf::new(),
-            },
-        ];
-
-        let matched = matching_prompts(&prompts, "code-reviewer");
-        assert_eq!(matched.len(), 2);
-        assert_eq!(matched[0].name, "rust-style");
-        assert_eq!(matched[1].name, "global");
-    }
-
-    #[test]
-    fn test_matching_prompts_no_match() {
-        let prompts = vec![Prompt {
-            name: "test-only".to_string(),
-            description: None,
-            apply_to: vec!["test-writer".to_string()],
-            body: String::new(),
-            source: PathBuf::new(),
-        }];
-
-        let matched = matching_prompts(&prompts, "code-reviewer");
-        assert!(matched.is_empty());
     }
 }

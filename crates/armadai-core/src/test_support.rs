@@ -70,8 +70,7 @@ pub fn env_lock() -> MutexGuard<'static, ()> {
 /// holding [`env_lock`] throughout.
 ///
 /// Without it, anything reading the user config (`AppPaths::resolve`, the
-/// global agent library `load_all_agents` scans for shadowing collisions, …)
-/// reads whatever `~/.config/armadai/` happens to hold on the machine running
+/// global agent and prompt libraries, …) reads whatever `~/.config/armadai/` happens to hold on the machine running
 /// the test.
 pub struct IsolatedConfigDir {
     _lock: MutexGuard<'static, ()>,

@@ -152,25 +152,15 @@ pub fn save_user_config(config: &UserConfig) -> anyhow::Result<()> {
 /// Resolved paths with project-local → global fallback.
 #[derive(Debug, Clone)]
 pub struct AppPaths {
-    pub agents_dir: PathBuf,
     pub templates_dir: PathBuf,
 }
 
 impl AppPaths {
-    /// Resolve paths: prefer `.armadai/` → project-local → global.
+    /// Resolve paths: project-local `templates/`, else the user's.
     pub fn resolve() -> Self {
-        let dotarmadai_agents = Path::new(".armadai/agents");
-        let local_agents = Path::new("agents");
         let local_templates = Path::new("templates");
 
         Self {
-            agents_dir: if dotarmadai_agents.exists() {
-                dotarmadai_agents.to_path_buf()
-            } else if local_agents.exists() {
-                local_agents.to_path_buf()
-            } else {
-                user_agents_dir()
-            },
             templates_dir: if local_templates.exists() {
                 local_templates.to_path_buf()
             } else {

@@ -91,15 +91,12 @@ pub(super) fn duplicate_keys(
 /// — two lines both claiming "twice" for the same key. "again" is true of
 /// every link in the chain, which is what `duplicate_keys` actually reports.
 ///
-/// The channel is `tracing::warn!` rather than the `LoadWarning` the core
-/// normally returns for the CLI to render (`agent_source.rs` documents that
-/// convention). The reason is the fatal case, which is this warning's whole
-/// point: when the duplicate makes the file unloadable, `parse_agent_file`
-/// returns `Err`, and a returned-warning channel has nowhere to put the
-/// explanation without widening the error type through every caller. The
-/// costs are real and measured — `link` parses each file twice (#419) and
-/// `tracing` does not deduplicate the way `load_all_agents` does, and
-/// `tracing::fmt` colours by `NO_COLOR` alone where `anstream` also detects a
+/// The channel is `tracing::warn!` rather than a returned warning. The reason
+/// is the fatal case, which is this warning's whole point: when the duplicate
+/// makes the file unloadable, `parse_agent_file` returns `Err`, and a
+/// returned-warning channel has nowhere to put the explanation without
+/// widening the error type through every caller. The costs are real and
+/// measured — `tracing` does not deduplicate, and `tracing::fmt` colours by `NO_COLOR` alone where `anstream` also detects a
 /// non-TTY, so a redirected stderr keeps its escape sequences.
 pub(super) fn warn_duplicate_keys(
     raw: &str,

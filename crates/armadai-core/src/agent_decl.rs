@@ -1,17 +1,15 @@
 //! The `.armadai/agents.yaml` format: agents declared rather than written as
 //! Markdown files.
 //!
-//! This module only *reads* the format. Turning a declaration into an `Agent`
-//! (defaults merge, fragment composition) is the rest of this file's job, and
-//! the dispatch between declared and file-backed agents lives in
-//! `agent_source`.
+//! This module only *reads* the format: the defaults merge and the fragment
+//! composition `migrate` applies to each declaration.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::agent::{Agent, AgentMetadata, default_temperature};
+use crate::agent::{AgentMetadata, default_temperature};
 
 /// One entry of an agent's `prompt:` list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,34 +252,6 @@ pub fn compose_prompt(
         parts.push(rendered.trim().to_string());
     }
     Ok(parts.join("\n\n"))
-}
-
-/// Build the `Agent` a single declaration resolves to: metadata merged over
-/// `defaults`, system prompt composed from `fragments`, `source` stamped as
-/// given by the caller.
-///
-/// Called once per declaration from both `agent_source::load_all_agents`
-/// (a whole project's fleet) and `agent_source::load_agent_by_name` (one
-/// agent by name) — putting the construction here, rather than inline at
-/// each call site, means both loaders call this one function instead of
-/// keeping two independently drifting copies of the same `Agent { .. }`
-/// literal.
-pub(crate) fn to_agent(
-    decl: &AgentDecl,
-    defaults: &AgentDefaults,
-    fragments: &[crate::prompt::Prompt],
-    source: std::path::PathBuf,
-) -> anyhow::Result<Agent> {
-    Ok(Agent {
-        name: decl.name.clone(),
-        source,
-        metadata: merge_metadata(decl, defaults)?,
-        system_prompt: compose_prompt(&decl.prompt, decl, fragments)?,
-        instructions: None,
-        output_format: None,
-        pipeline: None,
-        context: None,
-    })
 }
 
 #[cfg(test)]

@@ -66,16 +66,12 @@ pub struct RegistriesConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistryKind {
     Skills,
-    Models,
-    Starters,
 }
 
 impl RegistryKind {
     fn sources(self, config: &RegistriesConfig) -> &[RegistrySource] {
         match self {
             RegistryKind::Skills => &config.skills,
-            RegistryKind::Models => &config.models,
-            RegistryKind::Starters => &config.starters,
         }
     }
 }
@@ -300,24 +296,6 @@ registries:
     }
 
     #[test]
-    fn resolved_sources_does_not_cross_contaminate_kinds() {
-        let user = RegistriesConfig {
-            skills: vec![RegistrySource {
-                url: "https://user.example/skills".to_string(),
-                kind: None,
-            }],
-            ..Default::default()
-        };
-        let result = resolved_sources(
-            RegistryKind::Starters,
-            &["https://default.example/a"],
-            &user,
-            None,
-        );
-        assert_eq!(result, vec!["https://default.example/a".to_string()]);
-    }
-
-    #[test]
     fn cache_key_is_deterministic() {
         let url = "https://github.com/github/awesome-copilot.git";
         assert_eq!(cache_key(url), cache_key(url));
@@ -400,25 +378,5 @@ starters:
             kind: None,
         };
         assert_eq!(s.resolved_kind(), SourceKind::Git);
-    }
-
-    #[test]
-    fn test_resolved_sources_starters_union() {
-        let user = RegistriesConfig {
-            starters: vec![RegistrySource {
-                url: "u".into(),
-                kind: None,
-            }],
-            ..Default::default()
-        };
-        let proj = RegistriesConfig {
-            starters: vec![RegistrySource {
-                url: "p".into(),
-                kind: None,
-            }],
-            ..Default::default()
-        };
-        let out = resolved_sources(RegistryKind::Starters, &[], &user, Some(&proj));
-        assert_eq!(out, vec!["u".to_string(), "p".to_string()]);
     }
 }
