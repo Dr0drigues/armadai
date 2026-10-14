@@ -595,10 +595,9 @@ agents:
         );
     }
 
-    /// `cli` is the provider armadai uses to drive claude/gemini/codex as
-    /// subprocesses, and it needs `command` (and usually `args`) to know what
-    /// to run. Without this, the declarative format could not express a whole
-    /// class of agent the `.md` format can.
+    /// A legacy `cli` provider needs `command` (and usually `args`) to say what
+    /// it ran; `migrate` must read them from a declaration as it does from a
+    /// `.md` agent.
     #[test]
     fn a_declared_cli_provider_carries_its_command_and_args_through() {
         let mut d = decl("a");

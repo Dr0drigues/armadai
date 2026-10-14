@@ -147,14 +147,11 @@ pub struct PipelineConfig {
 ///
 /// The parser splits an agent file into `system_prompt` / `instructions` /
 /// `output_format` / `context`, dropping the `##` headings on the way in.
-/// Every consumer that hands an agent to a model has to put them back
-/// together, and until #395 only the linkers did: `run` sent `system_prompt`
-/// alone, so an agent whose output rules lived in `## Output Format` obeyed
-/// them when linked into a native CLI and ignored them when run directly,
-/// with nothing saying so.
+/// Every consumer that writes an agent's prompt (`migrate`, and the
+/// Codex/Copilot/OpenCode linkers) has to put them back together.
 ///
-/// This is that single definition. Measured before hoisting it here: the five
-/// linkers (claude/codex/copilot/gemini/opencode) each carried their own copy
+/// This is that single definition (#395). Measured before hoisting it here:
+/// the linkers of the time each carried their own copy
 /// of this loop and produced byte-identical bodies for the same agent
 /// (md5 `15461e18a2577665048e85fa3c5667b9` on a four-section fixture) — only
 /// the surrounding wrapper (YAML frontmatter, TOML quoting) differed, which
@@ -169,8 +166,8 @@ pub struct PipelineConfig {
 /// is byte-identical to what the per-linker copies produced.
 ///
 /// A section present but empty still contributes its heading: that is what
-/// the linkers did before, and `run`/`link` staying byte-identical matters
-/// more than trimming a stray heading.
+/// the linkers did before, and staying byte-identical with them matters more
+/// than trimming a stray heading.
 ///
 /// No trailing newline is appended — callers that need one normalise
 /// afterwards, as the linkers already do for the file as a whole.
@@ -192,7 +189,7 @@ pub fn compose_agent_prompt(
     ] {
         let Some(body) = body else { continue };
         // One blank line before the heading — but never open the prompt with
-        // one, which is where the five linkers disagreed (see above).
+        // one, which is where the linkers of the time disagreed (see above).
         if !out.is_empty() && !out.ends_with("\n\n") {
             if !out.ends_with('\n') {
                 out.push('\n');
@@ -255,9 +252,8 @@ mod tests {
 
     /// Order and separators, pinned byte for byte.
     ///
-    /// `run` and `link` now share this function, so a change here moves both
-    /// at once and the wiring tests comparing them (`--test
-    /// run_sends_every_section`) would stay green through it. This is what
+    /// `migrate` and the linkers share this function, so a change here moves
+    /// them all at once and no test comparing them would notice. This is what
     /// makes reordering the sections, or changing how they are separated, a
     /// deliberate act rather than a silent one.
     #[test]
@@ -295,9 +291,9 @@ mod tests {
     }
 
     /// An agent may declare `## System Prompt` and leave its body empty — the
-    /// parser accepts it. The five linkers disagreed on that input: codex and
-    /// copilot opened the composed body with two blank lines, claude, gemini
-    /// and opencode with none. Folding them into one definition forces a
+    /// parser accepts it. The linkers of the time disagreed on that input:
+    /// codex and copilot opened the composed body with two blank lines, the
+    /// others with none. Folding them into one definition forces a
     /// choice, and this pins it: no leading blank line, because a prompt that
     /// opens on whitespace spends the model's first tokens on nothing.
     ///

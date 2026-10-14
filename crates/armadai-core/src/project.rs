@@ -63,7 +63,7 @@ pub struct ProjectConfig {
     pub orchestration: Option<Box<OrchestrationConfig>>,
     /// Dynamic model-router rules (thresholds, keywords, tags, budget cap)
     /// for `latest:auto` agents. See `crate::routing::RoutingRules`.
-    /// Still parsed; no command reads it since `armadai run` was removed.
+    /// Still parsed, only so `migrate` can report it as dropped.
     pub routing: Option<crate::routing::RoutingRules>,
     /// Project-level custom registry sources, merged with the user-level
     /// `~/.config/armadai/registries.yaml` and built-in defaults. See

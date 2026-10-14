@@ -10,8 +10,7 @@
 //! `armadai-core::parser::markdown`) prove the section boundary; they cannot
 //! prove that the un-truncated text actually reaches a model. `link` writes
 //! `system_prompt`/`instructions`/`output_format` verbatim into a native
-//! config file and `run` hands `system_prompt` to the provider, so both are
-//! measured here on the real binary.
+//! config file, so that is measured here on the real binary.
 //!
 //! Measured on `master` before the fix (`armadai link --target claude`, a
 //! project holding only `agent-builder.md`): 3833 source bytes in, 1717
@@ -31,9 +30,6 @@ mod tests {
         ("opencode", ".opencode/agents/nested.md"),
     ];
 
-    /// Isolate `~/.config/armadai` per project: `link`/`run` register the
-    /// project and scan the global agent library, which on a developer machine
-    /// holds real agents that would shadow the fixture.
     /// `link` reads the canonical model: the legacy agent goes through
     /// `migrate`, which parses it with the legacy parser this file guards.
     fn migrate(root: &Path, dir: &Path) {
@@ -51,6 +47,9 @@ mod tests {
         );
     }
 
+    /// Isolate `~/.config/armadai` per project: `link` registers the project
+    /// there, and a developer machine's global prompt library could otherwise
+    /// leak into `migrate`.
     fn isolated_config(dir: &Path) -> PathBuf {
         let config = dir.join("config");
         std::fs::create_dir_all(&config).unwrap();

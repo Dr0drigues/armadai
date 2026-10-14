@@ -1,12 +1,11 @@
 //! Black-box regressions for the link manifest (issue #338's second half,
 //! see `docs/superpowers/archive/2026-08-24-link-manifest-design.md`). Spawns
-//! the real binary (like `unlink_content_guard.rs`) since the manifest is
+//! the real binary since the manifest is
 //! wired end to end through `cli::link::execute` (write) and
 //! `cli::unlink::execute` (consume).
 //!
-//! Each of the four cases below is the same one `unlink_content_guard.rs`
-//! guards for the #342 fallback, but exercised **through the manifest
-//! path** — `link` here always writes `.armadai/link-manifest.yaml`, and
+//! Each of the four cases below is one the #342 fallback guarded, but
+//! exercised **through the manifest path** — `link` here always writes `.armadai/link-manifest.yaml`, and
 //! `unlink` finds it and never falls back to regenerating against the
 //! current config. Case 2 (the orphan) is the one the fallback structurally
 //! cannot fix — its companion test below deletes the manifest and shows
@@ -17,10 +16,8 @@
 mod tests {
     use assert_cmd::Command;
 
-    /// Isolated `ARMADAI_CONFIG_DIR` per project — see `unlink_content_guard.rs`
-    /// for why this matters (a real global agent library on this machine
-    /// would otherwise leak into the shadowing check and the project
-    /// registry write would hit the developer's real `~/.config/armadai/`).
+    /// Isolated `ARMADAI_CONFIG_DIR` per project: the project registry write
+    /// would otherwise hit the developer's real `~/.config/armadai/`.
     fn isolated_config(dir: &std::path::Path) -> std::path::PathBuf {
         let config = dir.join("config");
         std::fs::create_dir_all(&config).unwrap();

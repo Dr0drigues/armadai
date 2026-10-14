@@ -170,14 +170,13 @@ pub fn parse_metadata(raw: &str, source: &Path) -> anyhow::Result<AgentMetadata>
             // All five `OrchestrationPattern` variants are accepted (#415).
             // Rejecting `hierarchical`/`auto` was not "ignoring a field": the
             // `bail!` propagates out of `parse_agent_file`, so the whole agent
-            // file became unloadable and the agent vanished from `run`, `link`,
-            // `list`, the TUI and the audit at once — while `armadai.yaml`'s
+            // file became unloadable and the agent vanished from every command
+            // that read it (today only `migrate`) — while `armadai.yaml`'s
             // own `orchestration.pattern` accepted all five through serde's
             // lowercase derive on the same enum.
             //
             // Widening cannot change any behaviour: this per-agent field is
-            // descriptive only. Nothing reads it after parsing since the
-            // execution engine, TUI and web UI were removed (step 0).
+            // descriptive only: `migrate` reports it as dropped.
             "orchestration" => {
                 orchestration = Some(match value.to_lowercase().as_str() {
                     "direct" => OrchestrationPattern::Direct,
@@ -556,7 +555,7 @@ mod tests {
     /// `## Metadata` section. Before the fix, `hierarchical` and `auto` made
     /// `parse_metadata` `bail!`, and since `parse_agent_file` propagates that
     /// error the WHOLE agent file became unloadable — the agent vanished from
-    /// `run`, `link`, `list`, the TUI and the audit at once.
+    /// every command that read it (today only `migrate`).
     ///
     /// Table-driven on purpose: it doubles as the negative control the
     /// per-variant assertions need. A fix that maps every value to one variant
