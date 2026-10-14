@@ -145,6 +145,7 @@ Full documentation lives in [`docs/wiki/`](docs/wiki/):
 
 - [Getting Started](docs/wiki/getting-started.md)
 - [Project format](docs/wiki/project-format.md)
+- [Models](docs/wiki/models.md)
 - [Link](docs/wiki/link.md)
 - [Policy gate](docs/wiki/policy-gate.md)
 - [Templates](docs/wiki/templates.md), [Starter packs](docs/wiki/starter-packs.md)

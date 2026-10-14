@@ -158,12 +158,12 @@ armadai config starters-dir remove /path/to/my-starters
 ### Remote starter registries
 
 When `armadai init --pack <name>` finds no local pack of that name, it syncs the remote starter
-registries declared under `registries:` (in `~/.config/armadai/registries.yaml` or the project
-config) once, then retries. A pack that exists locally never triggers a sync.
+registries declared under `registries:` (in `~/.config/armadai/registries.yaml`, or the config of
+a legacy project) once, then retries. A pack that exists locally never triggers a sync.
 
 ## See Also
 
 - [Getting Started](getting-started.md) — installation and first steps
-- [Agent Format](agent-format.md) — agent Markdown file reference
+- [Project format](project-format.md) — the `.armadai/` files a pack holds
 - [Templates](templates.md) — creating agents from templates
 - [Link](link.md) — compiling a pack's agents for your assistant

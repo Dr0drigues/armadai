@@ -222,8 +222,9 @@ armadai migrate --path DIR         # migrate another project
 armadai migrate --force            # redo it once project.yaml exists (restore the legacy files first)
 ```
 
-`migrate` reads the legacy project with the legacy loaders (the config, `.md` agents, declared
-agents of `agents.yaml` with their fragments and `defaults`, prompts, skills), then:
+`migrate` reads the legacy project with the legacy loaders (the config, the `.md` agents it lists
+under `agents:`, declared agents of `agents.yaml` with their fragments and `defaults`, prompts,
+skills), then:
 
 1. refuses if `.armadai/project.yaml` exists, unless `--force`;
 2. converts it and validates the result in a scratch directory: a conversion that would not
@@ -237,7 +238,8 @@ agents of `agents.yaml` with their fragments and `defaults`, prompts, skills), t
 
 A failure after step 3 says where the backup is. The report printed on stdout has three sections:
 **Written** (the new files), **Dropped** (every legacy field with no counterpart, with its reason)
-and **Warnings**.
+and **Warnings**. An agent `.md` file the config does not list is not converted: it stays only in
+the backup, with a warning ("not converted, kept only in the backup").
 
 What the conversion does:
 
