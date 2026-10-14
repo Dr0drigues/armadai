@@ -1,0 +1,21 @@
+description: Le dev-lead répartit une demande entre les spécialistes
+steps:
+  adapter-specialist:
+    agent: adapter-specialist
+  cli-specialist:
+    agent: cli-specialist
+  dev-lead:
+    agent: dev-lead
+  qa-specialist:
+    agent: qa-specialist
+  schema-specialist:
+    agent: schema-specialist
+links:
+- from: dev-lead
+  to: schema-specialist
+- from: dev-lead
+  to: adapter-specialist
+- from: dev-lead
+  to: cli-specialist
+- from: dev-lead
+  to: qa-specialist
