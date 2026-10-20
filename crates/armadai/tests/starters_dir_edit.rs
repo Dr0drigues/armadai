@@ -104,11 +104,15 @@ fn a_style_that_cannot_be_edited_is_refused_untouched() {
             ["add", "/opt/b"],
             "line 2",
         ),
-        ("{a: 1}\n", ["add", "/opt/b"], "would not read back"),
+        (
+            "{a: 1}\n",
+            ["add", "/opt/b"],
+            "did not find expected <document start>",
+        ),
         (
             "{starters_dirs: [/opt/a]}\n",
             ["add", "/opt/b"],
-            "would not read back",
+            "did not find expected <document start>",
         ),
         (
             "\u{feff}starters_dirs:\n- /opt/a\n",
