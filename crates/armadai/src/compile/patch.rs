@@ -92,7 +92,7 @@ fn real(p: &Path) -> anyhow::Result<PathBuf> {
 /// A fresh, exclusively created temporary file next to `path` (random name, never
 /// a planted one), then rename: a reader never sees half a file. The original's
 /// permissions are kept.
-fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
     use std::io::Write as _;
     let dir = path.parent().context("patched file has no parent")?;
     std::fs::create_dir_all(dir)?;
@@ -100,7 +100,16 @@ fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
         .with_context(|| format!("cannot write next to {}", path.display()))?;
     tmp.write_all(text.as_bytes())?;
     match std::fs::metadata(path) {
-        Ok(m) => std::fs::set_permissions(tmp.path(), m.permissions())?,
+        Ok(m) => {
+            // the rename replaces the file: keep its owner and group when allowed, and
+            // write anyway when not (a group the user is not in): never refuse midway
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let _ = std::os::unix::fs::chown(tmp.path(), Some(m.uid()), Some(m.gid()));
+            }
+            std::fs::set_permissions(tmp.path(), m.permissions())?
+        }
         // a new file: the usual mode of a versioned text file, not the temp file's 0600
         #[cfg(unix)]
         Err(_) => {
@@ -379,6 +388,48 @@ mod tests {
             let mode = std::fs::metadata(f).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o640, "{}", f.display());
         }
+    }
+
+    /// A file in a group the user is not in (here: created in /tmp, which hands out its
+    /// root group on macOS, then moved) is still patched and restored: link and unlink
+    /// never stop midway over ownership. Skipped where no such file can be made.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_of_a_foreign_group_is_patched_and_restored() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join(SETTINGS);
+        let md = dir.path().join("CLAUDE.md");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        let ids = std::process::Command::new("id").arg("-G").output().unwrap();
+        let mine: Vec<u32> = String::from_utf8_lossy(&ids.stdout)
+            .split_whitespace()
+            .filter_map(|g| g.parse().ok())
+            .collect();
+        for (f, text) in [(&settings, USER), (&md, "# Mine\n")] {
+            let staged = tempfile::Builder::new()
+                .prefix("armadai-foreign-group")
+                .tempfile_in("/tmp")
+                .unwrap()
+                .into_temp_path();
+            std::fs::write(&staged, text).unwrap();
+            let gid = std::fs::metadata(&staged).unwrap().gid();
+            if mine.contains(&gid) || std::fs::rename(&staged, f).is_err() {
+                eprintln!("skipped: no file of a foreign group can be made here");
+                return;
+            }
+            let _ = staged.keep();
+        }
+        let p = apply(dir.path(), None);
+        let b = apply_markdown_block(dir.path(), Path::new("CLAUDE.md"), "Lead.\n", None).unwrap();
+        assert!(value(&settings)["hooks"].is_object());
+        remove_patch(dir.path(), Path::new(".claude"), &p).unwrap();
+        remove_patch(dir.path(), Path::new("."), &b).unwrap();
+        assert_eq!(
+            value(&settings),
+            serde_json::from_str::<Value>(USER).unwrap()
+        );
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "# Mine\n");
     }
 
     #[test]
