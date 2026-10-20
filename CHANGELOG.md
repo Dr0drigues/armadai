@@ -48,6 +48,19 @@
 - `frozen/armadai-audit` vendors the small model-registry cache reader it needed from the
   removed `armadai-providers` crate (`src/vendored/model_registry.rs`).
 
+### Changed (project registries, #479)
+
+- `armadai migrate` reports each project registry source it drops (`registries.<type>: "<url>"`,
+  with its delivery `kind:` when declared) instead of one `registries` line: the new format has no
+  project registries, so a migrated project stops using them. For the `skills` and `starters`
+  registry types, a warning gives the entries to paste into the top-level lists of the user
+  `registries.yaml` (its real path is printed): starter entries keep their `kind`, skill entries
+  carry the URL alone (a skill source's `kind` is not read, and only GitHub sources are
+  fetched, which the warning says). URLs are quoted with control characters, U+FFFE/U+FFFF and
+  bidirectional characters escaped, so a pasted entry reads back as the same URL. `agents` and
+  `models` sources are read by no command. An empty url is reported as such; an empty
+  `registries:` section is no longer reported.
+
 ### Changed (YAML library, #467)
 
 - **YAML is read and written with serde-saphyr** instead of serde_yaml_ng, which pulled

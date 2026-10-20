@@ -163,7 +163,8 @@ fn extract_skill_entry(
 
 /// Get the effective sources list: the built-in defaults, plus any
 /// user-level (`~/.config/armadai/registries.yaml`) and project-level
-/// (`armadai.yaml` / `.armadai/config.yaml`) custom skill sources.
+/// (legacy `armadai.yaml` / `.armadai/config.yaml` only: a migrated project
+/// has no registries, #479) custom skill sources.
 ///
 /// Project config is looked up via `armadai_core::project::find_project_config`,
 /// which walks up from the current working directory — this matches how

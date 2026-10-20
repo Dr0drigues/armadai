@@ -20,6 +20,9 @@ const CASES: [&str; 6] = [
 /// Stands for `.armadai/.migrated/<unix seconds>` in `report.txt`.
 const BACKUP_TOKEN: &str = ".armadai/.migrated/<timestamp>";
 
+/// Stands for the `ARMADAI_CONFIG_DIR` of the run in `report.txt`.
+const CONFIG_TOKEN: &str = "<config dir>";
+
 fn copy_tree(from: &Path, to: &Path) {
     for entry in std::fs::read_dir(from).unwrap() {
         let path = entry.unwrap().path();
@@ -80,8 +83,17 @@ fn fixture_copy(case: &str) -> tempfile::TempDir {
 /// The snapshot of one migration: `.armadai/` files plus `report.txt`.
 fn snapshot(case: &str) -> BTreeMap<PathBuf, Vec<u8>> {
     let dir = fixture_copy(case);
-    let out = armadai(&["migrate", "--path"], dir.path()).success();
+    let cfg = tempfile::tempdir().unwrap();
+    let out = Command::cargo_bin("armadai")
+        .unwrap()
+        .env("ARMADAI_CONFIG_DIR", cfg.path())
+        .env("NO_COLOR", "1")
+        .args(["migrate", "--path"])
+        .arg(dir.path())
+        .assert()
+        .success();
     let report = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let report = report.replace(cfg.path().to_str().unwrap(), CONFIG_TOKEN);
     let migrated = dir.path().join(".armadai/.migrated");
     let backups: Vec<PathBuf> = std::fs::read_dir(&migrated)
         .unwrap()
