@@ -158,6 +158,13 @@ fn save_starters_dirs(dirs: &[String]) -> anyhow::Result<()> {
             );
         }
         #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            // a fresh file is owned by whoever runs this
+            let me = tempfile::tempfile()?.metadata()?.uid();
+            refuse_foreign_owner(&path, m.uid(), me)?;
+        }
+        #[cfg(unix)]
         if std::os::unix::fs::MetadataExt::nlink(&m) > 1 {
             anyhow::bail!(
                 "{} has {} hard links: edit `starters_dirs` by hand, or break the link \
@@ -176,6 +183,19 @@ fn save_starters_dirs(dirs: &[String]) -> anyhow::Result<()> {
         )
     })?;
     crate::compile::patch::write_atomic(&path, &edited)
+}
+
+/// The rename would hand the file over to whoever runs this: a file of another user is
+/// refused (writing it in place would keep its owner).
+fn refuse_foreign_owner(path: &std::path::Path, owner: u32, me: u32) -> anyhow::Result<()> {
+    if owner != me {
+        anyhow::bail!(
+            "{} belongs to another user (uid {owner}): edit `starters_dirs` by hand, or run \
+             this command as that user",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// `start` with its symbolic links followed (40 at most, as Linux), even to a target that
@@ -439,6 +459,10 @@ costs:
             "starters_dirs: # note\n- /a\n- /b\n"
         );
         assert_eq!(edit(text, &[]).unwrap(), "starters_dirs: [] # note\n");
+        assert_eq!(
+            edit("starters_dirs: [/a] # see [x]\n", &dirs(&["/a", "/b"])).unwrap(),
+            "starters_dirs: # see [x]\n- /a\n- /b\n"
+        );
         for null in ["~ # c", "null  # c", "[] # c"] {
             assert_eq!(
                 edit(&format!("starters_dirs: {null}\n"), &dirs(&["/a"])).unwrap(),
@@ -549,6 +573,19 @@ costs:
                 "starters_dirs:\n- /a\ncosts: 1\n"
             );
         }
+    }
+
+    #[test]
+    fn a_file_of_another_user_is_refused() {
+        let p = std::path::Path::new("/c/config.yaml");
+        assert!(super::refuse_foreign_owner(p, 501, 501).is_ok());
+        assert_eq!(
+            super::refuse_foreign_owner(p, 0, 501)
+                .unwrap_err()
+                .to_string(),
+            "/c/config.yaml belongs to another user (uid 0): edit `starters_dirs` by hand, \
+             or run this command as that user"
+        );
     }
 
     #[cfg(unix)]

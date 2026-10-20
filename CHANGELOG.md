@@ -13,11 +13,12 @@
     its end-of-line comment;
   - refused with the file untouched: an anchor or alias, an item or flow list spanning
     several lines, a `#` inside a quoted flow item, a flow mapping as the root, a leading
-    byte order mark; a file the user has no write permission on (any mode without the
-    owner's write bit, or another owner); a file with several hard links (break the link
-    first: the atomic rename would leave the other names on the old content);
-  - the write is atomic and keeps the file's mode, owner and group (refused when the owner
-    or group cannot be kept). A symbolic link `config.yaml` stays one: its target is
+    byte order mark; a file that does not open for writing (mode, ACL, immutable flag...);
+    a file of another user; a file with several hard links (break the link first: the
+    atomic rename would leave the other names on the old content);
+  - the write is atomic and keeps the file's mode; its owner and group are kept when the
+    system allows it, otherwise the file takes the group a new file gets in its directory
+    (also for the files `link` patches, which never stop over ownership). A symbolic link `config.yaml` stays one: its target is
     written, and created with its directories when it does not exist yet (40 links at
     most); no directory outside the resolved target is created (#476).
 
