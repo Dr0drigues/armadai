@@ -95,15 +95,78 @@ fn an_absent_file_is_created() {
 
 #[test]
 fn a_style_that_cannot_be_edited_is_refused_untouched() {
-    let text = "costs: 1\nstarters_dirs: [/opt/a] # note\n";
-    let (dir, path) = setup(text);
+    for (text, args, why) in [
+        (
+            "costs: 1\nstarters_dirs: [/opt/a] # note\n",
+            ["add", "/opt/b"],
+            "line 2",
+        ),
+        ("{a: 1}\n", ["add", "/opt/b"], "would not read back"),
+        (
+            "{starters_dirs: [/opt/a]}\n",
+            ["add", "/opt/b"],
+            "would not read back",
+        ),
+        (
+            "\u{feff}starters_dirs:\n- /opt/a\n",
+            ["add", "/opt/b"],
+            "byte order mark",
+        ),
+        (
+            "starters_dirs:\n- |-\n    #x\n- /opt/b\n",
+            ["remove", "/opt/b"],
+            "one line",
+        ),
+    ] {
+        let (dir, path) = setup(text);
+        let (ok, err) = run(dir.path(), &args);
+        assert!(!ok, "{text:?}: must fail");
+        assert!(
+            err.contains("config.yaml") && err.contains("by hand") && err.contains(why),
+            "{text:?}: {err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_read_only_file_is_refused_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, path) = setup(CONFIG);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
     let (ok, err) = run(dir.path(), &["add", "/opt/b"]);
     assert!(!ok, "the add must fail");
     assert!(
-        err.contains("config.yaml") && err.contains("by hand") && err.contains("line 2"),
+        err.contains("read-only") && err.contains("chmod u+w"),
         "{err}"
     );
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dangling_symlink_stays_one_and_its_target_is_created() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
+    std::fs::create_dir_all(dir.path().join("dots")).unwrap();
+    let link = dir.path().join("cfg/config.yaml");
+    // a relative chain: config.yaml -> ../dots/hop.yaml -> real.yaml (missing)
+    std::os::unix::fs::symlink("../dots/hop.yaml", &link).unwrap();
+    std::os::unix::fs::symlink("real.yaml", dir.path().join("dots/hop.yaml")).unwrap();
+
+    let (ok, err) = run(dir.path(), &["add", "/opt/a"]);
+    assert!(ok, "{err}");
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("dots/real.yaml")).unwrap(),
+        "starters_dirs:\n- /opt/a\n"
+    );
 }
 
 #[cfg(unix)]

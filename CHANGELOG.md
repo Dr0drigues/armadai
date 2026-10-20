@@ -4,8 +4,11 @@
 
 - `armadai config starters-dir add|remove` now edits only the `starters_dirs` key of
   `config.yaml`: the other keys, comments, order and line endings are kept byte for byte
-  (they were all lost), and a style it cannot edit safely (anchor, alias, multi-line item or
-  flow list, flow list with a comment) is refused with the file untouched (#476).
+  (they were all lost). A null or one-line flow `starters_dirs` becomes a block list; a style
+  it cannot edit safely (anchor, alias, multi-line item or flow list, flow list with a
+  comment, a flow mapping as the root, a leading byte order mark) and a read-only file are
+  refused with the file untouched. A symbolic link `config.yaml` stays one, even when its
+  target does not exist yet (#476).
 
 ### Removed (cleanup)
 

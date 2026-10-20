@@ -143,13 +143,19 @@ async fn starters_dir_remove(path: &str) -> anyhow::Result<()> {
 fn save_starters_dirs(dirs: &[String]) -> anyhow::Result<()> {
     use anyhow::Context as _;
     let path = app_config::config_file_path();
-    // a symbolic link stays one: its target is what gets updated
-    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    let path = link_target(path)?;
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => anyhow::bail!("cannot read {}: {e}", path.display()),
     };
+    // the atomic rename would replace a file the user made read-only
+    if std::fs::metadata(&path).is_ok_and(|m| m.permissions().readonly()) {
+        anyhow::bail!(
+            "{} is read-only: make it writable (`chmod u+w`) or edit `starters_dirs` by hand",
+            path.display()
+        );
+    }
     let edited = edit_starters_dirs(&text, dirs).with_context(|| {
         format!(
             "{} left untouched: edit `starters_dirs` by hand",
@@ -157,6 +163,24 @@ fn save_starters_dirs(dirs: &[String]) -> anyhow::Result<()> {
         )
     })?;
     crate::compile::patch::write_atomic(&path, &edited)
+}
+
+/// `path` with its symbolic links followed, even to a target that does not exist yet:
+/// a link stays one, its target is what gets written.
+fn link_target(mut path: std::path::PathBuf) -> anyhow::Result<std::path::PathBuf> {
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) if m.file_type().is_symlink() => {
+                let to = std::fs::read_link(&path)?;
+                path = match path.parent() {
+                    Some(dir) => dir.join(to),
+                    None => to,
+                };
+            }
+            _ => return Ok(path),
+        }
+    }
+    anyhow::bail!("{}: too many levels of symbolic links", path.display())
 }
 
 const KEY: &str = "starters_dirs:";
@@ -169,6 +193,9 @@ const KEY: &str = "starters_dirs:";
 /// is refused, and so is any edit whose result does not read back as `dirs`.
 fn edit_starters_dirs(text: &str, dirs: &[String]) -> anyhow::Result<String> {
     use anyhow::bail;
+    if text.starts_with('\u{feff}') {
+        bail!("the file starts with a byte order mark (BOM): remove it");
+    }
     let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let render = |d: &String| -> anyhow::Result<String> {
@@ -224,6 +251,14 @@ fn edit_starters_dirs(text: &str, dirs: &[String]) -> anyhow::Result<String> {
                     };
                     items.push((i, v.clone()));
                 }
+                // what the scan missed (a block scalar `|-` whose lines look like comments...)
+                let before: Option<app_config::UserConfig> =
+                    armadai_model::yaml::from_str(text).ok().flatten();
+                if before.unwrap_or_default().starters_dirs
+                    != items.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>()
+                {
+                    bail!("an item of `starters_dirs` is not a path on one line");
+                }
                 let end = items.last().map_or(k + 1, |(i, _)| i + 1);
                 let missing: Vec<&String> = dirs
                     .iter()
@@ -247,10 +282,14 @@ fn edit_starters_dirs(text: &str, dirs: &[String]) -> anyhow::Result<String> {
                         push_line(&mut out, &format!("{}{}", indent.unwrap_or(""), render(d)?));
                     }
                 }
-            } else if value.starts_with('[') && value.ends_with(']') && !value.contains('#') {
-                // one-line flow list: rewritten as a block list
-                armadai_model::yaml::from_str::<Vec<String>>(value)
-                    .map_err(|e| anyhow::anyhow!("line {}: {e}", k + 1))?;
+            } else if matches!(value, "~" | "null" | "Null" | "NULL")
+                || value.starts_with('[') && value.ends_with(']') && !value.contains('#')
+            {
+                // null or one-line flow list: rewritten as a block list
+                if value.starts_with('[') {
+                    armadai_model::yaml::from_str::<Vec<String>>(value)
+                        .map_err(|e| anyhow::anyhow!("line {}: {e}", k + 1))?;
+                }
                 for (i, l) in lines.iter().enumerate() {
                     if i != k {
                         out.push_str(l);
@@ -263,7 +302,7 @@ fn edit_starters_dirs(text: &str, dirs: &[String]) -> anyhow::Result<String> {
                 }
             } else {
                 bail!(
-                    "line {}: only a block list or a one-line flow list without comment is edited",
+                    "line {}: only a block list, null or a one-line flow list without comment is edited",
                     k + 1
                 );
             }
@@ -382,6 +421,44 @@ costs:
             "\"starters_dirs\": [/a]\n",
         ] {
             assert!(edit(text, &dirs(&["/z"])).is_err(), "{text:?}");
+        }
+        for (text, want, msg) in [
+            // only the read-back check catches these two
+            (
+                "{a: 1}\n",
+                &["/z"][..],
+                "the edited file would not read back as the expected list",
+            ),
+            (
+                "{starters_dirs: [/a]}\n",
+                &["/a", "/z"],
+                "the edited file would not read back as the expected list",
+            ),
+            (
+                "\u{feff}starters_dirs:\n- /a\n",
+                &["/a", "/z"],
+                "the file starts with a byte order mark (BOM): remove it",
+            ),
+            // removing another item would leave `#x` behind as a comment
+            (
+                "starters_dirs:\n- |-\n    #x\n- /b\n",
+                &["#x"],
+                "an item of `starters_dirs` is not a path on one line",
+            ),
+        ] {
+            let e = edit(text, &dirs(want)).unwrap_err().to_string();
+            assert_eq!(e, msg, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_null_list_becomes_a_block_list() {
+        for null in ["~", "null"] {
+            let text = format!("starters_dirs: {null}\ncosts: 1\n");
+            assert_eq!(
+                edit(&text, &dirs(&["/a"])).unwrap(),
+                "starters_dirs:\n- /a\ncosts: 1\n"
+            );
         }
     }
 }
