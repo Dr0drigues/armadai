@@ -4,20 +4,24 @@ Written (5):
   .armadai/agents/test-writer.md
   .armadai/project.yaml
   .armadai/skills/rust-conventions/SKILL.md
-Dropped (9):
+Dropped (11):
   code-reviewer: cost_limit (the execution engine was removed)
   code-reviewer: max_tokens (no reader in the new format)
   code-reviewer: stacks (no reader in the new format)
   debug: max_tokens (no reader in the new format)
   debug: stacks (no reader in the new format)
   provider: dropped for 3 agents (the target tool picks its own provider)
+  registries.skills: "https://example.com/team/skills.git" (the new format has no project registries; see the warning)
+  registries.starters: "https://example.com/team/starters.tar.gz", kind: archive (the new format has no project registries; see the warning)
   rust-conventions: apply_to (a skill is loaded on demand by the target, not attached to agents)
   test-writer: max_tokens (no reader in the new format)
   test-writer: stacks (no reader in the new format)
-Warnings (5):
+Warnings (7):
   YAML comments of the legacy files are not preserved; review the backup
   agent `code-reviewer`: description derived from the first sentence of its prompt
   agent `debug`: description derived from the first sentence of its prompt
   agent `test-writer`: description derived from the first sentence of its prompt
+  registries.skills: to keep `armadai skills sync|search|info` using these sources, add these entries (only GitHub sources, `owner/repo` or `https://github.com/owner/repo`, are fetched) to the top-level `skills:` list of <config dir>/registries.yaml (as `- { ... }` items if that list is written as a block): [{ url: "https://example.com/team/skills.git" }]
+  registries.starters: to keep `armadai init --pack` using these sources, add these exact entries, `kind` included, to the top-level `starters:` list of <config dir>/registries.yaml (as `- { ... }` items if that list is written as a block): [{ url: "https://example.com/team/starters.tar.gz", kind: archive }]
   unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
 Note: run 'armadai link' to compile the migrated project; the previous project is in .armadai/.migrated/<timestamp>/.

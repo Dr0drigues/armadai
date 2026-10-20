@@ -258,9 +258,43 @@ What the conversion does:
 | `link.target`, `link.overrides.<target>.output`, `link.coordinator` | `targets`, `outputs`, `coordinator` (an unsupported target such as `gemini` is dropped) |
 | `orchestration.coordinator` + `teams` | a flow `orchestration`: coordinator → team lead → members (members without a lead under the coordinator); an unknown agent is omitted with a warning |
 | `orchestration.policy`, `free_agents` | `policy.delegation`, `policy.free_agents` (a name that is not a project agent, such as `Explore`, is kept as it is: it may be an agent the target provides) |
-| `orchestration.enabled`, `pattern`, `routes`, limits; `defaults`, `routing`, `registries`, `sources` | **dropped**, listed |
+| `orchestration.enabled`, `pattern`, `routes`, limits; `defaults`, `routing`, `sources` | **dropped**, listed |
+| `registries:` (project-level registry sources) | **dropped**, one line per source, then a warning per registry type with the entries to paste where they can still be read (below) |
 
 Agents of the user library that the project references are copied into the project.
+
+**Project registries.** The new format has no `registries:` section, and nothing reads registry
+sources from a migrated (or new) project: only the legacy config files did. `migrate` lists each
+source it drops under **Dropped**, as `registries.<type>: "<url>"` where `<type>` is the registry
+type (`skills`, `starters`, `agents`, `models`), followed by its delivery `kind:` (`git` or
+`archive`) when one was declared. Then, for the `skills` and `starters` types, one **Warning** per
+type gives the entries to paste into your user file `registries.yaml` (the path printed is the real
+one: `$ARMADAI_CONFIG_DIR`, else `$XDG_CONFIG_HOME/armadai`, else `~/.config/armadai`), which
+`armadai skills sync|search|info` and `armadai init --pack` read. URLs are written as YAML
+double-quoted strings: control characters, U+FFFE/U+FFFF, bidirectional marks, line separators and
+the BOM are escaped as `\uXXXX`, so a pasted entry reads back as the same URL.
+
+- **Starters**: copy each entry whole. A `kind:` the URL does not imply (an archive served at
+  `…/dl?id=1`) is lost with the URL alone, and the source is then cloned with git.
+- **Skills**: skill sources are read as URLs only; a declared `kind:` is not read (it was not
+  before either), so the entries to paste carry the URL alone. Only GitHub sources are fetched
+  (`owner/repo` or `https://github.com/owner/repo`); `skills sync` refuses any other URL (a GitLab
+  or self-hosted one) with "Use owner/repo or a GitHub URL", as it did in a legacy project.
+
+The warning gives the entries as a flow list (`[{ url: … }, …]`). If the list already exists in
+block form, add each entry as one `- { url: …, kind: … }` item. A project with many sources gets
+one long warning line per type. The lists are top-level keys, without a `registries:` wrapper (a
+wrapped file is read as empty):
+
+```yaml
+skills:
+  - url: https://example.com/team/skills.git
+starters:
+  - url: https://example.com/team/starters.tar.gz
+    kind: archive
+```
+
+`agents` and `models` registry sources are read by no command; they are dropped with that reason.
 
 Known limits, also stated in every report:
 
