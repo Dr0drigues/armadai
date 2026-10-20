@@ -179,11 +179,14 @@ with macOS, Windows 10+ and most Linux distributions), then extracted with `tar`
   `CURL_CA_BUNDLE`; other variables such as `SSL_CERT_FILE` depend on curl's version and TLS
   backend), but `.curlrc` files are ignored;
 - `{}` and `[]` in the URL are sent as-is, never expanded;
-- the `user:pass@` part of the URL and its query (`?token=…`) are masked in messages, and
-  never appear in the cache directory name;
-- the archive is extracted and checked (no entry or link may point outside it) before it
-  replaces the previous copy: a failed sync keeps the previous copy, and never leaves a
-  partial one.
+- the `user:pass@` part of the URL and its query (`?token=…`) are masked in messages (a URL
+  with an `@` after its host shows as `https://***`), and never appear in the cache directory
+  name;
+- an archive URL may end in a query (`…/starters.tar.gz?token=…`): the extension before it
+  decides the kind;
+- the archive is extracted and checked (no entry or link may point outside it, no dangling
+  link, at most 1 GiB of files) before it replaces the previous copy: a failed sync keeps the
+  previous copy, and never leaves a partial one.
 
 ## See Also
 

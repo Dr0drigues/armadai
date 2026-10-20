@@ -36,15 +36,23 @@
   depend on curl's version and TLS backend), but `.curlrc` is ignored (`-q`) and URL globbing
   is off. The download goes to a private (0700) temporary directory removed afterwards.
 - A starter archive is extracted into a staging directory and checked (a symbolic link
-  resolving outside the archive is refused) before it replaces the cached copy: a failed sync
-  now keeps the previous copy instead of deleting it and leaving a partial pack that `init`
-  would use.
-- Credentials are masked in starter sync messages: the `user:pass@` part of a source URL
-  (including in the `git` command line a failed clone reports) and an archive URL's query.
+  resolving outside the archive, or dangling, is refused; its files may add up to 1 GiB once
+  extracted) before it replaces the cached copy: a failed sync now keeps the previous copy
+  instead of deleting it and leaving a partial pack that `init` would use. A cache entry that
+  is a symbolic link is replaced by a directory, not written through. Temporary directories a
+  killed sync left behind (over an hour old) are removed by the next sync of that source,
+  which first puts back a copy it had set aside.
+- Credentials are masked in starter sync messages: the `user:pass@` part and the query of a
+  source URL, including in the `git` command line and error a failed clone reports. A URL with
+  an `@` after its host (in the path, or an unencoded password holding `/`) is shown as
+  `https://***`, since its host cannot be shown reliably.
+- An archive URL with a query (`…/starters.tar.gz?token=…`) is recognised as an archive
+  without `kind: archive`.
 - The starter cache directory name no longer contains the URL's `user:pass@` part nor, in
   clear, its query: a source whose URL holds an `@` after `://` or a `?` gets a new cache
   directory and is synced again. The old directory stays on disk: delete it by hand
-  (`~/.config/armadai/registry/starters/`), since its name holds the credentials.
+  (`~/.config/armadai/registry/starters/`), since its name holds the credentials. Two
+  different URLs never share a directory.
 - The starter cache skips directories whose name starts with a dot (sync staging areas).
 
 ### Changed (YAML library, #467)
