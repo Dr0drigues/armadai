@@ -124,15 +124,22 @@ fn archive_entry_is_safe(name: &str) -> bool {
     })
 }
 
+/// `program` with stdin closed: `tar`, `unzip` and `curl` never wait on the terminal.
+fn tool(program: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    cmd.stdin(std::process::Stdio::null());
+    cmd
+}
+
 /// List entry paths inside an archive without extracting it, so they can be
 /// validated by [`archive_entry_is_safe`] before anything is written to disk.
 fn list_archive_entries(archive: &Path, is_zip: bool, label: &str) -> anyhow::Result<Vec<String>> {
     let out = if is_zip {
-        std::process::Command::new("unzip")
+        tool("unzip")
             .args(["-Z1", archive.to_str().unwrap_or("")])
             .output()?
     } else {
-        std::process::Command::new("tar")
+        tool("tar")
             .args(["-tzf", archive.to_str().unwrap_or("")])
             .output()?
     };
@@ -155,25 +162,41 @@ fn list_archive_entries(archive: &Path, is_zip: bool, label: &str) -> anyhow::Re
 /// Before extracting, every entry is listed and validated with
 /// [`archive_entry_is_safe`]: a malicious archive with a `../../etc/x` or
 /// absolute-path entry (zip-slip) is rejected up front rather than allowed to
-/// write outside `dest`. `label` names the archive in messages.
-fn extract_archive(archive: &Path, dest: &Path, label: &str, max_bytes: u64) -> anyhow::Result<()> {
+/// write outside `dest`. `label` names the archive in messages. An archive over
+/// `limits` (entry count, then total file size) is refused before extraction.
+fn extract_archive(
+    archive: &Path,
+    dest: &Path,
+    label: &str,
+    limits: ExtractLimits,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(dest)?;
     let name = archive.to_string_lossy().to_lowercase();
     let is_zip = name.ends_with(".zip");
-    check_extracted_size(archive, is_zip, max_bytes, label)?;
 
     let entries = list_archive_entries(archive, is_zip, label)?;
+    if entries.len() > limits.entries {
+        anyhow::bail!(
+            "refusing archive {label}: {} entries, more than the {} allowed",
+            entries.len(),
+            limits.entries
+        );
+    }
+    check_extracted_size(archive, is_zip, limits.bytes, label)?;
     if let Some(unsafe_entry) = entries.iter().find(|e| !archive_entry_is_safe(e)) {
         anyhow::bail!(
             "refusing to extract archive {label}: unsafe entry path '{unsafe_entry}' (zip-slip guard)"
         );
     }
 
+    // `-P ""`: an encrypted entry fails instead of prompting for a password on the tty.
     let status = if is_zip {
-        std::process::Command::new("unzip")
+        tool("unzip")
             .args([
                 "-q",
                 "-o",
+                "-P",
+                "",
                 archive.to_str().unwrap_or(""),
                 "-d",
                 dest.to_str().unwrap_or(""),
@@ -181,7 +204,7 @@ fn extract_archive(archive: &Path, dest: &Path, label: &str, max_bytes: u64) -> 
             .status()?
     } else {
         // .tar.gz / .tgz
-        std::process::Command::new("tar")
+        tool("tar")
             .args([
                 "-xzf",
                 archive.to_str().unwrap_or(""),
@@ -196,8 +219,19 @@ fn extract_archive(archive: &Path, dest: &Path, label: &str, max_bytes: u64) -> 
     Ok(())
 }
 
-/// Upper bound on the total size of an archive's files once extracted.
-const EXTRACT_MAX_BYTES: u64 = 1 << 30; // 1 GiB
+/// Upper bounds on what one archive may hold once extracted.
+#[derive(Clone, Copy)]
+struct ExtractLimits {
+    /// Total size of its files.
+    bytes: u64,
+    /// Number of entries (files, directories, links): each costs an inode.
+    entries: usize,
+}
+
+const EXTRACT_LIMITS: ExtractLimits = ExtractLimits {
+    bytes: 1 << 30, // 1 GiB
+    entries: 100_000,
+};
 
 /// Refuse an archive whose files add up to more than `max_bytes`, by streaming their
 /// contents (`tar -xO`, `unzip -p`) and counting, before anything is written to disk.
@@ -209,11 +243,11 @@ fn check_extracted_size(
 ) -> anyhow::Result<()> {
     use std::io::Read;
     let mut cmd = if is_zip {
-        let mut c = std::process::Command::new("unzip");
-        c.arg("-p").arg(archive);
+        let mut c = tool("unzip");
+        c.args(["-p", "-P", ""]).arg(archive);
         c
     } else {
-        let mut c = std::process::Command::new("tar");
+        let mut c = tool("tar");
         c.arg("-xzOf").arg(archive);
         c
     };
@@ -262,11 +296,11 @@ fn fetch_archive(curl: &str, url: &str, dest: &Path, tmp_root: &Path) -> anyhow:
         .ok_or_else(|| anyhow::anyhow!("no parent directory for {}", dest.display()))?;
     // `+` never occurs in a cache key: no other source's prefix can match this one.
     let staging_prefix = format!(
-        ".armadai-staging-{}+",
+        "{STAGING_PREFIX}{}+",
         dest.file_name().unwrap_or_default().to_string_lossy()
     );
-    sweep_orphans(parent, &staging_prefix, Some(dest));
-    sweep_orphans(tmp_root, "armadai-dl-", None);
+    sweep_orphans(parent, STAGING_PREFIX, true);
+    sweep_orphans(tmp_root, "armadai-dl-", false);
 
     let download = private_tempdir("armadai-dl-", tmp_root)?;
     // The extension makes extract_archive pick tar vs unzip.
@@ -282,7 +316,7 @@ fn fetch_archive(curl: &str, url: &str, dest: &Path, tmp_root: &Path) -> anyhow:
         .map_err(|e| anyhow::anyhow!("cannot stage {shown} in {}: {e}", parent.display()))
         .and_then(|staging| {
             let new = staging.path().join("new");
-            extract_archive(&src, &new, &shown, EXTRACT_MAX_BYTES)?;
+            extract_archive(&src, &new, &shown, EXTRACT_LIMITS)?;
             reject_escaping_links(&new, &shown)?;
             swap_in(&new, dest, &staging.path().join("old"))
                 .map_err(|e| anyhow::anyhow!("could not install archive {shown}: {e}"))
@@ -309,9 +343,13 @@ fn swap_in(new: &Path, dest: &Path, old: &Path) -> anyhow::Result<()> {
 /// How old a temp dir must be before a sync treats it as left by a killed run.
 const ORPHAN_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// Remove `prefix*` dirs in `dir` older than [`ORPHAN_AGE`]. With `restore`, a
-/// missing `restore` dir first gets back the copy an interrupted swap parked in `old`.
-fn sweep_orphans(dir: &Path, prefix: &str, restore: Option<&Path>) {
+/// Name prefix of a sync's staging dir: `<prefix><cache key>+<random>`.
+const STAGING_PREFIX: &str = ".armadai-staging-";
+
+/// Remove `prefix*` dirs in `dir` older than [`ORPHAN_AGE`], whatever source left them.
+/// With `restore`, they are staging dirs: a source whose cache dir (`<cache key>` in
+/// their name) is missing first gets back the copy an interrupted swap parked in `old`.
+fn sweep_orphans(dir: &Path, prefix: &str, restore: bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -321,13 +359,16 @@ fn sweep_orphans(dir: &Path, prefix: &str, restore: Option<&Path>) {
             .metadata()
             .and_then(|m| m.modified())
             .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > ORPHAN_AGE));
-        if !stale || !entry.file_name().to_string_lossy().starts_with(prefix) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix(prefix).filter(|_| stale) else {
             continue;
-        }
-        if let Some(dest) = restore
-            && std::fs::symlink_metadata(dest).is_err()
-        {
-            let _ = std::fs::rename(path.join("old"), dest);
+        };
+        // `+` never occurs in a cache key.
+        if restore && let Some((key, _)) = rest.split_once('+') {
+            let dest = dir.join(key);
+            if !key.is_empty() && std::fs::symlink_metadata(&dest).is_err() {
+                let _ = std::fs::rename(path.join("old"), &dest);
+            }
         }
         let _ = std::fs::remove_dir_all(&path);
     }
@@ -397,7 +438,7 @@ fn download_to(curl: &str, url: &str, out: &Path) -> anyhow::Result<()> {
     {
         anyhow::bail!("download {shown} refused: archive sources must use an https:// URL");
     }
-    let result = std::process::Command::new(curl)
+    let result = tool(curl)
         .args([
             "-q",
             "--globoff",
@@ -655,7 +696,7 @@ mod archive_tests {
             .unwrap();
         // Extract via the fetcher's extract helper (file:// or local path).
         let dest = tmp.join("dest");
-        extract_archive(&archive, &dest, "test", EXTRACT_MAX_BYTES).unwrap();
+        extract_archive(&archive, &dest, "test", EXTRACT_LIMITS).unwrap();
         let packs = discover_packs(&dest);
         assert!(
             packs
@@ -689,6 +730,7 @@ mod archive_tests {
             &script,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\n\
+                 [ /dev/fd/0 -ef /dev/null ] && echo null > \"$(dirname \"$0\")/stdin\"\n\
                  while [ $# -gt 1 ]; do [ \"$1\" = -o ] && out=$2; shift; done\n{body}\n"
             ),
         )
@@ -721,6 +763,8 @@ mod archive_tests {
         }
         assert_eq!(args.iter().filter(|a| **a == "=https").count(), 2);
         assert_eq!(args.last(), Some(&"https://example.com/a.tar.gz"));
+        let stdin = fs::read_to_string(dir.path().join("stdin")).unwrap_or_default();
+        assert_eq!(stdin, "null\n", "curl may read the terminal");
     }
 
     #[cfg(unix)]
@@ -1027,7 +1071,8 @@ mod archive_tests {
         }
         for archive in archives {
             let dest = dir.path().join("dest");
-            let err = extract_archive(&archive, &dest, "lbl", 4000)
+            let limits = |bytes| ExtractLimits { bytes, entries: 10 };
+            let err = extract_archive(&archive, &dest, "lbl", limits(4000))
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -1036,7 +1081,7 @@ mod archive_tests {
                 archive.display()
             );
             assert!(!dest.join("demo").exists(), "extracted anyway");
-            extract_archive(&archive, &dest, "lbl", 6000).unwrap();
+            extract_archive(&archive, &dest, "lbl", limits(6000)).unwrap();
             assert!(dest.join("demo/big.md").is_file());
             fs::remove_dir_all(&dest).unwrap();
         }
@@ -1061,20 +1106,25 @@ mod archive_tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cache");
         let tmp_root = dir.path().join("tmp");
-        let stale_stage = cache.join(".armadai-staging-src+killed");
-        write(
-            &stale_stage.join("old/old-pack/pack.yaml"),
-            "name: old-pack\n",
-        );
+        // Stale staging dirs (killed syncs): this source, another one whose cache is
+        // still there, and one removed from the config whose cache is missing.
+        let stale_stages = [
+            cache.join(".armadai-staging-src+killed"),
+            cache.join(".armadai-staging-src-2+killed"),
+            cache.join(".armadai-staging-gone~ab12+killed"),
+        ];
+        for stage in &stale_stages {
+            write(&stage.join("old/parked/pack.yaml"), "name: parked\n");
+        }
+        write(&cache.join("src-2/current/pack.yaml"), "name: current\n");
         let fresh_stage = cache.join(".armadai-staging-src+running");
-        let other_stage = cache.join(".armadai-staging-src-2+killed"); // another source, key starting like `src`
         let stale_dl = tmp_root.join("armadai-dl-killed");
         let fresh_dl = tmp_root.join("armadai-dl-running");
-        for d in [&fresh_stage, &other_stage, &stale_dl, &fresh_dl] {
+        for d in [&fresh_stage, &stale_dl, &fresh_dl] {
             fs::create_dir_all(d).unwrap();
         }
         let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
-        for d in [&stale_stage, &other_stage, &stale_dl] {
+        for d in stale_stages.iter().chain([&stale_dl]) {
             fs::File::open(d)
                 .unwrap()
                 .set_modified(two_hours_ago)
@@ -1084,19 +1134,23 @@ mod archive_tests {
         let dest = cache.join("src");
         let res = retry_busy(|| fetch_archive(&curl, "https://e.com/a.tar.gz", &dest, &tmp_root));
         assert!(res.is_err());
+        assert!(dest.join("parked/pack.yaml").is_file(), "src not restored");
         assert!(
-            dest.join("old-pack/pack.yaml").is_file(),
-            "parked copy not restored"
+            cache.join("gone~ab12/parked/pack.yaml").is_file(),
+            "gone not restored"
         );
         assert!(
-            !stale_stage.exists() && !stale_dl.exists(),
-            "stale dirs kept"
+            cache.join("src-2/current/pack.yaml").is_file(),
+            "src-2 overwritten"
         );
+        assert!(!cache.join("src-2/parked").exists(), "src-2 overwritten");
+        for stale in stale_stages.iter().chain([&stale_dl]) {
+            assert!(!stale.exists(), "{} kept", stale.display());
+        }
         assert!(
             fresh_stage.exists() && fresh_dl.exists(),
             "a running sync's dirs removed"
         );
-        assert!(other_stage.exists(), "another source's parked copy removed");
     }
 
     #[cfg(unix)]
@@ -1123,7 +1177,8 @@ mod archive_tests {
         });
         fs::set_permissions(&cache, fs::Permissions::from_mode(0o755)).unwrap();
         let err = res.unwrap_err().to_string();
-        assert!(err.contains(&cache.display().to_string()), "{err}");
+        let ours = format!("cannot stage https://e.com/a.tar.gz in {}", cache.display());
+        assert!(err.contains(&ours), "{err}");
     }
 
     #[cfg(unix)]
@@ -1138,5 +1193,49 @@ mod archive_tests {
         let err = res.unwrap_err().to_string();
         assert!(err.contains("'demo/l' is dangling"), "{err}");
         assert!(dest.join("old-pack/pack.yaml").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_archive_refuses_too_many_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = tar_gz(dir.path(), "many", |root| {
+            for i in 0..12 {
+                write(&root.join(format!("f{i}")), "");
+            }
+        });
+        let dest = dir.path().join("dest");
+        let limits = |entries| ExtractLimits {
+            bytes: 1 << 20,
+            entries,
+        };
+        let err = extract_archive(&archive, &dest, "lbl", limits(10))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("more than the 10 allowed"), "{err}");
+        assert!(!dest.join("f0").exists(), "extracted anyway");
+        extract_archive(&archive, &dest, "lbl", limits(20)).unwrap();
+        assert!(dest.join("f0").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_archive_refuses_an_encrypted_zip_without_prompting() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        write(&src.join("demo/pack.yaml"), "name: demo\n");
+        let zip = dir.path().join("enc.zip");
+        let zipped = std::process::Command::new("zip")
+            .current_dir(&src)
+            .args(["-qr", "-P", "secret"])
+            .arg(&zip)
+            .arg(".")
+            .status();
+        if !zipped.is_ok_and(|s| s.success()) {
+            return; // no `zip` to build the fixture
+        }
+        let dest = dir.path().join("dest");
+        assert!(extract_archive(&zip, &dest, "lbl", EXTRACT_LIMITS).is_err());
+        assert!(!dest.join("demo/pack.yaml").exists());
     }
 }

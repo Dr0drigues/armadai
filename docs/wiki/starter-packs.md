@@ -186,8 +186,13 @@ with macOS, Windows 10+ and most Linux distributions), then extracted with `tar`
 - an archive URL may end in a query (`…/starters.tar.gz?token=…`): the extension before it
   decides the kind;
 - the archive is extracted and checked (no entry or link may point outside it, no dangling
-  link, at most 1 GiB of files) before it replaces the previous copy: a failed sync keeps the
-  previous copy, and never leaves a partial one.
+  link, at most 100,000 entries and 1 GiB of files) before it replaces the previous copy: a
+  failed sync keeps the previous copy, and never leaves a partial one;
+- an encrypted zip is refused, never prompted for.
+
+Known limits: named pipes (FIFOs) in an archive are extracted into the cache; the credentials
+of a git source URL are stored in clear in its cache's `.git/config`, as `git clone` writes
+them.
 
 ## See Also
 

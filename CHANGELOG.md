@@ -58,24 +58,33 @@
   depend on curl's version and TLS backend), but `.curlrc` is ignored (`-q`) and URL globbing
   is off. The download goes to a private (0700) temporary directory removed afterwards.
 - A starter archive is extracted into a staging directory and checked (a symbolic link
-  resolving outside the archive, or dangling, is refused; its files may add up to 1 GiB once
-  extracted) before it replaces the cached copy: a failed sync now keeps the previous copy
-  instead of deleting it and leaving a partial pack that `init` would use. A cache entry that
-  is a symbolic link is replaced by a directory, not written through. Temporary directories a
-  killed sync left behind (over an hour old) are removed by the next sync of that source,
-  which first puts back a copy it had set aside.
+  resolving outside the archive, or dangling, is refused; it may hold at most 100,000 entries
+  and 1 GiB of files) before it replaces the cached copy: a failed sync now keeps the previous
+  copy instead of deleting it and leaving a partial pack that `init` would use. A cache entry
+  that is a symbolic link is replaced by a directory, not written through. Temporary
+  directories a killed sync left behind (over an hour old, whatever the source) are removed by
+  the next archive sync, which first puts back a copy set aside for a source whose cache is
+  missing. `tar`, `unzip` and `curl` run with stdin closed, and an encrypted zip fails instead
+  of asking for a password on the terminal.
 - Credentials are masked in starter sync messages: the `user:pass@` part and the query of a
-  source URL, including in the `git` command line and error a failed clone reports. A URL with
-  an `@` after its host (in the path, or an unencoded password holding `/`) is shown as
+  source URL, including in the `git` command line and error a failed clone reports, with or
+  without a scheme (`user:token@host:org/repo.git` shows as `***@host:org/repo.git`). A URL
+  with an `@` after its host (in the path, or an unencoded password holding `/`) is shown as
   `https://***`, since its host cannot be shown reliably.
 - An archive URL with a query (`…/starters.tar.gz?token=…`) is recognised as an archive
   without `kind: archive`.
 - The starter cache directory name no longer contains the URL's `user:pass@` part nor, in
-  clear, its query: a source whose URL holds an `@` after `://` or a `?` gets a new cache
-  directory and is synced again. The old directory stays on disk: delete it by hand
-  (`~/.config/armadai/registry/starters/`), since its name holds the credentials. Two
-  different URLs never share a directory.
+  clear, its query. A plain `scheme://host/path` URL of at most 60 characters (letters,
+  digits, `.`, `-`, `/`) keeps its directory; any other source (credentials, query, `#`, `@`,
+  `_`, a trailing `/`, a local path, a `git@host:` address, a longer URL) gets a new one,
+  named with a 128-bit SHA-256 digest, and is synced again. Before, two such URLs could be
+  forged to share a directory (32-bit hash), letting one source replace another's packs. The
+  old directory stays on disk: delete it by hand (`~/.config/armadai/registry/starters/`), as
+  its name may hold credentials.
 - The starter cache skips directories whose name starts with a dot (sync staging areas).
+- Known limits: an archive's named pipes (FIFOs) are extracted into the cache like files; a
+  git source's credentials (`https://user:token@…`) are stored in clear in its cache
+  `.git/config`, as `git clone` writes them; `git` itself may still prompt for credentials.
 
 ### Changed (project registries, #479)
 
