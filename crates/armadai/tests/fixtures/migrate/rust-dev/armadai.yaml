@@ -5,3 +5,10 @@ agents:
   - name: debug
 prompts:
   - name: rust-conventions
+# Project registries (#479): not in the new format, each source reported by `migrate`.
+registries:
+  skills:
+    - url: https://example.com/team/skills.git
+  starters:
+    - url: https://example.com/team/starters.tar.gz
+      kind: archive
