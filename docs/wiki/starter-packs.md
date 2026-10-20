@@ -161,6 +161,24 @@ When `armadai init --pack <name>` finds no local pack of that name, it syncs the
 registries declared under `registries:` (in `~/.config/armadai/registries.yaml`, or the config of
 a legacy project) once, then retries. A pack that exists locally never triggers a sync.
 
+```yaml
+registries:
+  starters:
+    - url: https://github.com/acme/starters.git        # git clone
+    - url: https://example.com/packs/starters.tar.gz   # archive (.tar.gz, .tgz or .zip)
+      kind: archive                                     # optional: inferred from the extension
+```
+
+An archive source is downloaded with the `curl` program, which must be in `PATH` (it ships
+with macOS, Windows 10+ and most Linux distributions), then extracted with `tar` or `unzip`:
+
+- the URL must use `https://`, and so must every redirect;
+- a download is capped at 300 seconds and 100 MiB;
+- curl's environment applies (`https_proxy`, `no_proxy`, `CURL_CA_BUNDLE`, `SSL_CERT_FILE`…), but
+  `.curlrc` files are ignored;
+- `{}` and `[]` in the URL are sent as-is, never expanded;
+- credentials embedded in the URL (`user:pass@`) are masked in error messages.
+
 ## See Also
 
 - [Getting Started](getting-started.md) — installation and first steps

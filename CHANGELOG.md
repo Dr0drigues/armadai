@@ -31,7 +31,10 @@
 - Starter archive sources are downloaded with the `curl` program (as `armadai update` already
   did) instead of `reqwest`; `reqwest`, `tokio` and their TLS stack leave the dependency tree
   (233 → 151 locked packages). `curl` must be in `PATH`; archive URLs must be `https://`
-  (redirects too); a download is capped at 300 s and 100 MiB.
+  (redirects too, scheme case-insensitive); a download is capped at 300 s and 100 MiB. curl's
+  environment applies (proxy variables, `CURL_CA_BUNDLE`, `SSL_CERT_FILE`), but `.curlrc` is
+  ignored (`-q`) and URL globbing is off. The download goes to a private (0700) temporary
+  directory removed afterwards; credentials in the URL are masked in messages.
 
 ### Changed (YAML library, #467)
 
