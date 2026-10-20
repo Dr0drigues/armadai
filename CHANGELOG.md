@@ -26,6 +26,14 @@
 - `frozen/armadai-audit` vendors the small model-registry cache reader it needed from the
   removed `armadai-providers` crate (`src/vendored/model_registry.rs`).
 
+### Changed (project registries, #479)
+
+- `armadai migrate` reports each project registry source it drops (`registries.<kind>: <url>`)
+  instead of one `registries` line: the new format has no project registries, so a migrated
+  project stops using them. A `skills` or `starters` source can be kept by adding it to the
+  top-level list of `~/.config/armadai/registries.yaml`; `agents` and `models` sources are read
+  by no command. An empty `registries:` section is no longer reported.
+
 ### Changed (YAML library, #467)
 
 - **YAML is read and written with serde-saphyr** instead of serde_yaml_ng, which pulled

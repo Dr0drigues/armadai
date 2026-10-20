@@ -565,9 +565,53 @@ fn project_level_dead_sections_are_reported() {
     )
     .unwrap();
     let (_, _, r) = convert(&o);
+    assert_eq!(dropped(&r, "project"), ["defaults", "routing", "sources"]);
+    // an empty `registries:` section loses nothing, so it reports nothing
+    assert!(!(r.dropped.iter()).any(|d| d.subject.starts_with("registries")));
+}
+
+#[test]
+fn each_project_registry_source_is_reported_with_its_way_out() {
+    let mut o = old(vec![agent("A")]);
+    o.config = armadai_model::yaml::from_str(
+        "registries:\n  skills: [{ url: s1 }, { url: s2 }]\n  starters: [{ url: p1 }]\n  \
+         agents: [{ url: a1 }]\n  models: [{ url: m1 }]\n",
+    )
+    .unwrap();
+    let (_, _, r) = convert(&o);
+    let user = |key: &str, reader: &str| {
+        format!(
+            "the new format has no project registries; add it to the top-level `{key}:` list of \
+             ~/.config/armadai/registries.yaml to keep `{reader}` using it"
+        )
+    };
+    let mut got: Vec<[String; 3]> = (r.dropped.iter())
+        .filter(|d| d.subject.starts_with("registries"))
+        .map(|d| [d.subject.clone(), d.field.clone(), d.reason.clone()])
+        .collect();
+    got.sort();
+    let t = |s: &str, f: &str, r: &str| [s.to_string(), f.to_string(), r.to_string()];
     assert_eq!(
-        dropped(&r, "project"),
-        ["defaults", "registries", "routing", "sources"]
+        got,
+        [
+            t(
+                "registries.agents",
+                "a1",
+                "no command reads agent registries"
+            ),
+            t(
+                "registries.models",
+                "m1",
+                "no command reads model registries"
+            ),
+            t("registries.skills", "s1", &user("skills", "armadai skills")),
+            t("registries.skills", "s2", &user("skills", "armadai skills")),
+            t(
+                "registries.starters",
+                "p1",
+                &user("starters", "armadai init --pack")
+            ),
+        ]
     );
 }
 

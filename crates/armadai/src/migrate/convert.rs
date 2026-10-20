@@ -522,14 +522,39 @@ fn project_dead_sections(old: &OldProject, r: &mut Report) {
             NO_ENGINE,
         ),
         ("routing", c.routing.is_some(), NO_ENGINE),
-        (
-            "registries",
-            c.registries.is_some(),
-            "not part of the project format",
-        ),
     ] {
         if present {
             r.drop("project", field, reason);
+        }
+    }
+    // One line per source, each saying where it can still be read from (#479).
+    let Some(reg) = &c.registries else { return };
+    let user_file = |key: &str, reader: &str| {
+        format!(
+            "the new format has no project registries; add it to the top-level `{key}:` list of \
+             ~/.config/armadai/registries.yaml to keep `{reader}` using it"
+        )
+    };
+    for (key, sources, reason) in [
+        ("skills", &reg.skills, user_file("skills", "armadai skills")),
+        (
+            "starters",
+            &reg.starters,
+            user_file("starters", "armadai init --pack"),
+        ),
+        (
+            "agents",
+            &reg.agents,
+            "no command reads agent registries".into(),
+        ),
+        (
+            "models",
+            &reg.models,
+            "no command reads model registries".into(),
+        ),
+    ] {
+        for s in sources {
+            r.drop(&format!("registries.{key}"), &s.url, reason.clone());
         }
     }
 }

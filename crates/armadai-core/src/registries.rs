@@ -4,7 +4,8 @@
 //! `skills_registry::sync` (`default_sources`). This module lets users and
 //! projects declare *additional* registry sources via a `registries:`
 //! section in `~/.config/armadai/registries.yaml` (user) and/or
-//! `armadai.yaml` (project). Consumed by `skills_registry::cache` (skills)
+//! a legacy project config (`armadai.yaml`, `.armadai/config.yaml`; the
+//! new `.armadai/project.yaml` has none, see #479). Consumed by `skills_registry::cache` (skills)
 //! and `starters_registry` (starter packs).
 
 use std::collections::HashSet;

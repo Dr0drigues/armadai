@@ -258,9 +258,26 @@ What the conversion does:
 | `link.target`, `link.overrides.<target>.output`, `link.coordinator` | `targets`, `outputs`, `coordinator` (an unsupported target such as `gemini` is dropped) |
 | `orchestration.coordinator` + `teams` | a flow `orchestration`: coordinator → team lead → members (members without a lead under the coordinator); an unknown agent is omitted with a warning |
 | `orchestration.policy`, `free_agents` | `policy.delegation`, `policy.free_agents` (a name that is not a project agent, such as `Explore`, is kept as it is: it may be an agent the target provides) |
-| `orchestration.enabled`, `pattern`, `routes`, limits; `defaults`, `routing`, `registries`, `sources` | **dropped**, listed |
+| `orchestration.enabled`, `pattern`, `routes`, limits; `defaults`, `routing`, `sources` | **dropped**, listed |
+| `registries:` (project-level registry sources) | **dropped**, one line per source with where it can still be read from (below) |
 
 Agents of the user library that the project references are copied into the project.
+
+**Project registries.** The new format has no `registries:` section, and nothing reads registry
+sources from a migrated (or new) project: only the legacy config files did. `migrate` lists each
+source it drops, as `registries.<kind>: <url>`. To keep a `skills` or `starters` source, add it to
+the user file `~/.config/armadai/registries.yaml`, which `armadai skills` and `armadai init --pack`
+read. Its lists are top-level keys, without a `registries:` wrapper (a wrapped file is read as
+empty):
+
+```yaml
+skills:
+  - url: https://example.com/team/skills.git
+starters:
+  - url: https://example.com/team/starters.tar.gz
+```
+
+`agents` and `models` registry sources are read by no command; they are dropped with that reason.
 
 Known limits, also stated in every report:
 

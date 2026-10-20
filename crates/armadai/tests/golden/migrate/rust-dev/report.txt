@@ -4,13 +4,15 @@ Written (5):
   .armadai/agents/test-writer.md
   .armadai/project.yaml
   .armadai/skills/rust-conventions/SKILL.md
-Dropped (9):
+Dropped (11):
   code-reviewer: cost_limit (the execution engine was removed)
   code-reviewer: max_tokens (no reader in the new format)
   code-reviewer: stacks (no reader in the new format)
   debug: max_tokens (no reader in the new format)
   debug: stacks (no reader in the new format)
   provider: dropped for 3 agents (the target tool picks its own provider)
+  registries.skills: https://example.com/team/skills.git (the new format has no project registries; add it to the top-level `skills:` list of ~/.config/armadai/registries.yaml to keep `armadai skills` using it)
+  registries.starters: https://example.com/team/starters.tar.gz (the new format has no project registries; add it to the top-level `starters:` list of ~/.config/armadai/registries.yaml to keep `armadai init --pack` using it)
   rust-conventions: apply_to (a skill is loaded on demand by the target, not attached to agents)
   test-writer: max_tokens (no reader in the new format)
   test-writer: stacks (no reader in the new format)
