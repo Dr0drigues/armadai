@@ -142,19 +142,32 @@ async fn starters_dir_remove(path: &str) -> anyhow::Result<()> {
 /// (other keys, comments, order, line endings): see [`edit_starters_dirs`].
 fn save_starters_dirs(dirs: &[String]) -> anyhow::Result<()> {
     use anyhow::Context as _;
-    let path = app_config::config_file_path();
-    let path = link_target(path)?;
+    let path = link_target(&app_config::config_file_path())?;
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => anyhow::bail!("cannot read {}: {e}", path.display()),
     };
-    // the atomic rename would replace a file the user made read-only
-    if std::fs::metadata(&path).is_ok_and(|m| m.permissions().readonly()) {
-        anyhow::bail!(
-            "{} is read-only: make it writable (`chmod u+w`) or edit `starters_dirs` by hand",
-            path.display()
-        );
+    // the atomic rename replaces the file: refuse what writing it in place could not do
+    if let Ok(m) = std::fs::metadata(&path) {
+        if let Err(e) = std::fs::OpenOptions::new().write(true).open(&path) {
+            anyhow::bail!(
+                "{} is not writable ({e}): make it writable (`chmod u+w`) or edit \
+                 `starters_dirs` by hand",
+                path.display()
+            );
+        }
+        #[cfg(unix)]
+        if std::os::unix::fs::MetadataExt::nlink(&m) > 1 {
+            anyhow::bail!(
+                "{} has {} hard links: edit `starters_dirs` by hand, or break the link \
+                 (`cp` the file, then `mv` the copy over it)",
+                path.display(),
+                std::os::unix::fs::MetadataExt::nlink(&m)
+            );
+        }
+        #[cfg(not(unix))]
+        let _ = m;
     }
     let edited = edit_starters_dirs(&text, dirs).with_context(|| {
         format!(
@@ -165,10 +178,12 @@ fn save_starters_dirs(dirs: &[String]) -> anyhow::Result<()> {
     crate::compile::patch::write_atomic(&path, &edited)
 }
 
-/// `path` with its symbolic links followed, even to a target that does not exist yet:
-/// a link stays one, its target is what gets written.
-fn link_target(mut path: std::path::PathBuf) -> anyhow::Result<std::path::PathBuf> {
-    for _ in 0..40 {
+/// `start` with its symbolic links followed (40 at most, as Linux), even to a target that
+/// does not exist yet: a link stays one, its target is what gets written. A `..` after a
+/// missing directory is resolved on the path, so no directory outside the target is created.
+fn link_target(start: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    let mut path = start.to_path_buf();
+    for _ in 0..=40 {
         match std::fs::symlink_metadata(&path) {
             Ok(m) if m.file_type().is_symlink() => {
                 let to = std::fs::read_link(&path)?;
@@ -177,10 +192,28 @@ fn link_target(mut path: std::path::PathBuf) -> anyhow::Result<std::path::PathBu
                     None => to,
                 };
             }
-            _ => return Ok(path),
+            _ => {
+                // each existing prefix resolved, so a `..` only ever pops a real directory
+                let mut out = std::path::PathBuf::new();
+                for c in path.components() {
+                    match c {
+                        std::path::Component::ParentDir => {
+                            out.pop();
+                        }
+                        std::path::Component::CurDir => {}
+                        c => {
+                            out.push(c);
+                            if let Ok(real) = out.canonicalize() {
+                                out = real;
+                            }
+                        }
+                    }
+                }
+                return Ok(out);
+            }
         }
     }
-    anyhow::bail!("{}: too many levels of symbolic links", path.display())
+    anyhow::bail!("{}: more than 40 levels of symbolic links", start.display())
 }
 
 const KEY: &str = "starters_dirs:";
@@ -188,9 +221,10 @@ const KEY: &str = "starters_dirs:";
 /// `text` with only its top-level `starters_dirs` reading as `dirs`: matching item lines
 /// are kept as they are, the others dropped, the missing ones appended after the last
 /// item (the key itself appended at the end of the file when absent, removed when the
-/// list ends up empty). A block list of one-line items and a one-line flow list without
-/// comment are edited; anything else (anchor or alias, multi-line item or flow list...)
-/// is refused, and so is any edit whose result does not read back as `dirs`.
+/// list ends up empty, or written `[]` when that would drop a comment). A block list of
+/// one-line items, null and a one-line flow list are edited; anything else (anchor or
+/// alias, multi-line item or flow list...) is refused, and so is any edit whose result
+/// does not read back as `dirs`.
 fn edit_starters_dirs(text: &str, dirs: &[String]) -> anyhow::Result<String> {
     use anyhow::bail;
     if text.starts_with('\u{feff}') {
@@ -229,8 +263,15 @@ fn edit_starters_dirs(text: &str, dirs: &[String]) -> anyhow::Result<String> {
             }
         }
         [k] => {
-            let value = lines[k][KEY.len()..].trim();
-            if value.is_empty() || value.starts_with('#') {
+            let raw = lines[k][KEY.len()..].trim_end_matches(['\r', '\n']);
+            let line_eol = &lines[k][KEY.len() + raw.len()..];
+            // a comment opens at a `#` that starts the value or follows a blank
+            let cut = raw
+                .char_indices()
+                .find(|&(i, c)| c == '#' && (i == 0 || raw[..i].ends_with([' ', '\t'])))
+                .map_or(raw.len(), |(i, _)| i);
+            let (value, comment) = (raw[..cut].trim(), &raw[cut..]);
+            if value.is_empty() {
                 // block list: its items run until the next top-level line that is not one
                 let (mut items, mut indent) = (Vec::new(), None);
                 for (i, l) in lines.iter().enumerate().skip(k + 1) {
@@ -265,13 +306,20 @@ fn edit_starters_dirs(text: &str, dirs: &[String]) -> anyhow::Result<String> {
                     .filter(|d| !items.iter().any(|(_, v)| v == *d))
                     .collect();
                 let emptied = missing.is_empty() && !items.iter().any(|(_, v)| dirs.contains(v));
+                // an emptied list keeps its key as `[]` rather than lose a comment
+                let keep_key = !comment.is_empty()
+                    || lines[k + 1..end].iter().any(|l| l.trim().starts_with('#'));
                 for (i, l) in lines.iter().enumerate() {
+                    if emptied && keep_key && i == k {
+                        out.push_str(&format!("starters_dirs: []{raw}{line_eol}"));
+                        continue;
+                    }
                     if i == end {
                         for d in &missing {
                             push_line(&mut out, &format!("{}{}", indent.unwrap_or(""), render(d)?));
                         }
                     }
-                    let gone = (emptied && (k..end).contains(&i))
+                    let gone = (emptied && !keep_key && (k..end).contains(&i))
                         || items.iter().any(|(j, v)| *j == i && !dirs.contains(v));
                     if !gone {
                         out.push_str(l);
@@ -283,26 +331,33 @@ fn edit_starters_dirs(text: &str, dirs: &[String]) -> anyhow::Result<String> {
                     }
                 }
             } else if matches!(value, "~" | "null" | "Null" | "NULL")
-                || value.starts_with('[') && value.ends_with(']') && !value.contains('#')
+                || value.starts_with('[') && value.ends_with(']')
             {
                 // null or one-line flow list: rewritten as a block list
                 if value.starts_with('[') {
                     armadai_model::yaml::from_str::<Vec<String>>(value)
                         .map_err(|e| anyhow::anyhow!("line {}: {e}", k + 1))?;
                 }
+                let comment = if comment.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {comment}")
+                };
                 for (i, l) in lines.iter().enumerate() {
                     if i != k {
                         out.push_str(l);
                     } else if !dirs.is_empty() {
-                        push_line(&mut out, "starters_dirs:");
+                        push_line(&mut out, &format!("starters_dirs:{comment}"));
                         for d in dirs {
                             push_line(&mut out, &render(d)?);
                         }
+                    } else if !comment.is_empty() {
+                        push_line(&mut out, &format!("starters_dirs: []{comment}"));
                     }
                 }
             } else {
                 bail!(
-                    "line {}: only a block list, null or a one-line flow list without comment is edited",
+                    "line {}: only a block list, null or a one-line flow list is edited",
                     k + 1
                 );
             }
@@ -348,15 +403,49 @@ costs:
         );
         let removed = edit(FULL, &dirs(&["/opt/b"])).unwrap();
         assert_eq!(removed, FULL.replace("  - /opt/a   # first\n", ""));
-        // the list emptied: the key goes, with what was inside it
+        // the list emptied: its comments stay, under a `[]` key
         let emptied = edit(FULL, &[]).unwrap();
         assert_eq!(
             emptied,
             FULL.replace(
                 "starters_dirs:   # mine\n  - /opt/a   # first\n  # between\n  - '/opt/b'\n",
-                ""
+                "starters_dirs: []   # mine\n  # between\n"
             )
         );
+        assert_eq!(
+            edit("starters_dirs: # c\n  # mine\n  - /a\n", &[]).unwrap(),
+            "starters_dirs: [] # c\n  # mine\n"
+        );
+        assert_eq!(
+            edit("starters_dirs: # c\n- /a\n", &[]).unwrap(),
+            "starters_dirs: [] # c\n"
+        );
+        assert_eq!(
+            edit("starters_dirs:\n  # mine\n  - /a\n", &[]).unwrap(),
+            "starters_dirs: []\n  # mine\n"
+        );
+        // without a comment to keep, the key goes
+        assert_eq!(
+            edit("costs: 1\nstarters_dirs:\n- /a\n\nx: 2\n", &[]).unwrap(),
+            "costs: 1\n\nx: 2\n"
+        );
+    }
+
+    #[test]
+    fn a_comment_after_a_flow_or_null_value_is_kept() {
+        let text = "starters_dirs: [/a] # note\n";
+        assert_eq!(
+            edit(text, &dirs(&["/a", "/b"])).unwrap(),
+            "starters_dirs: # note\n- /a\n- /b\n"
+        );
+        assert_eq!(edit(text, &[]).unwrap(), "starters_dirs: [] # note\n");
+        for null in ["~ # c", "null  # c", "[] # c"] {
+            assert_eq!(
+                edit(&format!("starters_dirs: {null}\n"), &dirs(&["/a"])).unwrap(),
+                "starters_dirs: # c\n- /a\n",
+                "{null}"
+            );
+        }
     }
 
     #[test]
@@ -406,8 +495,8 @@ costs:
     #[test]
     fn styles_that_cannot_be_edited_line_by_line_are_refused() {
         for text in [
-            "starters_dirs: [/a] # note\n",
-            "starters_dirs: [/a] # see [x]\n",
+            // a `#` inside a quoted flow item cannot be told from a comment
+            "starters_dirs: [\"/a #b\"]\n",
             "starters_dirs: [/a,\n  /b]\n",
             "starters_dirs: &d\n- /a\nother: *d\n",
             "base: &p /a\nstarters_dirs:\n- *p\n",
@@ -460,5 +549,44 @@ costs:
                 "starters_dirs:\n- /a\ncosts: 1\n"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn link_target_follows_40_links_and_no_more() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().canonicalize().unwrap();
+        for i in 0..41 {
+            symlink(format!("l{}", i + 1), d.join(format!("l{i}"))).unwrap();
+        }
+        // l1 -> ... -> l41 (missing): 40 links
+        assert_eq!(super::link_target(&d.join("l1")).unwrap(), d.join("l41"));
+        let e = super::link_target(&d.join("l0")).unwrap_err().to_string();
+        assert_eq!(
+            e,
+            format!(
+                "{}: more than 40 levels of symbolic links",
+                d.join("l0").display()
+            )
+        );
+        // a `..` after a linked directory pops the directory it points to, as the kernel does
+        std::fs::create_dir_all(d.join("far/inner")).unwrap();
+        symlink(d.join("far/inner"), d.join("hop")).unwrap();
+        symlink("hop/../z.yaml", d.join("cfg.yaml")).unwrap();
+        assert_eq!(
+            super::link_target(&d.join("cfg.yaml")).unwrap(),
+            d.join("far/z.yaml")
+        );
+        symlink("b", d.join("a")).unwrap();
+        symlink("a", d.join("b")).unwrap();
+        let e = super::link_target(&d.join("a")).unwrap_err().to_string();
+        assert_eq!(
+            e,
+            format!(
+                "{}: more than 40 levels of symbolic links",
+                d.join("a").display()
+            )
+        );
     }
 }

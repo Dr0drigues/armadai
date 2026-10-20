@@ -3,12 +3,23 @@
 ### Fixed
 
 - `armadai config starters-dir add|remove` now edits only the `starters_dirs` key of
-  `config.yaml`: the other keys, comments, order and line endings are kept byte for byte
-  (they were all lost). A null or one-line flow `starters_dirs` becomes a block list; a style
-  it cannot edit safely (anchor, alias, multi-line item or flow list, flow list with a
-  comment, a flow mapping as the root, a leading byte order mark) and a read-only file are
-  refused with the file untouched. A symbolic link `config.yaml` stays one, even when its
-  target does not exist yet (#476).
+  `config.yaml` (other keys and comments were all lost):
+  - everything outside the key's items is kept byte for byte: other keys, comments, order,
+    line endings, indentation. A removed item takes its own end-of-line comment with it; a
+    list left empty keeps its key as `starters_dirs: []` when it holds a comment, and loses
+    the key otherwise; a missing final newline is added before an appended item and not
+    taken back by a later `remove`;
+  - a null (`~`, `null`) or one-line flow (`[a, b]`) value becomes a block list, keeping
+    its end-of-line comment;
+  - refused with the file untouched: an anchor or alias, an item or flow list spanning
+    several lines, a `#` inside a quoted flow item, a flow mapping as the root, a leading
+    byte order mark; a file the user has no write permission on (any mode without the
+    owner's write bit, or another owner); a file with several hard links (break the link
+    first: the atomic rename would leave the other names on the old content);
+  - the write is atomic and keeps the file's mode, owner and group (refused when the owner
+    or group cannot be kept). A symbolic link `config.yaml` stays one: its target is
+    written, and created with its directories when it does not exist yet (40 links at
+    most); no directory outside the resolved target is created (#476).
 
 ### Removed (cleanup)
 

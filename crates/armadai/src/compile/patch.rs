@@ -100,7 +100,21 @@ pub(crate) fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
         .with_context(|| format!("cannot write next to {}", path.display()))?;
     tmp.write_all(text.as_bytes())?;
     match std::fs::metadata(path) {
-        Ok(m) => std::fs::set_permissions(tmp.path(), m.permissions())?,
+        Ok(m) => {
+            // the rename replaces the file: keep its owner and group, or refuse
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let t = tmp.as_file().metadata()?;
+                if (t.uid(), t.gid()) != (m.uid(), m.gid()) {
+                    std::os::unix::fs::chown(tmp.path(), Some(m.uid()), Some(m.gid()))
+                        .with_context(|| {
+                            format!("cannot keep the owner and group of {}", path.display())
+                        })?;
+                }
+            }
+            std::fs::set_permissions(tmp.path(), m.permissions())?
+        }
         // a new file: the usual mode of a versioned text file, not the temp file's 0600
         #[cfg(unix)]
         Err(_) => {

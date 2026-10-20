@@ -64,7 +64,10 @@ fn add_and_remove_keep_every_other_byte() {
     assert!(ok, "{err}");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        CONFIG.replace("starters_dirs:   # mine\r\n  - /opt/a   # first\r\n", "")
+        CONFIG.replace(
+            "starters_dirs:   # mine\r\n  - /opt/a   # first\r\n",
+            "starters_dirs: []   # mine\r\n"
+        )
     );
 }
 
@@ -97,7 +100,7 @@ fn an_absent_file_is_created() {
 fn a_style_that_cannot_be_edited_is_refused_untouched() {
     for (text, args, why) in [
         (
-            "costs: 1\nstarters_dirs: [/opt/a] # note\n",
+            "costs: 1\nstarters_dirs: &d\n- /opt/a\n",
             ["add", "/opt/b"],
             "line 2",
         ),
@@ -129,19 +132,72 @@ fn a_style_that_cannot_be_edited_is_refused_untouched() {
     }
 }
 
+/// The rename replaces the file: what writing it in place could not do is refused.
 #[cfg(unix)]
 #[test]
-fn a_read_only_file_is_refused_untouched() {
+fn a_file_the_user_cannot_write_is_refused_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    for mode in [0o464, 0o444, 0o400] {
+        let (dir, path) = setup(CONFIG);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        let (ok, err) = run(dir.path(), &["add", "/opt/b"]);
+        assert!(!ok, "{mode:o}: the add must fail");
+        assert!(
+            err.contains("not writable") && err.contains("chmod u+w"),
+            "{mode:o}: {err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG, "{mode:o}");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_read_only_directory_is_refused_untouched() {
     use std::os::unix::fs::PermissionsExt;
     let (dir, path) = setup(CONFIG);
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let cfg = dir.path().join("cfg");
+    std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let (ok, err) = run(dir.path(), &["add", "/opt/b"]);
+    std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!ok, "the add must fail");
+    assert!(err.contains("cannot write next to"), "{err}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hard_linked_file_is_refused_untouched() {
+    let (dir, path) = setup(CONFIG);
+    std::fs::hard_link(&path, dir.path().join("hard.yaml")).unwrap();
     let (ok, err) = run(dir.path(), &["add", "/opt/b"]);
     assert!(!ok, "the add must fail");
     assert!(
-        err.contains("read-only") && err.contains("chmod u+w"),
+        err.contains("has 2 hard links") && err.contains("by hand"),
         "{err}"
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG);
+}
+
+/// Needs a second group of the current user; skipped without one.
+#[cfg(unix)]
+#[test]
+fn the_group_of_the_file_is_kept() {
+    use std::os::unix::fs::MetadataExt;
+    let (dir, path) = setup(CONFIG);
+    let ids = std::process::Command::new("id").arg("-G").output().unwrap();
+    let own = std::fs::metadata(&path).unwrap().gid();
+    let Some(other) = String::from_utf8_lossy(&ids.stdout)
+        .split_whitespace()
+        .filter_map(|g| g.parse::<u32>().ok())
+        .find(|&g| g != own && std::os::unix::fs::chown(&path, None, Some(g)).is_ok())
+    else {
+        eprintln!("skipped: no second group to test with");
+        return;
+    };
+    let (ok, err) = run(dir.path(), &["add", "/opt/b"]);
+    assert!(ok, "{err}");
+    assert_eq!(std::fs::metadata(&path).unwrap().gid(), other);
 }
 
 #[cfg(unix)]
@@ -195,4 +251,21 @@ fn a_symlink_stays_one_and_permissions_are_kept() {
     );
     let mode = std::fs::metadata(&target).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
+}
+
+/// A `..` after a missing directory creates nothing outside the resolved target.
+#[cfg(unix)]
+#[test]
+fn a_dangling_symlink_through_a_missing_directory_creates_only_the_target_one() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
+    std::os::unix::fs::symlink("sub/../../z/real.yaml", dir.path().join("cfg/config.yaml"))
+        .unwrap();
+    let (ok, err) = run(dir.path(), &["add", "/opt/a"]);
+    assert!(ok, "{err}");
+    assert!(!dir.path().join("cfg/sub").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("z/real.yaml")).unwrap(),
+        "starters_dirs:\n- /opt/a\n"
+    );
 }
