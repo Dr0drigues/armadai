@@ -4,7 +4,7 @@ use std::process::Command as ProcessCommand;
 const REPO: &str = "Dr0drigues/armadai";
 
 /// Self-update armadai by downloading the latest release binary.
-pub async fn execute() -> anyhow::Result<()> {
+pub fn execute() -> anyhow::Result<()> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
 

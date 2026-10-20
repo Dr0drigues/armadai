@@ -4,7 +4,7 @@ use crate::linker::{LinkTarget, supported_target_names};
 use armadai_core::config;
 use armadai_core::starter::{StarterPack, find_pack_dir, list_available_packs};
 
-pub async fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Result<()> {
+pub fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
     if let Some(pack_name) = pack {
         // a pack always becomes a project here: the user library is gone (C11)

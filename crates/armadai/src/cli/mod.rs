@@ -373,21 +373,21 @@ fn strip_hidden_subcommands(script: &str, hidden: &[String]) -> String {
     out
 }
 
-pub async fn handle(cli: Cli) -> anyhow::Result<()> {
+pub fn handle(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::New { what } => new::execute(what),
-        Command::List { tags } => list::execute(tags).await,
-        Command::Inspect { agent } => inspect::execute(agent).await,
+        Command::List { tags } => list::execute(tags),
+        Command::Inspect { agent } => inspect::execute(agent),
         Command::Graph { flow, format } => graph::execute(flow, format),
-        Command::Validate { path, json } => validate::execute(path, json).await,
+        Command::Validate { path, json } => validate::execute(path, json),
         Command::Migrate {
             path,
             dry_run,
             force,
         } => migrate::execute(path, dry_run, force),
-        Command::Config { action } => config::execute(action).await,
-        Command::Models(action) => models::execute(action).await,
-        Command::Skills(action) => skills::execute(action).await,
+        Command::Config { action } => config::execute(action),
+        Command::Models(action) => models::execute(action),
+        Command::Skills(action) => skills::execute(action),
         Command::Link {
             target,
             dry_run,
@@ -395,19 +395,19 @@ pub async fn handle(cli: Cli) -> anyhow::Result<()> {
             output,
             agents,
             json,
-        } => link::execute(target, dry_run, force, output, agents, json).await,
+        } => link::execute(target, dry_run, force, output, agents, json),
         Command::Unlink {
             target,
             dry_run,
             output,
             agents,
-        } => unlink::execute(target, dry_run, output, agents).await,
+        } => unlink::execute(target, dry_run, output, agents),
         Command::Init {
             force,
             project,
             pack,
-        } => init::execute(force, project, pack).await,
-        Command::Update => update::execute().await,
+        } => init::execute(force, project, pack),
+        Command::Update => update::execute(),
         Command::Completion { shell } => {
             let mut buf = Vec::new();
             clap_complete::generate(shell, &mut Cli::command(), "armadai", &mut buf);

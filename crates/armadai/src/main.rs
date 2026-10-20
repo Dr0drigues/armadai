@@ -8,8 +8,7 @@ mod starters_registry;
 
 use clap::Parser;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     {
         use tracing_subscriber::prelude::*;
 
@@ -27,5 +26,5 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let args = cli::Cli::parse();
-    cli::handle(args).await
+    cli::handle(args)
 }

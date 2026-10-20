@@ -32,7 +32,7 @@ pub fn tier_str(t: Option<Tier>) -> &'static str {
     }
 }
 
-pub async fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
+pub fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
     let project = load_for_reading()?;
     let agents: Vec<_> = (project.agents.iter())
         .filter(|(_, a)| {

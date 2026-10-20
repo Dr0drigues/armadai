@@ -35,18 +35,18 @@ pub enum SkillsAction {
     },
 }
 
-pub async fn execute(action: SkillsAction) -> anyhow::Result<()> {
+pub fn execute(action: SkillsAction) -> anyhow::Result<()> {
     match action {
-        SkillsAction::List => list().await,
-        SkillsAction::Show { name } => show(&name).await,
-        SkillsAction::Sync => cmd_sync().await,
-        SkillsAction::Search { query } => cmd_search(&query).await,
-        SkillsAction::Add { source, force } => cmd_add(&source, force).await,
-        SkillsAction::Info { name } => cmd_info(&name).await,
+        SkillsAction::List => list(),
+        SkillsAction::Show { name } => show(&name),
+        SkillsAction::Sync => cmd_sync(),
+        SkillsAction::Search { query } => cmd_search(&query),
+        SkillsAction::Add { source, force } => cmd_add(&source, force),
+        SkillsAction::Info { name } => cmd_info(&name),
     }
 }
 
-async fn list() -> anyhow::Result<()> {
+fn list() -> anyhow::Result<()> {
     let skills = collect_skills();
 
     if skills.is_empty() {
@@ -121,7 +121,7 @@ async fn list() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn show(name: &str) -> anyhow::Result<()> {
+fn show(name: &str) -> anyhow::Result<()> {
     let skills = collect_skills();
     let skill = skills
         .iter()
@@ -186,7 +186,7 @@ async fn show(name: &str) -> anyhow::Result<()> {
 // Registry commands
 // ---------------------------------------------------------------------------
 
-async fn cmd_sync() -> anyhow::Result<()> {
+fn cmd_sync() -> anyhow::Result<()> {
     let sources = cache::effective_sources();
     let r = crate::cli::style::running();
     anstream::println!("{r}Syncing {} skill source(s)...{r:#}", sources.len());
@@ -199,7 +199,7 @@ async fn cmd_sync() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_search(query: &str) -> anyhow::Result<()> {
+fn cmd_search(query: &str) -> anyhow::Result<()> {
     check_staleness();
     let sources = cache::effective_sources();
     let index = cache::load_or_build_index(&sources)?;
@@ -269,7 +269,7 @@ async fn cmd_search(query: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_add(source: &str, force: bool) -> anyhow::Result<()> {
+fn cmd_add(source: &str, force: bool) -> anyhow::Result<()> {
     // Parse source: owner/repo or owner/repo/skill-name
     let parts: Vec<&str> = source.split('/').collect();
     let (owner, repo, skill_name) = match parts.len() {
@@ -354,7 +354,7 @@ async fn cmd_add(source: &str, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_info(name: &str) -> anyhow::Result<()> {
+fn cmd_info(name: &str) -> anyhow::Result<()> {
     check_staleness();
     let sources = cache::effective_sources();
     let index = cache::load_or_build_index(&sources)?;

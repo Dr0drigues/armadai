@@ -192,23 +192,20 @@ fn extract_archive(archive: &Path, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Archive-backed fetcher: download via reqwest, then extract via `tar`/`unzip`.
+/// Archive-backed fetcher: download via `curl`, then extract via `tar`/`unzip`.
 pub struct ArchiveFetcher;
 
 impl StarterFetcher for ArchiveFetcher {
     fn fetch(&self, url: &str, dest: &Path) -> anyhow::Result<()> {
-        // Download to a temp file, then extract into `dest`.
-        let bytes = download_bytes(url)?;
-        let tmp = std::env::temp_dir().join(format!("armadai-dl-{}", cache_key(url)));
-        std::fs::write(&tmp, &bytes)?;
-        // Preserve the extension so extract_archive picks tar vs unzip.
-        let ext_tmp = tmp.with_extension(archive_ext(url));
-        std::fs::rename(&tmp, &ext_tmp).ok();
-        let src = if ext_tmp.exists() { ext_tmp } else { tmp };
+        // Download to a temp file whose extension makes extract_archive pick tar vs unzip.
+        let src = std::env::temp_dir()
+            .join(format!("armadai-dl-{}", cache_key(url)))
+            .with_extension(archive_ext(url));
+        download_to("curl", url, &src)?;
         let _ = std::fs::remove_dir_all(dest); // fresh extract
-        extract_archive(&src, dest)?;
+        let extracted = extract_archive(&src, dest);
         let _ = std::fs::remove_file(&src);
-        Ok(())
+        extracted
     }
 }
 
@@ -223,26 +220,49 @@ fn archive_ext(url: &str) -> &'static str {
     }
 }
 
-fn download_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
-    // `fetch` is a sync trait method but is called from WITHIN an async runtime
-    // (`registry sync`, `init`). Creating a tokio runtime inline would panic
-    // ("cannot start a runtime from within a runtime"). Run the async reqwest
-    // download on a dedicated OS thread with its own current-thread runtime.
-    let url = url.to_string();
-    std::thread::spawn(move || -> anyhow::Result<Vec<u8>> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(async {
-            let resp = reqwest::get(&url).await?;
-            if !resp.status().is_success() {
-                anyhow::bail!("download {url} failed: HTTP {}", resp.status());
-            }
-            Ok(resp.bytes().await?.to_vec())
-        })
-    })
-    .join()
-    .map_err(|_| anyhow::anyhow!("download thread panicked"))?
+/// Upper bounds for one archive download (curl `--max-time`, `--max-filesize`).
+const DOWNLOAD_MAX_SECS: &str = "300";
+const DOWNLOAD_MAX_BYTES: &str = "104857600"; // 100 MiB
+
+/// Download `url` to `out` with the `curl` program (`update` uses it too).
+/// HTTPS only, redirects followed (still HTTPS), proxies from the standard env vars.
+/// On any failure `out` is removed, so a truncated file is never extracted.
+fn download_to(curl: &str, url: &str, out: &Path) -> anyhow::Result<()> {
+    if !url.starts_with("https://") {
+        anyhow::bail!("download {url} refused: archive sources must use an https:// URL");
+    }
+    let result = std::process::Command::new(curl)
+        .args([
+            "-fsSL",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--max-time",
+            DOWNLOAD_MAX_SECS,
+            "--max-filesize",
+            DOWNLOAD_MAX_BYTES,
+            "-o",
+        ])
+        .arg(out)
+        .arg(url)
+        .output();
+    let output = match result {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => anyhow::bail!(
+            "download {url} failed: `{curl}` not found in PATH; install curl (bundled with Windows 10+, macOS and most Linux distributions)"
+        ),
+        Err(e) => anyhow::bail!("download {url} failed: could not run `{curl}`: {e}"),
+    };
+    if !output.status.success() {
+        let _ = std::fs::remove_file(out);
+        anyhow::bail!(
+            "download {url} failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
 }
 
 /// Fetch one source into its cache dir. Git only in Lot 1; archive is Lot 2.
@@ -376,8 +396,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 
-    #[tokio::test]
-    async fn git_fetcher_clones_local_repo() {
+    #[test]
+    fn git_fetcher_clones_local_repo() {
         // Build a local git repo containing a pack, fetch it, discover the pack.
         // (Skip gracefully if `git` is unavailable.)
         if std::process::Command::new("git")
@@ -468,5 +488,104 @@ mod archive_tests {
                 .any(|p| p.file_name().unwrap().to_string_lossy() == "rust-qa")
         );
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// A fake `curl` that records its args, writes `-o`'s target then runs `body`.
+    #[cfg(unix)]
+    fn fake_curl(dir: &Path, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("curl");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\n\
+                 while [ $# -gt 1 ]; do [ \"$1\" = -o ] && out=$2; shift; done\n{body}\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        script.to_str().unwrap().to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_writes_the_body_with_bounded_https_only_curl() {
+        let dir = tempfile::tempdir().unwrap();
+        let curl = fake_curl(dir.path(), "printf payload > \"$out\"");
+        let out = dir.path().join("a.tar.gz");
+        download_to(&curl, "https://example.com/a.tar.gz", &out).unwrap();
+        assert_eq!(fs::read_to_string(&out).unwrap(), "payload");
+        let args = fs::read_to_string(dir.path().join("args")).unwrap();
+        let args: Vec<_> = args.lines().collect();
+        for flag in [
+            "-fsSL",
+            "--proto",
+            "--proto-redir",
+            "--max-time",
+            "--max-filesize",
+        ] {
+            assert!(args.contains(&flag), "missing {flag} in {args:?}");
+        }
+        assert_eq!(args.iter().filter(|a| **a == "=https").count(), 2);
+        assert_eq!(args.last(), Some(&"https://example.com/a.tar.gz"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_reports_http_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let curl = fake_curl(
+            dir.path(),
+            "echo 'curl: (22) The requested URL returned error: 404' >&2; exit 22",
+        );
+        let out = dir.path().join("a.tar.gz");
+        let err = download_to(&curl, "https://example.com/a.tar.gz", &out)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("returned error: 404"), "{err}");
+        assert!(err.contains("https://example.com/a.tar.gz"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_removes_a_truncated_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let curl = fake_curl(
+            dir.path(),
+            "printf partial > \"$out\"; echo 'curl: (18) transfer closed' >&2; exit 18",
+        );
+        let out = dir.path().join("a.tar.gz");
+        let err = download_to(&curl, "https://example.com/a.tar.gz", &out)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("transfer closed"), "{err}");
+        assert!(!out.exists(), "truncated download left behind");
+    }
+
+    #[test]
+    fn download_without_curl_says_to_install_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-curl");
+        let err = download_to(
+            missing.to_str().unwrap(),
+            "https://example.com/a.tar.gz",
+            &dir.path().join("a.tar.gz"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("not found in PATH"), "{err}");
+        assert!(err.contains("install curl"), "{err}");
+    }
+
+    #[test]
+    fn download_refuses_non_https_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        // A program that would succeed if it were run: the refusal must come first.
+        for url in ["http://example.com/a.tar.gz", "-o/etc/x https://e.com"] {
+            let err = download_to("true", url, &dir.path().join("a.tar.gz"))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("must use an https:// URL"), "{url}: {err}");
+        }
     }
 }

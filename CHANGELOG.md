@@ -26,6 +26,13 @@
 - `frozen/armadai-audit` vendors the small model-registry cache reader it needed from the
   removed `armadai-providers` crate (`src/vendored/model_registry.rs`).
 
+### Changed (archive download)
+
+- Starter archive sources are downloaded with the `curl` program (as `armadai update` already
+  did) instead of `reqwest`; `reqwest`, `tokio` and their TLS stack leave the dependency tree
+  (233 → 151 locked packages). `curl` must be in `PATH`; archive URLs must be `https://`
+  (redirects too); a download is capped at 300 s and 100 MiB.
+
 ### Changed (YAML library, #467)
 
 - **YAML is read and written with serde-saphyr** instead of serde_yaml_ng, which pulled
