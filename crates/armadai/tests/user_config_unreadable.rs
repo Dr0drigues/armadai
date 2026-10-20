@@ -66,7 +66,7 @@ fn an_empty_or_comment_only_config_is_the_default_without_warning() {
         assert!(!stderr.contains("warning"), "{text:?}: {stderr}");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
-            "starters_dirs:\n- /opt/other\n"
+            format!("{text}starters_dirs:\n- /opt/other\n")
         );
     }
 }

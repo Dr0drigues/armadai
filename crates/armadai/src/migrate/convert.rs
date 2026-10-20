@@ -9,6 +9,7 @@ use armadai_core::agent::{
 use armadai_core::model_resolution::{ModelTier, parse_latest_placeholder};
 use armadai_core::orchestration::OrchestrationPattern;
 use armadai_core::orchestration::policy::PolicyMode;
+use armadai_core::registries::SourceKind;
 use armadai_model::{
     Agent, AgentFront, Delegation, Flow, Link, Manifest, Policy, Project, Skill, SkillFront, Step,
     TARGETS, Tier,
@@ -522,16 +523,93 @@ fn project_dead_sections(old: &OldProject, r: &mut Report) {
             NO_ENGINE,
         ),
         ("routing", c.routing.is_some(), NO_ENGINE),
-        (
-            "registries",
-            c.registries.is_some(),
-            "not part of the project format",
-        ),
     ] {
         if present {
             r.drop("project", field, reason);
         }
     }
+    // One line per source, then one warning per registry type with the entries to paste
+    // where they can still be read from (#479).
+    let Some(reg) = &c.registries else { return };
+    let user_file = armadai_core::config::registries_config_path();
+    for (key, sources, reader) in [
+        (
+            "skills",
+            &reg.skills,
+            Some("armadai skills sync|search|info"),
+        ),
+        ("starters", &reg.starters, Some("armadai init --pack")),
+        ("agents", &reg.agents, None),
+        ("models", &reg.models, None),
+    ] {
+        let subject = format!("registries.{key}");
+        let mut kept = Vec::new();
+        let mut kind_ignored = false;
+        for s in sources {
+            let url = yaml_quoted(&s.url);
+            let kind = s.kind.map(|k| match k {
+                SourceKind::Git => "git",
+                SourceKind::Archive => "archive",
+            });
+            let shown = if s.url.is_empty() { "empty url" } else { &url };
+            let field = kind.map_or(shown.to_string(), |k| format!("{shown}, kind: {k}"));
+            let reason = match reader {
+                _ if s.url.is_empty() => "it names no registry".to_string(),
+                None => format!("no command reads {} registries", &key[..key.len() - 1]),
+                Some(_) => "the new format has no project registries; see the warning".into(),
+            };
+            r.drop(&subject, &field, reason);
+            if reader.is_none() || s.url.is_empty() {
+                continue;
+            }
+            // only starter sources are fetched by kind; skill sources are read as urls
+            kept.push(match kind {
+                Some(k) if key == "starters" => format!("{{ url: {url}, kind: {k} }}"),
+                _ => format!("{{ url: {url} }}"),
+            });
+            kind_ignored |= kind.is_some() && key != "starters";
+        }
+        let Some(reader) = reader.filter(|_| !kept.is_empty()) else {
+            continue;
+        };
+        let what = if key == "starters" {
+            "these exact entries, `kind` included,"
+        } else if kind_ignored {
+            "these entries (only GitHub sources, `owner/repo` or `https://github.com/owner/repo`, \
+             are fetched; a `kind` is not read for skill sources)"
+        } else {
+            "these entries (only GitHub sources, `owner/repo` or `https://github.com/owner/repo`, \
+             are fetched)"
+        };
+        r.warn(format!(
+            "{subject}: to keep `{reader}` using these sources, add {what} to the top-level \
+             `{key}:` list of {} (as `- {{ ... }}` items if that list is written as a block): [{}]",
+            user_file.display(),
+            kept.join(", ")
+        ));
+    }
+}
+
+/// `text` as a YAML double-quoted scalar. JSON escapes the C0 controls; also escaped as
+/// `\uXXXX`: what YAML refuses even quoted (DEL, the C1 controls, U+FFFE, U+FFFF) and what
+/// would make a report line read differently (the bidirectional marks and overrides U+061C,
+/// U+200E/F, U+202A-202E, U+2066-2069, the line separators U+2028/2029, the BOM U+FEFF).
+/// shortcut: other invisible characters (U+200B, U+2060, U+00AD) stay raw; YAML reads them
+/// and they hide no text, escape them if a report line is ever found misleading.
+fn yaml_quoted(text: &str) -> String {
+    let json = serde_json::to_string(text).unwrap_or_default();
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        if matches!(c, '\u{7f}'..='\u{9f}' | '\u{61c}' | '\u{200e}' | '\u{200f}'
+            | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}' | '\u{fffe}'
+            | '\u{ffff}')
+        {
+            out.push_str(&format!("\\u{:04x}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn skill_description(id: &str, declared: Option<&str>, body: &str, r: &mut Report) -> String {

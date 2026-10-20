@@ -1,5 +1,27 @@
 ## Unreleased
 
+### Fixed
+
+- `armadai config starters-dir add|remove` now edits only the `starters_dirs` key of
+  `config.yaml` (other keys and comments were all lost):
+  - everything outside the key's items is kept byte for byte: other keys, comments, order,
+    line endings, indentation. A removed item takes its own end-of-line comment with it; a
+    list left empty keeps its key as `starters_dirs: []` when it holds a comment, and loses
+    the key otherwise; a missing final newline is added before an appended item and not
+    taken back by a later `remove`;
+  - a null (`~`, `null`) or one-line flow (`[a, b]`) value becomes a block list, keeping
+    its end-of-line comment;
+  - refused with the file untouched: an anchor or alias, an item or flow list spanning
+    several lines, a `#` inside a quoted flow item, a flow mapping as the root, a leading
+    byte order mark; a file that does not open for writing (mode, ACL, immutable flag...);
+    a file of another user; a file with several hard links (break the link first: the
+    atomic rename would leave the other names on the old content);
+  - the write is atomic and keeps the file's mode; its owner and group are kept when the
+    system allows it, otherwise the file takes the group a new file gets in its directory
+    (also for the files `link` patches, which never stop over ownership). A symbolic link `config.yaml` stays one: its target is
+    written, and created with its directories when it does not exist yet (40 links at
+    most); no directory outside the resolved target is created (#476).
+
 ### Removed (cleanup)
 
 - Files left over from the removed surfaces: the root `agents/` (two legacy agents), `PRD.md`,
@@ -25,6 +47,19 @@
   point at `Dr0drigues/armadai`.
 - `frozen/armadai-audit` vendors the small model-registry cache reader it needed from the
   removed `armadai-providers` crate (`src/vendored/model_registry.rs`).
+
+### Changed (project registries, #479)
+
+- `armadai migrate` reports each project registry source it drops (`registries.<type>: "<url>"`,
+  with its delivery `kind:` when declared) instead of one `registries` line: the new format has no
+  project registries, so a migrated project stops using them. For the `skills` and `starters`
+  registry types, a warning gives the entries to paste into the top-level lists of the user
+  `registries.yaml` (its real path is printed): starter entries keep their `kind`, skill entries
+  carry the URL alone (a skill source's `kind` is not read, and only GitHub sources are
+  fetched, which the warning says). URLs are quoted with control characters, U+FFFE/U+FFFF and
+  bidirectional characters escaped, so a pasted entry reads back as the same URL. `agents` and
+  `models` sources are read by no command. An empty url is reported as such; an empty
+  `registries:` section is no longer reported.
 
 ### Changed (YAML library, #467)
 
