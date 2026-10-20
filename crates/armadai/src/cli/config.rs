@@ -101,7 +101,7 @@ async fn starters_dir_add(path: &str) -> anyhow::Result<()> {
     }
 
     config.starters_dirs.push(path.to_string());
-    app_config::save_user_config(&config)?;
+    save_starters_dirs(&config.starters_dirs)?;
     let o = crate::cli::style::ok();
     anstream::println!("{o}Added starter directory: {path}{o:#}");
     let m = crate::cli::style::muted();
@@ -126,7 +126,7 @@ async fn starters_dir_remove(path: &str) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    app_config::save_user_config(&config)?;
+    save_starters_dirs(&config.starters_dirs)?;
     let o = crate::cli::style::ok();
     anstream::println!("{o}Removed starter directory: {path}{o:#}");
     let m = crate::cli::style::muted();
@@ -136,4 +136,252 @@ async fn starters_dir_remove(path: &str) -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+/// Write `dirs` as the `starters_dirs` of config.yaml, touching nothing else in the file
+/// (other keys, comments, order, line endings): see [`edit_starters_dirs`].
+fn save_starters_dirs(dirs: &[String]) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let path = app_config::config_file_path();
+    // a symbolic link stays one: its target is what gets updated
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => anyhow::bail!("cannot read {}: {e}", path.display()),
+    };
+    let edited = edit_starters_dirs(&text, dirs).with_context(|| {
+        format!(
+            "{} left untouched: edit `starters_dirs` by hand",
+            path.display()
+        )
+    })?;
+    crate::compile::patch::write_atomic(&path, &edited)
+}
+
+const KEY: &str = "starters_dirs:";
+
+/// `text` with only its top-level `starters_dirs` reading as `dirs`: matching item lines
+/// are kept as they are, the others dropped, the missing ones appended after the last
+/// item (the key itself appended at the end of the file when absent, removed when the
+/// list ends up empty). A block list of one-line items and a one-line flow list without
+/// comment are edited; anything else (anchor or alias, multi-line item or flow list...)
+/// is refused, and so is any edit whose result does not read back as `dirs`.
+fn edit_starters_dirs(text: &str, dirs: &[String]) -> anyhow::Result<String> {
+    use anyhow::bail;
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let render = |d: &String| -> anyhow::Result<String> {
+        let item = armadai_model::yaml::to_string(&[d])?;
+        let item = item.trim_end_matches('\n');
+        if item.contains('\n') {
+            bail!("{d:?} does not fit on one line");
+        }
+        Ok(item.to_string())
+    };
+    let mut out = String::new();
+    let push_line = |out: &mut String, line: &str| {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push_str(eol);
+        }
+        out.push_str(line);
+        out.push_str(eol);
+    };
+
+    let keys: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i].starts_with(KEY))
+        .collect();
+    match keys[..] {
+        [] => {
+            out.push_str(text);
+            if !dirs.is_empty() {
+                push_line(&mut out, "starters_dirs:");
+                for d in dirs {
+                    push_line(&mut out, &render(d)?);
+                }
+            }
+        }
+        [k] => {
+            let value = lines[k][KEY.len()..].trim();
+            if value.is_empty() || value.starts_with('#') {
+                // block list: its items run until the next top-level line that is not one
+                let (mut items, mut indent) = (Vec::new(), None);
+                for (i, l) in lines.iter().enumerate().skip(k + 1) {
+                    let t = l.trim();
+                    if t.is_empty() || t.starts_with('#') {
+                        continue;
+                    }
+                    let ind = &l[..l.len() - l.trim_start().len()];
+                    if ind.is_empty() && !t.starts_with('-') {
+                        break;
+                    }
+                    if *indent.get_or_insert(ind) != ind || !(t.starts_with("- ") || t == "-") {
+                        bail!("line {}: an item must be `- <path>` on one line", i + 1);
+                    }
+                    let parsed: Option<Vec<String>> = armadai_model::yaml::from_str(t).ok();
+                    let Some([v]) = parsed.as_deref() else {
+                        bail!("line {}: `{t}` is not a single path", i + 1);
+                    };
+                    items.push((i, v.clone()));
+                }
+                let end = items.last().map_or(k + 1, |(i, _)| i + 1);
+                let missing: Vec<&String> = dirs
+                    .iter()
+                    .filter(|d| !items.iter().any(|(_, v)| v == *d))
+                    .collect();
+                let emptied = missing.is_empty() && !items.iter().any(|(_, v)| dirs.contains(v));
+                for (i, l) in lines.iter().enumerate() {
+                    if i == end {
+                        for d in &missing {
+                            push_line(&mut out, &format!("{}{}", indent.unwrap_or(""), render(d)?));
+                        }
+                    }
+                    let gone = (emptied && (k..end).contains(&i))
+                        || items.iter().any(|(j, v)| *j == i && !dirs.contains(v));
+                    if !gone {
+                        out.push_str(l);
+                    }
+                }
+                if end == lines.len() {
+                    for d in &missing {
+                        push_line(&mut out, &format!("{}{}", indent.unwrap_or(""), render(d)?));
+                    }
+                }
+            } else if value.starts_with('[') && value.ends_with(']') && !value.contains('#') {
+                // one-line flow list: rewritten as a block list
+                armadai_model::yaml::from_str::<Vec<String>>(value)
+                    .map_err(|e| anyhow::anyhow!("line {}: {e}", k + 1))?;
+                for (i, l) in lines.iter().enumerate() {
+                    if i != k {
+                        out.push_str(l);
+                    } else if !dirs.is_empty() {
+                        push_line(&mut out, "starters_dirs:");
+                        for d in dirs {
+                            push_line(&mut out, &render(d)?);
+                        }
+                    }
+                }
+            } else {
+                bail!(
+                    "line {}: only a block list or a one-line flow list without comment is edited",
+                    k + 1
+                );
+            }
+        }
+        _ => bail!("`starters_dirs` appears more than once"),
+    }
+    let read: Option<app_config::UserConfig> = armadai_model::yaml::from_str(&out)
+        .map_err(|e| anyhow::anyhow!("the edited file would not read: {e}"))?;
+    if read.unwrap_or_default().starters_dirs != dirs {
+        bail!("the edited file would not read back as the expected list");
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::edit_starters_dirs as edit;
+
+    fn dirs(d: &[&str]) -> Vec<String> {
+        d.iter().map(|s| s.to_string()).collect()
+    }
+
+    const FULL: &str = "\
+# ArmadAI user configuration
+defaults:
+  provider: anthropic   # kept
+starters_dirs:   # mine
+  - /opt/a   # first
+  # between
+  - '/opt/b'
+
+# costs below
+costs:
+  enabled: true
+";
+
+    #[test]
+    fn only_the_items_change_and_everything_else_is_kept() {
+        let added = edit(FULL, &dirs(&["/opt/a", "/opt/b", "/opt/c"])).unwrap();
+        assert_eq!(
+            added,
+            FULL.replace("  - '/opt/b'\n", "  - '/opt/b'\n  - /opt/c\n")
+        );
+        let removed = edit(FULL, &dirs(&["/opt/b"])).unwrap();
+        assert_eq!(removed, FULL.replace("  - /opt/a   # first\n", ""));
+        // the list emptied: the key goes, with what was inside it
+        let emptied = edit(FULL, &[]).unwrap();
+        assert_eq!(
+            emptied,
+            FULL.replace(
+                "starters_dirs:   # mine\n  - /opt/a   # first\n  # between\n  - '/opt/b'\n",
+                ""
+            )
+        );
+    }
+
+    #[test]
+    fn an_absent_key_is_appended_at_the_end() {
+        assert_eq!(edit("", &dirs(&["/x"])).unwrap(), "starters_dirs:\n- /x\n");
+        assert_eq!(
+            edit("# notes\ncosts:\n  enabled: true", &dirs(&["/x"])).unwrap(),
+            "# notes\ncosts:\n  enabled: true\nstarters_dirs:\n- /x\n"
+        );
+    }
+
+    #[test]
+    fn crlf_lines_stay_crlf() {
+        let text = "# notes\r\nstarters_dirs:\r\n- /a\r\ncosts: 1\r\n";
+        assert_eq!(
+            edit(text, &dirs(&["/a", "/b"])).unwrap(),
+            "# notes\r\nstarters_dirs:\r\n- /a\r\n- /b\r\ncosts: 1\r\n"
+        );
+        assert_eq!(
+            edit("costs: 1\r\n", &dirs(&["/b"])).unwrap(),
+            "costs: 1\r\nstarters_dirs:\r\n- /b\r\n"
+        );
+    }
+
+    #[test]
+    fn a_last_item_without_newline_gets_one_before_the_new_item() {
+        assert_eq!(
+            edit("starters_dirs:\n  - /a", &dirs(&["/a", "/b"])).unwrap(),
+            "starters_dirs:\n  - /a\n  - /b\n"
+        );
+    }
+
+    #[test]
+    fn a_one_line_flow_list_becomes_a_block_list() {
+        let text = "costs: 1\nstarters_dirs: [/a, \"/b\"]\nlogging: x\n";
+        assert_eq!(
+            edit(text, &dirs(&["/a", "/b", "/c"])).unwrap(),
+            "costs: 1\nstarters_dirs:\n- /a\n- /b\n- /c\nlogging: x\n"
+        );
+        assert_eq!(edit(text, &[]).unwrap(), "costs: 1\nlogging: x\n");
+        assert_eq!(
+            edit("starters_dirs: []\n", &dirs(&["/a"])).unwrap(),
+            "starters_dirs:\n- /a\n"
+        );
+    }
+
+    #[test]
+    fn styles_that_cannot_be_edited_line_by_line_are_refused() {
+        for text in [
+            "starters_dirs: [/a] # note\n",
+            "starters_dirs: [/a] # see [x]\n",
+            "starters_dirs: [/a,\n  /b]\n",
+            "starters_dirs: &d\n- /a\nother: *d\n",
+            "base: &p /a\nstarters_dirs:\n- *p\n",
+            // removing an anchored item would break its alias
+            "starters_dirs:\n- &p /a\nother: *p\n",
+            "starters_dirs:\n- /a\n  /continued\n",
+            "starters_dirs:\n  - /a\n - /b\n",
+            "starters_dirs:\n- [/a]\n",
+            "starters_dirs: []\nstarters_dirs: []\n",
+            // not recognised as the key: appending one would duplicate it
+            "\"starters_dirs\": [/a]\n",
+        ] {
+            assert!(edit(text, &dirs(&["/z"])).is_err(), "{text:?}");
+        }
+    }
 }

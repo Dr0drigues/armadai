@@ -92,7 +92,7 @@ fn real(p: &Path) -> anyhow::Result<PathBuf> {
 /// A fresh, exclusively created temporary file next to `path` (random name, never
 /// a planted one), then rename: a reader never sees half a file. The original's
 /// permissions are kept.
-fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
     use std::io::Write as _;
     let dir = path.parent().context("patched file has no parent")?;
     std::fs::create_dir_all(dir)?;

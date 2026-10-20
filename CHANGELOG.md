@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Fixed
+
+- `armadai config starters-dir add|remove` now edits only the `starters_dirs` key of
+  `config.yaml`: the other keys, comments, order and line endings are kept byte for byte
+  (they were all lost), and a style it cannot edit safely (anchor, alias, multi-line item or
+  flow list, flow list with a comment) is refused with the file untouched (#476).
+
 ### Removed (cleanup)
 
 - Files left over from the removed surfaces: the root `agents/` (two legacy agents), `PRD.md`,
