@@ -158,15 +158,16 @@ armadai config starters-dir remove /path/to/my-starters
 ### Remote starter registries
 
 When `armadai init --pack <name>` finds no local pack of that name, it syncs the remote starter
-registries declared under `registries:` (in `~/.config/armadai/registries.yaml`, or the config of
-a legacy project) once, then retries. A pack that exists locally never triggers a sync.
+registries once, then retries. A pack that exists locally never triggers a sync. Declare them in
+`~/.config/armadai/registries.yaml`, with `starters:` at the top level of the file (a legacy
+project's `armadai.yaml` nests the same list under `registries:`):
 
 ```yaml
-registries:
-  starters:
-    - url: https://github.com/acme/starters.git        # git clone
-    - url: https://example.com/packs/starters.tar.gz   # archive (.tar.gz, .tgz or .zip)
-      kind: archive                                     # optional: inferred from the extension
+# ~/.config/armadai/registries.yaml
+starters:
+  - url: https://github.com/acme/starters.git        # git clone
+  - url: https://example.com/packs/starters.tar.gz   # archive (.tar.gz, .tgz or .zip)
+    kind: archive                                     # optional: inferred from the extension
 ```
 
 An archive source is downloaded with the `curl` program, which must be in `PATH` (it ships
@@ -174,10 +175,15 @@ with macOS, Windows 10+ and most Linux distributions), then extracted with `tar`
 
 - the URL must use `https://`, and so must every redirect;
 - a download is capped at 300 seconds and 100 MiB;
-- curl's environment applies (`https_proxy`, `no_proxy`, `CURL_CA_BUNDLE`, `SSL_CERT_FILE`…), but
-  `.curlrc` files are ignored;
+- curl's environment applies (the proxy variables such as `https_proxy` and `no_proxy`, and
+  `CURL_CA_BUNDLE`; other variables such as `SSL_CERT_FILE` depend on curl's version and TLS
+  backend), but `.curlrc` files are ignored;
 - `{}` and `[]` in the URL are sent as-is, never expanded;
-- credentials embedded in the URL (`user:pass@`) are masked in error messages.
+- the `user:pass@` part of the URL and its query (`?token=…`) are masked in messages, and
+  never appear in the cache directory name;
+- the archive is extracted and checked (no entry or link may point outside it) before it
+  replaces the previous copy: a failed sync keeps the previous copy, and never leaves a
+  partial one.
 
 ## See Also
 

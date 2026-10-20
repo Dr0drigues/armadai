@@ -121,6 +121,16 @@ pub fn resolved_sources(
     out
 }
 
+/// The userinfo (`user:pass`) of a `scheme://userinfo@host/...` URL, if any.
+///
+/// It runs to the *last* `@`: an unencoded password may hold `/`, `?` or `#`, so
+/// an `@` in a path also counts. That only ever hides more, which is the point:
+/// callers mask or drop this part. URLs without `://` (`git@host:org/repo`) have none.
+pub fn url_userinfo(url: &str) -> Option<&str> {
+    let (_, rest) = url.split_once("://")?;
+    rest.rfind('@').map(|at| &rest[..at])
+}
+
 /// Derive a filesystem-safe, collision-resistant cache key for a registry
 /// source URL.
 ///
@@ -131,11 +141,12 @@ pub fn resolved_sources(
 /// hoc sanitization, neither of which was collision-resistant (see B2 Task 2
 /// review, minor finding).
 ///
-/// The key is `<readable-prefix>-<8 hex chars of a hash of the full URL>`.
-/// The prefix (a sanitized, truncated version of the URL) exists only for
-/// human readability in cache directory listings; the hash suffix — derived
-/// from the *whole*, un-sanitized URL — is what actually guarantees
-/// uniqueness:
+/// The key is `<readable-prefix>-<8 hex chars of a hash of the URL>`, both
+/// computed without the URL's userinfo (see [`url_userinfo`]): a password never
+/// lands in a directory name. The prefix (a sanitized, truncated version of the
+/// URL without its query, which may hold a token) exists only for human
+/// readability in cache directory listings; the hash suffix — derived from the
+/// un-sanitized URL, query included — is what actually guarantees uniqueness:
 /// - two different URLs that happen to sanitize to the same prefix (e.g.
 ///   differing only in characters that both get replaced) still get
 ///   distinct keys;
@@ -143,7 +154,14 @@ pub fn resolved_sources(
 ///   unsafe, path-traversal-shaped directory name) can never produce a key
 ///   equal to `.`/`..`, since the hash suffix is always appended.
 pub fn cache_key(url: &str) -> String {
+    let url = &match url_userinfo(url) {
+        Some(info) => url.replacen(&format!("{info}@"), "", 1),
+        None => url.to_string(),
+    };
     let sanitized: String = url
+        .split('?')
+        .next()
+        .unwrap_or_default()
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
@@ -323,6 +341,27 @@ registries:
         assert_ne!(cache_key(".."), "..");
         assert_ne!(cache_key("."), ".");
         assert_ne!(cache_key("...."), "..");
+    }
+
+    #[test]
+    fn cache_key_never_holds_credentials_or_query() {
+        let plain = cache_key("https://example.com/acme/starters.tar.gz");
+        let creds = cache_key("https://u:s3cret@example.com/acme/starters.tar.gz");
+        assert_eq!(creds, plain, "same source, same cache");
+        let raw = cache_key("https://u:pa/ss?#@example.com/acme/starters.tar.gz");
+        assert!(!raw.contains("pa_ss"), "{raw}");
+        let token = cache_key("https://example.com/a.tar.gz?token=s3cret");
+        assert!(!token.contains("s3cret"), "{token}");
+        assert_ne!(token, cache_key("https://example.com/a.tar.gz?token=other"));
+    }
+
+    #[test]
+    fn url_userinfo_runs_to_the_last_at() {
+        assert_eq!(url_userinfo("https://u:p@h/x"), Some("u:p"));
+        assert_eq!(url_userinfo("https://u:p/q@h/x"), Some("u:p/q"));
+        assert_eq!(url_userinfo("https://u:p@ss@h/x"), Some("u:p@ss"));
+        assert_eq!(url_userinfo("https://h/x"), None);
+        assert_eq!(url_userinfo("git@github.com:org/repo.git"), None);
     }
 
     #[test]

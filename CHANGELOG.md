@@ -32,9 +32,20 @@
   did) instead of `reqwest`; `reqwest`, `tokio` and their TLS stack leave the dependency tree
   (233 → 151 locked packages). `curl` must be in `PATH`; archive URLs must be `https://`
   (redirects too, scheme case-insensitive); a download is capped at 300 s and 100 MiB. curl's
-  environment applies (proxy variables, `CURL_CA_BUNDLE`, `SSL_CERT_FILE`), but `.curlrc` is
-  ignored (`-q`) and URL globbing is off. The download goes to a private (0700) temporary
-  directory removed afterwards; credentials in the URL are masked in messages.
+  environment applies (proxy variables, `CURL_CA_BUNDLE`; others such as `SSL_CERT_FILE`
+  depend on curl's version and TLS backend), but `.curlrc` is ignored (`-q`) and URL globbing
+  is off. The download goes to a private (0700) temporary directory removed afterwards.
+- A starter archive is extracted into a staging directory and checked (a symbolic link
+  resolving outside the archive is refused) before it replaces the cached copy: a failed sync
+  now keeps the previous copy instead of deleting it and leaving a partial pack that `init`
+  would use.
+- Credentials are masked in starter sync messages: the `user:pass@` part of a source URL
+  (including in the `git` command line a failed clone reports) and an archive URL's query.
+- The starter cache directory name no longer contains the URL's `user:pass@` part nor, in
+  clear, its query: a source whose URL holds an `@` after `://` or a `?` gets a new cache
+  directory and is synced again. The old directory stays on disk: delete it by hand
+  (`~/.config/armadai/registry/starters/`), since its name holds the credentials.
+- The starter cache skips directories whose name starts with a dot (sync staging areas).
 
 ### Changed (YAML library, #467)
 

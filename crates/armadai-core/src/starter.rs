@@ -300,7 +300,8 @@ fn remote_starter_pack_dirs_in(cache_root: &Path) -> Vec<PathBuf> {
         return out;
     };
     for src in sources.flatten() {
-        if src.path().is_dir() {
+        // A dot-dir is a sync's staging area (`.armadai-staging-*`), never a source.
+        if src.path().is_dir() && !src.file_name().to_string_lossy().starts_with('.') {
             out.extend(discover_packs(&src.path()));
         }
     }
@@ -405,6 +406,19 @@ mod tests {
                 .any(|d| d.file_name().unwrap().to_string_lossy() == "remote-demo")
         );
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn remote_cache_skips_staging_dot_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        for dir in ["src1/kept", ".armadai-staging-x/new/half-extracted"] {
+            let pack = tmp.path().join(dir).join("pack.yaml");
+            std::fs::create_dir_all(pack.parent().unwrap()).unwrap();
+            std::fs::write(&pack, "name: x\n").unwrap();
+        }
+        let dirs = remote_starter_pack_dirs_in(tmp.path());
+        assert_eq!(dirs.len(), 1, "{dirs:?}");
+        assert!(dirs[0].ends_with("src1/kept"), "{dirs:?}");
     }
 
     #[test]

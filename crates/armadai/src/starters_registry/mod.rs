@@ -10,7 +10,9 @@
 use std::path::{Path, PathBuf};
 
 use armadai_core::project::find_project_config;
-use armadai_core::registries::{RegistrySource, SourceKind, cache_key, load_user_registries};
+use armadai_core::registries::{
+    RegistrySource, SourceKind, cache_key, load_user_registries, url_userinfo,
+};
 #[cfg(test)]
 use armadai_core::starter::discover_packs;
 pub use armadai_core::starter::starters_cache_dir;
@@ -77,13 +79,15 @@ impl StarterFetcher for GitFetcher {
 fn run_git(args: &[&str]) -> anyhow::Result<()> {
     let out = std::process::Command::new("git").args(args).output()?;
     if !out.status.success() {
-        anyhow::bail!(
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
-        );
+        anyhow::bail!(git_failure(args, &String::from_utf8_lossy(&out.stderr)));
     }
     Ok(())
+}
+
+/// The error for a failed `git` run, with any URL userinfo in argv or stderr masked.
+fn git_failure(args: &[&str], stderr: &str) -> String {
+    let msg = format!("git {} failed: {}", args.join(" "), stderr.trim());
+    args.iter().fold(msg, |msg, arg| mask_userinfo(&msg, arg))
 }
 
 /// Check whether an archive entry's path is safe to extract under a fixed
@@ -121,7 +125,7 @@ fn archive_entry_is_safe(name: &str) -> bool {
 
 /// List entry paths inside an archive without extracting it, so they can be
 /// validated by [`archive_entry_is_safe`] before anything is written to disk.
-fn list_archive_entries(archive: &Path, is_zip: bool) -> anyhow::Result<Vec<String>> {
+fn list_archive_entries(archive: &Path, is_zip: bool, label: &str) -> anyhow::Result<Vec<String>> {
     let out = if is_zip {
         std::process::Command::new("unzip")
             .args(["-Z1", archive.to_str().unwrap_or("")])
@@ -133,8 +137,7 @@ fn list_archive_entries(archive: &Path, is_zip: bool) -> anyhow::Result<Vec<Stri
     };
     if !out.status.success() {
         anyhow::bail!(
-            "failed to list archive entries for {}: {}",
-            archive.display(),
+            "failed to list archive entries for {label}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
@@ -151,17 +154,16 @@ fn list_archive_entries(archive: &Path, is_zip: bool) -> anyhow::Result<Vec<Stri
 /// Before extracting, every entry is listed and validated with
 /// [`archive_entry_is_safe`]: a malicious archive with a `../../etc/x` or
 /// absolute-path entry (zip-slip) is rejected up front rather than allowed to
-/// write outside `dest`.
-fn extract_archive(archive: &Path, dest: &Path) -> anyhow::Result<()> {
+/// write outside `dest`. `label` names the archive in messages.
+fn extract_archive(archive: &Path, dest: &Path, label: &str) -> anyhow::Result<()> {
     std::fs::create_dir_all(dest)?;
     let name = archive.to_string_lossy().to_lowercase();
     let is_zip = name.ends_with(".zip");
 
-    let entries = list_archive_entries(archive, is_zip)?;
+    let entries = list_archive_entries(archive, is_zip, label)?;
     if let Some(unsafe_entry) = entries.iter().find(|e| !archive_entry_is_safe(e)) {
         anyhow::bail!(
-            "refusing to extract archive {}: unsafe entry path '{unsafe_entry}' (zip-slip guard)",
-            archive.display()
+            "refusing to extract archive {label}: unsafe entry path '{unsafe_entry}' (zip-slip guard)"
         );
     }
 
@@ -187,7 +189,7 @@ fn extract_archive(archive: &Path, dest: &Path) -> anyhow::Result<()> {
             .status()?
     };
     if !status.success() {
-        anyhow::bail!("failed to extract archive {}", archive.display());
+        anyhow::bail!("failed to extract archive {label}");
     }
     Ok(())
 }
@@ -201,18 +203,77 @@ impl StarterFetcher for ArchiveFetcher {
     }
 }
 
-/// Download into a private (0700), uniquely named dir under `tmp_root`, removed on return.
+/// Download into a private temp dir under `tmp_root`, extract into a staging dir next
+/// to `dest`, check it, then swap it in: a failed sync leaves the previous cache intact
+/// and a partial pack is never visible. Both temp dirs are removed on return.
 fn fetch_archive(curl: &str, url: &str, dest: &Path, tmp_root: &Path) -> anyhow::Result<()> {
+    let shown = redact(url);
+    let download = private_tempdir("armadai-dl-", tmp_root)?;
+    // The extension makes extract_archive pick tar vs unzip.
+    let src = download
+        .path()
+        .join(format!("archive.{}", archive_ext(url)));
+    download_to(curl, url, &src)?;
+
+    // Same filesystem as `dest`, so the swap is a rename; the leading dot keeps it
+    // out of pack discovery even if a crash leaves it behind.
+    let parent = dest
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("no parent directory for {}", dest.display()))?;
+    std::fs::create_dir_all(parent)?;
+    let staging = private_tempdir(".armadai-staging-", parent)?;
+    let new = staging.path().join("new");
+    extract_archive(&src, &new, &shown)?;
+    reject_escaping_links(&new, &shown)?;
+
+    let old = staging.path().join("old");
+    let had_old = std::fs::symlink_metadata(dest).is_ok();
+    if had_old {
+        std::fs::rename(dest, &old)?;
+    }
+    if let Err(e) = std::fs::rename(&new, dest) {
+        if had_old {
+            let _ = std::fs::rename(&old, dest);
+        }
+        anyhow::bail!(
+            "could not install archive {shown} into {}: {e}",
+            dest.display()
+        );
+    }
+    Ok(())
+}
+
+/// A uniquely named temp dir, private (0700) on unix, removed on drop.
+fn private_tempdir(prefix: &str, parent: &Path) -> std::io::Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
-    builder.prefix("armadai-dl-");
+    builder.prefix(prefix);
     #[cfg(unix)]
     builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
-    let tmp = builder.tempdir_in(tmp_root)?;
-    // The extension makes extract_archive pick tar vs unzip.
-    let src = tmp.path().join(format!("archive.{}", archive_ext(url)));
-    download_to(curl, url, &src)?;
-    let _ = std::fs::remove_dir_all(dest); // fresh extract
-    extract_archive(&src, dest)
+    builder.tempdir_in(parent)
+}
+
+/// Refuse an extracted tree holding a symlink that resolves outside `root`
+/// (or nowhere): a pack must not reach the rest of the disk through its cache.
+fn reject_escaping_links(root: &Path, label: &str) -> anyhow::Result<()> {
+    let root = root.canonicalize()?;
+    let mut dirs = vec![root.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            let kind = std::fs::symlink_metadata(&path)?.file_type();
+            if kind.is_symlink() {
+                if !path.canonicalize().is_ok_and(|t| t.starts_with(&root)) {
+                    anyhow::bail!(
+                        "refusing archive {label}: link '{}' points outside the archive",
+                        path.strip_prefix(&root).unwrap_or(&path).display()
+                    );
+                }
+            } else if kind.is_dir() {
+                dirs.push(path);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn archive_ext(url: &str) -> &'static str {
@@ -226,15 +287,20 @@ fn archive_ext(url: &str) -> &'static str {
     }
 }
 
-/// `url` with any `user:pass@` userinfo masked, for messages.
+/// `text` with `url`'s userinfo (see [`url_userinfo`]) masked wherever it precedes `@`.
+fn mask_userinfo(text: &str, url: &str) -> String {
+    match url_userinfo(url) {
+        Some(info) if !info.is_empty() => text.replace(&format!("{info}@"), "***@"),
+        _ => text.to_string(),
+    }
+}
+
+/// `url` for messages: userinfo masked, and the query too (a presigned URL's token).
 fn redact(url: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_string();
-    };
-    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
-    match authority.rfind('@') {
-        Some(at) => format!("{scheme}://***@{}", &rest[at + 1..]),
-        None => url.to_string(),
+    let shown = mask_userinfo(url, url);
+    match shown.split_once('?') {
+        Some((base, _)) => format!("{base}?***"),
+        None => shown,
     }
 }
 
@@ -306,16 +372,23 @@ pub fn fetch_starter_source(source: &RegistrySource) -> anyhow::Result<PathBuf> 
     }
 }
 
+/// The warning for a source that failed to sync, with its credentials masked
+/// in the URL and in the error (git echoes its argv).
+fn sync_warning(url: &str, err: &anyhow::Error) -> String {
+    let line = format!(
+        "  warn: failed to sync starter source {}: {err}",
+        redact(url)
+    );
+    mask_userinfo(&line, url)
+}
+
 /// Sync all sources; warn+continue on failure. Returns the dirs that synced OK.
 pub fn sync_starters(sources: &[RegistrySource]) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for s in sources {
         match fetch_starter_source(s) {
             Ok(d) => dirs.push(d),
-            Err(e) => eprintln!(
-                "  warn: failed to sync starter source {}: {e}",
-                redact(&s.url)
-            ),
+            Err(e) => eprintln!("{}", sync_warning(&s.url, &e)),
         }
     }
     dirs
@@ -509,7 +582,7 @@ mod archive_tests {
             .unwrap();
         // Extract via the fetcher's extract helper (file:// or local path).
         let dest = tmp.join("dest");
-        extract_archive(&archive, &dest).unwrap();
+        extract_archive(&archive, &dest, "test").unwrap();
         let packs = discover_packs(&dest);
         assert!(
             packs
@@ -665,14 +738,190 @@ mod archive_tests {
     }
 
     #[test]
-    fn redact_leaves_urls_without_userinfo_alone() {
-        for url in [
-            "https://example.com/a@b.tar.gz",
-            "https://example.com/a.tar.gz?x=a@b",
-            "git@github.com:org/repo.git",
+    fn redact_masks_userinfo_and_query_only() {
+        for (url, shown) in [
+            (
+                "https://example.com/a.tar.gz",
+                "https://example.com/a.tar.gz",
+            ),
+            ("git@github.com:org/repo.git", "git@github.com:org/repo.git"),
+            (
+                "https://TOKEN@example.com/a.tar.gz",
+                "https://***@example.com/a.tar.gz",
+            ),
+            (
+                "https://u:pa/ss?#@example.com/a.tar.gz",
+                "https://***@example.com/a.tar.gz",
+            ),
+            (
+                "https://example.com/a.tar.gz?token=s3cret",
+                "https://example.com/a.tar.gz?***",
+            ),
         ] {
-            assert_eq!(redact(url), url);
+            assert_eq!(redact(url), shown);
         }
+    }
+
+    #[test]
+    fn git_failure_masks_credentials_in_argv_and_stderr() {
+        let url = "https://u:s3cret@example.com/x.git";
+        let msg = git_failure(
+            &["clone", "-q", url, "/tmp/d"],
+            "fatal: unable to access 'https://u:s3cret@example.com/x.git/'\n",
+        );
+        assert!(!msg.contains("s3cret"), "{msg}");
+        assert!(
+            msg.contains("git clone -q https://***@example.com/x.git /tmp/d failed"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn sync_warning_masks_credentials_in_url_and_error() {
+        let url = "https://u:s3cret@example.com/x.git?token=t0ken";
+        let err = anyhow::anyhow!("git clone https://u:s3cret@example.com/x.git failed");
+        let line = sync_warning(url, &err);
+        assert!(!line.contains("s3cret"), "{line}");
+        assert!(!line.contains("t0ken"), "{line}");
+        assert!(
+            line.contains("source https://***@example.com/x.git?***: git clone https://***@"),
+            "{line}"
+        );
+    }
+
+    /// A .tar.gz of what `build` writes into a fresh source dir.
+    #[cfg(unix)]
+    fn tar_gz(dir: &Path, name: &str, build: impl Fn(&Path)) -> std::path::PathBuf {
+        let root = dir.join(format!("{name}-src"));
+        fs::create_dir_all(&root).unwrap();
+        build(&root);
+        let archive = dir.join(format!("{name}.tar.gz"));
+        let status = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&root)
+            .arg(".")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        archive
+    }
+
+    /// `fetch_archive` with a fake curl serving `archive`, into `<dir>/cache/src`
+    /// pre-filled with an `old-pack`. Returns the result and that dest.
+    #[cfg(unix)]
+    fn fetch_over_old_cache(
+        dir: &Path,
+        archive: &Path,
+    ) -> (anyhow::Result<()>, std::path::PathBuf) {
+        let dest = dir.join("cache/src");
+        write(&dest.join("old-pack/pack.yaml"), "name: old-pack\n");
+        let curl = fake_curl(dir, &format!("cp '{}' \"$out\"", archive.display()));
+        let tmp_root = dir.join("tmp");
+        fs::create_dir_all(&tmp_root).unwrap();
+        let res = retry_busy(|| fetch_archive(&curl, "https://e.com/a.tar.gz", &dest, &tmp_root));
+        let cache: Vec<_> = fs::read_dir(dir.join("cache"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(cache, ["src"], "staging left in the cache root");
+        assert_eq!(fs::read_dir(&tmp_root).unwrap().count(), 0);
+        (res, dest)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_archive_replaces_the_cache_on_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = tar_gz(dir.path(), "ok", |root| {
+            write(&root.join("demo/pack.yaml"), "name: demo\n");
+            std::os::unix::fs::symlink("demo", root.join("inner")).unwrap();
+        });
+        let (res, dest) = fetch_over_old_cache(dir.path(), &archive);
+        res.unwrap();
+        assert!(dest.join("demo/pack.yaml").is_file());
+        assert!(dest.join("inner/pack.yaml").is_file(), "inner link kept");
+        assert!(!dest.join("old-pack").exists(), "old cache replaced");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_archive_rejects_a_link_out_of_the_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        for (name, target) in [("abs", outside.clone()), ("rel", "../../..".into())] {
+            let archive = tar_gz(dir.path(), name, |root| {
+                write(&root.join("demo/pack.yaml"), "name: demo\n");
+                // Nested, so the check must walk the whole tree.
+                std::os::unix::fs::symlink(&target, root.join("demo/l")).unwrap();
+            });
+            let (res, dest) = fetch_over_old_cache(dir.path(), &archive);
+            let err = res.unwrap_err().to_string();
+            assert!(err.contains("'demo/l' points outside"), "{name}: {err}");
+            assert!(err.contains("https://e.com/a.tar.gz"), "{name}: {err}");
+            assert!(
+                dest.join("old-pack/pack.yaml").is_file(),
+                "{name}: old cache lost"
+            );
+            assert!(!dest.join("demo").exists(), "{name}: partial pack visible");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_archive_keeps_the_old_cache_when_extraction_stops_midway() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        // `demo/` extracts, then `l/pwned` would be written through the link `l`.
+        let first = dir.path().join("first");
+        write(&first.join("demo/pack.yaml"), "name: demo\n");
+        std::os::unix::fs::symlink(&outside, first.join("l")).unwrap();
+        let second = dir.path().join("second");
+        write(&second.join("l/pwned"), "x");
+        let archive = dir.path().join("evil.tar.gz");
+        let status = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&first)
+            .args(["demo", "l"])
+            .arg("-C")
+            .arg(&second)
+            .arg("l/pwned")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let (res, dest) = fetch_over_old_cache(dir.path(), &archive);
+        assert!(res.is_err());
+        assert!(!outside.join("pwned").exists(), "wrote outside the archive");
+        assert!(dest.join("old-pack/pack.yaml").is_file(), "old cache lost");
+        assert!(!dest.join("demo").exists(), "partial pack visible");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_archive_keeps_the_old_cache_on_a_truncated_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = tar_gz(dir.path(), "full", |root| {
+            for i in 0..50 {
+                write(&root.join(format!("demo/f{i}.md")), &"x".repeat(2000 + i));
+            }
+            write(&root.join("demo/pack.yaml"), "name: demo\n");
+        });
+        let bytes = fs::read(&archive).unwrap();
+        let cut = dir.path().join("cut.tar.gz");
+        fs::write(&cut, &bytes[..bytes.len() / 2]).unwrap();
+        let (res, dest) = fetch_over_old_cache(dir.path(), &cut);
+        let err = res.unwrap_err().to_string();
+        assert!(
+            !err.contains("armadai-dl-"),
+            "cites a deleted temp path: {err}"
+        );
+        assert!(dest.join("old-pack/pack.yaml").is_file(), "old cache lost");
+        assert!(!dest.join("demo").exists(), "partial pack visible");
     }
 
     #[cfg(unix)]
