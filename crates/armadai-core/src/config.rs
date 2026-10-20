@@ -134,17 +134,6 @@ pub fn load_user_config() -> UserConfig {
     })
 }
 
-/// Save user config back to `~/.config/armadai/config.yaml`.
-pub fn save_user_config(config: &UserConfig) -> anyhow::Result<()> {
-    let path = config_file_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let yaml = armadai_model::yaml::to_string(config)?;
-    std::fs::write(&path, yaml)?;
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // AppPaths — resolved paths for the current context
 // ---------------------------------------------------------------------------
