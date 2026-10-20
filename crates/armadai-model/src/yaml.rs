@@ -12,6 +12,7 @@
 //!   `0X10`, `0b1_0` and `tRuE` are accepted there (the previous reader refused them),
 //!   `0123` is not;
 //! - in a free (`native`) value `.inf`/`.nan` are refused (JSON data has no such number);
+//! - content after the root node (`{a: 1}` then `b: 2`) is an error, never dropped;
 //! - mappings nested deeper than 64 levels are refused (the previous reader allowed 128);
 //! - `!!binary` is base64-decoded (it was kept as its base64 text);
 //! - `null`/`~` where a string is required is an error (it was the text `null`/`~`).

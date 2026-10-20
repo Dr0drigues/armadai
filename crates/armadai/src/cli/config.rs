@@ -536,16 +536,17 @@ costs:
             assert!(edit(text, &dirs(&["/z"])).is_err(), "{text:?}");
         }
         for (text, want, msg) in [
-            // only the read-back check catches these two
+            // a flow mapping at the root is a whole document: the appended key is refused
+            // (serde-saphyr 1.3 ignored it, and only the read-back check caught these two)
             (
                 "{a: 1}\n",
                 &["/z"][..],
-                "the edited file would not read back as the expected list",
+                "the edited file would not read: did not find expected <document start> at line 2, column 1",
             ),
             (
                 "{starters_dirs: [/a]}\n",
                 &["/a", "/z"],
-                "the edited file would not read back as the expected list",
+                "the edited file would not read: did not find expected <document start> at line 2, column 1",
             ),
             (
                 "\u{feff}starters_dirs:\n- /a\n",
