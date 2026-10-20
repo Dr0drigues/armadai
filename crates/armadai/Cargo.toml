@@ -16,16 +16,10 @@ path = "src/main.rs"
 armadai-core = { path = "../armadai-core" }
 armadai-model = { path = "../armadai-model" }
 
-# Async runtime
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-
 # CLI
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 dialoguer = { workspace = true, features = ["fuzzy-select"] }
-
-# HTTP client (starter archives)
-reqwest = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

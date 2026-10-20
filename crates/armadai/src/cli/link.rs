@@ -515,7 +515,7 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
     Ok(())
 }
 
-pub async fn execute(
+pub fn execute(
     targets: Vec<crate::linker::LinkTarget>,
     dry_run: bool,
     force: bool,

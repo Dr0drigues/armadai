@@ -41,6 +41,8 @@ impl RegistrySource {
             return k;
         }
         let u = self.url.to_lowercase();
+        // A presigned archive URL ends in `?token=…`: the extension is before it.
+        let u = u.split(['?', '#']).next().unwrap_or_default();
         if u.ends_with(".tar.gz") || u.ends_with(".tgz") || u.ends_with(".zip") {
             SourceKind::Archive
         } else {
@@ -123,6 +125,54 @@ pub fn resolved_sources(
     out
 }
 
+/// `url` as shown in messages and cache directory names: without credentials.
+///
+/// The authority's userinfo (`user:pass@`) becomes `***@`, the query `?***`. An `@`
+/// after the authority is ambiguous (a path `@`, or an unencoded password holding
+/// `/`, `?` or `#`), so everything after the scheme is masked then: the result never
+/// shows a secret, nor a host that is not the one contacted.
+pub fn redact_url(url: &str) -> String {
+    // Without a scheme (`user:tok@host:org/repo.git`, `host/a.tar.gz?sig=…`), the
+    // same rules apply to the whole string.
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (format!("{scheme}://"), rest),
+        None => (String::new(), url),
+    };
+    let (authority, tail) = rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len()));
+    if tail.contains('@') {
+        return format!("{scheme}***");
+    }
+    let shown = match authority.rfind('@') {
+        Some(at) => format!("{scheme}***@{}{tail}", &authority[at + 1..]),
+        None => url.to_string(),
+    };
+    match shown.split_once('?') {
+        Some((base, _)) => format!("{base}?***"),
+        None => shown,
+    }
+}
+
+/// `text` with the credentials of `url` masked: `url` itself as [`redact_url`] shows
+/// it, then its userinfo and query wherever else they appear (git rewrites URLs).
+pub fn mask_url_secrets(text: &str, url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let mut text = text.replace(url, &redact_url(url));
+    if let Some(at) = rest.rfind('@') {
+        text = text.replace(&rest[..=at], "***@");
+    }
+    if let Some((_, query)) = rest.split_once('?')
+        && !query.is_empty()
+    {
+        text = text.replace(&format!("?{query}"), "?***");
+        // shortcut: a short query (`?a`) is only masked after its `?`, so that common
+        // words of the message stay readable; a token is longer than 8 characters.
+        if query.len() >= 8 {
+            text = text.replace(query, "***");
+        }
+    }
+    text
+}
+
 /// Derive a filesystem-safe, collision-resistant cache key for a registry
 /// source URL.
 ///
@@ -133,11 +183,18 @@ pub fn resolved_sources(
 /// hoc sanitization, neither of which was collision-resistant (see B2 Task 2
 /// review, minor finding).
 ///
-/// The key is `<readable-prefix>-<8 hex chars of a hash of the full URL>`.
-/// The prefix (a sanitized, truncated version of the URL) exists only for
-/// human readability in cache directory listings; the hash suffix — derived
-/// from the *whole*, un-sanitized URL — is what actually guarantees
-/// uniqueness:
+/// The key is `<readable-prefix>` (a sanitized, truncated version of the URL as
+/// [`redact_url`] shows it, without its query: no credential or token lands in a
+/// directory name) followed by a hash of the *whole*, original URL:
+/// - a plain URL (see [`is_plain_url`]) keeps the key it always had,
+///   `<prefix>-<8 hex chars>`: its prefix alone tells it apart from every other
+///   URL, so the short hash only has to be stable;
+/// - any other URL gets `<prefix>~<32 hex chars of its SHA-256>`: its prefix may
+///   be shared (`https` for every URL masked as `https://***`), and a 32-bit hash
+///   can be forged to collide in seconds, which would let one source overwrite
+///   another's cache.
+///
+/// As a consequence:
 /// - two different URLs that happen to sanitize to the same prefix (e.g.
 ///   differing only in characters that both get replaced) still get
 ///   distinct keys;
@@ -145,7 +202,10 @@ pub fn resolved_sources(
 ///   unsafe, path-traversal-shaped directory name) can never produce a key
 ///   equal to `.`/`..`, since the hash suffix is always appended.
 pub fn cache_key(url: &str) -> String {
-    let sanitized: String = url
+    let sanitized: String = redact_url(url)
+        .split('?')
+        .next()
+        .unwrap_or_default()
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
@@ -160,11 +220,34 @@ pub fn cache_key(url: &str) -> String {
     let prefix = sanitized.trim_matches(|c| c == '.' || c == '_');
     let prefix = if prefix.is_empty() { "src" } else { prefix };
 
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    url.hash(&mut hasher);
-    let hash = hasher.finish() as u32;
+    if is_plain_url(url) {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        url.hash(&mut hasher);
+        let hash = hasher.finish() as u32;
+        return format!("{prefix}-{hash:08x}");
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(url.as_bytes());
+    let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+    format!("{prefix}~{hex}")
+}
 
-    format!("{prefix}-{hash:08x}")
+/// A URL that [`cache_key`]'s readable prefix maps one-to-one: a lowercase
+/// `scheme://`, then only `[A-Za-z0-9.-]` and `/` (each `/` becomes `_`, nothing else
+/// changes), starting and ending with a character the prefix does not trim, and short
+/// enough not to be truncated.
+fn is_plain_url(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    !scheme.is_empty()
+        && scheme.chars().all(|c| c.is_ascii_lowercase())
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '/'))
+        && rest.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && rest.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '-')
+        && url.len() <= 60
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +408,142 @@ registries:
         assert_ne!(cache_key(".."), "..");
         assert_ne!(cache_key("."), ".");
         assert_ne!(cache_key("...."), "..");
+    }
+
+    #[test]
+    fn cache_key_never_holds_credentials_and_keeps_urls_apart() {
+        for (a, b) in [
+            (
+                "https://example.com/acme/starters.tar.gz",
+                "https://u:s3cret@example.com/acme/starters.tar.gz",
+            ),
+            (
+                "https://cdn.example/acme/starters.tar.gz",
+                "https://evil.example/x@cdn.example/acme/starters.tar.gz",
+            ),
+            (
+                "https://example.com/a.tar.gz?token=s3cret",
+                "https://example.com/a.tar.gz?token=other",
+            ),
+            (
+                "https://u:pa/ss@example.com/a.tar.gz",
+                "https://u:pa/zz@example.com/a.tar.gz",
+            ),
+        ] {
+            assert_ne!(cache_key(a), cache_key(b), "{a} and {b} share a cache dir");
+            for key in [cache_key(a), cache_key(b)] {
+                for secret in ["s3cret", "other", "pa_ss", "pa_zz", "evil"] {
+                    assert!(!key.contains(secret), "{key} holds {secret}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cache_key_keeps_forged_collisions_apart_by_construction() {
+        // A 32-bit collision found by brute force in review: same short key before.
+        let npm = "https://registry.npmjs.org/@acme/starters/-/starters-1.0.0.tgz";
+        let evil = "https://evil.example/x@y.tgz?n=7220038856";
+        assert_ne!(cache_key(npm), cache_key(evil));
+        let suffix = |key: &str| key.rsplit_once('~').map(|(_, h)| h.len());
+        for tainted in [
+            npm,
+            evil,
+            "https://u:p@example.com/a.tar.gz",
+            "https://example.com/a.tar.gz?x=1",
+            "https://example.com/a#x",
+            "https://example.com/a_b",
+            "https://example.com/a/",
+            "https://example.com/a.",
+            "https:///example.com/a",
+            "HTTPS://example.com/a",
+            "/srv/git/starters",
+            "git@github.com:org/repo.git",
+            "https://example.com/a-very-long-path/that-goes/past-sixty-characters",
+        ] {
+            assert_eq!(suffix(&cache_key(tainted)), Some(32), "{tainted}");
+        }
+        // Plain URLs keep their `-<8 hex>` key, so existing caches stay valid.
+        for plain in [
+            "https://github.com/github/awesome-copilot.git",
+            "https://example.com/a-b/c.tar.gz",
+        ] {
+            let key = cache_key(plain);
+            assert!(!key.contains('~'), "{key}");
+            assert_eq!(key.rsplit_once('-').map(|(_, h)| h.len()), Some(8), "{key}");
+        }
+    }
+
+    #[test]
+    fn redact_url_hides_credentials_and_never_shows_a_wrong_host() {
+        for (url, shown) in [
+            (
+                "https://example.com/a.tar.gz",
+                "https://example.com/a.tar.gz",
+            ),
+            ("git@github.com:org/repo.git", "***@github.com:org/repo.git"),
+            ("https://TOKEN@example.com/a", "https://***@example.com/a"),
+            ("https://u:p@ss@example.com/a", "https://***@example.com/a"),
+            (
+                "https://example.com/a?token=s3cret",
+                "https://example.com/a?***",
+            ),
+            // an `@` after the authority: path or unencoded password, all masked
+            ("https://evil.example/x@cdn.example/a", "https://***"),
+            ("https://u:pa/ss@example.com/a", "https://***"),
+            ("https://host/a@b", "https://***"),
+            // without a scheme
+            ("u:tok@h:o/r.git", "***@h:o/r.git"),
+            ("127.0.0.1/v.tar.gz?sig=t0kenF", "127.0.0.1/v.tar.gz?***"),
+            ("/srv/git/starters", "/srv/git/starters"),
+        ] {
+            assert_eq!(redact_url(url), shown, "{url}");
+        }
+    }
+
+    #[test]
+    fn mask_url_secrets_masks_rewritten_urls_too() {
+        let url = "https://u:s3cret@example.com/x.git?token=t0ken";
+        // git shows the URL rewritten: without its query, and the query on its own.
+        let text =
+            format!("clone {url}: fatal: 'https://u:s3cret@example.com/x.git/' (token=t0ken)");
+        let masked = mask_url_secrets(&text, url);
+        assert!(
+            !masked.contains("s3cret") && !masked.contains("t0ken"),
+            "{masked}"
+        );
+        assert!(
+            masked.starts_with("clone https://***@example.com/x.git?***: "),
+            "{masked}"
+        );
+    }
+
+    #[test]
+    fn mask_url_secrets_leaves_a_short_query_alone_in_prose() {
+        assert_eq!(
+            mask_url_secrets("fatal: a?a is a bad url", "https://h/x?a"),
+            "fatal: a?*** is a bad url"
+        );
+    }
+
+    #[test]
+    fn resolved_kind_ignores_the_query() {
+        let source = |url: &str| RegistrySource {
+            url: url.to_string(),
+            kind: None,
+        };
+        assert_eq!(
+            source("https://e.com/i.tar.gz?token=x").resolved_kind(),
+            SourceKind::Archive
+        );
+        assert_eq!(
+            source("https://e.com/i.zip#top").resolved_kind(),
+            SourceKind::Archive
+        );
+        assert_eq!(
+            source("https://e.com/r.git?x=y").resolved_kind(),
+            SourceKind::Git
+        );
     }
 
     #[test]

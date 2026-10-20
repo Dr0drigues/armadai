@@ -26,7 +26,7 @@ pub enum ModelsAction {
     List,
 }
 
-pub async fn execute(action: ModelsAction) -> anyhow::Result<()> {
+pub fn execute(action: ModelsAction) -> anyhow::Result<()> {
     match action {
         ModelsAction::Check { all, prune } => run(all, prune, false),
         ModelsAction::Update { all } => run(all, false, true),

@@ -1,7 +1,7 @@
 //! `armadai inspect <id>`: one agent of the project, as declared, and the flows
 //! it takes part in.
 
-pub async fn execute(id: String) -> anyhow::Result<()> {
+pub fn execute(id: String) -> anyhow::Result<()> {
     let project = crate::cli::list::load_for_reading()?;
     let Some(agent) = project.agents.get(&id) else {
         let known: Vec<&str> = project.agents.keys().map(String::as_str).collect();

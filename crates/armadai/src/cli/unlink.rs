@@ -4,7 +4,7 @@ use crate::compile;
 use crate::compile::patch::{self, PatchKind};
 use crate::linker;
 
-pub async fn execute(
+pub fn execute(
     targets: Vec<crate::linker::LinkTarget>,
     dry_run: bool,
     output: Option<PathBuf>,

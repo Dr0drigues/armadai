@@ -52,7 +52,7 @@ fn report(ds: Vec<armadai_model::Diagnostic>, json: bool) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub async fn execute(path: Option<PathBuf>, json: bool) -> anyhow::Result<()> {
+pub fn execute(path: Option<PathBuf>, json: bool) -> anyhow::Result<()> {
     // Resolve path (default: current directory)
     let target_path = path.unwrap_or_else(|| env::current_dir().expect("Failed to get cwd"));
 

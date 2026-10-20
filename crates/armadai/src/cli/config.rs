@@ -28,18 +28,18 @@ pub enum StartersDirAction {
     },
 }
 
-pub async fn execute(action: ConfigAction) -> anyhow::Result<()> {
+pub fn execute(action: ConfigAction) -> anyhow::Result<()> {
     match action {
         ConfigAction::StartersDir { action } => match action {
-            StartersDirAction::List => starters_dir_list().await,
-            StartersDirAction::Add { path } => starters_dir_add(&path).await,
-            StartersDirAction::Remove { path } => starters_dir_remove(&path).await,
+            StartersDirAction::List => starters_dir_list(),
+            StartersDirAction::Add { path } => starters_dir_add(&path),
+            StartersDirAction::Remove { path } => starters_dir_remove(&path),
         },
     }
 }
 
 /// List all starter directories with their source type.
-async fn starters_dir_list() -> anyhow::Result<()> {
+fn starters_dir_list() -> anyhow::Result<()> {
     use armadai_core::starter::{all_starters_dirs, builtin_starters_dir};
 
     let builtin = builtin_starters_dir();
@@ -91,7 +91,7 @@ async fn starters_dir_list() -> anyhow::Result<()> {
 }
 
 /// Add a custom starter directory to config.yaml.
-async fn starters_dir_add(path: &str) -> anyhow::Result<()> {
+fn starters_dir_add(path: &str) -> anyhow::Result<()> {
     let mut config = app_config::try_load_user_config()?;
 
     if config.starters_dirs.contains(&path.to_string()) {
@@ -114,7 +114,7 @@ async fn starters_dir_add(path: &str) -> anyhow::Result<()> {
 }
 
 /// Remove a custom starter directory from config.yaml.
-async fn starters_dir_remove(path: &str) -> anyhow::Result<()> {
+fn starters_dir_remove(path: &str) -> anyhow::Result<()> {
     let mut config = app_config::try_load_user_config()?;
 
     let before = config.starters_dirs.len();

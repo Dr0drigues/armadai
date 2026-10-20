@@ -163,6 +163,37 @@ registries once, then retries: the top-level `starters:` list of `~/.config/arma
 migrated project has none (see [Project format](project-format.md#migrating-a-legacy-project)). A
 pack that exists locally never triggers a sync.
 
+```yaml
+# ~/.config/armadai/registries.yaml
+starters:
+  - url: https://github.com/acme/starters.git        # git clone
+  - url: https://example.com/packs/starters.tar.gz   # archive (.tar.gz, .tgz or .zip)
+    kind: archive                                     # optional: inferred from the extension
+```
+
+An archive source is downloaded with the `curl` program, which must be in `PATH` (it ships
+with macOS, Windows 10+ and most Linux distributions), then extracted with `tar` or `unzip`:
+
+- the URL must use `https://`, and so must every redirect;
+- a download is capped at 300 seconds and 100 MiB;
+- curl's environment applies (the proxy variables such as `https_proxy` and `no_proxy`, and
+  `CURL_CA_BUNDLE`; other variables such as `SSL_CERT_FILE` depend on curl's version and TLS
+  backend), but `.curlrc` files are ignored;
+- `{}` and `[]` in the URL are sent as-is, never expanded;
+- the `user:pass@` part of the URL and its query (`?token=…`) are masked in messages (a URL
+  with an `@` after its host shows as `https://***`), and never appear in the cache directory
+  name;
+- an archive URL may end in a query (`…/starters.tar.gz?token=…`): the extension before it
+  decides the kind;
+- the archive is extracted and checked (no entry or link may point outside it, no dangling
+  link, at most 100,000 entries and 1 GiB of files) before it replaces the previous copy: a
+  failed sync keeps the previous copy, and never leaves a partial one;
+- an encrypted zip is refused, never prompted for.
+
+Known limits: named pipes (FIFOs) in an archive are extracted into the cache; the credentials
+of a git source URL are stored in clear in its cache's `.git/config`, as `git clone` writes
+them.
+
 ## See Also
 
 - [Getting Started](getting-started.md) — installation and first steps
