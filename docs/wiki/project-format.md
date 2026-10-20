@@ -265,16 +265,20 @@ Agents of the user library that the project references are copied into the proje
 
 **Project registries.** The new format has no `registries:` section, and nothing reads registry
 sources from a migrated (or new) project: only the legacy config files did. `migrate` lists each
-source it drops, as `registries.<kind>: <url>`. To keep a `skills` or `starters` source, add it to
-the user file `~/.config/armadai/registries.yaml`, which `armadai skills` and `armadai init --pack`
-read. Its lists are top-level keys, without a `registries:` wrapper (a wrapped file is read as
-empty):
+source it drops under **Dropped** (`registries.<kind>: "<url>"`, plus `kind:` when it was
+declared), then one **Warning** per kind giving the exact entries to keep. To keep the `skills` or
+`starters` sources, paste those entries into the user file `~/.config/armadai/registries.yaml`,
+which `armadai skills sync|search|info` and `armadai init --pack` read. Copy each entry whole: a
+`kind:` the URL does not imply (an archive served at `…/dl?id=1`) is lost with the URL alone, and
+the source is then cloned with git. The lists are top-level keys, without a `registries:` wrapper
+(a wrapped file is read as empty):
 
 ```yaml
 skills:
   - url: https://example.com/team/skills.git
 starters:
   - url: https://example.com/team/starters.tar.gz
+    kind: archive
 ```
 
 `agents` and `models` registry sources are read by no command; they are dropped with that reason.

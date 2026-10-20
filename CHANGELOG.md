@@ -28,11 +28,12 @@
 
 ### Changed (project registries, #479)
 
-- `armadai migrate` reports each project registry source it drops (`registries.<kind>: <url>`)
-  instead of one `registries` line: the new format has no project registries, so a migrated
-  project stops using them. A `skills` or `starters` source can be kept by adding it to the
-  top-level list of `~/.config/armadai/registries.yaml`; `agents` and `models` sources are read
-  by no command. An empty `registries:` section is no longer reported.
+- `armadai migrate` reports each project registry source it drops (`registries.<kind>: "<url>"`,
+  with its `kind:` when declared) instead of one `registries` line: the new format has no project
+  registries, so a migrated project stops using them. For `skills` and `starters`, a warning gives
+  the exact entries (`kind` included) to paste into the top-level lists of
+  `~/.config/armadai/registries.yaml`; `agents` and `models` sources are read by no command. An
+  empty url is reported as such; an empty `registries:` section is no longer reported.
 
 ### Changed (YAML library, #467)
 

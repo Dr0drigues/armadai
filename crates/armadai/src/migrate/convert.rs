@@ -9,6 +9,7 @@ use armadai_core::agent::{
 use armadai_core::model_resolution::{ModelTier, parse_latest_placeholder};
 use armadai_core::orchestration::OrchestrationPattern;
 use armadai_core::orchestration::policy::PolicyMode;
+use armadai_core::registries::SourceKind;
 use armadai_model::{
     Agent, AgentFront, Delegation, Flow, Link, Manifest, Policy, Project, Skill, SkillFront, Step,
     TARGETS, Tier,
@@ -527,34 +528,50 @@ fn project_dead_sections(old: &OldProject, r: &mut Report) {
             r.drop("project", field, reason);
         }
     }
-    // One line per source, each saying where it can still be read from (#479).
+    // One line per source, then one warning per kind with the entries to paste where
+    // they can still be read from (#479).
     let Some(reg) = &c.registries else { return };
-    let user_file = |key: &str, reader: &str| {
-        format!(
-            "the new format has no project registries; add it to the top-level `{key}:` list of \
-             ~/.config/armadai/registries.yaml to keep `{reader}` using it"
-        )
-    };
-    for (key, sources, reason) in [
-        ("skills", &reg.skills, user_file("skills", "armadai skills")),
+    for (key, sources, reader) in [
         (
-            "starters",
-            &reg.starters,
-            user_file("starters", "armadai init --pack"),
+            "skills",
+            &reg.skills,
+            Some("armadai skills sync|search|info"),
         ),
-        (
-            "agents",
-            &reg.agents,
-            "no command reads agent registries".into(),
-        ),
-        (
-            "models",
-            &reg.models,
-            "no command reads model registries".into(),
-        ),
+        ("starters", &reg.starters, Some("armadai init --pack")),
+        ("agents", &reg.agents, None),
+        ("models", &reg.models, None),
     ] {
+        let subject = format!("registries.{key}");
+        let mut kept = Vec::new();
         for s in sources {
-            r.drop(&format!("registries.{key}"), &s.url, reason.clone());
+            // a JSON string is a YAML double-quoted scalar: control characters stay escaped
+            let url = serde_json::to_string(&s.url).unwrap_or_default();
+            let kind = s.kind.map(|k| match k {
+                SourceKind::Git => "git",
+                SourceKind::Archive => "archive",
+            });
+            let shown = if s.url.is_empty() { "empty url" } else { &url };
+            let field = kind.map_or(shown.to_string(), |k| format!("{shown}, kind: {k}"));
+            let reason = match reader {
+                _ if s.url.is_empty() => "it names no registry".to_string(),
+                None => format!("no command reads {} registries", &key[..key.len() - 1]),
+                Some(_) => "the new format has no project registries; see the warning".into(),
+            };
+            r.drop(&subject, &field, reason);
+            if reader.is_some() && !s.url.is_empty() {
+                kept.push(match kind {
+                    Some(k) => format!("{{ url: {url}, kind: {k} }}"),
+                    None => format!("{{ url: {url} }}"),
+                });
+            }
+        }
+        if let (Some(reader), false) = (reader, kept.is_empty()) {
+            r.warn(format!(
+                "{subject}: to keep `{reader}` using these sources, add these exact entries \
+                 (kind included) to the top-level `{key}:` list of \
+                 ~/.config/armadai/registries.yaml: [{}]",
+                kept.join(", ")
+            ));
         }
     }
 }

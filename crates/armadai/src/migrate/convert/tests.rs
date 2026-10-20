@@ -573,46 +573,56 @@ fn project_level_dead_sections_are_reported() {
 #[test]
 fn each_project_registry_source_is_reported_with_its_way_out() {
     let mut o = old(vec![agent("A")]);
-    o.config = armadai_model::yaml::from_str(
-        "registries:\n  skills: [{ url: s1 }, { url: s2 }]\n  starters: [{ url: p1 }]\n  \
-         agents: [{ url: a1 }]\n  models: [{ url: m1 }]\n",
-    )
-    .unwrap();
+    let yaml = "registries:\n  \
+        skills: [{ url: s1 }, { url: \"a\\nb\" }, { url: \"\" }]\n  \
+        starters: [{ url: \"https://example.com/dl?id=1\", kind: archive }, { url: p2 }]\n  \
+        agents: [{ url: a1 }]\n  models: [{ url: m1, kind: git }]\n";
+    o.config = armadai_model::yaml::from_str(yaml).unwrap();
     let (_, _, r) = convert(&o);
-    let user = |key: &str, reader: &str| {
-        format!(
-            "the new format has no project registries; add it to the top-level `{key}:` list of \
-             ~/.config/armadai/registries.yaml to keep `{reader}` using it"
-        )
-    };
-    let mut got: Vec<[String; 3]> = (r.dropped.iter())
+    let mut got: Vec<String> = (r.dropped.iter())
         .filter(|d| d.subject.starts_with("registries"))
-        .map(|d| [d.subject.clone(), d.field.clone(), d.reason.clone()])
+        .map(|d| format!("{}: {} ({})", d.subject, d.field, d.reason))
         .collect();
     got.sort();
-    let t = |s: &str, f: &str, r: &str| [s.to_string(), f.to_string(), r.to_string()];
+    let see = "the new format has no project registries; see the warning";
+    let mut want = vec![
+        "registries.agents: \"a1\" (no command reads agent registries)".to_string(),
+        "registries.models: \"m1\", kind: git (no command reads model registries)".into(),
+        format!("registries.skills: \"s1\" ({see})"),
+        format!("registries.skills: \"a\\nb\" ({see})"),
+        "registries.skills: empty url (it names no registry)".into(),
+        format!("registries.starters: \"https://example.com/dl?id=1\", kind: archive ({see})"),
+        format!("registries.starters: \"p2\" ({see})"),
+    ];
+    want.sort();
+    assert_eq!(got, want);
+
+    let warned: Vec<&String> = (r.warnings.iter())
+        .filter(|w| w.starts_with("registries"))
+        .collect();
+    let to_keep = |key: &str, reader: &str, list: &str| {
+        format!(
+            "registries.{key}: to keep `{reader}` using these sources, add these exact entries \
+             (kind included) to the top-level `{key}:` list of \
+             ~/.config/armadai/registries.yaml: {list}"
+        )
+    };
+    let skills = r#"[{ url: "s1" }, { url: "a\nb" }]"#;
+    let starters = r#"[{ url: "https://example.com/dl?id=1", kind: archive }, { url: "p2" }]"#;
     assert_eq!(
-        got,
+        warned,
         [
-            t(
-                "registries.agents",
-                "a1",
-                "no command reads agent registries"
-            ),
-            t(
-                "registries.models",
-                "m1",
-                "no command reads model registries"
-            ),
-            t("registries.skills", "s1", &user("skills", "armadai skills")),
-            t("registries.skills", "s2", &user("skills", "armadai skills")),
-            t(
-                "registries.starters",
-                "p1",
-                &user("starters", "armadai init --pack")
-            ),
+            &to_keep("skills", "armadai skills sync|search|info", skills),
+            &to_keep("starters", "armadai init --pack", starters),
         ]
     );
+    // the pasted entries read back as the sources they came from, kind included
+    let pasted: armadai_core::registries::RegistriesConfig =
+        armadai_model::yaml::from_str(&format!("skills: {skills}\nstarters: {starters}\n"))
+            .unwrap();
+    let declared = o.config.registries.as_ref().unwrap();
+    assert_eq!(pasted.skills, declared.skills[..2]);
+    assert_eq!(pasted.starters, declared.starters);
 }
 
 #[test]
