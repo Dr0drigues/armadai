@@ -2,6 +2,10 @@
 
 ### Fixed
 
+- YAML read by ArmadAI no longer loses the lines after a root node that ends early: a file
+  starting with a flow mapping (`{a: 1}`) or with an indented first key (` x: v`) was read
+  up to that node and the rest silently dropped; it is now an error at the first line that
+  does not belong to it, as with the YAML reader before #467 (serde-saphyr 2.0.0).
 - `armadai config starters-dir add|remove` now edits only the `starters_dirs` key of
   `config.yaml` (other keys and comments were all lost):
   - everything outside the key's items is kept byte for byte: other keys, comments, order,

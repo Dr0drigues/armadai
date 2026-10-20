@@ -194,3 +194,13 @@ fn canonical_spellings_of_booleans_and_null_keep_their_type() {
         json!({"a": true, "b": true, "c": false, "d": false, "e": null, "f": null, "g": true})
     );
 }
+
+/// Content after the end of the root node is an error, never dropped: serde-saphyr 1.3
+/// read `{a: 1}` and ` x: v` alone and silently lost the next lines.
+#[test]
+fn content_after_the_root_node_is_refused_not_dropped() {
+    for src in ["{a: 1}\nb: 2\n", " x: v\nm: {x: 1}\n"] {
+        let e = from_str::<Value>(src).unwrap_err();
+        assert_eq!(e.location().map(|l| l.line()), Some(2), "{src:?}: {e}");
+    }
+}
