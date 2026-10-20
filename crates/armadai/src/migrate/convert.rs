@@ -575,9 +575,11 @@ fn project_dead_sections(old: &OldProject, r: &mut Report) {
         let what = if key == "starters" {
             "these exact entries, `kind` included,"
         } else if kind_ignored {
-            "these entries (a `kind` is not read for skill sources)"
+            "these entries (only GitHub sources, `owner/repo` or `https://github.com/owner/repo`, \
+             are fetched; a `kind` is not read for skill sources)"
         } else {
-            "these entries"
+            "these entries (only GitHub sources, `owner/repo` or `https://github.com/owner/repo`, \
+             are fetched)"
         };
         r.warn(format!(
             "{subject}: to keep `{reader}` using these sources, add {what} to the top-level \
@@ -588,15 +590,19 @@ fn project_dead_sections(old: &OldProject, r: &mut Report) {
     }
 }
 
-/// `text` as a YAML double-quoted scalar. JSON escapes the C0 controls; DEL and the C1
-/// controls, which YAML refuses even quoted, and the invisible or bidirectional characters
-/// that would make a report line read differently, are escaped as `\uXXXX` too.
+/// `text` as a YAML double-quoted scalar. JSON escapes the C0 controls; also escaped as
+/// `\uXXXX`: what YAML refuses even quoted (DEL, the C1 controls, U+FFFE, U+FFFF) and what
+/// would make a report line read differently (the bidirectional marks and overrides U+061C,
+/// U+200E/F, U+202A-202E, U+2066-2069, the line separators U+2028/2029, the BOM U+FEFF).
+/// shortcut: other invisible characters (U+200B, U+2060, U+00AD) stay raw; YAML reads them
+/// and they hide no text, escape them if a report line is ever found misleading.
 fn yaml_quoted(text: &str) -> String {
     let json = serde_json::to_string(text).unwrap_or_default();
     let mut out = String::with_capacity(json.len());
     for c in json.chars() {
         if matches!(c, '\u{7f}'..='\u{9f}' | '\u{61c}' | '\u{200e}' | '\u{200f}'
-            | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+            | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}' | '\u{fffe}'
+            | '\u{ffff}')
         {
             out.push_str(&format!("\\u{:04x}", c as u32));
         } else {

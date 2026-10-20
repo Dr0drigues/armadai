@@ -33,7 +33,8 @@
   project registries, so a migrated project stops using them. For the `skills` and `starters`
   registry types, a warning gives the entries to paste into the top-level lists of the user
   `registries.yaml` (its real path is printed): starter entries keep their `kind`, skill entries
-  carry the URL alone (a skill source's `kind` is not read). URLs are quoted with control and
+  carry the URL alone (a skill source's `kind` is not read, and only GitHub sources are
+  fetched, which the warning says). URLs are quoted with control characters, U+FFFE/U+FFFF and
   bidirectional characters escaped, so a pasted entry reads back as the same URL. `agents` and
   `models` sources are read by no command. An empty url is reported as such; an empty
   `registries:` section is no longer reported.

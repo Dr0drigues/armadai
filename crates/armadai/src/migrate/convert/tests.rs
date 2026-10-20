@@ -623,6 +623,8 @@ fn each_project_registry_source_is_reported_with_its_way_out() {
             user_file.display()
         )
     };
+    let github =
+        "only GitHub sources, `owner/repo` or `https://github.com/owner/repo`, are fetched";
     let skills = r#"[{ url: "s1" }, { url: "a\nb" }]"#;
     let starters = r#"[{ url: "https://example.com/dl?id=1", kind: archive }, { url: "p2" }]"#;
     assert_eq!(
@@ -631,7 +633,7 @@ fn each_project_registry_source_is_reported_with_its_way_out() {
             to_keep(
                 "skills",
                 "armadai skills sync|search|info",
-                "these entries (a `kind` is not read for skill sources)",
+                &format!("these entries ({github}; a `kind` is not read for skill sources)"),
                 skills
             ),
             to_keep(
@@ -649,16 +651,17 @@ fn each_project_registry_source_is_reported_with_its_way_out() {
         [to_keep(
             "skills",
             "armadai skills sync|search|info",
-            "these entries",
+            &format!("these entries ({github})"),
             r#"[{ url: "s1" }]"#
         )]
     );
 }
 
 /// Pasted into the user file and read by its real reader, the entries give back the very
-/// urls, whatever characters they hold: DEL and C1 controls (refused by YAML even quoted,
-/// which would make the whole file unreadable) and bidirectional or line-separator
-/// characters (which would make the report line read differently) are all escaped.
+/// sources (url and kind), whatever characters the urls hold: DEL, C1 controls, U+FFFE and
+/// U+FFFF (refused by YAML even quoted, which would make the whole file unreadable) and
+/// bidirectional or line-separator characters (which would make the report line read
+/// differently) are all escaped.
 #[test]
 fn pasted_registry_entries_read_back_whatever_their_characters() {
     let _iso = armadai_core::test_support::IsolatedConfigDir::enter();
@@ -671,16 +674,21 @@ fn pasted_registry_entries_read_back_whatever_their_characters() {
         "https://x.example/\u{200f}\u{2066}\u{61c}\u{feff}x",
         "https://x.example/\u{200e}\u{202a}\u{2029}\u{2069}\u{80}x",
         "https://x.example/tab\tquote\"back\\slash",
+        "https://x.example/\u{fffe}x",
+        "https://x.example/\u{ffff}x",
     ];
+    use armadai_core::registries::{RegistrySource, SourceKind};
+    let kinds = [Some(SourceKind::Archive), Some(SourceKind::Git)];
+    let declared: Vec<RegistrySource> = (urls.iter().enumerate())
+        .map(|(i, u)| RegistrySource {
+            url: u.to_string(),
+            kind: kinds.get(i).copied().flatten(),
+        })
+        .collect();
     let mut o = old(vec![agent("A")]);
     o.config = armadai_core::project::ProjectConfig {
         registries: Some(armadai_core::registries::RegistriesConfig {
-            starters: (urls.iter())
-                .map(|u| armadai_core::registries::RegistrySource {
-                    url: u.to_string(),
-                    kind: None,
-                })
-                .collect(),
+            starters: declared.clone(),
             ..Default::default()
         }),
         ..Default::default()
@@ -693,8 +701,8 @@ fn pasted_registry_entries_read_back_whatever_their_characters() {
     std::fs::write(&file, format!("starters: {}\n", pasted_list(warning))).unwrap();
     let read: Option<armadai_core::registries::RegistriesConfig> =
         armadai_core::config::read_user_yaml(&file).unwrap();
-    let read: Vec<String> = read.unwrap().starters.into_iter().map(|s| s.url).collect();
-    assert_eq!(read, urls);
+    // urls and kinds alike: the first entry is `kind: archive`, the second `kind: git`
+    assert_eq!(read.unwrap().starters, declared);
     // and the report lines show them escaped, never raw
     let mut fields: Vec<&str> = (r.dropped.iter())
         .filter(|d| d.subject.starts_with("registries"))
@@ -702,14 +710,16 @@ fn pasted_registry_entries_read_back_whatever_their_characters() {
         .collect();
     fields.sort();
     let mut want = [
-        r#""https://x.example/\u007fx""#,
-        r#""https://x.example/\u009bx""#,
+        r#""https://x.example/\u007fx", kind: archive"#,
+        r#""https://x.example/\u009bx", kind: git"#,
         r#""https://x.example/\u0085x""#,
         r#""https://x.example/\u202egpj.x""#,
         r#""https://x.example/\u2028x""#,
         r#""https://x.example/\u200f\u2066\u061c\ufeffx""#,
         r#""https://x.example/\u200e\u202a\u2029\u2069\u0080x""#,
         r#""https://x.example/tab\tquote\"back\\slash""#,
+        r#""https://x.example/\ufffex""#,
+        r#""https://x.example/\uffffx""#,
     ];
     want.sort();
     assert_eq!(fields, want);

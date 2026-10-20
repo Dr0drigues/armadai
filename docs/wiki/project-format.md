@@ -271,12 +271,15 @@ type (`skills`, `starters`, `agents`, `models`), followed by its delivery `kind:
 type gives the entries to paste into your user file `registries.yaml` (the path printed is the real
 one: `$ARMADAI_CONFIG_DIR`, else `$XDG_CONFIG_HOME/armadai`, else `~/.config/armadai`), which
 `armadai skills sync|search|info` and `armadai init --pack` read. URLs are written as YAML
-double-quoted strings, with control and bidirectional characters escaped as `\uXXXX`.
+double-quoted strings: control characters, U+FFFE/U+FFFF, bidirectional marks, line separators and
+the BOM are escaped as `\uXXXX`, so a pasted entry reads back as the same URL.
 
 - **Starters**: copy each entry whole. A `kind:` the URL does not imply (an archive served at
   `…/dl?id=1`) is lost with the URL alone, and the source is then cloned with git.
 - **Skills**: skill sources are read as URLs only; a declared `kind:` is not read (it was not
-  before either), so the entries to paste carry the URL alone.
+  before either), so the entries to paste carry the URL alone. Only GitHub sources are fetched
+  (`owner/repo` or `https://github.com/owner/repo`); `skills sync` refuses any other URL (a GitLab
+  or self-hosted one) with "Use owner/repo or a GitHub URL", as it did in a legacy project.
 
 The warning gives the entries as a flow list (`[{ url: … }, …]`). If the list already exists in
 block form, add each entry as one `- { url: …, kind: … }` item. A project with many sources gets
