@@ -570,41 +570,57 @@ fn project_level_dead_sections_are_reported() {
     assert!(!(r.dropped.iter()).any(|d| d.subject.starts_with("registries")));
 }
 
-#[test]
-fn each_project_registry_source_is_reported_with_its_way_out() {
+/// The `registries.*` lines of a conversion: (sorted Dropped lines, Warnings).
+fn registry_lines(yaml: &str) -> (Vec<String>, Vec<String>) {
     let mut o = old(vec![agent("A")]);
-    let yaml = "registries:\n  \
-        skills: [{ url: s1 }, { url: \"a\\nb\" }, { url: \"\" }]\n  \
-        starters: [{ url: \"https://example.com/dl?id=1\", kind: archive }, { url: p2 }]\n  \
-        agents: [{ url: a1 }]\n  models: [{ url: m1, kind: git }]\n";
     o.config = armadai_model::yaml::from_str(yaml).unwrap();
     let (_, _, r) = convert(&o);
-    let mut got: Vec<String> = (r.dropped.iter())
+    let mut dropped: Vec<String> = (r.dropped.iter())
         .filter(|d| d.subject.starts_with("registries"))
         .map(|d| format!("{}: {} ({})", d.subject, d.field, d.reason))
         .collect();
-    got.sort();
+    dropped.sort();
+    let warned = (r.warnings.iter())
+        .filter(|w| w.starts_with("registries"))
+        .cloned()
+        .collect();
+    (dropped, warned)
+}
+
+/// The list a registry warning asks to paste.
+fn pasted_list(warning: &str) -> &str {
+    &warning[warning.rfind(": [").unwrap() + 2..]
+}
+
+#[test]
+fn each_project_registry_source_is_reported_with_its_way_out() {
+    let _iso = armadai_core::test_support::IsolatedConfigDir::enter();
+    let user_file = armadai_core::config::registries_config_path();
+    let (dropped, warned) = registry_lines(
+        "registries:\n  \
+         skills: [{ url: s1, kind: archive }, { url: \"a\\nb\" }, { url: \"\" }]\n  \
+         starters: [{ url: \"https://example.com/dl?id=1\", kind: archive }, { url: p2 }]\n  \
+         agents: [{ url: a1 }]\n  models: [{ url: m1, kind: git }]\n",
+    );
     let see = "the new format has no project registries; see the warning";
     let mut want = vec![
         "registries.agents: \"a1\" (no command reads agent registries)".to_string(),
         "registries.models: \"m1\", kind: git (no command reads model registries)".into(),
-        format!("registries.skills: \"s1\" ({see})"),
+        format!("registries.skills: \"s1\", kind: archive ({see})"),
         format!("registries.skills: \"a\\nb\" ({see})"),
         "registries.skills: empty url (it names no registry)".into(),
         format!("registries.starters: \"https://example.com/dl?id=1\", kind: archive ({see})"),
         format!("registries.starters: \"p2\" ({see})"),
     ];
     want.sort();
-    assert_eq!(got, want);
+    assert_eq!(dropped, want);
 
-    let warned: Vec<&String> = (r.warnings.iter())
-        .filter(|w| w.starts_with("registries"))
-        .collect();
-    let to_keep = |key: &str, reader: &str, list: &str| {
+    let to_keep = |key: &str, reader: &str, what: &str, list: &str| {
         format!(
-            "registries.{key}: to keep `{reader}` using these sources, add these exact entries \
-             (kind included) to the top-level `{key}:` list of \
-             ~/.config/armadai/registries.yaml: {list}"
+            "registries.{key}: to keep `{reader}` using these sources, add {what} to the \
+             top-level `{key}:` list of {} (as `- {{ ... }}` items if that list is written as \
+             a block): {list}",
+            user_file.display()
         )
     };
     let skills = r#"[{ url: "s1" }, { url: "a\nb" }]"#;
@@ -612,17 +628,91 @@ fn each_project_registry_source_is_reported_with_its_way_out() {
     assert_eq!(
         warned,
         [
-            &to_keep("skills", "armadai skills sync|search|info", skills),
-            &to_keep("starters", "armadai init --pack", starters),
+            to_keep(
+                "skills",
+                "armadai skills sync|search|info",
+                "these entries (a `kind` is not read for skill sources)",
+                skills
+            ),
+            to_keep(
+                "starters",
+                "armadai init --pack",
+                "these exact entries, `kind` included,",
+                starters
+            ),
         ]
     );
-    // the pasted entries read back as the sources they came from, kind included
-    let pasted: armadai_core::registries::RegistriesConfig =
-        armadai_model::yaml::from_str(&format!("skills: {skills}\nstarters: {starters}\n"))
-            .unwrap();
-    let declared = o.config.registries.as_ref().unwrap();
-    assert_eq!(pasted.skills, declared.skills[..2]);
-    assert_eq!(pasted.starters, declared.starters);
+    // without a declared kind, the skills warning does not mention it
+    let (_, warned) = registry_lines("registries:\n  skills: [{ url: s1 }]\n");
+    assert_eq!(
+        warned,
+        [to_keep(
+            "skills",
+            "armadai skills sync|search|info",
+            "these entries",
+            r#"[{ url: "s1" }]"#
+        )]
+    );
+}
+
+/// Pasted into the user file and read by its real reader, the entries give back the very
+/// urls, whatever characters they hold: DEL and C1 controls (refused by YAML even quoted,
+/// which would make the whole file unreadable) and bidirectional or line-separator
+/// characters (which would make the report line read differently) are all escaped.
+#[test]
+fn pasted_registry_entries_read_back_whatever_their_characters() {
+    let _iso = armadai_core::test_support::IsolatedConfigDir::enter();
+    let urls = [
+        "https://x.example/\u{7f}x",
+        "https://x.example/\u{9b}x",
+        "https://x.example/\u{85}x",
+        "https://x.example/\u{202e}gpj.x",
+        "https://x.example/\u{2028}x",
+        "https://x.example/\u{200f}\u{2066}\u{61c}\u{feff}x",
+        "https://x.example/\u{200e}\u{202a}\u{2029}\u{2069}\u{80}x",
+        "https://x.example/tab\tquote\"back\\slash",
+    ];
+    let mut o = old(vec![agent("A")]);
+    o.config = armadai_core::project::ProjectConfig {
+        registries: Some(armadai_core::registries::RegistriesConfig {
+            starters: (urls.iter())
+                .map(|u| armadai_core::registries::RegistrySource {
+                    url: u.to_string(),
+                    kind: None,
+                })
+                .collect(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let (_, _, r) = convert(&o);
+    let warning = (r.warnings.iter())
+        .find(|w| w.starts_with("registries.starters"))
+        .unwrap();
+    let file = armadai_core::config::registries_config_path();
+    std::fs::write(&file, format!("starters: {}\n", pasted_list(warning))).unwrap();
+    let read: Option<armadai_core::registries::RegistriesConfig> =
+        armadai_core::config::read_user_yaml(&file).unwrap();
+    let read: Vec<String> = read.unwrap().starters.into_iter().map(|s| s.url).collect();
+    assert_eq!(read, urls);
+    // and the report lines show them escaped, never raw
+    let mut fields: Vec<&str> = (r.dropped.iter())
+        .filter(|d| d.subject.starts_with("registries"))
+        .map(|d| d.field.as_str())
+        .collect();
+    fields.sort();
+    let mut want = [
+        r#""https://x.example/\u007fx""#,
+        r#""https://x.example/\u009bx""#,
+        r#""https://x.example/\u0085x""#,
+        r#""https://x.example/\u202egpj.x""#,
+        r#""https://x.example/\u2028x""#,
+        r#""https://x.example/\u200f\u2066\u061c\ufeffx""#,
+        r#""https://x.example/\u200e\u202a\u2029\u2069\u0080x""#,
+        r#""https://x.example/tab\tquote\"back\\slash""#,
+    ];
+    want.sort();
+    assert_eq!(fields, want);
 }
 
 #[test]

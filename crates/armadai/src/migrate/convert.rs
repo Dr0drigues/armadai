@@ -528,9 +528,10 @@ fn project_dead_sections(old: &OldProject, r: &mut Report) {
             r.drop("project", field, reason);
         }
     }
-    // One line per source, then one warning per kind with the entries to paste where
-    // they can still be read from (#479).
+    // One line per source, then one warning per registry type with the entries to paste
+    // where they can still be read from (#479).
     let Some(reg) = &c.registries else { return };
+    let user_file = armadai_core::config::registries_config_path();
     for (key, sources, reader) in [
         (
             "skills",
@@ -543,9 +544,9 @@ fn project_dead_sections(old: &OldProject, r: &mut Report) {
     ] {
         let subject = format!("registries.{key}");
         let mut kept = Vec::new();
+        let mut kind_ignored = false;
         for s in sources {
-            // a JSON string is a YAML double-quoted scalar: control characters stay escaped
-            let url = serde_json::to_string(&s.url).unwrap_or_default();
+            let url = yaml_quoted(&s.url);
             let kind = s.kind.map(|k| match k {
                 SourceKind::Git => "git",
                 SourceKind::Archive => "archive",
@@ -558,22 +559,51 @@ fn project_dead_sections(old: &OldProject, r: &mut Report) {
                 Some(_) => "the new format has no project registries; see the warning".into(),
             };
             r.drop(&subject, &field, reason);
-            if reader.is_some() && !s.url.is_empty() {
-                kept.push(match kind {
-                    Some(k) => format!("{{ url: {url}, kind: {k} }}"),
-                    None => format!("{{ url: {url} }}"),
-                });
+            if reader.is_none() || s.url.is_empty() {
+                continue;
             }
+            // only starter sources are fetched by kind; skill sources are read as urls
+            kept.push(match kind {
+                Some(k) if key == "starters" => format!("{{ url: {url}, kind: {k} }}"),
+                _ => format!("{{ url: {url} }}"),
+            });
+            kind_ignored |= kind.is_some() && key != "starters";
         }
-        if let (Some(reader), false) = (reader, kept.is_empty()) {
-            r.warn(format!(
-                "{subject}: to keep `{reader}` using these sources, add these exact entries \
-                 (kind included) to the top-level `{key}:` list of \
-                 ~/.config/armadai/registries.yaml: [{}]",
-                kept.join(", ")
-            ));
+        let Some(reader) = reader.filter(|_| !kept.is_empty()) else {
+            continue;
+        };
+        let what = if key == "starters" {
+            "these exact entries, `kind` included,"
+        } else if kind_ignored {
+            "these entries (a `kind` is not read for skill sources)"
+        } else {
+            "these entries"
+        };
+        r.warn(format!(
+            "{subject}: to keep `{reader}` using these sources, add {what} to the top-level \
+             `{key}:` list of {} (as `- {{ ... }}` items if that list is written as a block): [{}]",
+            user_file.display(),
+            kept.join(", ")
+        ));
+    }
+}
+
+/// `text` as a YAML double-quoted scalar. JSON escapes the C0 controls; DEL and the C1
+/// controls, which YAML refuses even quoted, and the invisible or bidirectional characters
+/// that would make a report line read differently, are escaped as `\uXXXX` too.
+fn yaml_quoted(text: &str) -> String {
+    let json = serde_json::to_string(text).unwrap_or_default();
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        if matches!(c, '\u{7f}'..='\u{9f}' | '\u{61c}' | '\u{200e}' | '\u{200f}'
+            | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+        {
+            out.push_str(&format!("\\u{:04x}", c as u32));
+        } else {
+            out.push(c);
         }
     }
+    out
 }
 
 fn skill_description(id: &str, declared: Option<&str>, body: &str, r: &mut Report) -> String {

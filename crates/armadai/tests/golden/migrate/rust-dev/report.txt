@@ -21,7 +21,7 @@ Warnings (7):
   agent `code-reviewer`: description derived from the first sentence of its prompt
   agent `debug`: description derived from the first sentence of its prompt
   agent `test-writer`: description derived from the first sentence of its prompt
-  registries.skills: to keep `armadai skills sync|search|info` using these sources, add these exact entries (kind included) to the top-level `skills:` list of ~/.config/armadai/registries.yaml: [{ url: "https://example.com/team/skills.git" }]
-  registries.starters: to keep `armadai init --pack` using these sources, add these exact entries (kind included) to the top-level `starters:` list of ~/.config/armadai/registries.yaml: [{ url: "https://example.com/team/starters.tar.gz", kind: archive }]
+  registries.skills: to keep `armadai skills sync|search|info` using these sources, add these entries to the top-level `skills:` list of <config dir>/registries.yaml (as `- { ... }` items if that list is written as a block): [{ url: "https://example.com/team/skills.git" }]
+  registries.starters: to keep `armadai init --pack` using these sources, add these exact entries, `kind` included, to the top-level `starters:` list of <config dir>/registries.yaml (as `- { ... }` items if that list is written as a block): [{ url: "https://example.com/team/starters.tar.gz", kind: archive }]
   unknown keys of the legacy config file are not detected (the legacy loader ignores them); review the backup
 Note: run 'armadai link' to compile the migrated project; the previous project is in .armadai/.migrated/<timestamp>/.

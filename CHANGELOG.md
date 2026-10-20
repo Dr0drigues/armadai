@@ -28,12 +28,15 @@
 
 ### Changed (project registries, #479)
 
-- `armadai migrate` reports each project registry source it drops (`registries.<kind>: "<url>"`,
-  with its `kind:` when declared) instead of one `registries` line: the new format has no project
-  registries, so a migrated project stops using them. For `skills` and `starters`, a warning gives
-  the exact entries (`kind` included) to paste into the top-level lists of
-  `~/.config/armadai/registries.yaml`; `agents` and `models` sources are read by no command. An
-  empty url is reported as such; an empty `registries:` section is no longer reported.
+- `armadai migrate` reports each project registry source it drops (`registries.<type>: "<url>"`,
+  with its delivery `kind:` when declared) instead of one `registries` line: the new format has no
+  project registries, so a migrated project stops using them. For the `skills` and `starters`
+  registry types, a warning gives the entries to paste into the top-level lists of the user
+  `registries.yaml` (its real path is printed): starter entries keep their `kind`, skill entries
+  carry the URL alone (a skill source's `kind` is not read). URLs are quoted with control and
+  bidirectional characters escaped, so a pasted entry reads back as the same URL. `agents` and
+  `models` sources are read by no command. An empty url is reported as such; an empty
+  `registries:` section is no longer reported.
 
 ### Changed (YAML library, #467)
 
