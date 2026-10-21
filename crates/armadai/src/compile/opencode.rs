@@ -38,7 +38,7 @@ const MAX_DEPTH: usize = 8;
 /// Capability → the OpenCode 2.x permission keys it governs (v1 agent format, which
 /// 2.x migrates: `task` becomes the `subagent` action).
 const CAP_KEYS: [(&str, &[&str]); 5] = [
-    ("read", &["read"]),
+    ("read", &["read", "grep", "glob"]),
     ("write", &["edit"]),
     ("shell", &["shell"]),
     ("web", &["webfetch", "websearch"]),
@@ -800,7 +800,12 @@ mod tests {
         );
         assert_eq!(
             front(&plan, "agents/qa.md")["permission"],
-            serde_json::json!({"read": "ask"})
+            serde_json::json!({"read": "ask", "grep": "ask", "glob": "ask"})
+        );
+        // grep returns file contents: reading is read, grep and glob in 2.x
+        assert_eq!(
+            line(&plan, "agent qa capability read=ask"),
+            (Status::Compiled, Some("permission read, grep, glob".into()))
         );
         assert_eq!(
             line(&plan, "agent dev capability web=deny"),

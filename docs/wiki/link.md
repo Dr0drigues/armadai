@@ -84,7 +84,7 @@ version, is no longer produced (a previous one is removed as a stale file while 
 | flow | guidance in the team file | `approximated (guidance only)`, `compiled` under `strict` |
 | `policy.delegation: strict` | `permission.task` of each agent: `"*": deny`, then `allow` for each target the flows permit (same rule as the Claude [policy gate](policy-gate.md)) and the `free_agents`; the main-thread rule on the built-in `build` and `plan` agents (`agent.build.permission.task`, `agent.plan.permission.task` in `opencode.json`); `experimental.subagent_depth` the longest delegation chain of the flows (1 to 8) | `compiled (enforced by OpenCode permissions)`; primary agents of your own outside `.armadai/` are not covered |
 | `policy.delegation: off` | no `permission.task` | flows `approximated` |
-| capabilities | `deny` / `ask` on the agent's tools: `read` -> `read`, `write` -> `edit`, `shell` -> `shell`, `web` -> `webfetch` and `websearch`, `delegate` -> `task`; `allow` is OpenCode's default | `compiled` |
+| capabilities | `deny` / `ask` on the agent's tools: `read` -> `read`, `grep` and `glob`, `write` -> `edit`, `shell` -> `shell`, `web` -> `webfetch` and `websearch`, `delegate` -> `task`; `allow` is OpenCode's default | `compiled` |
 | automation | nothing (it would need an OpenCode plugin) | `not-compiled` |
 | `native.opencode` of an agent | merged into its frontmatter after the generated keys; a key colliding with a generated one is an error | `compiled` |
 | `native.opencode` of project.yaml | merged into `opencode.json` as owned keys | `compiled` |
