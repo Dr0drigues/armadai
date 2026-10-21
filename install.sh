@@ -49,7 +49,7 @@ get_latest_version() {
 }
 
 main() {
-    local platform version artifact_name download_url tmp_dir
+    local platform version artifact_name download_url
 
     platform="$(detect_platform)"
     artifact_name="armadai-${platform}"
@@ -79,15 +79,35 @@ main() {
     echo ""
 
     # Download
+    # global, not local: the EXIT trap runs after main returns
     tmp_dir="$(mktemp -d)"
     trap 'rm -rf "$tmp_dir"' EXIT
 
     echo "Downloading..."
+    local sums_url="https://github.com/${REPO}/releases/download/${version}/SHA256SUMS"
     if command -v curl &>/dev/null; then
-        curl -fsSL -o "${tmp_dir}/${BINARY_NAME}" "$download_url"
+        curl -q -fsSL --proto =https --proto-redir =https -o "${tmp_dir}/${artifact_name}" "$download_url"
+        curl -q -fsSL --proto =https --proto-redir =https -o "${tmp_dir}/SHA256SUMS" "$sums_url" || true
     else
-        wget -qO "${tmp_dir}/${BINARY_NAME}" "$download_url"
+        wget -qO "${tmp_dir}/${artifact_name}" "$download_url"
+        wget -qO "${tmp_dir}/SHA256SUMS" "$sums_url" || true
     fi
+
+    # Verify: a release without SHA256SUMS, or without a line for this platform, is refused.
+    if [ ! -s "${tmp_dir}/SHA256SUMS" ]; then
+        echo "Error: release ${version} publishes no SHA256SUMS; refusing an unverified binary." >&2
+        exit 1
+    fi
+    if ! grep -E "^[0-9a-fA-F]{64}  \*?${artifact_name}\$" "${tmp_dir}/SHA256SUMS" > "${tmp_dir}/expected"; then
+        echo "Error: SHA256SUMS has no line for ${artifact_name}." >&2
+        exit 1
+    fi
+    if command -v sha256sum &>/dev/null; then
+        (cd "$tmp_dir" && sha256sum -c expected >/dev/null)
+    else
+        (cd "$tmp_dir" && shasum -a 256 -c expected >/dev/null)
+    fi || { echo "Error: checksum mismatch for ${artifact_name}." >&2; exit 1; }
+    mv "${tmp_dir}/${artifact_name}" "${tmp_dir}/${BINARY_NAME}"
 
     # Install
     mkdir -p "$INSTALL_DIR"
