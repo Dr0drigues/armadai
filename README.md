@@ -202,8 +202,10 @@ docs: update README with new CLI commands
 refactor(linker): share the prompt composition
 ```
 
-`CHANGELOG.md` is written by hand (its `Unreleased` section); `cz changelog --dry-run` drafts the
-release notes from the commits (`release.yml`).
+`CHANGELOG.md` is written by hand (its `Unreleased` section), and the GitHub release notes are taken
+from it: before pushing a tag `vX.Y.Z`, rename `## Unreleased` to `## vX.Y.Z (YYYY-MM-DD)` and commit.
+`release.yml` publishes that section (`.github/scripts/release-notes.sh`) and fails when it is missing
+or empty; a manual dry run previews the `Unreleased` section instead.
 
 ## License
 
