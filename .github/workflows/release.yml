@@ -111,8 +111,19 @@ jobs:
         with:
           path: artifacts
 
+      # `armadai update` and install.sh refuse a release without this file.
+      - name: Checksums
+        run: |
+          mkdir -p dist
+          cp artifacts/*/armadai-* dist/
+          (cd dist && sha256sum armadai-* > SHA256SUMS)
+          cat dist/SHA256SUMS
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           body_path: RELEASE_NOTES.md
-          files: artifacts/*/armadai-*
+          files: |
+            dist/armadai-*
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
