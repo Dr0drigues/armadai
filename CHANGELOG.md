@@ -83,13 +83,16 @@
 - An archive URL with a query (`…/starters.tar.gz?token=…`) is recognised as an archive
   without `kind: archive`.
 - The starter cache directory name no longer contains the URL's `user:pass@` part nor, in
-  clear, its query. A plain `scheme://host/path` URL of at most 60 characters (letters,
-  digits, `.`, `-`, `/`) keeps its directory; any other source (credentials, query, `#`, `@`,
-  `_`, a trailing `/`, a local path, a `git@host:` address, a longer URL) gets a new one,
-  named with a 128-bit SHA-256 digest, and is synced again. Before, two such URLs could be
-  forged to share a directory (32-bit hash), letting one source replace another's packs. The
-  old directory stays on disk: delete it by hand (`~/.config/armadai/registry/starters/`), as
-  its name may hold credentials.
+  clear, its query. A plain `scheme://host/path` URL of at most 60 characters keeps its
+  directory: a lowercase scheme (letters only), then letters, digits, `.`, `-` and `/`, the
+  first character after `://` a letter or digit, the last one a letter, digit or `-`. Any
+  other source gets a new one, named with a 128-bit SHA-256 digest, and is synced again:
+  credentials, query, `#`, `@`, `_`, `~`, `%`, a port (`:`), a scheme with a capital
+  (`HTTPS://`), a digit or a `+` (`git+https://`), a host starting with `.` or `-`, a URL
+  ending with `/` or `.`, a local path, a `git@host:` address, a longer URL. Before, two
+  such URLs could be forged to share a directory (32-bit hash), letting one source replace
+  another's packs. The old directory stays on disk: delete it by hand
+  (`~/.config/armadai/registry/starters/`), as its name may hold credentials.
 - The starter cache skips directories whose name starts with a dot (sync staging areas).
 - Known limits: an archive's named pipes (FIFOs) are extracted into the cache like files; a
   git source's credentials (`https://user:token@…`) are stored in clear in its cache
@@ -351,6 +354,11 @@ the entry says so.
 
 ### Security
 
+- Listing a starter archive is bounded in memory and time (#493): its entry names are read as
+  `tar`/`unzip` print them, and past 100,000 entries, a name of more than 4096 bytes or 64 MiB
+  of names in total the lister is stopped and the archive refused, the message naming the
+  bound. Before, the whole listing was read first: a 1 MB `.tar.gz` declaring 1,000 names of
+  900 KB took 1.8 GB of memory and three minutes (debug build) before being refused.
 - `armadai update` downloads with the same hardened `curl` call as starter archives (#488):
   it no longer reads `~/.curlrc` (where `insecure` would turn TLS checks off while fetching
   the new executable), stays on HTTPS through redirects, does not expand `{}`/`[]` in URLs,
