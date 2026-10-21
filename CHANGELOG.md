@@ -346,6 +346,18 @@ the entry says so.
 
 ### Security
 
+- `armadai init --pack <name>` no longer lets a project source mask one of yours (#490). A
+  cloned repository could get its own pack of the same name installed: a source of its legacy
+  config (`registries.starters`) whose cache folder `read_dir` listed first (5 tries out of 5),
+  its `.armadai/starters/` (which outranked the built-in packs), or a `starters/` folder of the
+  current directory (taken for the built-in packs). Now your starter folders, then your
+  `registries.yaml` sources, always come before the project's sources; a `starters/` folder of
+  the current directory is never read; a pack taken from a project source is announced, its
+  URL masked; one found only there first syncs the sources, so that one of yours not synced
+  yet still wins. Two of your sources (or two project sources) holding the same pack is now
+  an error naming them, where one was picked in `read_dir` order. Only the caches of the
+  sources declared now are read: a cache left by a source since removed, or by another
+  project's source, is ignored.
 - `armadai update` downloads with the same hardened `curl` call as starter archives (#488):
   it no longer reads `~/.curlrc` (where `insecure` would turn TLS checks off while fetching
   the new executable), stays on HTTPS through redirects, does not expand `{}`/`[]` in URLs,

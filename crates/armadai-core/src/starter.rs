@@ -49,14 +49,14 @@ impl StarterPack {
 /// Discover the built-in starter packs directory.
 ///
 /// Resolution order:
-/// 1. `./starters` relative to CWD (dev)
-/// 2. `CARGO_MANIFEST_DIR/starters` (dev, compile-time path)
-/// 3. Next to the binary (packaged installs)
-/// 4. `~/.config/armadai/starters/` — extracted from embedded data on first use
+/// 1. `CARGO_MANIFEST_DIR/starters` (dev, compile-time path)
+/// 2. Next to the binary (packaged installs)
+/// 3. `~/.config/armadai/starters/` — extracted from embedded data on first use
+///
+/// Never a folder of the current directory: a cloned repository's `starters/` would
+/// pass for the embedded packs (#490).
 pub fn builtin_starters_dir() -> PathBuf {
     let candidates = [
-        // Dev: relative to CWD
-        PathBuf::from("starters"),
         // Dev: relative to project root at compile time
         PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/starters")),
         // Installed: next to binary
@@ -279,78 +279,133 @@ fn scan_for_packs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for e in entries.flatten() {
-        let p = e.path();
+    // sorted: the pack a source yields never depends on `read_dir` order
+    let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    dirs.sort();
+    for p in dirs {
         if p.is_dir() && !p.file_name().is_some_and(|n| n == ".git") {
             scan_for_packs(&p, depth + 1, out);
         }
     }
 }
 
-/// Pack directories discovered under the remote starters cache (each
-/// synced source is a subdir; packs are found by `discover_packs`).
-pub fn remote_starter_pack_dirs() -> Vec<PathBuf> {
-    remote_starter_pack_dirs_in(&starters_cache_dir())
+/// A starter pack found by name: its folder, and the project source it comes from
+/// (`None`: the embedded packs, the user's folders or the user's sources).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundPack {
+    pub dir: PathBuf,
+    pub project_source: Option<String>,
 }
 
-/// Testable core: scan a cache root's per-source subdirs for packs.
-fn remote_starter_pack_dirs_in(cache_root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let Ok(sources) = std::fs::read_dir(cache_root) else {
-        return out;
+/// Find a starter pack by name (#490). Trusted places first: the starter folders
+/// (built-in, user, `ARMADAI_STARTERS_DIRS`, `starters_dirs`; the last one holding it
+/// wins), then the user's sources of `registries.yaml`. Only then the project's: its
+/// `.armadai/starters/` and the sources of its legacy config. Two sources of the same
+/// level holding the pack is an error naming them. A cache no declared source owns
+/// is never read: nothing tells whose it is.
+pub fn find_pack(name: &str) -> anyhow::Result<Option<FoundPack>> {
+    let project_local = Path::new(".armadai/starters");
+    let trusted: Vec<PathBuf> = (all_starters_dirs().into_iter())
+        .filter(|d| d != project_local)
+        .collect();
+    let cache = |url: &str| {
+        let dir = starters_cache_dir().join(crate::registries::cache_key(url));
+        (crate::registries::redact_url(url), dir)
     };
-    for src in sources.flatten() {
-        // A dot-dir is a sync's staging area (`.armadai-staging-*`), never a source.
-        if src.path().is_dir() && !src.file_name().to_string_lossy().starts_with('.') {
-            out.extend(discover_packs(&src.path()));
+    let mut user_urls: Vec<String> = Vec::new();
+    for s in crate::registries::load_user_registries().starters {
+        if !user_urls.contains(&s.url) {
+            user_urls.push(s.url);
         }
     }
-    out
-}
-
-/// Find a starter pack directory by name across all source directories.
-///
-/// User and custom directories take priority over built-in (last match wins).
-/// If no local match is found, falls back to the remote starters cache: first
-/// by directory basename, then — for single-pack repos whose dir differs from
-/// the pack's declared `name:` — by reading each remote pack's `pack.yaml`
-/// (local always wins over remote either way).
-pub fn find_pack_dir(name: &str) -> Option<PathBuf> {
-    let mut found: Option<PathBuf> = None;
-    for dir in all_starters_dirs() {
-        let candidate = dir.join(name);
-        if !skipped(&candidate) && candidate.is_dir() && candidate.join("pack.yaml").is_file() {
-            found = Some(candidate);
+    let user: Vec<_> = user_urls.iter().map(|u| cache(u)).collect();
+    let mut project = Vec::new();
+    let local = project_local.join(name);
+    if is_pack(&local) {
+        let label = ".armadai/starters/ of the current directory".to_string();
+        project.push((label, local));
+    }
+    if let Some((root, cfg)) = crate::project::find_project_config() {
+        let mut seen = user_urls;
+        for s in cfg.registries.map(|r| r.starters).unwrap_or_default() {
+            if !seen.contains(&s.url) {
+                let (shown, dir) = cache(&s.url);
+                if let Some(pack) = pack_in_source(&dir, name) {
+                    project.push((format!("{shown} (from {})", root.display()), pack));
+                }
+                seen.push(s.url);
+            }
         }
     }
-    if found.is_none() {
-        found = remote_starter_pack_dirs()
-            .into_iter()
-            .find(|d| d.file_name().is_some_and(|n| n == name));
-    }
-    if found.is_none() {
-        found = find_remote_pack_by_name(name);
-    }
-    found
+    resolve_pack(name, &trusted, &user, project)
 }
 
-/// Find a remote pack by its `pack.yaml` `name:` (not just its dir basename),
-/// so single-pack repos whose dir != name still resolve. Testable core.
-fn find_remote_pack_by_name_in(cache_root: &Path, name: &str) -> Option<PathBuf> {
-    for dir in remote_starter_pack_dirs_in(cache_root) {
-        if let Ok(pack) = StarterPack::load(&dir)
-            && pack.name == name
-        {
-            return Some(dir);
-        }
+/// Testable core of [`find_pack`]: `user` lists `(shown URL, cache folder)` in
+/// declaration order, `project` the project packs already found, as `(label, pack)`.
+fn resolve_pack(
+    name: &str,
+    trusted: &[PathBuf],
+    user: &[(String, PathBuf)],
+    project: Vec<(String, PathBuf)>,
+) -> anyhow::Result<Option<FoundPack>> {
+    if let Some(dir) = trusted.iter().map(|d| d.join(name)).rfind(|c| is_pack(c)) {
+        let project_source = None;
+        return Ok(Some(FoundPack {
+            dir,
+            project_source,
+        }));
     }
-    None
+    let user: Vec<_> = (user.iter())
+        .filter_map(|(shown, cache)| Some((shown.clone(), pack_in_source(cache, name)?)))
+        .collect();
+    if let Some((_, dir)) = only_one(name, "of your sources", user)? {
+        let project_source = None;
+        return Ok(Some(FoundPack {
+            dir,
+            project_source,
+        }));
+    }
+    Ok(
+        only_one(name, "project sources", project)?.map(|(label, dir)| FoundPack {
+            dir,
+            project_source: Some(label),
+        }),
+    )
 }
 
-/// Find a remote pack by its declared `name:` across the synced starters
-/// cache. See [`find_remote_pack_by_name_in`] for the testable core.
-pub fn find_remote_pack_by_name(name: &str) -> Option<PathBuf> {
-    find_remote_pack_by_name_in(&starters_cache_dir(), name)
+fn is_pack(dir: &Path) -> bool {
+    !skipped(dir) && dir.is_dir() && dir.join("pack.yaml").is_file()
+}
+
+/// The pack `name` in one source's cache: by folder name, else by `pack.yaml` `name:`
+/// (a single-pack repository's folder is not named after its pack).
+fn pack_in_source(cache: &Path, name: &str) -> Option<PathBuf> {
+    let packs = discover_packs(cache);
+    (packs
+        .iter()
+        .find(|d| d.file_name().is_some_and(|n| n == name)))
+    .or_else(|| (packs.iter()).find(|d| StarterPack::load(d).is_ok_and(|p| p.name == name)))
+    .cloned()
+}
+
+/// The single match of one level; several is an error naming each source.
+fn only_one(
+    name: &str,
+    level: &str,
+    found: Vec<(String, PathBuf)>,
+) -> anyhow::Result<Option<(String, PathBuf)>> {
+    if found.len() < 2 {
+        return Ok(found.into_iter().next());
+    }
+    let list: Vec<String> = (found.iter())
+        .map(|(label, dir)| format!("  {label}: {}", dir.display()))
+        .collect();
+    anyhow::bail!(
+        "starter pack '{name}' is provided by several {level}:\n{}\n\
+         install one by its folder (`armadai init --pack <folder>`), or remove the other \
+         sources",
+        list.join("\n")
+    )
 }
 
 /// List all available starter pack names.
@@ -386,40 +441,6 @@ pub fn list_available_packs() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn remote_cache_packs_are_discovered() {
-        // A pack under the starters cache dir should be found by find_pack_dir.
-        // Isolate the cache via a temp registry_cache_dir if overridable; else
-        // assert discover_packs surfaces the cache packs through
-        // remote_starter_pack_dirs().
-        use std::fs;
-        let tmp = std::env::temp_dir().join(format!("armadai-remote-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&tmp);
-        let pack = tmp.join("src1/remote-demo/pack.yaml");
-        fs::create_dir_all(pack.parent().unwrap()).unwrap();
-        fs::write(&pack, "name: remote-demo\n").unwrap();
-        // remote_starter_pack_dirs scans a given cache root for packs:
-        let dirs = remote_starter_pack_dirs_in(&tmp);
-        assert!(
-            dirs.iter()
-                .any(|d| d.file_name().unwrap().to_string_lossy() == "remote-demo")
-        );
-        let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn remote_cache_skips_staging_dot_dirs() {
-        let tmp = tempfile::tempdir().unwrap();
-        for dir in ["src1/kept", ".armadai-staging-x/new/half-extracted"] {
-            let pack = tmp.path().join(dir).join("pack.yaml");
-            std::fs::create_dir_all(pack.parent().unwrap()).unwrap();
-            std::fs::write(&pack, "name: x\n").unwrap();
-        }
-        let dirs = remote_starter_pack_dirs_in(tmp.path());
-        assert_eq!(dirs.len(), 1, "{dirs:?}");
-        assert!(dirs[0].ends_with("src1/kept"), "{dirs:?}");
-    }
 
     #[test]
     fn test_load_pack() {
@@ -547,35 +568,26 @@ description: Minimal pack
     }
 
     #[test]
-    fn test_find_pack_dir_builtin() {
-        // Built-in packs should be findable
-        let found = find_pack_dir("code-analysis-rust");
-        assert!(found.is_some(), "Expected to find code-analysis-rust pack");
-        assert!(found.unwrap().join("pack.yaml").is_file());
+    fn test_find_pack_builtin() {
+        let found = find_pack("code-analysis-rust").unwrap().unwrap();
+        assert!(found.dir.join("pack.yaml").is_file());
+        assert_eq!(found.project_source, None);
     }
 
     #[test]
-    fn test_find_pack_dir_not_found() {
-        assert!(find_pack_dir("nonexistent-pack-xyz").is_none());
+    fn test_find_pack_not_found() {
+        assert_eq!(find_pack("nonexistent-pack-xyz").unwrap(), None);
     }
 
+    /// A source's pack whose folder differs from its `name:` is found by that name.
     #[test]
-    fn find_remote_pack_by_name_by_manifest_name_not_dir() {
-        // A remote pack whose dir differs from its `name:` should still
-        // resolve by name, not just by directory basename.
-        use std::fs;
-        let tmp = std::env::temp_dir().join(format!("armadai-nm-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&tmp);
-        let d = tmp.join("some-hash-dir/inner");
-        fs::create_dir_all(&d).unwrap();
-        fs::write(
-            d.join("pack.yaml"),
-            "name: cool-pack\ndescription: A cool pack\n",
-        )
-        .unwrap();
-        let found = find_remote_pack_by_name_in(&tmp, "cool-pack");
-        assert!(found.is_some());
-        let _ = fs::remove_dir_all(&tmp);
+    fn a_source_pack_is_found_by_its_declared_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path().join("inner");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("pack.yaml"), "name: cool-pack\ndescription: d\n").unwrap();
+        assert_eq!(pack_in_source(tmp.path(), "cool-pack"), Some(d));
+        assert_eq!(pack_in_source(tmp.path(), "inner2"), None);
     }
 
     #[test]
@@ -613,8 +625,8 @@ description: Minimal pack
         );
 
         // The env pack should be findable
-        let found = find_pack_dir("env-pack");
-        assert!(found.is_some(), "Expected to find env-pack");
+        let found = find_pack("env-pack").unwrap().map(|f| f.dir);
+        assert_eq!(found, Some(pack_dir.clone()));
 
         // Restore
         // SAFETY: Restoring original env state at end of test scope.

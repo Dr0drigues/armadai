@@ -125,11 +125,24 @@ The `armadai-authoring` pack and the `armadai-starter-authoring` skill help with
 
 ### Priority order
 
-1. **Built-in** — embedded in the binary
-2. **Project-local** — `.armadai/starters/` in the current project
-3. **User library** — `~/.config/armadai/starters/`
-4. **Environment variable** — `ARMADAI_STARTERS_DIRS` (colon-separated paths)
-5. **Config file** — `starters_dirs` in `~/.config/armadai/config.yaml`
+`armadai init --pack <name>` looks for the pack in your own places first, then in the
+project's:
+
+1. **Your starter folders**, the last one holding the pack wins: the built-in packs
+   (embedded in the binary), then `~/.config/armadai/starters/`, then
+   `ARMADAI_STARTERS_DIRS` (colon-separated paths), then `starters_dirs` in
+   `~/.config/armadai/config.yaml`.
+2. **Your remote sources**: the `starters:` of `~/.config/armadai/registries.yaml`.
+3. **The project's sources**: `.armadai/starters/` in the current directory, and the
+   `registries.starters` of a legacy project config. A pack taken from one of them is
+   announced (`note: pack '<name>' comes from a project source ...`, with the source's URL
+   masked).
+
+A project source never masks one of yours, and a `starters/` folder of the current
+directory is never read. Two of your remote sources (or two project sources) holding the
+same pack is an error that names them: install one by its folder
+(`armadai init --pack <folder>`, the folders are in the message), or remove the other
+source. Only the caches of the sources declared now are read.
 
 ### Environment variable
 
@@ -161,7 +174,8 @@ When `armadai init --pack <name>` finds no local pack of that name, it syncs the
 registries once, then retries: the top-level `starters:` list of `~/.config/armadai/registries.yaml`
 (no `registries:` wrapper there), plus the `registries.starters` of a legacy project's config. A
 migrated project has none (see [Project format](project-format.md#migrating-a-legacy-project)). A
-pack that exists locally never triggers a sync.
+pack found in your own folders or sources never triggers a sync; one found only in a project
+source does, so that one of your sources not synced yet still wins.
 
 ```yaml
 # ~/.config/armadai/registries.yaml
