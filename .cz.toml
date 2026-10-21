@@ -1,6 +1,6 @@
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "1.0.0-rc.5"
+version = "1.0.0-rc.6"
 version_provider = "commitizen"
 version_scheme = "semver2"
 # the crates whose version follows the release (armadai-model is versioned on its own)

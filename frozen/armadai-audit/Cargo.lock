@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "armadai-core"
-version = "1.0.0-rc.5"
+version = "1.0.0-rc.6"
 dependencies = [
  "anyhow",
  "armadai-model",
