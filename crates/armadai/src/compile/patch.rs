@@ -1,4 +1,5 @@
-//! Files link shares with the user (`.claude/settings.json`, the root `CLAUDE.md`):
+//! Files link shares with the user (`.claude/settings.json`, the root `CLAUDE.md`,
+//! `opencode.json`):
 //! patched in place, never written whole by `linker::manifest::write_files` (which
 //! skips an existing file without `--force` and deletes it whole on `unlink`).
 //!
@@ -14,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::claude_settings::{HookEntry, Owned, merge_settings, remove_entries};
+use super::json_keys::{JsonKeys, OwnedJson, merge_json_keys, remove_json_keys};
 use super::{BLOCK_BEGIN, BLOCK_END};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,6 +32,8 @@ pub struct PatchedFile {
 pub enum PatchKind {
     SettingsHooks(Owned),
     MarkdownBlock,
+    /// Owned keys of a shared JSON config file (`opencode.json`).
+    JsonKeys(OwnedJson),
 }
 
 /// Current text of `path`, `None` when absent; a symbolic link is refused.
@@ -175,22 +179,111 @@ pub fn apply_settings(
     let created = previous.is_some_and(|p| p.created) || existing.is_none();
     let (text, owned) = merge_settings(existing.as_deref(), entries, keys, &prev_owned)
         .with_context(|| path.display().to_string())?;
-    let mut reformatted = false;
-    match &existing {
-        None if owned == Owned::default() => {}
-        None => write_atomic(&path, &text)?,
-        Some(old) => {
-            let old_value: Value = serde_json::from_str(old)?;
-            if old_value != serde_json::from_str::<Value>(&text)? {
-                let canonical = serde_json::to_string_pretty(&old_value)? + "\n";
-                reformatted = *old != canonical;
-                write_atomic(&path, &text)?;
-            }
-        }
-    }
+    let reformatted = write_json(&path, existing.as_deref(), &text, owned == Owned::default())?;
     let patched = PatchedFile {
         path: rel.to_path_buf(),
         kind: PatchKind::SettingsHooks(owned),
+        created,
+    };
+    Ok((patched, reformatted))
+}
+
+/// Write merged JSON `text` over `existing` unless its value is unchanged (or, for a
+/// new file, unless link owns nothing in it); says whether an existing file's layout
+/// was normalised.
+fn write_json(
+    path: &Path,
+    existing: Option<&str>,
+    text: &str,
+    owns_nothing: bool,
+) -> anyhow::Result<bool> {
+    match existing {
+        None if owns_nothing => Ok(false),
+        None => write_atomic(path, text).map(|_| false),
+        Some(old) => {
+            let old_value: Value = serde_json::from_str(old)?;
+            if old_value == serde_json::from_str::<Value>(text)? {
+                return Ok(false);
+            }
+            let canonical = serde_json::to_string_pretty(&old_value)? + "\n";
+            write_atomic(path, text)?;
+            Ok(old != canonical)
+        }
+    }
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "called by link and unlink from step 4 task 4")
+)]
+/// The owned keys `previous` recorded, if it is a JSON-keys patch.
+fn previous_json(previous: Option<&PatchedFile>) -> OwnedJson {
+    match previous.map(|p| &p.kind) {
+        Some(PatchKind::JsonKeys(o)) => o.clone(),
+        _ => OwnedJson::default(),
+    }
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "called by link and unlink from step 4 task 4")
+)]
+/// Everything [`apply_json`] would refuse (symbolic link, unreadable or invalid JSON,
+/// a key clash), checked without writing: run before any write. A file named in
+/// `also_refuse` next to `rel` (`opencode.jsonc`) is refused too: the tool may read
+/// it instead of, or merged with, the file link patches.
+pub fn preflight_json(
+    root: &Path,
+    rel: &Path,
+    trust: &Path,
+    wanted: &JsonKeys,
+    previous: Option<&PatchedFile>,
+    also_refuse: &[&str],
+) -> anyhow::Result<()> {
+    let path = checked(root, trust, rel)?;
+    let dir = path.parent().context("patched file has no parent")?;
+    if let Some(name) = also_refuse
+        .iter()
+        .find(|n| std::fs::symlink_metadata(dir.join(n)).is_ok())
+    {
+        let ours = rel.file_name().unwrap_or_default().to_string_lossy();
+        bail!(
+            "{} exists: rename it to {ours} or remove it, link only patches {ours}",
+            dir.join(name).display()
+        );
+    }
+    merge_json_keys(read(&path)?.as_deref(), wanted, &previous_json(previous))
+        .map(|_| ())
+        .with_context(|| path.display().to_string())
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "called by link and unlink from step 4 task 4")
+)]
+/// Merge the `wanted` keys into `root/rel` (a shared JSON config file), with the same
+/// contract as [`apply_settings`].
+pub fn apply_json(
+    root: &Path,
+    rel: &Path,
+    trust: &Path,
+    wanted: &JsonKeys,
+    previous: Option<&PatchedFile>,
+) -> anyhow::Result<(PatchedFile, bool)> {
+    let path = checked(root, trust, rel)?;
+    let existing = read(&path)?;
+    let created = previous.is_some_and(|p| p.created) || existing.is_none();
+    let (text, owned) = merge_json_keys(existing.as_deref(), wanted, &previous_json(previous))
+        .with_context(|| path.display().to_string())?;
+    let reformatted = write_json(
+        &path,
+        existing.as_deref(),
+        &text,
+        owned == OwnedJson::default(),
+    )?;
+    let patched = PatchedFile {
+        path: rel.to_path_buf(),
+        kind: PatchKind::JsonKeys(owned),
         created,
     };
     Ok((patched, reformatted))
@@ -261,6 +354,10 @@ pub fn apply_markdown_block(
     })
 }
 
+fn is_empty_object(text: &str) -> bool {
+    serde_json::from_str::<Value>(text).is_ok_and(|v| v.as_object().is_some_and(|m| m.is_empty()))
+}
+
 /// Undo `patched` under `root`: remove what link added, and the file itself when link
 /// created it and nothing else is left. A missing file is nothing to undo. `trust`
 /// is the target's root: where a settings.json may be (a CLAUDE.md is always at the
@@ -268,7 +365,7 @@ pub fn apply_markdown_block(
 pub fn remove_patch(root: &Path, trust: &Path, patched: &PatchedFile) -> anyhow::Result<()> {
     let trust = match patched.kind {
         PatchKind::MarkdownBlock => Path::new("."),
-        PatchKind::SettingsHooks(_) => trust,
+        PatchKind::SettingsHooks(_) | PatchKind::JsonKeys(_) => trust,
     };
     let path = checked(root, trust, &patched.path)?;
     let Some(text) = read(&path)? else {
@@ -277,8 +374,13 @@ pub fn remove_patch(root: &Path, trust: &Path, patched: &PatchedFile) -> anyhow:
     let (rest, empty) = match &patched.kind {
         PatchKind::SettingsHooks(owned) => {
             let rest = remove_entries(&text, owned).with_context(|| path.display().to_string())?;
-            let empty = serde_json::from_str::<Value>(&rest)
-                .is_ok_and(|v| v.as_object().is_some_and(|m| m.is_empty()));
+            let empty = is_empty_object(&rest);
+            (rest, empty)
+        }
+        PatchKind::JsonKeys(owned) => {
+            let rest =
+                remove_json_keys(&text, owned).with_context(|| path.display().to_string())?;
+            let empty = is_empty_object(&rest);
             (rest, empty)
         }
         PatchKind::MarkdownBlock => {
@@ -731,6 +833,118 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{ broken");
+    }
+
+    const OPENCODE: &str = "opencode.json";
+
+    fn keys() -> JsonKeys {
+        JsonKeys {
+            values: [("default_agent".to_string(), json!("lead"))].into(),
+            array_entries: [(
+                "instructions".to_string(),
+                vec![json!(".opencode/armadai-team.md")],
+            )]
+            .into(),
+        }
+    }
+
+    fn preflight_oc(root: &Path) -> anyhow::Result<()> {
+        preflight_json(
+            root,
+            Path::new(OPENCODE),
+            Path::new("."),
+            &keys(),
+            None,
+            &["opencode.jsonc"],
+        )
+    }
+
+    fn apply_oc(root: &Path, prev: Option<&PatchedFile>) -> anyhow::Result<PatchedFile> {
+        apply_json(root, Path::new(OPENCODE), Path::new("."), &keys(), prev).map(|p| p.0)
+    }
+
+    #[test]
+    fn json_keys_are_added_kept_on_relink_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(OPENCODE);
+        let user = "{\"theme\": \"x\", \"instructions\": [\"mine.md\"]}";
+        std::fs::write(&file, user).unwrap();
+        preflight_oc(dir.path()).unwrap();
+        let p = apply_oc(dir.path(), None).unwrap();
+        assert!(!p.created);
+        assert_eq!(
+            value(&file),
+            json!({"theme": "x", "instructions": ["mine.md", ".opencode/armadai-team.md"], "default_agent": "lead"})
+        );
+        assert_eq!(apply_oc(dir.path(), Some(&p)).unwrap(), p);
+        remove_patch(dir.path(), Path::new("."), &p).unwrap();
+        assert_eq!(value(&file), serde_json::from_str::<Value>(user).unwrap());
+
+        let fresh = tempfile::tempdir().unwrap();
+        let p = apply_oc(fresh.path(), None).unwrap();
+        assert!(p.created);
+        remove_patch(fresh.path(), Path::new("."), &p).unwrap();
+        assert!(!fresh.path().join(OPENCODE).exists());
+    }
+
+    #[test]
+    fn an_opencode_jsonc_beside_or_instead_is_refused() {
+        for with_json in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("opencode.jsonc"), "{}").unwrap();
+            if with_json {
+                std::fs::write(dir.path().join(OPENCODE), "{}").unwrap();
+            }
+            let err = preflight_oc(dir.path()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "{} exists: rename it to opencode.json or remove it, link only patches opencode.json",
+                    dir.path().join("opencode.jsonc").display()
+                )
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        preflight_oc(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn invalid_json_keys_file_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(OPENCODE);
+        std::fs::write(&file, "{ broken").unwrap();
+        let err = preflight_oc(dir.path()).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            format!(
+                "{}: not valid JSON: key must be a string at line 1 column 3",
+                file.display()
+            )
+        );
+        assert!(apply_oc(dir.path(), None).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{ broken");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_json_keys_file_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("elsewhere.json");
+        std::fs::write(&real, "{}").unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join(OPENCODE)).unwrap();
+        for err in [
+            preflight_oc(dir.path()).unwrap_err(),
+            apply_oc(dir.path(), None).unwrap_err(),
+        ] {
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "{} is a symbolic link; refusing to patch it",
+                    dir.path().join(OPENCODE).display()
+                )
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "{}");
     }
 
     #[test]

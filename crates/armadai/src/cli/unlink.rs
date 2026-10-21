@@ -584,6 +584,7 @@ fn print_manifest_dry_run(
             let what = match f.kind {
                 PatchKind::SettingsHooks(_) => "ArmadAI hooks",
                 PatchKind::MarkdownBlock => "ArmadAI block",
+                PatchKind::JsonKeys(_) => "ArmadAI keys",
             };
             anstream::println!(
                 "{m}  {} ({what} would be removed){m:#}",
@@ -696,7 +697,9 @@ fn trust_root<'a>(entry: &linker::manifest::ManifestEntry, target_root: &'a Path
 fn patch_is_trusted(root: &Path, target_root: &Path, f: &patch::PatchedFile) -> bool {
     match f.kind {
         PatchKind::MarkdownBlock => f.path == Path::new("CLAUDE.md"),
-        PatchKind::SettingsHooks(_) => linker::manifest::is_trusted(root, target_root, &f.path),
+        PatchKind::SettingsHooks(_) | PatchKind::JsonKeys(_) => {
+            linker::manifest::is_trusted(root, target_root, &f.path)
+        }
     }
 }
 
