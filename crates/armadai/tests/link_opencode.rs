@@ -334,3 +334,38 @@ fn an_opencode_json_link_created_and_no_longer_needs_is_removed_and_reported() {
     assert_eq!(gone(&["link", "--target", "opencode", "--json"]), [line]);
     assert!(!env.root().join("opencode.json").exists());
 }
+
+#[test]
+fn agents_filter_leaving_the_coordinator_out_sets_no_default_agent() {
+    let mut files = PROJECT.to_vec();
+    files[1] = (
+        ".armadai/agents/lead.md",
+        "---\ndescription: Leads\ntier: max\n---\nYou lead.\n",
+    );
+    let env = Env::new(&files);
+    let report: Value = serde_json::from_str(
+        &env.ok(&["link", "--target", "opencode", "--agents", "dev", "--json"]),
+    )
+    .unwrap();
+    assert!(!env.root().join(".opencode/agents/lead.md").exists());
+    assert_eq!(env.opencode_json().get("default_agent"), None);
+    let lead: Vec<&Value> = (report.as_array().unwrap().iter())
+        .filter(|l| {
+            let e = l["element"].as_str().unwrap();
+            e.starts_with("agent lead") || e == "default_agent"
+        })
+        .collect();
+    assert_eq!(
+        lead,
+        [
+            &json!({"target": "opencode", "element": "agent lead", "status": "not-compiled",
+                    "reason": "skipped (--agents)"}),
+            &json!({"target": "opencode", "element": "default_agent", "status": "not-compiled",
+                    "reason": "coordinator skipped (--agents)"}),
+        ]
+    );
+    // once the coordinator was written, --agents keeps it the default
+    env.ok(&["link", "--target", "opencode"]);
+    env.ok(&["link", "--target", "opencode", "--agents", "dev"]);
+    assert_eq!(env.opencode_json()["default_agent"], "lead");
+}

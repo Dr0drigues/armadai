@@ -136,13 +136,31 @@ fn prepare(
             .retain(|a| !(a.kind == ArtifactKind::Agent && skipped.contains(&a.produced_by.name)));
         for id in &skipped {
             let element = format!("agent {id}");
-            p.report.lines.retain(|l| l.element != element);
+            let detail = format!("{element} ");
+            (p.report.lines).retain(|l| l.element != element && !l.element.starts_with(&detail));
             p.report.push(
                 target,
                 element,
                 Status::NotCompiled,
                 Some("skipped (--agents)"),
             );
+        }
+        // OpenCode's default agent must be a file that exists: written now, or kept
+        // from a previous link
+        if let Some(lead) = project.manifest.coordinator.as_ref()
+            && skipped.contains(lead)
+            && let Some((_, keys)) = &mut p.json
+        {
+            let file = p.output_dir.join(format!("agents/{lead}.md"));
+            let kept = (p.previous.iter().flat_map(|t| &t.entries)).any(|e| e.path == file);
+            if !kept && keys.values.remove("default_agent").is_some() {
+                p.report.push(
+                    target,
+                    "default_agent",
+                    Status::NotCompiled,
+                    Some("coordinator skipped (--agents)"),
+                );
+            }
         }
     }
 
