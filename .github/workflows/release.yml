@@ -13,6 +13,9 @@
 # Usage:
 #   git tag v0.1.0
 #   git push origin v0.1.0
+#
+# Dry run (no tag, nothing published): `gh workflow run release.yml`, then
+# `gh run download <run-id> -n release-dry-run` for the binaries and SHA256SUMS.
 
 name: Release
 
@@ -20,6 +23,7 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -119,7 +123,18 @@ jobs:
           (cd dist && sha256sum armadai-* > SHA256SUMS)
           cat dist/SHA256SUMS
 
+      - name: Verify checksums
+        run: cd dist && sha256sum -c SHA256SUMS
+
+      - name: Keep the dry-run files
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dry-run
+          path: dist/
+
       - name: Create GitHub Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3
         with:
           body_path: RELEASE_NOTES.md
