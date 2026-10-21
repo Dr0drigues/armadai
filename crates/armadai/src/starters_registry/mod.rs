@@ -430,7 +430,7 @@ const DOWNLOAD_MAX_BYTES: &str = "104857600"; // 100 MiB
 /// `-q` (must stay first) ignores `.curlrc`, which could e.g. turn TLS checks off;
 /// `--globoff` keeps `{}`/`[]` in the URL literal instead of expanding to many requests.
 /// On any failure `out` is removed, so a truncated file is never extracted.
-fn download_to(curl: &str, url: &str, out: &Path) -> anyhow::Result<()> {
+pub(crate) fn download_to(curl: &str, url: &str, out: &Path) -> anyhow::Result<()> {
     let shown = redact_url(url);
     if !url
         .get(..8)
@@ -659,7 +659,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod archive_tests {
+pub(crate) mod archive_tests {
     use super::*;
     use std::fs;
 
@@ -709,7 +709,7 @@ mod archive_tests {
     /// Runs `f` again while exec hits ETXTBSY: on Linux, a fork from a concurrent test
     /// can briefly hold the fake script's write handle open.
     #[cfg(unix)]
-    fn retry_busy<T>(f: impl Fn() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    pub(crate) fn retry_busy<T>(f: impl Fn() -> anyhow::Result<T>) -> anyhow::Result<T> {
         for _ in 0..20 {
             match f() {
                 Err(e) if e.to_string().contains("Text file busy") => {
@@ -723,7 +723,7 @@ mod archive_tests {
 
     /// A fake `curl` that records its args, writes `-o`'s target then runs `body`.
     #[cfg(unix)]
-    fn fake_curl(dir: &Path, body: &str) -> String {
+    pub(crate) fn fake_curl(dir: &Path, body: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
         let script = dir.join("curl");
         fs::write(

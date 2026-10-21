@@ -346,6 +346,11 @@ the entry says so.
 
 ### Security
 
+- `armadai update` downloads with the same hardened `curl` call as starter archives (#488):
+  it no longer reads `~/.curlrc` (where `insecure` would turn TLS checks off while fetching
+  the new executable), stays on HTTPS through redirects, does not expand `{}`/`[]` in URLs,
+  and is bounded in time and size. Releases publish no checksum yet, so the downloaded binary
+  is still not verified against one.
 - `rustls` upgraded to 0.23.46 to resolve RUSTSEC-2026-0346 to 0349 (#478).
 - `armadai config secrets init`, removed in this release, wrote the age private key to
   `.armadai/age-key.txt` and the generated `.armadai/.gitignore` did not exclude it. If your
