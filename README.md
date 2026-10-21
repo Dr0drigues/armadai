@@ -54,9 +54,10 @@ web UI, and `link` never touches the network.
 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 ```
 
-Options: `INSTALL_DIR=~/.local/bin` (default), `VERSION=v1.0.0-rc.5` (default: latest).
-The latest published release (`v1.0.0-rc.5`) predates the declarative refocus: until the next
-one, [build from source](docs/wiki/getting-started.md#from-source) to get the commands below.
+Options: `INSTALL_DIR=~/.local/bin` (default), `VERSION=v1.x.y` (default: latest).
+The installer checks the binary against the release's `SHA256SUMS` and refuses a release that
+publishes none. The latest published release (`v1.0.0-rc.5`) predates both the declarative
+refocus and those checksums: until the next one, [build from source](docs/wiki/getting-started.md#from-source).
 
 ```bash
 armadai init --pack rust-dev                # a project (.armadai/) from a starter pack

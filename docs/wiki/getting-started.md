@@ -10,23 +10,25 @@ Welcome to ArmadAI — follow the steps below to get up and running.
 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 ```
 
-This downloads the latest release binary for your platform (Linux/macOS, x86_64/aarch64) and installs it to `~/.local/bin/`.
-The latest published release (`v1.0.0-rc.5`) predates the declarative refocus described here:
-until the next one, build [from source](#from-source).
+This downloads the latest release binary for your platform (Linux/macOS, x86_64/aarch64), checks it
+against the release's `SHA256SUMS` and installs it to `~/.local/bin/`. A release that publishes no
+`SHA256SUMS`, or no line for your platform, is refused (`armadai update` applies the same rule).
+The latest published release (`v1.0.0-rc.5`) predates both the declarative refocus described here and
+those checksums: until the next one, build [from source](#from-source).
 
 **Options** (via environment variables):
 
 | Variable | Default | Description |
 |---|---|---|
 | `INSTALL_DIR` | `~/.local/bin` | Where to install the binary |
-| `VERSION` | latest | Specific version to install (e.g. `v1.0.0-rc.5`) |
+| `VERSION` | latest | Specific version to install (e.g. `v1.0.0`); it must publish `SHA256SUMS` |
 
 ```bash
 # Custom install directory
 INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 
 # Specific version
-VERSION=v1.0.0-rc.5 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
+VERSION=v1.0.0 curl -fsSL https://raw.githubusercontent.com/Dr0drigues/armadai/master/install.sh | bash
 ```
 
 ### From source

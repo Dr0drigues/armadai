@@ -349,8 +349,15 @@ the entry says so.
 - `armadai update` downloads with the same hardened `curl` call as starter archives (#488):
   it no longer reads `~/.curlrc` (where `insecure` would turn TLS checks off while fetching
   the new executable), stays on HTTPS through redirects, does not expand `{}`/`[]` in URLs,
-  and is bounded in time and size. Releases publish no checksum yet, so the downloaded binary
-  is still not verified against one.
+  and is bounded in time and size.
+- Releases publish a `SHA256SUMS` file, and both `armadai update` and `install.sh` check the
+  downloaded binary against it before installing it. A release without `SHA256SUMS` (every
+  release up to v1.0.0-rc.5), or without a line for the platform, is **refused**: install such
+  a version by hand. This guards against a corrupted or altered download, not against a
+  compromised GitHub account (the checksums come from the same place as the binaries).
+- `install.sh` ignores the `~/.curlrc` of the user (`curl -q`), stays on HTTPS through
+  redirects, and no longer exits in error after a successful install (its EXIT trap read a
+  variable that was gone).
 - `rustls` upgraded to 0.23.46 to resolve RUSTSEC-2026-0346 to 0349 (#478).
 - `armadai config secrets init`, removed in this release, wrote the age private key to
   `.armadai/age-key.txt` and the generated `.armadai/.gitignore` did not exclude it. If your
