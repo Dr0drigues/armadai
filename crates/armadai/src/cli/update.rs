@@ -41,21 +41,11 @@ pub fn execute() -> anyhow::Result<()> {
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Could not determine install directory"))?;
 
-    let artifact = format!("armadai-{platform}");
-    let download_url =
-        format!("https://github.com/{repo}/releases/download/v{latest_version}/{artifact}");
-
     let r = crate::cli::style::running();
     let a = crate::cli::style::accent();
     anstream::println!("{r}Downloading{r:#} {a}v{latest_version}{a:#} for {a}{platform}{a:#}...");
 
-    // Download to temp file (removed by `download_to` on failure)
-    let tmp_path = install_dir.join(".armadai-update-tmp");
-    if let Err(e) = download_to("curl", &download_url, &tmp_path) {
-        anyhow::bail!(
-            "{e}\nCheck your network connection or try: VERSION=v{latest_version} install.sh"
-        );
-    }
+    let tmp_path = download_release("curl", repo, &latest_version, platform, install_dir)?;
 
     // Make executable
     #[cfg(unix)]
@@ -92,6 +82,23 @@ fn latest_version(curl: &str, repo: &str) -> anyhow::Result<String> {
     )
     .map_err(|e| anyhow::anyhow!("Failed to check for updates: {e}"))?;
     parse_tag(&std::fs::read_to_string(&json)?)
+}
+
+/// Downloads the release binary for `platform` into `dir/.armadai-update-tmp` with the
+/// hardened [`download_to`] (removed on failure), and returns that path.
+fn download_release(
+    curl: &str,
+    repo: &str,
+    version: &str,
+    platform: &str,
+    dir: &std::path::Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    let url = format!("https://github.com/{repo}/releases/download/v{version}/armadai-{platform}");
+    let tmp_path = dir.join(".armadai-update-tmp");
+    download_to(curl, &url, &tmp_path).map_err(|e| {
+        anyhow::anyhow!("{e}\nCheck your network connection or try: VERSION=v{version} install.sh")
+    })?;
+    Ok(tmp_path)
 }
 
 fn parse_tag(body: &str) -> anyhow::Result<String> {
@@ -132,7 +139,38 @@ mod tests {
         let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
         let args: Vec<_> = args.lines().collect();
         assert_eq!(args.first(), Some(&"-q"));
+        assert_eq!(
+            args.last(),
+            Some(&"https://api.github.com/repos/Dr0drigues/armadai/releases/latest")
+        );
         for flag in ["--globoff", "--proto", "--proto-redir", "--max-time"] {
+            assert!(args.contains(&flag), "{flag} missing: {args:?}");
+        }
+    }
+
+    /// The executable itself, the most sensitive download of #488, goes through the
+    /// hardened `curl` call too.
+    #[cfg(unix)]
+    #[test]
+    fn the_binary_download_uses_the_hardened_curl() {
+        use crate::starters_registry::archive_tests::{fake_curl, retry_busy};
+        let dir = tempfile::tempdir().unwrap();
+        let curl = fake_curl(dir.path(), "printf binary > \"$out\"");
+        let tmp = retry_busy(|| {
+            super::download_release(&curl, super::REPO, "9.9.9", "macos-aarch64", dir.path())
+        })
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&tmp).unwrap(), "binary");
+        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+        let args: Vec<_> = args.lines().collect();
+        assert_eq!(args.first(), Some(&"-q"));
+        assert_eq!(
+            args.last(),
+            Some(
+                &"https://github.com/Dr0drigues/armadai/releases/download/v9.9.9/armadai-macos-aarch64"
+            )
+        );
+        for flag in ["--globoff", "--proto", "--proto-redir", "--max-filesize"] {
             assert!(args.contains(&flag), "{flag} missing: {args:?}");
         }
     }
