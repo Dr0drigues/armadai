@@ -48,7 +48,7 @@ CI (`.github/workflows/ci.yml`) runs fmt, clippy, test, build (`cargo build --re
 
 **Non-obvious facts**:
 - `crates/armadai` is **binary-only** — no `lib.rs`. `cargo test --lib` there returns "0 passed" with **no error**; use `--bin armadai` or `--test <name>`.
-- There is no execution engine: flows are guidance (`CLAUDE.md`) plus, under `policy.delegation: strict`, links enforced by the gate. The legacy `OrchestrationPattern` is read only by the legacy parser (for `migrate`).
+- There is no execution engine: flows are guidance (`CLAUDE.md` for Claude, `.opencode/armadai-team.md` for OpenCode) plus, under `policy.delegation: strict`, links enforced by the gate (Claude Code) or by native `permission.task` rules (OpenCode). The legacy `OrchestrationPattern` is read only by the legacy parser (for `migrate`).
 - There is no response-marker protocol any more (`ARMADAI_DELEGATE`/`END`/`META` were removed): delegation goes through each tool's native mechanism. The `PreToolUse` policy gate (`armadai __claude-policy-gate`) is installed by `link` in `settings.json` under `policy.delegation: strict` and reads `.armadai/project.yaml` at runtime (see `docs/wiki/policy-gate.md`).
 - Test env isolation lives in `armadai_core::test_support` (behind the core's dev-only `test-support` cargo feature) and is **not reentrant** — two guards on one thread deadlock.
 

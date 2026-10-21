@@ -69,7 +69,8 @@ guidance in `CLAUDE.md`; under `strict`, the delegation topology is enforced by 
 Target: OpenCode 2.x only (checked against [the agents page](https://opencode.ai/docs/agents/),
 [the config page](https://opencode.ai/docs/config/), [the rules page](https://opencode.ai/docs/rules/)
 and the 2.x code; 1.x is not supported). OpenCode 2.x reads, in a project: `.opencode/agents/*.md`,
-`opencode.json` at the root, `AGENTS.md` (`CLAUDE.md` only when there is no `AGENTS.md`), the files
+`opencode.json` at the root, `AGENTS.md` (the 2.x code looks for `AGENTS.md` only; the rules
+page also mentions `CLAUDE.md`), the files
 listed under `instructions` in `opencode.json`, and the skills of `.opencode/skills/`. Link writes
 nothing else: `.opencode/instructions.md`, written by the former linker and read by no OpenCode
 version, is no longer produced (a previous one is removed as a stale file while unchanged).
@@ -77,7 +78,7 @@ version, is no longer produced (a previous one is removed as a stale file while 
 | Declared | Produced | Report |
 |---|---|---|
 | agent `<id>` | `.opencode/agents/<id>.md`: `description`, `mode: subagent`, `model` (see below), `temperature`, `permission`; the body is the prompt. No other key: OpenCode sends an unknown frontmatter key to the provider as a model option | `compiled` |
-| coordinator | its agent in `mode: primary`, its prompt followed by a `## Delegation` section; `opencode.json`: `default_agent: <id>` | `compiled` |
+| coordinator | its agent in `mode: primary`, its prompt followed by a `## Delegation` section; `opencode.json`: `default_agent: <id>` (left out when `--agents` skips the coordinator and no previous link wrote its file) | `compiled` |
 | team and flows | `.opencode/armadai-team.md` (in the output folder), listed under `instructions` in `opencode.json`: the agents by id and the flows (steps, states, transitions), described neutrally since every agent reads it. Written when there is a coordinator or a flow | `team file: compiled` |
 | skill `<id>` | `.opencode/skills/<id>/`, every file byte for byte | `compiled` |
 | `skills:` of an agent | `permission.skill`: `"*": deny`, then `<id>: allow` for each; the prompt says to load them with the `skill` tool | `compiled` |
@@ -114,16 +115,22 @@ Their other settings are left alone, and `unlink` removes the rule.
 **`opencode.json` is shared with you.** It is merged, never overwritten: link owns only the keys
 and array entries it adds (`default_agent`, its `instructions` entry, `agent.build.permission.task`,
 `agent.plan.permission.task`, `experimental.subagent_depth`, the `native.opencode` keys), recorded
-in the manifest; your keys and your `instructions` entries are kept. A key no longer wanted is
+in the manifest; your keys and your `instructions` entries are kept, in their order (OpenCode
+permission rules are ordered: the last match wins). A key you already set to another value than
+the one link wants (for instance `default_agent` or `experimental.subagent_depth`) makes the link
+fail before any write (``key `default_agent` is already set to another value``), as does an owned
+value you changed by hand since the last link (``key `…` was changed by hand since the last link``):
+remove or restore it, then link again. A key no longer wanted is
 removed on the next link, and a file link created is removed once it owns nothing in it
 (`removed: link created it and no owned key is left`). An `opencode.jsonc` stops the link before
-any write (rename it to `opencode.json`). `AGENTS.md` and `CLAUDE.md` are never created nor
-modified: creating an `AGENTS.md` would hide a `CLAUDE.md` you wrote for OpenCode.
+any write (rename it to `opencode.json`), and `unlink` checks it can undo every shared file
+before removing anything (a comment added to `opencode.json` stops it with nothing removed).
+`AGENTS.md` and `CLAUDE.md` are never created nor modified: they are yours.
 
 `native.opencode` of project.yaml may not name a key link owns: `default_agent` with a
 coordinator, `instructions` with a team file, and, under `strict`, the whole top-level `agent` and
-`experimental` keys (they are not merged in depth), nor a key holding a `.`. Each is an error
-naming the key. A native file `.armadai/native/opencode/opencode.json` collides with the generated
+`experimental` keys (they are not merged in depth). A key holding a `.` is always refused. Each
+is an error naming the key. A native file `.armadai/native/opencode/opencode.json` collides with the generated
 `opencode.json` and is an error too: use `native.opencode` of project.yaml.
 
 ## Codex, Copilot

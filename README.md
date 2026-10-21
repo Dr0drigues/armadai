@@ -21,7 +21,7 @@ assistant you use:
 ```
 armadai link --target claude      # .claude/agents/*.md        (+ a block in the root CLAUDE.md for a coordinator)
 armadai link --target codex       # .codex/agents/*.toml, .codex/config.toml, .codex/AGENTS.md
-armadai link --target opencode    # .opencode/agents/*.md      (+ .opencode/instructions.md for a coordinator)
+armadai link --target opencode    # .opencode/agents/*.md, opencode.json, .opencode/armadai-team.md
 armadai link --target copilot     # .github/agents/*.agent.md  (+ .github/copilot-instructions.md for a coordinator)
 ```
 
