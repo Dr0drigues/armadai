@@ -369,3 +369,35 @@ fn agents_filter_leaving_the_coordinator_out_sets_no_default_agent() {
     env.ok(&["link", "--target", "opencode", "--agents", "dev"]);
     assert_eq!(env.opencode_json()["default_agent"], "lead");
 }
+
+#[test]
+fn unlink_refuses_an_opencode_json_it_cannot_read_before_removing_anything() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link", "--target", "opencode"]);
+    let path = env.root().join("opencode.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    // a comment: valid for OpenCode (JSONC), not JSON
+    std::fs::write(&path, format!("// mine\n{text}")).unwrap();
+    let before = tree(&env.root());
+    let out = Command::cargo_bin("armadai")
+        .unwrap()
+        .current_dir(env.root())
+        .env("HOME", env.dir.path().join("home"))
+        .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+        .args(["unlink", "--target", "opencode"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!(
+            "Error: {}\n\nCaused by:\n    0: not valid JSON\n    1: expected value at line 1 column 1\n",
+            env.root()
+                .canonicalize()
+                .unwrap()
+                .join("opencode.json")
+                .display()
+        )
+    );
+    assert_eq!(tree(&env.root()), before, "nothing removed");
+}

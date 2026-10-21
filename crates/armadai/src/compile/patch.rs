@@ -351,13 +351,39 @@ fn is_empty_object(text: &str) -> bool {
 /// is the target's root: where a settings.json may be (a CLAUDE.md and an
 /// opencode.json are always at the project root).
 pub fn remove_patch(root: &Path, trust: &Path, patched: &PatchedFile) -> anyhow::Result<()> {
+    let Some((path, text, rest, empty)) = removal(root, trust, patched)? else {
+        return Ok(());
+    };
+    if patched.created && empty {
+        std::fs::remove_file(&path).with_context(|| format!("cannot remove {}", path.display()))
+    } else if rest != text {
+        write_atomic(&path, &rest)
+    } else {
+        Ok(())
+    }
+}
+
+/// The checks of [`remove_patch`] without the write: run before `unlink` removes
+/// anything, so a file it cannot undo (a JSONC comment, a broken block) stops it with
+/// nothing removed.
+pub fn preflight_remove(root: &Path, trust: &Path, patched: &PatchedFile) -> anyhow::Result<()> {
+    removal(root, trust, patched).map(|_| ())
+}
+
+/// `(path, current text, text once undone, nothing else left)`, `None` when the file
+/// or the block is absent.
+fn removal(
+    root: &Path,
+    trust: &Path,
+    patched: &PatchedFile,
+) -> anyhow::Result<Option<(PathBuf, String, String, bool)>> {
     let trust = match patched.kind {
         PatchKind::MarkdownBlock | PatchKind::JsonKeys(_) => Path::new("."),
         PatchKind::SettingsHooks(_) => trust,
     };
     let path = checked(root, trust, &patched.path)?;
     let Some(text) = read(&path)? else {
-        return Ok(());
+        return Ok(None);
     };
     let (rest, empty) = match &patched.kind {
         PatchKind::SettingsHooks(owned) => {
@@ -373,7 +399,7 @@ pub fn remove_patch(root: &Path, trust: &Path, patched: &PatchedFile) -> anyhow:
         }
         PatchKind::MarkdownBlock => {
             let Some((b, e)) = block_span(&text, &path)? else {
-                return Ok(());
+                return Ok(None);
             };
             let mut rest = format!("{}{}", &text[..b], &text[e..]);
             // the blank line `apply_markdown_block` put before an appended block
@@ -389,13 +415,7 @@ pub fn remove_patch(root: &Path, trust: &Path, patched: &PatchedFile) -> anyhow:
             (rest, empty)
         }
     };
-    if patched.created && empty {
-        std::fs::remove_file(&path).with_context(|| format!("cannot remove {}", path.display()))
-    } else if rest != text {
-        write_atomic(&path, &rest)
-    } else {
-        Ok(())
-    }
+    Ok(Some((path, text, rest, empty)))
 }
 
 #[cfg(test)]

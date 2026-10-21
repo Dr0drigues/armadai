@@ -170,6 +170,16 @@ fn unlink_from_manifest(
         return Ok(());
     }
 
+    // a shared file unlink could not undo stops it before any removal
+    if agents_filter.is_none() {
+        for f in patched
+            .iter()
+            .filter(|f| patch_is_trusted(root, &target_root, f))
+        {
+            patch::preflight_remove(root, &target_root, f)?;
+        }
+    }
+
     let mut deleted = 0;
     let mut kept = 0;
     let mut absent = 0;
