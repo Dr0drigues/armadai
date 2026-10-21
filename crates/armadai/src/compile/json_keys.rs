@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, bail};
+use armadai_model::NativeValue;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -21,14 +22,38 @@ pub struct JsonKeys {
 /// What a link added to the file, as exact values.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OwnedJson {
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        serialize_with = "plain_values"
+    )]
     pub values: BTreeMap<String, Value>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        serialize_with = "plain_entries"
+    )]
     pub array_entries: BTreeMap<String, Vec<Value>>,
     /// Objects and arrays link created: removed once empty again; one the user had,
     /// even empty, is kept.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub containers: Vec<String>,
+}
+
+// numbers as plain YAML numbers (`NativeValue`), not `arbitrary_precision`'s private map
+fn plain_values<S: serde::Serializer>(
+    m: &BTreeMap<String, Value>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.collect_map(m.iter().map(|(k, v)| (k, NativeValue(v.clone()))))
+}
+
+fn plain_entries<S: serde::Serializer>(
+    m: &BTreeMap<String, Vec<Value>>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    let plain = |vs: &Vec<Value>| vs.iter().cloned().map(NativeValue).collect::<Vec<_>>();
+    s.collect_map(m.iter().map(|(k, vs)| (k, plain(vs))))
 }
 
 fn parse(existing: Option<&str>) -> anyhow::Result<Value> {
@@ -479,6 +504,24 @@ mod tests {
             render(value(r#"{"theme":"x","a":1,"b":2}"#)),
             "pruned container"
         );
+    }
+
+    /// The manifest stores a number as a plain YAML number (not serde_json's private
+    /// `arbitrary_precision` map), and reads it back as the same value.
+    #[test]
+    fn owned_numbers_are_plain_yaml_numbers_in_the_manifest() {
+        let owned = OwnedJson {
+            values: [("experimental.subagent_depth".to_string(), json!(4))].into(),
+            array_entries: [("a".to_string(), vec![json!(1.5)])].into(),
+            containers: vec![],
+        };
+        let yaml = armadai_model::yaml::to_string(&owned).unwrap();
+        assert_eq!(
+            yaml,
+            "values:\n  experimental.subagent_depth: 4\narray_entries:\n  a:\n  - 1.5\n"
+        );
+        let back: OwnedJson = armadai_model::yaml::from_str(&yaml).unwrap();
+        assert_eq!(back, owned);
     }
 
     #[test]
