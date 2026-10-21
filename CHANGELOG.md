@@ -1,4 +1,15 @@
-## Unreleased
+## v1.0.0-rc.6 (2026-10-21)
+
+Sixth release candidate, and the first of the declarative refocus: ArmadAI no longer runs
+agents. A team is described once in `.armadai/` (canonical model, `armadai validate`,
+`armadai migrate`, guided `armadai new`, `armadai graph`), then compiled by `armadai link` into
+the native files of Claude Code, Codex, OpenCode and Copilot.
+
+Breaking: the runtime (`run`, the TUI, the web dashboard, the shell, the providers), Gemini and
+`armadai config providers|secrets` are removed; a legacy project is converted with
+`armadai migrate` (see the migration notes of step 0 below). Releases now publish a
+`SHA256SUMS` file, checked by `install.sh` and `armadai update`, which refuse a release without
+one: this is the first release they accept.
 
 ### Fixed
 
