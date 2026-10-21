@@ -45,6 +45,8 @@ Anti-objectifs (ce qui serait un échec même si ça marche) :
 - `` !`cmd` `` exécuté au rendu.
 - Une commande dont l'`agent` est un sous-agent part en sous-tâche (plus d'interaction) ; un `agent` primaire bascule l'agent de la session.
 
+Noms intégrés relevés le 2026-10-21 : la page `code.claude.com/docs/en/commands.md` liste ~150 commandes et skills intégrées (dont `/init`, `/review`, `/design`, `/run`, `/verify`, `/plan`, `/loop`, `/debug`) ; aucune ne s'appelle `mockup`, `iterate` ou `brief`. OpenCode : `/init`, `/undo`, `/redo`, `/help`… (`docs/commands.mdx`, `docs/tui`). Une commande de projet qui porterait un nom intégré est masquée ou masque ; d'où l'avertissement du §5.
+
 Conséquences retenues :
 - Seul `$ARGUMENTS` est portable : `$<chiffre>` et `$ARGUMENTS[` dans le corps → **erreur** de validation (sens différent selon la cible).
 - `` !` `` ou une ligne ` ```! ` dans le corps → **erreur** de validation (exécution au rendu ; l'auteur qui le veut passe par `native`, à ses risques).
