@@ -4,7 +4,8 @@ use crate::linker::{LinkTarget, supported_target_names};
 use armadai_core::config;
 use armadai_core::registries::redact_url;
 use armadai_core::starter::{
-    FoundPack, ProjectAmbiguity, StarterPack, find_pack, list_available_packs, printable,
+    FoundPack, ProjectAmbiguity, StarterPack, find_pack, list_available_packs, pack_commands,
+    printable,
 };
 
 pub fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Result<()> {
@@ -73,7 +74,7 @@ fn init_global(force: bool) -> anyhow::Result<()> {
 /// if one of the user's sources fails to sync, a project pack is refused. Network is
 /// only touched then — a pack found in the user's own folders or sources never syncs.
 pub(crate) fn resolve_pack_dir(name: &str) -> anyhow::Result<Option<FoundPack>> {
-    if name.is_empty() {
+    if name.trim().is_empty() {
         anyhow::bail!("empty pack name: give a pack name or a pack folder");
     }
     if is_path(name) {
@@ -84,7 +85,10 @@ pub(crate) fn resolve_pack_dir(name: &str) -> anyhow::Result<Option<FoundPack>> 
                 };
                 std::path::PathBuf::from(home).join(rest.trim_start_matches('/'))
             }
-            _ => std::path::PathBuf::from(name),
+            Some(_) => {
+                anyhow::bail!("'{name}': `~user` is not expanded, write the folder's full path")
+            }
+            None => std::path::PathBuf::from(name),
         };
         if !dir.join("pack.yaml").is_file() {
             anyhow::bail!(
@@ -129,15 +133,19 @@ pub(crate) fn resolve_pack_dir(name: &str) -> anyhow::Result<Option<FoundPack>> 
         .map(|u| format!("  {}", printable(&redact_url(u))))
         .collect();
     if project_only && !unsynced.is_empty() {
-        let folder = match &found {
-            Ok(Some(f)) => printable(&f.dir.display().to_string()),
-            _ => "<folder>".into(),
+        let candidates = match &found {
+            Ok(Some(f)) => vec![(f.project_source.clone().unwrap_or_default(), f.dir.clone())],
+            Err(e) => (e.downcast_ref::<ProjectAmbiguity>())
+                .map(|a| a.candidates.clone())
+                .unwrap_or_default(),
+            Ok(None) => vec![],
         };
         anyhow::bail!(
             "pack '{name}' is found only in project sources, and these sources of yours did \
              not sync (one of them may hold it):\n{}\nretry once they can be reached, or \
-             install the project's pack by its folder: `armadai init --pack {folder}`",
-            unsynced.join("\n")
+             install a project's pack with its command:\n{}",
+            unsynced.join("\n"),
+            pack_commands(&candidates)
         );
     }
     found

@@ -126,8 +126,9 @@ The `armadai-authoring` pack and the `armadai-starter-authoring` skill help with
 ### Priority order
 
 `armadai init --pack <name>` takes a path (it holds `/`, or starts with `.` or `~`:
-`./my-pack`, `../packs/x`, `/abs/x`, `~/packs/x`, a leading `~` being your home directory)
-as a pack folder; an empty name is refused. A bare name is never read from the
+`./my-pack`, `../packs/x`, `/abs/x`, `~/packs/x`, a leading `~` being your home directory;
+`~user` is not expanded) as a pack folder, and says `<folder> holds no pack.yaml` when it
+holds none; an empty or blank name is refused. A bare name is never read from the
 current directory: it is looked up in your own places first, then in the project's:
 
 1. **Your starter folders**, the last one holding the pack wins: the built-in packs
@@ -143,7 +144,7 @@ current directory: it is looked up in your own places first, then in the project
 A project source never masks one of yours: a pack found only in project sources is
 installed only once all your sources synced without it; if one of them fails to sync
 (offline, 404, broken archive), `init` stops and names it: retry once it can be reached,
-or install the project's pack by its folder (the message gives it). A pack name matches a
+or install a project's pack with the command the message prints for each candidate. A pack name matches a
 folder name exactly, case included, whatever the file system; for a non-ASCII name, type
 it as it is written on disk (the same accented letter can be stored in two Unicode forms),
 as the `Available packs` list of the "not found" error shows it. A relative entry of `ARMADAI_STARTERS_DIRS` or
@@ -151,8 +152,8 @@ as the `Available packs` list of the "not found" error shows it. A relative entr
 (`armadai config starters-dir add` refuses one). Two of your remote sources holding the
 same pack is an error that names them; so are two project sources (`.armadai/starters/` and
 a project registry included), once your sources are synced: install one by its folder
-(`armadai init --pack <folder>`, the folders are in the message), or remove the other
-source. Only the caches of the sources declared now are read. Control characters of a
+with the `armadai init --pack '<folder>'` command the message prints for each one (quoted
+for the shell, it runs as pasted), or remove the other source. Only the caches of the sources declared now are read. Control characters of a
 project's URL or path, and of the folder names in the `Available packs` list, are shown
 escaped (`\u{1b}`).
 

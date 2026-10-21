@@ -155,12 +155,40 @@ pub fn printable(text: &str) -> String {
 /// The error of [`find_pack`] when several project sources hold the pack: one of the
 /// user's sources not synced yet may still hold it, so `init` syncs, then retries.
 #[derive(Debug)]
-pub struct ProjectAmbiguity(String);
+pub struct ProjectAmbiguity {
+    pub name: String,
+    /// `(source label, pack folder)` of each project source holding the pack.
+    pub candidates: Vec<(String, PathBuf)>,
+}
 
 impl std::fmt::Display for ProjectAmbiguity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&ambiguity(&self.name, "project sources", &self.candidates))
     }
+}
+
+/// `text` quoted for a POSIX shell: a printed command runs as pasted.
+pub fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// One `armadai init --pack '<folder>'` command per candidate, under its source's label.
+pub fn pack_commands(candidates: &[(String, PathBuf)]) -> String {
+    (candidates.iter())
+        .map(|(label, dir)| {
+            let dir = shell_quote(&printable(&dir.display().to_string()));
+            format!("  {label}:\n    armadai init --pack {dir}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn ambiguity(name: &str, level: &str, candidates: &[(String, PathBuf)]) -> String {
+    format!(
+        "starter pack '{name}' is provided by several {level}:\n{}\n\
+         install one with its command above, or remove the other sources",
+        pack_commands(candidates)
+    )
 }
 
 impl std::error::Error for ProjectAmbiguity {}
@@ -389,21 +417,22 @@ fn resolve_pack(
     let user: Vec<_> = (user.iter())
         .filter_map(|(shown, cache)| Some((shown.clone(), pack_in_source(cache, name)?)))
         .collect();
-    if let Some((_, dir)) = only_one(name, "of your sources", user).map_err(anyhow::Error::msg)? {
+    let user = only_one(user).map_err(|c| anyhow::anyhow!(ambiguity(name, "of your sources", &c)));
+    if let Some((_, dir)) = user? {
         let project_source = None;
         return Ok(Some(FoundPack {
             dir,
             project_source,
         }));
     }
-    Ok(
-        (only_one(name, "project sources", project).map_err(ProjectAmbiguity)?).map(
-            |(label, dir)| FoundPack {
-                dir,
-                project_source: Some(label),
-            },
-        ),
-    )
+    Ok((only_one(project).map_err(|candidates| ProjectAmbiguity {
+        name: name.to_string(),
+        candidates,
+    })?)
+    .map(|(label, dir)| FoundPack {
+        dir,
+        project_source: Some(label),
+    }))
 }
 
 fn is_pack(dir: &Path) -> bool {
@@ -430,24 +459,13 @@ fn pack_in_source(cache: &Path, name: &str) -> Option<PathBuf> {
     .cloned()
 }
 
-/// The single match of one level; several is an error naming each source.
-fn only_one(
-    name: &str,
-    level: &str,
-    found: Vec<(String, PathBuf)>,
-) -> Result<Option<(String, PathBuf)>, String> {
+/// The single match of one level; several is an error carrying them all.
+type Candidates = Vec<(String, PathBuf)>;
+fn only_one(found: Candidates) -> Result<Option<(String, PathBuf)>, Candidates> {
     if found.len() < 2 {
         return Ok(found.into_iter().next());
     }
-    let list: Vec<String> = (found.iter())
-        .map(|(label, dir)| format!("  {label}: {}", printable(&dir.display().to_string())))
-        .collect();
-    Err(format!(
-        "starter pack '{name}' is provided by several {level}:\n{}\n\
-         install one by its folder (`armadai init --pack <folder>`), or remove the other \
-         sources",
-        list.join("\n")
-    ))
+    Err(found)
 }
 
 /// List all available starter pack names.

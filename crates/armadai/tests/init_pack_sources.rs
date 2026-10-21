@@ -12,14 +12,20 @@ use assert_cmd::Command;
 
 struct Env {
     dir: tempfile::TempDir,
+    /// The configuration folder's name, under `dir`.
+    config: String,
 }
 
 impl Env {
     /// A project `repo/` (legacy config holding project sources goes at its root), run
     /// from `repo/sub`, with a fake `curl` serving `arch/<host>.tar.gz`.
     fn new() -> Self {
+        Env::with_config("config")
+    }
+
+    fn with_config(config: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        for d in ["config", "repo/.git", "repo/sub", "fake", "arch"] {
+        for d in [config, "repo/.git", "repo/sub", "fake", "arch"] {
             std::fs::create_dir_all(dir.path().join(d)).unwrap();
         }
         let curl = dir.path().join("fake/curl");
@@ -32,7 +38,8 @@ impl Env {
         .unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
-        Env { dir }
+        let config = config.to_string();
+        Env { dir, config }
     }
 
     fn path(&self, rel: &str) -> PathBuf {
@@ -40,13 +47,15 @@ impl Env {
     }
 
     fn cache(&self, url: &str) -> PathBuf {
-        self.path("config/registry/starters").join(cache_key(url))
+        self.path(&self.config)
+            .join("registry/starters")
+            .join(cache_key(url))
     }
 
     fn user_sources(&self, urls: &[&str]) {
         let list: String = urls.iter().map(|u| format!("  - url: {u}\n")).collect();
         std::fs::write(
-            self.path("config/registries.yaml"),
+            self.path(&self.config).join("registries.yaml"),
             format!("starters:\n{list}"),
         )
         .unwrap();
@@ -81,20 +90,36 @@ impl Env {
     }
 
     fn run_env(&self, args: &[&str], vars: &[(&str, &str)]) -> (bool, String) {
-        let out = Command::cargo_bin("armadai")
-            .unwrap()
+        self.output(Command::cargo_bin("armadai").unwrap().args(args), vars)
+    }
+
+    /// `line` run as is by `sh -c`, `armadai` being the binary under test.
+    fn run_line(&self, line: &str) -> (bool, String) {
+        let bin = assert_cmd::cargo::cargo_bin("armadai");
+        let path = format!(
+            "{}:{}:/usr/bin:/bin",
+            bin.parent().unwrap().display(),
+            self.path("fake").display()
+        );
+        self.output(
+            Command::new("/bin/sh").args(["-c", line]),
+            &[("PATH", path.as_str())],
+        )
+    }
+
+    fn output(&self, cmd: &mut Command, vars: &[(&str, &str)]) -> (bool, String) {
+        let out = cmd
             .current_dir(self.path("repo/sub"))
             .env_clear()
             .env(
                 "PATH",
                 format!("{}:/usr/bin:/bin", self.path("fake").display()),
             )
-            .env("ARMADAI_CONFIG_DIR", self.path("config"))
+            .env("ARMADAI_CONFIG_DIR", self.path(&self.config))
             .env("HOME", self.dir.path())
             .env("ARCH", self.path("arch"))
             .env("NO_COLOR", "1")
             .envs(vars.iter().copied())
-            .args(args)
             .output()
             .unwrap();
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -176,8 +201,8 @@ fn two_user_sources_holding_the_same_pack_are_refused() {
     assert!(!ok);
     let expected = format!(
         "Error: starter pack 'shared' is provided by several of your sources:\n  \
-         {A}: {}\n  {B}: {}\ninstall one by its folder (`armadai init --pack <folder>`), \
-         or remove the other sources\n",
+         {A}:\n    armadai init --pack '{}'\n  {B}:\n    armadai init --pack '{}'\n\
+         install one with its command above, or remove the other sources\n",
         env.cache(A).join("shared").display(),
         env.cache(B).join("shared").display()
     );
@@ -427,12 +452,13 @@ fn a_user_source_that_fails_to_sync_refuses_a_project_pack() {
             .lines()
             .skip_while(|l| !l.starts_with("Error:"))
             .collect();
-        let folder = env.cache(B).join("shared");
         let want = format!(
             "Error: pack 'shared' is found only in project sources, and these sources of \
              yours did not sync (one of them may hold it):\n  {A}\nretry once they can be \
-             reached, or install the project's pack by its folder: `armadai init --pack {}`",
-            folder.display()
+             reached, or install a project's pack with its command:\n  {B} (from {}):\n    \
+             armadai init --pack '{}'",
+            env.path("repo").canonicalize().unwrap().display(),
+            env.cache(B).join("shared").display()
         );
         assert_eq!(error.join("\n"), want, "{err}");
         assert!(!env.path("repo/sub/.armadai/agents").exists());
@@ -454,18 +480,22 @@ fn a_leading_tilde_is_the_home_directory() {
         err,
         "Error: cannot expand `~` in '~/home-p': HOME is not set\n"
     );
+    let (ok, err) = env.run(&["init", "--pack", "~bob/home-p"]);
+    assert!(!ok);
+    let want = "Error: '~bob/home-p': `~user` is not expanded, write the folder's full path\n";
+    assert_eq!(err, want);
 }
 
 #[test]
 fn an_empty_pack_name_is_refused() {
-    let env = Env::new();
-    write_pack(&env.path("repo/sub"), "here", "FROM-CWD");
-    let (ok, err) = env.run(&["init", "--pack", ""]);
-    assert!(!ok);
-    assert_eq!(
-        err,
-        "Error: empty pack name: give a pack name or a pack folder\n"
-    );
+    for name in ["", "  "] {
+        let env = Env::new();
+        write_pack(&env.path("repo/sub"), "here", "FROM-CWD");
+        let (ok, err) = env.run(&["init", "--pack", name]);
+        assert!(!ok, "{name:?}");
+        let want = "Error: empty pack name: give a pack name or a pack folder\n";
+        assert_eq!(err, want, "{name:?}");
+    }
 }
 
 /// `.`, `../x` and `x/` are paths: each names its folder.
@@ -499,4 +529,78 @@ fn the_available_packs_list_escapes_control_characters() {
         names.join(", ").replace('\u{1b}', "\\u{1b}")
     );
     assert_eq!(err, want);
+}
+
+/// Several project packs while one of the user's sources fails to sync: the refusal
+/// lists every candidate as a command that runs as printed, even from a folder holding
+/// a space.
+#[test]
+fn a_failed_user_sync_lists_every_project_candidate_as_a_runnable_command() {
+    let env = Env::with_config("my config");
+    env.user_sources(&[A]); // no archive: its sync fails
+    env.project_sources(&[B]);
+    write_pack(&env.cache(B).join("shared"), "shared", "FROM-PROJREG");
+    env.archive("b.example", "shared", "FROM-PROJREG");
+    write_pack(
+        &env.path("repo/sub/.armadai/starters/shared"),
+        "shared",
+        "FROM-LOCAL",
+    );
+    let (ok, err) = env.run(&["init", "--pack", "shared"]);
+    assert!(!ok);
+    let error: Vec<&str> = err
+        .lines()
+        .skip_while(|l| !l.starts_with("Error:"))
+        .collect();
+    let command = format!(
+        "armadai init --pack '{}'",
+        env.cache(B).join("shared").display()
+    );
+    let want = format!(
+        "Error: pack 'shared' is found only in project sources, and these sources of yours \
+         did not sync (one of them may hold it):\n  {A}\nretry once they can be reached, or \
+         install a project's pack with its command:\n  .armadai/starters/ of the current \
+         directory:\n    armadai init --pack '.armadai/starters/shared'\n  {B} (from {}):\n    \
+         {command}",
+        env.path("repo").canonicalize().unwrap().display(),
+    );
+    assert_eq!(error.join("\n"), want, "{err}");
+    let (ok, err) = env.run_line(&command);
+    assert!(ok, "{err}");
+    assert_eq!(env.installed(), agent("FROM-PROJREG"));
+}
+
+/// Only the user's sources failing to sync refuse a project pack: a project source that
+/// fails does not.
+#[test]
+fn a_failed_project_sync_does_not_refuse_a_project_pack() {
+    let env = Env::new();
+    env.user_sources(&[A]);
+    env.archive("a.example", "other", "FROM-USER");
+    env.project_sources(&[B]); // no archive: its sync fails, its cache stays
+    write_pack(&env.cache(B).join("shared"), "shared", "FROM-PROJECT");
+    let (ok, err) = env.run(&["init", "--pack", "shared"]);
+    assert!(ok, "{err}");
+    assert_eq!(env.installed(), agent("FROM-PROJECT"));
+}
+
+/// The folders of an ambiguity are shown with their control characters escaped.
+#[test]
+fn an_ambiguity_escapes_control_characters_in_folders() {
+    let env = Env::with_config("con\u{1b}fig");
+    env.user_sources(&[A, B]);
+    write_pack(&env.cache(A).join("shared"), "shared", "FROM-A");
+    write_pack(&env.cache(B).join("shared"), "shared", "FROM-B");
+    let (ok, err) = env.run(&["init", "--pack", "shared"]);
+    assert!(!ok);
+    let shown =
+        |url| (env.cache(url).join("shared").display().to_string()).replace('\u{1b}', "\\u{1b}");
+    let expected = format!(
+        "Error: starter pack 'shared' is provided by several of your sources:\n  \
+         {A}:\n    armadai init --pack '{}'\n  {B}:\n    armadai init --pack '{}'\n\
+         install one with its command above, or remove the other sources\n",
+        shown(A),
+        shown(B)
+    );
+    assert_eq!(err, expected);
 }
