@@ -6,7 +6,8 @@ version_scheme = "semver2"
 # the crates whose version follows the release (armadai-model is versioned on its own)
 version_files = ["crates/armadai/Cargo.toml:^version", "crates/armadai-core/Cargo.toml:^version"]
 tag_format = "v$version"
-# the CHANGELOG is written by hand: an incremental cz changelog would replace its Unreleased section
+# the CHANGELOG is written by hand: an incremental cz changelog would replace its Unreleased section;
+# release.yml takes the release notes from it (.github/scripts/release-notes.sh), not from cz
 update_changelog_on_bump = false
 changelog_file = "CHANGELOG.md"
 changelog_incremental = true
