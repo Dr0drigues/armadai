@@ -92,6 +92,10 @@ fn starters_dir_list() -> anyhow::Result<()> {
 
 /// Add a custom starter directory to config.yaml.
 fn starters_dir_add(path: &str) -> anyhow::Result<()> {
+    if !std::path::Path::new(path).is_absolute() {
+        // read from the current directory, it would be a cloned repository's (#490)
+        anyhow::bail!("{path} is a relative path: give an absolute one");
+    }
     let mut config = app_config::try_load_user_config()?;
 
     if config.starters_dirs.contains(&path.to_string()) {

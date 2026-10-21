@@ -354,6 +354,33 @@ the entry says so.
 
 ### Security
 
+- `armadai init --pack <name>` no longer lets a project source mask one of yours (#490). A
+  cloned repository could get its own pack of the same name installed: a source of its legacy
+  config (`registries.starters`) whose cache folder `read_dir` listed first (5 tries out of 5),
+  its `.armadai/starters/` (which outranked the built-in packs), a `starters/` folder of the
+  current directory (taken for the built-in packs), a `<name>/` folder of the current
+  directory (read before any source), or a relative `starters_dirs` entry (read from the
+  current directory). Now:
+  - your starter folders, then your `registries.yaml` sources, always come before the
+    project's sources;
+  - `--pack <name>` never reads the current directory: only a path (holding `/`, or starting
+    with `.` or `~`, such as `./my-pack`) names a local folder;
+  - a relative entry of `starters_dirs` or `ARMADAI_STARTERS_DIRS` is ignored with a warning,
+    and `armadai config starters-dir add` refuses one;
+  - a pack name matches folder names exactly, case included, on every file system;
+  - a pack taken from a project source is announced, its URL masked and its control
+    characters escaped; one found only there (or in several project sources) first syncs the
+    sources, so that one of yours not synced yet still wins, and is refused when one of your
+    sources fails to sync (the error names it, and gives each candidate folder as a command
+    ready to paste, quoted for the shell);
+  - `--pack ~/x` (quoted) is read from the home directory (`~user` is not expanded, and is
+    said so); an empty or blank `--pack` is refused; a path without `pack.yaml` is reported
+    as `<folder> holds no pack.yaml` instead of an unknown pack;
+  - two of your sources holding the same pack is an error naming them, where one was picked
+    in `read_dir` order; so are two project sources, which includes `.armadai/starters/` and
+    a project registry holding the same name (`.armadai/starters/` was installed before);
+  - only the caches of the sources declared now are read: a cache left by a source since
+    removed, or by another project's source, is ignored.
 - Listing a starter archive is bounded in memory and time (#493): its entry names are read as
   `tar`/`unzip` print them, and past 100,000 entries, a name of more than 4096 bytes or 64 MiB
   of names in total the lister is stopped and the archive refused, the message naming the

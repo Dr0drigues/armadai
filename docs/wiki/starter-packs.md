@@ -125,11 +125,37 @@ The `armadai-authoring` pack and the `armadai-starter-authoring` skill help with
 
 ### Priority order
 
-1. **Built-in** — embedded in the binary
-2. **Project-local** — `.armadai/starters/` in the current project
-3. **User library** — `~/.config/armadai/starters/`
-4. **Environment variable** — `ARMADAI_STARTERS_DIRS` (colon-separated paths)
-5. **Config file** — `starters_dirs` in `~/.config/armadai/config.yaml`
+`armadai init --pack <name>` takes a path (it holds `/`, or starts with `.` or `~`:
+`./my-pack`, `../packs/x`, `/abs/x`, `~/packs/x`, a leading `~` being your home directory;
+`~user` is not expanded) as a pack folder, and says `<folder> holds no pack.yaml` when it
+holds none; an empty or blank name is refused. A bare name is never read from the
+current directory: it is looked up in your own places first, then in the project's:
+
+1. **Your starter folders**, the last one holding the pack wins: the built-in packs
+   (embedded in the binary), then `~/.config/armadai/starters/`, then
+   `ARMADAI_STARTERS_DIRS` (colon-separated paths), then `starters_dirs` in
+   `~/.config/armadai/config.yaml`.
+2. **Your remote sources**: the `starters:` of `~/.config/armadai/registries.yaml`.
+3. **The project's sources**: `.armadai/starters/` in the current directory, and the
+   `registries.starters` of a legacy project config. A pack taken from one of them is
+   announced (`note: pack '<name>' comes from a project source ...`, with the source's URL
+   masked).
+
+A project source never masks one of yours: a pack found only in project sources is
+installed only once all your sources synced without it; if one of them fails to sync
+(offline, 404, broken archive), `init` stops and names it: retry once it can be reached,
+or install a project's pack with the command the message prints for each candidate. A pack name matches a
+folder name exactly, case included, whatever the file system; for a non-ASCII name, type
+it as it is written on disk (the same accented letter can be stored in two Unicode forms),
+as the `Available packs` list of the "not found" error shows it. A relative entry of `ARMADAI_STARTERS_DIRS` or
+`starters_dirs` would be read from the current directory: it is ignored, with a warning
+(`armadai config starters-dir add` refuses one). Two of your remote sources holding the
+same pack is an error that names them; so are two project sources (`.armadai/starters/` and
+a project registry included), once your sources are synced: install one by its folder
+with the `armadai init --pack '<folder>'` command the message prints for each one (quoted
+for the shell, it runs as pasted), or remove the other source. Only the caches of the sources declared now are read. Control characters of a
+project's URL or path, and of the folder names in the `Available packs` list, are shown
+escaped (`\u{1b}`).
 
 ### Environment variable
 
@@ -161,7 +187,8 @@ When `armadai init --pack <name>` finds no local pack of that name, it syncs the
 registries once, then retries: the top-level `starters:` list of `~/.config/armadai/registries.yaml`
 (no `registries:` wrapper there), plus the `registries.starters` of a legacy project's config. A
 migrated project has none (see [Project format](project-format.md#migrating-a-legacy-project)). A
-pack that exists locally never triggers a sync.
+pack found in your own folders or sources never triggers a sync; one found only in a project
+source does, so that one of your sources not synced yet still wins.
 
 ```yaml
 # ~/.config/armadai/registries.yaml

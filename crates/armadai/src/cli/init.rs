@@ -2,7 +2,11 @@ use std::path::Path;
 
 use crate::linker::{LinkTarget, supported_target_names};
 use armadai_core::config;
-use armadai_core::starter::{StarterPack, find_pack_dir, list_available_packs};
+use armadai_core::registries::redact_url;
+use armadai_core::starter::{
+    FoundPack, ProjectAmbiguity, StarterPack, find_pack, list_available_packs, pack_commands,
+    printable,
+};
 
 pub fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
@@ -58,33 +62,100 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve a pack reference: a local directory containing `pack.yaml`
-/// takes precedence, otherwise fall back to the named starter pack lookup.
+/// Resolve a pack reference: a path (holding `/`, or starting with `.` or `~`; a leading
+/// `~` or `~/` is the home directory) names a local folder holding `pack.yaml`; a bare
+/// name goes through the starter sources only, never the current directory, where a
+/// cloned repository's `<name>/` would mask a trusted pack (#490).
 ///
-/// If both miss, auto-sync-on-miss kicks in: known starter registry sources
-/// (user ∪ project, see `crate::starters_registry::effective_starter_sources`)
-/// are synced once, then the lookup is retried. Network is only touched on
-/// a miss — a plain `armadai init --pack <known-local-name>` never syncs.
-pub(crate) fn resolve_pack_dir(name: &str) -> Option<std::path::PathBuf> {
-    let candidate = std::path::Path::new(name);
-    if candidate.join("pack.yaml").is_file() {
-        return Some(candidate.to_path_buf());
+/// If the name misses, or only project sources hold it, auto-sync kicks in: known starter
+/// registry sources (user ∪ project, see
+/// `crate::starters_registry::effective_starter_sources`) are synced once, then the
+/// lookup is retried, so a user source not synced yet still wins over the project's;
+/// if one of the user's sources fails to sync, a project pack is refused. Network is
+/// only touched then — a pack found in the user's own folders or sources never syncs.
+pub(crate) fn resolve_pack_dir(name: &str) -> anyhow::Result<Option<FoundPack>> {
+    if name.trim().is_empty() {
+        anyhow::bail!("empty pack name: give a pack name or a pack folder");
     }
-    if let Some(dir) = find_pack_dir(name) {
-        return Some(dir);
+    if is_path(name) {
+        let dir = match name.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
+                    anyhow::bail!("cannot expand `~` in '{name}': HOME is not set");
+                };
+                std::path::PathBuf::from(home).join(rest.trim_start_matches('/'))
+            }
+            Some(_) => {
+                anyhow::bail!("'{name}': `~user` is not expanded, write the folder's full path")
+            }
+            None => std::path::PathBuf::from(name),
+        };
+        if !dir.join("pack.yaml").is_file() {
+            anyhow::bail!(
+                "{} holds no pack.yaml",
+                printable(&dir.display().to_string())
+            );
+        }
+        let project_source = None;
+        return Ok(Some(FoundPack {
+            dir,
+            project_source,
+        }));
+    }
+    let found = find_pack(name);
+    match &found {
+        Ok(Some(f)) if f.project_source.is_none() => return found,
+        Err(e) if !e.is::<ProjectAmbiguity>() => return found,
+        _ => {}
     }
 
-    // Auto-sync-on-miss: fetch remote starter sources, then retry once.
+    // Auto-sync: fetch remote starter sources, then retry once.
     let sources = crate::starters_registry::effective_starter_sources();
     if sources.is_empty() {
-        return None;
+        return found;
     }
     let r = crate::cli::style::running();
-    anstream::eprintln!(
-        "{r}Pack '{name}' not found locally — syncing remote starter registries...{r:#}"
-    );
-    let _ = crate::starters_registry::sync_starters(&sources);
-    find_pack_dir(name)
+    let why = match found {
+        Ok(None) => "not found locally",
+        _ => "found only in project sources",
+    };
+    anstream::eprintln!("{r}Pack '{name}' {why} — syncing remote starter registries...{r:#}");
+    let failed = crate::starters_registry::sync_starters(&sources);
+    let found = find_pack(name);
+    let project_only = match &found {
+        Ok(Some(f)) => f.project_source.is_some(),
+        Err(e) => e.is::<ProjectAmbiguity>(),
+        Ok(None) => false,
+    };
+    let user = armadai_core::registries::load_user_registries().starters;
+    let unsynced: Vec<String> = (failed.iter())
+        .filter(|u| user.iter().any(|s| &s.url == *u))
+        .map(|u| format!("  {}", printable(&redact_url(u))))
+        .collect();
+    if project_only && !unsynced.is_empty() {
+        let candidates = match &found {
+            Ok(Some(f)) => vec![(f.project_source.clone().unwrap_or_default(), f.dir.clone())],
+            Err(e) => (e.downcast_ref::<ProjectAmbiguity>())
+                .map(|a| a.candidates.clone())
+                .unwrap_or_default(),
+            Ok(None) => vec![],
+        };
+        anyhow::bail!(
+            "pack '{name}' is found only in project sources, and these sources of yours did \
+             not sync (one of them may hold it):\n{}\nretry once they can be reached, or \
+             install a project's pack with its command:\n{}",
+            unsynced.join("\n"),
+            pack_commands(&candidates)
+        );
+    }
+    found
+}
+
+/// A pack reference naming a folder rather than a pack.
+fn is_path(name: &str) -> bool {
+    name.contains(['/', '\\'])
+        || name.starts_with(['.', '~'])
+        || std::path::Path::new(name).is_absolute()
 }
 
 /// Refuse to overwrite a project: the new format, or a legacy one to migrate.
@@ -140,12 +211,7 @@ fn md_name(name: &str) -> String {
 /// The pack, materialised as a legacy project under `tmp`: its files copied
 /// under `tmp/.armadai/`, and a synthetic config naming them by path (never by
 /// name, which would also search the user's library).
-fn materialize_pack(
-    pack_dir: &Path,
-    pack: &StarterPack,
-    pack_name: &str,
-    tmp: &Path,
-) -> anyhow::Result<()> {
+fn materialize_pack(pack_dir: &Path, pack: &StarterPack, tmp: &Path) -> anyhow::Result<()> {
     let base = tmp.join(".armadai");
     let unsafe_name = |n: &str| n.contains('/') || n.contains('\\') || n.contains("..");
     let mut config = String::from("agents:\n");
@@ -183,8 +249,8 @@ fn materialize_pack(
         copy_tree(&src, &base.join("skills").join(name))?;
         config.push_str(&format!("  - path: .armadai/skills/{name}\n"));
     }
-    let coordinator = detect_pack_coordinator(pack, pack_name);
-    let target = detect_pack_link_target(pack_name);
+    let coordinator = detect_pack_coordinator(pack, pack_dir);
+    let target = detect_pack_link_target(pack_dir);
     if coordinator.is_some() || target.is_some() {
         config.push_str("link:\n");
         if let Some(t) = &target {
@@ -228,17 +294,25 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
     if !force {
         ensure_no_project(root)?;
     }
-    let Some(pack_dir) = resolve_pack_dir(pack_name) else {
+    let Some(found) = resolve_pack_dir(pack_name)? else {
         let available = list_available_packs();
         anyhow::bail!(
             "Starter pack '{pack_name}' not found. Available packs: {}",
             if available.is_empty() {
                 "none".into()
             } else {
-                available.join(", ")
+                printable(&available.join(", "))
             }
         );
     };
+    if let Some(source) = &found.project_source {
+        let w = crate::cli::style::warn();
+        anstream::eprintln!(
+            "{w}note: pack '{pack_name}' comes from a project source, not from your own \
+             folders or sources: {source}{w:#}"
+        );
+    }
+    let pack_dir = found.dir;
     let pack = StarterPack::load(&pack_dir)?;
     no_link_at(&root.join(".armadai"))?;
     match pack.format {
@@ -250,7 +324,7 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
         None => {}
     }
     let tmp = tempfile::tempdir()?;
-    materialize_pack(&pack_dir, &pack, pack_name, tmp.path())?;
+    materialize_pack(&pack_dir, &pack, tmp.path())?;
     let report = crate::migrate::run(tmp.path(), false, false)?;
     let built = tmp.path().join(".armadai");
     // every destination, before the first write: never through a symbolic link
@@ -331,8 +405,8 @@ fn no_link_at(path: &Path) -> anyhow::Result<()> {
 
 /// Detect a coordinator agent from a pack by scanning agent files for a
 /// `tags: [... coordinator ...]` metadata entry.
-fn detect_pack_coordinator(pack: &StarterPack, pack_name: &str) -> Option<String> {
-    let agents_dir = resolve_pack_dir(pack_name)?.join("agents");
+fn detect_pack_coordinator(pack: &StarterPack, pack_dir: &Path) -> Option<String> {
+    let agents_dir = pack_dir.join("agents");
     if !agents_dir.is_dir() {
         return None;
     }
@@ -418,8 +492,8 @@ fn read_agent_providers(agents_dir: &std::path::Path) -> Vec<String> {
 
 /// Infer the link target of a pack from its agents, or `None` when no agent
 /// names a supported target.
-fn detect_pack_link_target(pack_name: &str) -> Option<String> {
-    let agents_dir = resolve_pack_dir(pack_name)?.join("agents");
+fn detect_pack_link_target(pack_dir: &Path) -> Option<String> {
+    let agents_dir = pack_dir.join("agents");
     pick_link_target(&read_agent_providers(&agents_dir))
 }
 
@@ -523,7 +597,7 @@ mod tests {
         )
         .unwrap();
         let resolved = resolve_pack_dir(dir.path().to_str().unwrap()).unwrap();
-        assert_eq!(resolved, dir.path());
+        assert_eq!(resolved.unwrap().dir, dir.path());
     }
 
     #[test]
@@ -540,7 +614,7 @@ mod tests {
         }
 
         let resolved = resolve_pack_dir("definitely-nonexistent-pack-xyz");
-        assert!(resolved.is_none());
+        assert!(resolved.unwrap().is_none());
 
         // SAFETY: restoring original env state at end of test scope.
         match orig {
