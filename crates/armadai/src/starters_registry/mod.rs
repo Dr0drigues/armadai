@@ -133,27 +133,81 @@ fn tool(program: &str) -> std::process::Command {
 
 /// List entry paths inside an archive without extracting it, so they can be
 /// validated by [`archive_entry_is_safe`] before anything is written to disk.
-fn list_archive_entries(archive: &Path, is_zip: bool, label: &str) -> anyhow::Result<Vec<String>> {
-    let out = if is_zip {
-        tool("unzip")
-            .args(["-Z1", archive.to_str().unwrap_or("")])
-            .output()?
+///
+/// The listing is read as it comes: past `limits` (entries, length of one name,
+/// total length of the names) the lister is killed and the archive refused, so a
+/// small archive declaring huge names never fills memory.
+fn list_archive_entries(
+    archive: &Path,
+    is_zip: bool,
+    label: &str,
+    limits: ExtractLimits,
+) -> anyhow::Result<Vec<String>> {
+    use std::io::{BufRead, Read};
+    let mut cmd = if is_zip {
+        let mut c = tool("unzip");
+        c.arg("-Z1").arg(archive);
+        c
     } else {
-        tool("tar")
-            .args(["-tzf", archive.to_str().unwrap_or("")])
-            .output()?
+        let mut c = tool("tar");
+        c.arg("-tzf").arg(archive);
+        c
     };
-    if !out.status.success() {
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    // Drained apart (a full stderr pipe would stall the lister); its first KiB is kept.
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let stderr = std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let _ = (&mut stderr).take(1024).read_to_end(&mut kept);
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        kept
+    });
+    let mut stdout = std::io::BufReader::new(child.stdout.take().expect("piped stdout"));
+    let (mut entries, mut names_bytes, mut line) = (Vec::new(), 0usize, Vec::new());
+    let refusal = loop {
+        line.clear();
+        let max_line = limits.name_bytes as u64 + 1; // the name and its newline
+        if (&mut stdout).take(max_line).read_until(b'\n', &mut line)? == 0 {
+            break None;
+        }
+        if line.pop_if(|b| *b == b'\n').is_none() && line.len() > limits.name_bytes {
+            break Some(format!(
+                "an entry name is longer than {} bytes",
+                limits.name_bytes
+            ));
+        }
+        if line.is_empty() {
+            continue;
+        }
+        names_bytes += line.len();
+        if names_bytes > limits.names_bytes {
+            break Some(format!(
+                "its entry names exceed {} bytes in total",
+                limits.names_bytes
+            ));
+        }
+        if entries.len() == limits.entries {
+            break Some(format!("more than the {} entries allowed", limits.entries));
+        }
+        entries.push(String::from_utf8_lossy(&line).into_owned());
+    };
+    if let Some(reason) = refusal {
+        let _ = child.kill();
+        let _ = child.wait();
+        anyhow::bail!("refusing archive {label}: {reason}");
+    }
+    let status = child.wait()?;
+    let stderr = stderr.join().unwrap_or_default();
+    if !status.success() {
         anyhow::bail!(
             "failed to list archive entries for {label}: {}",
-            String::from_utf8_lossy(&out.stderr)
+            String::from_utf8_lossy(&stderr)
         );
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect())
+    Ok(entries)
 }
 
 /// Extract a downloaded archive (.tar.gz/.tgz or .zip) into `dest` by shelling
@@ -174,14 +228,7 @@ fn extract_archive(
     let name = archive.to_string_lossy().to_lowercase();
     let is_zip = name.ends_with(".zip");
 
-    let entries = list_archive_entries(archive, is_zip, label)?;
-    if entries.len() > limits.entries {
-        anyhow::bail!(
-            "refusing archive {label}: {} entries, more than the {} allowed",
-            entries.len(),
-            limits.entries
-        );
-    }
+    let entries = list_archive_entries(archive, is_zip, label, limits)?;
     check_extracted_size(archive, is_zip, limits.bytes, label)?;
     if let Some(unsafe_entry) = entries.iter().find(|e| !archive_entry_is_safe(e)) {
         anyhow::bail!(
@@ -226,11 +273,19 @@ struct ExtractLimits {
     bytes: u64,
     /// Number of entries (files, directories, links): each costs an inode.
     entries: usize,
+    /// Length of one entry name, in bytes.
+    name_bytes: usize,
+    /// Total length of the entry names: what the listing keeps in memory.
+    names_bytes: usize,
 }
 
 const EXTRACT_LIMITS: ExtractLimits = ExtractLimits {
     bytes: 1 << 30, // 1 GiB
     entries: 100_000,
+    // PATH_MAX on Linux (macOS: 1024): a longer name cannot be extracted anyway.
+    name_bytes: 4096,
+    // 100,000 names of 670 bytes on average; real packs hold names under 200 bytes.
+    names_bytes: 64 << 20, // 64 MiB
 };
 
 /// Refuse an archive whose files add up to more than `max_bytes`, by streaming their
@@ -1071,7 +1126,11 @@ pub(crate) mod archive_tests {
         }
         for archive in archives {
             let dest = dir.path().join("dest");
-            let limits = |bytes| ExtractLimits { bytes, entries: 10 };
+            let limits = |bytes| ExtractLimits {
+                bytes,
+                entries: 10,
+                ..EXTRACT_LIMITS
+            };
             let err = extract_archive(&archive, &dest, "lbl", limits(4000))
                 .unwrap_err()
                 .to_string();
@@ -1208,19 +1267,192 @@ pub(crate) mod archive_tests {
         let limits = |entries| ExtractLimits {
             bytes: 1 << 20,
             entries,
+            ..EXTRACT_LIMITS
         };
         let err = extract_archive(&archive, &dest, "lbl", limits(10))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("more than the 10 allowed"), "{err}");
+        assert_eq!(
+            err,
+            "refusing archive lbl: more than the 10 entries allowed"
+        );
         assert!(!dest.join("f0").exists(), "extracted anyway");
         extract_archive(&archive, &dest, "lbl", limits(20)).unwrap();
         assert!(dest.join("f0").exists());
     }
 
+    /// `build`'s tree as a .tar.gz, and as a .zip when `zip` is installed.
+    #[cfg(unix)]
+    fn tar_gz_and_zip(dir: &Path, name: &str, build: impl Fn(&Path)) -> Vec<PathBuf> {
+        let mut archives = vec![tar_gz(dir, name, build)];
+        let zip = dir.join(format!("{name}.zip"));
+        let zipped = std::process::Command::new("zip")
+            .current_dir(dir.join(format!("{name}-src")))
+            .arg("-qr")
+            .arg(&zip)
+            .arg(".")
+            .status();
+        if zipped.is_ok_and(|s| s.success()) {
+            archives.push(zip);
+        }
+        archives
+    }
+
+    fn is_zip(archive: &Path) -> bool {
+        archive.extension().is_some_and(|e| e == "zip")
+    }
+
+    /// Each bound accepts the archive at its exact value and refuses it one below,
+    /// for tar.gz and zip alike.
+    #[cfg(unix)]
+    #[test]
+    fn list_archive_entries_refuses_at_each_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let archives = tar_gz_and_zip(dir.path(), "names", |root| {
+            write(&root.join("short"), "");
+            write(&root.join("a-much-longer-entry-name.md"), "");
+        });
+        for archive in &archives {
+            let list = |limits| list_archive_entries(archive, is_zip(archive), "lbl", limits);
+            let names = list(EXTRACT_LIMITS).unwrap();
+            assert!(names.iter().any(|n| n.ends_with("short")), "{names:?}");
+            let longest = names.iter().map(String::len).max().unwrap();
+            let total = names.iter().map(String::len).sum::<usize>();
+            let exact = ExtractLimits {
+                entries: names.len(),
+                name_bytes: longest,
+                names_bytes: total,
+                ..EXTRACT_LIMITS
+            };
+            assert_eq!(list(exact).unwrap(), names, "{}", archive.display());
+            for (limits, refusal) in [
+                (
+                    ExtractLimits {
+                        entries: names.len() - 1,
+                        ..exact
+                    },
+                    format!("more than the {} entries allowed", names.len() - 1),
+                ),
+                (
+                    ExtractLimits {
+                        name_bytes: longest - 1,
+                        ..exact
+                    },
+                    format!("an entry name is longer than {} bytes", longest - 1),
+                ),
+                (
+                    ExtractLimits {
+                        names_bytes: total - 1,
+                        ..exact
+                    },
+                    format!("its entry names exceed {} bytes in total", total - 1),
+                ),
+            ] {
+                let err = list(limits).unwrap_err().to_string();
+                assert_eq!(err, format!("refusing archive lbl: {refusal}"));
+            }
+        }
+    }
+
+    /// Past a bound the lister is killed: never waited on with its listing unread
+    /// (it would block on the full pipe), never read to the end.
+    #[cfg(unix)]
+    #[test]
+    fn list_archive_entries_kills_the_lister_past_a_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let archives = tar_gz_and_zip(dir.path(), "long", |root| {
+            for i in 0..2000 {
+                write(&root.join(format!("{i:04}-{}", "n".repeat(100))), "");
+            }
+        });
+        for archive in archives {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let zip = is_zip(&archive);
+            std::thread::spawn(move || {
+                let limits = ExtractLimits {
+                    entries: 10,
+                    ..EXTRACT_LIMITS
+                };
+                let _ = tx.send(list_archive_entries(&archive, zip, "lbl", limits));
+            });
+            let res = rx
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("lister not killed: still waiting on it");
+            assert_eq!(
+                res.unwrap_err().to_string(),
+                "refusing archive lbl: more than the 10 entries allowed"
+            );
+        }
+    }
+
+    /// Run as `name` under a pseudo-terminal (`script`), so that a tool reading the
+    /// terminal would block there; fails past 60 s instead of hanging. `false` when
+    /// `script` is missing.
+    #[cfg(unix)]
+    fn run_under_a_terminal(name: &str) -> bool {
+        let exe = std::env::current_exe().unwrap();
+        let test = format!("starters_registry::archive_tests::{name}");
+        let mut cmd = std::process::Command::new("script");
+        if cfg!(target_os = "macos") {
+            cmd.args(["-q", "/dev/null"])
+                .arg(&exe)
+                .args([&test, "--exact", "--nocapture"]);
+        } else {
+            let line = format!("'{}' '{test}' --exact --nocapture", exe.display());
+            cmd.args(["-qec", &line, "/dev/null"]);
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("log");
+        let child = cmd
+            .env("ARMADAI_TEST_UNDER_TERMINAL", "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(fs::File::create(&out).unwrap())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let Ok(mut child) = child else {
+            return false;
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{name} still running after 60 s: blocked on the terminal");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        let log = fs::read_to_string(&out).unwrap_or_default();
+        assert!(
+            status.success() && log.contains("1 passed"),
+            "{name} under a terminal: {status}\n{log}"
+        );
+        true
+    }
+
+    /// Under a terminal, an encrypted zip fails instead of asking for its password,
+    /// and the tools do not get the terminal as stdin.
     #[cfg(unix)]
     #[test]
     fn extract_archive_refuses_an_encrypted_zip_without_prompting() {
+        let name = "extract_archive_refuses_an_encrypted_zip_without_prompting";
+        if std::env::var_os("ARMADAI_TEST_UNDER_TERMINAL").is_none() {
+            if run_under_a_terminal(name) {
+                return;
+            }
+            eprintln!("{name}: no `script`, run without a terminal");
+        } else {
+            let tty = |mut c: std::process::Command| {
+                c.args(["-c", "test -t 0"]).status().unwrap().success()
+            };
+            assert!(
+                tty(std::process::Command::new("sh")),
+                "not under a terminal"
+            );
+            assert!(!tty(tool("sh")), "stdin of the tools is the terminal");
+        }
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
         write(&src.join("demo/pack.yaml"), "name: demo\n");

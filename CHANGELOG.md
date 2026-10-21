@@ -346,6 +346,11 @@ the entry says so.
 
 ### Security
 
+- Listing a starter archive is bounded in memory and time (#493): its entry names are read as
+  `tar`/`unzip` print them, and past 100,000 entries, a name of more than 4096 bytes or 64 MiB
+  of names in total the lister is stopped and the archive refused, the message naming the
+  bound. Before, the whole listing was read first: a 1 MB `.tar.gz` declaring 1,000 names of
+  900 KB took 1.8 GB of memory and three minutes (debug build) before being refused.
 - `armadai update` downloads with the same hardened `curl` call as starter archives (#488):
   it no longer reads `~/.curlrc` (where `insecure` would turn TLS checks off while fetching
   the new executable), stays on HTTPS through redirects, does not expand `{}`/`[]` in URLs,
