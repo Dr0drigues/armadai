@@ -2,6 +2,11 @@
 
 ### Fixed
 
+- The GitHub release notes are no longer empty: `release.yml` piped a failing `cz changelog`
+  into `awk`, which hid the error (15 releases, v0.7.0 and v0.10.0 to v1.0.0-rc.5, shipped
+  without notes). The notes are now the
+  tag's `## vX.Y.Z` section of this file, and the release fails when that section is missing
+  or empty (#497).
 - YAML read by ArmadAI no longer loses the lines after a root node that ends early: a file
   starting with a flow mapping (`{a: 1}`) or with an indented first key (` x: v`) was read
   up to that node and the rest silently dropped; it is now an error at the first line that

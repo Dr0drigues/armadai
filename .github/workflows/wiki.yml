@@ -14,11 +14,13 @@ on:
     paths:
       - "docs/wiki/**"
       - ".github/scripts/sync-wiki*.sh"
+      - ".github/scripts/release-notes*.sh"
       - ".github/workflows/wiki.yml"
   pull_request:
     paths:
       - "docs/wiki/**"
       - ".github/scripts/sync-wiki*.sh"
+      - ".github/scripts/release-notes*.sh"
       - ".github/workflows/wiki.yml"
 
 permissions:
@@ -34,6 +36,10 @@ jobs:
 
       - name: Run sync-wiki tests
         run: .github/scripts/sync-wiki.test.sh
+
+      # release.yml's notes extraction; tested here, beside the other script.
+      - name: Run release-notes tests
+        run: .github/scripts/release-notes.test.sh
 
   sync:
     name: Publish to Wiki

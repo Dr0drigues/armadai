@@ -10,7 +10,9 @@
 # Creates a GitHub Release with all binaries attached.
 # Trigger: push a semver tag like v0.1.0
 #
-# Usage:
+# Usage: rename `## Unreleased` in CHANGELOG.md to `## v0.1.0 (YYYY-MM-DD)` and
+# commit it first — the release notes are that section, and the run fails
+# without it. Then:
 #   git tag v0.1.0
 #   git push origin v0.1.0
 #
@@ -31,6 +33,7 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.target }}
+    needs: notes
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -93,23 +96,40 @@ jobs:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
 
+  # Checked first, so a tag without its CHANGELOG section fails before the builds.
+  notes:
+    name: Release notes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the CHANGELOG section
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            .github/scripts/release-notes.sh "$GITHUB_REF_NAME" CHANGELOG.md > /dev/null
+          fi
+
   release:
     name: Create Release
-    needs: build
+    needs: [notes, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - name: Generate release notes
+      # The notes are the tag's section of the hand-written CHANGELOG.md; a tag
+      # without one fails here. A dry run previews `## Unreleased` and only warns.
+      - name: Release notes
+        shell: bash
         run: |
-          pip install commitizen
-          cz changelog --dry-run --file-name /dev/null | awk '/^## v/{if(n++) exit; next} n' > RELEASE_NOTES.md
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            .github/scripts/release-notes.sh "$GITHUB_REF_NAME" CHANGELOG.md > RELEASE_NOTES.md
+          elif ! .github/scripts/release-notes.sh --unreleased CHANGELOG.md > RELEASE_NOTES.md; then
+            echo "::warning::no release notes: the Unreleased section of CHANGELOG.md is missing or empty"
+          fi
+          cat RELEASE_NOTES.md
 
       - uses: actions/download-artifact@v8
         with:
