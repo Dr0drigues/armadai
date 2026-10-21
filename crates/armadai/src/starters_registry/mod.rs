@@ -170,8 +170,11 @@ fn list_archive_entries(
     let refusal = loop {
         line.clear();
         let max_line = limits.name_bytes as u64 + 1; // the name and its newline
-        if (&mut stdout).take(max_line).read_until(b'\n', &mut line)? == 0 {
-            break None;
+        // A read error refuses too, so the lister is still killed and reaped below.
+        match (&mut stdout).take(max_line).read_until(b'\n', &mut line) {
+            Ok(0) => break None,
+            Ok(_) => {}
+            Err(e) => break Some(format!("cannot read its listing: {e}")),
         }
         if line.pop_if(|b| *b == b'\n').is_none() && line.len() > limits.name_bytes {
             break Some(format!(
