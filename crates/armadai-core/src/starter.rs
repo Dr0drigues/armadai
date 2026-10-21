@@ -440,7 +440,7 @@ fn only_one(
         return Ok(found.into_iter().next());
     }
     let list: Vec<String> = (found.iter())
-        .map(|(label, dir)| format!("  {label}: {}", dir.display()))
+        .map(|(label, dir)| format!("  {label}: {}", printable(&dir.display().to_string())))
         .collect();
     Err(format!(
         "starter pack '{name}' is provided by several {level}:\n{}\n\

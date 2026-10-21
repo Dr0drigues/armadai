@@ -331,7 +331,19 @@ fn a_project_ambiguity_still_lets_an_unsynced_user_source_win() {
 /// escaped in the note.
 #[test]
 fn the_note_escapes_control_characters() {
+    for esc_root in [false, true] {
+        note_escapes_control_characters(esc_root);
+    }
+}
+
+/// `esc_root`: the project root's real name holds an escape character (`repo` is a
+/// link to it, the current directory resolves to it).
+fn note_escapes_control_characters(esc_root: bool) {
     let env = Env::new();
+    if esc_root {
+        std::fs::rename(env.path("repo"), env.path("re\u{1b}po")).unwrap();
+        std::os::unix::fs::symlink(env.path("re\u{1b}po"), env.path("repo")).unwrap();
+    }
     let url = "https://p.example/x\u{1b}[31mRED\u{7}/s.tar.gz";
     std::fs::create_dir_all(env.path("repo/.armadai")).unwrap();
     let yaml =
@@ -344,7 +356,12 @@ fn the_note_escapes_control_characters() {
     let note = format!(
         "note: pack 'shared' comes from a project source, not from your own folders or \
          sources: https://p.example/x\\u{{1b}}[31mRED\\u{{7}}/s.tar.gz (from {})",
-        env.path("repo").canonicalize().unwrap().display()
+        (env.path("repo")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string())
+        .replace('\u{1b}', "\\u{1b}")
     );
     let notes: Vec<&str> = err.lines().filter(|l| l.starts_with("note:")).collect();
     assert_eq!(notes, [note.as_str()], "{err}");
@@ -384,4 +401,102 @@ fn a_relative_starter_folder_is_not_added() {
         "Error: starters is a relative path: give an absolute one\n"
     );
     assert!(!env.path("config/config.yaml").exists());
+}
+
+/// A user source that fails to sync may hold the pack: a project pack is refused then.
+/// One that syncs without it lets the project pack in, announced.
+#[test]
+fn a_user_source_that_fails_to_sync_refuses_a_project_pack() {
+    for user_syncs in [false, true] {
+        let env = Env::new();
+        env.user_sources(&[A]);
+        if user_syncs {
+            env.archive("a.example", "other", "FROM-USER");
+        } // else: no archive, the fake curl fails
+        env.project_sources(&[B]);
+        write_pack(&env.cache(B).join("shared"), "shared", "FROM-PROJECT");
+        env.archive("b.example", "shared", "FROM-PROJECT");
+        let (ok, err) = env.run(&["init", "--pack", "shared"]);
+        if user_syncs {
+            assert!(ok, "{err}");
+            assert_eq!(env.installed(), agent("FROM-PROJECT"));
+            continue;
+        }
+        assert!(!ok);
+        let error: Vec<&str> = err
+            .lines()
+            .skip_while(|l| !l.starts_with("Error:"))
+            .collect();
+        let folder = env.cache(B).join("shared");
+        let want = format!(
+            "Error: pack 'shared' is found only in project sources, and these sources of \
+             yours did not sync (one of them may hold it):\n  {A}\nretry once they can be \
+             reached, or install the project's pack by its folder: `armadai init --pack {}`",
+            folder.display()
+        );
+        assert_eq!(error.join("\n"), want, "{err}");
+        assert!(!env.path("repo/sub/.armadai/agents").exists());
+    }
+}
+
+/// `~` and `~/...` are the home directory; without HOME, a clear error.
+#[test]
+fn a_leading_tilde_is_the_home_directory() {
+    let env = Env::new();
+    write_pack(&env.path("home-p"), "home-p", "FROM-HOME");
+    let (ok, err) = env.run(&["init", "--pack", "~/home-p"]);
+    assert!(ok, "{err}");
+    assert_eq!(env.installed(), agent("FROM-HOME"));
+    let env = Env::new();
+    let (ok, err) = env.run_env(&["init", "--pack", "~/home-p"], &[("HOME", "")]);
+    assert!(!ok);
+    assert_eq!(
+        err,
+        "Error: cannot expand `~` in '~/home-p': HOME is not set\n"
+    );
+}
+
+#[test]
+fn an_empty_pack_name_is_refused() {
+    let env = Env::new();
+    write_pack(&env.path("repo/sub"), "here", "FROM-CWD");
+    let (ok, err) = env.run(&["init", "--pack", ""]);
+    assert!(!ok);
+    assert_eq!(
+        err,
+        "Error: empty pack name: give a pack name or a pack folder\n"
+    );
+}
+
+/// `.`, `../x` and `x/` are paths: each names its folder.
+#[test]
+fn dot_parent_and_trailing_slash_are_paths() {
+    for (arg, at) in [(".", "repo/sub"), ("../x", "repo/x"), ("p/", "repo/sub/p")] {
+        let env = Env::new();
+        write_pack(&env.path(at), "local", "FROM-LOCAL");
+        let (ok, err) = env.run(&["init", "--pack", arg]);
+        assert!(ok, "{arg}: {err}");
+        assert_eq!(env.installed(), agent("FROM-LOCAL"), "{arg}");
+    }
+}
+
+/// The "Available packs" list shows a folder name's control characters escaped.
+#[test]
+fn the_available_packs_list_escapes_control_characters() {
+    let env = Env::new();
+    write_pack(&env.path("repo/sub/.armadai/starters/x\u{1b}y"), "x", "X");
+    let mut names: Vec<String> =
+        std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../armadai-core/starters"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+    names.push("x\u{1b}y".into());
+    names.sort();
+    let (ok, err) = env.run(&["init", "--pack", "nothere"]);
+    assert!(!ok);
+    let want = format!(
+        "Error: Starter pack 'nothere' not found. Available packs: {}\n",
+        names.join(", ").replace('\u{1b}', "\\u{1b}")
+    );
+    assert_eq!(err, want);
 }

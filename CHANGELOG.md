@@ -367,7 +367,10 @@ the entry says so.
   - a pack name matches folder names exactly, case included, on every file system;
   - a pack taken from a project source is announced, its URL masked and its control
     characters escaped; one found only there (or in several project sources) first syncs the
-    sources, so that one of yours not synced yet still wins;
+    sources, so that one of yours not synced yet still wins, and is refused when one of your
+    sources fails to sync (the error names it, and gives the folder to install the project's
+    pack explicitly);
+  - `--pack ~/x` (quoted) is read from the home directory, and `--pack ""` is refused;
   - two of your sources holding the same pack is an error naming them, where one was picked
     in `read_dir` order; so are two project sources, which includes `.armadai/starters/` and
     a project registry holding the same name (`.armadai/starters/` was installed before);

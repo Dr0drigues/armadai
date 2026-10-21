@@ -2,8 +2,9 @@ use std::path::Path;
 
 use crate::linker::{LinkTarget, supported_target_names};
 use armadai_core::config;
+use armadai_core::registries::redact_url;
 use armadai_core::starter::{
-    FoundPack, ProjectAmbiguity, StarterPack, find_pack, list_available_packs,
+    FoundPack, ProjectAmbiguity, StarterPack, find_pack, list_available_packs, printable,
 };
 
 pub fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Result<()> {
@@ -60,24 +61,41 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve a pack reference: a path (holding `/`, or starting with `.` or `~`) names a
-/// local folder holding `pack.yaml`; a bare name goes through the starter sources only,
-/// never the current directory, where a cloned repository's `<name>/` would mask a
-/// trusted pack (#490).
+/// Resolve a pack reference: a path (holding `/`, or starting with `.` or `~`; a leading
+/// `~` or `~/` is the home directory) names a local folder holding `pack.yaml`; a bare
+/// name goes through the starter sources only, never the current directory, where a
+/// cloned repository's `<name>/` would mask a trusted pack (#490).
 ///
 /// If the name misses, or only project sources hold it, auto-sync kicks in: known starter
 /// registry sources (user ∪ project, see
 /// `crate::starters_registry::effective_starter_sources`) are synced once, then the
-/// lookup is retried, so a user source not synced yet still wins over the project's.
-/// Network is only touched then — a pack found in the user's own folders or sources
-/// never syncs.
+/// lookup is retried, so a user source not synced yet still wins over the project's;
+/// if one of the user's sources fails to sync, a project pack is refused. Network is
+/// only touched then — a pack found in the user's own folders or sources never syncs.
 pub(crate) fn resolve_pack_dir(name: &str) -> anyhow::Result<Option<FoundPack>> {
-    let candidate = std::path::Path::new(name);
+    if name.is_empty() {
+        anyhow::bail!("empty pack name: give a pack name or a pack folder");
+    }
     if is_path(name) {
-        let dir = candidate.to_path_buf();
-        return Ok(dir.join("pack.yaml").is_file().then_some(FoundPack {
+        let dir = match name.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
+                    anyhow::bail!("cannot expand `~` in '{name}': HOME is not set");
+                };
+                std::path::PathBuf::from(home).join(rest.trim_start_matches('/'))
+            }
+            _ => std::path::PathBuf::from(name),
+        };
+        if !dir.join("pack.yaml").is_file() {
+            anyhow::bail!(
+                "{} holds no pack.yaml",
+                printable(&dir.display().to_string())
+            );
+        }
+        let project_source = None;
+        return Ok(Some(FoundPack {
             dir,
-            project_source: None,
+            project_source,
         }));
     }
     let found = find_pack(name);
@@ -98,14 +116,36 @@ pub(crate) fn resolve_pack_dir(name: &str) -> anyhow::Result<Option<FoundPack>> 
         _ => "found only in project sources",
     };
     anstream::eprintln!("{r}Pack '{name}' {why} — syncing remote starter registries...{r:#}");
-    let _ = crate::starters_registry::sync_starters(&sources);
-    find_pack(name)
+    let failed = crate::starters_registry::sync_starters(&sources);
+    let found = find_pack(name);
+    let project_only = match &found {
+        Ok(Some(f)) => f.project_source.is_some(),
+        Err(e) => e.is::<ProjectAmbiguity>(),
+        Ok(None) => false,
+    };
+    let user = armadai_core::registries::load_user_registries().starters;
+    let unsynced: Vec<String> = (failed.iter())
+        .filter(|u| user.iter().any(|s| &s.url == *u))
+        .map(|u| format!("  {}", printable(&redact_url(u))))
+        .collect();
+    if project_only && !unsynced.is_empty() {
+        let folder = match &found {
+            Ok(Some(f)) => printable(&f.dir.display().to_string()),
+            _ => "<folder>".into(),
+        };
+        anyhow::bail!(
+            "pack '{name}' is found only in project sources, and these sources of yours did \
+             not sync (one of them may hold it):\n{}\nretry once they can be reached, or \
+             install the project's pack by its folder: `armadai init --pack {folder}`",
+            unsynced.join("\n")
+        );
+    }
+    found
 }
 
 /// A pack reference naming a folder rather than a pack.
 fn is_path(name: &str) -> bool {
-    name.is_empty()
-        || name.contains(['/', '\\'])
+    name.contains(['/', '\\'])
         || name.starts_with(['.', '~'])
         || std::path::Path::new(name).is_absolute()
 }
@@ -253,7 +293,7 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
             if available.is_empty() {
                 "none".into()
             } else {
-                available.join(", ")
+                printable(&available.join(", "))
             }
         );
     };

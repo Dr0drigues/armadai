@@ -496,16 +496,16 @@ fn sync_warning(url: &str, err: &anyhow::Error) -> String {
     mask_url_secrets(&line, url)
 }
 
-/// Sync all sources; warn+continue on failure. Returns the dirs that synced OK.
-pub fn sync_starters(sources: &[RegistrySource]) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
+/// Sync all sources; warn+continue on failure. Returns the URLs that failed to sync.
+pub fn sync_starters(sources: &[RegistrySource]) -> Vec<String> {
+    let mut failed = Vec::new();
     for s in sources {
-        match fetch_starter_source(s) {
-            Ok(d) => dirs.push(d),
-            Err(e) => eprintln!("{}", sync_warning(&s.url, &e)),
+        if let Err(e) = fetch_starter_source(s) {
+            eprintln!("{}", sync_warning(&s.url, &e));
+            failed.push(s.url.clone());
         }
     }
-    dirs
+    failed
 }
 
 #[cfg(test)]
