@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -83,14 +84,27 @@ pub fn ensure_config_dirs() -> anyhow::Result<()> {
 // UserConfig
 // ---------------------------------------------------------------------------
 
-/// `~/.config/armadai/config.yaml`. Only `starters_dirs` is read (by the
-/// starter-pack lookup and `armadai config starters-dir`); keys written by
+/// `~/.config/armadai/config.yaml`. Only `starters_dirs` (starter-pack lookup,
+/// `armadai config starters-dir`) and `model_tiers` (per-target model choice for
+/// a tier, read by the compilers) are read; keys written by
 /// earlier versions (`defaults`, `storage`, `rate_limits`, `costs`,
 /// `logging`) are ignored on load, not rejected.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct UserConfig {
     pub starters_dirs: Vec<String>,
+    /// Target name -> tier -> model id, e.g. `opencode: {fast: opencode/free-a}`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_tiers: BTreeMap<String, BTreeMap<armadai_model::Tier, String>>,
+}
+
+/// The model the user chose for `tier` on `target`, if any.
+pub fn model_for_tier(
+    config: &UserConfig,
+    target: &str,
+    tier: armadai_model::Tier,
+) -> Option<String> {
+    config.model_tiers.get(target)?.get(&tier).cloned()
 }
 
 /// Parse a user file: `Ok(None)` when it is missing, empty or only comments; an error
@@ -179,6 +193,33 @@ pub const DEFAULT_CONFIG_YAML: &str = "\
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_tiers_are_read_per_target() {
+        use armadai_model::Tier;
+        let cfg: UserConfig = armadai_model::yaml::from_str(
+            "model_tiers:\n  opencode:\n    fast: opencode/free-a\n    max: anthropic/claude-x\n",
+        )
+        .unwrap();
+        assert_eq!(
+            model_for_tier(&cfg, "opencode", Tier::Fast),
+            Some("opencode/free-a".to_string())
+        );
+        assert_eq!(
+            model_for_tier(&cfg, "opencode", Tier::Max),
+            Some("anthropic/claude-x".to_string())
+        );
+        assert_eq!(model_for_tier(&cfg, "opencode", Tier::Pro), None);
+        assert_eq!(model_for_tier(&cfg, "codex", Tier::Fast), None);
+    }
+
+    #[test]
+    fn a_config_without_model_tiers_still_reads() {
+        let cfg: UserConfig =
+            armadai_model::yaml::from_str("starters_dirs:\n  - /opt/a\n").unwrap();
+        assert_eq!(cfg.starters_dirs, vec!["/opt/a".to_string()]);
+        assert!(cfg.model_tiers.is_empty());
+    }
 
     #[test]
     fn test_default_user_config() {
