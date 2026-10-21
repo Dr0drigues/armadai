@@ -2,7 +2,7 @@
 #
 # Print the release notes of one version, taken from the hand-written
 # CHANGELOG.md: the body of its `## <version> (date)` section, up to the next
-# `## ` heading, with leading and trailing blank lines trimmed.
+# `## ` heading outside a fenced code block, with leading and trailing blank lines trimmed.
 #
 #   .github/scripts/release-notes.sh v1.0.0 CHANGELOG.md
 #   .github/scripts/release-notes.sh --unreleased CHANGELOG.md
@@ -28,8 +28,8 @@ status=0
 # Exact string match on the heading, followed by end of line or a space, so
 # v1.0.0-rc.1 never picks up the v1.0.0-rc.10 section.
 notes=$(awk -v h="$heading" '
-    found && /^## / { exit }
-    found { lines[++n] = $0 }
+    found && !fence && /^## / { exit }
+    found { lines[++n] = $0; if ($0 ~ /^```/) fence = !fence }
     !found && ($0 == h || index($0, h " ") == 1) { found = 1 }
     END {
         if (!found) exit 3

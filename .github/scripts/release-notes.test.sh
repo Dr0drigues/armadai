@@ -38,6 +38,16 @@ cat > "$CL" <<'EOF'
 - rc.1 fix
   
 
+## v1.0.0-beta.3 (2026-07-12)
+
+- before the block
+
+```sh
+## not a heading
+```
+
+- after the block
+
 ## v1.0.0-beta.2 (2026-07-10)
 
 ## v0.9.0 (2026-01-01)
@@ -82,6 +92,11 @@ expect_out "rc section: exact body, ### kept, blank lines trimmed" \
 
 # The heading match must not be a prefix match: rc.1 is listed after rc.10.
 expect_out "rc.10 is not mistaken for rc.1" "- rc.10 only" v1.0.0-rc.10 "$CL"
+
+# A `## ` line inside a fenced code block does not end the section.
+expect_out "a ## line in a code block does not cut the section" \
+    "$(printf -- '- before the block\n\n```sh\n## not a heading\n```\n\n- after the block')" \
+    v1.0.0-beta.3 "$CL"
 
 expect_out "last section of the file" "- last section" v0.9.0 "$CL"
 

@@ -33,6 +33,7 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.target }}
+    needs: notes
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -95,9 +96,23 @@ jobs:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
 
+  # Checked first, so a tag without its CHANGELOG section fails before the builds.
+  notes:
+    name: Release notes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the CHANGELOG section
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            .github/scripts/release-notes.sh "$GITHUB_REF_NAME" CHANGELOG.md > /dev/null
+          fi
+
   release:
     name: Create Release
-    needs: build
+    needs: [notes, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
