@@ -1,8 +1,10 @@
-# Étape 4, lot B1 : les commandes dans le modèle canonique
+# Étape 4, lot B1 : commandes et prises (slots) dans le modèle canonique
 
 ## 1. Intention
 
 Le lot B livre un pack « du concept au code propre » dont l'utilisateur pilote une partie par des commandes explicites : `/mockup <sujet>`, `/iterate <retour>`, `/brief <idée>`. Aujourd'hui le modèle d'ArmadAI ne connaît que les agents, les skills, les flows et les automations : il n'a aucun moyen de déclarer une commande. B1 ajoute cet élément au modèle, une fois pour tous les packs, et le compile vers les deux cibles fidèles (Claude Code, OpenCode 2.x). B2 (le pack) s'appuie dessus.
+
+B1 ajoute aussi les **prises** (slots) : un pack doit pouvoir être complété par un autre (normes de code, docs d'infra, sécurité, guides UX) sans qu'on réécrive ses agents. Aujourd'hui un agent ne connaît que les skills nommées dans son `skills:` ; une skill de normes ajoutée plus tard lui est invisible, et sous OpenCode elle est même bloquée par `permission.skill` (`"*": deny`). Avec une prise, l'agent déclare ce qu'il consomme (`slots: [code-standards]`), la skill déclare ce qu'elle fournit, et `link` fait le raccord. Le lot C (packs de normes) livre des packs qui ne contiennent que des skills branchées sur ces prises.
 
 Une commande est un **raccourci que l'utilisateur tape**. Elle tourne dans la conversation principale, pour garder l'interaction avec l'utilisateur (questions à choix, validation). La méthode longue vit dans une skill, que la commande charge ; la skill peut aussi être déclenchée par le modèle quand l'utilisateur formule la demande en langage naturel.
 
@@ -14,13 +16,15 @@ Objectifs :
 3. `link` : Claude → `.claude/commands/<id>.md` ; OpenCode → `.opencode/commands/<id>.md` ; Codex, Copilot → ligne `not-compiled`. `unlink` retire ce que `link` a écrit (manifeste).
 4. Une ligne de rapport de conformité par commande et par cible.
 5. `armadai new command` (et entrée du menu guidé), `list`, `inspect` affichent les commandes.
-6. Documentation (`docs/wiki/project-format.md`, `docs/wiki/link.md`), CHANGELOG.
+6. Prises : champ `slots: [<nom>]` sur un agent ; une skill remplit une prise par `metadata: { armadai-slot: <nom> }` (plusieurs prises séparées par des virgules) ; `link` ajoute à l'agent toutes les skills du projet qui remplissent ses prises, exactement comme si elles étaient listées dans `skills:`.
+7. Documentation (`docs/wiki/project-format.md`, `docs/wiki/link.md`), CHANGELOG.
 
 Non-objectifs :
 - Commande qui s'exécute dans un sous-agent (`context: fork` + `agent` chez Claude, `agent` sous-agent chez OpenCode) : elle perd l'interaction avec l'utilisateur, aucun besoin de B2. Reste possible par `native`.
 - Arguments positionnels (`$1`, `$ARGUMENTS[N]`, arguments nommés).
 - Commandes Codex et Copilot (adaptateurs pas encore fidèles).
-- Le pack lui-même (B2).
+- Le pack lui-même (B2), et sa commande de paramétrage (équivalent de `/init` pour les normes et la doc, demandé par Dimitri) qui écrira une skill de projet branchée sur les prises.
+- Une prise qui apporte des agents ou modifie un flow : une prise ne contient que des skills.
 
 Anti-objectifs (ce qui serait un échec même si ça marche) :
 - Une commande qui, à texte identique, fait autre chose dans Claude et dans OpenCode.
@@ -54,6 +58,8 @@ Conséquences retenues :
 
 ## 4. Décidé avec Dimitri
 
+- Prises ajoutées à B1 (2026-10-21) : les packs doivent être « plug and play » avec des normes de code, des docs d'infra, etc.
+
 - Noms en anglais : `/mockup`, `/iterate`, `/brief` (B2) ; `iterate` doit aussi pouvoir être induit par le prompt de l'utilisateur → la méthode vit dans une skill, la commande la charge.
 - Ordre : B1 (commandes dans le modèle) puis B2 (pack).
 - Les commandes tournent dans la conversation principale (interaction avec l'utilisateur).
@@ -76,6 +82,21 @@ Règles de validation (codes stables, à nommer par le constructeur dans la fami
 - `description` vide → erreur ; corps vide → erreur ;
 - placeholders non portables et shell au rendu → erreur (§3).
 
+### Prises
+
+| Modèle | Claude | OpenCode | Rapport |
+|---|---|---|---|
+| agent `slots: [s]`, skills `k1`, `k2` remplissent `s` | `k1`, `k2` ajoutées au champ `skills` du sous-agent (préchargées) | ajoutées à `permission.skill` (`allow`) et à la consigne « charge ces skills » | `agent <id> slot <s>: compiled (k1, k2)` |
+| prise sans aucune skill | rien | rien | `agent <id> slot <s>: not-compiled (no skill fills it)` — **pas une erreur** : le pack marche sans norme branchée |
+| coordinateur avec `slots:` | fil principal : pas de préchargement (comme `skills:` aujourd'hui) | consigne + `permission.skill` | `approximated` côté Claude |
+
+Règles :
+- nom de prise = même règle de nom qu'un id ;
+- une skill listée à la fois dans `skills:` et par une prise n'apparaît qu'une fois ;
+- `armadai-slot` de valeur vide ou mal formée → erreur ; une skill peut remplir plusieurs prises ;
+- ordre déterministe (id de skill trié) pour des étalons stables ;
+- `list` / `inspect` montrent pour chaque prise les skills qui la remplissent ; `graph` n'est pas modifié.
+
 `strict` : sans effet sur les commandes (elles tournent dans le fil principal, où le gate Claude et les permissions OpenCode s'appliquent déjà).
 
 ## 6. Laissé au constructeur
@@ -87,9 +108,9 @@ Règles de validation (codes stables, à nommer par le constructeur dans la fami
 ## 7. Critères d'acceptation
 
 1. Barrière complète verte ; chaque test ajouté vu rouge par mutation.
-2. Étalons : un projet avec deux commandes (dont une avec `argument_hint` et une avec `native`) lié vers les 4 cibles ; `unlink` revient à l'état initial.
+2. Étalons : un projet avec une prise remplie par deux skills, une prise vide, et deux commandes (dont une avec `argument_hint` et une avec `native`) lié vers les 4 cibles ; `unlink` revient à l'état initial.
 3. Validation : chaque règle du §5 a son test à message exact.
-4. Essai réel par Dimitri : dans Claude Code et dans OpenCode 2.1.2, `/<commande> du texte` apparaît dans le menu, reçoit le texte, et peut poser une question à choix à l'utilisateur.
+4. Essai réel par Dimitri : dans Claude Code et dans OpenCode 2.1.2, `/<commande> du texte` apparaît dans le menu, reçoit le texte, et peut poser une question à choix à l'utilisateur ; une skill ajoutée après coup avec `armadai-slot` est chargeable par l'agent qui déclare la prise après un nouveau `link` (et seulement par lui sous OpenCode).
 
 ## 8. Risques
 
