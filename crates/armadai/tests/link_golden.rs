@@ -155,26 +155,34 @@ mod tests {
                 "target {target}: the output contains an ARMADAI_ marker:\n{rendered}"
             );
 
-            let golden = golden_path(target);
-            if std::env::var_os("UPDATE_GOLDEN").is_some() {
-                std::fs::create_dir_all(golden.parent().unwrap()).unwrap();
-                std::fs::write(&golden, &rendered).unwrap();
-                continue;
-            }
-            let expected = std::fs::read_to_string(&golden).unwrap_or_else(|_| {
-                panic!(
-                    "missing snapshot {} — generate it with UPDATE_GOLDEN=1",
-                    golden.display()
-                )
-            });
-            assert_eq!(
-                rendered, expected,
-                "target {target}: link output changed. If this is deliberate, \
-                 regenerate with UPDATE_GOLDEN=1 and justify it in the PR."
-            );
+            check_golden(target, &rendered);
         }
     }
 
+    /// `rendered` against `golden/link/<name>.txt`, or written there under
+    /// `UPDATE_GOLDEN` (set, not empty, not `0`).
+    fn check_golden(name: &str, rendered: &str) {
+        let golden = golden_path(name);
+        if std::env::var("UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty() && v != "0") {
+            std::fs::create_dir_all(golden.parent().unwrap()).unwrap();
+            std::fs::write(&golden, rendered).unwrap();
+            return;
+        }
+        let expected = std::fs::read_to_string(&golden).unwrap_or_else(|_| {
+            panic!(
+                "missing snapshot {} — generate it with UPDATE_GOLDEN=1",
+                golden.display()
+            )
+        });
+        assert_eq!(
+            rendered, expected,
+            "{name}: link output changed. If this is deliberate, \
+             regenerate with UPDATE_GOLDEN=1 and justify it in the PR."
+        );
+    }
+
+    // shortcut: each integration test is its own crate; a copy of the helper the
+    // migrate tests also carry, until a shared tests/common module is worth it
     fn copy_tree(from: &Path, to: &Path) {
         for e in std::fs::read_dir(from).unwrap() {
             let p = e.unwrap().path();
@@ -222,21 +230,7 @@ mod tests {
         let report = stdout.split_once("Conformance report:\n").unwrap().1;
         rendered.push_str(&format!("=== report ===\n{report}"));
 
-        let golden = golden_path("opencode-strict");
-        if std::env::var_os("UPDATE_GOLDEN").is_some() {
-            std::fs::write(&golden, &rendered).unwrap();
-            return;
-        }
-        let expected = std::fs::read_to_string(&golden).unwrap_or_else(|_| {
-            panic!(
-                "missing snapshot {} — generate it with UPDATE_GOLDEN=1",
-                golden.display()
-            )
-        });
-        assert_eq!(
-            rendered, expected,
-            "regenerate with UPDATE_GOLDEN=1 if deliberate"
-        );
+        check_golden("opencode-strict", &rendered);
     }
 
     /// `link` must never reach the network (decision of 2026-10-09): every

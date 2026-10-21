@@ -103,29 +103,35 @@ fn snapshot(pack: &str) -> String {
     out
 }
 
+/// `snap` against `path`, or written there under `UPDATE_GOLDEN` (set, not empty,
+/// not `0`).
+fn check_golden(path: &Path, snap: &str) {
+    if std::env::var("UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty() && v != "0") {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, snap).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(path).unwrap_or_else(|_| {
+        panic!(
+            "missing snapshot {} — generate it with UPDATE_GOLDEN=1",
+            path.display()
+        )
+    });
+    assert_eq!(
+        snap,
+        expected,
+        "{}: output changed. If deliberate, regenerate with UPDATE_GOLDEN=1 and justify it \
+         in the PR.",
+        path.display()
+    );
+}
+
 #[test]
 fn init_then_link_matches_the_golden_snapshots() {
     let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/init_pack");
-    let update = std::env::var("UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty() && v != "0");
     for pack in PACKS {
         let snap = snapshot(pack);
-        let path = golden.join(format!("{pack}.txt"));
-        if update {
-            std::fs::create_dir_all(&golden).unwrap();
-            std::fs::write(&path, &snap).unwrap();
-            continue;
-        }
-        let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
-            panic!(
-                "missing snapshot {} — generate it with UPDATE_GOLDEN=1",
-                path.display()
-            )
-        });
-        assert_eq!(
-            snap, expected,
-            "{pack}: init/link output changed. If deliberate, regenerate with UPDATE_GOLDEN=1 \
-             and justify it in the PR."
-        );
+        check_golden(&golden.join(format!("{pack}.txt")), &snap);
     }
 }
 
@@ -163,7 +169,6 @@ fn frontmatter_keys(agent: &str) -> Vec<String> {
 #[test]
 fn every_pack_links_to_opencode_with_known_keys_only() {
     let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/init_pack_opencode");
-    let update = std::env::var("UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty() && v != "0");
     for pack in PACKS {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("project");
@@ -201,22 +206,6 @@ fn every_pack_links_to_opencode_with_known_keys_only() {
                 String::from_utf8_lossy(&bytes)
             ));
         }
-        let path = golden.join(format!("{pack}.txt"));
-        if update {
-            std::fs::create_dir_all(&golden).unwrap();
-            std::fs::write(&path, &snap).unwrap();
-            continue;
-        }
-        let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
-            panic!(
-                "missing snapshot {} — generate it with UPDATE_GOLDEN=1",
-                path.display()
-            )
-        });
-        assert_eq!(
-            snap, expected,
-            "{pack}: OpenCode link output changed. If deliberate, regenerate with \
-             UPDATE_GOLDEN=1 and justify it in the PR."
-        );
+        check_golden(&golden.join(format!("{pack}.txt")), &snap);
     }
 }
