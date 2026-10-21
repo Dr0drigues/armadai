@@ -1,11 +1,9 @@
 mod codex;
 mod copilot;
 pub mod manifest;
-mod opencode;
 
 pub use codex::CodexLinker;
 pub use copilot::CopilotLinker;
-pub use opencode::OpencodeLinker;
 
 use std::path::PathBuf;
 
@@ -35,7 +33,7 @@ impl std::fmt::Display for LinkTarget {
     }
 }
 
-/// An agent as the Codex, Copilot and OpenCode linkers take it
+/// An agent as the Codex and Copilot linkers take it
 /// (built from the canonical model by `compile::legacy_targets`).
 pub struct LinkAgent {
     pub name: String,
@@ -45,7 +43,6 @@ pub struct LinkAgent {
     pub context: Option<String>,
     pub description: Option<String>,
     pub model: Option<String>,
-    pub temperature: f32,
 }
 
 /// A file to be written by a linker.
@@ -77,13 +74,12 @@ pub fn supported_targets_sentence() -> String {
     format!("Supported targets: {}", supported_target_names().join(", "))
 }
 
-/// The legacy linker of a target other than Claude (whose adapter is
-/// `compile::claude`).
+/// The legacy linker of Codex or Copilot (Claude and OpenCode have their adapter,
+/// `compile::claude` and `compile::opencode`).
 pub fn create_linker(target: &str) -> anyhow::Result<Box<dyn Linker>> {
     match target {
         "codex" => Ok(Box::new(CodexLinker)),
         "copilot" => Ok(Box::new(CopilotLinker)),
-        "opencode" => Ok(Box::new(OpencodeLinker)),
         _ => anyhow::bail!(
             "No legacy linker for '{target}'. {}",
             supported_targets_sentence()
@@ -139,11 +135,11 @@ mod tests {
     #[test]
     fn every_advertised_link_target_can_actually_be_compiled() {
         for name in supported_target_names() {
-            if let Err(e) = crate::compile::compiler_for(name) {
+            if let Err(e) = crate::compile::compiler_for(name, std::path::Path::new("x")) {
                 panic!("target '{name}' is advertised but: {e}");
             }
         }
-        let err = match crate::compile::compiler_for("kilocode") {
+        let err = match crate::compile::compiler_for("kilocode", std::path::Path::new("x")) {
             Ok(_) => panic!("an unknown target must be refused"),
             Err(e) => e.to_string(),
         };
@@ -172,14 +168,13 @@ mod tests {
     }
 
     #[test]
-    fn create_linker_builds_the_three_legacy_targets_only() {
-        for t in ["codex", "copilot", "opencode"] {
+    fn create_linker_builds_the_two_legacy_targets_only() {
+        for t in ["codex", "copilot"] {
             assert!(create_linker(t).is_ok(), "{t}");
         }
-        assert!(
-            create_linker("claude").is_err(),
-            "claude has its own adapter"
-        );
+        for t in ["claude", "opencode"] {
+            assert!(create_linker(t).is_err(), "{t} has its own adapter");
+        }
         assert!(create_linker("unknown").is_err());
     }
 }

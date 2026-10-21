@@ -195,7 +195,6 @@ mod tests {
             context: None,
             description: Some(system_prompt.lines().next().unwrap_or("").to_string()),
             model: None,
-            temperature: 0.7,
         }
     }
 
@@ -236,7 +235,6 @@ mod tests {
             context: Some("Rust project.".to_string()),
             description: Some("You are a test agent.".to_string()),
             model: Some("gpt-4o".to_string()),
-            temperature: 0.3,
         }];
         let files = linker.generate(&agents, None);
 
@@ -387,7 +385,6 @@ mod tests {
             context: None,
             description: Some("You lead the team.".to_string()),
             model: None,
-            temperature: 0.7,
         };
         let agents = vec![make_agent("Worker", "You do the work.")];
 

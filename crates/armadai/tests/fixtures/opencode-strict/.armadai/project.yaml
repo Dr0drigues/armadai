@@ -1,0 +1,6 @@
+schema_version: 1
+targets: [opencode]
+coordinator: lead
+policy:
+  delegation: strict
+  free_agents: [explore]

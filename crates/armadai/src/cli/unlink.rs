@@ -170,6 +170,16 @@ fn unlink_from_manifest(
         return Ok(());
     }
 
+    // a shared file unlink could not undo stops it before any removal
+    if agents_filter.is_none() {
+        for f in patched
+            .iter()
+            .filter(|f| patch_is_trusted(root, &target_root, f))
+        {
+            patch::preflight_remove(root, &target_root, f)?;
+        }
+    }
+
     let mut deleted = 0;
     let mut kept = 0;
     let mut absent = 0;
@@ -584,6 +594,7 @@ fn print_manifest_dry_run(
             let what = match f.kind {
                 PatchKind::SettingsHooks(_) => "ArmadAI hooks",
                 PatchKind::MarkdownBlock => "ArmadAI block",
+                PatchKind::JsonKeys(_) => "ArmadAI keys",
             };
             anstream::println!(
                 "{m}  {} ({what} would be removed){m:#}",
@@ -692,17 +703,19 @@ fn trust_root<'a>(entry: &linker::manifest::ManifestEntry, target_root: &'a Path
     }
 }
 
-/// Link patches the root `CLAUDE.md` and files under the target's own root only.
+/// Link patches the root `CLAUDE.md` and `opencode.json`, and files under the
+/// target's own root only.
 fn patch_is_trusted(root: &Path, target_root: &Path, f: &patch::PatchedFile) -> bool {
     match f.kind {
         PatchKind::MarkdownBlock => f.path == Path::new("CLAUDE.md"),
+        PatchKind::JsonKeys(_) => f.path == Path::new("opencode.json"),
         PatchKind::SettingsHooks(_) => linker::manifest::is_trusted(root, target_root, &f.path),
     }
 }
 
 /// Without a manifest (review R-I2): recompile the project and remove only the files
 /// whose bytes still equal what `link` would write now. The files shared with the
-/// user (`settings.json`, the root `CLAUDE.md`) are never touched: without the
+/// user (`settings.json`, the root `CLAUDE.md`, `opencode.json`) are never touched: without the
 /// record of what link added, nothing there is provably link's.
 fn unlink_via_fallback(
     root: &Path,
@@ -717,7 +730,7 @@ fn unlink_via_fallback(
         }
         anyhow::anyhow!("no link manifest and the project is invalid: nothing to compare against")
     })?;
-    let plan = compile::compiler_for(target_name)?.compile(&project, root)?;
+    let plan = compile::compiler_for(target_name, output_dir)?.compile(&project, root)?;
     let target_root = root.join(output_dir);
     let candidates: Vec<(PathBuf, Vec<u8>)> = (plan.artifacts.into_iter())
         .filter(|a| match agents_filter {

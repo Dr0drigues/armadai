@@ -6,7 +6,9 @@
 
 pub mod claude;
 pub mod claude_settings;
+pub mod json_keys;
 pub mod legacy_targets;
+pub mod opencode;
 pub mod patch;
 pub mod report;
 
@@ -43,6 +45,9 @@ pub struct Plan {
     /// Markdown blocks patched into files the user may own: (path relative to
     /// the project root, block content without the ArmadAI markers).
     pub blocks: Vec<(PathBuf, String)>,
+    /// Owned keys of a JSON file shared with the user (path relative to the
+    /// project root), such as `opencode.json`.
+    pub json: Option<(PathBuf, json_keys::JsonKeys)>,
     pub report: Report,
 }
 
@@ -194,13 +199,13 @@ pub fn check_output(root: &Path, output: &Path, from_flag: bool) -> anyhow::Resu
     Ok(())
 }
 
-/// The compiler of a link target.
-pub fn compiler_for(target: &str) -> anyhow::Result<Box<dyn Compiler>> {
+/// The compiler of a link target writing into `output` (relative to the root).
+pub fn compiler_for(target: &str, output: &Path) -> anyhow::Result<Box<dyn Compiler>> {
     Ok(match target {
         "claude" => Box::new(claude::ClaudeCompiler),
         "codex" => Box::new(legacy_targets::LegacyCompiler { target: "codex" }),
         "copilot" => Box::new(legacy_targets::LegacyCompiler { target: "copilot" }),
-        "opencode" => Box::new(legacy_targets::LegacyCompiler { target: "opencode" }),
+        "opencode" => Box::new(opencode::OpencodeCompiler::new(output)),
         _ => bail!(
             "Unknown link target: '{target}'. {}",
             crate::linker::supported_targets_sentence()

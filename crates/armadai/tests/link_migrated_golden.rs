@@ -94,7 +94,7 @@ fn check(name: &str, rendered: String) {
     let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/golden/link_migrated")
         .join(format!("{name}.txt"));
-    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+    if std::env::var("UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty() && v != "0") {
         std::fs::create_dir_all(golden.parent().unwrap()).unwrap();
         std::fs::write(&golden, &rendered).unwrap();
         return;

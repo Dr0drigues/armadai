@@ -71,6 +71,22 @@ fn add_and_remove_keep_every_other_byte() {
     );
 }
 
+#[test]
+fn model_tiers_survive_an_edit_byte_for_byte() {
+    let text =
+        format!("{CONFIG}model_tiers:\r\n  opencode:\r\n    fast: opencode/free-a   # cheap\r\n");
+    let (dir, path) = setup(&text);
+    let (ok, err) = run(dir.path(), &["add", "/opt/b"]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        text.replace(
+            "  - /opt/a   # first\r\n",
+            "  - /opt/a   # first\r\n  - /opt/b\r\n"
+        )
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_duplicate_add_or_an_absent_remove_does_not_rewrite() {

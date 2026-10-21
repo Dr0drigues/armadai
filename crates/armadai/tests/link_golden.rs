@@ -121,9 +121,15 @@ mod tests {
                 produced.display()
             );
             let mut rendered = render_tree(&root, &produced);
-            if *target == "claude" {
-                let md = std::fs::read_to_string(root.join("CLAUDE.md")).unwrap();
-                rendered = format!("=== CLAUDE.md ===\n{md}\n{rendered}");
+            // the shared root file link patches
+            let shared = match *target {
+                "claude" => Some("CLAUDE.md"),
+                "opencode" => Some("opencode.json"),
+                _ => None,
+            };
+            if let Some(f) = shared {
+                let text = std::fs::read_to_string(root.join(f)).unwrap();
+                rendered = format!("=== {f} ===\n{text}\n{rendered}");
             }
             let stdout = String::from_utf8_lossy(&output.stdout);
             let report = stdout
@@ -149,24 +155,82 @@ mod tests {
                 "target {target}: the output contains an ARMADAI_ marker:\n{rendered}"
             );
 
-            let golden = golden_path(target);
-            if std::env::var_os("UPDATE_GOLDEN").is_some() {
-                std::fs::create_dir_all(golden.parent().unwrap()).unwrap();
-                std::fs::write(&golden, &rendered).unwrap();
-                continue;
-            }
-            let expected = std::fs::read_to_string(&golden).unwrap_or_else(|_| {
-                panic!(
-                    "missing snapshot {} — generate it with UPDATE_GOLDEN=1",
-                    golden.display()
-                )
-            });
-            assert_eq!(
-                rendered, expected,
-                "target {target}: link output changed. If this is deliberate, \
-                 regenerate with UPDATE_GOLDEN=1 and justify it in the PR."
-            );
+            check_golden(target, &rendered);
         }
+    }
+
+    /// `rendered` against `golden/link/<name>.txt`, or written there under
+    /// `UPDATE_GOLDEN` (set, not empty, not `0`).
+    fn check_golden(name: &str, rendered: &str) {
+        let golden = golden_path(name);
+        if std::env::var("UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty() && v != "0") {
+            std::fs::create_dir_all(golden.parent().unwrap()).unwrap();
+            std::fs::write(&golden, rendered).unwrap();
+            return;
+        }
+        let expected = std::fs::read_to_string(&golden).unwrap_or_else(|_| {
+            panic!(
+                "missing snapshot {} — generate it with UPDATE_GOLDEN=1",
+                golden.display()
+            )
+        });
+        assert_eq!(
+            rendered, expected,
+            "{name}: link output changed. If this is deliberate, \
+             regenerate with UPDATE_GOLDEN=1 and justify it in the PR."
+        );
+    }
+
+    // shortcut: each integration test is its own crate; a copy of the helper the
+    // migrate tests also carry, until a shared tests/common module is worth it
+    fn copy_tree(from: &Path, to: &Path) {
+        for e in std::fs::read_dir(from).unwrap() {
+            let p = e.unwrap().path();
+            let dest = to.join(p.file_name().unwrap());
+            if p.is_dir() {
+                std::fs::create_dir_all(&dest).unwrap();
+                copy_tree(&p, &dest);
+            } else {
+                std::fs::copy(&p, &dest).unwrap();
+            }
+        }
+    }
+
+    /// A strict project with a coordinator and a review loop
+    /// (`tests/fixtures/opencode-strict/`, also the project of the real OpenCode
+    /// trial): `opencode.json`, every file under `.opencode/`, the report.
+    #[test]
+    fn the_opencode_strict_fixture_matches_its_golden() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        copy_tree(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/opencode-strict"),
+            &root,
+        );
+        let output = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(&root)
+            .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+            .env("HOME", dir.path())
+            .args(["link"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json = std::fs::read_to_string(root.join("opencode.json")).unwrap();
+        let mut rendered = format!(
+            "=== opencode.json ===\n{json}\n{}",
+            render_tree(&root, &root.join(".opencode"))
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let report = stdout.split_once("Conformance report:\n").unwrap().1;
+        rendered.push_str(&format!("=== report ===\n{report}"));
+
+        check_golden("opencode-strict", &rendered);
     }
 
     /// `link` must never reach the network (decision of 2026-10-09): every

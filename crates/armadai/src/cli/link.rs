@@ -12,6 +12,7 @@ use anyhow::{Context, bail};
 use armadai_model::Project;
 
 use crate::compile::claude_settings::{self, HookEntry};
+use crate::compile::json_keys::JsonKeys;
 use crate::compile::patch::{self, PatchKind, PatchedFile};
 use crate::compile::{self, Artifact, ArtifactKind, Report, Status};
 use crate::linker::manifest::{self, DigestCheck, FileOutcome, Lookup, Outcome, ProducedBy};
@@ -26,6 +27,8 @@ struct Prepared {
     blocks: Vec<(PathBuf, String)>,
     /// `(settings.json path relative to the root, hooks, native keys)`, Claude only.
     settings: Option<Settings>,
+    /// `(opencode.json path relative to the root, owned keys)`, OpenCode only.
+    json: Option<(PathBuf, JsonKeys)>,
     previous: Option<manifest::TargetManifest>,
     /// Everything the project produces for this target, `--agents` or not: what
     /// is stale is decided on this, never on a filtered subset.
@@ -95,13 +98,15 @@ fn prepare(
     agents: Option<&[String]>,
 ) -> anyhow::Result<Prepared> {
     compile::check_output(root, &output_of(target, output, project), output.is_some())?;
-    let plan = compile::compiler_for(target)?.compile(project, root)?;
+    let output_dir = output_of(target, output, project);
+    let plan = compile::compiler_for(target, &output_dir)?.compile(project, root)?;
     let mut p = Prepared {
         target: target.to_string(),
-        output_dir: output_of(target, output, project),
+        output_dir,
         artifacts: plan.artifacts,
         blocks: plan.blocks,
         settings: None,
+        json: plan.json,
         previous: match manifest::lookup_target(root, target) {
             Lookup::Found(t) => Some(t),
             Lookup::Fallback => None,
@@ -131,13 +136,31 @@ fn prepare(
             .retain(|a| !(a.kind == ArtifactKind::Agent && skipped.contains(&a.produced_by.name)));
         for id in &skipped {
             let element = format!("agent {id}");
-            p.report.lines.retain(|l| l.element != element);
+            let detail = format!("{element} ");
+            (p.report.lines).retain(|l| l.element != element && !l.element.starts_with(&detail));
             p.report.push(
                 target,
                 element,
                 Status::NotCompiled,
                 Some("skipped (--agents)"),
             );
+        }
+        // OpenCode's default agent must be a file that exists: written now, or kept
+        // from a previous link
+        if let Some(lead) = project.manifest.coordinator.as_ref()
+            && skipped.contains(lead)
+            && let Some((_, keys)) = &mut p.json
+        {
+            let file = p.output_dir.join(format!("agents/{lead}.md"));
+            let kept = (p.previous.iter().flat_map(|t| &t.entries)).any(|e| e.path == file);
+            if !kept && keys.values.remove("default_agent").is_some() {
+                p.report.push(
+                    target,
+                    "default_agent",
+                    Status::NotCompiled,
+                    Some("coordinator skipped (--agents)"),
+                );
+            }
         }
     }
 
@@ -155,6 +178,17 @@ fn prepare(
         )?;
         p.settings = Some((rel, hooks, keys));
     }
+    if let Some((rel, keys)) = &p.json {
+        let previous = (p.previous.iter().flat_map(|t| &t.patched)).find(|f| f.path == *rel);
+        patch::preflight_json(
+            root,
+            rel,
+            Path::new("."),
+            keys,
+            previous,
+            &["opencode.jsonc"],
+        )?;
+    }
     for (rel, _) in &p.blocks {
         patch::preflight_markdown(root, rel)?;
     }
@@ -168,6 +202,7 @@ fn prepare(
         let mut generated: BTreeSet<String> = (p.all_produced.iter().cloned())
             .chain(p.blocks.iter().map(|(r, _)| r.clone()))
             .chain(p.settings.iter().map(|(r, _, _)| r.clone()))
+            .chain(p.json.iter().map(|(r, _)| r.clone()))
             .map(|r| folded(&r))
             .collect();
         let (files, backups) = compile::read_tree_skipping(&native_dir, &root.join(".armadai"))?;
@@ -225,6 +260,9 @@ fn prepare(
     }
     if let Some((rel, _, _)) = &p.settings {
         compile::check_destination(root, &trust, rel)?;
+    }
+    if let Some((rel, _)) = &p.json {
+        compile::check_destination(root, Path::new("."), rel)?;
     }
 
     // the root file of the former Claude linker, which Claude Code still reads
@@ -346,21 +384,28 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
         .push(&target, element, Status::NotCompiled, Some(&reason));
 }
 
-/// Whether undoing the previous settings patch removes the settings.json link
-/// created (its record says created, and nothing else would be left in it).
-fn settings_file_goes(root: &Path, prev: &PatchedFile) -> bool {
-    let PatchKind::SettingsHooks(owned) = &prev.kind else {
+/// Whether undoing the previous JSON patch (settings.json hooks, opencode.json keys)
+/// removes the file link created (its record says created, and nothing else would
+/// be left in it).
+fn patched_file_goes(root: &Path, prev: &PatchedFile) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join(&prev.path)) else {
         return false;
     };
+    let rest = match &prev.kind {
+        PatchKind::SettingsHooks(owned) => claude_settings::remove_entries(&text, owned).ok(),
+        PatchKind::JsonKeys(owned) => {
+            crate::compile::json_keys::remove_json_keys(&text, owned).ok()
+        }
+        PatchKind::MarkdownBlock => None,
+    };
     prev.created
-        && std::fs::read_to_string(root.join(&prev.path))
-            .ok()
-            .and_then(|t| claude_settings::remove_entries(&t, owned).ok())
+        && rest
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .is_some_and(|v| v.as_object().is_some_and(|m| m.is_empty()))
 }
 
 const SETTINGS_GONE: &str = "removed: link created it and no hook is left";
+const JSON_GONE: &str = "removed: link created it and no owned key is left";
 
 /// The `--dry-run` side of `write_files`' decision: the files a real run would
 /// leave in place (they exist with other bytes, are not link's previous output,
@@ -424,7 +469,7 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
         let prev = p.previous_patch(&rel).cloned();
         if hooks.is_empty() && keys.is_empty() {
             if let Some(prev) = &prev {
-                let goes = settings_file_goes(root, prev);
+                let goes = patched_file_goes(root, prev);
                 patch::remove_patch(root, &p.output_dir, prev)?;
                 if goes {
                     p.report.push(
@@ -461,6 +506,41 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
                 }
             }
             patched.push(done);
+        }
+    }
+
+    // the owned keys of opencode.json (project root): merged, or removed once no
+    // longer wanted
+    let json = p.json.take();
+    if let Some((rel, keys)) = &json {
+        let before = bytes(&root.join(rel));
+        let (done, reformatted) =
+            patch::apply_json(root, rel, Path::new("."), keys, p.previous_patch(rel))?;
+        if bytes(&root.join(rel)) != before {
+            changed.insert(rel.clone());
+        }
+        if reformatted {
+            p.report.push(
+                &p.target,
+                rel.display().to_string(),
+                Status::Approximated,
+                Some("reformatted (values and key order kept)"),
+            );
+        }
+        patched.push(done);
+    }
+    let stale_json: Vec<PatchedFile> = (p.previous.iter().flat_map(|t| &t.patched))
+        .filter(|f| matches!(f.kind, PatchKind::JsonKeys(_)))
+        .filter(|f| json.as_ref().is_none_or(|(r, _)| *r != f.path))
+        .cloned()
+        .collect();
+    for f in &stale_json {
+        let goes = patched_file_goes(root, f);
+        patch::remove_patch(root, Path::new("."), f)?;
+        if goes {
+            let element = f.path.display().to_string();
+            p.report
+                .push(&p.target, element, Status::Compiled, Some(JSON_GONE));
         }
     }
 
@@ -545,12 +625,24 @@ pub fn execute(
                 && hooks.is_empty()
                 && keys.is_empty()
                 && let Some(prev) = p.previous_patch(rel)
-                && settings_file_goes(&root, prev)
+                && patched_file_goes(&root, prev)
             {
                 let element = prev.path.display().to_string();
                 let target = p.target.clone();
                 p.report
                     .push(&target, element, Status::Compiled, Some(SETTINGS_GONE));
+            }
+            if p.json.is_none() {
+                let gone: Vec<String> = (p.previous.iter().flat_map(|t| &t.patched))
+                    .filter(|f| matches!(f.kind, PatchKind::JsonKeys(_)))
+                    .filter(|f| patched_file_goes(&root, f))
+                    .map(|f| f.path.display().to_string())
+                    .collect();
+                let target = p.target.clone();
+                for element in gone {
+                    p.report
+                        .push(&target, element, Status::Compiled, Some(JSON_GONE));
+                }
             }
         }
         for (p, skipped) in prepared.iter().zip(&skips) {
@@ -579,6 +671,9 @@ pub fn execute(
                 && (!hooks.is_empty() || !keys.is_empty())
             {
                 lines.push(format!("  {} (hooks merged)", root.join(rel).display()));
+            }
+            if let Some((rel, _)) = &p.json {
+                lines.push(format!("  {} (keys merged)", root.join(rel).display()));
             }
             if !same.is_empty() {
                 lines.push(format!(

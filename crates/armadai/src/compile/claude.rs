@@ -378,7 +378,7 @@ fn agent_file(id: &str, agent: &Agent, r: &mut Report) -> anyhow::Result<String>
     Ok(out)
 }
 
-fn one_line(s: &str) -> String {
+pub(super) fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -407,7 +407,7 @@ fn claude_md(coordinator: &str, lead: &Agent, project: &Project) -> String {
     out
 }
 
-fn flow_section(fid: &str, flow: &Flow) -> String {
+pub(super) fn flow_section(fid: &str, flow: &Flow) -> String {
     let mut out = format!("\n### Flow `{fid}`\n\n");
     if let Some(d) = &flow.description {
         out.push_str(&format!("{}\n\n", one_line(d)));

@@ -1292,6 +1292,23 @@ mod tests {
                 kind: PatchKind::MarkdownBlock,
                 created: false,
             },
+            PatchedFile {
+                path: PathBuf::from("opencode.json"),
+                kind: PatchKind::JsonKeys(crate::compile::json_keys::OwnedJson {
+                    values: [(
+                        "agent.build.permission.task".to_string(),
+                        serde_json::json!({"*": "deny"}),
+                    )]
+                    .into(),
+                    array_entries: [(
+                        "instructions".to_string(),
+                        vec![serde_json::json!(".opencode/armadai-team.md")],
+                    )]
+                    .into(),
+                    containers: vec!["agent.build.permission".into()],
+                }),
+                created: false,
+            },
         ];
         write_target(
             dir.path(),

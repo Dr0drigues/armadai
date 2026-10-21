@@ -1,4 +1,4 @@
-//! Codex, OpenCode and Copilot fed from the canonical model through their existing
+//! Codex and Copilot fed from the canonical model through their existing
 //! linkers: same output as before step 2 (differences listed in the commit), and a
 //! report that says what these targets do not compile yet (step 4).
 
@@ -38,11 +38,6 @@ fn model_for(agent: &Agent, target: &str) -> Option<String> {
         "codex" => Some(
             fallback_model_for_tier("openai", tier(agent.front.tier.unwrap_or(Tier::Pro))).into(),
         ),
-        // the provider legacy agents defaulted to
-        "opencode" => agent
-            .front
-            .tier
-            .map(|t| fallback_model_for_tier("anthropic", tier(t)).into()),
         _ => None,
     }
 }
@@ -61,7 +56,6 @@ pub fn link_agents(project: &Project, target: &str) -> Vec<LinkAgent> {
             context: None,
             description: Some(a.front.description.clone()),
             model: model_for(a, target),
-            temperature: a.front.temperature.unwrap_or(0.7),
         })
         .collect()
 }
@@ -193,7 +187,7 @@ impl Compiler for LegacyCompiler {
 mod tests {
     use super::*;
 
-    const TARGETS: [&str; 3] = ["codex", "copilot", "opencode"];
+    const TARGETS: [&str; 2] = ["codex", "copilot"];
 
     fn copy_tree(from: &Path, to: &Path) {
         for e in std::fs::read_dir(from).unwrap() {
@@ -321,21 +315,21 @@ mod tests {
     #[test]
     fn native_model_wins_and_codex_defaults_to_pro() {
         let (_dir, mut p) = migrated();
-        let dev = p.agents.get_mut("dev").unwrap();
-        dev.front.tier = None;
-        dev.front.native.insert(
-            "opencode".into(),
-            armadai_model::yaml::from_str("model: openai/gpt-5").unwrap(),
-        );
-        let model = |t: &str| {
-            link_agents(&p, t)
+        let model = |p: &Project, t: &str| {
+            link_agents(p, t)
                 .into_iter()
                 .find(|a| a.name == "dev")
                 .unwrap()
                 .model
         };
-        assert_eq!(model("opencode").as_deref(), Some("openai/gpt-5"));
-        assert_eq!(model("codex").as_deref(), Some("gpt-4o"));
-        assert_eq!(model("copilot"), None);
+        let dev = p.agents.get_mut("dev").unwrap();
+        dev.front.tier = None;
+        assert_eq!(model(&p, "codex").as_deref(), Some("gpt-4o"));
+        p.agents.get_mut("dev").unwrap().front.native.insert(
+            "codex".into(),
+            armadai_model::yaml::from_str("model: gpt-5-codex").unwrap(),
+        );
+        assert_eq!(model(&p, "codex").as_deref(), Some("gpt-5-codex"));
+        assert_eq!(model(&p, "copilot"), None);
     }
 }
