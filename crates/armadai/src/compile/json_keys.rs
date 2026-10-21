@@ -103,7 +103,7 @@ fn unmerge(doc: &mut Value, values: &[(&String, &Value)], entries: &[(&String, &
         if let Some(obj) = parent_mut(doc, k)
             && obj.get(leaf) == Some(*v)
         {
-            obj.remove(leaf);
+            obj.shift_remove(leaf);
         }
     }
     for (k, e) in entries {
@@ -129,7 +129,7 @@ fn prune(doc: &mut Value, containers: &mut Vec<String>) {
             _ => false,
         });
         if empty && let Some(obj) = parent_mut(doc, c) {
-            obj.remove(split(c).1);
+            obj.shift_remove(split(c).1);
         }
     }
     containers.retain(|c| get(doc, c).is_some());
@@ -148,8 +148,9 @@ pub fn merge_json_keys(
     previous: &OwnedJson,
 ) -> anyhow::Result<(String, OwnedJson)> {
     let mut doc = parse(existing)?;
+    // a key still wanted is replaced in place below, not removed and appended
     let gone_values: Vec<(&String, &Value)> = (previous.values.iter())
-        .filter(|(k, v)| wanted.values.get(*k) != Some(*v))
+        .filter(|(k, _)| !wanted.values.contains_key(*k))
         .collect();
     let gone_entries: Vec<(&String, &Value)> = (previous.array_entries.iter())
         .flat_map(|(k, es)| es.iter().map(move |e| (k, e)))
@@ -169,6 +170,10 @@ pub fn merge_json_keys(
                 if previous.values.get(k) == Some(v) {
                     owned.values.insert(k.clone(), v.clone());
                 }
+            }
+            Some(cur) if previous.values.get(k) == Some(cur) => {
+                obj[leaf] = v.clone();
+                owned.values.insert(k.clone(), v.clone());
             }
             Some(_) if previous.values.contains_key(k) => {
                 bail!("key `{k}` was changed by hand since the last link")
@@ -419,6 +424,60 @@ mod tests {
         assert_eq!(
             value(&remove_json_keys(&edited, &owned).unwrap()),
             json!({"default_agent": "other"})
+        );
+    }
+
+    /// OpenCode permission rules are ordered (the last match wins): removing or
+    /// replacing an owned key must leave every other key where it was, in the text.
+    #[test]
+    fn the_key_order_of_the_user_is_kept_on_unlink_and_relink() {
+        let user = r#"{"agent":{"build":{"permission":{"read":"deny","*":"ask"}}}}"#;
+        let task = |t: &str| JsonKeys {
+            values: [("agent.build.permission.task".to_string(), json!({"*": t}))].into(),
+            array_entries: BTreeMap::new(),
+        };
+        let (text, owned) =
+            merge_json_keys(Some(user), &task("deny"), &OwnedJson::default()).unwrap();
+        assert_eq!(
+            text,
+            render(value(
+                r#"{"agent":{"build":{"permission":{"read":"deny","*":"ask","task":{"*":"deny"}}}}}"#
+            ))
+        );
+        // the user then adds rules after the owned one
+        let edited = render(value(
+            r#"{"agent":{"build":{"permission":{"read":"deny","*":"ask","task":{"*":"deny"},"edit":"allow","shell":"deny"}}}}"#,
+        ));
+        assert_eq!(
+            remove_json_keys(&edited, &owned).unwrap(),
+            render(value(
+                r#"{"agent":{"build":{"permission":{"read":"deny","*":"ask","edit":"allow","shell":"deny"}}}}"#
+            )),
+            "unlink"
+        );
+        // a new rule replaces the owned one in place
+        let (relinked, _) = merge_json_keys(Some(&edited), &task("ask"), &owned).unwrap();
+        assert_eq!(
+            relinked,
+            render(value(
+                r#"{"agent":{"build":{"permission":{"read":"deny","*":"ask","task":{"*":"ask"},"edit":"allow","shell":"deny"}}}}"#
+            )),
+            "relink"
+        );
+        // a container link created goes without moving the keys added after it
+        let depth = JsonKeys {
+            values: [("experimental.subagent_depth".to_string(), json!(2))].into(),
+            array_entries: BTreeMap::new(),
+        };
+        let (_, owned) =
+            merge_json_keys(Some(r#"{"theme":"x"}"#), &depth, &OwnedJson::default()).unwrap();
+        let edited = render(value(
+            r#"{"theme":"x","experimental":{"subagent_depth":2},"a":1,"b":2}"#,
+        ));
+        assert_eq!(
+            remove_json_keys(&edited, &owned).unwrap(),
+            render(value(r#"{"theme":"x","a":1,"b":2}"#)),
+            "pruned container"
         );
     }
 
