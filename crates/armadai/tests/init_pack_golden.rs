@@ -128,3 +128,95 @@ fn init_then_link_matches_the_golden_snapshots() {
         );
     }
 }
+
+/// The frontmatter keys OpenCode 2.x decodes for an agent
+/// (https://opencode.ai/docs/agents/, v1 agent schema of the 2.x code): any other
+/// key goes to the provider as a model option. Same list as the adapter's unit test.
+const OPENCODE_AGENT_KEYS: [&str; 10] = [
+    "description",
+    "mode",
+    "model",
+    "temperature",
+    "top_p",
+    "steps",
+    "disable",
+    "hidden",
+    "color",
+    "permission",
+];
+
+/// The top-level keys of a generated agent's frontmatter.
+fn frontmatter_keys(agent: &str) -> Vec<String> {
+    let yaml = agent
+        .strip_prefix("---\n")
+        .and_then(|r| r.split_once("\n---\n"))
+        .unwrap_or_else(|| panic!("no frontmatter:\n{agent}"))
+        .0;
+    let map: serde_json::Map<String, serde_json::Value> =
+        armadai_model::yaml::from_str(yaml).unwrap();
+    map.into_iter().map(|(k, _)| k).collect()
+}
+
+/// Each pack links to OpenCode (dry run, then for real) and every agent written
+/// carries only keys OpenCode 2.x knows; the files and the report are frozen per pack
+/// (`tests/golden/init_pack_opencode/`).
+#[test]
+fn every_pack_links_to_opencode_with_known_keys_only() {
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/init_pack_opencode");
+    let update = std::env::var("UPDATE_GOLDEN").is_ok_and(|v| !v.is_empty() && v != "0");
+    for pack in PACKS {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let config = tmp.path().join("config");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        armadai(&root, &config, &["init", "--pack", pack]);
+        armadai(
+            &root,
+            &config,
+            &["link", "--target", "opencode", "--dry-run"],
+        );
+        let link = armadai(&root, &config, &["link", "--target", "opencode"]);
+
+        let agents = files(&root.join(".opencode/agents"));
+        assert!(!agents.is_empty(), "{pack}: no agent written");
+        for (rel, bytes) in &agents {
+            for k in frontmatter_keys(&String::from_utf8_lossy(bytes)) {
+                assert!(
+                    OPENCODE_AGENT_KEYS.contains(&k.as_str()),
+                    "{pack}: {}: key `{k}` unknown to OpenCode 2.x",
+                    rel.display()
+                );
+            }
+        }
+
+        let mut snap = format!("$ armadai link --target opencode\n{link}");
+        for (rel, bytes) in files(&root) {
+            if rel.starts_with(".armadai") || rel.starts_with(".git") {
+                continue;
+            }
+            snap.push_str(&format!(
+                "\n=== {}\n{}",
+                rel.display(),
+                String::from_utf8_lossy(&bytes)
+            ));
+        }
+        let path = golden.join(format!("{pack}.txt"));
+        if update {
+            std::fs::create_dir_all(&golden).unwrap();
+            std::fs::write(&path, &snap).unwrap();
+            continue;
+        }
+        let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+            panic!(
+                "missing snapshot {} — generate it with UPDATE_GOLDEN=1",
+                path.display()
+            )
+        });
+        assert_eq!(
+            snap, expected,
+            "{pack}: OpenCode link output changed. If deliberate, regenerate with \
+             UPDATE_GOLDEN=1 and justify it in the PR."
+        );
+    }
+}

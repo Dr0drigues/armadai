@@ -1,3 +1,34 @@
+=== opencode.json ===
+{
+  "agent": {
+    "build": {
+      "permission": {
+        "task": {
+          "*": "deny",
+          "Explore": "allow",
+          "dev": "allow"
+        }
+      }
+    },
+    "plan": {
+      "permission": {
+        "task": {
+          "*": "deny",
+          "Explore": "allow",
+          "dev": "allow"
+        }
+      }
+    }
+  },
+  "default_agent": "lead",
+  "experimental": {
+    "subagent_depth": 2
+  },
+  "instructions": [
+    ".opencode/armadai-team.md"
+  ]
+}
+
 === .opencode/agents/dev.md ===
 ---
 description: "Writes code: \"small\" functions"

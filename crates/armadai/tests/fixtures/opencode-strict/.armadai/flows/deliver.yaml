@@ -1,0 +1,10 @@
+description: A request is designed, implemented, then reviewed until approved
+start: design
+steps:
+  design: { agent: architect }
+  build: { agent: dev }
+  review: { agent: reviewer, states: [approved, rejected] }
+links:
+  - { from: design, to: build }
+  - { from: build, to: review }
+  - { from: review, to: build, when: rejected }
