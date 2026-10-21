@@ -126,3 +126,4 @@ jobs:
           files: |
             dist/armadai-*
             dist/SHA256SUMS
+          fail_on_unmatched_files: true

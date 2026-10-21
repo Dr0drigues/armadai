@@ -39,7 +39,7 @@ detect_platform() {
 get_latest_version() {
     local url="https://api.github.com/repos/${REPO}/releases/latest"
     if command -v curl &>/dev/null; then
-        curl -fsSL "$url" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//'
+        curl -q -fsSL --proto =https --proto-redir =https "$url" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//'
     elif command -v wget &>/dev/null; then
         wget -qO- "$url" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//'
     else
@@ -98,14 +98,17 @@ main() {
         echo "Error: release ${version} publishes no SHA256SUMS; refusing an unverified binary." >&2
         exit 1
     fi
-    if ! grep -E "^[0-9a-fA-F]{64}  \*?${artifact_name}\$" "${tmp_dir}/SHA256SUMS" > "${tmp_dir}/expected"; then
+    if ! grep -E "^[0-9a-fA-F]{64} [ *]${artifact_name}\$" "${tmp_dir}/SHA256SUMS" > "${tmp_dir}/expected"; then
         echo "Error: SHA256SUMS has no line for ${artifact_name}." >&2
         exit 1
     fi
     if command -v sha256sum &>/dev/null; then
         (cd "$tmp_dir" && sha256sum -c expected >/dev/null)
-    else
+    elif command -v shasum &>/dev/null; then
         (cd "$tmp_dir" && shasum -a 256 -c expected >/dev/null)
+    else
+        echo "Error: sha256sum or shasum is required to verify the download." >&2
+        exit 1
     fi || { echo "Error: checksum mismatch for ${artifact_name}." >&2; exit 1; }
     mv "${tmp_dir}/${artifact_name}" "${tmp_dir}/${BINARY_NAME}"
 
