@@ -2,7 +2,9 @@ use std::path::Path;
 
 use crate::linker::{LinkTarget, supported_target_names};
 use armadai_core::config;
-use armadai_core::starter::{FoundPack, StarterPack, find_pack, list_available_packs};
+use armadai_core::starter::{
+    FoundPack, ProjectAmbiguity, StarterPack, find_pack, list_available_packs,
+};
 
 pub fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
@@ -58,10 +60,12 @@ fn init_global(force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Resolve a pack reference: a local directory containing `pack.yaml`
-/// takes precedence, otherwise fall back to the named starter pack lookup.
+/// Resolve a pack reference: a path (holding `/`, or starting with `.` or `~`) names a
+/// local folder holding `pack.yaml`; a bare name goes through the starter sources only,
+/// never the current directory, where a cloned repository's `<name>/` would mask a
+/// trusted pack (#490).
 ///
-/// If both miss, or only a project source holds it, auto-sync kicks in: known starter
+/// If the name misses, or only project sources hold it, auto-sync kicks in: known starter
 /// registry sources (user ∪ project, see
 /// `crate::starters_registry::effective_starter_sources`) are synced once, then the
 /// lookup is retried, so a user source not synced yet still wins over the project's.
@@ -69,32 +73,41 @@ fn init_global(force: bool) -> anyhow::Result<()> {
 /// never syncs.
 pub(crate) fn resolve_pack_dir(name: &str) -> anyhow::Result<Option<FoundPack>> {
     let candidate = std::path::Path::new(name);
-    if candidate.join("pack.yaml").is_file() {
+    if is_path(name) {
         let dir = candidate.to_path_buf();
-        return Ok(Some(FoundPack {
+        return Ok(dir.join("pack.yaml").is_file().then_some(FoundPack {
             dir,
             project_source: None,
         }));
     }
-    let found = find_pack(name)?;
-    if found.as_ref().is_some_and(|f| f.project_source.is_none()) {
-        return Ok(found);
+    let found = find_pack(name);
+    match &found {
+        Ok(Some(f)) if f.project_source.is_none() => return found,
+        Err(e) if !e.is::<ProjectAmbiguity>() => return found,
+        _ => {}
     }
 
     // Auto-sync: fetch remote starter sources, then retry once.
     let sources = crate::starters_registry::effective_starter_sources();
     if sources.is_empty() {
-        return Ok(found);
+        return found;
     }
     let r = crate::cli::style::running();
-    let why = if found.is_some() {
-        "found only in a project source"
-    } else {
-        "not found locally"
+    let why = match found {
+        Ok(None) => "not found locally",
+        _ => "found only in project sources",
     };
     anstream::eprintln!("{r}Pack '{name}' {why} — syncing remote starter registries...{r:#}");
     let _ = crate::starters_registry::sync_starters(&sources);
     find_pack(name)
+}
+
+/// A pack reference naming a folder rather than a pack.
+fn is_path(name: &str) -> bool {
+    name.is_empty()
+        || name.contains(['/', '\\'])
+        || name.starts_with(['.', '~'])
+        || std::path::Path::new(name).is_absolute()
 }
 
 /// Refuse to overwrite a project: the new format, or a legacy one to migrate.

@@ -109,30 +109,61 @@ pub fn all_starters_dirs() -> Vec<PathBuf> {
         dirs.push(user);
     }
 
+    // A relative entry would be read from the current directory, a cloned repository's
+    // folder (#490): ignored, with a warning.
+    let mut add = |entry: &str, from: &str| {
+        let p = PathBuf::from(entry);
+        if !p.is_absolute() {
+            crate::config::warn_once(format!(
+                "starter folder '{}' ({from}) is a relative path: ignored, give an absolute path",
+                printable(entry)
+            ));
+        } else if p.is_dir() && !dirs.contains(&p) {
+            dirs.push(p);
+        }
+    };
+
     // 4. ARMADAI_STARTERS_DIRS env var (colon-separated)
     if let Ok(env_dirs) = std::env::var("ARMADAI_STARTERS_DIRS") {
         for entry in env_dirs.split(':') {
             let trimmed = entry.trim();
             if !trimmed.is_empty() {
-                let p = PathBuf::from(trimmed);
-                if p.is_dir() && !dirs.contains(&p) {
-                    dirs.push(p);
-                }
+                add(trimmed, "ARMADAI_STARTERS_DIRS");
             }
         }
     }
 
     // 5. Custom dirs from config.yaml
-    let config = load_user_config();
-    for custom in &config.starters_dirs {
-        let p = PathBuf::from(custom);
-        if p.is_dir() && !dirs.contains(&p) {
-            dirs.push(p);
-        }
+    for custom in &load_user_config().starters_dirs {
+        add(custom, "starters_dirs");
     }
 
     dirs
 }
+
+/// `text` with its control characters escaped (`\u{1b}`): a URL or a path read from a
+/// project never drives the terminal.
+pub fn printable(text: &str) -> String {
+    (text.chars())
+        .map(|c| match c.is_control() {
+            true => c.escape_unicode().to_string(),
+            false => c.to_string(),
+        })
+        .collect()
+}
+
+/// The error of [`find_pack`] when several project sources hold the pack: one of the
+/// user's sources not synced yet may still hold it, so `init` syncs, then retries.
+#[derive(Debug)]
+pub struct ProjectAmbiguity(String);
+
+impl std::fmt::Display for ProjectAmbiguity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ProjectAmbiguity {}
 
 // ---------------------------------------------------------------------------
 // Remote starter registry: cache dir + pack discovery
@@ -310,7 +341,7 @@ pub fn find_pack(name: &str) -> anyhow::Result<Option<FoundPack>> {
         .collect();
     let cache = |url: &str| {
         let dir = starters_cache_dir().join(crate::registries::cache_key(url));
-        (crate::registries::redact_url(url), dir)
+        (printable(&crate::registries::redact_url(url)), dir)
     };
     let mut user_urls: Vec<String> = Vec::new();
     for s in crate::registries::load_user_registries().starters {
@@ -320,8 +351,7 @@ pub fn find_pack(name: &str) -> anyhow::Result<Option<FoundPack>> {
     }
     let user: Vec<_> = user_urls.iter().map(|u| cache(u)).collect();
     let mut project = Vec::new();
-    let local = project_local.join(name);
-    if is_pack(&local) {
+    if let Some(local) = child_pack(project_local, name) {
         let label = ".armadai/starters/ of the current directory".to_string();
         project.push((label, local));
     }
@@ -331,7 +361,8 @@ pub fn find_pack(name: &str) -> anyhow::Result<Option<FoundPack>> {
             if !seen.contains(&s.url) {
                 let (shown, dir) = cache(&s.url);
                 if let Some(pack) = pack_in_source(&dir, name) {
-                    project.push((format!("{shown} (from {})", root.display()), pack));
+                    let root = printable(&root.display().to_string());
+                    project.push((format!("{shown} (from {root})"), pack));
                 }
                 seen.push(s.url);
             }
@@ -348,7 +379,7 @@ fn resolve_pack(
     user: &[(String, PathBuf)],
     project: Vec<(String, PathBuf)>,
 ) -> anyhow::Result<Option<FoundPack>> {
-    if let Some(dir) = trusted.iter().map(|d| d.join(name)).rfind(|c| is_pack(c)) {
+    if let Some(dir) = trusted.iter().rev().find_map(|d| child_pack(d, name)) {
         let project_source = None;
         return Ok(Some(FoundPack {
             dir,
@@ -358,7 +389,7 @@ fn resolve_pack(
     let user: Vec<_> = (user.iter())
         .filter_map(|(shown, cache)| Some((shown.clone(), pack_in_source(cache, name)?)))
         .collect();
-    if let Some((_, dir)) = only_one(name, "of your sources", user)? {
+    if let Some((_, dir)) = only_one(name, "of your sources", user).map_err(anyhow::Error::msg)? {
         let project_source = None;
         return Ok(Some(FoundPack {
             dir,
@@ -366,15 +397,26 @@ fn resolve_pack(
         }));
     }
     Ok(
-        only_one(name, "project sources", project)?.map(|(label, dir)| FoundPack {
-            dir,
-            project_source: Some(label),
-        }),
+        (only_one(name, "project sources", project).map_err(ProjectAmbiguity)?).map(
+            |(label, dir)| FoundPack {
+                dir,
+                project_source: Some(label),
+            },
+        ),
     )
 }
 
 fn is_pack(dir: &Path) -> bool {
     !skipped(dir) && dir.is_dir() && dir.join("pack.yaml").is_file()
+}
+
+/// The pack folder `dir/<name>`, its name compared to the real entries of `dir`, case
+/// included: a case-insensitive file system never matches `Shared` to `shared`.
+fn child_pack(dir: &Path, name: &str) -> Option<PathBuf> {
+    (std::fs::read_dir(dir).ok()?.flatten())
+        .find(|e| e.file_name() == name)
+        .map(|e| e.path())
+        .filter(|p| is_pack(p))
 }
 
 /// The pack `name` in one source's cache: by folder name, else by `pack.yaml` `name:`
@@ -393,19 +435,19 @@ fn only_one(
     name: &str,
     level: &str,
     found: Vec<(String, PathBuf)>,
-) -> anyhow::Result<Option<(String, PathBuf)>> {
+) -> Result<Option<(String, PathBuf)>, String> {
     if found.len() < 2 {
         return Ok(found.into_iter().next());
     }
     let list: Vec<String> = (found.iter())
         .map(|(label, dir)| format!("  {label}: {}", dir.display()))
         .collect();
-    anyhow::bail!(
+    Err(format!(
         "starter pack '{name}' is provided by several {level}:\n{}\n\
          install one by its folder (`armadai init --pack <folder>`), or remove the other \
          sources",
         list.join("\n")
-    )
+    ))
 }
 
 /// List all available starter pack names.
@@ -588,6 +630,23 @@ description: Minimal pack
         std::fs::write(d.join("pack.yaml"), "name: cool-pack\ndescription: d\n").unwrap();
         assert_eq!(pack_in_source(tmp.path(), "cool-pack"), Some(d));
         assert_eq!(pack_in_source(tmp.path(), "inner2"), None);
+    }
+
+    /// In one source, a folder named after the pack comes before a pack declaring that
+    /// `name:` in another folder.
+    #[test]
+    fn a_source_pack_is_found_by_folder_before_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (dir, name) in [("a", "b"), ("b", "x")] {
+            let d = tmp.path().join(dir);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("pack.yaml"),
+                format!("name: {name}\ndescription: d\n"),
+            )
+            .unwrap();
+        }
+        assert_eq!(pack_in_source(tmp.path(), "b"), Some(tmp.path().join("b")));
     }
 
     #[test]

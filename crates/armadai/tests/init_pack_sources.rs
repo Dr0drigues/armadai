@@ -77,6 +77,10 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> (bool, String) {
+        self.run_env(args, &[])
+    }
+
+    fn run_env(&self, args: &[&str], vars: &[(&str, &str)]) -> (bool, String) {
         let out = Command::cargo_bin("armadai")
             .unwrap()
             .current_dir(self.path("repo/sub"))
@@ -89,6 +93,7 @@ impl Env {
             .env("HOME", self.dir.path())
             .env("ARCH", self.path("arch"))
             .env("NO_COLOR", "1")
+            .envs(vars.iter().copied())
             .args(args)
             .output()
             .unwrap();
@@ -204,24 +209,62 @@ fn a_pack_only_in_a_project_source_is_installed_and_announced() {
     );
 }
 
-/// Each kind of project source, alone, carrying an embedded pack's name: the embedded
-/// pack is installed.
-#[test]
-fn an_embedded_pack_wins_over_every_project_source() {
-    let embedded = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../armadai-core/starters/code-analysis-rust/agents");
-    let mut want: Vec<String> = std::fs::read_dir(embedded)
+fn agent_files(dir: &Path) -> Vec<String> {
+    let mut got: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    want.sort();
+    got.sort();
+    got
+}
+
+/// Each kind of project source, alone, carrying an embedded pack's name: the embedded
+/// pack is installed. A relative starter folder, which would be read from the current
+/// directory, is ignored with a warning.
+#[test]
+fn an_embedded_pack_wins_over_every_project_source() {
+    let want = agent_files(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../armadai-core/starters/code-analysis-rust/agents"),
+    );
     let name = "code-analysis-rust";
-    for kind in ["registry", ".armadai/starters", "starters"] {
+    let ignored = |from: &str| {
+        format!(
+            "warning: starter folder 'starters' ({from}) is a relative path: ignored, give an absolute path\n"
+        )
+    };
+    for kind in [
+        "registry",
+        ".armadai/starters",
+        "starters",
+        ".",
+        "starters_dirs",
+        "ARMADAI_STARTERS_DIRS",
+    ] {
         let env = Env::new();
+        let mut vars = vec![];
+        let mut want_err = String::new();
         match kind {
             "registry" => {
                 env.project_sources(&[A]);
                 write_pack(&env.cache(A).join(name), name, "FROM-PROJECT");
+            }
+            "starters_dirs" | "ARMADAI_STARTERS_DIRS" => {
+                write_pack(
+                    &env.path("repo/sub/starters").join(name),
+                    name,
+                    "FROM-PROJECT",
+                );
+                if kind == "starters_dirs" {
+                    std::fs::write(
+                        env.path("config/config.yaml"),
+                        "starters_dirs:\n  - starters\n",
+                    )
+                    .unwrap();
+                } else {
+                    vars.push(("ARMADAI_STARTERS_DIRS", "starters"));
+                }
+                want_err = ignored(kind);
             }
             dir => write_pack(
                 &env.path("repo/sub").join(dir).join(name),
@@ -229,13 +272,116 @@ fn an_embedded_pack_wins_over_every_project_source() {
                 "FROM-PROJECT",
             ),
         }
-        let (ok, err) = env.run(&["init", "--pack", name]);
+        let (ok, err) = env.run_env(&["init", "--pack", name], &vars);
         assert!(ok, "{kind}: {err}");
-        let mut got: Vec<String> = std::fs::read_dir(env.path("repo/sub/.armadai/agents"))
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        got.sort();
-        assert_eq!(got, want, "{kind}: {err}");
+        assert_eq!(
+            agent_files(&env.path("repo/sub/.armadai/agents")),
+            want,
+            "{kind}: {err}"
+        );
+        assert_eq!(err, want_err, "{kind}");
     }
+}
+
+/// A path names a local folder, a bare name never does.
+#[test]
+fn only_a_path_names_a_folder_of_the_current_directory() {
+    let env = Env::new();
+    let name = "code-analysis-rust";
+    write_pack(&env.path("repo/sub").join(name), name, "FROM-LOCAL");
+    let (ok, err) = env.run(&["init", "--pack", "./code-analysis-rust"]);
+    assert!(ok, "{err}");
+    assert_eq!(env.installed(), agent("FROM-LOCAL"));
+    assert_eq!(err, "");
+}
+
+/// Two project packs, and one of the user's sources declared but not synced yet: the
+/// sync runs, and the user's pack wins. Without it, the ambiguity stays an error.
+#[test]
+fn a_project_ambiguity_still_lets_an_unsynced_user_source_win() {
+    for with_user in [true, false] {
+        let env = Env::new();
+        env.project_sources(&[B]);
+        write_pack(&env.cache(B).join("shared"), "shared", "FROM-PROJREG");
+        env.archive("b.example", "shared", "FROM-PROJREG");
+        write_pack(
+            &env.path("repo/sub/.armadai/starters/shared"),
+            "shared",
+            "FROM-LOCAL",
+        );
+        if with_user {
+            env.user_sources(&[A]);
+            env.archive("a.example", "shared", "FROM-USER");
+        }
+        let (ok, err) = env.run(&["init", "--pack", "shared"]);
+        if with_user {
+            assert!(ok, "{err}");
+            assert_eq!(env.installed(), agent("FROM-USER"), "{err}");
+        } else {
+            assert!(!ok);
+            let first = err.lines().find(|l| l.starts_with("Error:"));
+            let want = "Error: starter pack 'shared' is provided by several project sources:";
+            assert_eq!(first, Some(want), "{err}");
+            assert!(!env.path("repo/sub/.armadai/agents").exists());
+        }
+    }
+}
+
+/// A URL read from a project never drives the terminal: its control characters are
+/// escaped in the note.
+#[test]
+fn the_note_escapes_control_characters() {
+    let env = Env::new();
+    let url = "https://p.example/x\u{1b}[31mRED\u{7}/s.tar.gz";
+    std::fs::create_dir_all(env.path("repo/.armadai")).unwrap();
+    let yaml =
+        "registries:\n  starters:\n    - url: \"https://p.example/x\\e[31mRED\\a/s.tar.gz\"\n";
+    std::fs::write(env.path("repo/.armadai/config.yaml"), yaml).unwrap();
+    env.archive("p.example", "shared", "FROM-PROJECT");
+    write_pack(&env.cache(url).join("shared"), "shared", "FROM-PROJECT");
+    let (ok, err) = env.run(&["init", "--pack", "shared"]);
+    assert!(ok, "{err}");
+    let note = format!(
+        "note: pack 'shared' comes from a project source, not from your own folders or \
+         sources: https://p.example/x\\u{{1b}}[31mRED\\u{{7}}/s.tar.gz (from {})",
+        env.path("repo").canonicalize().unwrap().display()
+    );
+    let notes: Vec<&str> = err.lines().filter(|l| l.starts_with("note:")).collect();
+    assert_eq!(notes, [note.as_str()], "{err}");
+}
+
+/// A pack name matches a folder name case included, whatever the file system: `Shared`
+/// is not the user's `shared`, nor the project's.
+#[test]
+fn a_pack_name_matches_folders_case_included() {
+    let env = Env::new();
+    env.user_sources(&[A]);
+    write_pack(&env.cache(A).join("shared"), "shared", "FROM-USER");
+    env.archive("a.example", "shared", "FROM-USER");
+    write_pack(
+        &env.path("repo/sub/.armadai/starters/shared"),
+        "shared",
+        "FROM-PROJECT",
+    );
+    let (ok, err) = env.run(&["init", "--pack", "Shared"]);
+    assert!(!ok);
+    let first = err.lines().find(|l| l.starts_with("Error:"));
+    assert_eq!(
+        first.map(|l| l.split('.').next().unwrap()),
+        Some("Error: Starter pack 'Shared' not found"),
+        "{err}"
+    );
+    assert!(!env.path("repo/sub/.armadai/agents").exists());
+}
+
+#[test]
+fn a_relative_starter_folder_is_not_added() {
+    let env = Env::new();
+    let (ok, err) = env.run(&["config", "starters-dir", "add", "starters"]);
+    assert!(!ok);
+    assert_eq!(
+        err,
+        "Error: starters is a relative path: give an absolute one\n"
+    );
+    assert!(!env.path("config/config.yaml").exists());
 }
