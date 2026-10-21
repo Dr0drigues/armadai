@@ -11,12 +11,8 @@ use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called by link and unlink from step 4 task 4")
-)]
 /// What a link wants in the file, keyed by dotted path.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JsonKeys {
     pub values: BTreeMap<String, Value>,
     pub array_entries: BTreeMap<String, Vec<Value>>,

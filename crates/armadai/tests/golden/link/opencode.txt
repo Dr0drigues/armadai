@@ -2,28 +2,35 @@
 ---
 description: "Writes code: \"small\" functions"
 mode: subagent
-model: claude-sonnet-4-5-20250929
 temperature: 0.9
+permission:
+  shell: ask
+  webfetch: deny
+  websearch: deny
+  skill:
+    "*": deny
+    review: allow
 ---
-
 DEV_SYSTEM_MARKER — you write the code.
 
 ### Style
 
 DEV_SUBSECTION_MARKER — small functions.
 
-=== .opencode/instructions.md ===
+## Skills
+
+Before you start, load these skills with the `skill` tool: `review`.
+
+=== .opencode/agents/lead.md ===
+---
+description: Coordinates the team
+mode: primary
+---
 LEAD_SYSTEM_MARKER — you coordinate the team.
 
 ## Instructions
 
 LEAD_INSTRUCTIONS_MARKER — delegate, then synthesize.
-
-## Team
-
-| Agent | File | Description |
-|-------|------|-------------|
-| dev | [agents/dev.md](agents/dev.md) | Writes code: "small" functions |
 
 === .opencode/skills/review/SKILL.md ===
 ---
@@ -34,10 +41,14 @@ REVIEW_MARKER
 
 === report ===
 opencode: agent dev: compiled
-opencode: agent dev capabilities: not-compiled (not supported by this target yet (step 4))
-opencode: agent dev skills: not-compiled (not supported by this target yet (step 4))
-opencode: agent lead: compiled (coordinator, rendered into the instructions file)
-opencode: automation fmt: not-compiled (not supported by this target yet (step 4))
+opencode: agent dev capability shell=ask: compiled (permission shell)
+opencode: agent dev capability web=deny: compiled (permission webfetch, websearch)
+opencode: agent dev model: approximated (inherited from the OpenCode session)
+opencode: agent dev skills: compiled (allowed through permission.skill, loading prescribed in the prompt)
+opencode: agent lead: compiled (coordinator, primary agent)
+opencode: agent lead model: approximated (inherited from the OpenCode session)
+opencode: agents tags: not-compiled (informational, no OpenCode field; 1 agent: dev)
+opencode: automation fmt: not-compiled (needs an OpenCode plugin)
 opencode: flow ship: not-compiled (not supported by this target yet (step 4))
 opencode: policy delegation=strict: not-compiled (no delegation gate for this target (step 4))
 opencode: skill review: compiled
