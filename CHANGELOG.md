@@ -1,3 +1,26 @@
+## Unreleased
+
+### Changed
+
+- `armadai link --target opencode` now compiles for OpenCode 2.x from the canonical model
+  (see [Link](docs/wiki/link.md#opencode)); OpenCode 1.x is not supported:
+  - each agent file carries only keys OpenCode 2.x reads (`description`, `mode`,
+    `temperature`, `permission`, `model` when chosen); capabilities become `deny`/`ask`
+    permissions, an agent's `skills:` become `permission.skill` plus a loading prescription;
+  - no model by default (the agent inherits the session's): `native.opencode.model`, or a
+    tier mapped in `model_tiers` of `~/.config/armadai/config.yaml`; the former output wrote
+    an Anthropic model without provider, which OpenCode 2.x ignored;
+  - the coordinator is the default primary agent (`default_agent`), with its delegation in its
+    own prompt; the team and the flows go to a generated `.opencode/armadai-team.md`, listed
+    under `instructions` in `opencode.json`. `.opencode/instructions.md`, which no OpenCode
+    version reads, is no longer written (a previous one is removed while unchanged);
+  - under `policy.delegation: strict`, delegations are enforced by OpenCode permissions
+    (`permission.task` of each agent and of the built-in `build` and `plan`,
+    `experimental.subagent_depth`);
+  - `opencode.json` is patched by owned keys, recorded in the manifest and removed by
+    `unlink`; `AGENTS.md` and `CLAUDE.md` are never touched. Automations stay
+    `not-compiled` (they need an OpenCode plugin).
+
 ## v1.0.0-rc.6 (2026-10-21)
 
 Sixth release candidate, and the first of the declarative refocus: ArmadAI no longer runs

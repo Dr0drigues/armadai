@@ -17,19 +17,18 @@ In an agent's frontmatter (see [Project format](project-format.md)):
 |---|---|
 | `claude` | `native.claude.model`, else the tier as an alias: `fast` → `haiku`, `pro` → `sonnet`, `max` → `opus`; no tier, no `model` key |
 | `codex` | `native.codex.model`, else the tier (default `pro`) as an OpenAI model from the table below |
-| `opencode` | `native.opencode.model`, else the tier as an Anthropic model from the table below; no tier, no model |
+| `opencode` | `native.opencode.model`, else the tier through `model_tiers` of your `~/.config/armadai/config.yaml` when it maps it; otherwise no model (the agent inherits the session's) |
 | `copilot` | none: Copilot agent files carry no model (reported `not-compiled`) |
 
 See [Link](link.md) for the rest of each target's output.
 
 ## The static tier table
 
-Codex and OpenCode turn a tier into a model with a table built into the binary. It is frozen at
+Codex turns a tier into a model with a table built into the binary. It is frozen at
 the time it was written, and `link` never reads a model catalogue:
 
 | Vendor | `fast` | `pro` | `max` |
 |---|---|---|---|
-| Anthropic (OpenCode) | `claude-haiku-4-5-20251001` | `claude-sonnet-4-5-20250929` | `claude-opus-4-6` |
 | OpenAI (Codex) | `gpt-4o-mini` | `gpt-4o` | `o3-pro` |
 
 Pin `native.<target>.model` when you need a newer model.

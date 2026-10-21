@@ -90,8 +90,9 @@ which files a sub-agent will touch, nor track a budget or a depth across calls â
 interception points and persistent state. Flow states and `on_failure` are guidance in
 `CLAUDE.md`; the gate applies the links only.
 
-It is specific to Claude Code: Codex, Copilot and OpenCode receive no equivalent (their report
-says `not-compiled`).
+It is specific to Claude Code. OpenCode gets the same rule as native permissions
+(`permission.task`, see [Link](link.md#opencode)); Codex and Copilot receive no equivalent (their
+report says `not-compiled`).
 
 Every uncertainty resolves to *no opinion*: unreadable payload or project, a tool other than
 `Agent`/`Task`, `policy.delegation: off`. A gate that refuses because it failed to understand is a
