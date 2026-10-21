@@ -78,13 +78,16 @@
 - An archive URL with a query (`…/starters.tar.gz?token=…`) is recognised as an archive
   without `kind: archive`.
 - The starter cache directory name no longer contains the URL's `user:pass@` part nor, in
-  clear, its query. A plain `scheme://host/path` URL of at most 60 characters (letters,
-  digits, `.`, `-`, `/`) keeps its directory; any other source (credentials, query, `#`, `@`,
-  `_`, a trailing `/`, a local path, a `git@host:` address, a longer URL) gets a new one,
-  named with a 128-bit SHA-256 digest, and is synced again. Before, two such URLs could be
-  forged to share a directory (32-bit hash), letting one source replace another's packs. The
-  old directory stays on disk: delete it by hand (`~/.config/armadai/registry/starters/`), as
-  its name may hold credentials.
+  clear, its query. A plain `scheme://host/path` URL of at most 60 characters keeps its
+  directory: a lowercase scheme (letters only), then letters, digits, `.`, `-` and `/`, the
+  first character after `://` a letter or digit, the last one a letter, digit or `-`. Any
+  other source gets a new one, named with a 128-bit SHA-256 digest, and is synced again:
+  credentials, query, `#`, `@`, `_`, `~`, `%`, a port (`:`), a scheme with a capital
+  (`HTTPS://`), a digit or a `+` (`git+https://`), a host starting with `.` or `-`, a URL
+  ending with `/` or `.`, a local path, a `git@host:` address, a longer URL. Before, two
+  such URLs could be forged to share a directory (32-bit hash), letting one source replace
+  another's packs. The old directory stays on disk: delete it by hand
+  (`~/.config/armadai/registry/starters/`), as its name may hold credentials.
 - The starter cache skips directories whose name starts with a dot (sync staging areas).
 - Known limits: an archive's named pipes (FIFOs) are extracted into the cache like files; a
   git source's credentials (`https://user:token@…`) are stored in clear in its cache
