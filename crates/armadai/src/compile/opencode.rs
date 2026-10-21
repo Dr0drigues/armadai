@@ -32,9 +32,6 @@ pub const BUILTIN_AGENTS: [&str; 8] = [
 /// Built-in agents a delegation can reach (the others are primary).
 const BUILTIN_SUBAGENTS: [&str; 3] = ["general", "explore", "scout"];
 
-/// The generated team guide, as `opencode.json` `instructions` names it.
-pub(crate) const TEAM_FILE: &str = ".opencode/armadai-team.md";
-
 /// Upper bound of `experimental.subagent_depth`.
 const MAX_DEPTH: usize = 8;
 
@@ -48,7 +45,20 @@ const CAP_KEYS: [(&str, &[&str]); 5] = [
     ("delegate", &["task"]),
 ];
 
-pub struct OpencodeCompiler;
+pub struct OpencodeCompiler {
+    /// The team file as `opencode.json` and the coordinator name it: in the output
+    /// directory of this link, relative to the project root.
+    team: String,
+}
+
+impl OpencodeCompiler {
+    pub fn new(output: &Path) -> Self {
+        let team = output.join("armadai-team.md");
+        Self {
+            team: team.to_string_lossy().replace('\\', "/"),
+        }
+    }
+}
 
 impl Compiler for OpencodeCompiler {
     fn compile(&self, project: &Project, root: &Path) -> anyhow::Result<Plan> {
@@ -56,11 +66,17 @@ impl Compiler for OpencodeCompiler {
             project,
             root,
             &armadai_core::config::try_load_user_config()?,
+            &self.team,
         )
     }
 }
 
-fn compile_with(project: &Project, root: &Path, config: &UserConfig) -> anyhow::Result<Plan> {
+fn compile_with(
+    project: &Project,
+    root: &Path,
+    config: &UserConfig,
+    team: &str,
+) -> anyhow::Result<Plan> {
     let mut plan = Plan::default();
     let coordinator = project.manifest.coordinator.as_deref();
     let strict = project.manifest.policy.delegation == Delegation::Strict;
@@ -81,7 +97,7 @@ fn compile_with(project: &Project, root: &Path, config: &UserConfig) -> anyhow::
             content: agent_file(
                 id,
                 agent,
-                is_lead,
+                is_lead.then_some(team),
                 has_flows,
                 targets,
                 config,
@@ -109,13 +125,10 @@ fn compile_with(project: &Project, root: &Path, config: &UserConfig) -> anyhow::
             produced_by: ProducedBy::coordinator(coordinator.unwrap_or(T)),
         });
         keys.array_entries
-            .insert("instructions".into(), vec![TEAM_FILE.into()]);
-        plan.report.push(
-            T,
-            "team file",
-            Status::Compiled,
-            Some("guidance in .opencode/armadai-team.md, listed in opencode.json instructions"),
-        );
+            .insert("instructions".into(), vec![team.into()]);
+        let note = format!("guidance in {team}, listed in opencode.json instructions");
+        plan.report
+            .push(T, "team file", Status::Compiled, Some(&note));
     }
     if strict {
         // switching to `build` or `plan` (Tab) must not get around the topology
@@ -394,7 +407,8 @@ fn model(id: &str, f: &AgentFront, config: &UserConfig, r: &mut Report) -> Optio
 fn agent_file(
     id: &str,
     agent: &Agent,
-    is_lead: bool,
+    // the team file, for the coordinator only
+    lead: Option<&str>,
     has_flows: bool,
     targets: Option<BTreeSet<String>>,
     config: &UserConfig,
@@ -403,7 +417,11 @@ fn agent_file(
     let f = &agent.front;
     let mut m = Map::new();
     m.insert("description".into(), f.description.as_str().into());
-    let mode = if is_lead { "primary" } else { "subagent" };
+    let mode = if lead.is_some() {
+        "primary"
+    } else {
+        "subagent"
+    };
     m.insert("mode".into(), mode.into());
     if let Some(model) = model(id, f, config, r) {
         m.insert("model".into(), model.into());
@@ -436,14 +454,14 @@ fn agent_file(
         }
     }
     let mut body = agent.body.clone();
-    if is_lead {
+    if let Some(team) = lead {
         let (what, how) = if has_flows {
             ("the team and the flows", "Delegate each step to its agent")
         } else {
             ("the team", "Delegate")
         };
         body = format!(
-            "{}\n\n## Delegation\n\nYou coordinate {what} described in `{TEAM_FILE}`. \
+            "{}\n\n## Delegation\n\nYou coordinate {what} described in `{team}`. \
              {how} with the `subagent` tool, naming the agent by its id.\n",
             body.trim_end()
         );
@@ -533,7 +551,7 @@ mod tests {
         let p = armadai_model::load_checked(dir.path())
             .unwrap_or_else(|ds| panic!("{:?}", ds.iter().map(|d| d.render()).collect::<Vec<_>>()))
             .0;
-        compile_with(&p, dir.path(), config)
+        compile_with(&p, dir.path(), config, ".opencode/armadai-team.md")
     }
 
     fn compile(files: &[(&str, &[u8])]) -> anyhow::Result<Plan> {
@@ -868,11 +886,13 @@ mod tests {
         )
         .unwrap();
         let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
-        let plan = OpencodeCompiler.compile(&p, dir.path()).unwrap();
+        let plan = OpencodeCompiler::new(Path::new(".opencode"))
+            .compile(&p, dir.path())
+            .unwrap();
         assert_eq!(front(&plan, "agents/dev.md")["model"], "anthropic/x");
 
         std::fs::write(&cfg, "model_tiers: [\n").unwrap();
-        let err = OpencodeCompiler
+        let err = OpencodeCompiler::new(Path::new(".opencode"))
             .compile(&p, dir.path())
             .unwrap_err()
             .to_string();

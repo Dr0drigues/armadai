@@ -98,10 +98,11 @@ fn prepare(
     agents: Option<&[String]>,
 ) -> anyhow::Result<Prepared> {
     compile::check_output(root, &output_of(target, output, project), output.is_some())?;
-    let plan = compile::compiler_for(target)?.compile(project, root)?;
+    let output_dir = output_of(target, output, project);
+    let plan = compile::compiler_for(target, &output_dir)?.compile(project, root)?;
     let mut p = Prepared {
         target: target.to_string(),
-        output_dir: output_of(target, output, project),
+        output_dir,
         artifacts: plan.artifacts,
         blocks: plan.blocks,
         settings: None,
@@ -159,14 +160,7 @@ fn prepare(
         )?;
         p.settings = Some((rel, hooks, keys));
     }
-    if let Some((rel, keys)) = &mut p.json {
-        // the team file is where this link writes it, not the default output
-        let team = p.output_dir.join("armadai-team.md");
-        for e in keys.array_entries.values_mut().flatten() {
-            if *e == compile::opencode::TEAM_FILE {
-                *e = team.to_string_lossy().replace('\\', "/").into();
-            }
-        }
+    if let Some((rel, keys)) = &p.json {
         let previous = (p.previous.iter().flat_map(|t| &t.patched)).find(|f| f.path == *rel);
         patch::preflight_json(
             root,

@@ -199,13 +199,13 @@ pub fn check_output(root: &Path, output: &Path, from_flag: bool) -> anyhow::Resu
     Ok(())
 }
 
-/// The compiler of a link target.
-pub fn compiler_for(target: &str) -> anyhow::Result<Box<dyn Compiler>> {
+/// The compiler of a link target writing into `output` (relative to the root).
+pub fn compiler_for(target: &str, output: &Path) -> anyhow::Result<Box<dyn Compiler>> {
     Ok(match target {
         "claude" => Box::new(claude::ClaudeCompiler),
         "codex" => Box::new(legacy_targets::LegacyCompiler { target: "codex" }),
         "copilot" => Box::new(legacy_targets::LegacyCompiler { target: "copilot" }),
-        "opencode" => Box::new(opencode::OpencodeCompiler),
+        "opencode" => Box::new(opencode::OpencodeCompiler::new(output)),
         _ => bail!(
             "Unknown link target: '{target}'. {}",
             crate::linker::supported_targets_sentence()

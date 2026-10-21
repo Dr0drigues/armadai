@@ -139,11 +139,11 @@ mod tests {
     #[test]
     fn every_advertised_link_target_can_actually_be_compiled() {
         for name in supported_target_names() {
-            if let Err(e) = crate::compile::compiler_for(name) {
+            if let Err(e) = crate::compile::compiler_for(name, std::path::Path::new("x")) {
                 panic!("target '{name}' is advertised but: {e}");
             }
         }
-        let err = match crate::compile::compiler_for("kilocode") {
+        let err = match crate::compile::compiler_for("kilocode", std::path::Path::new("x")) {
             Ok(_) => panic!("an unknown target must be refused"),
             Err(e) => e.to_string(),
         };

@@ -128,6 +128,13 @@ fn link_then_unlink_restores_a_hand_written_opencode_json() {
     assert!(root.join(".opencode/armadai-team.md").is_file());
     assert!(root.join(".opencode/agents/lead.md").is_file());
     assert!(root.join(".opencode/skills/notes/SKILL.md").is_file());
+    for (shared, bytes) in [("AGENTS.md", "# Mine\n"), ("CLAUDE.md", "# Claude notes\n")] {
+        assert_eq!(
+            std::fs::read_to_string(root.join(shared)).unwrap(),
+            bytes,
+            "{shared} untouched by link"
+        );
+    }
 
     env.ok(&["unlink", "--target", "opencode"]);
     assert_eq!(
@@ -156,6 +163,12 @@ fn link_creates_opencode_json_and_unlink_removes_it() {
     let env = Env::new(PROJECT);
     env.ok(&["link", "--target", "opencode"]);
     assert_eq!(env.opencode_json(), owned_keys(".opencode/armadai-team.md"));
+    for shared in ["AGENTS.md", "CLAUDE.md"] {
+        assert!(
+            !env.root().join(shared).exists(),
+            "{shared} created by link"
+        );
+    }
     env.ok(&["unlink", "--target", "opencode"]);
     assert!(!env.root().join("opencode.json").exists());
 }
@@ -163,9 +176,27 @@ fn link_creates_opencode_json_and_unlink_removes_it() {
 #[test]
 fn instructions_name_the_team_file_in_a_custom_output_directory() {
     let env = Env::new(PROJECT);
-    env.ok(&["link", "--target", "opencode", "--output", "oc"]);
+    let report: Value = serde_json::from_str(
+        &env.ok(&["link", "--target", "opencode", "--output", "oc", "--json"]),
+    )
+    .unwrap();
     assert!(env.root().join("oc/armadai-team.md").is_file());
     assert_eq!(env.opencode_json(), owned_keys("oc/armadai-team.md"));
+    // the coordinator and the report name the file this link wrote
+    assert_eq!(
+        std::fs::read_to_string(env.root().join("oc/agents/lead.md")).unwrap(),
+        "---\ndescription: Leads\nmode: primary\npermission:\n  task:\n    \"*\": deny\n---\n\
+         You lead.\n\n## Delegation\n\nYou coordinate the team described in `oc/armadai-team.md`. \
+         Delegate with the `subagent` tool, naming the agent by its id.\n"
+    );
+    let team: Vec<&Value> = (report.as_array().unwrap().iter())
+        .filter(|l| l["element"] == "team file")
+        .collect();
+    assert_eq!(team.len(), 1, "{report:#}");
+    assert_eq!(
+        team[0]["reason"],
+        "guidance in oc/armadai-team.md, listed in opencode.json instructions"
+    );
     env.ok(&["unlink", "--target", "opencode", "--output", "oc"]);
     assert!(!env.root().join("opencode.json").exists());
 }
@@ -261,4 +292,14 @@ fn keys_no_longer_wanted_are_removed_on_relink() {
         env.opencode_json(),
         serde_json::from_str::<Value>(USER_OPENCODE).unwrap()
     );
+}
+
+#[test]
+fn unlink_without_a_manifest_recognises_the_coordinator_of_a_custom_output() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link", "--target", "opencode", "--output", "oc"]);
+    std::fs::remove_file(env.root().join(".armadai/link-manifest.yaml")).unwrap();
+    env.ok(&["unlink", "--target", "opencode", "--output", "oc"]);
+    // the coordinator names `oc/armadai-team.md`: the fallback compares those bytes
+    assert!(!env.root().join("oc/agents/lead.md").exists());
 }

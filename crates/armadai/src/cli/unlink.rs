@@ -720,7 +720,7 @@ fn unlink_via_fallback(
         }
         anyhow::anyhow!("no link manifest and the project is invalid: nothing to compare against")
     })?;
-    let plan = compile::compiler_for(target_name)?.compile(&project, root)?;
+    let plan = compile::compiler_for(target_name, output_dir)?.compile(&project, root)?;
     let target_root = root.join(output_dir);
     let candidates: Vec<(PathBuf, Vec<u8>)> = (plan.artifacts.into_iter())
         .filter(|a| match agents_filter {
