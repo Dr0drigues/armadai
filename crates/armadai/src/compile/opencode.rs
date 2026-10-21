@@ -33,7 +33,7 @@ pub const BUILTIN_AGENTS: [&str; 8] = [
 const BUILTIN_SUBAGENTS: [&str; 3] = ["general", "explore", "scout"];
 
 /// The generated team guide, as `opencode.json` `instructions` names it.
-const TEAM_FILE: &str = ".opencode/armadai-team.md";
+pub(crate) const TEAM_FILE: &str = ".opencode/armadai-team.md";
 
 /// Upper bound of `experimental.subagent_depth`.
 const MAX_DEPTH: usize = 8;

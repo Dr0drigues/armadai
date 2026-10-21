@@ -12,6 +12,7 @@ use anyhow::{Context, bail};
 use armadai_model::Project;
 
 use crate::compile::claude_settings::{self, HookEntry};
+use crate::compile::json_keys::JsonKeys;
 use crate::compile::patch::{self, PatchKind, PatchedFile};
 use crate::compile::{self, Artifact, ArtifactKind, Report, Status};
 use crate::linker::manifest::{self, DigestCheck, FileOutcome, Lookup, Outcome, ProducedBy};
@@ -26,6 +27,8 @@ struct Prepared {
     blocks: Vec<(PathBuf, String)>,
     /// `(settings.json path relative to the root, hooks, native keys)`, Claude only.
     settings: Option<Settings>,
+    /// `(opencode.json path relative to the root, owned keys)`, OpenCode only.
+    json: Option<(PathBuf, JsonKeys)>,
     previous: Option<manifest::TargetManifest>,
     /// Everything the project produces for this target, `--agents` or not: what
     /// is stale is decided on this, never on a filtered subset.
@@ -102,6 +105,7 @@ fn prepare(
         artifacts: plan.artifacts,
         blocks: plan.blocks,
         settings: None,
+        json: plan.json,
         previous: match manifest::lookup_target(root, target) {
             Lookup::Found(t) => Some(t),
             Lookup::Fallback => None,
@@ -155,6 +159,24 @@ fn prepare(
         )?;
         p.settings = Some((rel, hooks, keys));
     }
+    if let Some((rel, keys)) = &mut p.json {
+        // the team file is where this link writes it, not the default output
+        let team = p.output_dir.join("armadai-team.md");
+        for e in keys.array_entries.values_mut().flatten() {
+            if *e == compile::opencode::TEAM_FILE {
+                *e = team.to_string_lossy().replace('\\', "/").into();
+            }
+        }
+        let previous = (p.previous.iter().flat_map(|t| &t.patched)).find(|f| f.path == *rel);
+        patch::preflight_json(
+            root,
+            rel,
+            Path::new("."),
+            keys,
+            previous,
+            &["opencode.jsonc"],
+        )?;
+    }
     for (rel, _) in &p.blocks {
         patch::preflight_markdown(root, rel)?;
     }
@@ -168,6 +190,7 @@ fn prepare(
         let mut generated: BTreeSet<String> = (p.all_produced.iter().cloned())
             .chain(p.blocks.iter().map(|(r, _)| r.clone()))
             .chain(p.settings.iter().map(|(r, _, _)| r.clone()))
+            .chain(p.json.iter().map(|(r, _)| r.clone()))
             .map(|r| folded(&r))
             .collect();
         let (files, backups) = compile::read_tree_skipping(&native_dir, &root.join(".armadai"))?;
@@ -225,6 +248,9 @@ fn prepare(
     }
     if let Some((rel, _, _)) = &p.settings {
         compile::check_destination(root, &trust, rel)?;
+    }
+    if let Some((rel, _)) = &p.json {
+        compile::check_destination(root, Path::new("."), rel)?;
     }
 
     // the root file of the former Claude linker, which Claude Code still reads
@@ -464,6 +490,35 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
         }
     }
 
+    // the owned keys of opencode.json (project root): merged, or removed once no
+    // longer wanted
+    let json = p.json.take();
+    if let Some((rel, keys)) = &json {
+        let before = bytes(&root.join(rel));
+        let (done, reformatted) =
+            patch::apply_json(root, rel, Path::new("."), keys, p.previous_patch(rel))?;
+        if bytes(&root.join(rel)) != before {
+            changed.insert(rel.clone());
+        }
+        if reformatted {
+            p.report.push(
+                &p.target,
+                rel.display().to_string(),
+                Status::Approximated,
+                Some("reformatted (values and key order kept)"),
+            );
+        }
+        patched.push(done);
+    }
+    let stale_json: Vec<PatchedFile> = (p.previous.iter().flat_map(|t| &t.patched))
+        .filter(|f| matches!(f.kind, PatchKind::JsonKeys(_)))
+        .filter(|f| json.as_ref().is_none_or(|(r, _)| *r != f.path))
+        .cloned()
+        .collect();
+    for f in &stale_json {
+        patch::remove_patch(root, Path::new("."), f)?;
+    }
+
     let files: Vec<(PathBuf, Vec<u8>, ProducedBy)> = (p.artifacts.iter())
         .map(|a| {
             (
@@ -579,6 +634,9 @@ pub fn execute(
                 && (!hooks.is_empty() || !keys.is_empty())
             {
                 lines.push(format!("  {} (hooks merged)", root.join(rel).display()));
+            }
+            if let Some((rel, _)) = &p.json {
+                lines.push(format!("  {} (keys merged)", root.join(rel).display()));
             }
             if !same.is_empty() {
                 lines.push(format!(

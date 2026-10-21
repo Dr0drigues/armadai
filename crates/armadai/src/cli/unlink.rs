@@ -693,19 +693,19 @@ fn trust_root<'a>(entry: &linker::manifest::ManifestEntry, target_root: &'a Path
     }
 }
 
-/// Link patches the root `CLAUDE.md` and files under the target's own root only.
+/// Link patches the root `CLAUDE.md` and `opencode.json`, and files under the
+/// target's own root only.
 fn patch_is_trusted(root: &Path, target_root: &Path, f: &patch::PatchedFile) -> bool {
     match f.kind {
         PatchKind::MarkdownBlock => f.path == Path::new("CLAUDE.md"),
-        PatchKind::SettingsHooks(_) | PatchKind::JsonKeys(_) => {
-            linker::manifest::is_trusted(root, target_root, &f.path)
-        }
+        PatchKind::JsonKeys(_) => f.path == Path::new("opencode.json"),
+        PatchKind::SettingsHooks(_) => linker::manifest::is_trusted(root, target_root, &f.path),
     }
 }
 
 /// Without a manifest (review R-I2): recompile the project and remove only the files
 /// whose bytes still equal what `link` would write now. The files shared with the
-/// user (`settings.json`, the root `CLAUDE.md`) are never touched: without the
+/// user (`settings.json`, the root `CLAUDE.md`, `opencode.json`) are never touched: without the
 /// record of what link added, nothing there is provably link's.
 fn unlink_via_fallback(
     root: &Path,

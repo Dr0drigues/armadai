@@ -212,10 +212,6 @@ fn write_json(
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called by link and unlink from step 4 task 4")
-)]
 /// The owned keys `previous` recorded, if it is a JSON-keys patch.
 fn previous_json(previous: Option<&PatchedFile>) -> OwnedJson {
     match previous.map(|p| &p.kind) {
@@ -224,10 +220,6 @@ fn previous_json(previous: Option<&PatchedFile>) -> OwnedJson {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called by link and unlink from step 4 task 4")
-)]
 /// Everything [`apply_json`] would refuse (symbolic link, unreadable or invalid JSON,
 /// a key clash), checked without writing: run before any write. A file named in
 /// `also_refuse` next to `rel` (`opencode.jsonc`) is refused too: the tool may read
@@ -257,10 +249,6 @@ pub fn preflight_json(
         .with_context(|| path.display().to_string())
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called by link and unlink from step 4 task 4")
-)]
 /// Merge the `wanted` keys into `root/rel` (a shared JSON config file), with the same
 /// contract as [`apply_settings`].
 pub fn apply_json(
@@ -360,12 +348,12 @@ fn is_empty_object(text: &str) -> bool {
 
 /// Undo `patched` under `root`: remove what link added, and the file itself when link
 /// created it and nothing else is left. A missing file is nothing to undo. `trust`
-/// is the target's root: where a settings.json may be (a CLAUDE.md is always at the
-/// project root).
+/// is the target's root: where a settings.json may be (a CLAUDE.md and an
+/// opencode.json are always at the project root).
 pub fn remove_patch(root: &Path, trust: &Path, patched: &PatchedFile) -> anyhow::Result<()> {
     let trust = match patched.kind {
-        PatchKind::MarkdownBlock => Path::new("."),
-        PatchKind::SettingsHooks(_) | PatchKind::JsonKeys(_) => trust,
+        PatchKind::MarkdownBlock | PatchKind::JsonKeys(_) => Path::new("."),
+        PatchKind::SettingsHooks(_) => trust,
     };
     let path = checked(root, trust, &patched.path)?;
     let Some(text) = read(&path)? else {

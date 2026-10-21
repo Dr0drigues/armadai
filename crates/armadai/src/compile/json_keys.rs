@@ -68,10 +68,6 @@ fn parent_mut<'a>(doc: &'a mut Value, path: &str) -> Option<&'a mut Map<String, 
         .as_object_mut()
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called by link and unlink from step 4 task 4")
-)]
 /// The object holding `path`'s leaf, creating the missing objects on the way (each
 /// recorded in `created`).
 fn parent_or_create<'a>(
@@ -141,10 +137,6 @@ fn prune(doc: &mut Value, containers: &mut Vec<String>) {
     containers.dedup();
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called by link and unlink from step 4 task 4")
-)]
 /// Merge `wanted` into `existing` (absent = new file). What `previous` owned and is no
 /// longer wanted is removed by value; a wanted value already present with the same
 /// value is not claimed, with another value is an error (naming the key), as is an
