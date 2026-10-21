@@ -303,3 +303,34 @@ fn unlink_without_a_manifest_recognises_the_coordinator_of_a_custom_output() {
     // the coordinator names `oc/armadai-team.md`: the fallback compares those bytes
     assert!(!env.root().join("oc/agents/lead.md").exists());
 }
+
+#[test]
+fn an_opencode_json_link_created_and_no_longer_needs_is_removed_and_reported() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link", "--target", "opencode"]);
+    std::fs::write(
+        env.root().join(".armadai/project.yaml"),
+        "schema_version: 1\n",
+    )
+    .unwrap();
+    let gone = |args: &[&str]| -> Vec<Value> {
+        let report: Value = serde_json::from_str(&env.ok(args)).unwrap();
+        (report.as_array().unwrap().iter())
+            .filter(|l| l["element"] == "opencode.json")
+            .cloned()
+            .collect()
+    };
+    let line = json!({
+        "target": "opencode",
+        "element": "opencode.json",
+        "status": "compiled",
+        "reason": "removed: link created it and no owned key is left",
+    });
+    assert_eq!(
+        gone(&["link", "--target", "opencode", "--dry-run", "--json"]),
+        std::slice::from_ref(&line)
+    );
+    assert!(env.root().join("opencode.json").exists(), "dry run");
+    assert_eq!(gone(&["link", "--target", "opencode", "--json"]), [line]);
+    assert!(!env.root().join("opencode.json").exists());
+}

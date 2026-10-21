@@ -366,21 +366,28 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
         .push(&target, element, Status::NotCompiled, Some(&reason));
 }
 
-/// Whether undoing the previous settings patch removes the settings.json link
-/// created (its record says created, and nothing else would be left in it).
-fn settings_file_goes(root: &Path, prev: &PatchedFile) -> bool {
-    let PatchKind::SettingsHooks(owned) = &prev.kind else {
+/// Whether undoing the previous JSON patch (settings.json hooks, opencode.json keys)
+/// removes the file link created (its record says created, and nothing else would
+/// be left in it).
+fn patched_file_goes(root: &Path, prev: &PatchedFile) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join(&prev.path)) else {
         return false;
     };
+    let rest = match &prev.kind {
+        PatchKind::SettingsHooks(owned) => claude_settings::remove_entries(&text, owned).ok(),
+        PatchKind::JsonKeys(owned) => {
+            crate::compile::json_keys::remove_json_keys(&text, owned).ok()
+        }
+        PatchKind::MarkdownBlock => None,
+    };
     prev.created
-        && std::fs::read_to_string(root.join(&prev.path))
-            .ok()
-            .and_then(|t| claude_settings::remove_entries(&t, owned).ok())
+        && rest
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .is_some_and(|v| v.as_object().is_some_and(|m| m.is_empty()))
 }
 
 const SETTINGS_GONE: &str = "removed: link created it and no hook is left";
+const JSON_GONE: &str = "removed: link created it and no owned key is left";
 
 /// The `--dry-run` side of `write_files`' decision: the files a real run would
 /// leave in place (they exist with other bytes, are not link's previous output,
@@ -444,7 +451,7 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
         let prev = p.previous_patch(&rel).cloned();
         if hooks.is_empty() && keys.is_empty() {
             if let Some(prev) = &prev {
-                let goes = settings_file_goes(root, prev);
+                let goes = patched_file_goes(root, prev);
                 patch::remove_patch(root, &p.output_dir, prev)?;
                 if goes {
                     p.report.push(
@@ -510,7 +517,13 @@ fn write(root: &Path, p: &mut Prepared, force: bool, out: &mut Vec<String>) -> a
         .cloned()
         .collect();
     for f in &stale_json {
+        let goes = patched_file_goes(root, f);
         patch::remove_patch(root, Path::new("."), f)?;
+        if goes {
+            let element = f.path.display().to_string();
+            p.report
+                .push(&p.target, element, Status::Compiled, Some(JSON_GONE));
+        }
     }
 
     let files: Vec<(PathBuf, Vec<u8>, ProducedBy)> = (p.artifacts.iter())
@@ -594,12 +607,24 @@ pub fn execute(
                 && hooks.is_empty()
                 && keys.is_empty()
                 && let Some(prev) = p.previous_patch(rel)
-                && settings_file_goes(&root, prev)
+                && patched_file_goes(&root, prev)
             {
                 let element = prev.path.display().to_string();
                 let target = p.target.clone();
                 p.report
                     .push(&target, element, Status::Compiled, Some(SETTINGS_GONE));
+            }
+            if p.json.is_none() {
+                let gone: Vec<String> = (p.previous.iter().flat_map(|t| &t.patched))
+                    .filter(|f| matches!(f.kind, PatchKind::JsonKeys(_)))
+                    .filter(|f| patched_file_goes(&root, f))
+                    .map(|f| f.path.display().to_string())
+                    .collect();
+                let target = p.target.clone();
+                for element in gone {
+                    p.report
+                        .push(&target, element, Status::Compiled, Some(JSON_GONE));
+                }
             }
         }
         for (p, skipped) in prepared.iter().zip(&skips) {
