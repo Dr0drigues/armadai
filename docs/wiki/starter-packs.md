@@ -212,7 +212,8 @@ with macOS, Windows 10+ and most Linux distributions), then extracted with `tar`
 - an archive URL may end in a query (`…/starters.tar.gz?token=…`): the extension before it
   decides the kind;
 - the archive is extracted and checked (no entry or link may point outside it, no dangling
-  link, at most 100,000 entries and 1 GiB of files) before it replaces the previous copy: a
+  link, at most 100,000 entries, names of at most 4096 bytes and 64 MiB in total, and 1 GiB
+  of files) before it replaces the previous copy: a
   failed sync keeps the previous copy, and never leaves a partial one;
 - an encrypted zip is refused, never prompted for.
 

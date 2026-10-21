@@ -546,6 +546,15 @@ registries:
         );
     }
 
+    /// A plain URL keeps the cache directory earlier versions used: no new sync.
+    #[test]
+    fn cache_key_of_a_plain_url_is_unchanged() {
+        assert_eq!(
+            cache_key("https://github.com/Dr0drigues/armadai-starters"),
+            "https___github.com_Dr0drigues_armadai-starters-7d70fef7"
+        );
+    }
+
     #[test]
     fn cache_key_readable_prefix_preserved_for_normal_urls() {
         let key = cache_key("https://github.com/github/awesome-copilot.git");
