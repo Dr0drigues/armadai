@@ -100,7 +100,7 @@
       "type": "string"
     },
     "from": {
-      "description": "The agent template this agent is an instance of (always `None` once rendered).",
+      "description": "The agent template (`templates/<id>.md`) this agent is an instance of.",
       "type": [
         "string",
         "null"
@@ -149,7 +149,7 @@
       "additionalProperties": {
         "type": "string"
       },
-      "description": "Values of the template's `{{var}}` (always empty once rendered).",
+      "description": "Values of the template's `{{var}}` variables (strings).",
       "type": "object"
     }
   },

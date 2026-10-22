@@ -184,10 +184,12 @@ pub struct AgentFront {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     pub native: Native,
-    /// The agent template this agent is an instance of (always `None` once rendered).
+    /// The agent template (`templates/<id>.md`) this agent is an instance of.
+    // always `None` in a rendered agent
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
-    /// Values of the template's `{{var}}` (always empty once rendered).
+    /// Values of the template's `{{var}}` variables (strings).
+    // always empty in a rendered agent
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vars: BTreeMap<String, String>,
 }
