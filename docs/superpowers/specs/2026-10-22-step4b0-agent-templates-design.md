@@ -18,7 +18,7 @@ Objectifs :
 7. `armadai new agent <id> --from <modèle> --var k=v` (répétable) écrit une instance ; le menu guidé propose de partir d'un modèle du projet quand il y en a.
 8. `init --pack` installe `templates/*.md` d'un pack natif ; schémas JSON (`template.schema.json`, clés `from` et `vars` dans `agent.schema.json`), doc `docs/wiki/project-format.md`, CHANGELOG.
 
-Non-objectifs :
+Non-objectifs du MVP (décision de Dimitri, 2026-10-22 : livrer un MVP pour finir les lots B0 → B2, puis revoir l'ensemble ; ces points sont reportés, pas refusés) :
 - Modèle qui hérite d'un autre modèle (`from` dans un modèle) : erreur.
 - Logique dans les modèles (conditions, boucles, filtres, valeurs par défaut de variables).
 - Modèles de flows, de skills ou de commandes.
@@ -41,6 +41,7 @@ Anti-objectifs :
 ## 4. Décidé avec Dimitri
 
 - Ajouter le templating, avant B1 (2026-10-22).
+- B0 est un MVP : les non-objectifs du §2 sont des améliorations reportées après les lots B, pas des refus.
 - Forme proposée et montrée : `templates/checker.md` + `agents/guardian.md` (`from: checker`, `vars:`) ; frontmatter de l'instance remplace clé par clé ; corps ajouté à la suite ; variable manquante = erreur ; prévoir un échappement.
 
 ## 5. Diagnostics (codes stables, nouveaux)
