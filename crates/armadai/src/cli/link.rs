@@ -366,6 +366,7 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
     };
     let element = match a.produced_by.kind {
         manifest::ProducedByKind::Skill => format!("skill {}", a.produced_by.name),
+        manifest::ProducedByKind::Command => format!("command {}", a.produced_by.name),
         manifest::ProducedByKind::Native => format!("native {}", a.produced_by.name),
         _ => format!("agent {}", a.produced_by.name),
     };

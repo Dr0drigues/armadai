@@ -41,7 +41,7 @@ web UI, and `link` never touches the network.
 - **Reversible** — `link` records what it wrote in a manifest, and `unlink` removes exactly that.
 - **Policy gate** — for Claude Code, a `PreToolUse` hook that enforces the declared delegation
   topology.
-- **Guided creation** — `armadai new agent|flow|automation|skill` (or a guided menu), agent
+- **Guided creation** — `armadai new agent|flow|automation|skill|command` (or a guided menu), agent
   and flow templates, native starter packs; every creation is validated, and undone if it would
   break the project.
 

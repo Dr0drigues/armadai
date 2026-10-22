@@ -40,7 +40,7 @@ fn manifest_path(root: &Path) -> PathBuf {
 /// What produced a manifest entry. `kind` is the stated extension point for
 /// the declarative chain the design's §2/§7 anticipates (`Config →
 /// Governance → Meta-agents → Rules → Agents → link → native configs`):
-/// today it is always `agent`, `coordinator`, `skill` or `prompt`; a later
+/// today it is `agent`, `coordinator`, `skill`, `command`, `native` or `prompt`; a later
 /// stage adds a value here, not a new field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProducedBy {
@@ -70,6 +70,13 @@ impl ProducedBy {
         }
     }
 
+    pub fn command(name: impl Into<String>) -> Self {
+        Self {
+            kind: ProducedByKind::Command,
+            name: name.into(),
+        }
+    }
+
     pub fn native(path: impl Into<String>) -> Self {
         Self {
             kind: ProducedByKind::Native,
@@ -84,6 +91,9 @@ pub enum ProducedByKind {
     Agent,
     Coordinator,
     Skill,
+    /// A command of `.armadai/commands/`. An older binary reads a manifest holding
+    /// this value as unusable (`Lookup::Fallback`).
+    Command,
     Prompt,
     /// A file copied as is from `.armadai/native/<target>/`, relative to the
     /// project root (not the target's root). An older binary reads a manifest

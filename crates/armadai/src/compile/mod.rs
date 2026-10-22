@@ -24,6 +24,8 @@ pub use report::{Report, Status};
 pub enum ArtifactKind {
     Agent,
     Skill,
+    /// A command the user types (`commands/<id>.md`): depends on no agent.
+    Command,
     Instructions,
     /// Copied from `.armadai/native/<target>/`; its path is relative to the project root.
     Native,
@@ -49,6 +51,54 @@ pub struct Plan {
     /// project root), such as `opencode.json`.
     pub json: Option<(PathBuf, json_keys::JsonKeys)>,
     pub report: Report,
+}
+
+/// Merges `native.<target>` into the frontmatter `m` of `what` (`agent `dev``), the
+/// keys in `skip` aside (the caller resolved them); a collision with a generated key
+/// is an error. True when there was something to merge.
+pub fn merge_native(
+    m: &mut serde_json::Map<String, serde_json::Value>,
+    native: &armadai_model::Native,
+    target: &str,
+    what: &str,
+    skip: &[&str],
+) -> anyhow::Result<bool> {
+    let Some(native) = native.get(target) else {
+        return Ok(false);
+    };
+    let Some(native) = native.as_object() else {
+        bail!("{what}: native.{target} must be a mapping");
+    };
+    for (k, v) in native.iter().filter(|(k, _)| !skip.contains(&k.as_str())) {
+        if m.contains_key(k) {
+            bail!("{what}: native.{target} key `{k}` collides with a generated key");
+        }
+        m.insert(k.clone(), v.clone());
+    }
+    Ok(true)
+}
+
+/// One line per slot of agent `id` on target `t`: a filled slot is `compiled` with
+/// its skills, or `approximated` with the given reason; an empty one `not-compiled`.
+pub(crate) fn slot_lines(
+    r: &mut Report,
+    t: &str,
+    project: &Project,
+    id: &str,
+    f: &armadai_model::AgentFront,
+    approximated: Option<&str>,
+) {
+    for s in &f.slots {
+        let fills = armadai_model::slot_fills(project, s);
+        let element = format!("agent {id} slot {s}");
+        if fills.is_empty() {
+            r.push(t, element, Status::NotCompiled, Some("no skill fills it"));
+        } else if let Some(why) = approximated {
+            r.push(t, element, Status::Approximated, Some(why));
+        } else {
+            r.push(t, element, Status::Compiled, Some(&fills.join(", ")));
+        }
+    }
 }
 
 /// Markers around the ArmadAI block of a markdown file the user may also edit.

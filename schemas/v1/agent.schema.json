@@ -116,6 +116,13 @@
       },
       "type": "array"
     },
+    "slots": {
+      "description": "Named slots (`code-standards`, ...) filled by the skills that declare them.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "tags": {
       "items": {
         "type": "string"

@@ -1,0 +1,46 @@
+=== .github/agents/dev.agent.md ===
+Writes code
+
+DEV_MARKER: you write the code.
+
+=== .github/copilot-instructions.md ===
+LEAD_MARKER: you coordinate the team.
+
+## Team
+
+| Agent | Description |
+|-------|-------------|
+| dev | Writes code |
+
+To delegate to a specialized agent, mention `@<agent-name>` in your prompt.
+
+=== .github/skills/a-std/SKILL.md ===
+---
+name: a-std
+description: Coding standards, part A
+metadata:
+  armadai-slot: code-standards
+---
+A_STD_MARKER
+
+=== .github/skills/b-std/SKILL.md ===
+---
+name: b-std
+description: Coding standards, part B
+metadata:
+  armadai-slot: code-standards
+---
+B_STD_MARKER
+
+=== report ===
+copilot: agent dev: compiled
+copilot: agent dev skills: not-compiled (not supported by this target yet (step 4))
+copilot: agent dev slot code-standards: not-compiled (not supported by this target yet (step 4))
+copilot: agent dev slot security: not-compiled (no skill fills it)
+copilot: agent lead: compiled (coordinator, rendered into the instructions file)
+copilot: agent lead skills: not-compiled (not supported by this target yet (step 4))
+copilot: agent lead slot code-standards: not-compiled (not supported by this target yet (step 4))
+copilot: command brief: not-compiled (no command support yet)
+copilot: command mockup: not-compiled (no command support yet)
+copilot: skill a-std: compiled
+copilot: skill b-std: compiled

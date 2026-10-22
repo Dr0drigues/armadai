@@ -17,6 +17,7 @@ pub enum Kind {
     Skill,
     Flow,
     Automation,
+    Command,
 }
 
 impl Kind {
@@ -27,6 +28,7 @@ impl Kind {
             Kind::Skill => Path::new("skills").join(id).join("SKILL.md"),
             Kind::Flow => Path::new("flows").join(format!("{id}.yaml")),
             Kind::Automation => Path::new("automations").join(format!("{id}.yaml")),
+            Kind::Command => Path::new("commands").join(format!("{id}.md")),
         }
     }
 }

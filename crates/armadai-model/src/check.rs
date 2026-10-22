@@ -9,6 +9,153 @@ use crate::load::{Kind, Origins, Project, load_project};
 
 const MAX_SKILL_DESCRIPTION: usize = 1024;
 
+/// Names of the built-in commands and skills of the targets, sorted. Sources: Claude Code
+/// `code.claude.com/docs/en/commands.md` (read on 2026-10-21); OpenCode
+/// `packages/web/src/content/docs/tui.mdx` at commit 681156c8.
+pub const BUILTIN_COMMANDS: &[&str] = &[
+    "add-dir",
+    "adddir",
+    "advisor",
+    "agents",
+    "allowed-tools",
+    "android",
+    "app",
+    "artifacts",
+    "autocompact",
+    "autofix-pr",
+    "background",
+    "bashes",
+    "batch",
+    "bg",
+    "branch",
+    "btw",
+    "bug",
+    "cd",
+    "checkpoint",
+    "checkup",
+    "chrome",
+    "claude-api",
+    "claude-in-chrome",
+    "clear",
+    "code-review",
+    "color",
+    "compact",
+    "config",
+    "connect",
+    "context",
+    "continue",
+    "copy",
+    "cost",
+    "debug",
+    "deep-research",
+    "design",
+    "desktop",
+    "details",
+    "diff",
+    "doctor",
+    "editor",
+    "effort",
+    "exit",
+    "export",
+    "extra-usage",
+    "fast",
+    "feedback",
+    "fewer-permission-prompts",
+    "focus",
+    "fork",
+    "goal",
+    "heapdump",
+    "help",
+    "hooks",
+    "ide",
+    "import",
+    "init",
+    "insights",
+    "install-github-app",
+    "install-slack-app",
+    "ios",
+    "keybindings",
+    "list-agents",
+    "login",
+    "logout",
+    "loop",
+    "mcp",
+    "memory",
+    "mobile",
+    "model",
+    "models",
+    "new",
+    "output-style",
+    "passes",
+    "peers",
+    "permissions",
+    "plan",
+    "plugin",
+    "powerup",
+    "pr-comments",
+    "privacy-settings",
+    "proactive",
+    "q",
+    "quit",
+    "radio",
+    "rate-limit-options",
+    "rc",
+    "recap",
+    "redo",
+    "release-notes",
+    "reload-plugins",
+    "reload-skills",
+    "remote-control",
+    "remote-env",
+    "rename",
+    "reset",
+    "resume",
+    "review",
+    "rewind",
+    "routines",
+    "run",
+    "sandbox",
+    "schedule",
+    "scroll-speed",
+    "security-review",
+    "sessions",
+    "settings",
+    "setup-bedrock",
+    "setup-vertex",
+    "share",
+    "simplify",
+    "skill-doctor",
+    "skills",
+    "stats",
+    "status",
+    "statusline",
+    "stickers",
+    "stop",
+    "subtask",
+    "summarize",
+    "tasks",
+    "team-onboarding",
+    "teleport",
+    "terminal-setup",
+    "theme",
+    "themes",
+    "thinking",
+    "tp",
+    "tui",
+    "ultraplan",
+    "ultrareview",
+    "undo",
+    "update-config",
+    "upgrade",
+    "usage",
+    "usage-credits",
+    "verify",
+    "vim",
+    "voice",
+    "web-setup",
+    "workflows",
+];
+
 pub fn has_errors(ds: &[Diagnostic]) -> bool {
     ds.iter().any(|d| d.severity == Severity::Error)
 }
@@ -169,11 +316,45 @@ impl Out<'_> {
     ) {
         // A diagnostic without a known origin is kept, just without a position.
         let origin = self.origins.files.get(&(kind, id.to_string()));
-        let (line, column) = match (origin, token) {
+        let pos = match (origin, token) {
             (Some((_, text)), Some((t, false))) => locate(text, t),
             (Some((_, text)), Some((t, true))) => locate_key(text, t),
             _ => (None, None),
         };
+        self.emit_pos((kind, id), severity, code, pos, message, hint);
+    }
+
+    /// (line, column) of byte `at` of `body`, when `body` is the end of the file of `kind`/`id`.
+    fn body_pos(
+        &self,
+        (kind, id): (Kind, &str),
+        body: &str,
+        at: usize,
+    ) -> (Option<usize>, Option<usize>) {
+        let Some((_, text)) = self.origins.files.get(&(kind, id.to_string())) else {
+            return (None, None);
+        };
+        let start = text.len().checked_sub(body.len());
+        let Some(start) = start.filter(|&s| text.get(s..) == Some(body)) else {
+            return (None, None);
+        };
+        let before = &text[..start + at];
+        let line = before.matches('\n').count() + 1;
+        let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+        (Some(line), Some(col))
+    }
+
+    /// Emit a diagnostic of `kind`/`id` at a known position.
+    fn emit_pos(
+        &mut self,
+        (kind, id): (Kind, &str),
+        severity: Severity,
+        code: &'static str,
+        (line, column): (Option<usize>, Option<usize>),
+        message: String,
+        hint: Option<String>,
+    ) {
+        let origin = self.origins.files.get(&(kind, id.to_string()));
         let file = origin.map_or_else(|| PathBuf::from(id), |(f, _)| f.clone());
         // a template error is met once per instance: report it once
         let seen = |d: &Diagnostic| {
@@ -252,6 +433,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         (Kind::Skill, project.skills.keys().collect()),
         (Kind::Flow, project.flows.keys().collect()),
         (Kind::Automation, project.automations.keys().collect()),
+        (Kind::Command, project.commands.keys().collect()),
     ] {
         for id in ids.into_iter().filter(|id| !is_valid_id(id)) {
             o.err(
@@ -367,6 +549,15 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         {
             o.unknown_ref(at("skills"), "unknown-skill", "skill", s, &skills);
         }
+        for s in a.front.slots.iter().filter(|s| !is_valid_id(s)) {
+            o.err(
+                at("slots"),
+                "bad-id",
+                Some((s, false)),
+                format!("slot name `{s}` is not a valid id"),
+                Some("ids match [a-z0-9][a-z0-9-]{0,63}".into()),
+            );
+        }
         o.native_keys(at("native"), a.front.native.keys());
     }
 
@@ -408,6 +599,39 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 None,
             ),
             Some(_) => {}
+        }
+        let slot_key = Some(("armadai-slot", true));
+        let slots = crate::slots::filled_by(s);
+        if slots == [""] {
+            o.err(
+                at,
+                "bad-slot",
+                slot_key,
+                "`armadai-slot` is empty".into(),
+                Some(
+                    "name the slots this skill fills, such as `armadai-slot: code-standards`"
+                        .into(),
+                ),
+            );
+        } else {
+            if slots.contains(&"") {
+                o.err(
+                    at,
+                    "bad-slot",
+                    slot_key,
+                    "`armadai-slot` has an empty slot name (two commas in a row, or a comma at an end)".into(),
+                    Some("separate slot names with single commas, such as `armadai-slot: code-standards, security`".into()),
+                );
+            }
+            for n in (slots.into_iter()).filter(|n| !n.is_empty() && !is_valid_id(n)) {
+                o.err(
+                    at,
+                    "bad-slot",
+                    slot_key,
+                    format!("slot name `{n}` in `armadai-slot` is not a valid id"),
+                    Some("ids match [a-z0-9][a-z0-9-]{0,63}".into()),
+                );
+            }
         }
     }
 
@@ -593,5 +817,171 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         }
         o.native_keys(at, a.native.keys());
     }
+
+    // commands
+    for (id, c) in &project.commands {
+        check_command(&mut o, id, c, &skills);
+    }
     o.ds
+}
+
+/// Tokens of `body` whose meaning differs between the targets: `$<digits>` and
+/// `$ARGUMENTS[...]`, each distinct token once with its first byte offset, in order.
+fn positional_tokens(body: &str) -> Vec<(usize, &str)> {
+    let mut out: Vec<(usize, &str)> = Vec::new();
+    for (i, _) in body.match_indices('$') {
+        let rest = &body[i + 1..];
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        let len = if digits > 0 {
+            1 + digits
+        } else if let Some(tail) = rest.strip_prefix("ARGUMENTS[") {
+            // up to the closing `]` when there is one on the line
+            let close = tail
+                .find([']', '\n'])
+                .filter(|&j| tail[j..].starts_with(']'));
+            1 + "ARGUMENTS[".len() + close.map_or(0, |j| j + 1)
+        } else {
+            continue;
+        };
+        let t = &body[i..i + len];
+        if !out.iter().any(|(_, u)| *u == t) {
+            out.push((i, t));
+        }
+    }
+    out
+}
+
+fn check_command(o: &mut Out, id: &str, c: &crate::load::Command, skills: &BTreeSet<&str>) {
+    let at = (Kind::Command, id);
+    if c.front.description.trim().is_empty() {
+        o.err(
+            at,
+            "command-empty-description",
+            Some(("description", true)),
+            "command description is empty".into(),
+            None,
+        );
+    }
+    if c.front
+        .argument_hint
+        .as_deref()
+        .is_some_and(|h| h.trim().is_empty())
+    {
+        o.err(
+            at,
+            "command-empty-argument-hint",
+            Some(("argument_hint", true)),
+            "command `argument_hint` is empty".into(),
+            Some("remove it, or describe the expected input, such as `<idea>`".into()),
+        );
+    }
+    if c.body.trim().is_empty() {
+        o.err(
+            at,
+            "command-empty-body",
+            None,
+            "command body is empty".into(),
+            Some("write the text the command sends, citing `$ARGUMENTS`".into()),
+        );
+    }
+    for (i, t) in positional_tokens(&c.body) {
+        let message = match t.strip_prefix("$ARGUMENTS[") {
+            Some(rest) => format!(
+                "`{t}` means something else in each target: Claude Code reads the argument \
+                 at index {}, OpenCode replaces `$ARGUMENTS` with the whole input and keeps `[{rest}`",
+                rest.trim_end_matches(']')
+            ),
+            None => format!(
+                "`{t}` would be replaced by both Claude Code and OpenCode \
+                 (`$<digit>` is a positional argument, indexed from 0 in one and from 1 in the other)"
+            ),
+        };
+        let pos = o.body_pos(at, &c.body, i);
+        o.emit_pos(
+            at,
+            Severity::Error,
+            "command-positional-argument",
+            pos,
+            message,
+            Some("only `$ARGUMENTS` is portable: rephrase the text (an amount: `5 USD`)".into()),
+        );
+    }
+    let shell_hint =
+        || Some("remove it: ArmadAI never compiles shell execution at command time".into());
+    if let Some(i) = c.body.find("!`") {
+        let pos = o.body_pos(at, &c.body, i);
+        o.emit_pos(
+            at,
+            Severity::Error,
+            "command-shell-expansion",
+            pos,
+            "`!` before a backtick runs a shell command when the command is typed".into(),
+            shell_hint(),
+        );
+    }
+    // byte offset of the first line opening a ```! block
+    let block = (c.body.split_inclusive('\n'))
+        .scan(0, |off, l| {
+            let start = *off + l.len() - l.trim_start().len();
+            *off += l.len();
+            Some(start)
+        })
+        .find(|&i| c.body[i..].starts_with("```!"));
+    if let Some(i) = block {
+        let pos = o.body_pos(at, &c.body, i);
+        o.emit_pos(
+            at,
+            Severity::Error,
+            "command-shell-expansion",
+            pos,
+            "a line starting with ```! runs a shell block when the command is typed".into(),
+            shell_hint(),
+        );
+    }
+    // `${CLAUDE_SESSION_ID}`, `${CLAUDE_SKILL_DIR}`… (Claude Code skills doc, read on
+    // 2026-10-22): substituted by Claude Code, literal text under OpenCode
+    let mut seen = Vec::new();
+    for (i, _) in c.body.match_indices("${CLAUDE_") {
+        let rest = &c.body[i + 2..];
+        let name = rest.len()
+            - rest
+                .trim_start_matches(|ch: char| ch.is_ascii_alphanumeric() || ch == '_')
+                .len();
+        let end = i + 2 + name + usize::from(rest[name..].starts_with('}'));
+        let token = &c.body[i..end];
+        if seen.contains(&token) {
+            continue;
+        }
+        seen.push(token);
+        let pos = o.body_pos(at, &c.body, i);
+        o.emit_pos(
+            at,
+            Severity::Error,
+            "command-target-variable",
+            pos,
+            format!("`{token}` is replaced by Claude Code only: OpenCode would send it as is"),
+            Some("only `$ARGUMENTS` is portable: remove it, or put it in a native file".into()),
+        );
+    }
+    if skills.contains(id) {
+        o.err(
+            at,
+            "command-shadows-skill",
+            None,
+            format!("command `{id}` has the same id as skill `{id}`"),
+            Some(
+                "Claude Code would run the skill and ignore the command: rename one of them".into(),
+            ),
+        );
+    }
+    if BUILTIN_COMMANDS.binary_search(&id).is_ok() {
+        o.emit(
+            at,
+            Severity::Warning,
+            "command-shadows-builtin",
+            None,
+            format!("command `{id}` has the name of a built-in command of Claude Code or OpenCode"),
+            Some("one of them hides the other: pick another name".into()),
+        );
+    }
 }

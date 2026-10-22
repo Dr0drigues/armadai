@@ -303,3 +303,64 @@ fn inspect_shows_an_instance_rendered_and_its_template() {
          Extra line.\n"
     );
 }
+
+const SLOTTED: &[(&str, &str)] = &[
+    (".armadai/project.yaml", "schema_version: 1\n"),
+    (
+        ".armadai/agents/dev.md",
+        "---\ndescription: Writes code\nskills: [notes]\nslots: [security, code-standards]\n---\nCode.\n",
+    ),
+    (
+        ".armadai/skills/notes/SKILL.md",
+        "---\nname: notes\ndescription: Notes\n---\nB\n",
+    ),
+    (
+        ".armadai/skills/b-std/SKILL.md",
+        "---\nname: b-std\ndescription: B\nmetadata:\n  armadai-slot: code-standards\n---\nB\n",
+    ),
+    (
+        ".armadai/skills/a-std/SKILL.md",
+        "---\nname: a-std\ndescription: A\nmetadata:\n  armadai-slot: code-standards\n---\nA\n",
+    ),
+    (
+        ".armadai/commands/brief.md",
+        "---\ndescription: Refine an idea\n---\n$ARGUMENTS\n",
+    ),
+];
+
+#[test]
+fn list_shows_the_commands_and_the_skills_of_each_slot() {
+    let env = Env::new(SLOTTED);
+    let (ok, out, err) = env.run(&["list"]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        out,
+        "  ID   TIER  TAGS  DESCRIPTION\n  \
+         dev  -     -  Writes code\n\n  \
+         1 agent(s) found.\n\
+         Skills: a-std, b-std, notes\n\
+         Commands: brief\n\
+         Slots:\n  \
+         code-standards: a-std, b-std\n  \
+         security: (none)\n"
+    );
+}
+
+#[test]
+fn inspect_shows_each_slot_and_the_skills_filling_it() {
+    let env = Env::new(SLOTTED);
+    let (ok, out, err) = env.run(&["inspect", "dev"]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        out,
+        "Agent: dev\n\
+         Source: .armadai/agents/dev.md\n\n  \
+         Description:  Writes code\n  \
+         Tier:         -\n  \
+         Skills:       notes\n  \
+         Slots:        security: (none)\n  \
+         \x20             code-standards: a-std, b-std\n\n\
+         ## Prompt\n  \
+         Code.\n"
+    );
+}

@@ -38,6 +38,13 @@ pub struct Template {
     pub body: String,
 }
 
+/// A command (`commands/<id>.md`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Command {
+    pub front: CommandFront,
+    pub body: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Skill {
     pub front: SkillFront,
@@ -62,6 +69,7 @@ pub struct Project {
     pub skills: BTreeMap<String, Skill>,
     pub flows: BTreeMap<String, Flow>,
     pub automations: BTreeMap<String, Automation>,
+    pub commands: BTreeMap<String, Command>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -72,6 +80,7 @@ pub enum Kind {
     Flow,
     Automation,
     Template,
+    Command,
 }
 
 /// Source path and text of every loaded file (the manifest is keyed by `"project"`).
@@ -606,6 +615,34 @@ pub fn load_project(root: &Path) -> Loaded {
         }
     }
 
+    let mut commands = BTreeMap::new();
+    for p in sorted(&base.join("commands")) {
+        if p.is_dir() {
+            // a sub-folder would become `/a:b` (Claude) or `/a/b` (OpenCode)
+            cx.ignored(&p, "command sub-folders are not loaded");
+            continue;
+        }
+        if p.extension().is_none_or(|e| e != "md") {
+            continue;
+        }
+        let id = stem(&p);
+        let Some(text) = cx.read(Kind::Command, &id, &p) else {
+            continue;
+        };
+        let Some((yaml, body, first)) = cx.frontmatter(&text, &p) else {
+            continue;
+        };
+        if let Some(front) = cx.parse::<CommandFront>(yaml, &p, first - 1) {
+            commands.insert(
+                id,
+                Command {
+                    front,
+                    body: body.to_string(),
+                },
+            );
+        }
+    }
+
     Loaded {
         project: manifest.map(|manifest| Project {
             manifest,
@@ -614,6 +651,7 @@ pub fn load_project(root: &Path) -> Loaded {
             skills,
             flows,
             automations,
+            commands,
         }),
         origins: cx.origins,
         diagnostics: cx.diagnostics,

@@ -46,6 +46,10 @@ pub fn execute(id: String) -> anyhow::Result<()> {
     if !f.skills.is_empty() {
         field("Skills:", f.skills.join(", "));
     }
+    for (i, slot) in f.slots.iter().enumerate() {
+        let name = if i == 0 { "Slots:" } else { "" };
+        field(name, crate::cli::list::slot_line(&project, slot));
+    }
     let caps = armadai_model::yaml::to_string(&f.capabilities)?;
     if caps.trim() != "{}" {
         field("Capabilities:", caps.trim().replace('\n', ", "));

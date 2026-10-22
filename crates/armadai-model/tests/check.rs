@@ -757,3 +757,412 @@ fn an_output_outside_the_project_or_into_its_sources_is_an_error() {
     )]);
     assert!(!ds.iter().any(|d| d.code == "bad-output"), "{ds:?}");
 }
+
+// ---- commands ----
+
+const IDS: &str = "ids match [a-z0-9][a-z0-9-]{0,63}";
+
+fn command(text: &str) -> Vec<Diagnostic> {
+    diags(&[M, (".armadai/commands/brief.md", text)])
+}
+
+fn body(b: &str) -> Vec<Diagnostic> {
+    command(&format!("---\ndescription: d\n---\n{b}"))
+}
+
+fn said(
+    d: &Diagnostic,
+) -> (
+    Severity,
+    &str,
+    Option<usize>,
+    Option<usize>,
+    &str,
+    Option<&str>,
+) {
+    (
+        d.severity,
+        d.file.file_name().unwrap().to_str().unwrap(),
+        d.line,
+        d.column,
+        d.message.as_str(),
+        d.hint.as_deref(),
+    )
+}
+
+#[test]
+fn a_valid_command_has_no_diagnostic() {
+    assert_eq!(
+        command("---\ndescription: d\nargument_hint: <idea>\n---\nRefine: $ARGUMENTS\n"),
+        []
+    );
+}
+
+#[test]
+fn command_id_follows_the_id_pattern() {
+    let ds = diags(&[
+        M,
+        (
+            ".armadai/commands/Bad_Id.md",
+            "---\ndescription: d\n---\nB\n",
+        ),
+    ]);
+    assert_eq!(
+        said(&only(&ds, "bad-id")),
+        (
+            Severity::Error,
+            "Bad_Id.md",
+            None,
+            None,
+            "`Bad_Id` is not a valid id",
+            Some(IDS)
+        )
+    );
+}
+
+#[test]
+fn command_empty_description() {
+    let ds = command("---\ndescription: \"  \"\n---\nB\n");
+    assert_eq!(
+        said(&only(&ds, "command-empty-description")),
+        (
+            Severity::Error,
+            "brief.md",
+            Some(2),
+            Some(1),
+            "command description is empty",
+            None
+        )
+    );
+}
+
+#[test]
+fn command_empty_argument_hint() {
+    for hint in ["\"\"", "\"   \""] {
+        let ds = command(&format!(
+            "---\ndescription: d\nargument_hint: {hint}\n---\nB\n"
+        ));
+        assert_eq!(
+            said(&only(&ds, "command-empty-argument-hint")),
+            (
+                Severity::Error,
+                "brief.md",
+                Some(3),
+                Some(1),
+                "command `argument_hint` is empty",
+                Some("remove it, or describe the expected input, such as `<idea>`")
+            ),
+            "{hint}"
+        );
+    }
+}
+
+#[test]
+fn command_empty_body() {
+    for b in ["", " \n\t\n"] {
+        let ds = body(b);
+        assert_eq!(
+            said(&only(&ds, "command-empty-body")),
+            (
+                Severity::Error,
+                "brief.md",
+                None,
+                None,
+                "command body is empty",
+                Some("write the text the command sends, citing `$ARGUMENTS`")
+            ),
+            "{b:?}"
+        );
+    }
+}
+
+const POSITIONAL_HINT: &str =
+    "only `$ARGUMENTS` is portable: rephrase the text (an amount: `5 USD`)";
+
+fn positional(t: &str) -> String {
+    format!(
+        "`{t}` would be replaced by both Claude Code and OpenCode \
+         (`$<digit>` is a positional argument, indexed from 0 in one and from 1 in the other)"
+    )
+}
+
+#[test]
+fn command_positional_arguments_are_refused() {
+    for (b, token, column) in [("Take $1 now\n", "$1", 6), ("It costs $5.\n", "$5", 10)] {
+        let ds = body(b);
+        assert_eq!(
+            said(&only(&ds, "command-positional-argument")),
+            (
+                Severity::Error,
+                "brief.md",
+                Some(4),
+                Some(column),
+                positional(token).as_str(),
+                Some(POSITIONAL_HINT)
+            ),
+            "{b}"
+        );
+    }
+}
+
+#[test]
+fn an_indexed_argument_is_refused_with_its_own_message() {
+    let ds = body("First: $ARGUMENTS[0]\n");
+    assert_eq!(
+        said(&only(&ds, "command-positional-argument")),
+        (
+            Severity::Error,
+            "brief.md",
+            Some(4),
+            Some(8),
+            "`$ARGUMENTS[0]` means something else in each target: Claude Code reads the argument \
+             at index 0, OpenCode replaces `$ARGUMENTS` with the whole input and keeps `[0]`",
+            Some(POSITIONAL_HINT)
+        )
+    );
+}
+
+#[test]
+fn a_positional_argument_is_located_in_the_body_not_in_the_description() {
+    let ds = command("---\ndescription: costs $5\n---\nIt costs $5.\n");
+    let d = only(&ds, "command-positional-argument");
+    assert_eq!((d.line, d.column), (Some(4), Some(10)));
+}
+
+#[test]
+fn each_distinct_positional_argument_is_reported_once() {
+    let ds = body("$1 and $2 and $1 again\n");
+    let got: Vec<_> = (ds.iter())
+        .filter(|d| d.code == "command-positional-argument")
+        .map(|d| d.message.clone())
+        .collect();
+    assert_eq!(got, [positional("$1"), positional("$2")]);
+}
+
+#[test]
+fn command_shell_expansion_is_refused() {
+    let shell_hint = Some("remove it: ArmadAI never compiles shell execution at command time");
+    for (b, line, column, message) in [
+        (
+            "Attention !\nDiff: !`git diff`\n",
+            Some(5),
+            Some(7),
+            "`!` before a backtick runs a shell command when the command is typed",
+        ),
+        (
+            "Context:\n```!\ngit status\n```\n",
+            Some(5),
+            Some(1),
+            "a line starting with ```! runs a shell block when the command is typed",
+        ),
+        (
+            "Context:\n  ```!\ngit status\n  ```\n",
+            Some(5),
+            Some(3),
+            "a line starting with ```! runs a shell block when the command is typed",
+        ),
+    ] {
+        let ds = body(b);
+        assert_eq!(
+            said(&only(&ds, "command-shell-expansion")),
+            (
+                Severity::Error,
+                "brief.md",
+                line,
+                column,
+                message,
+                shell_hint
+            ),
+            "{b}"
+        );
+    }
+}
+
+/// `${CLAUDE_…}` substitutions (Claude Code skills doc, 2026-10-22) stay literal
+/// under OpenCode: refused, positioned in the body.
+#[test]
+fn command_claude_variables_are_refused() {
+    let hint = Some("only `$ARGUMENTS` is portable: remove it, or put it in a native file");
+    for (b, line, column, token) in [
+        (
+            "Session: ${CLAUDE_SESSION_ID}\n",
+            4,
+            10,
+            "${CLAUDE_SESSION_ID}",
+        ),
+        (
+            "Read\n  ${CLAUDE_SKILL_DIR}/a.md\n",
+            5,
+            3,
+            "${CLAUDE_SKILL_DIR}",
+        ),
+        ("In ${CLAUDE_PROJECT_DIR}.\n", 4, 4, "${CLAUDE_PROJECT_DIR}"),
+    ] {
+        let ds = body(b);
+        let message =
+            format!("`{token}` is replaced by Claude Code only: OpenCode would send it as is");
+        assert_eq!(
+            said(&only(&ds, "command-target-variable")),
+            (
+                Severity::Error,
+                "brief.md",
+                Some(line),
+                Some(column),
+                message.as_str(),
+                hint
+            ),
+            "{b}"
+        );
+    }
+    // `$ARGUMENTS` and a shell-style `${HOME}` are not Claude substitutions
+    let ds = body("Do $ARGUMENTS in ${HOME}\n");
+    assert!(
+        ds.iter().all(|d| d.code != "command-target-variable"),
+        "{ds:?}"
+    );
+}
+
+#[test]
+fn a_command_cannot_share_its_id_with_a_skill() {
+    let ds = diags(&[
+        M,
+        (".armadai/commands/lint.md", "---\ndescription: d\n---\nB\n"),
+        (
+            ".armadai/skills/lint/SKILL.md",
+            "---\nname: lint\ndescription: d\n---\nB\n",
+        ),
+    ]);
+    assert_eq!(
+        said(&only(&ds, "command-shadows-skill")),
+        (
+            Severity::Error,
+            "lint.md",
+            None,
+            None,
+            "command `lint` has the same id as skill `lint`",
+            Some("Claude Code would run the skill and ignore the command: rename one of them")
+        )
+    );
+}
+
+#[test]
+fn a_command_named_like_a_builtin_is_a_warning() {
+    let ds = diags(&[
+        M,
+        (
+            ".armadai/commands/review.md",
+            "---\ndescription: d\n---\nB\n",
+        ),
+    ]);
+    assert_eq!(
+        said(&only(&ds, "command-shadows-builtin")),
+        (
+            Severity::Warning,
+            "review.md",
+            None,
+            None,
+            "command `review` has the name of a built-in command of Claude Code or OpenCode",
+            Some("one of them hides the other: pick another name")
+        )
+    );
+}
+
+#[test]
+fn builtin_commands_are_sorted_and_unique() {
+    let mut sorted = check::BUILTIN_COMMANDS.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted, check::BUILTIN_COMMANDS);
+    assert_eq!(check::BUILTIN_COMMANDS.len(), 141);
+}
+
+// ---- slots ----
+
+#[test]
+fn a_slot_name_follows_the_id_pattern() {
+    let ds = diags(&[
+        M,
+        (
+            ".armadai/agents/dev.md",
+            "---\ndescription: d\nslots: [Bad Slot]\n---\nB\n",
+        ),
+    ]);
+    assert_eq!(
+        said(&only(&ds, "bad-id")),
+        (
+            Severity::Error,
+            "dev.md",
+            Some(3),
+            Some(9),
+            "slot name `Bad Slot` is not a valid id",
+            Some(IDS)
+        )
+    );
+}
+
+fn skill_slot(value: &str) -> Vec<Diagnostic> {
+    diags(&[
+        M,
+        (
+            ".armadai/skills/std/SKILL.md",
+            &format!(
+                "---\nname: std\ndescription: d\nmetadata:\n  armadai-slot: {value}\n---\nB\n"
+            ),
+        ),
+    ])
+}
+
+#[test]
+fn an_empty_armadai_slot_is_an_error() {
+    for v in ["\"\"", "\"  \""] {
+        assert_eq!(
+            said(&only(&skill_slot(v), "bad-slot")),
+            (
+                Severity::Error,
+                "SKILL.md",
+                Some(5),
+                Some(3),
+                "`armadai-slot` is empty",
+                Some("name the slots this skill fills, such as `armadai-slot: code-standards`")
+            ),
+            "{v}"
+        );
+    }
+}
+
+#[test]
+fn a_malformed_armadai_slot_element_is_an_error() {
+    assert_eq!(
+        said(&only(&skill_slot("\"ok, Not Ok\""), "bad-slot")),
+        (
+            Severity::Error,
+            "SKILL.md",
+            Some(5),
+            Some(3),
+            "slot name `Not Ok` in `armadai-slot` is not a valid id",
+            Some(IDS)
+        )
+    );
+}
+
+#[test]
+fn an_empty_armadai_slot_element_is_an_error() {
+    assert_eq!(
+        said(&only(&skill_slot("\"a,,b\""), "bad-slot")),
+        (
+            Severity::Error,
+            "SKILL.md",
+            Some(5),
+            Some(3),
+            "`armadai-slot` has an empty slot name (two commas in a row, or a comma at an end)",
+            Some(
+                "separate slot names with single commas, such as `armadai-slot: code-standards, security`"
+            )
+        )
+    );
+}
+
+#[test]
+fn several_slots_separated_by_commas_are_valid() {
+    assert_eq!(skill_slot("\"a, b\""), []);
+}

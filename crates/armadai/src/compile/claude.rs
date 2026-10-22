@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
-use armadai_model::{Agent, AgentFront, Cap, Delegation, Flow, NativeValue, Project, Tier};
+use armadai_model::{
+    Agent, AgentFront, Cap, Command, Delegation, Flow, NativeValue, Project, Tier, agent_skills,
+};
 use serde_json::{Map, Value};
 
 use super::{
@@ -24,6 +26,8 @@ const CAP_TOOLS: [(&str, &[&str]); 5] = [
 
 const ASK: &str = "Claude Code asks per project/session permission, not per agent";
 const MAIN: &str = "the coordinator runs as the main session (CLAUDE.md), not as a subagent";
+const NO_PRELOAD: &str =
+    "skills are discovered project-wide from .claude/skills; the main session cannot preload them";
 
 pub struct ClaudeCompiler;
 
@@ -36,12 +40,12 @@ impl Compiler for ClaudeCompiler {
         informational(&mut plan.report, project);
         for (id, agent) in &project.agents {
             if Some(id.as_str()) == coordinator {
-                coordinator_lines(&mut plan.report, id, &agent.front);
+                coordinator_lines(&mut plan.report, project, id, &agent.front);
                 continue;
             }
             plan.artifacts.push(Artifact {
                 path: PathBuf::from(format!("agents/{id}.md")),
-                content: agent_file(id, agent, &mut plan.report)?.into_bytes(),
+                content: agent_file(project, id, agent, &mut plan.report)?.into_bytes(),
                 kind: ArtifactKind::Agent,
                 produced_by: ProducedBy::agent(id),
             });
@@ -78,6 +82,16 @@ impl Compiler for ClaudeCompiler {
                     Some("kept in SKILL.md as is, for Claude Code to read"),
                 );
             }
+        }
+        for (id, c) in &project.commands {
+            plan.artifacts.push(Artifact {
+                path: PathBuf::from(format!("commands/{id}.md")),
+                content: command_file(id, c, &mut plan.report)?.into_bytes(),
+                kind: ArtifactKind::Command,
+                produced_by: ProducedBy::command(id),
+            });
+            plan.report
+                .push(T, format!("command {id}"), Status::Compiled, None);
         }
         plan.artifacts.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -283,7 +297,7 @@ fn informational(r: &mut Report, project: &Project) {
     }
 }
 
-fn coordinator_lines(r: &mut Report, id: &str, f: &AgentFront) {
+fn coordinator_lines(r: &mut Report, project: &Project, id: &str, f: &AgentFront) {
     let mut fields = Vec::new();
     if caps(f).iter().any(|(_, c)| c.is_some()) {
         fields.push("capabilities");
@@ -299,12 +313,10 @@ fn coordinator_lines(r: &mut Report, id: &str, f: &AgentFront) {
             T,
             format!("agent {id} skills"),
             Status::Approximated,
-            Some(
-                "skills are discovered project-wide from .claude/skills; the main session \
-                 cannot preload them",
-            ),
+            Some(NO_PRELOAD),
         );
     }
+    super::slot_lines(r, T, project, id, f, Some(NO_PRELOAD));
     for field in fields {
         r.push(
             T,
@@ -315,13 +327,20 @@ fn coordinator_lines(r: &mut Report, id: &str, f: &AgentFront) {
     }
 }
 
-fn agent_file(id: &str, agent: &Agent, r: &mut Report) -> anyhow::Result<String> {
+fn agent_file(
+    project: &Project,
+    id: &str,
+    agent: &Agent,
+    r: &mut Report,
+) -> anyhow::Result<String> {
     let f = &agent.front;
     let mut m = Map::new();
     m.insert("name".into(), id.into());
     m.insert("description".into(), f.description.as_str().into());
-    if let Some(t) = f.tier {
-        m.insert("model".into(), alias(t).into());
+    // `native.claude.model` is the documented override of the tier
+    let native_model = (f.native.get(T)).and_then(|n| n.get("model")).cloned();
+    if let Some(model) = native_model.or_else(|| f.tier.map(|t| alias(t).into())) {
+        m.insert("model".into(), model);
     }
     let mut denied = Vec::new();
     for ((name, cap), (_, tools)) in caps(f).into_iter().zip(CAP_TOOLS) {
@@ -341,8 +360,9 @@ fn agent_file(id: &str, agent: &Agent, r: &mut Report) -> anyhow::Result<String>
     if !denied.is_empty() {
         m.insert("disallowedTools".into(), denied.join(", ").into());
     }
-    if !f.skills.is_empty() {
-        let list: Vec<Value> = f.skills.iter().map(|s| s.as_str().into()).collect();
+    let skills = agent_skills(project, id);
+    if !skills.is_empty() {
+        let list: Vec<Value> = skills.into_iter().map(Value::from).collect();
         m.insert("skills".into(), Value::Array(list));
         r.push(
             T,
@@ -351,17 +371,8 @@ fn agent_file(id: &str, agent: &Agent, r: &mut Report) -> anyhow::Result<String>
             Some("preloaded through the subagent `skills` field"),
         );
     }
-    if let Some(native) = f.native.get(T) {
-        let Some(native) = native.as_object() else {
-            bail!("agent `{id}`: native.claude must be a mapping");
-        };
-        for (k, v) in native {
-            // `model` is the documented override of the tier; any other generated key wins nothing
-            if k != "model" && m.contains_key(k) {
-                bail!("agent `{id}`: native.claude key `{k}` collides with a generated key");
-            }
-            m.insert(k.clone(), v.clone());
-        }
+    super::slot_lines(r, T, project, id, f, None);
+    if super::merge_native(&mut m, &f.native, T, &format!("agent `{id}`"), &["model"])? {
         r.push(
             T,
             format!("agent {id} native"),
@@ -372,6 +383,31 @@ fn agent_file(id: &str, agent: &Agent, r: &mut Report) -> anyhow::Result<String>
     let yaml = armadai_model::yaml::to_string(&NativeValue(Value::Object(m)))
         .context("subagent frontmatter")?;
     let mut out = format!("---\n{yaml}---\n{}", agent.body);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// `.claude/commands/<id>.md` (skills doc, `code.claude.com/docs/en/skills.md`,
+/// 2026-10-21: `.claude/commands/` files keep working, same frontmatter as a skill).
+fn command_file(id: &str, c: &Command, r: &mut Report) -> anyhow::Result<String> {
+    let mut m = Map::new();
+    m.insert("description".into(), c.front.description.as_str().into());
+    if let Some(h) = &c.front.argument_hint {
+        m.insert("argument-hint".into(), h.as_str().into());
+    }
+    if super::merge_native(&mut m, &c.front.native, T, &format!("command `{id}`"), &[])? {
+        r.push(
+            T,
+            format!("command {id} native"),
+            Status::Compiled,
+            Some("merged into the command frontmatter"),
+        );
+    }
+    let yaml = armadai_model::yaml::to_string(&NativeValue(Value::Object(m)))
+        .context("command frontmatter")?;
+    let mut out = format!("---\n{yaml}---\n{}", c.body);
     if !out.ends_with('\n') {
         out.push('\n');
     }
@@ -1057,6 +1093,118 @@ mod tests {
         assert!(
             !block.contains("`dev`: Writes code (not delegable"),
             "{block}"
+        );
+    }
+
+    const BRIEF: (&str, &[u8]) = (
+        ".armadai/commands/brief.md",
+        b"---\ndescription: Refine an idea\nargument_hint: <idea>\n---\nRefine: $ARGUMENTS\n",
+    );
+
+    #[test]
+    fn a_command_compiles_to_a_command_file() {
+        let plan = compile(&[M, BRIEF]).unwrap();
+        assert_eq!(
+            text(&plan, "commands/brief.md"),
+            "---\ndescription: Refine an idea\nargument-hint: <idea>\n---\nRefine: $ARGUMENTS\n"
+        );
+        let a = artifact(&plan, "commands/brief.md");
+        assert_eq!(a.kind, ArtifactKind::Command);
+        assert_eq!(
+            a.produced_by,
+            crate::linker::manifest::ProducedBy::command("brief")
+        );
+        let l = line(&plan, "command brief");
+        assert_eq!((l.status, l.reason.as_deref()), (Status::Compiled, None));
+    }
+
+    #[test]
+    fn command_native_keys_are_merged_and_a_collision_is_an_error() {
+        let plan = compile(&[
+            M,
+            (
+                ".armadai/commands/brief.md",
+                b"---\ndescription: Refine an idea\nnative:\n  claude:\n    allowed-tools: Read\n---\nRefine: $ARGUMENTS\n",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            text(&plan, "commands/brief.md"),
+            "---\ndescription: Refine an idea\nallowed-tools: Read\n---\nRefine: $ARGUMENTS\n"
+        );
+        let err = compile(&[
+            M,
+            (
+                ".armadai/commands/brief.md",
+                b"---\ndescription: Refine an idea\nnative:\n  claude:\n    description: x\n---\nRefine: $ARGUMENTS\n",
+            ),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "command `brief`: native.claude key `description` collides with a generated key"
+        );
+    }
+
+    fn slotted(
+        project_yaml: &'static [u8],
+        agent: &'static str,
+    ) -> Vec<(&'static str, &'static [u8])> {
+        vec![
+            (".armadai/project.yaml", project_yaml),
+            (
+                ".armadai/skills/b-std/SKILL.md",
+                b"---\nname: b-std\ndescription: B\nmetadata:\n  armadai-slot: code-standards\n---\nB\n",
+            ),
+            (
+                ".armadai/skills/a-std/SKILL.md",
+                b"---\nname: a-std\ndescription: A\nmetadata:\n  armadai-slot: code-standards\n---\nA\n",
+            ),
+            (agent, b"---\ndescription: d\nslots: [code-standards, security]\n---\nB\n"),
+        ]
+    }
+
+    #[test]
+    fn slot_skills_are_preloaded_and_each_slot_is_reported() {
+        let plan = compile(&slotted(M.1, ".armadai/agents/dev.md")).unwrap();
+        assert_eq!(
+            front(&plan, "agents/dev.md").get("skills").cloned(),
+            Some(serde_json::json!(["a-std", "b-std"]))
+        );
+        let l = line(&plan, "agent dev slot code-standards");
+        assert_eq!(
+            (l.status, l.reason.as_deref()),
+            (Status::Compiled, Some("a-std, b-std"))
+        );
+        let l = line(&plan, "agent dev slot security");
+        assert_eq!(
+            (l.status, l.reason.as_deref()),
+            (Status::NotCompiled, Some("no skill fills it"))
+        );
+    }
+
+    #[test]
+    fn coordinator_slots_are_approximated_like_its_skills() {
+        let plan = compile(&slotted(
+            b"schema_version: 1\ncoordinator: lead\n",
+            ".armadai/agents/lead.md",
+        ))
+        .unwrap();
+        let l = line(&plan, "agent lead slot code-standards");
+        assert_eq!(
+            (l.status, l.reason.as_deref()),
+            (
+                Status::Approximated,
+                Some(
+                    "skills are discovered project-wide from .claude/skills; the main session \
+                     cannot preload them"
+                )
+            )
+        );
+        let l = line(&plan, "agent lead slot security");
+        assert_eq!(
+            (l.status, l.reason.as_deref()),
+            (Status::NotCompiled, Some("no skill fills it"))
         );
     }
 

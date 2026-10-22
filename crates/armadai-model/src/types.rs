@@ -179,6 +179,9 @@ pub struct AgentFront {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
+    /// Named slots (`code-standards`, ...) filled by the skills that declare them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<String>,
     #[serde(default, skip_serializing_if = "Capabilities::is_empty")]
     pub capabilities: Capabilities,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -230,8 +233,23 @@ pub struct TemplateFront {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
+    /// Named slots (`code-standards`, ...) filled by the skills that declare them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<String>,
     #[serde(default, skip_serializing_if = "Capabilities::is_empty")]
     pub capabilities: Capabilities,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(with = "BTreeMap<String, serde_json::Value>")]
+    pub native: Native,
+}
+
+/// Frontmatter of `commands/<id>.md`: a prompt the user runs as `/<id>` in the main thread.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommandFront {
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     pub native: Native,

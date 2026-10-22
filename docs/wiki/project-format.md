@@ -13,6 +13,7 @@ with "legacy format, run `armadai migrate`" (see [Migrating](#migrating-a-legacy
   skills/<id>/SKILL.md    # cross-tool skill standard, folder copied as is
   flows/<id>.yaml
   automations/<id>.yaml
+  commands/<id>.md        # commands the user types (`/<id>`)
   native/<target>/<path>  # files copied as is by link
 ```
 
@@ -20,7 +21,7 @@ Every file is strict YAML: an unknown key, a duplicate key or a value outside it
 error, except under `native` (opaque) and in a skill's frontmatter (owned by other tools: an
 unknown key is a warning). Files are discovered per directory and sorted; nothing is listed in the
 manifest. An **id** is the file (or folder) name and matches `[a-z0-9][a-z0-9-]{0,63}`; it is the
-only identity of an agent, template, skill, flow or automation. The supported targets are `claude`, `codex`,
+only identity of an agent, template, skill, flow, automation or command. The supported targets are `claude`, `codex`,
 `copilot` and `opencode`. JSON Schemas of every file are in `schemas/v1/`.
 
 ## `project.yaml`
@@ -47,6 +48,7 @@ tier: pro                               # fast | pro | max
 temperature: 0.4                        # optional
 tags: [dev]
 skills: [rust-conventions]              # skill ids of the project
+slots: [code-standards]                 # optional: slots other packs fill (see Slots)
 capabilities: { read: allow, write: ask, shell: ask, web: deny, delegate: allow }
 native: { claude: { model: claude-sonnet-4-5 } }
 ---
@@ -135,6 +137,9 @@ Frontmatter: `name` (equal to the folder name), `description` (required, at most
 characters), `license`, `compatibility`, `metadata`. Other keys are kept and reported as
 warnings. The folder's other files (scripts, references) are untouched.
 
+`metadata: { armadai-slot: code-standards }` makes the skill fill a slot (see
+[Slots](#slots)); several slots are separated by commas (`armadai-slot: "code-standards, security"`).
+
 ## `flows/<id>.yaml`
 
 ```yaml
@@ -178,10 +183,63 @@ description: …          # optional
 native: {}              # optional, opaque
 ```
 
+## `commands/<id>.md`
+
+A command is a shortcut the user types, `/<id> some text`. It runs in the main conversation, so
+it keeps the interaction with the user (questions, validation); a long method belongs in a
+skill the command tells the model to load.
+
+```markdown
+---
+description: Refine an idea into a brief   # required
+argument_hint: <idea>                      # optional, Claude Code autocomplete hint
+native: { claude: { allowed-tools: Read } } # optional, merged into the target's frontmatter
+---
+Refine this idea into a brief: $ARGUMENTS
+```
+
+- The body is the text sent; `$ARGUMENTS` is replaced by everything typed after the name. It is
+  the only portable placeholder: `$<digit>` and `$ARGUMENTS[N]` are an error, since Claude Code
+  indexes arguments from 0 and OpenCode from 1 (`$5` in plain text too: write `5 USD`).
+- `` !`cmd` `` and a line starting with ```` ```! ```` are an error: both targets would run the
+  shell when the command is typed. An author who wants that writes a native file
+  (`.armadai/native/<target>/…`, see [Link](link.md#pipeline)) under an id none of the commands
+  uses, at their risk: the `native` key of a command only adds frontmatter keys.
+- `${CLAUDE_…}` substitutions (`${CLAUDE_SESSION_ID}`, `${CLAUDE_SKILL_DIR}`,
+  `${CLAUDE_PROJECT_DIR}`…) are an error: Claude Code replaces them, OpenCode sends them as is.
+- No `agent`, `context` or `subagent` key is generated: a command running in a subagent loses
+  the interaction with the user. `native` can still set them.
+- An id equal to a skill id is an error (Claude Code would run the skill and ignore the command);
+  an id equal to a built-in command of Claude Code or OpenCode (`init`, `review`, `help`…, list in
+  `crates/armadai-model/src/check.rs`) is a warning, since one hides the other.
+- Only `.md` files directly under `commands/` are loaded: a sub-folder is ignored with a warning
+  (Claude Code would name `commands/a/b.md` `/a:b`, OpenCode `/a/b`).
+
+## Slots
+
+A slot lets a pack be completed by another one (code standards, infrastructure docs, security
+guides) without rewriting its agents. An agent declares what it consumes, `slots:
+[code-standards]`; a skill declares what it provides, `metadata: { armadai-slot: code-standards
+}`; `link` gives the agent every skill of the project that fills one of its slots: preloaded
+under Claude Code, prescribed under OpenCode. A slot never restricts the agent's other skills:
+under OpenCode only declared `skills:` produce a `permission.skill` rule (see
+[Link](link.md#opencode)).
+
+- The agent's skills are its `skills:` in declared order, then the skills of its slots sorted by
+  id, each once.
+- A slot only holds skills: it cannot bring agents nor change a flow.
+- A slot no skill fills is not an error (the pack works with no standard plugged in): `link`
+  reports `agent <id> slot <s>: not-compiled (no skill fills it)`. A skill filling a slot no agent
+  declares is not a diagnostic either (a standards pack may be installed before the team).
+- `armadai list` shows a `Slots:` section with the slots agents declare and the skills filling
+  each (`code-standards: a-std, b-std`, or `(none)`); a slot only skills name does not appear.
+  In `armadai inspect <agent>`, `Skills:` is the declared list, the skills coming from slots are
+  on the `Slots:` lines.
+
 ## `native`
 
-A map `{ claude|codex|copilot|opencode: <free YAML> }` accepted on the manifest, agents and
-automations. Only its keys are checked (they must be supported targets); its content is
+A map `{ claude|codex|copilot|opencode: <free YAML> }` accepted on the manifest, agents,
+commands and automations. Only its keys are checked (they must be supported targets); its content is
 "native, not checked".
 
 ## Creating a project
@@ -194,6 +252,7 @@ armadai new agent reviewer --template dev-review --stack rust
 armadai new agent guardian --from checker --var subject="the frame"   # templates/checker.md
 armadai new flow review --template review-loop --agents dev,reviewer
 armadai new automation fmt --event after-tool --run "cargo fmt"
+armadai new command brief --description "Refine an idea into a brief"   # body: $ARGUMENTS
 armadai validate
 ```
 
@@ -263,7 +322,7 @@ warning on stderr.
 | `ignored-file` | warning | A `.yml` file in `flows/` or `automations/` is not loaded | Rename it to `.yaml` |
 | `sequence-and-steps` | error | A flow has both `sequence` and `steps`/`links` | Keep one form |
 | `duplicate-step` | error | A `sequence` defines the same step id twice | Use `{ id: …, agent: … }` for the repeat |
-| `bad-id` | error | A file, folder or step id, or a `vars` name, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
+| `bad-id` | error | A file, folder or step id, a `vars` name or a slot name of an agent's `slots`, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
 | `unknown-target` | error | A target in `targets`, `outputs` or a `native` key is not supported | Use `claude`, `codex`, `copilot` or `opencode` |
 | `bad-output` | error | An `outputs` value is absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` | Use a folder inside the project such as `.claude` (`link --output` can point elsewhere for one run) |
 | `unknown-agent` | error | A step or `coordinator` names no agent of the project | Use an existing agent id (the hint suggests a close one) |
@@ -292,6 +351,15 @@ warning on stderr.
 | `vars-without-template` | error | An agent has `vars` but no `from` | Add `from: <template>`, or remove `vars` |
 | `nested-template` | error | A template uses `from` (a template does not inherit, not in this version) | Copy the keys you need into it |
 | `template-agent-collision` | error | A template and an agent have the same id | Rename one of them |
+| `bad-slot` | error | A skill's `armadai-slot` is empty, has an empty name (two commas in a row, a comma at an end) or a name that is not a valid id | Name the slots, separated by single commas: `armadai-slot: code-standards, security` |
+| `command-empty-description` | error | A command's `description` is empty | Write a one-line description |
+| `command-empty-argument-hint` | error | A command's `argument_hint` is empty | Remove it, or describe the expected input, such as `<idea>` |
+| `command-empty-body` | error | A command's body is empty | Write the text the command sends, citing `$ARGUMENTS` |
+| `command-positional-argument` | error | The body holds `$<digit>` or `$ARGUMENTS[`: Claude Code and OpenCode read them differently | Only `$ARGUMENTS` is portable: rephrase the text (an amount: `5 USD`) |
+| `command-shell-expansion` | error | The body holds `` !` `` or a line starting with ```` ```! ````: a shell run when the command is typed | Remove it: ArmadAI never compiles shell execution at command time |
+| `command-target-variable` | error | The body holds a `${CLAUDE_…}` substitution, replaced by Claude Code only | Only `$ARGUMENTS` is portable: remove it, or put it in a native file |
+| `command-shadows-skill` | error | A command has the id of a skill | Rename one of them (Claude Code would run the skill and ignore the command) |
+| `command-shadows-builtin` | warning | A command has the name of a built-in command of Claude Code or OpenCode | Pick another name: one of them hides the other |
 
 ## Migrating a legacy project
 

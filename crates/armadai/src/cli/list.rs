@@ -1,4 +1,5 @@
-//! `armadai list`: the agents, skills, templates, flows and automations of the project.
+//! `armadai list`: the agents, skills, templates, flows, automations, commands and
+//! slots of the project.
 //!
 //! Read-only: a project with errors is still listed (diagnostics on stderr), as far
 //! as it loads.
@@ -21,6 +22,16 @@ pub fn load_for_reading() -> anyhow::Result<Project> {
     loaded
         .project
         .ok_or_else(|| anyhow::anyhow!("the project manifest could not be read"))
+}
+
+/// `<slot>: <the skills filling it>`, or `(none)`.
+pub fn slot_line(project: &Project, slot: &str) -> String {
+    let fills = armadai_model::slots::slot_fills(project, slot);
+    if fills.is_empty() {
+        format!("{slot}: (none)")
+    } else {
+        format!("{slot}: {}", fills.join(", "))
+    }
 }
 
 pub fn tier_str(t: Option<Tier>) -> &'static str {
@@ -84,10 +95,20 @@ pub fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
         ("Templates", project.templates.keys().collect()),
         ("Flows", project.flows.keys().collect()),
         ("Automations", project.automations.keys().collect()),
+        ("Commands", project.commands.keys().collect()),
     ] {
         if !ids.is_empty() {
             let ids: Vec<&str> = ids.into_iter().map(String::as_str).collect();
             anstream::println!("{h}{title}:{h:#} {}", ids.join(", "));
+        }
+    }
+    let slots: std::collections::BTreeSet<&String> = (project.agents.values())
+        .flat_map(|a| &a.front.slots)
+        .collect();
+    if !slots.is_empty() {
+        anstream::println!("{h}Slots:{h:#}");
+        for slot in slots {
+            anstream::println!("  {}", slot_line(&project, slot));
         }
     }
     Ok(())

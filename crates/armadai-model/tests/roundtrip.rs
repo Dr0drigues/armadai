@@ -32,6 +32,7 @@ fn normalized(mut p: Project) -> Project {
     p.agents.values_mut().for_each(|a| fix(&mut a.body));
     p.skills.values_mut().for_each(|s| fix(&mut s.body));
     p.templates.values_mut().for_each(|t| fix(&mut t.body));
+    p.commands.values_mut().for_each(|c| fix(&mut c.body));
     (p.agents.values_mut().filter_map(|a| a.instance.as_mut())).for_each(|i| fix(&mut i.body));
     p
 }
@@ -140,6 +141,7 @@ fn agent_key_order_follows_the_struct() {
     assert!(out.starts_with("---\ndescription:"));
     assert!(pos("title") < pos("tier") && pos("tier") < pos("temperature"));
     assert!(pos("temperature") < pos("tags") && pos("skills") < pos("capabilities"));
+    assert!(pos("skills") < pos("slots") && pos("slots") < pos("capabilities"));
     assert!(pos("capabilities") < pos("native"));
 }
 
@@ -190,6 +192,15 @@ fn write_refuses_ids_that_are_not_safe_file_names() {
         let e = write_project(&q, dir.path()).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "template {bad}");
         assert!(!dir.path().join(".armadai").exists(), "template {bad}");
+    }
+    let command = p.commands["brief"].clone();
+    for bad in ["../evil", "Dev"] {
+        let mut q = p.clone();
+        q.commands.insert(bad.to_string(), command.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let e = write_project(&q, dir.path()).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "command {bad}");
+        assert!(!dir.path().join(".armadai").exists(), "command {bad}");
     }
     p.agents.clear();
     p.flows.clear();
@@ -276,4 +287,26 @@ fn an_instance_without_vars_writes_none() {
         }),
         "---\n---\n"
     );
+}
+
+#[test]
+fn a_command_is_written_back_byte_for_byte() {
+    let fx = fixture("full");
+    let p = load_ok(&fx);
+    let original = std::fs::read_to_string(fx.join(".armadai/commands/brief.md")).unwrap();
+    assert_eq!(render_command(&p.commands["brief"]), original);
+    let dir = tempfile::tempdir().unwrap();
+    let written = write_project(&p, dir.path()).unwrap();
+    let path = dir.path().join(".armadai/commands/brief.md");
+    assert!(written.contains(&path), "{written:?}");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+}
+
+#[test]
+fn a_command_without_hint_nor_native_writes_neither() {
+    let c = Command {
+        front: armadai_model::yaml::from_str("description: d\n").unwrap(),
+        body: "B".into(),
+    };
+    assert_eq!(render_command(&c), "---\ndescription: d\n---\nB\n");
 }
