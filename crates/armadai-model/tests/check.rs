@@ -978,6 +978,50 @@ fn command_shell_expansion_is_refused() {
     }
 }
 
+/// `${CLAUDE_…}` substitutions (Claude Code skills doc, 2026-10-22) stay literal
+/// under OpenCode: refused, positioned in the body.
+#[test]
+fn command_claude_variables_are_refused() {
+    let hint = Some("only `$ARGUMENTS` is portable: remove it, or put it in a native file");
+    for (b, line, column, token) in [
+        (
+            "Session: ${CLAUDE_SESSION_ID}\n",
+            4,
+            10,
+            "${CLAUDE_SESSION_ID}",
+        ),
+        (
+            "Read\n  ${CLAUDE_SKILL_DIR}/a.md\n",
+            5,
+            3,
+            "${CLAUDE_SKILL_DIR}",
+        ),
+        ("In ${CLAUDE_PROJECT_DIR}.\n", 4, 4, "${CLAUDE_PROJECT_DIR}"),
+    ] {
+        let ds = body(b);
+        let message =
+            format!("`{token}` is replaced by Claude Code only: OpenCode would send it as is");
+        assert_eq!(
+            said(&only(&ds, "command-target-variable")),
+            (
+                Severity::Error,
+                "brief.md",
+                Some(line),
+                Some(column),
+                message.as_str(),
+                hint
+            ),
+            "{b}"
+        );
+    }
+    // `$ARGUMENTS` and a shell-style `${HOME}` are not Claude substitutions
+    let ds = body("Do $ARGUMENTS in ${HOME}\n");
+    assert!(
+        ds.iter().all(|d| d.code != "command-target-variable"),
+        "{ds:?}"
+    );
+}
+
 #[test]
 fn a_command_cannot_share_its_id_with_a_skill() {
     let ds = diags(&[

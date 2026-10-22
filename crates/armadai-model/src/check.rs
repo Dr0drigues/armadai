@@ -938,6 +938,31 @@ fn check_command(o: &mut Out, id: &str, c: &crate::load::Command, skills: &BTree
             shell_hint(),
         );
     }
+    // `${CLAUDE_SESSION_ID}`, `${CLAUDE_SKILL_DIR}`… (Claude Code skills doc, read on
+    // 2026-10-22): substituted by Claude Code, literal text under OpenCode
+    let mut seen = Vec::new();
+    for (i, _) in c.body.match_indices("${CLAUDE_") {
+        let rest = &c.body[i + 2..];
+        let name = rest.len()
+            - rest
+                .trim_start_matches(|ch: char| ch.is_ascii_alphanumeric() || ch == '_')
+                .len();
+        let end = i + 2 + name + usize::from(rest[name..].starts_with('}'));
+        let token = &c.body[i..end];
+        if seen.contains(&token) {
+            continue;
+        }
+        seen.push(token);
+        let pos = o.body_pos(at, &c.body, i);
+        o.emit_pos(
+            at,
+            Severity::Error,
+            "command-target-variable",
+            pos,
+            format!("`{token}` is replaced by Claude Code only: OpenCode would send it as is"),
+            Some("only `$ARGUMENTS` is portable: remove it, or put it in a native file".into()),
+        );
+    }
     if skills.contains(id) {
         o.err(
             at,
