@@ -143,4 +143,13 @@ mod tests {
             Err(vec!["a".to_string()])
         );
     }
+
+    #[test]
+    fn strings_in_lists_and_maps_are_rendered_keys_are_not() {
+        let mut v = serde_json::json!({ "{{a}}": ["{{a}}", { "k": "{{ a }}" }, 1] });
+        let mut missing = BTreeSet::new();
+        render_value(&mut v, &vars(&[("a", "x")]), &mut missing);
+        assert_eq!(v, serde_json::json!({ "{{a}}": ["x", { "k": "x" }, 1] }));
+        assert_eq!(missing, BTreeSet::new());
+    }
 }
