@@ -697,3 +697,29 @@ fn a_non_finite_temperature_from_the_template_points_at_the_template() {
         )]
     );
 }
+
+#[test]
+fn a_template_error_shared_by_instances_is_reported_once() {
+    let ds = validated(&[
+        M,
+        (
+            ".armadai/templates/checker.md",
+            "---\ndescription: d\nskills: [nope, nada]\n---\n",
+        ),
+        (".armadai/agents/guardian.md", "---\nfrom: checker\n---\n"),
+        (".armadai/agents/validator.md", "---\nfrom: checker\n---\n"),
+    ]);
+    // two errors of the same code on the same file stay two
+    let unknown = |column, name: &str| {
+        (
+            Severity::Error,
+            "unknown-skill",
+            "templates/checker.md".to_string(),
+            Some(3),
+            Some(column),
+            format!("unknown skill `{name}`"),
+            None,
+        )
+    };
+    assert_eq!(ds, vec![unknown(10, "nope"), unknown(16, "nada")]);
+}

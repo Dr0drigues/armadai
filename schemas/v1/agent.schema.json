@@ -82,6 +82,11 @@
       ]
     },
     {
+      "properties": {
+        "from": {
+          "type": "string"
+        }
+      },
       "required": [
         "from"
       ]

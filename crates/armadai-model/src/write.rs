@@ -152,3 +152,19 @@ pub fn write_project(project: &Project, root: &Path) -> std::io::Result<Vec<Path
     }
     Ok(files.into_iter().map(|(p, _)| p).collect())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn agent_keys_are_the_agent_front_fields() {
+        let schema = serde_json::to_value(schemars::schema_for!(crate::types::AgentFront)).unwrap();
+        let mut fields: Vec<&str> = (schema["properties"].as_object().unwrap().keys())
+            .map(String::as_str)
+            .filter(|k| !matches!(*k, "from" | "vars"))
+            .collect();
+        fields.sort();
+        let mut keys = super::AGENT_KEYS.to_vec();
+        keys.sort();
+        assert_eq!(keys, fields);
+    }
+}

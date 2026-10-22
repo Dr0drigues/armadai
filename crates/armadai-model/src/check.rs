@@ -175,6 +175,13 @@ impl Out<'_> {
             _ => (None, None),
         };
         let file = origin.map_or_else(|| PathBuf::from(id), |(f, _)| f.clone());
+        // a template error is met once per instance: report it once
+        let seen = |d: &Diagnostic| {
+            (d.code, &d.file, d.line, d.column, &d.message) == (code, &file, line, column, &message)
+        };
+        if kind == Kind::Template && self.ds.iter().any(seen) {
+            return;
+        }
         self.ds.push(Diagnostic {
             severity,
             code,

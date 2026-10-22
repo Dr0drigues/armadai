@@ -203,7 +203,11 @@ fn description_unless_from(s: &mut schemars::Schema) {
     }
     s.insert(
         "anyOf".into(),
-        serde_json::json!([{ "required": ["description"] }, { "required": ["from"] }]),
+        serde_json::json!([
+            { "required": ["description"] },
+            // `from: null` must not count as an instance
+            { "required": ["from"], "properties": { "from": { "type": "string" } } },
+        ]),
     );
 }
 

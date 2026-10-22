@@ -53,7 +53,10 @@ fn agent_description_is_required_unless_from_is_set() {
     assert_eq!(s.get("required"), None);
     assert_eq!(
         s["anyOf"],
-        serde_json::json!([{ "required": ["description"] }, { "required": ["from"] }])
+        serde_json::json!([
+            { "required": ["description"] },
+            { "required": ["from"], "properties": { "from": { "type": "string" } } },
+        ])
     );
     for k in ["from", "vars"] {
         assert!(s["properties"].get(k).is_some(), "{k}");
