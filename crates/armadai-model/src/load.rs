@@ -1,17 +1,40 @@
 //! Loading of a `.armadai/` directory, accumulating positioned diagnostics.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
 
 use crate::SCHEMA_VERSION;
+use crate::agent_templates::{render, render_value, value_variables, variables};
 use crate::diag::{Diagnostic, Severity, locate, locate_key};
 use crate::types::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Agent {
     pub front: AgentFront,
+    pub body: String,
+    /// The instance form (`from` + `vars` + own keys + own body) when this agent was
+    /// rendered from a template; `None` for an agent written by hand.
+    pub instance: Option<Instance>,
+}
+
+/// What an instance file says, before rendering (kept so a rewrite never flattens it).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Instance {
+    pub from: String,
+    pub vars: BTreeMap<String, String>,
+    /// The instance's own frontmatter keys, `from` and `vars` excluded, unrendered.
+    pub front: Map<String, Value>,
+    /// The instance's own body, unrendered.
+    pub body: String,
+}
+
+/// An agent template (`templates/<id>.md`), unrendered.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Template {
+    pub front: TemplateFront,
     pub body: String,
 }
 
@@ -35,6 +58,7 @@ pub struct Flow {
 pub struct Project {
     pub manifest: Manifest,
     pub agents: BTreeMap<String, Agent>,
+    pub templates: BTreeMap<String, Template>,
     pub skills: BTreeMap<String, Skill>,
     pub flows: BTreeMap<String, Flow>,
     pub automations: BTreeMap<String, Automation>,
@@ -47,6 +71,7 @@ pub enum Kind {
     Skill,
     Flow,
     Automation,
+    Template,
 }
 
 /// Source path and text of every loaded file (the manifest is keyed by `"project"`).
@@ -202,6 +227,13 @@ impl Ctx {
         message: String,
     ) {
         self.diag(Severity::Error, code, file, pos, message);
+    }
+
+    /// Attach `hint` to the last diagnostic.
+    fn hint(&mut self, hint: Option<String>) {
+        if let Some(d) = self.diagnostics.last_mut() {
+            d.hint = hint;
+        }
     }
 
     /// True for `.yaml`; a `.yml` file is skipped with an `ignored-file` warning.
@@ -369,6 +401,57 @@ pub fn load_project(root: &Path) -> Loaded {
         None
     };
 
+    // templates first: agents are rendered from them
+    let mut templates = BTreeMap::new();
+    let mut template_maps = BTreeMap::new();
+    for p in sorted(&base.join("templates")) {
+        if p.extension().is_none_or(|e| e != "md") {
+            continue;
+        }
+        let id = stem(&p);
+        let Some(text) = cx.read(Kind::Template, &id, &p) else {
+            continue;
+        };
+        if !crate::is_valid_id(&id) {
+            cx.error(
+                "bad-id",
+                &p,
+                (None, None),
+                format!("`{id}` is not a valid id"),
+            );
+            cx.hint(Some(ID_RULE.into()));
+            continue;
+        }
+        let Some((yaml, body, first)) = cx.frontmatter(&text, &p) else {
+            continue;
+        };
+        // a template may set no key at all
+        let yaml = if yaml.trim().is_empty() { "{}" } else { yaml };
+        let Some(map) = cx.parse::<Map<String, Value>>(yaml, &p, first - 1) else {
+            continue;
+        };
+        if map.contains_key("from") {
+            cx.error(
+                "nested-template",
+                &p,
+                locate_key(&text, "from"),
+                format!("template `{id}` cannot use `from`: a template does not inherit"),
+            );
+            continue;
+        }
+        let Some(front) = cx.parse::<TemplateFront>(yaml, &p, first - 1) else {
+            continue;
+        };
+        template_maps.insert(id.clone(), map);
+        templates.insert(
+            id,
+            Template {
+                front,
+                body: body.to_string(),
+            },
+        );
+    }
+
     let mut agents = BTreeMap::new();
     for p in sorted(&base.join("agents")) {
         if p.extension().is_none_or(|e| e != "md") {
@@ -381,12 +464,37 @@ pub fn load_project(root: &Path) -> Loaded {
         let Some((yaml, body, first)) = cx.frontmatter(&text, &p) else {
             continue;
         };
+        // routing only: a frontmatter that does not parse is reported by the typed parse
+        let raw = crate::yaml::from_str::<Map<String, Value>>(yaml).ok();
+        if let Some(own) = raw.clone().filter(|m| m.contains_key("from")) {
+            let src = Source {
+                path: &p,
+                text: &text,
+                yaml,
+                body,
+                first,
+            };
+            if let Some(a) = instance(&mut cx, &templates, &template_maps, &src, own) {
+                agents.insert(id, a);
+            }
+            continue;
+        }
+        if raw.is_some_and(|m| m.contains_key("vars")) {
+            cx.error(
+                "vars-without-template",
+                &p,
+                locate_key(&text, "vars"),
+                "`vars` is only allowed with `from: <template>`".into(),
+            );
+            continue;
+        }
         if let Some(front) = cx.parse::<AgentFront>(yaml, &p, first - 1) {
             agents.insert(
                 id,
                 Agent {
                     front,
                     body: body.to_string(),
+                    instance: None,
                 },
             );
         }
@@ -499,6 +607,7 @@ pub fn load_project(root: &Path) -> Loaded {
         project: manifest.map(|manifest| Project {
             manifest,
             agents,
+            templates,
             skills,
             flows,
             automations,
@@ -506,6 +615,158 @@ pub fn load_project(root: &Path) -> Loaded {
         origins: cx.origins,
         diagnostics: cx.diagnostics,
     }
+}
+
+const ID_RULE: &str = "ids match [a-z0-9][a-z0-9-]{0,63}";
+
+/// An instance file being rendered.
+struct Source<'a> {
+    path: &'a Path,
+    text: &'a str,
+    yaml: &'a str,
+    body: &'a str,
+    first: usize,
+}
+
+/// Render the instance `src` (frontmatter `own`, which has `from`) from its template:
+/// strings rendered, top-level keys of the instance replacing the template's, bodies
+/// joined by one blank line, then the result parsed as an ordinary agent.
+fn instance(
+    cx: &mut Ctx,
+    templates: &BTreeMap<String, Template>,
+    template_maps: &BTreeMap<String, Map<String, Value>>,
+    src: &Source,
+    mut own: Map<String, Value>,
+) -> Option<Agent> {
+    let (p, text) = (src.path, src.text);
+    // the instance's own keys, typed and positioned; its template may set `description`
+    // shortcut: appending a block key breaks a flow-style (`{...}`) frontmatter; upgrade if one is ever seen
+    let with_description;
+    let yaml = if own.contains_key("description") {
+        src.yaml
+    } else {
+        with_description = format!("{}\ndescription: x\n", src.yaml);
+        &with_description
+    };
+    let typed: AgentFront = cx.parse(yaml, p, src.first - 1)?;
+    let from = typed.from.unwrap_or_default();
+    let vars = typed.vars;
+    let bad: Vec<&String> = vars.keys().filter(|k| !crate::is_valid_id(k)).collect();
+    for k in &bad {
+        cx.error(
+            "bad-id",
+            p,
+            locate_key(text, k),
+            format!("variable `{k}` is not a valid name"),
+        );
+        cx.hint(Some(ID_RULE.into()));
+    }
+    let Some(tmap) = template_maps.get(&from) else {
+        // a template that exists but did not load is reported on itself
+        if !cx
+            .origins
+            .files
+            .contains_key(&(Kind::Template, from.clone()))
+        {
+            cx.error(
+                "unknown-template",
+                p,
+                locate_key(text, "from"),
+                format!("unknown template `{from}`"),
+            );
+            let known: BTreeSet<&str> = templates.keys().map(String::as_str).collect();
+            cx.hint(crate::check::hint_for(&from, &known));
+        }
+        return None;
+    };
+    if !bad.is_empty() {
+        return None;
+    }
+    own.remove("from");
+    own.remove("vars");
+    let template_body = &templates[&from].body;
+
+    let mut used = variables(template_body);
+    used.extend(variables(src.body));
+    tmap.values()
+        .chain(own.values())
+        .for_each(|v| value_variables(v, &mut used));
+    let mut missing = BTreeSet::new();
+    let mut merged = tmap.clone();
+    let mut rendered_own = own.clone();
+    merged
+        .values_mut()
+        .chain(rendered_own.values_mut())
+        .for_each(|v| render_value(v, &vars, &mut missing));
+    merged.extend(rendered_own);
+    let mut body = |t: &str| {
+        render(t, &vars).unwrap_or_else(|m| {
+            missing.extend(m);
+            String::new()
+        })
+    };
+    let (tb, ib) = (body(template_body), body(src.body));
+
+    for name in &missing {
+        cx.error(
+            "missing-template-var",
+            p,
+            locate_key(text, "from"),
+            format!("template `{from}` uses `{{{{{name}}}}}`, which `vars` does not set"),
+        );
+    }
+    for k in vars.keys().filter(|k| !used.contains(*k)) {
+        cx.diag(
+            Severity::Warning,
+            "unused-template-var",
+            p,
+            locate_key(text, k),
+            format!("variable `{k}` is not used by template `{from}`"),
+        );
+    }
+    if !missing.is_empty() {
+        return None;
+    }
+
+    let body = if ib.trim().is_empty() {
+        tb
+    } else if tb.trim().is_empty() {
+        ib
+    } else {
+        format!(
+            "{}\n\n{}",
+            tb.trim_end_matches(['\r', '\n']),
+            ib.trim_start_matches(['\r', '\n'])
+        )
+    };
+    // the typed parse of an ordinary agent, on the rendered values (never the YAML text)
+    let rendered = crate::yaml::to_string(&NativeValue(Value::Object(merged)))
+        .expect("YAML values serialize to YAML");
+    let front = match crate::yaml::from_str::<AgentFront>(&rendered) {
+        Ok(f) => f,
+        Err(e) => {
+            cx.error(
+                "invalid-yaml",
+                p,
+                locate_key(text, "from"),
+                format!(
+                    "agent rendered from template `{from}`: {}",
+                    strip_positions(&e.to_string())
+                ),
+            );
+            return None;
+        }
+    };
+    Some(Agent {
+        front,
+        body,
+        instance: Some(Instance {
+            from,
+            vars,
+            front: own,
+            body: src.body.to_string(),
+        }),
+    })
 }
 
 #[cfg(test)]

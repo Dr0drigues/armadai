@@ -82,6 +82,13 @@
     "description": {
       "type": "string"
     },
+    "from": {
+      "description": "The agent template this agent is an instance of (always `None` once rendered).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "native": {
       "additionalProperties": true,
       "type": "object"
@@ -120,6 +127,13 @@
         "string",
         "null"
       ]
+    },
+    "vars": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Values of the template's `{{var}}` (always empty once rendered).",
+      "type": "object"
     }
   },
   "required": [

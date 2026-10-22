@@ -1,0 +1,337 @@
+use std::collections::BTreeMap;
+
+use armadai_model::*;
+use tempfile::TempDir;
+
+fn project(files: &[(&str, &str)]) -> TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for (p, c) in files {
+        let path = dir.path().join(p);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, c).unwrap();
+    }
+    dir
+}
+
+const M: (&str, &str) = (".armadai/project.yaml", "schema_version: 1\n");
+const CHECKER: (&str, &str) = (
+    ".armadai/templates/checker.md",
+    "---\ndescription: \"Checks {{subject}}\"\ntier: pro\ncapabilities: { write: deny, shell: deny }\n---\nYou check {{subject}}.\n",
+);
+const GUARDIAN: (&str, &str) = (
+    ".armadai/agents/guardian.md",
+    "---\nfrom: checker\nvars: { subject: the frame }\nskills: [cadre]\n---\nExtra line.\n",
+);
+
+fn load(files: &[(&str, &str)]) -> Loaded {
+    load_project(project(files).path())
+}
+
+/// (severity, code, file name, line, message, hint) of every diagnostic.
+type Short = (
+    Severity,
+    &'static str,
+    String,
+    Option<usize>,
+    String,
+    Option<String>,
+);
+
+fn short(l: &Loaded) -> Vec<Short> {
+    l.diagnostics
+        .iter()
+        .map(|d| {
+            (
+                d.severity,
+                d.code,
+                d.file.file_name().unwrap().to_string_lossy().into_owned(),
+                d.line,
+                d.message.clone(),
+                d.hint.clone(),
+            )
+        })
+        .collect()
+}
+
+fn agent<'a>(l: &'a Loaded, id: &str) -> &'a Agent {
+    &l.project.as_ref().unwrap().agents[id]
+}
+
+fn instance(vars: &str, extra: &str) -> (&'static str, String) {
+    (
+        ".armadai/agents/guardian.md",
+        format!("---\nfrom: checker\nvars: {vars}\n{extra}---\n"),
+    )
+}
+
+fn load_with(template: &str, inst: &(&'static str, String)) -> Loaded {
+    load(&[
+        M,
+        (".armadai/templates/checker.md", template),
+        (inst.0, &inst.1),
+    ])
+}
+
+#[test]
+fn instance_is_rendered_into_an_ordinary_agent() {
+    let l = load(&[M, CHECKER, GUARDIAN]);
+    assert_eq!(short(&l), vec![]);
+    let a = agent(&l, "guardian");
+    assert_eq!(a.front.description, "Checks the frame");
+    assert_eq!(a.front.tier, Some(Tier::Pro));
+    assert_eq!(a.front.skills, vec!["cadre".to_string()]);
+    assert_eq!(a.body, "You check the frame.\n\nExtra line.\n");
+    assert_eq!(a.front.from, None);
+    assert_eq!(a.front.vars, BTreeMap::new());
+    let i = a.instance.as_ref().unwrap();
+    assert_eq!(
+        (i.from.as_str(), i.body.as_str()),
+        ("checker", "Extra line.\n")
+    );
+    assert_eq!(
+        i.vars,
+        BTreeMap::from([("subject".to_string(), "the frame".to_string())])
+    );
+    assert_eq!(
+        serde_json::Value::Object(i.front.clone()),
+        serde_json::json!({ "skills": ["cadre"] })
+    );
+    // the template is loaded, unrendered
+    let t = &l.project.as_ref().unwrap().templates["checker"];
+    assert_eq!(t.front.description.as_deref(), Some("Checks {{subject}}"));
+    assert_eq!(t.body, "You check {{subject}}.\n");
+}
+
+#[test]
+fn hand_written_agent_has_no_instance() {
+    let l = load(&[
+        M,
+        (".armadai/agents/dev.md", "---\ndescription: d\n---\nB\n"),
+    ]);
+    assert_eq!(agent(&l, "dev").instance, None);
+}
+
+#[test]
+fn instance_capabilities_replace_the_whole_template_key() {
+    let l = load_with(
+        CHECKER.1,
+        &instance("{ subject: x }", "capabilities: { write: allow }\n"),
+    );
+    assert_eq!(short(&l), vec![]);
+    assert_eq!(
+        agent(&l, "guardian").front.capabilities,
+        Capabilities {
+            write: Some(Cap::Allow),
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn a_value_cannot_inject_yaml_structure() {
+    let l = load_with(CHECKER.1, &instance("{ subject: \"a: b\\nc\" }", ""));
+    assert_eq!(short(&l), vec![]);
+    let a = agent(&l, "guardian");
+    assert_eq!(a.front.description, "Checks a: b\nc");
+    assert_eq!(a.body, "You check a: b\nc.\n");
+}
+
+#[test]
+fn unknown_template_suggests_the_closest() {
+    let l = load(&[
+        M,
+        CHECKER,
+        (
+            ".armadai/agents/guardian.md",
+            "---\nvars: { zzz: q }\nfrom: chekcer\n---\n",
+        ),
+    ]);
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "unknown-template",
+            "guardian.md".into(),
+            Some(3),
+            "unknown template `chekcer`".into(),
+            Some("did you mean `checker`?".into()),
+        )]
+    );
+    assert!(!l.project.unwrap().agents.contains_key("guardian"));
+}
+
+#[test]
+fn missing_template_var_is_an_error() {
+    let l = load_with(
+        "---\ndescription: \"{{subject}}\"\n---\n{{level}}\n",
+        &instance("{ subject: x }", ""),
+    );
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "missing-template-var",
+            "guardian.md".into(),
+            Some(2),
+            "template `checker` uses `{{level}}`, which `vars` does not set".into(),
+            None,
+        )]
+    );
+    assert!(!l.project.unwrap().agents.contains_key("guardian"));
+}
+
+#[test]
+fn unused_template_var_warns_and_the_agent_loads() {
+    let l = load_with(CHECKER.1, &instance("{ subject: x, extra: y }", ""));
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Warning,
+            "unused-template-var",
+            "guardian.md".into(),
+            Some(3),
+            "variable `extra` is not used by template `checker`".into(),
+            None,
+        )]
+    );
+    assert_eq!(agent(&l, "guardian").front.description, "Checks x");
+}
+
+#[test]
+fn vars_without_template_is_an_error() {
+    let l = load(&[
+        M,
+        (
+            ".armadai/agents/dev.md",
+            "---\ndescription: d\nvars: { a: b }\n---\n",
+        ),
+    ]);
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "vars-without-template",
+            "dev.md".into(),
+            Some(3),
+            "`vars` is only allowed with `from: <template>`".into(),
+            None,
+        )]
+    );
+}
+
+#[test]
+fn nested_template_is_an_error() {
+    let l = load(&[
+        M,
+        CHECKER,
+        (
+            ".armadai/templates/strict.md",
+            "---\ndescription: s\nfrom: checker\n---\n",
+        ),
+    ]);
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "nested-template",
+            "strict.md".into(),
+            Some(3),
+            "template `strict` cannot use `from`: a template does not inherit".into(),
+            None,
+        )]
+    );
+    assert!(!l.project.unwrap().templates.contains_key("strict"));
+}
+
+#[test]
+fn bad_template_id_and_bad_variable_name() {
+    let l = load(&[
+        M,
+        (".armadai/templates/Bad.md", "---\ndescription: d\n---\n"),
+    ]);
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "bad-id",
+            "Bad.md".into(),
+            None,
+            "`Bad` is not a valid id".into(),
+            Some("ids match [a-z0-9][a-z0-9-]{0,63}".into()),
+        )]
+    );
+    let l = load_with(CHECKER.1, &instance("{ subject: x, Bad_Name: y }", ""));
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "bad-id",
+            "guardian.md".into(),
+            Some(3),
+            "variable `Bad_Name` is not a valid name".into(),
+            Some("ids match [a-z0-9][a-z0-9-]{0,63}".into()),
+        )]
+    );
+}
+
+#[test]
+fn unknown_key_in_a_template_is_reported_on_the_template() {
+    let l = load(&[
+        M,
+        (".armadai/templates/checker.md", "---\nbogus: 1\n---\n"),
+        GUARDIAN,
+    ]);
+    let ds = short(&l);
+    assert_eq!(ds.len(), 1, "{ds:?}");
+    assert_eq!(
+        (ds[0].1, ds[0].2.as_str(), ds[0].3),
+        ("invalid-yaml", "checker.md", Some(2))
+    );
+}
+
+#[test]
+fn description_left_to_nobody_is_an_error_on_the_instance() {
+    let l = load_with("---\ntier: pro\n---\n", &instance("{}", ""));
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "invalid-yaml",
+            "guardian.md".into(),
+            Some(2),
+            "agent rendered from template `checker`: missing field `description`".into(),
+            None,
+        )]
+    );
+}
+
+#[test]
+fn other_files_and_folders_in_templates_are_ignored() {
+    let l = load(&[
+        M,
+        CHECKER,
+        (".armadai/templates/x.txt", "not a template"),
+        (
+            ".armadai/templates/sub/inner.md",
+            "---\ndescription: d\n---\n",
+        ),
+    ]);
+    assert_eq!(short(&l), vec![]);
+    assert_eq!(
+        l.project.unwrap().templates.keys().collect::<Vec<_>>(),
+        vec!["checker"]
+    );
+}
+
+#[test]
+fn the_instance_own_values_and_body_are_rendered_too() {
+    let inst = (
+        ".armadai/agents/guardian.md",
+        "---\nfrom: checker\nvars: { subject: x, extra: y, more: z }\ntitle: \"T {{extra}}\"\n---\nAlso {{more}}.\n".to_string(),
+    );
+    let l = load_with(CHECKER.1, &inst);
+    assert_eq!(short(&l), vec![]);
+    let a = agent(&l, "guardian");
+    assert_eq!(a.front.title.as_deref(), Some("T y"));
+    assert_eq!(a.body, "You check x.\n\nAlso z.\n");
+}

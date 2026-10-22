@@ -101,6 +101,7 @@ fn body_without_trailing_newline_gets_one() {
     let agent = Agent {
         front: armadai_model::yaml::from_str("description: d\n").unwrap(),
         body: "no newline".into(),
+        instance: None,
     };
     assert_eq!(
         render_agent("a", &agent),

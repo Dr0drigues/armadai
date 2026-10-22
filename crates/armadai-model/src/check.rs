@@ -131,7 +131,7 @@ pub fn entry_steps(flow: &crate::load::Flow) -> Vec<String> {
 }
 
 /// "did you mean" when an id is within edit distance 2, else the known ids.
-fn hint_for(token: &str, known: &BTreeSet<&str>) -> Option<String> {
+pub(crate) fn hint_for(token: &str, known: &BTreeSet<&str>) -> Option<String> {
     // closest id (ties: alphabetical, the set is sorted), within a bound that grows with length
     let bound = (token.chars().count() / 3).max(1);
     let best = known

@@ -1,5 +1,6 @@
 //! Canonical ArmadAI project model. Pure: depends on no other workspace crate.
 
+pub mod agent_templates;
 pub mod check;
 pub mod diag;
 pub mod load;

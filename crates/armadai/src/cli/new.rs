@@ -466,7 +466,14 @@ pub fn agent_from_template(
     let stack = opts.stack.as_deref().unwrap_or(DEFAULT_STACK);
     vars.insert("stack".to_string(), stack.to_string());
     let (body, remaining) = armadai_core::template::render_lenient(body, &vars);
-    Ok((armadai_model::Agent { front, body }, remaining))
+    Ok((
+        armadai_model::Agent {
+            front,
+            body,
+            instance: None,
+        },
+        remaining,
+    ))
 }
 
 /// Convert a slug like "my-agent" to title case "My Agent".
