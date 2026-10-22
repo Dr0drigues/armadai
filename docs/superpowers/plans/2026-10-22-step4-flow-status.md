@@ -19,7 +19,7 @@
 - `.armadai/.gitignore` gagne `state/`.
 - État : la **dernière** ligne de la réponse de la forme exacte `STATE: <mot>` (mot = caractères d'id), sinon `null`.
 - Consigne ajoutée au corps d'un agent qui tient au moins une étape à états : `\n\n## Verdict\n\nEnd your reply with exactly one line \`STATE: <state>\`, where <state> is one of: <états triés, séparés par ", ">.\n`.
-- Affichage : `✓` fait, `●` en cours, `○` à venir, `?` incertain (avec la raison), `✗` état non prévu par un lien.
+- Affichage : `✓` fait, `●` en cours, `○` à venir, `?` incertain (avec la raison), `✗` état non déclaré pour l'étape (un état déclaré sans lien applicable termine l'exécution normalement).
 - Tests à égalité exacte ; une mutation vue rouge par test ajouté (restaurer puis `touch`) ; `crates/armadai` binaire seul (`--bin armadai` / `--test <nom>`), `--no-fail-fast`.
 - Barrière : `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --no-fail-fast`, `cargo build -p armadai-core`, `cargo build -p armadai-model`, `(cd frozen/armadai-audit && cargo check --all-targets)`.
 
