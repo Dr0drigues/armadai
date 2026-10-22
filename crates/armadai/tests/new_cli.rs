@@ -1,4 +1,4 @@
-//! `armadai new agent|flow|automation|skill` without a terminal: nominal paths,
+//! `armadai new agent|flow|automation|skill|command` without a terminal: nominal paths,
 //! collisions, hostile ids, writes that stay under `.armadai/`, and the undo of a
 //! creation that would make the project invalid (T8).
 
@@ -412,6 +412,7 @@ fn interactive_mode_without_a_terminal_is_a_clear_error() {
         &["new", "flow", "--interactive"][..],
         &["new", "automation", "-i"][..],
         &["new", "skill", "-i"][..],
+        &["new", "command", "-i"][..],
     ] {
         let err = env.fails(args);
         assert!(
@@ -762,4 +763,55 @@ fn new_flow_and_skill_leave_an_instance_byte_for_byte() {
     env.ok(&["new", "skill", "cadre", "--description", "Frames"]);
     assert_eq!(env.read(".armadai/agents/guardian.md"), instance);
     assert_eq!(env.diagnostics(), Vec::<String>::new());
+}
+
+/// `new command`: the default command file; an existing id, an invalid id and an
+/// id a skill already holds are refused, nothing written.
+#[test]
+fn new_command_writes_a_command_that_passes_the_arguments() {
+    let env = Env::new(&[
+        (".armadai/project.yaml", "schema_version: 1\n"),
+        (
+            ".armadai/skills/notes/SKILL.md",
+            "---\nname: notes\ndescription: Notes\n---\nB\n",
+        ),
+    ]);
+    let out = env.ok(&["new", "command", "brief", "--description", "Refine an idea"]);
+    assert_eq!(out, "Created .armadai/commands/brief.md\n");
+    assert_eq!(
+        env.read(".armadai/commands/brief.md"),
+        "---\ndescription: Refine an idea\n---\n$ARGUMENTS\n"
+    );
+    assert_eq!(env.diagnostics(), Vec::<String>::new());
+    let before = tree(&env.root());
+
+    let err = env.fails(&["new", "command", "brief", "--description", "Other"]);
+    assert_eq!(
+        err,
+        "Error: .armadai/commands/brief.md already exists (use --force to replace it)\n"
+    );
+    let err = env.fails(&["new", "command", "Bad_Id", "--description", "x"]);
+    assert_eq!(
+        err,
+        "Error: `Bad_Id` is not a valid id: use 1 to 64 lowercase letters, digits and \
+         hyphens, starting with a letter or a digit (e.g. `code-reviewer`)\n"
+    );
+    let err = env.fails(&["new", "command", "notes", "--description", "x"]);
+    let root = format!("{}/", env.root().canonicalize().unwrap().display());
+    assert_eq!(
+        err.replace(&root, "").lines().collect::<Vec<_>>(),
+        [
+            "(rolled back) .armadai/commands/notes.md: error[command-shadows-skill]: command \
+             `notes` has the same id as skill `notes`",
+            "  hint: Claude Code would run the skill and ignore the command: rename one of them",
+            "Error: .armadai/commands/notes.md would make the project invalid; nothing was \
+             written",
+        ]
+    );
+    let err = env.fails(&["new", "command", "x"]);
+    assert_eq!(
+        err,
+        "Error: --description is required: armadai new command <id> --description <text>\n"
+    );
+    assert_eq!(tree(&env.root()), before);
 }

@@ -16,7 +16,17 @@ pub enum WizardKind {
     Flow,
     Automation,
     Skill,
+    Command,
 }
+
+/// The guided menu of `armadai new`, in the order shown.
+pub const MENU: [(WizardKind, &str); 5] = [
+    (WizardKind::Agent, "an agent"),
+    (WizardKind::Flow, "a flow"),
+    (WizardKind::Automation, "an automation"),
+    (WizardKind::Skill, "a skill"),
+    (WizardKind::Command, "a command"),
+];
 
 /// The five capabilities, in the order they are asked.
 pub const CAPABILITIES: [&str; 5] = ["read", "write", "shell", "web", "delegate"];
@@ -128,6 +138,17 @@ pub fn plan_automation(a: AutomationAnswers) -> (String, Automation) {
     (a.id, automation)
 }
 
+#[derive(Debug, Clone)]
+pub struct CommandAnswers {
+    pub id: String,
+    pub description: String,
+}
+
+pub fn plan_command(a: CommandAnswers) -> (String, armadai_model::Command) {
+    let command = crate::cli::new::command_skeleton(a.description.trim().to_string());
+    (a.id, command)
+}
+
 /// The valid id an invalid answer most likely meant (`Mon Agent` → `mon-agent`),
 /// to propose, never to apply silently.
 pub fn suggest_id(input: &str) -> Option<String> {
@@ -148,7 +169,7 @@ fn require_terminal() -> anyhow::Result<()> {
     if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
         anyhow::bail!(
             "interactive mode needs a terminal; pass the options instead \
-             (armadai new <agent|flow|automation|skill> --help)"
+             (armadai new <agent|flow|automation|skill|command> --help)"
         );
     }
     Ok(())
@@ -159,18 +180,12 @@ pub fn run(kind: Option<WizardKind>) -> anyhow::Result<()> {
     let kind = match kind {
         Some(k) => k,
         None => {
-            let kinds = [
-                WizardKind::Agent,
-                WizardKind::Flow,
-                WizardKind::Automation,
-                WizardKind::Skill,
-            ];
             let i = dialoguer::Select::new()
                 .with_prompt("Create")
-                .items(["an agent", "a flow", "an automation", "a skill"])
+                .items(MENU.map(|(_, label)| label))
                 .default(0)
                 .interact()?;
-            kinds[i]
+            MENU[i].0
         }
     };
     let root = crate::compile::find_project(&std::env::current_dir()?)?;
@@ -237,6 +252,19 @@ pub fn run(kind: Option<WizardKind>) -> anyhow::Result<()> {
                 &id,
                 false,
                 &armadai_model::render_skill(&skill),
+            )
+        }
+        WizardKind::Command => {
+            let id = ask_id("Command id, typed as /<id> (e.g. brief)")?;
+            let description: String = dialoguer::Input::new()
+                .with_prompt("What it does (shown in the / menu)")
+                .interact_text()?;
+            let (id, command) = plan_command(CommandAnswers { id, description });
+            crate::cli::new::create(
+                crate::cli::new_target::Kind::Command,
+                &id,
+                false,
+                &armadai_model::render_command(&command),
             )
         }
     }
@@ -537,6 +565,33 @@ mod tests {
         assert_eq!(
             armadai_model::render_automation(&a),
             "event: after-tool\nrun: cargo fmt\n"
+        );
+    }
+
+    #[test]
+    fn command_answers_become_the_command_file() {
+        let (id, c) = plan_command(CommandAnswers {
+            id: "brief".into(),
+            description: " Refine an idea ".into(),
+        });
+        assert_eq!(id, "brief");
+        assert_eq!(
+            armadai_model::render_command(&c),
+            "---\ndescription: Refine an idea\n---\n$ARGUMENTS\n"
+        );
+    }
+
+    #[test]
+    fn the_guided_menu_offers_every_kind() {
+        assert_eq!(
+            MENU,
+            [
+                (WizardKind::Agent, "an agent"),
+                (WizardKind::Flow, "a flow"),
+                (WizardKind::Automation, "an automation"),
+                (WizardKind::Skill, "a skill"),
+                (WizardKind::Command, "a command"),
+            ]
         );
     }
 

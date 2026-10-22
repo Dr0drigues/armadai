@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ArmadAI is a declarative compiler written in Rust (edition 2024). A team of agents (agents, skills, flows, gates, hooks) is described once, then compiled by `armadai link` into the native files of Claude Code, Codex, OpenCode and Copilot. ArmadAI does not run agents: there is no execution engine, no TUI, no web UI. The binary is named `armadai`; without arguments it prints the help.
 
-Commands: `link`, `unlink`, `list`, `inspect`, `graph`, `validate`, `migrate`, `new` (`agent|flow|automation|skill`, or a guided menu), `init`, `skills`, `models`, `config`, `update`, `completion`.
+Commands: `link`, `unlink`, `list`, `inspect`, `graph`, `validate`, `migrate`, `new` (`agent|flow|automation|skill|command`, or a guided menu), `init`, `skills`, `models`, `config`, `update`, `completion`.
 
 The refocus (what was removed, kept and frozen) is specified in `docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md`.
 

@@ -152,6 +152,22 @@ pub enum NewCommand {
         #[arg(long, short = 'i')]
         interactive: bool,
     },
+    /// Create a command the user types as /<id> (.armadai/commands/<id>.md)
+    #[command(after_help = "Examples:\n  \
+        armadai new command brief --description \"Refine an idea\"")]
+    Command {
+        /// Command id, its file name and what the user types after / (required, unless -i)
+        id: Option<String>,
+        /// What the command does, shown in the / menu (required, unless -i)
+        #[arg(long, short)]
+        description: Option<String>,
+        /// Replace an existing command file
+        #[arg(long)]
+        force: bool,
+        /// Ask for every value in the terminal
+        #[arg(long, short = 'i')]
+        interactive: bool,
+    },
     /// The former `armadai new <name>`
     #[command(external_subcommand)]
     Former(Vec<String>),
@@ -211,6 +227,9 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
         NewCommand::Skill {
             interactive: true, ..
         } => new_wizard::run(Some(WizardKind::Skill)),
+        NewCommand::Command {
+            interactive: true, ..
+        } => new_wizard::run(Some(WizardKind::Command)),
         NewCommand::Agent {
             id,
             from: Some(from),
@@ -322,12 +341,33 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
                 &armadai_model::render_skill(&skill),
             )
         }
+        NewCommand::Command {
+            id,
+            description,
+            force,
+            ..
+        } => {
+            let id = required(
+                id,
+                "a command id is required: armadai new command <id> --description <text>",
+            )?;
+            let command = command_skeleton(required(
+                description,
+                "--description is required: armadai new command <id> --description <text>",
+            )?);
+            create(
+                Kind::Command,
+                &id,
+                force,
+                &armadai_model::render_command(&command),
+            )
+        }
         NewCommand::Former(args) => {
             let name = args.first().map(String::as_str).unwrap_or("<id>");
             anyhow::bail!(
                 "`armadai new <name>` became `armadai new agent <name>`: run \
                  `armadai new agent {name}` (or `armadai new --help` for flows, \
-                 automations and skills)"
+                 automations, skills and commands)"
             )
         }
     }
@@ -440,6 +480,18 @@ pub fn skill_skeleton(id: &str, description: String) -> armadai_model::Skill {
             "# {}\n\nWhen to use this skill, then the steps to follow.\n",
             slug_to_title(id)
         ),
+    }
+}
+
+/// A command passing what the user typed after `/<id>` as its whole prompt.
+pub fn command_skeleton(description: String) -> armadai_model::Command {
+    armadai_model::Command {
+        front: armadai_model::CommandFront {
+            description,
+            argument_hint: None,
+            native: Default::default(),
+        },
+        body: "$ARGUMENTS\n".into(),
     }
 }
 

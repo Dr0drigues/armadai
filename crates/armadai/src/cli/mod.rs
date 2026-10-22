@@ -48,9 +48,9 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Create an agent, a flow, an automation or a skill
+    /// Create an agent, a flow, an automation, a skill or a command
     #[command(
-        long_about = "Create an agent, a flow, an automation or a skill in the project of the \
+        long_about = "Create an agent, a flow, an automation, a skill or a command in the project of the \
             current directory (armadai init --project first).\n\n\
             Each command writes one file under .armadai/, then validates the project: a \
             creation that would introduce an error is undone and nothing is left behind. \
@@ -64,13 +64,14 @@ pub enum Command {
             armadai new agent reviewer --template dev-review --stack rust\n  \
             armadai new flow review --template review-loop --agents dev,reviewer\n  \
             armadai new automation fmt --event after-tool --run \"cargo fmt\"\n  \
-            armadai new skill release-notes --description \"Write release notes\""
+            armadai new skill release-notes --description \"Write release notes\"\n  \
+            armadai new command brief --description \"Refine an idea\""
     )]
     New {
         #[command(subcommand)]
         what: Option<new::NewCommand>,
     },
-    /// List the project's agents, skills, flows and automations
+    /// List the project's agents, skills, flows, automations, commands and slots
     #[command(after_help = "Examples:\n  \
         armadai list\n  \
         armadai list --tags dev review")]
@@ -81,8 +82,8 @@ pub enum Command {
     },
     /// Show one agent of the project
     #[command(long_about = "Show one agent of the project.\n\n\
-            Displays its frontmatter (description, tier, tags, skills, capabilities, \
-            native targets), the flows it takes part in, and its prompt.")]
+            Displays its frontmatter (description, tier, tags, skills, slots and the skills \
+            filling them, capabilities, native targets), the flows it takes part in, and its prompt.")]
     Inspect {
         /// Agent id (its file name under .armadai/agents/)
         agent: String,
