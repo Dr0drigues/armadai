@@ -86,7 +86,8 @@ Read the cadre skill first.             # optional, added after the template's p
 
 The template is rendered at load time, every time: `link`, `inspect`, `graph` and the gate only
 see the rendered agent, and the next `link` after a template change rewrites the files of its
-instances (no `--force` needed while they were not edited by hand). The canonical writer keeps an
+instances (no `--force` needed while they were not edited by hand; one edited by hand is left
+in place, and its report line ends with `(from template checker)`). The canonical writer keeps an
 instance as an instance (`from`, `vars`, its own keys and prompt); no command flattens it.
 `armadai new agent guardian --from checker --var subject="the frame"` writes one (`--var` is
 repeatable, the same name given twice is refused), `list` shows `guardian (from checker)` and a
@@ -112,14 +113,19 @@ repeatable, the same name given twice is refused), `list` shows `guardian (from 
 - **Escaping**: `\{{` writes a literal `{{` and is never a variable (`\{{name}}` gives
   `{{name}}`). A backslash cannot be written right before a rendered variable: `\\{{name}}`
   gives `\{{name}}`.
+  In a double-quoted YAML value, YAML itself refuses `\{` (`invalid-yaml`, unknown escape):
+  write `"\\{{name}}"` or use single quotes (`'\{{name}}'`); both give `{{name}}`.
 - **Diagnostics**: a variable the template uses and `vars` does not set is an error
   (`missing-template-var`); a `vars` entry no `{{…}}` uses is a warning
   (`unused-template-var`), and the agent still loads. An error that comes from the template (an
   unknown key, a wrong type) is reported once, on the template file, not on each instance.
+  A template no agent uses is only checked as a file (YAML, keys, types): its other errors
+  (an unknown skill) show up with its first instance, reported on the template.
 
 Not in this first version (deferred, not refused): a template using `from` itself
 (`nested-template`), logic in templates (conditions, loops, filters, default values), templates
-of flows, skills or commands, and generating N agents from a list (one instance is one file).
+of flows, skills or commands, generating N agents from a list (one instance is one file),
+and checking a template no agent uses beyond its file.
 The starting points of `armadai new agent --template` ([Templates](templates.md)) are copied,
 not linked: they are not project templates.
 

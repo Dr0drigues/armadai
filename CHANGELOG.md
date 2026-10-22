@@ -10,7 +10,8 @@
   follows the template's; `\{{` writes a literal `{{`. New diagnostics: `unknown-template`,
   `missing-template-var`, `unused-template-var` (warning), `vars-without-template`,
   `nested-template`, `template-agent-collision`. `armadai new agent <id> --from <template>
-  --var k=v` writes an instance, `list` and `inspect` show the template, `init --pack`
+  --var k=v` writes an instance, `list` and `inspect` show the template, a
+  generated file `link` refuses (edited by hand) names it in the report, `init --pack`
   installs a pack's `templates/`, and `schemas/v1/template.schema.json` describes the file.
   Deferred: template inheritance, logic, templates of flows, skills or commands, agents
   generated from a list (see [Project format](docs/wiki/project-format.md#templatesidmd)).
