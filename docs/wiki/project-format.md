@@ -202,7 +202,11 @@ Refine this idea into a brief: $ARGUMENTS
   the only portable placeholder: `$<digit>` and `$ARGUMENTS[N]` are an error, since Claude Code
   indexes arguments from 0 and OpenCode from 1 (`$5` in plain text too: write `5 USD`).
 - `` !`cmd` `` and a line starting with ```` ```! ```` are an error: both targets would run the
-  shell when the command is typed. An author who wants that writes it in `native`, at their risk.
+  shell when the command is typed. An author who wants that writes a native file
+  (`.armadai/native/<target>/…`, see [Link](link.md#pipeline)) under an id none of the commands
+  uses, at their risk: the `native` key of a command only adds frontmatter keys.
+- `${CLAUDE_…}` substitutions (`${CLAUDE_SESSION_ID}`, `${CLAUDE_SKILL_DIR}`,
+  `${CLAUDE_PROJECT_DIR}`…) are an error: Claude Code replaces them, OpenCode sends them as is.
 - No `agent`, `context` or `subagent` key is generated: a command running in a subagent loses
   the interaction with the user. `native` can still set them.
 - An id equal to a skill id is an error (Claude Code would run the skill and ignore the command);
@@ -353,6 +357,7 @@ warning on stderr.
 | `command-empty-body` | error | A command's body is empty | Write the text the command sends, citing `$ARGUMENTS` |
 | `command-positional-argument` | error | The body holds `$<digit>` or `$ARGUMENTS[`: Claude Code and OpenCode read them differently | Only `$ARGUMENTS` is portable: rephrase the text (an amount: `5 USD`) |
 | `command-shell-expansion` | error | The body holds `` !` `` or a line starting with ```` ```! ````: a shell run when the command is typed | Remove it: ArmadAI never compiles shell execution at command time |
+| `command-target-variable` | error | The body holds a `${CLAUDE_…}` substitution, replaced by Claude Code only | Only `$ARGUMENTS` is portable: remove it, or put it in a native file |
 | `command-shadows-skill` | error | A command has the id of a skill | Rename one of them (Claude Code would run the skill and ignore the command) |
 | `command-shadows-builtin` | warning | A command has the name of a built-in command of Claude Code or OpenCode | Pick another name: one of them hides the other |
 

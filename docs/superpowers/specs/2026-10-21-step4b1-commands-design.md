@@ -28,7 +28,7 @@ Non-objectifs :
 
 Anti-objectifs (ce qui serait un échec même si ça marche) :
 - Une commande qui, à texte identique, fait autre chose dans Claude et dans OpenCode.
-- Une commande qui exécute du shell au moment où elle est tapée sans que l'auteur l'ait écrit dans `native`.
+- Une commande qui exécute du shell au moment où elle est tapée sans que l'auteur l'ait écrit dans un fichier natif (`.armadai/native/<target>/…`).
 - Une commande qui masque silencieusement une skill du même nom (ou l'inverse).
 
 ## 3. Contraintes (formats natifs vérifiés)
@@ -53,7 +53,8 @@ Noms intégrés relevés le 2026-10-21 : la page `code.claude.com/docs/en/comman
 
 Conséquences retenues :
 - Seul `$ARGUMENTS` est portable : `$<chiffre>` et `$ARGUMENTS[` dans le corps → **erreur** de validation (sens différent selon la cible).
-- `` !` `` ou une ligne ` ```! ` dans le corps → **erreur** de validation (exécution au rendu ; l'auteur qui le veut passe par `native`, à ses risques).
+- `` !` `` ou une ligne ` ```! ` dans le corps → **erreur** de validation (exécution au rendu ; l'auteur qui le veut écrit un fichier natif `.armadai/native/<target>/…` sous un autre id que ses commandes, à ses risques : la clé `native` d'une commande n'ajoute que des clés de frontmatter).
+- `${CLAUDE_…}` dans le corps (`${CLAUDE_SESSION_ID}`, `${CLAUDE_EFFORT}`, `${CLAUDE_SKILL_DIR}`, `${CLAUDE_PROJECT_DIR}`, `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}`, doc Claude relevée le 2026-10-22) → **erreur** `command-target-variable` : substitué par Claude, littéral sous OpenCode.
 - `@chemin` : non vérifié dans la doc Claude ; laissé tel quel dans le texte, sans promesse.
 
 ## 4. Décidé avec Dimitri
@@ -110,7 +111,9 @@ Règles :
 1. Barrière complète verte ; chaque test ajouté vu rouge par mutation.
 2. Étalons : un projet avec une prise remplie par deux skills, une prise vide, et deux commandes (dont une avec `argument_hint` et une avec `native`) lié vers les 4 cibles ; `unlink` revient à l'état initial.
 3. Validation : chaque règle du §5 a son test à message exact.
-4. Essai réel par Dimitri : dans Claude Code et dans OpenCode 2.1.2, `/<commande> du texte` apparaît dans le menu, reçoit le texte, et peut poser une question à choix à l'utilisateur ; une skill ajoutée après coup avec `armadai-slot` est chargeable par l'agent qui déclare la prise après un nouveau `link` (et seulement par lui sous OpenCode).
+4. Essai réel par Dimitri : dans Claude Code et dans OpenCode 2.1.2, `/<commande> du texte` apparaît dans le menu, reçoit le texte, et peut poser une question à choix à l'utilisateur ; une skill ajoutée après coup avec `armadai-slot` est chargeable par l'agent qui déclare la prise après un nouveau `link`.
+
+   Note du 2026-10-22 (ruling du coordinateur, revue finale de B1) : « et seulement par lui sous OpenCode » est retiré. Une prise ne restreint jamais : seul un agent qui déclare des `skills:` reçoit `permission.skill` (`"*": deny`, ses skills et celles de ses prises en `allow`) ; un agent sans `skills:` garde toutes les skills, comme sous Claude où la prise précharge sans restreindre. Sinon, remplir après coup la prise d'un coordinateur lui retirait toutes ses autres skills.
 
 ## 8. Risques
 
