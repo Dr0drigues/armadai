@@ -1,4 +1,4 @@
-//! OpenCode 2.x adapter: agents (`.opencode/agents/<id>.md`), skills, models and
+//! OpenCode 2.x adapter: agents (`.opencode/agents/<id>.md`), commands, skills, models and
 //! capabilities as per-agent permissions.
 
 use std::collections::BTreeSet;
@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use armadai_core::config::{UserConfig, model_for_tier};
-use armadai_model::{Agent, AgentFront, Cap, Delegation, NativeValue, Project};
+use armadai_model::{AgentFront, Cap, Command, Delegation, NativeValue, Project, agent_skills};
 use serde_json::{Map, Value};
 
 use super::json_keys::JsonKeys;
@@ -82,7 +82,7 @@ fn compile_with(
     let strict = project.manifest.policy.delegation == Delegation::Strict;
     let has_flows = !project.flows.is_empty();
     informational(&mut plan.report, project);
-    for (id, agent) in &project.agents {
+    for id in project.agents.keys() {
         if BUILTIN_AGENTS.contains(&id.as_str()) {
             bail!(
                 "agent `{id}` has the name of an OpenCode built-in agent; rename it \
@@ -95,8 +95,8 @@ fn compile_with(
         plan.artifacts.push(Artifact {
             path: PathBuf::from(format!("agents/{id}.md")),
             content: agent_file(
+                project,
                 id,
-                agent,
                 is_lead.then_some(team),
                 has_flows,
                 targets,
@@ -212,6 +212,22 @@ fn compile_with(
         }
         plan.report
             .push(T, format!("skill {id}"), Status::Compiled, None);
+    }
+    for (id, c) in &project.commands {
+        plan.artifacts.push(Artifact {
+            path: PathBuf::from(format!("commands/{id}.md")),
+            content: command_file(id, c, &mut plan.report)?.into_bytes(),
+            kind: ArtifactKind::Command,
+            produced_by: ProducedBy::command(id),
+        });
+        let (status, why) = match c.front.argument_hint {
+            Some(_) => (
+                Status::Approximated,
+                Some("argument_hint has no OpenCode equivalent"),
+            ),
+            None => (Status::Compiled, None),
+        };
+        plan.report.push(T, format!("command {id}"), status, why);
     }
     plan.artifacts.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -405,8 +421,8 @@ fn model(id: &str, f: &AgentFront, config: &UserConfig, r: &mut Report) -> Optio
 }
 
 fn agent_file(
+    project: &Project,
     id: &str,
-    agent: &Agent,
     // the team file, for the coordinator only
     lead: Option<&str>,
     has_flows: bool,
@@ -414,6 +430,7 @@ fn agent_file(
     config: &UserConfig,
     r: &mut Report,
 ) -> anyhow::Result<String> {
+    let agent = &project.agents[id];
     let f = &agent.front;
     let mut m = Map::new();
     m.insert("description".into(), f.description.as_str().into());
@@ -466,14 +483,16 @@ fn agent_file(
             body.trim_end()
         );
     }
-    if !f.skills.is_empty() {
+    // no skill at all: no rule, the agent keeps every skill of the project
+    let skills = agent_skills(project, id);
+    if !skills.is_empty() {
         // the catch-all first: OpenCode applies the last matching rule
         let mut skill = Map::from_iter([("*".to_string(), Value::from("deny"))]);
-        for s in &f.skills {
+        for s in &skills {
             skill.insert(s.clone(), "allow".into());
         }
         permission.insert("skill".into(), Value::Object(skill));
-        let list: Vec<String> = f.skills.iter().map(|s| format!("`{s}`")).collect();
+        let list: Vec<String> = skills.iter().map(|s| format!("`{s}`")).collect();
         body = format!(
             "{}\n\n## Skills\n\nBefore you start, load these skills with the `skill` tool: {}.\n",
             body.trim_end(),
@@ -486,20 +505,12 @@ fn agent_file(
             Some("allowed through permission.skill, loading prescribed in the prompt"),
         );
     }
+    super::claude::slot_lines(r, T, project, id, f, true);
     if !permission.is_empty() {
         m.insert("permission".into(), Value::Object(permission));
     }
-    if let Some(native) = f.native.get(T) {
-        let Some(native) = native.as_object() else {
-            bail!("agent `{id}`: native.opencode must be a mapping");
-        };
-        // `model` was resolved above, as the documented override of the tier
-        for (k, v) in native.iter().filter(|(k, _)| *k != "model") {
-            if m.contains_key(k) {
-                bail!("agent `{id}`: native.opencode key `{k}` collides with a generated key");
-            }
-            m.insert(k.clone(), v.clone());
-        }
+    // `model` was resolved above, as the documented override of the tier
+    if super::merge_native(&mut m, &f.native, T, &format!("agent `{id}`"), &["model"])? {
         r.push(
             T,
             format!("agent {id} native"),
@@ -510,6 +521,28 @@ fn agent_file(
     let yaml = armadai_model::yaml::to_string(&NativeValue(Value::Object(m)))
         .context("agent frontmatter")?;
     let mut out = format!("---\n{yaml}---\n{body}");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// `.opencode/commands/<id>.md`: `description` and the body as the template (OpenCode
+/// `dev` at 681156c8, `packages/core/src/config/plugin/command.ts`); no argument hint.
+fn command_file(id: &str, c: &Command, r: &mut Report) -> anyhow::Result<String> {
+    let mut m = Map::new();
+    m.insert("description".into(), c.front.description.as_str().into());
+    if super::merge_native(&mut m, &c.front.native, T, &format!("command `{id}`"), &[])? {
+        r.push(
+            T,
+            format!("command {id} native"),
+            Status::Compiled,
+            Some("merged into the command frontmatter"),
+        );
+    }
+    let yaml = armadai_model::yaml::to_string(&NativeValue(Value::Object(m)))
+        .context("command frontmatter")?;
+    let mut out = format!("---\n{yaml}---\n{}", c.body);
     if !out.ends_with('\n') {
         out.push('\n');
     }
@@ -1327,6 +1360,130 @@ mod tests {
         assert_eq!(
             line(&plan, "automation fmt"),
             (Status::NotCompiled, Some("needs an OpenCode plugin".into()))
+        );
+    }
+
+    const BRIEF: (&str, &[u8]) = (
+        ".armadai/commands/brief.md",
+        b"---\ndescription: Refine an idea\n---\nRefine: $ARGUMENTS\n",
+    );
+
+    #[test]
+    fn a_command_compiles_to_a_command_file() {
+        let plan = compile(&[M, BRIEF]).unwrap();
+        assert_eq!(
+            text(&plan, "commands/brief.md"),
+            "---\ndescription: Refine an idea\n---\nRefine: $ARGUMENTS\n"
+        );
+        let a = artifact(&plan, "commands/brief.md");
+        assert_eq!(a.kind, ArtifactKind::Command);
+        assert_eq!(a.produced_by, ProducedBy::command("brief"));
+        assert_eq!(line(&plan, "command brief"), (Status::Compiled, None));
+    }
+
+    #[test]
+    fn an_argument_hint_is_approximated() {
+        let plan = compile(&[
+            M,
+            (
+                ".armadai/commands/brief.md",
+                b"---\ndescription: Refine an idea\nargument_hint: <idea>\n---\nRefine: $ARGUMENTS\n",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            text(&plan, "commands/brief.md"),
+            "---\ndescription: Refine an idea\n---\nRefine: $ARGUMENTS\n"
+        );
+        assert_eq!(
+            line(&plan, "command brief"),
+            (
+                Status::Approximated,
+                Some("argument_hint has no OpenCode equivalent".into())
+            )
+        );
+    }
+
+    #[test]
+    fn command_native_keys_are_merged_and_a_collision_is_an_error() {
+        let plan = compile(&[
+            M,
+            (
+                ".armadai/commands/brief.md",
+                b"---\ndescription: Refine an idea\nnative:\n  opencode:\n    agent: dev\n---\nRefine: $ARGUMENTS\n",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            text(&plan, "commands/brief.md"),
+            "---\ndescription: Refine an idea\nagent: dev\n---\nRefine: $ARGUMENTS\n"
+        );
+        assert_eq!(
+            line(&plan, "command brief native"),
+            (
+                Status::Compiled,
+                Some("merged into the command frontmatter".into())
+            )
+        );
+        let err = compile(&[
+            M,
+            (
+                ".armadai/commands/brief.md",
+                b"---\ndescription: Refine an idea\nnative:\n  opencode:\n    description: x\n---\nRefine: $ARGUMENTS\n",
+            ),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "command `brief`: native.opencode key `description` collides with a generated key"
+        );
+    }
+
+    #[test]
+    fn slot_skills_are_allowed_and_prescribed() {
+        let plan = compile(&[
+            M,
+            (
+                ".armadai/skills/b-std/SKILL.md",
+                b"---\nname: b-std\ndescription: B\nmetadata:\n  armadai-slot: code-standards\n---\nB\n",
+            ),
+            (
+                ".armadai/skills/a-std/SKILL.md",
+                b"---\nname: a-std\ndescription: A\nmetadata:\n  armadai-slot: code-standards\n---\nA\n",
+            ),
+            (
+                ".armadai/agents/dev.md",
+                b"---\ndescription: d\nslots: [code-standards, security]\n---\nYou write code.\n",
+            ),
+        ])
+        .unwrap();
+        let dev = front(&plan, "agents/dev.md");
+        let rule: Vec<(&String, &serde_json::Value)> = dev["permission"]["skill"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .collect();
+        assert_eq!(
+            rule,
+            [
+                (&"*".to_string(), &serde_json::json!("deny")),
+                (&"a-std".to_string(), &serde_json::json!("allow")),
+                (&"b-std".to_string(), &serde_json::json!("allow")),
+            ]
+        );
+        let t = text(&plan, "agents/dev.md");
+        let (_, body, _) = armadai_model::split_frontmatter(&t).unwrap();
+        assert_eq!(
+            body,
+            "You write code.\n\n## Skills\n\nBefore you start, load these skills with the `skill` tool: `a-std`, `b-std`.\n"
+        );
+        assert_eq!(
+            line(&plan, "agent dev slot code-standards"),
+            (Status::Compiled, Some("a-std, b-std".into()))
+        );
+        assert_eq!(
+            line(&plan, "agent dev slot security"),
+            (Status::NotCompiled, Some("no skill fills it".into()))
         );
     }
 }

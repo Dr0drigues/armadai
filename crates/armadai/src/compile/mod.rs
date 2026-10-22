@@ -53,6 +53,31 @@ pub struct Plan {
     pub report: Report,
 }
 
+/// Merges `native.<target>` into the frontmatter `m` of `what` (`agent `dev``), the
+/// keys in `skip` aside (the caller resolved them); a collision with a generated key
+/// is an error. True when there was something to merge.
+pub fn merge_native(
+    m: &mut serde_json::Map<String, serde_json::Value>,
+    native: &armadai_model::Native,
+    target: &str,
+    what: &str,
+    skip: &[&str],
+) -> anyhow::Result<bool> {
+    let Some(native) = native.get(target) else {
+        return Ok(false);
+    };
+    let Some(native) = native.as_object() else {
+        bail!("{what}: native.{target} must be a mapping");
+    };
+    for (k, v) in native.iter().filter(|(k, _)| !skip.contains(&k.as_str())) {
+        if m.contains_key(k) {
+            bail!("{what}: native.{target} key `{k}` collides with a generated key");
+        }
+        m.insert(k.clone(), v.clone());
+    }
+    Ok(true)
+}
+
 /// Markers around the ArmadAI block of a markdown file the user may also edit.
 pub const BLOCK_BEGIN: &str = "<!-- armadai:begin -->";
 pub const BLOCK_END: &str = "<!-- armadai:end -->";

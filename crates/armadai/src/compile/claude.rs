@@ -300,16 +300,23 @@ fn informational(r: &mut Report, project: &Project) {
 
 /// One line per slot of `f`: `preloaded` is the line of a filled slot, else the
 /// slot is `not-compiled`.
-fn slot_lines(r: &mut Report, project: &Project, id: &str, f: &AgentFront, preloaded: bool) {
+pub(super) fn slot_lines(
+    r: &mut Report,
+    t: &str,
+    project: &Project,
+    id: &str,
+    f: &AgentFront,
+    preloaded: bool,
+) {
     for s in &f.slots {
         let fills = slot_fills(project, s);
         let element = format!("agent {id} slot {s}");
         if fills.is_empty() {
-            r.push(T, element, Status::NotCompiled, Some("no skill fills it"));
+            r.push(t, element, Status::NotCompiled, Some("no skill fills it"));
         } else if preloaded {
-            r.push(T, element, Status::Compiled, Some(&fills.join(", ")));
+            r.push(t, element, Status::Compiled, Some(&fills.join(", ")));
         } else {
-            r.push(T, element, Status::Approximated, Some(NO_PRELOAD));
+            r.push(t, element, Status::Approximated, Some(NO_PRELOAD));
         }
     }
 }
@@ -333,7 +340,7 @@ fn coordinator_lines(r: &mut Report, project: &Project, id: &str, f: &AgentFront
             Some(NO_PRELOAD),
         );
     }
-    slot_lines(r, project, id, f, false);
+    slot_lines(r, T, project, id, f, false);
     for field in fields {
         r.push(
             T,
@@ -354,8 +361,10 @@ fn agent_file(
     let mut m = Map::new();
     m.insert("name".into(), id.into());
     m.insert("description".into(), f.description.as_str().into());
-    if let Some(t) = f.tier {
-        m.insert("model".into(), alias(t).into());
+    // `native.claude.model` is the documented override of the tier
+    let native_model = (f.native.get(T)).and_then(|n| n.get("model")).cloned();
+    if let Some(model) = native_model.or_else(|| f.tier.map(|t| alias(t).into())) {
+        m.insert("model".into(), model);
     }
     let mut denied = Vec::new();
     for ((name, cap), (_, tools)) in caps(f).into_iter().zip(CAP_TOOLS) {
@@ -386,18 +395,8 @@ fn agent_file(
             Some("preloaded through the subagent `skills` field"),
         );
     }
-    slot_lines(r, project, id, f, true);
-    if let Some(native) = f.native.get(T) {
-        let Some(native) = native.as_object() else {
-            bail!("agent `{id}`: native.claude must be a mapping");
-        };
-        for (k, v) in native {
-            // `model` is the documented override of the tier; any other generated key wins nothing
-            if k != "model" && m.contains_key(k) {
-                bail!("agent `{id}`: native.claude key `{k}` collides with a generated key");
-            }
-            m.insert(k.clone(), v.clone());
-        }
+    slot_lines(r, T, project, id, f, true);
+    if super::merge_native(&mut m, &f.native, T, &format!("agent `{id}`"), &["model"])? {
         r.push(
             T,
             format!("agent {id} native"),
@@ -422,16 +421,7 @@ fn command_file(id: &str, c: &Command, r: &mut Report) -> anyhow::Result<String>
     if let Some(h) = &c.front.argument_hint {
         m.insert("argument-hint".into(), h.as_str().into());
     }
-    if let Some(native) = c.front.native.get(T) {
-        let Some(native) = native.as_object() else {
-            bail!("command `{id}`: native.claude must be a mapping");
-        };
-        for (k, v) in native {
-            if m.contains_key(k) {
-                bail!("command `{id}`: native.claude key `{k}` collides with a generated key");
-            }
-            m.insert(k.clone(), v.clone());
-        }
+    if super::merge_native(&mut m, &c.front.native, T, &format!("command `{id}`"), &[])? {
         r.push(
             T,
             format!("command {id} native"),

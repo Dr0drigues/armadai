@@ -171,3 +171,25 @@ fn a_native_pack_installs_its_commands() {
         "{out}"
     );
 }
+
+/// OpenCode: the command and the slot skill land in the real output directory, and
+/// unlink takes them back.
+#[test]
+fn opencode_link_then_unlink_brings_the_tree_back() {
+    let env = Env::new(PROJECT);
+    let before = tree(&env.root());
+    env.ok(&["link", "--target", "opencode", "--output", "oc"]);
+    assert_eq!(
+        env.read("oc/commands/brief.md"),
+        "---\ndescription: Refine an idea\n---\nRefine: $ARGUMENTS\n"
+    );
+    assert_eq!(
+        env.read("oc/agents/dev.md"),
+        "---\ndescription: Writes code\nmode: subagent\npermission:\n  skill:\n    \"*\": deny\n    a-std: allow\n---\nYou write code.\n\n## Skills\n\nBefore you start, load these skills with the `skill` tool: `a-std`.\n"
+    );
+    assert!(!env.root().join(".opencode").exists());
+    env.ok(&["unlink", "--target", "opencode", "--output", "oc"]);
+    let mut after = tree(&env.root());
+    after.remove(Path::new(".armadai/.gitignore"));
+    assert_eq!(after, before);
+}
