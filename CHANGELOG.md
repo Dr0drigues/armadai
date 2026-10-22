@@ -2,6 +2,22 @@
 
 ### Added
 
+- Commands and slots (MVP). `.armadai/commands/<id>.md` declares a command the user types
+  (`/<id> text`): a `description`, an optional `argument_hint`, an optional `native`, and a body
+  citing `$ARGUMENTS`, the only portable placeholder. `link` writes `.claude/commands/<id>.md`
+  (the legacy commands format Claude Code still reads) and `.opencode/commands/<id>.md`
+  (`argument_hint` reported `approximated`); Codex and Copilot report `not-compiled (no command
+  support yet)`; `unlink` removes them, `unlink --agents` too. A slot lets a pack be completed by
+  another: an agent declares `slots: [code-standards]`, a skill fills it with `metadata: {
+  armadai-slot: code-standards }`, and `link` gives the agent those skills as if listed in its
+  `skills:` (one report line per slot; an empty slot is `not-compiled`, never an error). New
+  diagnostics: `command-empty-description`, `command-empty-argument-hint`, `command-empty-body`,
+  `command-positional-argument`, `command-shell-expansion`, `command-shadows-skill`,
+  `command-shadows-builtin` (warning), `bad-slot`. `armadai new command <id> --description`,
+  `list` and `inspect` show commands and slots, `init --pack` installs a pack's `commands/`, and
+  `schemas/v1/command.schema.json` describes the file. Deferred: commands running in a subagent,
+  positional arguments, Codex and Copilot commands (see
+  [Project format](docs/wiki/project-format.md#commandsidmd) and [Link](docs/wiki/link.md)).
 - Agent templates (MVP): `.armadai/templates/<id>.md` holds an agent written once with
   `{{var}}` variables, and an agent of `agents/` declares `from: <template>` and `vars:` to
   become an instance of it. The template is rendered at load time, so every target links an
