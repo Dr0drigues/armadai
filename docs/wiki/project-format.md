@@ -87,7 +87,7 @@ Read the cadre skill first.             # optional, added after the template's p
 The template is rendered at load time, every time: `link`, `inspect`, `graph` and the gate only
 see the rendered agent, and the next `link` after a template change rewrites the files of its
 instances (no `--force` needed while they were not edited by hand; one edited by hand is left
-in place, and its report line ends with `(from template checker)`). The canonical writer keeps an
+in place, and its report line names the template as `(from template checker)`). The canonical writer keeps an
 instance as an instance (`from`, `vars`, its own keys and prompt); no command flattens it.
 `armadai new agent guardian --from checker --var subject="the frame"` writes one (`--var` is
 repeatable, the same name given twice is refused), `list` shows `guardian (from checker)` and a
