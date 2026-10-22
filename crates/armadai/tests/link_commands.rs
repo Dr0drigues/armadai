@@ -1,5 +1,5 @@
 //! Commands (`.armadai/commands/`) end to end for Claude Code: link then unlink,
-//! a hand-written command file, `--agents`.
+//! a hand-written command file, `--agents`, and a native pack shipping commands.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -146,4 +146,28 @@ fn link_agents_still_writes_the_commands() {
     env.ok(&["link", "--target", "claude", "--agents", "dev"]);
     assert_eq!(env.read(".claude/commands/brief.md"), BRIEF_CLAUDE);
     assert!(!env.root().join(".claude/agents/qa.md").exists());
+}
+
+#[test]
+fn a_native_pack_installs_its_commands() {
+    let env = Env::new(&[]);
+    let pack = env.dir.path().join("packs/demo");
+    for (p, c) in [
+        (
+            "pack.yaml",
+            "format: 1\nname: demo\ndescription: A demo pack\n",
+        ),
+        ("agents/dev.md", "---\ndescription: Codes\n---\nCode.\n"),
+        ("commands/brief.md", BRIEF),
+    ] {
+        let path = pack.join(p);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, c).unwrap();
+    }
+    let out = env.ok(&["init", "--pack", pack.to_str().unwrap()]);
+    assert_eq!(env.read(".armadai/commands/brief.md"), BRIEF);
+    assert!(
+        out.contains("1 agent(s), 0 skill(s), 0 flow(s), 0 automation(s), 1 command(s)"),
+        "{out}"
+    );
 }
