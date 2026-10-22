@@ -6,6 +6,7 @@ $ armadai link --target claude
   wrote <root>/.claude/agents/code-reviewer.md
   wrote <root>/.claude/agents/doc-generator.md
   wrote <root>/.claude/agents/test-writer.md
+  patched <root>/.claude/settings.json
 
 Conformance report:
 claude: agent code-reviewer: compiled
@@ -13,6 +14,7 @@ claude: agent doc-generator: compiled
 claude: agent test-writer: compiled
 claude: agents tags: not-compiled (informational, no Claude Code field; 3 agents: code-reviewer, doc-generator, test-writer)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 3 agents: code-reviewer, doc-generator, test-writer)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
 claude: flow review: not-compiled (no coordinator: no CLAUDE.md to render the flow into)
 
 === .claude/agents/code-reviewer.md
@@ -90,3 +92,43 @@ Code de test pret a etre enregistre. Inclut :
 - Cas de test organises par fonction
 - Noms de test descriptifs
 - Commentaires pour les scenarios non evidents
+
+=== .claude/settings.json
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

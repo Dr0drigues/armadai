@@ -11,6 +11,7 @@ $ armadai link --target claude
   wrote <root>/.claude/agents/starter-builder.md
   wrote <root>/.claude/skills/armadai-conventions/SKILL.md
   patched <root>/CLAUDE.md
+  patched <root>/.claude/settings.json
 
 Conformance report:
 claude: agent agent-builder: compiled
@@ -33,6 +34,7 @@ claude: agents temperature: not-compiled (no equivalent in Claude Code subagents
 claude: flow authoring: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: flow pack: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: flow pack step review: approximated (states and on_failure rendered as guidance)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
 claude: skill armadai-conventions: compiled
 
 === .claude/agents/agent-builder.md
@@ -379,6 +381,46 @@ description: "What the team does, in one sentence"
 Write each file with the `Write` tool (`pack.yaml`, `project.yaml`, flows; delegate agents and
 skills to their builders through the lead), then report the validation. Never render the pack
 only in chat. Ask before overwriting.
+
+=== .claude/settings.json
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
 
 === .claude/skills/armadai-conventions/SKILL.md
 ---

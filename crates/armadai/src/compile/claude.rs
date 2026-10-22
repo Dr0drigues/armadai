@@ -117,6 +117,17 @@ impl Compiler for ClaudeCompiler {
                 );
             }
         }
+        if !project.flows.is_empty() {
+            plan.report.push(
+                T,
+                "flow recording",
+                Status::Compiled,
+                Some(
+                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) \
+                     in .claude/settings.json",
+                ),
+            );
+        }
         if !claude_settings::native_settings(project)?.is_empty() {
             plan.report.push(
                 T,
@@ -553,6 +564,42 @@ mod tests {
         );
         assert_eq!(line(&plan, "agent dev").status, Status::Compiled);
         assert!(plan.blocks.is_empty(), "no coordinator, no CLAUDE.md");
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| l.element != "flow recording"),
+            "no flow, no recording hook"
+        );
+    }
+
+    const DEV: (&str, &[u8]) = (
+        ".armadai/agents/dev.md",
+        b"---\ndescription: d\n---\nYou build.\n",
+    );
+    const REV: (&str, &[u8]) = (
+        ".armadai/agents/rev.md",
+        b"---\ndescription: d\n---\nYou review.\n",
+    );
+    const DELIVER: (&str, &[u8]) = (
+        ".armadai/flows/deliver.yaml",
+        b"steps:\n  build: { agent: dev }\n  guard: { agent: rev, states: [rejected, approved] }\n  ship: { agent: dev }\nlinks:\n  - { from: build, to: guard }\n  - { from: guard, to: build, when: rejected }\n  - { from: guard, to: ship, when: approved }\n",
+    );
+
+    #[test]
+    fn a_project_with_a_flow_reports_its_recording_hooks() {
+        let plan = compile(&[M, DEV, REV, DELIVER]).unwrap();
+        let l = line(&plan, "flow recording");
+        assert_eq!(
+            (l.status, l.reason.as_deref()),
+            (
+                Status::Compiled,
+                Some(
+                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) \
+                     in .claude/settings.json"
+                )
+            )
+        );
     }
 
     #[test]

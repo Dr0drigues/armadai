@@ -9,6 +9,7 @@ $ armadai link --target claude
   wrote <root>/.claude/agents/web-test-analyzer.md
   wrote <root>/.claude/skills/analysis-standards/SKILL.md
   patched <root>/CLAUDE.md
+  patched <root>/.claude/settings.json
 
 Conformance report:
 claude: agent lead-analyst: compiled (coordinator, rendered into CLAUDE.md)
@@ -25,6 +26,7 @@ claude: agent web-test-analyzer skills: compiled (preloaded through the subagent
 claude: agents tags: not-compiled (informational, no Claude Code field; 5 agents: lead-analyst, web-doc-writer, web-reviewer, web-security, web-test-analyzer)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: lead-analyst, web-doc-writer, web-reviewer, web-security, web-test-analyzer)
 claude: flow analysis: approximated (rendered as guidance in CLAUDE.md, not enforced)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
 claude: skill analysis-standards: compiled
 
 === .claude/agents/web-doc-writer.md
@@ -168,6 +170,46 @@ For each finding, provide:
 - Review test quality, not just presence
 - Flag flaky test patterns (timers, network calls, DOM timing)
 - Suggest snapshot tests only when appropriate (stable visual components)
+
+=== .claude/settings.json
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
 
 === .claude/skills/analysis-standards/SKILL.md
 ---

@@ -640,7 +640,8 @@ fn read(root: &Path) -> Option<Manifest> {
 }
 
 /// Create `<root>/.armadai/.gitignore` when it is missing: `.armadai/` is versioned,
-/// but the link manifest and migration backups describe this machine only.
+/// but the link manifest, migration backups and flow records (`state/`) describe
+/// this machine only.
 pub fn ensure_gitignore(root: &Path) -> std::io::Result<()> {
     let path = root.join(".armadai/.gitignore");
     match std::fs::symlink_metadata(&path) {
@@ -660,7 +661,7 @@ pub fn ensure_gitignore(root: &Path) -> std::io::Result<()> {
         .write(true)
         .create_new(true)
         .open(&path)?
-        .write_all(b"link-manifest.yaml\n.migrated/\n")
+        .write_all(b"link-manifest.yaml\n.migrated/\nstate/\n")
 }
 
 /// Replace `target`'s data with `root`/`created_dirs`/`entries`, leaving
