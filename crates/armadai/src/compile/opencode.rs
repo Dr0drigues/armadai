@@ -483,27 +483,28 @@ fn agent_file(
             body.trim_end()
         );
     }
-    // no skill at all: no rule, the agent keeps every skill of the project
+    // only declared `skills:` restrict: an agent with none (slots or not) keeps
+    // every skill of the project, as under Claude where a slot preloads only
     let skills = agent_skills(project, id);
     if !skills.is_empty() {
-        // the catch-all first: OpenCode applies the last matching rule
-        let mut skill = Map::from_iter([("*".to_string(), Value::from("deny"))]);
-        for s in &skills {
-            skill.insert(s.clone(), "allow".into());
-        }
-        permission.insert("skill".into(), Value::Object(skill));
+        let why = if f.skills.is_empty() {
+            "loading prescribed in the prompt; no `skills:`, so every skill stays allowed"
+        } else {
+            // the catch-all first: OpenCode applies the last matching rule
+            let mut skill = Map::from_iter([("*".to_string(), Value::from("deny"))]);
+            for s in &skills {
+                skill.insert(s.clone(), "allow".into());
+            }
+            permission.insert("skill".into(), Value::Object(skill));
+            "allowed through permission.skill, loading prescribed in the prompt"
+        };
         let list: Vec<String> = skills.iter().map(|s| format!("`{s}`")).collect();
         body = format!(
             "{}\n\n## Skills\n\nBefore you start, load these skills with the `skill` tool: {}.\n",
             body.trim_end(),
             list.join(", ")
         );
-        r.push(
-            T,
-            format!("agent {id} skills"),
-            Status::Compiled,
-            Some("allowed through permission.skill, loading prescribed in the prompt"),
-        );
+        r.push(T, format!("agent {id} skills"), Status::Compiled, Some(why));
     }
     super::slot_lines(r, T, project, id, f, None);
     if !permission.is_empty() {
@@ -1440,7 +1441,7 @@ mod tests {
     }
 
     #[test]
-    fn slot_skills_are_allowed_and_prescribed() {
+    fn slot_skills_are_prescribed_without_restricting() {
         let plan = compile(&[
             M,
             (
@@ -1457,19 +1458,17 @@ mod tests {
             ),
         ])
         .unwrap();
-        let dev = front(&plan, "agents/dev.md");
-        let rule: Vec<(&String, &serde_json::Value)> = dev["permission"]["skill"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .collect();
+        // no `skills:`: the slot prescribes, it does not restrict
+        assert_eq!(front(&plan, "agents/dev.md").get("permission"), None);
         assert_eq!(
-            rule,
-            [
-                (&"*".to_string(), &serde_json::json!("deny")),
-                (&"a-std".to_string(), &serde_json::json!("allow")),
-                (&"b-std".to_string(), &serde_json::json!("allow")),
-            ]
+            line(&plan, "agent dev skills"),
+            (
+                Status::Compiled,
+                Some(
+                    "loading prescribed in the prompt; no `skills:`, so every skill stays allowed"
+                        .into()
+                )
+            )
         );
         let t = text(&plan, "agents/dev.md");
         let (_, body, _) = armadai_model::split_frontmatter(&t).unwrap();

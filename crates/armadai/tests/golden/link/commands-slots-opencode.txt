@@ -10,11 +10,6 @@
 ---
 description: Writes code
 mode: subagent
-permission:
-  skill:
-    "*": deny
-    a-std: allow
-    b-std: allow
 ---
 DEV_MARKER: you write the code.
 
@@ -26,11 +21,6 @@ Before you start, load these skills with the `skill` tool: `a-std`, `b-std`.
 ---
 description: Coordinates the team
 mode: primary
-permission:
-  skill:
-    "*": deny
-    a-std: allow
-    b-std: allow
 ---
 LEAD_MARKER: you coordinate the team.
 
@@ -84,11 +74,11 @@ B_STD_MARKER
 
 === report ===
 opencode: agent dev: compiled
-opencode: agent dev skills: compiled (allowed through permission.skill, loading prescribed in the prompt)
+opencode: agent dev skills: compiled (loading prescribed in the prompt; no `skills:`, so every skill stays allowed)
 opencode: agent dev slot code-standards: compiled (a-std, b-std)
 opencode: agent dev slot security: not-compiled (no skill fills it)
 opencode: agent lead: compiled (coordinator, primary agent, default_agent in opencode.json)
-opencode: agent lead skills: compiled (allowed through permission.skill, loading prescribed in the prompt)
+opencode: agent lead skills: compiled (loading prescribed in the prompt; no `skills:`, so every skill stays allowed)
 opencode: agent lead slot code-standards: compiled (a-std, b-std)
 opencode: command brief: approximated (argument_hint has no OpenCode equivalent)
 opencode: command mockup: compiled

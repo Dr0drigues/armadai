@@ -190,7 +190,7 @@ fn opencode_link_then_unlink_brings_the_tree_back() {
     );
     assert_eq!(
         env.read("oc/agents/dev.md"),
-        "---\ndescription: Writes code\nmode: subagent\npermission:\n  skill:\n    \"*\": deny\n    a-std: allow\n---\nYou write code.\n\n## Skills\n\nBefore you start, load these skills with the `skill` tool: `a-std`.\n"
+        "---\ndescription: Writes code\nmode: subagent\n---\nYou write code.\n\n## Skills\n\nBefore you start, load these skills with the `skill` tool: `a-std`.\n"
     );
     assert!(!env.root().join(".opencode").exists());
     env.ok(&["unlink", "--target", "opencode", "--output", "oc"]);
@@ -279,4 +279,68 @@ fn a_command_native_claude_that_is_not_a_mapping_is_an_error() {
         "Error: command `brief`: native.claude must be a mapping\n"
     );
     assert_eq!(tree(&env.root()), before);
+}
+
+/// OpenCode: a slot never restricts the skills. A coordinator without `skills:`
+/// whose slot gets filled later is told to load the new skill but gets no
+/// `permission.skill`: it keeps every other skill of the project.
+#[test]
+fn an_opencode_slot_never_denies_the_other_skills() {
+    let env = Env::new(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\ncoordinator: lead\n",
+        ),
+        (
+            ".armadai/agents/lead.md",
+            "---\ndescription: Leads\nslots: [code-standards]\n---\nYou lead.\n",
+        ),
+        (
+            ".armadai/skills/notes/SKILL.md",
+            "---\nname: notes\ndescription: Notes\n---\nN\n",
+        ),
+    ]);
+    env.ok(&["link", "--target", "opencode"]);
+    let lead = "---\ndescription: Leads\nmode: primary\n---\nYou lead.\n\n## Delegation\n\n\
+                You coordinate the team described in `.opencode/armadai-team.md`. Delegate \
+                with the `subagent` tool, naming the agent by its id.\n";
+    assert_eq!(env.read(".opencode/agents/lead.md"), lead);
+    std::fs::create_dir_all(env.root().join(".armadai/skills/std")).unwrap();
+    std::fs::write(
+        env.root().join(".armadai/skills/std/SKILL.md"),
+        "---\nname: std\ndescription: Standards\nmetadata:\n  armadai-slot: code-standards\n---\nS\n",
+    )
+    .unwrap();
+    env.ok(&["link", "--target", "opencode"]);
+    assert_eq!(
+        env.read(".opencode/agents/lead.md"),
+        format!(
+            "{lead}\n## Skills\n\nBefore you start, load these skills with the `skill` tool: `std`.\n"
+        )
+    );
+}
+
+/// OpenCode: an agent with `skills:` is restricted to them plus its slot skills.
+#[test]
+fn opencode_declared_skills_and_slot_skills_are_allowed_together() {
+    let env = Env::new(&[
+        (".armadai/project.yaml", "schema_version: 1\n"),
+        (
+            ".armadai/agents/dev.md",
+            "---\ndescription: Codes\nskills: [x]\nslots: [s]\n---\nCode.\n",
+        ),
+        (
+            ".armadai/skills/x/SKILL.md",
+            "---\nname: x\ndescription: X\n---\nX\n",
+        ),
+        (
+            ".armadai/skills/a/SKILL.md",
+            "---\nname: a\ndescription: A\nmetadata:\n  armadai-slot: s\n---\nA\n",
+        ),
+    ]);
+    env.ok(&["link", "--target", "opencode"]);
+    assert_eq!(
+        env.read(".opencode/agents/dev.md"),
+        "---\ndescription: Codes\nmode: subagent\npermission:\n  skill:\n    \"*\": deny\n    x: allow\n    a: allow\n---\nCode.\n\n## Skills\n\nBefore you start, load these skills with the `skill` tool: `x`, `a`.\n"
+    );
 }

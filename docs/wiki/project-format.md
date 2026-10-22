@@ -216,8 +216,10 @@ Refine this idea into a brief: $ARGUMENTS
 A slot lets a pack be completed by another one (code standards, infrastructure docs, security
 guides) without rewriting its agents. An agent declares what it consumes, `slots:
 [code-standards]`; a skill declares what it provides, `metadata: { armadai-slot: code-standards
-}`; `link` gives the agent every skill of the project that fills one of its slots, exactly as if
-it were listed in its `skills:`.
+}`; `link` gives the agent every skill of the project that fills one of its slots: preloaded
+under Claude Code, prescribed under OpenCode. A slot never restricts the agent's other skills:
+under OpenCode only declared `skills:` produce a `permission.skill` rule (see
+[Link](link.md#opencode)).
 
 - The agent's skills are its `skills:` in declared order, then the skills of its slots sorted by
   id, each once.

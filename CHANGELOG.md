@@ -9,8 +9,9 @@
   (`argument_hint` reported `approximated`); Codex and Copilot report `not-compiled (no command
   support yet)`; `unlink` removes them, `unlink --agents` too. A slot lets a pack be completed by
   another: an agent declares `slots: [code-standards]`, a skill fills it with `metadata: {
-  armadai-slot: code-standards }`, and `link` gives the agent those skills as if listed in its
-  `skills:` (one report line per slot; an empty slot is `not-compiled`, never an error). New
+  armadai-slot: code-standards }`, and `link` gives the agent those skills (preloaded under
+  Claude Code, prescribed under OpenCode, never restricting its other skills; one report line
+  per slot; an empty slot is `not-compiled`, never an error). New
   diagnostics: `command-empty-description`, `command-empty-argument-hint`, `command-empty-body`,
   `command-positional-argument`, `command-shell-expansion`, `command-shadows-skill`,
   `command-shadows-builtin` (warning), `bad-slot`. `armadai new command <id> --description`,
