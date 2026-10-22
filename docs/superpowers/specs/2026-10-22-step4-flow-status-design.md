@@ -13,7 +13,7 @@ Objectifs (MVP) :
 2. `armadai __record-flow-event` lit le JSON d'entrée et ajoute une ligne à `.armadai/state/claude/<session_id>.jsonl` : horodatage, événement (`start` / `stop`), `agent_id`, `agent_type`, et pour `stop` seulement l'**état** extrait de la réponse finale (voir 4). Aucun texte de prompt ni de réponse n'est enregistré. Le dossier `.armadai/state/` est ignoré par git (`.armadai/.gitignore`).
 3. Verdict à format fixe : pour toute étape de flow qui a des `states`, `link` ajoute au prompt de l'agent (Claude et OpenCode) la consigne de terminer par une ligne `STATE: <état>` avec la liste des états de ses étapes. C'est ce qui rend l'état lisible (point relevé par la simulation).
 4. `armadai flow status [<flow>] [--session <id>] [--watch]` : sans `--session`, la session la plus récente. Affiche pour chaque exécution du flow :
-   - chaque étape : `✓ fait (état)`, `● en cours`, `○ à venir`, `✗` si l'étape a rendu un état qu'aucun lien ne prévoit ;
+   - chaque étape : `✓ fait (état)`, `● en cours`, `○ à venir`, `✗` si l'étape a rendu un état qu'elle ne déclare pas (ruling du 2026-10-22 : un état déclaré sans lien applicable termine normalement) ;
    - le compteur de chaque lien emprunté plus d'une fois (`build ⇄ guard : 2`) ;
    - la liste horodatée des transitions.
    `--watch` réaffiche à chaque nouvelle ligne du journal (lecture périodique, une seconde), jusqu'à Ctrl-C. Texte simple, couleurs du style de la CLI, aucune dépendance TUI.
