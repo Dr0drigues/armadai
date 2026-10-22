@@ -690,6 +690,42 @@ fn a_bad_instance_is_refused_and_nothing_is_written() {
             file.display()
         )
     );
+    // a name given twice: which value was meant?
+    let err = env.fails(&[
+        "new",
+        "agent",
+        "d",
+        "--from",
+        "checker",
+        "--var",
+        "subject=a",
+        "--var",
+        "subject=b",
+    ]);
+    assert_eq!(err, "Error: --var `subject` given twice; keep one value\n");
+    // a template and an agent with one id
+    let err = env.fails(&[
+        "new",
+        "agent",
+        "checker",
+        "--from",
+        "checker",
+        "--var",
+        "subject=x",
+    ]);
+    assert_eq!(
+        err,
+        format!(
+            "(rolled back) {}: error[template-agent-collision]: template `checker` has the same \
+             id as agent `checker`\n  hint: rename the template or the agent\nError: \
+             .armadai/agents/checker.md would make the project invalid; nothing was written\n",
+            env.root()
+                .canonicalize()
+                .unwrap()
+                .join(".armadai/templates/checker.md")
+                .display()
+        )
+    );
     // `--from` is not a built-in template
     let err = env.fails(&[
         "new",

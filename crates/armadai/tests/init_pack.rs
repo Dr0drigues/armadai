@@ -732,10 +732,14 @@ fn a_native_pack_installs_its_templates() {
         instance
     );
     assert!(!base.join("templates/notes.txt").exists());
-    assert!(err.contains("ignored: templates/notes.txt"), "{err}");
-    assert!(
-        out.contains("1 agent(s), 0 skill(s), 0 flow(s), 0 automation(s), 1 template(s)\n"),
-        "{out}"
+    assert_eq!(
+        err,
+        "  warn: ignored: templates/notes.txt (not part of a pack)\n"
+    );
+    assert_eq!(
+        out,
+        "Created .armadai/ from pack 'tpl': 1 agent(s), 0 skill(s), 0 flow(s), 0 automation(s), \
+         1 template(s)\n  Run `armadai link` to generate the target files.\n"
     );
     assert_eq!(armadai_model::validate(&env.root()), Vec::new());
 }

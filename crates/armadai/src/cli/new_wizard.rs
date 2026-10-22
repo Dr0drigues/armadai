@@ -82,12 +82,14 @@ pub struct InstanceAnswers {
     pub vars: Vec<(String, String)>,
 }
 
-/// `(id, agent)`: the instance `new::create_instance` writes.
-pub fn plan_instance(a: InstanceAnswers) -> (String, armadai_model::Agent) {
+/// `(id, from, vars)` for `new::create_instance`.
+pub fn plan_instance(
+    a: InstanceAnswers,
+) -> (String, String, std::collections::BTreeMap<String, String>) {
     let vars = (a.vars.into_iter())
         .map(|(k, v)| (k, v.trim().to_string()))
         .collect();
-    (a.id, crate::cli::new::instance_agent(&a.from, vars))
+    (a.id, a.from, vars)
 }
 
 #[derive(Debug, Clone)]
@@ -186,13 +188,8 @@ pub fn run(kind: Option<WizardKind>) -> anyhow::Result<()> {
                     .interact()?
                     == 1
             {
-                let (id, agent) = plan_instance(ask_instance(templates)?);
-                return crate::cli::new::create(
-                    crate::cli::new_target::Kind::Agent,
-                    &id,
-                    false,
-                    &armadai_model::render_agent(&id, &agent),
-                );
+                let (id, from, vars) = plan_instance(ask_instance(templates)?);
+                return crate::cli::new::create_instance(&id, &from, vars, false);
             }
             let skills: Vec<String> = (project.iter())
                 .flat_map(|p| p.skills.keys().cloned())
@@ -485,7 +482,7 @@ mod tests {
         };
         let names: Vec<String> = template_variables(&t).into_iter().collect();
         assert_eq!(names, ["deep", "subject", "who"]);
-        let (id, agent) = plan_instance(InstanceAnswers {
+        let (id, from, vars) = plan_instance(InstanceAnswers {
             id: "guardian".into(),
             from: "checker".into(),
             vars: vec![
@@ -494,6 +491,7 @@ mod tests {
             ],
         });
         assert_eq!(id, "guardian");
+        let agent = crate::cli::new::instance_agent(&from, vars);
         assert_eq!(
             armadai_model::render_agent(&id, &agent),
             "---\nfrom: checker\nvars:\n  subject: the frame\n  who: dev\n---\n"

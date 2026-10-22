@@ -223,7 +223,7 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
                 "an agent id is required: armadai new agent <id> --from <template> --var name=value",
             )?,
             &from,
-            vars.into_iter().collect(),
+            var_map(vars)?,
             force,
         ),
         NewCommand::Agent {
@@ -353,6 +353,20 @@ pub fn create_agent(
     )?;
     warn_placeholders(&remaining);
     Ok(())
+}
+
+/// `--var` values by name; a name given twice is refused (which value was meant?).
+fn var_map(
+    vars: Vec<(String, String)>,
+) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    let mut map = std::collections::BTreeMap::new();
+    for (k, v) in vars {
+        if map.contains_key(&k) {
+            anyhow::bail!("--var `{k}` given twice; keep one value");
+        }
+        map.insert(k, v);
+    }
+    Ok(map)
 }
 
 /// The agent `id` as an instance of the project template `from`, written and
