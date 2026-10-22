@@ -1,7 +1,7 @@
 //! Where each declared flow stands, rebuilt from the recorded sub-agent events
 //! (spec §4). Pure: the project and the session log in, the runs out.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use armadai_model::{Flow, Project};
 
@@ -40,8 +40,12 @@ pub struct Run {
 /// - The step of an event: the steps its `agent_type` holds (an agent no step
 ///   holds, internal ones with an empty type included, is ignored); among
 ///   them, the one a link allows from the last finished step of an open run,
-///   else an entry step of a flow without an open run (which opens one). More
-///   than one such step: each is marked `?` "ambiguous step" and no run moves.
+///   else an entry step of a flow without an open run (which opens one).
+///   Flows sharing that entry step open one candidate run each, grouped: each
+///   later event keeps the candidates it extends and drops the others; while
+///   more than one remains they show as one run named `a | b`. Steps of two
+///   distinct runs (or two steps of one): each is marked `?` "ambiguous step"
+///   and no run moves.
 /// - A run finishes when a step is done with a known state that no link leads
 ///   on from, and no step of the run is still running.
 pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
@@ -58,13 +62,34 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
                 None => b.start(&e), // its start was not recorded
             },
         };
-        if e.event == EventKind::Stop
-            && let [(i, step)] = targets.as_slice()
-        {
-            b.stop(*i, step, e.state.as_deref());
+        if e.event == EventKind::Stop && !b.ambiguous(&targets) {
+            for (i, step) in &targets {
+                b.stop(*i, step, e.state.as_deref());
+            }
         }
     }
-    b.open.into_iter().map(Building::finish).collect()
+    let mut groups: BTreeMap<usize, Vec<Building>> = BTreeMap::new();
+    for r in b.open.into_iter().filter(|r| !r.dropped) {
+        groups.entry(r.group).or_default().push(r);
+    }
+    groups.into_values().map(merge_candidates).collect()
+}
+
+/// One run for the candidates still grouped: their flows joined by ` | `, the
+/// steps they all have (as the first sees them), finished when all are.
+fn merge_candidates(mut members: Vec<Building>) -> Run {
+    // already sorted: candidates open in the order of `project.flows`
+    let flow = (members.iter().map(|m| m.run.flow.as_str()))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let finished = members.iter().all(|m| m.run.finished);
+    let others: Vec<&'_ Flow> = members[1..].iter().map(|m| m.flow).collect();
+    let mut run = members.swap_remove(0).finish();
+    run.steps
+        .retain(|v| others.iter().all(|f| f.steps.contains_key(&v.step)));
+    run.flow = flow;
+    run.finished = finished;
+    run
 }
 
 /// One stop per sub-agent run: a `SubagentHandback` (with the state) and the
@@ -95,13 +120,16 @@ fn merge_stops(events: &[FlowEvent]) -> Vec<FlowEvent> {
 
 struct Building<'p> {
     flow: &'p Flow,
+    /// Candidate runs opened by one event share it; a dropped one extended nothing.
+    group: usize,
+    dropped: bool,
     run: Run,
     last_done: Option<String>,
     taken: BTreeMap<(String, String), u32>,
 }
 
 impl<'p> Building<'p> {
-    fn new(flow_id: &str, flow: &'p Flow) -> Self {
+    fn new(flow_id: &str, flow: &'p Flow, group: usize) -> Self {
         let pending = |s: &str| StepView {
             step: s.to_string(),
             mark: Mark::Pending,
@@ -110,6 +138,8 @@ impl<'p> Building<'p> {
         };
         Building {
             flow,
+            group,
+            dropped: false,
             run: Run {
                 flow: flow_id.to_string(),
                 steps: step_order(flow).into_iter().map(pending).collect(),
@@ -154,8 +184,15 @@ struct Builder<'p> {
 impl<'p> Builder<'p> {
     fn open_run(&self, flow: &str) -> Option<usize> {
         (self.open.iter())
-            .rposition(|r| r.run.flow == flow)
+            .rposition(|r| r.run.flow == flow && !r.dropped)
             .filter(|i| !self.open[*i].run.finished)
+    }
+
+    /// Steps of two distinct runs, or two steps of one candidate.
+    fn ambiguous(&self, targets: &[(usize, String)]) -> bool {
+        let runs: BTreeSet<usize> = targets.iter().map(|(i, _)| *i).collect();
+        let groups: BTreeSet<usize> = runs.iter().map(|i| self.open[*i].group).collect();
+        groups.len() > 1 || runs.len() < targets.len()
     }
 
     fn start(&mut self, e: &FlowEvent) -> Vec<(usize, String)> {
@@ -184,16 +221,29 @@ impl<'p> Builder<'p> {
                         && armadai_model::entry_steps(flow).iter().any(|s| s == sid)
                 })
                 .collect();
+            let group = self.open.len();
             for (fid, flow, sid) in entries {
                 // two entry steps of one flow share the run they open
                 let i = self.open_run(fid).unwrap_or_else(|| {
-                    self.open.push(Building::new(fid, flow));
+                    self.open.push(Building::new(fid, flow, group));
                     self.open.len() - 1
                 });
                 linked.push((i, sid, None));
             }
         }
-        let ambiguous = linked.len() > 1;
+        let targets: Vec<(usize, String)> = (linked.iter())
+            .map(|(i, s, _)| (*i, s.to_string()))
+            .collect();
+        let ambiguous = self.ambiguous(&targets);
+        if !ambiguous && let Some((i, _, _)) = linked.first() {
+            // the candidates of this run that the event does not extend
+            let group = self.open[*i].group;
+            for (j, r) in self.open.iter_mut().enumerate() {
+                if r.group == group && !r.run.finished && !linked.iter().any(|l| l.0 == j) {
+                    r.dropped = true;
+                }
+            }
+        }
         for (i, sid, from) in &linked {
             let run = &mut self.open[*i];
             *run.view(sid) = StepView {
@@ -214,10 +264,6 @@ impl<'p> Builder<'p> {
                     .or_default() += 1;
             }
         }
-        let targets: Vec<(usize, String)> = linked
-            .into_iter()
-            .map(|(i, s, _)| (i, s.to_string()))
-            .collect();
         self.assigned.insert(e.agent_id.clone(), targets.clone());
         targets
     }
@@ -303,7 +349,16 @@ mod tests {
         std::fs::create_dir_all(a.join("agents")).unwrap();
         std::fs::create_dir_all(a.join("flows")).unwrap();
         std::fs::write(a.join("project.yaml"), "schema_version: 1\n").unwrap();
-        for agent in ["architect", "dev", "qa", "ops", "lead"] {
+        for agent in [
+            "architect",
+            "dev",
+            "qa",
+            "ops",
+            "lead",
+            "analyst",
+            "implementer",
+            "coach",
+        ] {
             std::fs::write(
                 a.join(format!("agents/{agent}.md")),
                 "---\ndescription: d\n---\nB\n",
@@ -539,6 +594,58 @@ mod tests {
         assert_eq!(
             runs(&deliver(), &events)[0].steps[2],
             view("guard", Mark::Done, Some("approved"), None)
+        );
+    }
+
+    /// `deliver` and `guide` share their entry step, then diverge.
+    const SHARED_ENTRY: [(&str, &str); 2] = [
+        (
+            "deliver",
+            "steps:\n  refine: { agent: analyst }\n  build: { agent: implementer }\n  ship: { agent: ops }\nlinks:\n  - { from: refine, to: build }\n  - { from: build, to: ship }\n",
+        ),
+        (
+            "guide",
+            "steps:\n  refine: { agent: analyst }\n  build: { agent: coach }\nlinks:\n  - { from: refine, to: build }\n",
+        ),
+    ];
+
+    #[test]
+    fn flows_sharing_their_entry_resolve_at_the_divergence() {
+        let events = seq(&[
+            &step(10, "r1", "analyst", None),
+            &[start(20, "i1", "implementer")],
+        ]);
+        assert_eq!(
+            runs(&project(&SHARED_ENTRY), &events),
+            vec![Run {
+                flow: "deliver".into(),
+                steps: vec![
+                    view("refine", Mark::Done, Some("done"), None),
+                    view("build", Mark::Running, None, None),
+                    view("ship", Mark::Pending, None, None),
+                ],
+                loops: vec![],
+                transitions: vec![t(20, "refine", "build", Some("done"))],
+                finished: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn flows_sharing_their_entry_stay_one_run_before_the_divergence() {
+        let events = step(10, "r1", "analyst", None);
+        assert_eq!(
+            runs(&project(&SHARED_ENTRY), &events),
+            vec![Run {
+                flow: "deliver | guide".into(),
+                steps: vec![
+                    view("refine", Mark::Done, Some("done"), None),
+                    view("build", Mark::Pending, None, None),
+                ],
+                loops: vec![],
+                transitions: vec![],
+                finished: false,
+            }]
         );
     }
 
