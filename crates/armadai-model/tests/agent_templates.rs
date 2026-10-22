@@ -275,21 +275,6 @@ fn bad_template_id_and_bad_variable_name() {
 }
 
 #[test]
-fn unknown_key_in_a_template_is_reported_on_the_template() {
-    let l = load(&[
-        M,
-        (".armadai/templates/checker.md", "---\nbogus: 1\n---\n"),
-        GUARDIAN,
-    ]);
-    let ds = short(&l);
-    assert_eq!(ds.len(), 1, "{ds:?}");
-    assert_eq!(
-        (ds[0].1, ds[0].2.as_str(), ds[0].3),
-        ("invalid-yaml", "checker.md", Some(2))
-    );
-}
-
-#[test]
 fn description_left_to_nobody_is_an_error_on_the_instance() {
     let l = load_with("---\ntier: pro\n---\n", &instance("{}", ""));
     assert_eq!(
@@ -397,4 +382,102 @@ fn unknown_key_of_the_template_is_reported_on_the_template() {
             None,
         )]
     );
+}
+
+#[test]
+fn an_instance_the_generic_read_refuses_is_an_error_not_a_hand_written_agent() {
+    let l = load_with(
+        CHECKER.1,
+        &instance("{ subject: x }", "description: d\ntemperature: .inf\n"),
+    );
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "invalid-yaml",
+            "guardian.md".into(),
+            Some(5),
+            "non-finite float `.inf` rejected by the configured policy".into(),
+            None,
+        )]
+    );
+    assert!(!l.project.unwrap().agents.contains_key("guardian"));
+}
+
+#[test]
+fn a_replaced_key_needs_none_of_its_variables() {
+    let template = "---\ndescription: \"Checks {{subject}}\"\n---\nBody.\n";
+    let l = load_with(template, &instance("{}", "description: Own\n"));
+    assert_eq!(short(&l), vec![]);
+    assert_eq!(agent(&l, "guardian").front.description, "Own");
+    // and a variable only the replaced key used is unused
+    let l = load_with(template, &instance("{ subject: x }", "description: Own\n"));
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Warning,
+            "unused-template-var",
+            "guardian.md".into(),
+            Some(3),
+            "variable `subject` is not used by template `checker`".into(),
+            None,
+        )]
+    );
+}
+
+#[test]
+fn an_unknown_template_reports_nothing_else() {
+    let l = load(&[
+        M,
+        (
+            ".armadai/agents/guardian.md",
+            "---\nfrom: nope\nvars: { Bad_Name: y }\n---\n",
+        ),
+    ]);
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "unknown-template",
+            "guardian.md".into(),
+            Some(2),
+            "unknown template `nope`".into(),
+            None,
+        )]
+    );
+}
+
+#[test]
+fn a_non_string_var_is_reported_on_vars() {
+    let l = load_with(CHECKER.1, &instance("{ subject: 1 }", ""));
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "invalid-yaml",
+            "guardian.md".into(),
+            Some(3),
+            "invalid type: number, expected a string".into(),
+            None,
+        )]
+    );
+}
+
+#[test]
+fn missing_variables_are_reported_sorted() {
+    let l = load_with(
+        "---\ndescription: d\n---\n{{zeta}} {{alpha}}\n",
+        &instance("{}", ""),
+    );
+    let missing = |v: &str| {
+        (
+            Severity::Error,
+            "missing-template-var",
+            "guardian.md".to_string(),
+            Some(2),
+            format!("template `checker` uses `{{{{{v}}}}}`, which `vars` does not set"),
+            None,
+        )
+    };
+    assert_eq!(short(&l), vec![missing("alpha"), missing("zeta")]);
 }

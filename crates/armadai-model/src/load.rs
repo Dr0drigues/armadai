@@ -487,6 +487,11 @@ pub fn load_project(root: &Path) -> Loaded {
             continue;
         }
         if let Some(front) = cx.parse::<AgentFront>(yaml, &p, first - 1) {
+            if front.from.is_some() || !front.vars.is_empty() {
+                // an instance whose frontmatter the generic read refuses: report why
+                cx.parse::<Map<String, Value>>(yaml, &p, first - 1);
+                continue;
+            }
             agents.insert(
                 id,
                 Agent {
@@ -624,14 +629,6 @@ struct Source<'a> {
     body: &'a str,
 }
 
-/// The keys that make an agent an instance.
-#[derive(serde::Deserialize)]
-struct Head {
-    from: String,
-    #[serde(default)]
-    vars: BTreeMap<String, String>,
-}
-
 /// Render the instance `src` (frontmatter `own`, which has `from`) from its template:
 /// strings rendered, top-level keys of the instance replacing the template's, bodies
 /// joined by one blank line, then the result parsed as an ordinary agent.
@@ -643,28 +640,26 @@ fn instance(
     mut own: Map<String, Value>,
 ) -> Option<Agent> {
     let (p, text) = (src.path, src.text);
-    // `from` and `vars` typed here; the other keys once merged with the template's
-    let head: Map<String, Value> = ["from", "vars"]
-        .into_iter()
-        .filter_map(|k| Some((k.to_string(), own.get(k)?.clone())))
-        .collect();
-    let Head { from, vars } = match serde_json::from_value(Value::Object(head)) {
-        Ok(h) => h,
+    // `from` and `vars` typed here, each error on its key; the other keys once merged
+    let mut head = |key: &str| own.remove(key).unwrap_or(Value::Null);
+    let (from, vars) = (head("from"), head("vars"));
+    let from: String = match serde_json::from_value(from) {
+        Ok(f) => f,
         Err(e) => {
             cx.error("invalid-yaml", p, locate_key(text, "from"), e.to_string());
             return None;
         }
     };
-    let bad: Vec<&String> = vars.keys().filter(|k| !crate::is_valid_id(k)).collect();
-    for k in &bad {
-        cx.error(
-            "bad-id",
-            p,
-            locate_key(text, k),
-            format!("variable `{k}` is not a valid name"),
-        );
-        cx.hint(Some(ID_RULE.into()));
-    }
+    let vars: BTreeMap<String, String> = match vars {
+        Value::Null => BTreeMap::new(),
+        v => match serde_json::from_value(v) {
+            Ok(v) => v,
+            Err(e) => {
+                cx.error("invalid-yaml", p, locate_key(text, "vars"), e.to_string());
+                return None;
+            }
+        },
+    };
     let Some(tmap) = template_maps.get(&from) else {
         // a template that exists but did not load is reported on itself
         if !cx
@@ -683,26 +678,32 @@ fn instance(
         }
         return None;
     };
+    // only once the template is known: an agent never rendered reports nothing else
+    let bad: Vec<&String> = vars.keys().filter(|k| !crate::is_valid_id(k)).collect();
+    for k in &bad {
+        cx.error(
+            "bad-id",
+            p,
+            locate_key(text, k),
+            format!("variable `{k}` is not a valid name"),
+        );
+        cx.hint(Some(ID_RULE.into()));
+    }
     if !bad.is_empty() {
         return None;
     }
-    own.remove("from");
-    own.remove("vars");
     let template_body = &templates[&from].body;
 
+    // merge first, render after: a key the instance replaces needs none of its variables
+    let mut merged = tmap.clone();
+    merged.extend(own.clone());
     let mut used = variables(template_body);
     used.extend(variables(src.body));
-    tmap.values()
-        .chain(own.values())
-        .for_each(|v| value_variables(v, &mut used));
+    merged.values().for_each(|v| value_variables(v, &mut used));
     let mut missing = BTreeSet::new();
-    let mut merged = tmap.clone();
-    let mut rendered_own = own.clone();
     merged
         .values_mut()
-        .chain(rendered_own.values_mut())
         .for_each(|v| render_value(v, &vars, &mut missing));
-    merged.extend(rendered_own);
     let mut body = |t: &str| {
         render(t, &vars).unwrap_or_else(|m| {
             missing.extend(m);
