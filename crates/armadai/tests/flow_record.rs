@@ -30,8 +30,14 @@ fn stop(session: &str, cwd: &Path) -> String {
 }
 
 fn record(input: &str, home: &Path) -> std::process::Output {
+    record_in(input, home, home)
+}
+
+/// Run from `dir`: a payload without `cwd` must not fall back to the process's.
+fn record_in(input: &str, home: &Path, dir: &Path) -> std::process::Output {
     Command::cargo_bin("armadai")
         .unwrap()
+        .current_dir(dir)
         .arg("__record-flow-event")
         .env("HOME", home)
         .env("ARMADAI_CONFIG_DIR", home.join("cfg"))
@@ -143,4 +149,29 @@ fn bad_input_or_no_project_records_nothing_and_succeeds() {
     assert!(!dir.path().join(".armadai/state").exists());
     assert!(!outside.path().join(".armadai").exists());
     assert!(!dir.path().join(".armadai/evil.jsonl").exists());
+}
+
+#[test]
+fn a_missing_cwd_session_or_directory_records_nothing_and_succeeds() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    project(dir.path());
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(outside.path().join(".git")).unwrap();
+    let without = |key: &str| {
+        let mut v: serde_json::Value = serde_json::from_str(&stop("s1", dir.path())).unwrap();
+        v.as_object_mut().unwrap().remove(key);
+        v.to_string()
+    };
+
+    for input in [
+        without("session_id"),
+        without("cwd"),
+        stop("s1", &outside.path().join("gone/deeper")),
+    ] {
+        assert_silent_success(&record_in(&input, home.path(), dir.path()));
+    }
+
+    assert!(!dir.path().join(".armadai/state").exists());
+    assert!(!outside.path().join("gone").exists());
 }

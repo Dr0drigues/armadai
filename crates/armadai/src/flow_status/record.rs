@@ -143,6 +143,14 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_last_line_leaves_the_last_valid_one() {
+        assert_eq!(
+            state_of("STATE: approved\nSTATE: Two words").as_deref(),
+            Some("approved")
+        );
+    }
+
+    #[test]
     fn subagent_start_records_a_start() {
         assert_eq!(
             line(START),
@@ -184,8 +192,18 @@ mod tests {
         let session = START.replace(r#""SubagentStart""#, r#""SessionStart""#);
         // A handback seen from the main thread carries no agent: nothing to attribute.
         let main_thread = HANDBACK.replace(r#""agent_id":"def456","agent_type":"Explore","#, "");
+        // `--agent` sets `agent_type` on the main thread too: `agent_id` decides.
+        let typed_main_thread = HANDBACK.replace(r#""agent_id":"def456","#, "");
         let other_tool = HANDBACK.replace("SubagentHandback", "Bash");
-        for raw in [&stop, &session, &main_thread, &other_tool, "{not json", ""] {
+        for raw in [
+            &stop,
+            &session,
+            &main_thread,
+            &typed_main_thread,
+            &other_tool,
+            "{not json",
+            "",
+        ] {
             assert_eq!(event_from_hook(raw, 100), None, "{raw}");
         }
     }
