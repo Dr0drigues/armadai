@@ -1,4 +1,4 @@
-//! `armadai list`: the agents, skills, flows and automations of the project.
+//! `armadai list`: the agents, skills, templates, flows and automations of the project.
 //!
 //! Read-only: a project with errors is still listed (diagnostics on stderr), as far
 //! as it loads.
@@ -47,9 +47,14 @@ pub fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
     if agents.is_empty() {
         anstream::println!("{m}No agents found.{m:#}");
     } else {
+        // an instance shows the template it comes from
+        let label = |id: &str, a: &armadai_model::Agent| match &a.instance {
+            Some(i) => format!("{id} (from {})", i.from),
+            None => id.to_string(),
+        };
         let w = agents
             .iter()
-            .map(|(id, _)| id.len())
+            .map(|(id, a)| label(id, a).len())
             .max()
             .unwrap_or(2)
             .max(2);
@@ -67,7 +72,7 @@ pub fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
             };
             anstream::println!(
                 "  {acc}{:<w$}{acc:#}  {:<4}  {tags}  {}{role}",
-                id,
+                label(id, a),
                 tier_str(a.front.tier),
                 a.front.description.lines().next().unwrap_or_default(),
             );
@@ -76,6 +81,7 @@ pub fn execute(tags: Option<Vec<String>>) -> anyhow::Result<()> {
     }
     for (title, ids) in [
         ("Skills", project.skills.keys().collect::<Vec<_>>()),
+        ("Templates", project.templates.keys().collect()),
         ("Flows", project.flows.keys().collect()),
         ("Automations", project.automations.keys().collect()),
     ] {

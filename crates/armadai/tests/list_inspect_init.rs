@@ -255,3 +255,51 @@ fn a_config_settings_yaml_prints_no_hint() {
         "{err}"
     );
 }
+
+const INSTANCE: &[(&str, &str)] = &[
+    (".armadai/project.yaml", "schema_version: 1\n"),
+    (
+        ".armadai/templates/checker.md",
+        "---\ndescription: \"Checks {{subject}}\"\ntier: pro\n---\nYou check {{subject}}.\n",
+    ),
+    (
+        ".armadai/agents/guardian.md",
+        "---\nfrom: checker\nvars:\n  subject: the frame\n---\nExtra line.\n",
+    ),
+    (
+        ".armadai/agents/lead.md",
+        "---\ndescription: Leads\n---\nLead.\n",
+    ),
+];
+
+#[test]
+fn list_shows_the_templates_and_where_an_instance_comes_from() {
+    let env = Env::new(INSTANCE);
+    let (ok, out, err) = env.run(&["list"]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        out,
+        "  ID                       TIER  TAGS  DESCRIPTION\n  \
+         guardian (from checker)  pro   -  Checks the frame\n  \
+         lead                     -     -  Leads\n\n  \
+         2 agent(s) found.\n\
+         Templates: checker\n"
+    );
+}
+
+#[test]
+fn inspect_shows_an_instance_rendered_and_its_template() {
+    let env = Env::new(INSTANCE);
+    let (ok, out, err) = env.run(&["inspect", "guardian"]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        out,
+        "Agent: guardian\n\
+         Source: .armadai/agents/guardian.md, from: checker (.armadai/templates/checker.md)\n\n  \
+         Description:  Checks the frame\n  \
+         Tier:         pro\n\n\
+         ## Prompt\n  \
+         You check the frame.\n  \n  \
+         Extra line.\n"
+    );
+}

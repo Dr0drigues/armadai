@@ -1,0 +1,10 @@
+start: plan
+steps:
+  plan: { agent: lead }
+  frame: { agent: guardian, states: [rejected] }
+  code: { agent: validator, states: [rejected] }
+links:
+  - { from: plan, to: frame }
+  - { from: frame, to: code }
+  - { from: frame, to: plan, when: rejected }
+  - { from: code, to: plan, when: rejected }

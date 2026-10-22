@@ -131,7 +131,7 @@ pub fn entry_steps(flow: &crate::load::Flow) -> Vec<String> {
 }
 
 /// "did you mean" when an id is within edit distance 2, else the known ids.
-fn hint_for(token: &str, known: &BTreeSet<&str>) -> Option<String> {
+pub(crate) fn hint_for(token: &str, known: &BTreeSet<&str>) -> Option<String> {
     // closest id (ties: alphabetical, the set is sorted), within a bound that grows with length
     let bound = (token.chars().count() / 3).max(1);
     let best = known
@@ -175,6 +175,13 @@ impl Out<'_> {
             _ => (None, None),
         };
         let file = origin.map_or_else(|| PathBuf::from(id), |(f, _)| f.clone());
+        // a template error is met once per instance: report it once
+        let seen = |d: &Diagnostic| {
+            (d.code, &d.file, d.line, d.column, &d.message) == (code, &file, line, column, &message)
+        };
+        if kind == Kind::Template && self.ds.iter().any(seen) {
+            return;
+        }
         self.ds.push(Diagnostic {
             severity,
             code,
@@ -313,12 +320,30 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         );
     }
 
+    for id in project
+        .templates
+        .keys()
+        .filter(|id| agents.contains(id.as_str()))
+    {
+        o.err(
+            (Kind::Template, id),
+            "template-agent-collision",
+            None,
+            format!("template `{id}` has the same id as agent `{id}`"),
+            Some("rename the template or the agent".into()),
+        );
+    }
+
     // agents
     for (id, a) in &project.agents {
-        let at = (Kind::Agent, id.as_str());
+        // an instance's key it does not set itself comes from (and is reported on) its template
+        let at = |key: &str| match &a.instance {
+            Some(i) if !i.front.contains_key(key) => (Kind::Template, i.from.as_str()),
+            _ => (Kind::Agent, id.as_str()),
+        };
         if a.front.description.trim().is_empty() {
             o.err(
-                at,
+                at("description"),
                 "empty-description",
                 Some(("description", true)),
                 "agent description is empty".into(),
@@ -327,7 +352,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         }
         if let Some(t) = a.front.temperature.filter(|t| !t.is_finite()) {
             o.err(
-                at,
+                at("temperature"),
                 "invalid-temperature",
                 Some(("temperature", true)),
                 format!("temperature must be a finite number, got {t}"),
@@ -340,9 +365,9 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
             .iter()
             .filter(|s| !skills.contains(s.as_str()))
         {
-            o.unknown_ref(at, "unknown-skill", "skill", s, &skills);
+            o.unknown_ref(at("skills"), "unknown-skill", "skill", s, &skills);
         }
-        o.native_keys(at, a.front.native.keys());
+        o.native_keys(at("native"), a.front.native.keys());
     }
 
     // skills

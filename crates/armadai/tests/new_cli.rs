@@ -593,3 +593,173 @@ fn a_leftover_backup_blocks_force() {
     assert!(err.contains("dev.md.armadai-backup"), "{err}");
     assert_eq!(tree(&env.root()), before);
 }
+
+const CHECKER: &[(&str, &str)] = &[
+    (".armadai/project.yaml", "schema_version: 1\n"),
+    (
+        ".armadai/templates/checker.md",
+        "---\ndescription: \"Checks {{subject}}\"\ntier: pro\n---\nYou check {{subject}}.\n",
+    ),
+    (
+        ".armadai/agents/lead.md",
+        "---\ndescription: Leads\n---\nLead.\n",
+    ),
+];
+
+#[test]
+fn new_agent_from_a_project_template_writes_an_instance() {
+    let env = Env::new(CHECKER);
+    let out = env.ok(&[
+        "new",
+        "agent",
+        "guardian",
+        "--from",
+        "checker",
+        "--var",
+        "subject=the frame",
+    ]);
+    assert_eq!(out, "Created .armadai/agents/guardian.md\n");
+    assert_eq!(
+        env.read(".armadai/agents/guardian.md"),
+        "---\nfrom: checker\nvars:\n  subject: the frame\n---\n"
+    );
+    assert_eq!(env.diagnostics(), Vec::<String>::new());
+    // repeatable, and a value may hold `=`
+    env.ok(&[
+        "new",
+        "agent",
+        "two",
+        "--from",
+        "checker",
+        "--var",
+        "subject=a=b",
+        "--var",
+        "extra=x",
+    ]);
+    assert_eq!(
+        env.read(".armadai/agents/two.md"),
+        "---\nfrom: checker\nvars:\n  extra: x\n  subject: a=b\n---\n"
+    );
+}
+
+#[test]
+fn a_bad_instance_is_refused_and_nothing_is_written() {
+    let env = Env::new(CHECKER);
+    let before = tree(&env.root());
+    // a `--var` without `=`: refused by the command line itself
+    let err = env.fails(&["new", "agent", "g", "--from", "checker", "--var", "subject"]);
+    assert!(
+        err.contains(
+            "invalid value 'subject' for '--var <NAME=VALUE>': `subject` is not \
+             NAME=VALUE"
+        ),
+        "{err}"
+    );
+    // an unknown template: the validator's diagnostic, then the undo
+    let err = env.fails(&[
+        "new",
+        "agent",
+        "g",
+        "--from",
+        "chekcer",
+        "--var",
+        "subject=x",
+    ]);
+    let file = env
+        .root()
+        .canonicalize()
+        .unwrap()
+        .join(".armadai/agents/g.md");
+    assert_eq!(
+        err,
+        format!(
+            "(rolled back) {}:2:1: error[unknown-template]: unknown template `chekcer`\n  \
+             hint: did you mean `checker`?\nError: .armadai/agents/g.md would make the project \
+             invalid; nothing was written\n",
+            file.display()
+        )
+    );
+    // a variable the template uses and `--var` does not set
+    let err = env.fails(&["new", "agent", "g", "--from", "checker"]);
+    assert_eq!(
+        err,
+        format!(
+            "(rolled back) {}:2:1: error[missing-template-var]: template `checker` uses \
+             `{{{{subject}}}}`, which `vars` does not set\nError: .armadai/agents/g.md would \
+             make the project invalid; nothing was written\n",
+            file.display()
+        )
+    );
+    // a name given twice: which value was meant?
+    let err = env.fails(&[
+        "new",
+        "agent",
+        "d",
+        "--from",
+        "checker",
+        "--var",
+        "subject=a",
+        "--var",
+        "subject=b",
+    ]);
+    assert_eq!(err, "Error: --var `subject` given twice; keep one value\n");
+    // a template and an agent with one id
+    let err = env.fails(&[
+        "new",
+        "agent",
+        "checker",
+        "--from",
+        "checker",
+        "--var",
+        "subject=x",
+    ]);
+    assert_eq!(
+        err,
+        format!(
+            "(rolled back) {}: error[template-agent-collision]: template `checker` has the same \
+             id as agent `checker`\n  hint: rename the template or the agent\nError: \
+             .armadai/agents/checker.md would make the project invalid; nothing was written\n",
+            env.root()
+                .canonicalize()
+                .unwrap()
+                .join(".armadai/templates/checker.md")
+                .display()
+        )
+    );
+    // `--from` is not a built-in template
+    let err = env.fails(&[
+        "new",
+        "agent",
+        "g",
+        "--from",
+        "checker",
+        "--template",
+        "basic",
+    ]);
+    assert!(
+        err.contains("the argument '--from <FROM>' cannot be used with '--template <TEMPLATE>'"),
+        "{err}"
+    );
+    assert_eq!(tree(&env.root()), before);
+    // the guided creation would drop `--from` in silence
+    let err = env.fails(&["new", "agent", "g", "-i", "--from", "checker"]);
+    assert_eq!(
+        err.lines().next(),
+        Some("error: the argument '--interactive' cannot be used with '--from <FROM>'")
+    );
+    assert_eq!(tree(&env.root()), before);
+}
+
+/// Review Focus 4: creating a flow or a skill never rewrites an instance.
+#[test]
+fn new_flow_and_skill_leave_an_instance_byte_for_byte() {
+    let mut files = CHECKER.to_vec();
+    let instance =
+        "---\nfrom: checker\nvars:\n  subject: the frame\nskills: [cadre]\n---\nExtra.\n";
+    files.push((".armadai/agents/guardian.md", instance));
+    let env = Env::new(&files);
+    env.ok(&["new", "flow", "ship", "--agents", "lead,guardian"]);
+    env.ok(&["new", "skill", "cadre", "--description", "Frames"]);
+    assert_eq!(env.read(".armadai/agents/guardian.md"), instance);
+    assert_eq!(env.diagnostics(), Vec::<String>::new());
+}

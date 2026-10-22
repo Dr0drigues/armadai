@@ -56,6 +56,42 @@ pub fn plan_agent(a: AgentAnswers) -> (String, String, AgentOptions) {
     (a.id, a.template, opts)
 }
 
+/// Where a new agent starts: a template of the project is offered only when the
+/// project has one.
+pub fn agent_sources(project_templates: usize) -> &'static [&'static str] {
+    if project_templates == 0 {
+        &["a built-in template"]
+    } else {
+        &["a built-in template", "a template of the project"]
+    }
+}
+
+/// Every `{{var}}` of a project template, its frontmatter values and its body.
+pub fn template_variables(t: &armadai_model::Template) -> std::collections::BTreeSet<String> {
+    let mut names = armadai_model::agent_templates::variables(&t.body);
+    let front = serde_json::to_value(&t.front).unwrap_or_default();
+    armadai_model::agent_templates::value_variables(&front, &mut names);
+    names
+}
+
+#[derive(Debug, Clone)]
+pub struct InstanceAnswers {
+    pub id: String,
+    pub from: String,
+    /// `(variable, value)`, values as typed.
+    pub vars: Vec<(String, String)>,
+}
+
+/// `(id, from, vars)` for `new::create_instance`.
+pub fn plan_instance(
+    a: InstanceAnswers,
+) -> (String, String, std::collections::BTreeMap<String, String>) {
+    let vars = (a.vars.into_iter())
+        .map(|(k, v)| (k, v.trim().to_string()))
+        .collect();
+    (a.id, a.from, vars)
+}
+
 #[derive(Debug, Clone)]
 pub struct FlowAnswers {
     pub id: String,
@@ -141,6 +177,20 @@ pub fn run(kind: Option<WizardKind>) -> anyhow::Result<()> {
     let project = armadai_model::load_project(&root).project;
     match kind {
         WizardKind::Agent => {
+            let templates = project.as_ref().map(|p| &p.templates);
+            let sources = agent_sources(templates.map_or(0, |t| t.len()));
+            if let Some(templates) = templates
+                && sources.len() > 1
+                && dialoguer::Select::new()
+                    .with_prompt("Start from")
+                    .items(sources)
+                    .default(0)
+                    .interact()?
+                    == 1
+            {
+                let (id, from, vars) = plan_instance(ask_instance(templates)?);
+                return crate::cli::new::create_instance(&id, &from, vars, false);
+            }
             let skills: Vec<String> = (project.iter())
                 .flat_map(|p| p.skills.keys().cloned())
                 .collect();
@@ -267,6 +317,27 @@ fn ask_agent(skills: &[String]) -> anyhow::Result<AgentAnswers> {
     })
 }
 
+fn ask_instance(
+    templates: &std::collections::BTreeMap<String, armadai_model::Template>,
+) -> anyhow::Result<InstanceAnswers> {
+    let id = ask_id("Agent id (e.g. guardian)")?;
+    let ids: Vec<&String> = templates.keys().collect();
+    let from = ids[dialoguer::Select::new()
+        .with_prompt("Template of the project")
+        .items(&ids)
+        .default(0)
+        .interact()?]
+    .clone();
+    let mut vars = Vec::new();
+    for name in template_variables(&templates[&from]) {
+        let value: String = dialoguer::Input::new()
+            .with_prompt(format!("{{{{{name}}}}}"))
+            .interact_text()?;
+        vars.push((name, value));
+    }
+    Ok(InstanceAnswers { id, from, vars })
+}
+
 fn ask_flow(agents: &[String]) -> anyhow::Result<FlowAnswers> {
     let id = ask_id("Flow id (e.g. review)")?;
     let template = armadai_model::FLOW_TEMPLATES[dialoguer::Select::new()
@@ -389,6 +460,42 @@ mod tests {
              delegate: ask\n"
         );
         assert!(text.contains("working on rust"), "{text}");
+    }
+
+    #[test]
+    fn a_project_template_is_offered_only_when_there_is_one() {
+        assert_eq!(agent_sources(0), ["a built-in template"]);
+        assert_eq!(
+            agent_sources(2),
+            ["a built-in template", "a template of the project"]
+        );
+    }
+
+    #[test]
+    fn instance_answers_become_the_instance_file() {
+        let t: armadai_model::Template = armadai_model::Template {
+            front: armadai_model::yaml::from_str(
+                "description: \"Checks {{subject}}\"\nnative: { claude: { x: \"{{deep}}\" } }\n",
+            )
+            .unwrap(),
+            body: "You check {{subject}} for {{ who }}, not \\{{literal}}.\n".into(),
+        };
+        let names: Vec<String> = template_variables(&t).into_iter().collect();
+        assert_eq!(names, ["deep", "subject", "who"]);
+        let (id, from, vars) = plan_instance(InstanceAnswers {
+            id: "guardian".into(),
+            from: "checker".into(),
+            vars: vec![
+                ("subject".into(), " the frame ".into()),
+                ("who".into(), "dev".into()),
+            ],
+        });
+        assert_eq!(id, "guardian");
+        let agent = crate::cli::new::instance_agent(&from, vars);
+        assert_eq!(
+            armadai_model::render_agent(&id, &agent),
+            "---\nfrom: checker\nvars:\n  subject: the frame\n  who: dev\n---\n"
+        );
     }
 
     #[test]

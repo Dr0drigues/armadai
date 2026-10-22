@@ -34,6 +34,8 @@ struct Prepared {
     /// is stale is decided on this, never on a filtered subset.
     all_produced: BTreeSet<PathBuf>,
     report: Report,
+    /// Agent id -> the template it is an instance of: a report line names the source.
+    templates: std::collections::BTreeMap<String, String>,
 }
 
 impl Prepared {
@@ -113,6 +115,9 @@ fn prepare(
         },
         report: plan.report,
         all_produced: BTreeSet::new(),
+        templates: (project.agents.iter())
+            .filter_map(|(id, a)| Some((id.clone(), a.instance.as_ref()?.from.clone())))
+            .collect(),
     };
     p.all_produced = p.artifacts.iter().map(|a| p.rel(a)).collect();
 
@@ -367,7 +372,7 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
     let rel = p.rel(a);
     let ours_before = (p.previous.iter().flat_map(|t| &t.entries))
         .any(|e| e.path == rel && e.outcome == Outcome::Created);
-    let reason = if ours_before {
+    let mut reason = if ours_before {
         format!(
             "edited since the last link (use --force): {}",
             rel.display()
@@ -378,6 +383,13 @@ fn not_written(p: &mut Prepared, root: &Path, path: &Path) {
             rel.display()
         )
     };
+    if matches!(
+        a.produced_by.kind,
+        manifest::ProducedByKind::Agent | manifest::ProducedByKind::Coordinator
+    ) && let Some(t) = p.templates.get(&a.produced_by.name)
+    {
+        reason.push_str(&format!(" (from template {t})"));
+    }
     p.report.lines.retain(|l| l.element != element);
     let target = p.target.clone();
     p.report

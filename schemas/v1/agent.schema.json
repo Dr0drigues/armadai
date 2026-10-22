@@ -75,12 +75,36 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "anyOf": [
+    {
+      "required": [
+        "description"
+      ]
+    },
+    {
+      "properties": {
+        "from": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from"
+      ]
+    }
+  ],
   "properties": {
     "capabilities": {
       "$ref": "#/$defs/Capabilities"
     },
     "description": {
       "type": "string"
+    },
+    "from": {
+      "description": "The agent template (`templates/<id>.md`) this agent is an instance of.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "native": {
       "additionalProperties": true,
@@ -120,11 +144,15 @@
         "string",
         "null"
       ]
+    },
+    "vars": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Values of the template's `{{var}}` variables (strings).",
+      "type": "object"
     }
   },
-  "required": [
-    "description"
-  ],
   "title": "AgentFront",
   "type": "object"
 }

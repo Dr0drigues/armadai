@@ -705,3 +705,41 @@ fn a_failed_link_keeps_the_project_and_says_so() {
         "{err}"
     );
 }
+
+#[test]
+fn a_native_pack_installs_its_templates() {
+    let env = Env::new();
+    let template = "---\ndescription: \"Checks {{subject}}\"\n---\nYou check {{subject}}.\n";
+    let instance = "---\nfrom: checker\nvars:\n  subject: the frame\n---\n";
+    let pack = env.pack(
+        "tpl",
+        &[
+            ("pack.yaml", "format: 1\nname: tpl\ndescription: d\n"),
+            ("templates/checker.md", template),
+            ("templates/notes.txt", "not a template\n"),
+            ("agents/guardian.md", instance),
+        ],
+    );
+    let (ok, out, err) = env.init(&pack, &[]);
+    assert!(ok, "{out}\n{err}");
+    let base = env.root().join(".armadai");
+    assert_eq!(
+        std::fs::read_to_string(base.join("templates/checker.md")).unwrap(),
+        template
+    );
+    assert_eq!(
+        std::fs::read_to_string(base.join("agents/guardian.md")).unwrap(),
+        instance
+    );
+    assert!(!base.join("templates/notes.txt").exists());
+    assert_eq!(
+        err,
+        "  warn: ignored: templates/notes.txt (not part of a pack)\n"
+    );
+    assert_eq!(
+        out,
+        "Created .armadai/ from pack 'tpl': 1 agent(s), 0 skill(s), 0 flow(s), 0 automation(s), \
+         1 template(s)\n  Run `armadai link` to generate the target files.\n"
+    );
+    assert_eq!(armadai_model::validate(&env.root()), Vec::new());
+}

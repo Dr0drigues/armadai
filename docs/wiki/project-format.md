@@ -9,6 +9,7 @@ with "legacy format, run `armadai migrate`" (see [Migrating](#migrating-a-legacy
 .armadai/
   project.yaml            # manifest
   agents/<id>.md          # frontmatter + prompt
+  templates/<id>.md       # agent templates, rendered into agents/ instances
   skills/<id>/SKILL.md    # cross-tool skill standard, folder copied as is
   flows/<id>.yaml
   automations/<id>.yaml
@@ -19,7 +20,7 @@ Every file is strict YAML: an unknown key, a duplicate key or a value outside it
 error, except under `native` (opaque) and in a skill's frontmatter (owned by other tools: an
 unknown key is a warning). Files are discovered per directory and sorted; nothing is listed in the
 manifest. An **id** is the file (or folder) name and matches `[a-z0-9][a-z0-9-]{0,63}`; it is the
-only identity of an agent, skill, flow or automation. The supported targets are `claude`, `codex`,
+only identity of an agent, template, skill, flow or automation. The supported targets are `claude`, `codex`,
 `copilot` and `opencode`. JSON Schemas of every file are in `schemas/v1/`.
 
 ## `project.yaml`
@@ -55,6 +56,78 @@ You are the developer…
 - No `id` key: the id is the file name without `.md`.
 - A missing `capabilities` block, or a missing key in it, means "keep the target's default".
 - A concrete model goes in `native.<target>.model`; `tier` is the only portable setting.
+
+## `templates/<id>.md`
+
+An agent template is written once and gives several agents: agents that differ by a few
+phrases (two checkers that read, never write and answer with the same verdict) come from one
+template and a few lines each. A template is not an agent: it is never linked, and cannot be a
+flow step, the `coordinator` or a `free_agents` entry.
+
+```markdown
+---
+description: "Checks {{subject}}"       # the keys of an agent, all optional
+tier: pro
+capabilities: { write: deny, shell: deny }
+---
+You check {{subject}}: you read, you never write.
+```
+
+An agent of `agents/` becomes an **instance** of it with `from` and `vars`:
+
+```markdown
+---
+from: checker                           # a template of templates/
+vars: { subject: the frame }            # string values only
+skills: [cadre]                         # any agent key: replaces the template's
+---
+Read the cadre skill first.             # optional, added after the template's prompt
+```
+
+The template is rendered at load time, every time: `link`, `inspect`, `graph` and the gate only
+see the rendered agent, and the next `link` after a template change rewrites the files of its
+instances (no `--force` needed while they were not edited by hand; one edited by hand is left
+in place, and its report line names the template as `(from template checker)`). The canonical writer keeps an
+instance as an instance (`from`, `vars`, its own keys and prompt); no command flattens it.
+`armadai new agent guardian --from checker --var subject="the frame"` writes one (`--var` is
+repeatable, the same name given twice is refused), `list` shows `guardian (from checker)` and a
+`Templates` section, `inspect guardian` shows the rendered agent and its template.
+
+- **Variables**: `{{name}}` or `{{ name }}`, `name` an id (`[a-z0-9][a-z0-9-]{0,63}`); anything
+  else between braces (`{{Bad Name}}`) is plain text. They are replaced in the prompt and in the
+  string values of the frontmatter, nested ones and `native` included, never in keys. A template
+  is read as a frontmatter on its own before it is rendered, so a variable only stands in a
+  string value or under `native`: `tier: "{{t}}"` is refused (`invalid-yaml`, unknown variant).
+  The instance's own values and prompt are rendered with the same `vars`.
+- **Values** are inserted as they are: a value holding `{{other}}` is not rendered again, and a
+  value holding `:` or a line break stays one string (the rendering works on parsed values,
+  never on the YAML text).
+- **Merge, then render**: an instance key replaces the whole template key, at the top level
+  only. With the template above, an instance `capabilities: { write: allow }` gives
+  `{ write: allow }` alone (`shell: deny` is gone, not merged). A replaced key does not need the
+  variables of the value it replaces: the template's `description` is never rendered for an
+  instance that sets its own. The rendered agent must then be valid as any agent (`description`
+  required).
+- **Prompt**: the instance's prompt, when not empty, follows the template's after exactly one
+  blank line.
+- **Escaping**: `\{{` writes a literal `{{` and is never a variable (`\{{name}}` gives
+  `{{name}}`). A backslash cannot be written right before a rendered variable: `\\{{name}}`
+  gives `\{{name}}`.
+  In a double-quoted YAML value, YAML itself refuses `\{` (`invalid-yaml`, unknown escape):
+  write `"\\{{name}}"` or use single quotes (`'\{{name}}'`); both give `{{name}}`.
+- **Diagnostics**: a variable the template uses and `vars` does not set is an error
+  (`missing-template-var`); a `vars` entry no `{{…}}` uses is a warning
+  (`unused-template-var`), and the agent still loads. An error that comes from the template (an
+  unknown key, a wrong type) is reported once, on the template file, not on each instance.
+  A template no agent uses is only checked as a file (YAML, keys, types): its other errors
+  (an unknown skill) show up with its first instance, reported on the template.
+
+Not in this first version (deferred, not refused): a template using `from` itself
+(`nested-template`), logic in templates (conditions, loops, filters, default values), templates
+of flows, skills or commands, generating N agents from a list (one instance is one file),
+and checking a template no agent uses beyond its file.
+The starting points of `armadai new agent --template` ([Templates](templates.md)) are copied,
+not linked: they are not project templates.
 
 ## `skills/<id>/SKILL.md`
 
@@ -118,6 +191,7 @@ armadai init --project                  # an empty project
 armadai new skill rust-conventions --description "Rust conventions of this project"
 armadai new agent dev --template dev-test --stack rust --skills rust-conventions
 armadai new agent reviewer --template dev-review --stack rust
+armadai new agent guardian --from checker --var subject="the frame"   # templates/checker.md
 armadai new flow review --template review-loop --agents dev,reviewer
 armadai new automation fmt --event after-tool --run "cargo fmt"
 armadai validate
@@ -189,7 +263,7 @@ warning on stderr.
 | `ignored-file` | warning | A `.yml` file in `flows/` or `automations/` is not loaded | Rename it to `.yaml` |
 | `sequence-and-steps` | error | A flow has both `sequence` and `steps`/`links` | Keep one form |
 | `duplicate-step` | error | A `sequence` defines the same step id twice | Use `{ id: …, agent: … }` for the repeat |
-| `bad-id` | error | A file, folder or step id does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
+| `bad-id` | error | A file, folder or step id, or a `vars` name, does not match `[a-z0-9][a-z0-9-]{0,63}` | Rename it in kebab-case |
 | `unknown-target` | error | A target in `targets`, `outputs` or a `native` key is not supported | Use `claude`, `codex`, `copilot` or `opencode` |
 | `bad-output` | error | An `outputs` value is absolute, climbs with `..`, is the project root, or points into `.armadai/` or `.git/` | Use a folder inside the project such as `.claude` (`link --output` can point elsewhere for one run) |
 | `unknown-agent` | error | A step or `coordinator` names no agent of the project | Use an existing agent id (the hint suggests a close one) |
@@ -212,6 +286,12 @@ warning on stderr.
 | `ambiguous-entry` | warning | The flow declares no `start` and a step the guess above takes as an entry has an incoming link (of any kind): where the flow begins is only a guess (an entry with no incoming link at all is not warned) | Declare `start: <step>` to say where the flow begins |
 | `unreachable-step` | warning | A step cannot be reached from any entry step (every link and `on_failure` counts here) | Link it, or remove it |
 | `empty-command` | error | An automation's `run` is empty | Give the command to run |
+| `unknown-template` | error | An agent's `from` names no template of `templates/` | Use an existing template id (the hint suggests a close one) |
+| `missing-template-var` | error | The template uses `{{x}}` and the instance's `vars` does not set `x` | Add `x` to `vars` |
+| `unused-template-var` | warning | A `vars` entry is used by no `{{…}}` of the rendered agent (a template key the instance replaces does not count); the agent still loads | Remove it, or use it |
+| `vars-without-template` | error | An agent has `vars` but no `from` | Add `from: <template>`, or remove `vars` |
+| `nested-template` | error | A template uses `from` (a template does not inherit, not in this version) | Copy the keys you need into it |
+| `template-agent-collision` | error | A template and an agent have the same id | Rename one of them |
 
 ## Migrating a legacy project
 

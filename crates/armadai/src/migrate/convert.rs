@@ -144,6 +144,7 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
     let project = Project {
         manifest,
         agents,
+        templates: BTreeMap::new(),
         skills,
         flows,
         automations: BTreeMap::new(),
@@ -262,6 +263,8 @@ fn convert_agent(id: &str, a: &OldAgent, old: &OldProject, r: &mut Report) -> (A
         skills: Vec::new(),
         capabilities: Default::default(),
         native: Default::default(),
+        from: None,
+        vars: BTreeMap::new(),
     };
     convert_model(id, &m.provider, m.model.as_deref(), &mut front, r);
 
@@ -288,7 +291,14 @@ fn convert_agent(id: &str, a: &OldAgent, old: &OldProject, r: &mut Report) -> (A
             r.drop(id, field, reason);
         }
     }
-    (Agent { front, body }, derived)
+    (
+        Agent {
+            front,
+            body,
+            instance: None,
+        },
+        derived,
+    )
 }
 
 fn convert_model(
