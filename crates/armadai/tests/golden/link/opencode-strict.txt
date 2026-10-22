@@ -102,6 +102,10 @@ permission:
 You review the change against the design and the conventions. End with
 `approved` or `rejected` and the reasons.
 
+## Verdict
+
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.
+
 === .opencode/armadai-team.md ===
 # Team
 

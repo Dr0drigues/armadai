@@ -55,6 +55,10 @@ DEV_SUBSECTION_MARKER — small functions.
 
 Before you start, load these skills with the `skill` tool: `review`.
 
+## Verdict
+
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: blocked.
+
 === .opencode/agents/lead.md ===
 ---
 description: Coordinates the team

@@ -110,6 +110,10 @@ the verdict: `approved` (CI green, tests cover the change, no open blocker) or `
 the blockers listed above it). The `release` flow hands an `approved` branch to the release
 manager and a `rejected` one back to the dev lead.
 
+## Verdict
+
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.
+
 === .claude/agents/release-manager.md
 ---
 name: release-manager

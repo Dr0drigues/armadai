@@ -161,6 +161,10 @@ manager and a `rejected` one back to the dev lead.
 
 Before you start, load these skills with the `skill` tool: `rust-conventions`.
 
+## Verdict
+
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.
+
 === .opencode/agents/release-manager.md
 ---
 description: "Owns releases: readiness checks, semantic version, changelog, tags and branch sync; use only when cutting a release"

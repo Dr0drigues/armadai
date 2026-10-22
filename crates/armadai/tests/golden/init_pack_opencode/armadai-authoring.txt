@@ -300,6 +300,10 @@ rejected
 
 Before you start, load these skills with the `skill` tool: `armadai-conventions`.
 
+## Verdict
+
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.
+
 === .opencode/agents/authoring-tester.md
 ---
 description: "Writes the test plan of an ArmadAI pack: prompts per agent, expected behavior, delegation and link checks"

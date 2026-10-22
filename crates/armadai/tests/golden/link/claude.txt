@@ -42,6 +42,10 @@ DEV_SYSTEM_MARKER — you write the code.
 
 DEV_SUBSECTION_MARKER — small functions.
 
+## Verdict
+
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: blocked.
+
 === .claude/settings.json ===
 {
   "hooks": {

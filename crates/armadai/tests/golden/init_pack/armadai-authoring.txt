@@ -217,6 +217,10 @@ Your checks:
 rejected
 ```
 
+## Verdict
+
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.
+
 === .claude/agents/authoring-tester.md
 ---
 name: authoring-tester

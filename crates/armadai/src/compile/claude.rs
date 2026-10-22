@@ -394,6 +394,9 @@ fn agent_file(
     let yaml = armadai_model::yaml::to_string(&NativeValue(Value::Object(m)))
         .context("subagent frontmatter")?;
     let mut out = format!("---\n{yaml}---\n{}", agent.body);
+    if let Some(v) = super::verdict_instruction(project, id) {
+        out = format!("{}{v}", out.trim_end());
+    }
     if !out.ends_with('\n') {
         out.push('\n');
     }
@@ -587,6 +590,22 @@ mod tests {
     );
 
     #[test]
+    fn the_agent_holding_a_step_with_states_is_asked_for_a_state_line() {
+        let plan = compile(&[M, DEV, REV, DELIVER]).unwrap();
+        assert_eq!(
+            text(&plan, "agents/rev.md"),
+            "---\nname: rev\ndescription: d\n---\nYou review.\n\n## Verdict\n\n\
+             End your reply with exactly one line `STATE: <state>`, where <state> is one of: \
+             approved, rejected.\n"
+        );
+        assert_eq!(
+            text(&plan, "agents/dev.md"),
+            "---\nname: dev\ndescription: d\n---\nYou build.\n",
+            "no step with states: no instruction"
+        );
+    }
+
+    #[test]
     fn a_project_with_a_flow_reports_its_recording_hooks() {
         let plan = compile(&[M, DEV, REV, DELIVER]).unwrap();
         let l = line(&plan, "flow recording");
@@ -599,6 +618,21 @@ mod tests {
                      in .claude/settings.json"
                 )
             )
+        );
+    }
+
+    #[test]
+    fn an_agent_in_two_flows_is_asked_for_the_union_of_their_states() {
+        let other: (&str, &[u8]) = (
+            ".armadai/flows/other.yaml",
+            b"steps:\n  review: { agent: rev, states: [changes, approved] }\n  fix: { agent: dev }\nlinks:\n  - { from: review, to: fix, when: changes }\n",
+        );
+        let plan = compile(&[M, DEV, REV, DELIVER, other]).unwrap();
+        assert_eq!(
+            text(&plan, "agents/rev.md"),
+            "---\nname: rev\ndescription: d\n---\nYou review.\n\n## Verdict\n\n\
+             End your reply with exactly one line `STATE: <state>`, where <state> is one of: \
+             approved, changes, rejected.\n"
         );
     }
 

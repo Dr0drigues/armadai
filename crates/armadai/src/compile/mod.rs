@@ -101,6 +101,23 @@ pub(crate) fn slot_lines(
     }
 }
 
+/// The `## Verdict` section appended to the prompt of an agent holding at least one
+/// flow step with `states`: the union of those states, sorted. `None` otherwise.
+pub fn verdict_instruction(project: &Project, agent: &str) -> Option<String> {
+    let states: std::collections::BTreeSet<&str> = (project.flows.values())
+        .flat_map(|f| f.steps.values())
+        .filter(|s| s.agent == agent)
+        .flat_map(|s| s.states.iter().map(String::as_str))
+        .collect();
+    (!states.is_empty()).then(|| {
+        format!(
+            "\n\n## Verdict\n\nEnd your reply with exactly one line `STATE: <state>`, \
+             where <state> is one of: {}.\n",
+            states.into_iter().collect::<Vec<_>>().join(", ")
+        )
+    })
+}
+
 /// Markers around the ArmadAI block of a markdown file the user may also edit.
 pub const BLOCK_BEGIN: &str = "<!-- armadai:begin -->";
 pub const BLOCK_END: &str = "<!-- armadai:end -->";

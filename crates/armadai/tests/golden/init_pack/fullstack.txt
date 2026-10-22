@@ -45,6 +45,10 @@ Termine toujours ta revue par une derniere ligne qui ne contient que le verdict,
 `approved` (aucun point bloquant) ou `rejected` (au moins un point bloquant, a corriger par le
 redacteur des tests). Ce verdict est l'etat que le flow `review` attend.
 
+## Verdict
+
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.
+
 === .claude/agents/doc-generator.md
 ---
 name: doc-generator
