@@ -66,7 +66,7 @@ pub enum NewCommand {
         #[arg(long, value_delimiter = ',')]
         skills: Vec<String>,
         /// A template of the project (.armadai/templates/<id>.md): the agent stays linked to it
-        #[arg(long, conflicts_with_all = ["template", "description", "stack", "tier", "skills"])]
+        #[arg(long, conflicts_with_all = ["template", "description", "stack", "tier", "skills", "interactive"])]
         from: Option<String>,
         /// A value for the project template, NAME=VALUE (repeatable)
         #[arg(long = "var", value_name = "NAME=VALUE", value_parser = parse_var, requires = "from")]

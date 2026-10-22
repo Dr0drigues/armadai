@@ -741,6 +741,13 @@ fn a_bad_instance_is_refused_and_nothing_is_written() {
         "{err}"
     );
     assert_eq!(tree(&env.root()), before);
+    // the guided creation would drop `--from` in silence
+    let err = env.fails(&["new", "agent", "g", "-i", "--from", "checker"]);
+    assert_eq!(
+        err.lines().next(),
+        Some("error: the argument '--interactive' cannot be used with '--from <FROM>'")
+    );
+    assert_eq!(tree(&env.root()), before);
 }
 
 /// Review Focus 4: creating a flow or a skill never rewrites an instance.
