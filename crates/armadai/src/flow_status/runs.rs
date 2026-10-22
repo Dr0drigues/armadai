@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use armadai_model::{Flow, Project};
 
-use super::record::{EventKind, FlowEvent};
+use super::record::{EventKind, FlowEvent, GROUP_SEP};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mark {
@@ -84,7 +84,7 @@ fn merge_candidates(mut members: Vec<Building>) -> Run {
     // already sorted: candidates open in the order of `project.flows`
     let flow = (members.iter().map(|m| m.run.flow.as_str()))
         .collect::<Vec<_>>()
-        .join(" | ");
+        .join(GROUP_SEP);
     let finished = members.iter().all(|m| m.run.finished);
     let others: Vec<&'_ Flow> = members[1..].iter().map(|m| m.flow).collect();
     let mut run = members.swap_remove(0).finish();
@@ -175,11 +175,13 @@ impl<'p> Building<'p> {
     }
 
     /// The finished step (the latest) with a link to `to` still to take: `to`
-    /// has not started since that step stopped.
+    /// has not started since that step stopped, nor has the step itself (a
+    /// restarted step's old stop opens nothing).
     fn linked_from(&self, to: &str) -> Option<String> {
         (self.stopped.iter())
             .filter(|(s, at)| {
                 self.started.get(to).is_none_or(|t| t < *at)
+                    && self.started.get(*s).is_none_or(|t| t < *at)
                     && next_steps(self.flow, s, self.leads_with(s)).contains(&to)
             })
             .max_by_key(|(_, at)| **at)
@@ -340,7 +342,10 @@ impl<'p> Builder<'p> {
         };
         run.stopped.insert(step.to_string(), self.tick);
         let to_take = (run.flow.steps.keys()).any(|t| run.linked_from(t).is_some());
-        run.run.finished = !run.running() && !to_take;
+        // a `?` or `✗` step never ends a run
+        let unknown =
+            (run.run.steps.iter()).any(|v| matches!(v.mark, Mark::Unsure | Mark::Unexpected));
+        run.run.finished = !run.running() && !to_take && !unknown;
     }
 }
 
@@ -848,6 +853,64 @@ mod tests {
         ]);
         let restarted = seq(&[&healthy, &[start(30, "a3", "architect")]]);
         assert_eq!(runs(&deliver(), &restarted), runs(&deliver(), &healthy));
+    }
+
+    /// design, build, guard `rejected`, build, then guard starts again.
+    fn second_guard() -> Vec<FlowEvent> {
+        seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", Some("rejected")),
+            &step(40, "a4", "dev", None),
+            &[start(50, "a5", "qa")],
+        ])
+    }
+
+    #[test]
+    fn a_restarted_step_does_not_reopen_its_links() {
+        let events = seq(&[&second_guard(), &[start(60, "a6", "ops")]]);
+        assert_eq!(
+            runs(&deliver(), &events)[0].steps,
+            vec![
+                view("design", Mark::Done, Some("done"), None),
+                view("build", Mark::Done, Some("done"), None),
+                view("guard", Mark::Running, None, None),
+                view("validate", Mark::Pending, None, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_restarted_step_does_not_capture_the_entry_of_another_flow() {
+        let release = ("release", "steps:\n  ship: { agent: ops }\n");
+        let events = seq(&[&second_guard(), &[start(60, "a6", "ops")]]);
+        let got = runs(&project(&[("deliver", DELIVER), release]), &events);
+        assert_eq!(
+            got.iter()
+                .map(|r| (r.flow.as_str(), r.steps.last().unwrap().clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("deliver", view("validate", Mark::Pending, None, None)),
+                ("release", view("ship", Mark::Running, None, None)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_last_step_without_a_known_state_does_not_end_the_run() {
+        let p = project(&[(
+            "check",
+            "steps:\n  a: { agent: architect }\n  r: { agent: qa, states: [ok, ko] }\nlinks:\n  - { from: a, to: r }\n",
+        )]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "qa", None),
+        ]);
+        let got = &runs(&p, &events)[0];
+        assert_eq!(
+            (got.steps[1].clone(), got.finished),
+            (view("r", Mark::Unsure, None, Some("no STATE line")), false)
+        );
     }
 
     #[test]
