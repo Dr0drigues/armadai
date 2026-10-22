@@ -1,7 +1,6 @@
-//! Flow status: what Claude Code hooks record about sub-agents, and (later
-//! tasks) where each declared flow stands.
+//! Flow status: what Claude Code hooks record about sub-agents, and where
+//! each declared flow stands (`armadai flow status`).
 
 pub mod record;
-// shortcut: no caller until `armadai flow status` (task 4) wires it; drop then.
-#[allow(dead_code)]
+pub mod render;
 pub mod runs;

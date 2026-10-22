@@ -1,4 +1,5 @@
 mod config;
+mod flow;
 mod graph;
 pub mod init;
 mod inspect;
@@ -38,7 +39,8 @@ use clap::{CommandFactory, Parser, Subcommand};
         armadai init --pack rust-dev\n  \
         armadai new flow review --template review-loop --agents dev,reviewer\n  \
         armadai graph review\n  \
-        armadai link --target claude\n\n\
+        armadai link --target claude\n  \
+        armadai flow status --watch\n\n\
         Documentation: https://github.com/Dr0drigues/armadai"
 )]
 pub struct Cli {
@@ -107,6 +109,15 @@ pub enum Command {
         /// Output format
         #[arg(long, value_enum, default_value_t = graph::GraphFormat::Mermaid)]
         format: graph::GraphFormat,
+    },
+    /// Show where each flow of a Claude Code session stands
+    #[command(after_help = "Examples:\n  \
+        armadai flow status\n  \
+        armadai flow status deliver --watch\n  \
+        armadai flow status --list")]
+    Flow {
+        #[command(subcommand)]
+        what: flow::FlowCommand,
     },
     /// Validate the project (.armadai/) or a starter pack
     #[command(
@@ -395,6 +406,7 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::List { tags } => list::execute(tags),
         Command::Inspect { agent } => inspect::execute(agent),
         Command::Graph { flow, format } => graph::execute(flow, format),
+        Command::Flow { what } => flow::execute(what),
         Command::Validate { path, json } => validate::execute(path, json),
         Command::Migrate {
             path,
@@ -528,6 +540,7 @@ mod tests {
             "list",
             "inspect",
             "graph",
+            "flow",
             "validate",
             "config",
             "models",
