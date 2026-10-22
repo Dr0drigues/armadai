@@ -2,6 +2,15 @@
 
 ### Added
 
+- Flow status (MVP, Claude Code only). `link` installs async hooks (`SubagentStart`,
+  `SubagentStop`, `PreToolUse` on `SubagentHandback`) that append each sub-agent event to
+  `.armadai/state/claude/<session>.jsonl` (ids and the `STATE:` word only), asks the agent
+  holding a step with `states:` to end with `STATE: <state>`, adds `state/` to
+  `.armadai/.gitignore` and reports `flow recording` (`not-compiled` for OpenCode, Codex and
+  Copilot). `armadai flow status [<flow>] [--session <id>] [--watch] [--list]` rebuilds the runs:
+  steps done, running and pending, `?` when the log does not say, `✗` for a state the step does
+  not declare, loop counts and UTC transitions. Purge with `rm -r .armadai/state/`. See
+  [Flow status](docs/wiki/flow-status.md).
 - Commands and slots (MVP). `.armadai/commands/<id>.md` declares a command the user types
   (`/<id> text`): a `description`, an optional `argument_hint`, an optional `native`, and a body
   citing `$ARGUMENTS`, the only portable placeholder. `link` writes `.claude/commands/<id>.md`

@@ -152,6 +152,7 @@ Full documentation lives in [`docs/wiki/`](docs/wiki/):
 - [Models](docs/wiki/models.md)
 - [Link](docs/wiki/link.md)
 - [Policy gate](docs/wiki/policy-gate.md)
+- [Flow status](docs/wiki/flow-status.md)
 - [Templates](docs/wiki/templates.md), [Starter packs](docs/wiki/starter-packs.md)
 - Legacy format, read only by `migrate`: [Agent format](docs/wiki/agent-format.md),
   [Declarative agents](docs/wiki/declarative-agents.md),
