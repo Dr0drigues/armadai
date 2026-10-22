@@ -87,9 +87,9 @@ Règles de validation (codes stables, à nommer par le constructeur dans la fami
 
 | Modèle | Claude | OpenCode | Rapport |
 |---|---|---|---|
-| agent `slots: [s]`, skills `k1`, `k2` remplissent `s` | `k1`, `k2` ajoutées au champ `skills` du sous-agent (préchargées) | ajoutées à `permission.skill` (`allow`) et à la consigne « charge ces skills » | `agent <id> slot <s>: compiled (k1, k2)` |
+| agent `slots: [s]`, skills `k1`, `k2` remplissent `s` | `k1`, `k2` ajoutées au champ `skills` du sous-agent (préchargées) | ajoutées à la consigne « charge ces skills » ; et à `permission.skill` (`allow`) seulement si l'agent déclare des `skills:` (une prise ne restreint jamais, ruling du 2026-10-22) | `agent <id> slot <s>: compiled (k1, k2)` |
 | prise sans aucune skill | rien | rien | `agent <id> slot <s>: not-compiled (no skill fills it)` — **pas une erreur** : le pack marche sans norme branchée |
-| coordinateur avec `slots:` | fil principal : pas de préchargement (comme `skills:` aujourd'hui) | consigne + `permission.skill` | `approximated` côté Claude |
+| coordinateur avec `slots:` | fil principal : pas de préchargement (comme `skills:` aujourd'hui) | consigne (+ `permission.skill` seulement avec des `skills:` déclarées) | `approximated` côté Claude |
 
 Règles :
 - nom de prise = même règle de nom qu'un id ;
