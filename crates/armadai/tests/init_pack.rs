@@ -648,3 +648,60 @@ fn a_read_only_config_says_once_that_packs_are_not_refreshed() {
     assert_eq!(err.matches(warning).count(), 1, "{err}");
     assert_eq!(err2.matches(warning).count(), 1, "{err2}");
 }
+
+#[test]
+fn link_flag_links_after_the_install_and_no_link_does_not() {
+    let env = Env::new();
+    let pack = env.pack("demo", NATIVE);
+    let (ok, out, err) = env.init(&pack, &["--link"]);
+    assert!(ok, "{out}\n{err}");
+    assert!(env.root().join(".armadai/link-manifest.yaml").is_file());
+    assert!(env.root().join(".claude/agents/dev.md").is_file());
+    assert!(!out.contains("Run `armadai link`"), "{out}");
+
+    let env = Env::new();
+    let pack = env.pack("demo", NATIVE);
+    let (ok, out, err) = env.init(&pack, &["--no-link"]);
+    assert!(ok, "{out}\n{err}");
+    assert!(env.root().join(".armadai/project.yaml").is_file());
+    assert!(!env.root().join(".armadai/link-manifest.yaml").exists());
+    assert!(!env.root().join(".claude").exists());
+    assert!(
+        out.contains("  Run `armadai link` to generate the target files.\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn link_flags_require_pack_and_exclude_each_other() {
+    let env = Env::new();
+    for args in [
+        &["init", "--link"][..],
+        &["init", "--no-link"],
+        &["init", "--pack", "x", "--link", "--no-link"],
+    ] {
+        let (ok, _, err) = env.run(args);
+        assert!(!ok, "{args:?}");
+        assert!(
+            err.contains("cannot be used with") || err.contains("required arguments"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn a_failed_link_keeps_the_project_and_says_so() {
+    let env = Env::new();
+    let pack = env.pack("demo", NATIVE);
+    // a settings.json link cannot patch: the link errors out (a mere refused file does not)
+    let settings = env.root().join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "{ not json\n").unwrap();
+    let (ok, out, err) = env.init(&pack, &["--link"]);
+    assert!(!ok, "{out}\n{err}");
+    assert!(env.root().join(".armadai/project.yaml").is_file());
+    assert!(
+        err.contains("Error: the project was created, but link failed: "),
+        "{err}"
+    );
+}

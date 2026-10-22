@@ -11,8 +11,15 @@ assistant.
 armadai init --pack rust-dev                 # a built-in pack, by name
 armadai init --pack ./path/to/my-pack        # a pack folder
 armadai init --pack fullstack --force        # merge into an existing project
+armadai init --pack rust-dev --link          # then run `armadai link` without asking
 armadai validate && armadai link
 ```
+
+After a pack install, `init` offers to run `armadai link` (the project's targets, no dry run):
+`--link` does it without asking, `--no-link` skips it, and with neither a terminal is asked
+(default yes) while a non-interactive run does not link. If the link fails, the project stays
+created, the error is prefixed `the project was created, but link failed:` and the exit code
+is not 0. Both flags require `--pack`.
 
 What `init --pack` does with a native pack (`format: 1`):
 

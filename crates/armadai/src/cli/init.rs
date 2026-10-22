@@ -8,11 +8,36 @@ use armadai_core::starter::{
     printable,
 };
 
-pub fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Result<()> {
+pub fn execute(
+    force: bool,
+    project: bool,
+    pack: Option<String>,
+    link: bool,
+    no_link: bool,
+) -> anyhow::Result<()> {
     let root = std::env::current_dir()?;
     if let Some(pack_name) = pack {
         // a pack always becomes a project here: the user library is gone (C11)
-        return init_project_from_pack(&root, &pack_name, force);
+        init_project_from_pack(&root, &pack_name, force)?;
+        let interactive = {
+            use std::io::IsTerminal;
+            std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+        };
+        let ask = || {
+            Ok(dialoguer::Confirm::new()
+                .with_prompt("Run `armadai link` now?")
+                .default(true)
+                .interact()?)
+        };
+        if should_link(link, no_link, interactive, ask)? {
+            // the project is created and stays so: a failed link undoes nothing
+            super::link::execute(vec![], false, false, None, None, false)
+                .map_err(|e| anyhow::anyhow!("the project was created, but link failed: {e:#}"))?;
+        } else {
+            let m = crate::cli::style::muted();
+            anstream::println!("{m}  Run `armadai link` to generate the target files.{m:#}");
+        }
+        return Ok(());
     }
     if project {
         return init_project(&root);
@@ -20,6 +45,21 @@ pub fn execute(force: bool, project: bool, pack: Option<String>) -> anyhow::Resu
     init_global(force)?;
     super::setup::prompt_shell_setup();
     Ok(())
+}
+
+/// Whether `init --pack` runs `link` afterwards: the flags decide; without one, ask on a
+/// terminal, and never link when no one can answer.
+fn should_link(
+    link: bool,
+    no_link: bool,
+    interactive: bool,
+    ask: impl FnOnce() -> anyhow::Result<bool>,
+) -> anyhow::Result<bool> {
+    if link || no_link {
+        return Ok(link);
+    }
+    // a failed question (Ctrl-C, I/O error) counts as "no": the project already exists
+    Ok(interactive && ask().unwrap_or(false))
 }
 
 /// Create the global config directory and default files.
@@ -381,7 +421,6 @@ fn init_project_from_pack(root: &Path, pack_name: &str, force: bool) -> anyhow::
         let s = crate::cli::style::warn();
         anstream::eprintln!("{s}  warn: {w}{s:#}");
     }
-    anstream::println!("{m}  Run `armadai link` to generate the target files.{m:#}");
     Ok(())
 }
 
@@ -621,5 +660,34 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("ARMADAI_CONFIG_DIR", v) },
             None => unsafe { std::env::remove_var("ARMADAI_CONFIG_DIR") },
         }
+    }
+}
+
+#[cfg(test)]
+mod should_link_tests {
+    use super::should_link;
+
+    fn no_ask() -> anyhow::Result<bool> {
+        panic!("must not ask")
+    }
+
+    #[test]
+    fn flags_decide_without_asking() {
+        assert!(should_link(true, false, true, no_ask).unwrap());
+        assert!(should_link(true, false, false, no_ask).unwrap());
+        assert!(!should_link(false, true, true, no_ask).unwrap());
+    }
+
+    #[test]
+    fn no_flag_asks_on_a_terminal_only() {
+        assert!(should_link(false, false, true, || Ok(true)).unwrap());
+        assert!(!should_link(false, false, true, || Ok(false)).unwrap());
+        assert!(!should_link(false, false, false, no_ask).unwrap());
+    }
+
+    #[test]
+    fn a_failed_question_means_no_link() {
+        let failing = || Err(anyhow::anyhow!("interrupted"));
+        assert!(!should_link(false, false, true, failing).unwrap());
     }
 }
