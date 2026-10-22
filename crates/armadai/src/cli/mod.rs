@@ -250,13 +250,17 @@ pub enum Command {
             skills/, flows/ and automations/; its automations are listed (they become \
             hooks). A pack without `format` is the legacy format, converted like \
             `armadai migrate`. With --force, a pack is merged into an existing project: an \
-            existing file is kept, and so is the existing project.yaml.",
+            existing file is kept, and so is the existing project.yaml.\n\n\
+            After --pack, `armadai link` can run at once: --link runs it without asking, \
+            --no-link skips it; with neither, a terminal is asked and anything else is not \
+            linked. If the link fails, the project stays created and the exit code is not 0.",
         after_help = "Examples:\n  \
             armadai init\n  \
             armadai init --project\n  \
             armadai init --pack rust-dev\n  \
             armadai init --pack ./my-pack\n  \
-            armadai init --pack fullstack --force"
+            armadai init --pack fullstack --force\n  \
+            armadai init --pack rust-dev --link"
     )]
     Init {
         /// Overwrite existing config files
@@ -268,6 +272,12 @@ pub enum Command {
         /// Create the project from this starter pack (name, or a directory holding pack.yaml)
         #[arg(long)]
         pack: Option<String>,
+        /// After --pack, run `armadai link` without asking
+        #[arg(long, requires = "pack", conflicts_with = "no_link")]
+        link: bool,
+        /// After --pack, do not run `armadai link` and do not ask
+        #[arg(long, requires = "pack")]
+        no_link: bool,
     },
     /// Manage composable skills
     #[command(
@@ -406,7 +416,9 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
             force,
             project,
             pack,
-        } => init::execute(force, project, pack),
+            link,
+            no_link,
+        } => init::execute(force, project, pack, link, no_link),
         Command::Update => update::execute(),
         Command::Completion { shell } => {
             let mut buf = Vec::new();

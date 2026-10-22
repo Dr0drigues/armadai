@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Added
+
+- `armadai init --pack` offers to run `armadai link` once the pack is installed: `--link` runs
+  it without asking, `--no-link` skips it, and with neither a terminal is asked (default yes)
+  while a script is not linked. A failing link keeps the created project and exits non-zero
+  (see [Starter Packs](docs/wiki/starter-packs.md)).
+
 ### Changed
 
 - `armadai link --target opencode` now compiles for OpenCode 2.x from the canonical model

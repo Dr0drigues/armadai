@@ -281,7 +281,6 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
     if kept > 0 {
         anstream::println!("{m}  {kept} existing file(s) kept{m:#}");
     }
-    anstream::println!("{m}  Run `armadai link` to generate the target files.{m:#}");
     Ok(())
 }
 

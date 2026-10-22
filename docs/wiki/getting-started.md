@@ -74,8 +74,8 @@ armadai link                    # write them (Claude Code by default)
 Or start from a starter pack, copied into the project:
 
 ```bash
-armadai init --pack rust-dev
-armadai link --target claude
+armadai init --pack rust-dev --link   # --link runs `armadai link` right after the install
+# or, by hand: armadai init --pack rust-dev --no-link && armadai link --target claude
 ```
 
 `link` accepts `claude`, `codex`, `opencode` and `copilot`. See [Link](link.md) for what each

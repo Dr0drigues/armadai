@@ -60,7 +60,7 @@ publishes none. The latest published release (`v1.0.0-rc.5`) predates both the d
 refocus and those checksums: until the next one, [build from source](docs/wiki/getting-started.md#from-source).
 
 ```bash
-armadai init --pack rust-dev                # a project (.armadai/) from a starter pack
+armadai init --pack rust-dev --link         # a project (.armadai/) from a starter pack, linked at once
 armadai new agent planner --template planning
 armadai new flow ship --agents planner,code-reviewer,test-writer
 armadai graph ship                          # the flow as Mermaid
@@ -120,6 +120,9 @@ armadai init --pack rust-dev              # Rust essentials (3 agents + conventi
 armadai init --pack fullstack             # tests, review and docs chained by a review loop (3 agents)
 armadai init --pack ./my-pack             # your own pack (a folder with pack.yaml, format: 1)
 ```
+
+`init --pack` offers to run `armadai link` afterwards (`--link` to do it without asking,
+`--no-link` to skip it).
 
 See [Starter Packs](docs/wiki/starter-packs.md) for the full list and their contents.
 
