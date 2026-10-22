@@ -470,9 +470,7 @@ pub fn load_project(root: &Path) -> Loaded {
             let src = Source {
                 path: &p,
                 text: &text,
-                yaml,
                 body,
-                first,
             };
             if let Some(a) = instance(&mut cx, &templates, &template_maps, &src, own) {
                 agents.insert(id, a);
@@ -623,9 +621,15 @@ const ID_RULE: &str = "ids match [a-z0-9][a-z0-9-]{0,63}";
 struct Source<'a> {
     path: &'a Path,
     text: &'a str,
-    yaml: &'a str,
     body: &'a str,
-    first: usize,
+}
+
+/// The keys that make an agent an instance.
+#[derive(serde::Deserialize)]
+struct Head {
+    from: String,
+    #[serde(default)]
+    vars: BTreeMap<String, String>,
 }
 
 /// Render the instance `src` (frontmatter `own`, which has `from`) from its template:
@@ -639,18 +643,18 @@ fn instance(
     mut own: Map<String, Value>,
 ) -> Option<Agent> {
     let (p, text) = (src.path, src.text);
-    // the instance's own keys, typed and positioned; its template may set `description`
-    // shortcut: appending a block key breaks a flow-style (`{...}`) frontmatter; upgrade if one is ever seen
-    let with_description;
-    let yaml = if own.contains_key("description") {
-        src.yaml
-    } else {
-        with_description = format!("{}\ndescription: x\n", src.yaml);
-        &with_description
+    // `from` and `vars` typed here; the other keys once merged with the template's
+    let head: Map<String, Value> = ["from", "vars"]
+        .into_iter()
+        .filter_map(|k| Some((k.to_string(), own.get(k)?.clone())))
+        .collect();
+    let Head { from, vars } = match serde_json::from_value(Value::Object(head)) {
+        Ok(h) => h,
+        Err(e) => {
+            cx.error("invalid-yaml", p, locate_key(text, "from"), e.to_string());
+            return None;
+        }
     };
-    let typed: AgentFront = cx.parse(yaml, p, src.first - 1)?;
-    let from = typed.from.unwrap_or_default();
-    let vars = typed.vars;
     let bad: Vec<&String> = vars.keys().filter(|k| !crate::is_valid_id(k)).collect();
     for k in &bad {
         cx.error(
@@ -740,19 +744,29 @@ fn instance(
         )
     };
     // the typed parse of an ordinary agent, on the rendered values (never the YAML text)
-    let rendered = crate::yaml::to_string(&NativeValue(Value::Object(merged)))
-        .expect("YAML values serialize to YAML");
-    let front = match crate::yaml::from_str::<AgentFront>(&rendered) {
+    let front = match serde_json::from_value::<AgentFront>(Value::Object(merged.clone())) {
         Ok(f) => f,
         Err(e) => {
+            // the first key that is wrong on its own, reported on the file that sets it;
+            // none (a missing `description`): on the instance
+            let culprit = merged.iter().find_map(|(k, v)| {
+                let one = Map::from_iter([(k.clone(), v.clone())]);
+                (serde_json::from_value::<TemplateFront>(Value::Object(one)).err())
+                    .map(|e| (k.clone(), e))
+            });
+            let (file, pos, e) = match culprit {
+                Some((k, e)) if !own.contains_key(&k) => {
+                    let (file, ttext) = &cx.origins.files[&(Kind::Template, from.clone())];
+                    (file.clone(), locate_key(ttext, &k), e)
+                }
+                Some((k, e)) => (p.to_path_buf(), locate_key(text, &k), e),
+                None => (p.to_path_buf(), locate_key(text, "from"), e),
+            };
             cx.error(
                 "invalid-yaml",
-                p,
-                locate_key(text, "from"),
-                format!(
-                    "agent rendered from template `{from}`: {}",
-                    strip_positions(&e.to_string())
-                ),
+                &file,
+                pos,
+                format!("agent rendered from template `{from}`: {e}"),
             );
             return None;
         }

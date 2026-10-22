@@ -335,3 +335,66 @@ fn the_instance_own_values_and_body_are_rendered_too() {
     assert_eq!(a.front.title.as_deref(), Some("T y"));
     assert_eq!(a.body, "You check x.\n\nAlso z.\n");
 }
+
+#[test]
+fn a_flow_style_instance_without_description_loads() {
+    let l = load(&[
+        M,
+        CHECKER,
+        (
+            ".armadai/agents/guardian.md",
+            "---\n{from: checker, vars: {subject: x}}\n---\n",
+        ),
+    ]);
+    assert_eq!(short(&l), vec![]);
+    assert_eq!(agent(&l, "guardian").front.description, "Checks x");
+}
+
+#[test]
+fn a_number_survives_the_merge() {
+    let l = load_with(
+        "---\ndescription: d\ntemperature: 0.3\n---\n",
+        &instance("{}", ""),
+    );
+    assert_eq!(short(&l), vec![]);
+    assert_eq!(agent(&l, "guardian").front.temperature, Some(0.3));
+}
+
+#[test]
+fn unknown_key_of_the_instance_is_reported_on_the_instance() {
+    let l = load_with(CHECKER.1, &instance("{ subject: x }", "bogus: 1\n"));
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "invalid-yaml",
+            "guardian.md".into(),
+            Some(4),
+            "agent rendered from template `checker`: unknown field `bogus`, expected one of `description`, `title`, `tier`, `temperature`, `tags`, `skills`, `capabilities`, `native`".into(),
+            None,
+        )]
+    );
+}
+
+#[test]
+fn unknown_key_of_the_template_is_reported_on_the_template() {
+    let l = load(&[
+        M,
+        (
+            ".armadai/templates/checker.md",
+            "---\ndescription: d\nbogus: 1\n---\n",
+        ),
+        GUARDIAN,
+    ]);
+    assert_eq!(
+        short(&l),
+        vec![(
+            Severity::Error,
+            "invalid-yaml",
+            "checker.md".into(),
+            Some(3),
+            "unknown field `bogus`, expected one of description, title, tier, temperature, tags, skills, capabilities, native".into(),
+            None,
+        )]
+    );
+}
