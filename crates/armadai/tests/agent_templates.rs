@@ -151,3 +151,27 @@ fn a_changed_template_relinks_without_force() {
     assert_eq!(changed, 8, "files the change must reach");
     assert_eq!(env.linked(), expected);
 }
+
+/// Spec §8: a generated file edited by hand is refused by the next link, and the
+/// report line names the template the agent comes from.
+#[test]
+fn a_refused_instance_names_its_template() {
+    let env = Env::new("templates-instances");
+    env.ok(&["link", "--target", "claude"]);
+    let generated = env.root().join(".claude/agents/guardian.md");
+    let edited = std::fs::read_to_string(&generated).unwrap() + "Edited by hand.\n";
+    std::fs::write(&generated, &edited).unwrap();
+
+    let out = env.ok(&["link", "--target", "claude"]);
+    let lines: Vec<&str> = (out.lines())
+        .filter(|l| l.starts_with("claude: agent guardian:"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "claude: agent guardian: not-compiled (edited since the last link (use --force): \
+          .claude/agents/guardian.md (from template checker))"
+        ]
+    );
+    assert_eq!(std::fs::read_to_string(&generated).unwrap(), edited);
+}
