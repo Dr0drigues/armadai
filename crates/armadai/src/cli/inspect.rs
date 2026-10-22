@@ -1,5 +1,5 @@
-//! `armadai inspect <id>`: one agent of the project, as declared, and the flows
-//! it takes part in.
+//! `armadai inspect <id>`: one agent of the project, as declared (an instance
+//! rendered from its template), and the flows it takes part in.
 
 pub fn execute(id: String) -> anyhow::Result<()> {
     let project = crate::cli::list::load_for_reading()?;
@@ -19,7 +19,13 @@ pub fn execute(id: String) -> anyhow::Result<()> {
     let a = crate::cli::style::accent();
     let m = crate::cli::style::muted();
     anstream::println!("{h}Agent:{h:#} {a}{id}{a:#}");
-    anstream::println!("{m}Source: .armadai/agents/{id}.md{m:#}\n");
+    match &agent.instance {
+        Some(i) => anstream::println!(
+            "{m}Source: .armadai/agents/{id}.md, from: {t} (.armadai/templates/{t}.md){m:#}\n",
+            t = i.from
+        ),
+        None => anstream::println!("{m}Source: .armadai/agents/{id}.md{m:#}\n"),
+    }
     let field = |name: &str, value: String| {
         anstream::println!("{m}  {name:<13}{m:#} {value}");
     };

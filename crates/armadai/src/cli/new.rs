@@ -45,7 +45,8 @@ pub enum NewCommand {
     /// Create an agent from a template (.armadai/agents/<id>.md)
     #[command(after_help = "Examples:\n  \
         armadai new agent reviewer --template dev-review --stack rust\n  \
-        armadai new agent scanner --template security-review -d \"audit OWASP top 10\" --tier max")]
+        armadai new agent scanner --template security-review -d \"audit OWASP top 10\" --tier max\n  \
+        armadai new agent guardian --from checker --var subject=\"the frame\"")]
     Agent {
         /// Agent id, its file name: lowercase letters, digits and hyphens (required, unless -i)
         id: Option<String>,
@@ -64,6 +65,12 @@ pub enum NewCommand {
         /// Skills of the project the agent uses (comma-separated)
         #[arg(long, value_delimiter = ',')]
         skills: Vec<String>,
+        /// A template of the project (.armadai/templates/<id>.md): the agent stays linked to it
+        #[arg(long, conflicts_with_all = ["template", "description", "stack", "tier", "skills"])]
+        from: Option<String>,
+        /// A value for the project template, NAME=VALUE (repeatable)
+        #[arg(long = "var", value_name = "NAME=VALUE", value_parser = parse_var, requires = "from")]
+        vars: Vec<(String, String)>,
         /// Replace an existing agent file
         #[arg(long)]
         force: bool,
@@ -154,6 +161,15 @@ fn parse_tier(s: &str) -> Result<armadai_model::Tier, String> {
     armadai_model::yaml::from_str(s).map_err(|_| format!("`{s}` is not a tier (fast, pro, max)"))
 }
 
+fn parse_var(s: &str) -> Result<(String, String), String> {
+    match s.split_once('=') {
+        Some((k, v)) if !k.is_empty() => Ok((k.to_string(), v.to_string())),
+        _ => Err(format!(
+            "`{s}` is not NAME=VALUE (e.g. --var subject=\"the frame\")"
+        )),
+    }
+}
+
 fn parse_flow_template(s: &str) -> Result<armadai_model::FlowTemplate, String> {
     s.parse()
         .map_err(|e: armadai_model::TemplateError| e.to_string())
@@ -195,6 +211,21 @@ pub fn execute(command: Option<NewCommand>) -> anyhow::Result<()> {
         NewCommand::Skill {
             interactive: true, ..
         } => new_wizard::run(Some(WizardKind::Skill)),
+        NewCommand::Agent {
+            id,
+            from: Some(from),
+            vars,
+            force,
+            ..
+        } => create_instance(
+            &required(
+                id,
+                "an agent id is required: armadai new agent <id> --from <template> --var name=value",
+            )?,
+            &from,
+            vars.into_iter().collect(),
+            force,
+        ),
         NewCommand::Agent {
             id,
             template,
@@ -322,6 +353,41 @@ pub fn create_agent(
     )?;
     warn_placeholders(&remaining);
     Ok(())
+}
+
+/// The agent `id` as an instance of the project template `from`, written and
+/// validated: an unknown template or a missing variable is the validator's, undone.
+pub fn create_instance(
+    id: &str,
+    from: &str,
+    vars: std::collections::BTreeMap<String, String>,
+    force: bool,
+) -> anyhow::Result<()> {
+    let agent = instance_agent(from, vars);
+    create(
+        crate::cli::new_target::Kind::Agent,
+        id,
+        force,
+        &armadai_model::render_agent(id, &agent),
+    )
+}
+
+/// An agent holding only its instance form (`from` + `vars`); the writer ignores
+/// `front` and `body` for it.
+pub fn instance_agent(
+    from: &str,
+    vars: std::collections::BTreeMap<String, String>,
+) -> armadai_model::Agent {
+    armadai_model::Agent {
+        front: armadai_model::AgentFront::default(),
+        body: String::new(),
+        instance: Some(armadai_model::Instance {
+            from: from.to_string(),
+            vars,
+            front: Default::default(),
+            body: String::new(),
+        }),
+    }
 }
 
 pub fn create_flow(id: &str, flow: &armadai_model::Flow, force: bool) -> anyhow::Result<()> {

@@ -80,7 +80,7 @@ pub(crate) fn render_value(
 }
 
 /// Add the variables of every string of `v` to `out`.
-pub(crate) fn value_variables(v: &Value, out: &mut BTreeSet<String>) {
+pub fn value_variables(v: &Value, out: &mut BTreeSet<String>) {
     match v {
         Value::String(s) => out.extend(variables(s)),
         Value::Array(a) => a.iter().for_each(|v| value_variables(v, out)),
