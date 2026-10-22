@@ -85,15 +85,17 @@ impl Env {
     }
 }
 
-/// Every file under `root` with its bytes (`.git/` aside).
+/// Every path under `root` with its bytes, directories included (empty content,
+/// `/`-terminated), so an empty directory left behind is seen too.
 fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
         for e in std::fs::read_dir(dir).unwrap() {
             let path = e.unwrap().path();
+            let rel = path.strip_prefix(root).unwrap().to_path_buf();
             if path.is_dir() {
+                out.insert(PathBuf::from(format!("{}/", rel.display())), Vec::new());
                 walk(root, &path, out);
             } else {
-                let rel = path.strip_prefix(root).unwrap().to_path_buf();
                 out.insert(rel, std::fs::read(&path).unwrap());
             }
         }
@@ -117,6 +119,8 @@ fn link_then_unlink_brings_the_tree_back() {
     let mut after = tree(&env.root());
     // the one file link leaves on purpose: it keeps the manifest out of git
     after.remove(Path::new(".armadai/.gitignore"));
+    // left on purpose, empty: unlink never removes the target root
+    assert_eq!(after.remove(Path::new(".claude/")), Some(Vec::new()));
     assert_eq!(after, before);
 }
 
@@ -166,9 +170,10 @@ fn a_native_pack_installs_its_commands() {
     }
     let out = env.ok(&["init", "--pack", pack.to_str().unwrap()]);
     assert_eq!(env.read(".armadai/commands/brief.md"), BRIEF);
-    assert!(
-        out.contains("1 agent(s), 0 skill(s), 0 flow(s), 0 automation(s), 1 command(s)"),
-        "{out}"
+    assert_eq!(
+        out,
+        "Created .armadai/ from pack 'demo': 1 agent(s), 0 skill(s), 0 flow(s), \
+         0 automation(s), 1 command(s)\n  Run `armadai link` to generate the target files.\n"
     );
 }
 
@@ -191,5 +196,87 @@ fn opencode_link_then_unlink_brings_the_tree_back() {
     env.ok(&["unlink", "--target", "opencode", "--output", "oc"]);
     let mut after = tree(&env.root());
     after.remove(Path::new(".armadai/.gitignore"));
+    assert_eq!(after.remove(Path::new("oc/")), Some(Vec::new()));
     assert_eq!(after, before);
+}
+
+/// `unlink --agents dev` takes the commands back too, as it does the skills: they
+/// depend on no agent, so any agent-filtered unlink removes them.
+#[test]
+fn unlink_agents_takes_the_commands_back() {
+    let env = Env::new(PROJECT);
+    env.ok(&["link", "--target", "claude"]);
+    env.ok(&["unlink", "--target", "claude", "--agents", "dev"]);
+    assert!(!env.root().join(".claude/commands/brief.md").exists());
+    assert!(!env.root().join(".claude/agents/dev.md").exists());
+    assert!(env.root().join(".claude/agents/qa.md").exists());
+}
+
+/// OpenCode: the coordinator is a primary agent, its filled slot is compiled
+/// (allowed through `permission.skill`), unlike Claude's main session.
+#[test]
+fn an_opencode_coordinator_slot_is_compiled() {
+    let mut files = PROJECT.to_vec();
+    files[0] = (
+        ".armadai/project.yaml",
+        "schema_version: 1\ncoordinator: dev\n",
+    );
+    let env = Env::new(&files);
+    let l = env.line(&["--target", "opencode"], "agent dev slot code-standards");
+    assert_eq!(
+        l,
+        json!({
+            "target": "opencode",
+            "element": "agent dev slot code-standards",
+            "status": "compiled",
+            "reason": "a-std"
+        })
+    );
+}
+
+/// OpenCode: an agent whose only slot is empty gets no `permission.skill` rule
+/// (it keeps every skill, as an agent without `skills:` does).
+#[test]
+fn an_opencode_agent_with_only_an_empty_slot_has_no_skill_rule() {
+    let env = Env::new(&[
+        (".armadai/project.yaml", "schema_version: 1\n"),
+        (
+            ".armadai/agents/dev.md",
+            "---\ndescription: Writes code\nslots: [security]\n---\nYou write code.\n",
+        ),
+    ]);
+    let l = env.line(&["--target", "opencode"], "agent dev slot security");
+    assert_eq!(l["status"], "not-compiled");
+    assert_eq!(
+        env.read(".opencode/agents/dev.md"),
+        "---\ndescription: Writes code\nmode: subagent\n---\nYou write code.\n"
+    );
+}
+
+/// A command whose `native.claude` is not a mapping stops link, nothing written.
+#[test]
+fn a_command_native_claude_that_is_not_a_mapping_is_an_error() {
+    let env = Env::new(&[
+        (".armadai/project.yaml", "schema_version: 1\n"),
+        (
+            ".armadai/commands/brief.md",
+            "---\ndescription: D\nnative:\n  claude: x\n---\nDo $ARGUMENTS\n",
+        ),
+    ]);
+    let before = tree(&env.root());
+    let out = Command::cargo_bin("armadai")
+        .unwrap()
+        .current_dir(env.root())
+        .env("HOME", env.dir.path().join("home"))
+        .env("ARMADAI_CONFIG_DIR", env.dir.path().join("config"))
+        .env("NO_COLOR", "1")
+        .args(["link", "--target", "claude"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "Error: command `brief`: native.claude must be a mapping\n"
+    );
+    assert_eq!(tree(&env.root()), before);
 }

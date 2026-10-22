@@ -233,6 +233,83 @@ mod tests {
         check_golden("opencode-strict", &rendered);
     }
 
+    /// Every path under `dir` (directories with a trailing `/`) with its content.
+    fn paths(dir: &Path) -> std::collections::BTreeMap<String, String> {
+        fn walk(root: &Path, dir: &Path, out: &mut std::collections::BTreeMap<String, String>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                let rel = p.strip_prefix(root).unwrap().display().to_string();
+                if p.is_dir() {
+                    out.insert(format!("{rel}/"), String::new());
+                    walk(root, &p, out);
+                } else {
+                    out.insert(rel, std::fs::read_to_string(&p).unwrap());
+                }
+            }
+        }
+        let mut out = std::collections::BTreeMap::new();
+        walk(dir, dir, &mut out);
+        out
+    }
+
+    /// Commands and slots (`tests/fixtures/commands-slots/`): a coordinator and an
+    /// agent declaring `code-standards` (filled by `a-std` and `b-std`), `dev` also
+    /// declaring the empty `security`, a command with `argument_hint` and one with
+    /// `native.claude`. Per target: the generated tree, the shared root file, the
+    /// report; then `unlink` brings the project back, directories included, but for
+    /// the empty target root (never removed by design).
+    #[test]
+    fn the_commands_slots_fixture_matches_its_golden_for_each_target() {
+        for (target, out_dir) in TARGETS {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("project");
+            std::fs::create_dir_all(&root).unwrap();
+            copy_tree(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/commands-slots"),
+                &root,
+            );
+            let before = paths(&root);
+            let run = |args: &[&str]| {
+                let output = Command::cargo_bin("armadai")
+                    .unwrap()
+                    .current_dir(&root)
+                    .env("ARMADAI_CONFIG_DIR", isolated_config(dir.path()))
+                    .env("HOME", dir.path())
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{args:?}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                String::from_utf8_lossy(&output.stdout).into_owned()
+            };
+            let stdout = run(&["link", "--target", target]);
+            let mut rendered = render_tree(&root, &root.join(out_dir));
+            let shared = match *target {
+                "claude" => Some("CLAUDE.md"),
+                "opencode" => Some("opencode.json"),
+                _ => None,
+            };
+            if let Some(f) = shared {
+                let text = std::fs::read_to_string(root.join(f)).unwrap();
+                rendered = format!("=== {f} ===\n{text}\n{rendered}");
+            }
+            let report = stdout.split_once("Conformance report:\n").unwrap().1;
+            rendered.push_str(&format!("=== report ===\n{report}"));
+            check_golden(&format!("commands-slots-{target}"), &rendered);
+
+            run(&["unlink", "--target", target]);
+            let mut after = paths(&root);
+            // left on purpose: it keeps the link manifest out of git
+            after.remove(".armadai/.gitignore");
+            // left on purpose, empty: unlink never removes a target root
+            assert_eq!(after.remove(&format!("{out_dir}/")), Some(String::new()));
+            assert_eq!(after, before, "target {target}: unlink left a trace");
+        }
+    }
+
     /// `link` must never reach the network (decision of 2026-10-09): every
     /// proxy variable points at a live local listener, so any HTTP(S) attempt
     /// from an env-honoring client shows up as an accepted connection.

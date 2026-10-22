@@ -1,0 +1,67 @@
+=== CLAUDE.md ===
+<!-- armadai:begin -->
+LEAD_MARKER: you coordinate the team.
+
+## Delegation
+
+Delegate with the Agent tool, naming the subagent by its id.
+
+### Agents
+
+- `dev`: Writes code
+<!-- armadai:end -->
+
+=== .claude/agents/dev.md ===
+---
+name: dev
+description: Writes code
+skills:
+- a-std
+- b-std
+---
+DEV_MARKER: you write the code.
+
+=== .claude/commands/brief.md ===
+---
+description: Refine an idea into a brief
+argument-hint: <idea>
+---
+BRIEF_MARKER: refine this idea into a brief: $ARGUMENTS
+
+=== .claude/commands/mockup.md ===
+---
+description: Draw a mockup
+allowed-tools: Read, Write
+---
+MOCKUP_MARKER: draw a mockup of $ARGUMENTS
+
+=== .claude/skills/a-std/SKILL.md ===
+---
+name: a-std
+description: Coding standards, part A
+metadata:
+  armadai-slot: code-standards
+---
+A_STD_MARKER
+
+=== .claude/skills/b-std/SKILL.md ===
+---
+name: b-std
+description: Coding standards, part B
+metadata:
+  armadai-slot: code-standards
+---
+B_STD_MARKER
+
+=== report ===
+claude: agent dev: compiled
+claude: agent dev skills: compiled (preloaded through the subagent `skills` field)
+claude: agent dev slot code-standards: compiled (a-std, b-std)
+claude: agent dev slot security: not-compiled (no skill fills it)
+claude: agent lead: compiled (coordinator, rendered into CLAUDE.md)
+claude: agent lead slot code-standards: approximated (skills are discovered project-wide from .claude/skills; the main session cannot preload them)
+claude: command brief: compiled
+claude: command mockup: compiled
+claude: command mockup native: compiled (merged into the command frontmatter)
+claude: skill a-std: compiled
+claude: skill b-std: compiled

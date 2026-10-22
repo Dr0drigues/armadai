@@ -815,3 +815,22 @@ fn new_command_writes_a_command_that_passes_the_arguments() {
     );
     assert_eq!(tree(&env.root()), before);
 }
+
+/// `new command x --description ""`: refused by the validator's
+/// `command-empty-description`, the file rolled back, nothing left behind.
+#[test]
+fn new_command_with_an_empty_description_writes_nothing() {
+    let env = Env::project();
+    let before = tree(&env.root());
+    let err = env.fails(&["new", "command", "x", "--description", ""]);
+    let root = format!("{}/", env.root().canonicalize().unwrap().display());
+    assert_eq!(
+        err.replace(&root, "").lines().collect::<Vec<_>>(),
+        [
+            "(rolled back) .armadai/commands/x.md:2:1: error[command-empty-description]: \
+             command description is empty",
+            "Error: .armadai/commands/x.md would make the project invalid; nothing was written",
+        ]
+    );
+    assert_eq!(tree(&env.root()), before);
+}

@@ -1,0 +1,51 @@
+=== .codex/AGENTS.md ===
+LEAD_MARKER: you coordinate the team.
+
+## Team
+
+| Agent | Config | Description |
+|-------|--------|-------------|
+| dev | [agents/dev.toml](agents/dev.toml) | Writes code |
+
+=== .codex/agents/dev.toml ===
+model = "gpt-4o"
+developer_instructions = """
+DEV_MARKER: you write the code.
+"""
+
+=== .codex/config.toml ===
+[agents.dev]
+description = "Writes code"
+config_file = "agents/dev.toml"
+
+
+=== .codex/skills/a-std/SKILL.md ===
+---
+name: a-std
+description: Coding standards, part A
+metadata:
+  armadai-slot: code-standards
+---
+A_STD_MARKER
+
+=== .codex/skills/b-std/SKILL.md ===
+---
+name: b-std
+description: Coding standards, part B
+metadata:
+  armadai-slot: code-standards
+---
+B_STD_MARKER
+
+=== report ===
+codex: agent dev: compiled
+codex: agent dev skills: not-compiled (not supported by this target yet (step 4))
+codex: agent dev slot code-standards: not-compiled (not supported by this target yet (step 4))
+codex: agent dev slot security: not-compiled (no skill fills it)
+codex: agent lead: compiled (coordinator, rendered into the instructions file)
+codex: agent lead skills: not-compiled (not supported by this target yet (step 4))
+codex: agent lead slot code-standards: not-compiled (not supported by this target yet (step 4))
+codex: command brief: not-compiled (no command support yet)
+codex: command mockup: not-compiled (no command support yet)
+codex: skill a-std: compiled
+codex: skill b-std: compiled
