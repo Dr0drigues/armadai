@@ -134,12 +134,21 @@ impl Compiler for LegacyCompiler {
                     Some(STEP4),
                 );
             }
-            if !f.skills.is_empty() {
+            if !armadai_model::agent_skills(project, id).is_empty() {
                 r.push(
                     t,
                     format!("agent {id} skills"),
                     Status::NotCompiled,
                     Some(STEP4),
+                );
+            }
+            for s in &f.slots {
+                let filled = !armadai_model::slot_fills(project, s).is_empty();
+                r.push(
+                    t,
+                    format!("agent {id} slot {s}"),
+                    Status::NotCompiled,
+                    Some(if filled { STEP4 } else { "no skill fills it" }),
                 );
             }
             if f.tier.is_some() && t == "copilot" {
@@ -159,6 +168,14 @@ impl Compiler for LegacyCompiler {
                     Some("only native model is compiled for this target (step 4)"),
                 );
             }
+        }
+        for id in project.commands.keys() {
+            r.push(
+                t,
+                format!("command {id}"),
+                Status::NotCompiled,
+                Some("no command support yet"),
+            );
         }
         for id in project.flows.keys() {
             r.push(t, format!("flow {id}"), Status::NotCompiled, Some(STEP4));
@@ -309,6 +326,65 @@ mod tests {
                 line(&plan, "skill review-checklist").unwrap().status,
                 Status::Compiled
             );
+        }
+    }
+
+    /// Commands and slots: reported, and not a byte of the generated files changes.
+    #[test]
+    fn commands_and_slots_are_reported_and_leave_the_files_unchanged() {
+        let (dir, p) = migrated();
+        let before: Vec<Plan> = TARGETS
+            .iter()
+            .map(|t| {
+                LegacyCompiler { target: t }
+                    .compile(&p, dir.path())
+                    .unwrap()
+            })
+            .collect();
+        for (rel, content) in [
+            (
+                "commands/brief.md",
+                "---\ndescription: Refine an idea\n---\nRefine: $ARGUMENTS\n",
+            ),
+            (
+                "skills/a-std/SKILL.md",
+                "---\nname: a-std\ndescription: A\nmetadata:\n  armadai-slot: code-standards\n---\nA\n",
+            ),
+        ] {
+            let path = dir.path().join(".armadai").join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        // slots on an existing agent: its file must not change
+        let dev = dir.path().join(".armadai/agents/dev.md");
+        let text = std::fs::read_to_string(&dev).unwrap();
+        let text = text.replacen("---\n", "---\nslots: [code-standards, security]\n", 1);
+        std::fs::write(&dev, text).unwrap();
+        let (p2, _) = armadai_model::load_checked(dir.path()).unwrap();
+        for (t, before) in TARGETS.iter().zip(before) {
+            let plan = LegacyCompiler { target: t }
+                .compile(&p2, dir.path())
+                .unwrap();
+            let lines = |e: &str| {
+                let l = line(&plan, e).unwrap_or_else(|| panic!("{t}: no `{e}`"));
+                (l.status, l.reason.clone())
+            };
+            assert_eq!(
+                lines("command brief"),
+                (Status::NotCompiled, Some("no command support yet".into()))
+            );
+            for e in ["agent dev skills", "agent dev slot code-standards"] {
+                assert_eq!(lines(e), (Status::NotCompiled, Some(STEP4.into())), "{t}");
+            }
+            assert_eq!(
+                lines("agent dev slot security"),
+                (Status::NotCompiled, Some("no skill fills it".into()))
+            );
+            // the new skill aside, the files are those of the project without the additions
+            let kept: Vec<&Artifact> = (plan.artifacts.iter())
+                .filter(|a| a.produced_by != ProducedBy::skill("a-std"))
+                .collect();
+            assert_eq!(kept, before.artifacts.iter().collect::<Vec<_>>(), "{t}");
         }
     }
 

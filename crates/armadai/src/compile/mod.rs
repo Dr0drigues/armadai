@@ -24,6 +24,8 @@ pub use report::{Report, Status};
 pub enum ArtifactKind {
     Agent,
     Skill,
+    /// A command the user types (`commands/<id>.md`): depends on no agent.
+    Command,
     Instructions,
     /// Copied from `.armadai/native/<target>/`; its path is relative to the project root.
     Native,
