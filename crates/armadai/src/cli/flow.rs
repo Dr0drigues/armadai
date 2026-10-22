@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use armadai_model::Project;
 
-use crate::flow_status::record::{FlowEvent, log_path};
+use crate::flow_status::record::{FlowEvent, GROUP_SEP, log_path};
 use crate::flow_status::render;
 use crate::flow_status::runs::runs;
 
@@ -42,7 +42,7 @@ pub enum FlowCommand {
         #[arg(long, conflicts_with = "list")]
         watch: bool,
         /// List the recorded sessions instead
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["flow", "session"])]
         list: bool,
     },
 }
@@ -160,7 +160,7 @@ impl View {
         }
         let mut found = runs(&self.project, &read_log(&path));
         if let Some(id) = &self.flow {
-            found.retain(|r| r.flow.split(" | ").any(|f| f == id));
+            found.retain(|r| r.flow.split(GROUP_SEP).any(|f| f == id));
         }
         render::render(&found, &session)
     }

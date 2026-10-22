@@ -180,6 +180,14 @@ impl Compiler for LegacyCompiler {
         for id in project.flows.keys() {
             r.push(t, format!("flow {id}"), Status::NotCompiled, Some(STEP4));
         }
+        if !project.flows.is_empty() {
+            r.push(
+                t,
+                "flow recording",
+                Status::NotCompiled,
+                Some(super::report::RECORDING_CLAUDE_ONLY),
+            );
+        }
         for id in project.automations.keys() {
             r.push(
                 t,
@@ -321,6 +329,12 @@ mod tests {
                 let l = line(&plan, e).unwrap_or_else(|| panic!("{t}: no `{e}`"));
                 assert_eq!(l.status, Status::NotCompiled, "{t}: {e}");
             }
+            let rec = line(&plan, "flow recording").unwrap_or_else(|| panic!("{t}: no recording"));
+            assert_eq!(
+                (rec.status, rec.reason.as_deref()),
+                (Status::NotCompiled, Some("Claude Code only for now")),
+                "{t}"
+            );
             assert_eq!(line(&plan, "agent dev").unwrap().status, Status::Compiled);
             assert_eq!(
                 line(&plan, "skill review-checklist").unwrap().status,

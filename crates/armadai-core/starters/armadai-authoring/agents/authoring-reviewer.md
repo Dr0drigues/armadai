@@ -43,4 +43,6 @@ Your checks:
 
 ## Verdict
 1 blocker, 2 warnings: the blocker must be fixed.
+
+STATE: rejected
 ```

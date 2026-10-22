@@ -30,6 +30,7 @@ opencode: agent schema-specialist model: approximated (inherited from the OpenCo
 opencode: agent schema-specialist skills: compiled (allowed through permission.skill, loading prescribed in the prompt)
 opencode: agents tags: not-compiled (informational, no OpenCode field; 6 agents: adapter-specialist, cli-specialist, dev-lead, qa-specialist, release-manager, schema-specialist)
 opencode: flow delivery: approximated (guidance only)
+opencode: flow recording: not-compiled (Claude Code only for now)
 opencode: flow release: approximated (guidance only)
 opencode: skill rust-conventions: compiled
 opencode: team file: compiled (guidance in .opencode/armadai-team.md, listed in opencode.json instructions)

@@ -2,6 +2,9 @@
 
 use serde::Serialize;
 
+/// Why `flow recording` is not compiled for Codex, Copilot and OpenCode.
+pub const RECORDING_CLAUDE_ONLY: &str = "Claude Code only for now";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Status {

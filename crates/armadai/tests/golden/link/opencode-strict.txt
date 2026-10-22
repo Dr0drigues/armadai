@@ -161,6 +161,7 @@ opencode: agent reviewer capability web=deny: compiled (permission webfetch, web
 opencode: agent reviewer capability write=deny: compiled (permission edit)
 opencode: agents build, plan: compiled (permission.task set to the main-thread rule in opencode.json)
 opencode: flow deliver: compiled (transitions enforced by OpenCode permissions, the rest as guidance)
+opencode: flow recording: not-compiled (Claude Code only for now)
 opencode: policy delegation=strict: compiled (enforced by OpenCode permissions; agents of your own outside .armadai/ not covered)
 opencode: skill conventions: compiled
 opencode: team file: compiled (guidance in .opencode/armadai-team.md, listed in opencode.json instructions)

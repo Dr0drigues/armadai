@@ -3,13 +3,14 @@
 
 use std::path::{Path, PathBuf};
 
+use super::record::{LOGS_DIR, log_path};
 use super::runs::{Mark, Run};
 
 /// The runs of one session: a `session <id>` heading, then each run (finished
 /// ones first, each group in start order) with one line per step, its loops
 /// and its timed transitions.
 pub fn render(runs: &[Run], session: &str) -> String {
-    let mut out = format!("session {session}\n");
+    let mut out = format!("session {session} (UTC)\n");
     if runs.is_empty() {
         out += "\nno run of a declared flow in this session yet\n";
     }
@@ -36,7 +37,8 @@ pub fn render(runs: &[Run], session: &str) -> String {
                 .chain(v.note.as_ref().map(|n| format!("({n})")))
                 .collect::<Vec<_>>()
                 .join(" ");
-            out += &format!("  {sign} {:<w$}  {what}\n", v.step);
+            out += format!("  {sign} {:<w$}  {what}", v.step).trim_end();
+            out.push('\n');
         }
         for (from, to, n) in &run.loops {
             out += &format!("  {from} ⇄ {to} : {n}\n");
@@ -58,9 +60,8 @@ fn utc(ts: u64, fmt: &str) -> String {
         .unwrap_or_else(|| "?".into())
 }
 
-/// `<root>/.armadai/state/claude/`.
-pub fn logs_dir(root: &Path) -> PathBuf {
-    root.join(".armadai/state/claude")
+fn logs_dir(root: &Path) -> PathBuf {
+    root.join(LOGS_DIR)
 }
 
 /// Every recorded session as `(id, last modified in unix seconds)`, newest first.
@@ -77,6 +78,7 @@ pub fn sessions(root: &Path) -> Vec<(String, u64)> {
                 .to_str()?
                 .strip_suffix(".jsonl")?
                 .to_string();
+            log_path(root, &id)?; // a name `--session` could not reach is not listed
             let mtime = e.metadata().ok()?.modified().ok()?;
             let secs = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
             Some((id, secs))
@@ -178,7 +180,7 @@ mod tests {
     fn a_running_run_with_a_loop_renders_every_line() {
         assert_eq!(
             render(&[looping()], "abc123"),
-            "session abc123\n\
+            "session abc123 (UTC)\n\
              \n\
              deliver  in progress\n\
              \x20 ✓ design    done\n\
@@ -197,7 +199,7 @@ mod tests {
     fn finished_runs_stay_and_come_before_the_running_one() {
         assert_eq!(
             render(&[looping(), finished()], "s"),
-            "session s\n\
+            "session s (UTC)\n\
              \n\
              hotfix  finished\n\
              \x20 ✓ triage  done\n\
@@ -219,10 +221,40 @@ mod tests {
     }
 
     #[test]
+    fn a_step_with_nothing_to_say_leaves_no_trailing_space() {
+        let run = Run {
+            flow: "f".into(),
+            steps: vec![
+                view("a", Mark::Done, None, None),
+                view("long-step", Mark::Unsure, None, None),
+            ],
+            loops: vec![],
+            transitions: vec![],
+            finished: true,
+        };
+        assert_eq!(
+            render(&[run], "s"),
+            "session s (UTC)\n\nf  finished\n  ✓ a\n  ? long-step\n"
+        );
+    }
+
+    #[test]
+    fn only_names_session_can_reach_are_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join(LOGS_DIR);
+        std::fs::create_dir_all(&logs).unwrap();
+        for name in ["ok-1_A.jsonl", "has space.jsonl", "dot.dot.jsonl", ".jsonl"] {
+            std::fs::write(logs.join(name), "").unwrap();
+        }
+        let ids: Vec<String> = sessions(dir.path()).into_iter().map(|s| s.0).collect();
+        assert_eq!(ids, ["ok-1_A"]);
+    }
+
+    #[test]
     fn a_session_without_a_run_says_so() {
         assert_eq!(
             render(&[], "s"),
-            "session s\n\nno run of a declared flow in this session yet\n"
+            "session s (UTC)\n\nno run of a declared flow in this session yet\n"
         );
     }
 
@@ -240,7 +272,7 @@ mod tests {
     fn the_latest_session_is_the_last_modified_log() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(latest_session(dir.path()), None);
-        let logs = dir.path().join(".armadai/state/claude");
+        let logs = dir.path().join(LOGS_DIR);
         std::fs::create_dir_all(&logs).unwrap();
         assert_eq!(latest_session(dir.path()), None);
         let at = |name: &str, secs: u64| {

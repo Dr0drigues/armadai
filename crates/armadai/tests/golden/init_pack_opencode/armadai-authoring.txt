@@ -35,6 +35,7 @@ opencode: agent starter-builder skills: compiled (allowed through permission.ski
 opencode: agents tags: not-compiled (informational, no OpenCode field; 7 agents: agent-builder, authoring-architect, authoring-lead, authoring-reviewer, authoring-tester, skill-builder, starter-builder)
 opencode: flow authoring: approximated (guidance only)
 opencode: flow pack: approximated (guidance only)
+opencode: flow recording: not-compiled (Claude Code only for now)
 opencode: skill armadai-conventions: compiled
 opencode: team file: compiled (guidance in .opencode/armadai-team.md, listed in opencode.json instructions)
 
@@ -293,6 +294,8 @@ Your checks:
 
 ## Verdict
 1 blocker, 2 warnings: the blocker must be fixed.
+
+STATE: rejected
 ```
 
 ## Skills

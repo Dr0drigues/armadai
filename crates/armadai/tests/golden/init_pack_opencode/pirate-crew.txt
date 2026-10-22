@@ -22,6 +22,7 @@ opencode: agent vigie model: approximated (inherited from the OpenCode session)
 opencode: agent vigie skills: compiled (allowed through permission.skill, loading prescribed in the prompt)
 opencode: agents tags: not-compiled (informational, no OpenCode field; 4 agents: capitaine, cartographe, charpentier, vigie)
 opencode: flow mission: approximated (guidance only)
+opencode: flow recording: not-compiled (Claude Code only for now)
 opencode: skill code-nautique: compiled
 opencode: team file: compiled (guidance in .opencode/armadai-team.md, listed in opencode.json instructions)
 

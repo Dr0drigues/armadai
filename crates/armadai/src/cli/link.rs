@@ -712,7 +712,12 @@ pub fn execute(
         if let Err(e) = armadai_core::project_registry::register_project(&root) {
             tracing::warn!("Failed to register project in registry: {:?}", e);
         }
-        manifest::ensure_gitignore(&root).context("cannot write .armadai/.gitignore")?;
+        if manifest::ensure_gitignore(&root).context("cannot write .armadai/.gitignore")? {
+            lines.push(format!(
+                "  patched {}",
+                root.join(".armadai/.gitignore").display()
+            ));
+        }
         for p in &mut prepared {
             write(&root, p, force, &mut lines)?;
         }

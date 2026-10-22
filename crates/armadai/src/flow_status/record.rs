@@ -70,6 +70,12 @@ pub fn event_from_hook(raw: &str, now: u64) -> Option<(String, PathBuf, FlowEven
     ))
 }
 
+/// Where the session logs live, under the project root.
+pub const LOGS_DIR: &str = ".armadai/state/claude";
+
+/// Separates the flows of a group sharing an entry step (`a | b`).
+pub const GROUP_SEP: &str = " | ";
+
 /// `<root>/.armadai/state/claude/<session_id>.jsonl`, or `None` when the id
 /// could leave that directory.
 pub fn log_path(root: &Path, session_id: &str) -> Option<PathBuf> {
@@ -77,7 +83,7 @@ pub fn log_path(root: &Path, session_id: &str) -> Option<PathBuf> {
         && session_id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    safe.then(|| root.join(format!(".armadai/state/claude/{session_id}.jsonl")))
+    safe.then(|| root.join(LOGS_DIR).join(format!("{session_id}.jsonl")))
 }
 
 /// Read a hook payload from stdin and append its event. Never fails the hook.

@@ -108,7 +108,7 @@ fn looping(env: &Env, session: &str, mtime: u64) {
     env.log(session, &events, mtime);
 }
 
-const LOOPING: &str = "session s1\n\
+const LOOPING: &str = "session s1 (UTC)\n\
 \n\
 deliver  in progress\n\
 \x20 ✓ design    done\n\
@@ -229,9 +229,99 @@ fn a_flow_id_keeps_only_its_runs() {
         (code, out.as_str()),
         (
             Some(0),
-            "session s1\n\nship  in progress\n  ● release  running\n"
+            "session s1 (UTC)\n\nship  in progress\n  ● release  running\n"
         )
     );
     let (_, out, _) = env.run(&env.root(), &["flow", "status", "deliver"]);
     assert_eq!(out, LOOPING);
+}
+
+#[test]
+fn list_without_any_session_says_so() {
+    let env = Env::new();
+    let (code, out, err) = env.run(&env.root(), &["flow", "status", "--list"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (
+            Some(0),
+            "no flow activity recorded yet (link installs the hooks; start a flow in Claude Code)\n",
+            ""
+        )
+    );
+}
+
+#[test]
+fn outside_any_project_it_says_so() {
+    let env = Env::new();
+    let (code, out, err) = env.run(env.dir.path(), &["flow", "status"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (
+            Some(1),
+            "",
+            "Error: no ArmadAI project found (.armadai/project.yaml); run `armadai init --project`, or `armadai migrate` for a legacy project\n"
+        )
+    );
+}
+
+#[test]
+fn an_unknown_flow_in_a_project_without_flow_says_so() {
+    let env = Env::new();
+    std::fs::remove_file(env.root().join(".armadai/flows/deliver.yaml")).unwrap();
+    std::fs::remove_file(env.root().join(".armadai/flows/ship.yaml")).unwrap();
+    let (code, out, err) = env.run(&env.root(), &["flow", "status", "x"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (
+            Some(1),
+            "",
+            "Error: unknown flow `x`: the project has no flow\n"
+        )
+    );
+}
+
+#[test]
+fn a_session_id_that_could_leave_the_logs_is_refused() {
+    let env = Env::new();
+    let (code, out, err) = env.run(&env.root(), &["flow", "status", "--session", "../x"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (
+            Some(1),
+            "",
+            "Error: `../x` is not a session id; see `armadai flow status --list`\n"
+        )
+    );
+}
+
+#[test]
+fn list_takes_no_flow_nor_session() {
+    let env = Env::new();
+    looping(&env, "s1", T0);
+    for args in [
+        vec!["flow", "status", "deliver", "--list"],
+        vec!["flow", "status", "--list", "--session", "s1"],
+    ] {
+        let (code, out, _) = env.run(&env.root(), &args);
+        assert_eq!((code, out.as_str()), (Some(2), ""), "{args:?}");
+    }
+}
+
+/// `link` says when it patched `.armadai/.gitignore`, and only then.
+#[test]
+fn link_reports_the_gitignore_it_patched() {
+    let env = Env::new();
+    let ignore = env
+        .root()
+        .canonicalize()
+        .unwrap()
+        .join(".armadai/.gitignore");
+    std::fs::write(&ignore, "mine\n").unwrap();
+    let line = format!("  patched {}\n", ignore.display());
+    let (code, out, _) = env.run(&env.root(), &["link", "--target", "claude"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(out.matches(&line).count(), 1, "{out}");
+    assert_eq!(std::fs::read_to_string(&ignore).unwrap(), "mine\nstate/\n");
+    let (_, out, _) = env.run(&env.root(), &["link", "--target", "claude"]);
+    assert!(!out.contains(&line), "{out}");
 }
