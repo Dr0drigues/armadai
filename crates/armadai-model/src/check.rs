@@ -9,6 +9,153 @@ use crate::load::{Kind, Origins, Project, load_project};
 
 const MAX_SKILL_DESCRIPTION: usize = 1024;
 
+/// Names of the built-in commands and skills of the targets, sorted. Sources: Claude Code
+/// `code.claude.com/docs/en/commands.md` (read on 2026-10-21); OpenCode
+/// `packages/web/src/content/docs/tui.mdx` at commit 681156c8.
+pub const BUILTIN_COMMANDS: &[&str] = &[
+    "add-dir",
+    "adddir",
+    "advisor",
+    "agents",
+    "allowed-tools",
+    "android",
+    "app",
+    "artifacts",
+    "autocompact",
+    "autofix-pr",
+    "background",
+    "bashes",
+    "batch",
+    "bg",
+    "branch",
+    "btw",
+    "bug",
+    "cd",
+    "checkpoint",
+    "checkup",
+    "chrome",
+    "claude-api",
+    "claude-in-chrome",
+    "clear",
+    "code-review",
+    "color",
+    "compact",
+    "config",
+    "connect",
+    "context",
+    "continue",
+    "copy",
+    "cost",
+    "debug",
+    "deep-research",
+    "design",
+    "desktop",
+    "details",
+    "diff",
+    "doctor",
+    "editor",
+    "effort",
+    "exit",
+    "export",
+    "extra-usage",
+    "fast",
+    "feedback",
+    "fewer-permission-prompts",
+    "focus",
+    "fork",
+    "goal",
+    "heapdump",
+    "help",
+    "hooks",
+    "ide",
+    "import",
+    "init",
+    "insights",
+    "install-github-app",
+    "install-slack-app",
+    "ios",
+    "keybindings",
+    "list-agents",
+    "login",
+    "logout",
+    "loop",
+    "mcp",
+    "memory",
+    "mobile",
+    "model",
+    "models",
+    "new",
+    "output-style",
+    "passes",
+    "peers",
+    "permissions",
+    "plan",
+    "plugin",
+    "powerup",
+    "pr-comments",
+    "privacy-settings",
+    "proactive",
+    "q",
+    "quit",
+    "radio",
+    "rate-limit-options",
+    "rc",
+    "recap",
+    "redo",
+    "release-notes",
+    "reload-plugins",
+    "reload-skills",
+    "remote-control",
+    "remote-env",
+    "rename",
+    "reset",
+    "resume",
+    "review",
+    "rewind",
+    "routines",
+    "run",
+    "sandbox",
+    "schedule",
+    "scroll-speed",
+    "security-review",
+    "sessions",
+    "settings",
+    "setup-bedrock",
+    "setup-vertex",
+    "share",
+    "simplify",
+    "skill-doctor",
+    "skills",
+    "stats",
+    "status",
+    "statusline",
+    "stickers",
+    "stop",
+    "subtask",
+    "summarize",
+    "tasks",
+    "team-onboarding",
+    "teleport",
+    "terminal-setup",
+    "theme",
+    "themes",
+    "thinking",
+    "tp",
+    "tui",
+    "ultraplan",
+    "ultrareview",
+    "undo",
+    "update-config",
+    "upgrade",
+    "usage",
+    "usage-credits",
+    "verify",
+    "vim",
+    "voice",
+    "web-setup",
+    "workflows",
+];
+
 pub fn has_errors(ds: &[Diagnostic]) -> bool {
     ds.iter().any(|d| d.severity == Severity::Error)
 }
@@ -252,6 +399,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         (Kind::Skill, project.skills.keys().collect()),
         (Kind::Flow, project.flows.keys().collect()),
         (Kind::Automation, project.automations.keys().collect()),
+        (Kind::Command, project.commands.keys().collect()),
     ] {
         for id in ids.into_iter().filter(|id| !is_valid_id(id)) {
             o.err(
@@ -367,6 +515,15 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         {
             o.unknown_ref(at("skills"), "unknown-skill", "skill", s, &skills);
         }
+        for s in a.front.slots.iter().filter(|s| !is_valid_id(s)) {
+            o.err(
+                at("slots"),
+                "bad-id",
+                Some((s, false)),
+                format!("slot name `{s}` is not a valid id"),
+                Some("ids match [a-z0-9][a-z0-9-]{0,63}".into()),
+            );
+        }
         o.native_keys(at("native"), a.front.native.keys());
     }
 
@@ -408,6 +565,30 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 None,
             ),
             Some(_) => {}
+        }
+        let slot_key = Some(("armadai-slot", true));
+        let slots = crate::slots::filled_by(s);
+        if slots == [""] {
+            o.err(
+                at,
+                "bad-slot",
+                slot_key,
+                "`armadai-slot` is empty".into(),
+                Some(
+                    "name the slots this skill fills, such as `armadai-slot: code-standards`"
+                        .into(),
+                ),
+            );
+        } else {
+            for n in slots.into_iter().filter(|n| !is_valid_id(n)) {
+                o.err(
+                    at,
+                    "bad-slot",
+                    slot_key,
+                    format!("slot name `{n}` in `armadai-slot` is not a valid id"),
+                    Some("ids match [a-z0-9][a-z0-9-]{0,63}".into()),
+                );
+            }
         }
     }
 
@@ -593,5 +774,125 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         }
         o.native_keys(at, a.native.keys());
     }
+
+    // commands
+    for (id, c) in &project.commands {
+        check_command(&mut o, id, c, &skills);
+    }
     o.ds
+}
+
+/// Tokens of `body` whose meaning differs between the targets: `$<digits>` and
+/// `$ARGUMENTS[...]`, each distinct token once, in order of appearance.
+fn positional_tokens(body: &str) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    for (i, _) in body.match_indices('$') {
+        let rest = &body[i + 1..];
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        let len = if digits > 0 {
+            1 + digits
+        } else if let Some(tail) = rest.strip_prefix("ARGUMENTS[") {
+            // up to the closing `]` when there is one on the line
+            let close = tail
+                .find([']', '\n'])
+                .filter(|&j| tail[j..].starts_with(']'));
+            1 + "ARGUMENTS[".len() + close.map_or(0, |j| j + 1)
+        } else {
+            continue;
+        };
+        let t = &body[i..i + len];
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+fn check_command(o: &mut Out, id: &str, c: &crate::load::Command, skills: &BTreeSet<&str>) {
+    let at = (Kind::Command, id);
+    if c.front.description.trim().is_empty() {
+        o.err(
+            at,
+            "command-empty-description",
+            Some(("description", true)),
+            "command description is empty".into(),
+            None,
+        );
+    }
+    if c.front
+        .argument_hint
+        .as_deref()
+        .is_some_and(|h| h.trim().is_empty())
+    {
+        o.err(
+            at,
+            "command-empty-argument-hint",
+            Some(("argument_hint", true)),
+            "command `argument_hint` is empty".into(),
+            Some("remove it, or describe the expected input, such as `<idea>`".into()),
+        );
+    }
+    if c.body.trim().is_empty() {
+        o.err(
+            at,
+            "command-empty-body",
+            None,
+            "command body is empty".into(),
+            Some("write the text the command sends, citing `$ARGUMENTS`".into()),
+        );
+    }
+    for t in positional_tokens(&c.body) {
+        o.err(
+            at,
+            "command-positional-argument",
+            Some((t, false)),
+            format!(
+                "`{t}` would be replaced by both Claude Code and OpenCode \
+                 (`$<digit>` is a positional argument, indexed from 0 in one and from 1 in the other)"
+            ),
+            Some("only `$ARGUMENTS` is portable: rephrase the text (an amount: `5 USD`)".into()),
+        );
+    }
+    let shell_hint =
+        || Some("remove it: ArmadAI never compiles shell run when a command is typed".into());
+    if c.body.contains("!`") {
+        // shortcut: positioned on the first whole-word `!` of the file, not the exact one
+        o.err(
+            at,
+            "command-shell-expansion",
+            Some(("!", false)),
+            "`!` before a backtick runs a shell command when the command is typed".into(),
+            shell_hint(),
+        );
+    }
+    if c.body.lines().any(|l| l.trim_start().starts_with("```!")) {
+        o.err(
+            at,
+            "command-shell-expansion",
+            Some(("```!", false)),
+            "a line starting with ```! runs a shell block when the command is typed".into(),
+            shell_hint(),
+        );
+    }
+    if skills.contains(id) {
+        o.err(
+            at,
+            "command-shadows-skill",
+            None,
+            format!("command `{id}` has the same id as skill `{id}`"),
+            Some(
+                "Claude Code would run the skill and ignore the command: rename one of them".into(),
+            ),
+        );
+    }
+    if BUILTIN_COMMANDS.binary_search(&id).is_ok() {
+        o.emit(
+            at,
+            Severity::Warning,
+            "command-shadows-builtin",
+            None,
+            format!("command `{id}` has the name of a built-in command of Claude Code or OpenCode"),
+            Some("one of them hides the other: pick another name".into()),
+        );
+    }
 }

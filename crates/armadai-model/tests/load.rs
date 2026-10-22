@@ -525,14 +525,15 @@ fn nested_command_folder_is_ignored() {
     ]);
     let l = load_project(dir.path());
     let got: Vec<_> = (l.diagnostics.iter())
-        .map(|d| (d.severity, d.code, d.file.clone()))
+        .map(|d| (d.severity, d.code, d.file.clone(), d.message.as_str()))
         .collect();
     assert_eq!(
         got,
         [(
             Severity::Warning,
             "ignored-file",
-            dir.path().join(".armadai/commands/a")
+            dir.path().join(".armadai/commands/a"),
+            "command sub-folders are not loaded"
         )]
     );
     assert!(l.project.unwrap().commands.is_empty());
