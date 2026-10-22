@@ -19,14 +19,20 @@ pub fn slot_fills(project: &Project, slot: &str) -> Vec<String> {
         .collect()
 }
 
-/// The skills of `agent`: its `skills:` in order, then the fills of each of its slots in
-/// slot order, each skill once (first occurrence kept). Empty for an unknown agent.
+/// The skills of `agent`: its `skills:` in declared order, then every skill filling one
+/// of its slots, sorted by id, each skill once (first occurrence kept). Empty for an
+/// unknown agent.
 pub fn agent_skills(project: &Project, agent: &str) -> Vec<String> {
     let Some(a) = project.agents.get(agent) else {
         return Vec::new();
     };
     let mut out: Vec<String> = Vec::new();
-    let fills = a.front.slots.iter().flat_map(|s| slot_fills(project, s));
+    let fills: std::collections::BTreeSet<String> = a
+        .front
+        .slots
+        .iter()
+        .flat_map(|s| slot_fills(project, s))
+        .collect();
     for s in a.front.skills.iter().cloned().chain(fills) {
         if !out.contains(&s) {
             out.push(s);

@@ -61,7 +61,7 @@ fn agent_skills_are_its_skills_then_its_slot_fills_without_duplicate() {
 }
 
 #[test]
-fn agent_skills_follow_the_order_of_the_slots() {
+fn slot_fills_are_sorted_by_id_across_slots() {
     let (_d, p) = loaded(&[
         (
             ".armadai/skills/sec/SKILL.md",
@@ -72,7 +72,7 @@ fn agent_skills_follow_the_order_of_the_slots() {
             "---\ndescription: d\nslots: [security, code-standards]\n---\nB\n",
         ),
     ]);
-    assert_eq!(agent_skills(&p, "dev"), ["sec", "x", "a-std", "b-std"]);
+    assert_eq!(agent_skills(&p, "dev"), ["a-std", "b-std", "sec", "x"]);
 }
 
 #[test]

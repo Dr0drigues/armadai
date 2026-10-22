@@ -888,11 +888,7 @@ fn positional(t: &str) -> String {
 
 #[test]
 fn command_positional_arguments_are_refused() {
-    for (b, token, column) in [
-        ("Take $1 now\n", "$1", 6),
-        ("First: $ARGUMENTS[0]\n", "$ARGUMENTS[0]", 8),
-        ("It costs $5.\n", "$5", 10),
-    ] {
+    for (b, token, column) in [("Take $1 now\n", "$1", 6), ("It costs $5.\n", "$5", 10)] {
         let ds = body(b);
         assert_eq!(
             said(&only(&ds, "command-positional-argument")),
@@ -910,6 +906,30 @@ fn command_positional_arguments_are_refused() {
 }
 
 #[test]
+fn an_indexed_argument_is_refused_with_its_own_message() {
+    let ds = body("First: $ARGUMENTS[0]\n");
+    assert_eq!(
+        said(&only(&ds, "command-positional-argument")),
+        (
+            Severity::Error,
+            "brief.md",
+            Some(4),
+            Some(8),
+            "`$ARGUMENTS[0]` means something else in each target: Claude Code reads the argument \
+             at index 0, OpenCode replaces `$ARGUMENTS` with the whole input and keeps `[0]`",
+            Some(POSITIONAL_HINT)
+        )
+    );
+}
+
+#[test]
+fn a_positional_argument_is_located_in_the_body_not_in_the_description() {
+    let ds = command("---\ndescription: costs $5\n---\nIt costs $5.\n");
+    let d = only(&ds, "command-positional-argument");
+    assert_eq!((d.line, d.column), (Some(4), Some(10)));
+}
+
+#[test]
 fn each_distinct_positional_argument_is_reported_once() {
     let ds = body("$1 and $2 and $1 again\n");
     let got: Vec<_> = (ds.iter())
@@ -921,11 +941,11 @@ fn each_distinct_positional_argument_is_reported_once() {
 
 #[test]
 fn command_shell_expansion_is_refused() {
-    let shell_hint = Some("remove it: ArmadAI never compiles shell run when a command is typed");
+    let shell_hint = Some("remove it: ArmadAI never compiles shell execution at command time");
     for (b, line, column, message) in [
         (
-            "Diff: !`git diff`\n",
-            Some(4),
+            "Attention !\nDiff: !`git diff`\n",
+            Some(5),
             Some(7),
             "`!` before a backtick runs a shell command when the command is typed",
         ),
@@ -1077,6 +1097,23 @@ fn a_malformed_armadai_slot_element_is_an_error() {
             Some(3),
             "slot name `Not Ok` in `armadai-slot` is not a valid id",
             Some(IDS)
+        )
+    );
+}
+
+#[test]
+fn an_empty_armadai_slot_element_is_an_error() {
+    assert_eq!(
+        said(&only(&skill_slot("\"a,,b\""), "bad-slot")),
+        (
+            Severity::Error,
+            "SKILL.md",
+            Some(5),
+            Some(3),
+            "`armadai-slot` has an empty slot name (two commas in a row, or a comma at an end)",
+            Some(
+                "separate slot names with single commas, such as `armadai-slot: code-standards, security`"
+            )
         )
     );
 }

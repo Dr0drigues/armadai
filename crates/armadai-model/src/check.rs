@@ -316,11 +316,45 @@ impl Out<'_> {
     ) {
         // A diagnostic without a known origin is kept, just without a position.
         let origin = self.origins.files.get(&(kind, id.to_string()));
-        let (line, column) = match (origin, token) {
+        let pos = match (origin, token) {
             (Some((_, text)), Some((t, false))) => locate(text, t),
             (Some((_, text)), Some((t, true))) => locate_key(text, t),
             _ => (None, None),
         };
+        self.emit_pos((kind, id), severity, code, pos, message, hint);
+    }
+
+    /// (line, column) of byte `at` of `body`, when `body` is the end of the file of `kind`/`id`.
+    fn body_pos(
+        &self,
+        (kind, id): (Kind, &str),
+        body: &str,
+        at: usize,
+    ) -> (Option<usize>, Option<usize>) {
+        let Some((_, text)) = self.origins.files.get(&(kind, id.to_string())) else {
+            return (None, None);
+        };
+        let start = text.len().checked_sub(body.len());
+        let Some(start) = start.filter(|&s| text.get(s..) == Some(body)) else {
+            return (None, None);
+        };
+        let before = &text[..start + at];
+        let line = before.matches('\n').count() + 1;
+        let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+        (Some(line), Some(col))
+    }
+
+    /// Emit a diagnostic of `kind`/`id` at a known position.
+    fn emit_pos(
+        &mut self,
+        (kind, id): (Kind, &str),
+        severity: Severity,
+        code: &'static str,
+        (line, column): (Option<usize>, Option<usize>),
+        message: String,
+        hint: Option<String>,
+    ) {
+        let origin = self.origins.files.get(&(kind, id.to_string()));
         let file = origin.map_or_else(|| PathBuf::from(id), |(f, _)| f.clone());
         // a template error is met once per instance: report it once
         let seen = |d: &Diagnostic| {
@@ -580,7 +614,16 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
                 ),
             );
         } else {
-            for n in slots.into_iter().filter(|n| !is_valid_id(n)) {
+            if slots.contains(&"") {
+                o.err(
+                    at,
+                    "bad-slot",
+                    slot_key,
+                    "`armadai-slot` has an empty slot name (two commas in a row, or a comma at an end)".into(),
+                    Some("separate slot names with single commas, such as `armadai-slot: code-standards, security`".into()),
+                );
+            }
+            for n in (slots.into_iter()).filter(|n| !n.is_empty() && !is_valid_id(n)) {
                 o.err(
                     at,
                     "bad-slot",
@@ -783,9 +826,9 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
 }
 
 /// Tokens of `body` whose meaning differs between the targets: `$<digits>` and
-/// `$ARGUMENTS[...]`, each distinct token once, in order of appearance.
-fn positional_tokens(body: &str) -> Vec<&str> {
-    let mut out: Vec<&str> = Vec::new();
+/// `$ARGUMENTS[...]`, each distinct token once with its first byte offset, in order.
+fn positional_tokens(body: &str) -> Vec<(usize, &str)> {
+    let mut out: Vec<(usize, &str)> = Vec::new();
     for (i, _) in body.match_indices('$') {
         let rest = &body[i + 1..];
         let digits = rest.chars().take_while(char::is_ascii_digit).count();
@@ -801,8 +844,8 @@ fn positional_tokens(body: &str) -> Vec<&str> {
             continue;
         };
         let t = &body[i..i + len];
-        if !out.contains(&t) {
-            out.push(t);
+        if !out.iter().any(|(_, u)| *u == t) {
+            out.push((i, t));
         }
     }
     out
@@ -841,35 +884,56 @@ fn check_command(o: &mut Out, id: &str, c: &crate::load::Command, skills: &BTree
             Some("write the text the command sends, citing `$ARGUMENTS`".into()),
         );
     }
-    for t in positional_tokens(&c.body) {
-        o.err(
-            at,
-            "command-positional-argument",
-            Some((t, false)),
-            format!(
+    for (i, t) in positional_tokens(&c.body) {
+        let message = match t.strip_prefix("$ARGUMENTS[") {
+            Some(rest) => format!(
+                "`{t}` means something else in each target: Claude Code reads the argument \
+                 at index {}, OpenCode replaces `$ARGUMENTS` with the whole input and keeps `[{rest}`",
+                rest.trim_end_matches(']')
+            ),
+            None => format!(
                 "`{t}` would be replaced by both Claude Code and OpenCode \
                  (`$<digit>` is a positional argument, indexed from 0 in one and from 1 in the other)"
             ),
+        };
+        let pos = o.body_pos(at, &c.body, i);
+        o.emit_pos(
+            at,
+            Severity::Error,
+            "command-positional-argument",
+            pos,
+            message,
             Some("only `$ARGUMENTS` is portable: rephrase the text (an amount: `5 USD`)".into()),
         );
     }
     let shell_hint =
-        || Some("remove it: ArmadAI never compiles shell run when a command is typed".into());
-    if c.body.contains("!`") {
-        // shortcut: positioned on the first whole-word `!` of the file, not the exact one
-        o.err(
+        || Some("remove it: ArmadAI never compiles shell execution at command time".into());
+    if let Some(i) = c.body.find("!`") {
+        let pos = o.body_pos(at, &c.body, i);
+        o.emit_pos(
             at,
+            Severity::Error,
             "command-shell-expansion",
-            Some(("!", false)),
+            pos,
             "`!` before a backtick runs a shell command when the command is typed".into(),
             shell_hint(),
         );
     }
-    if c.body.lines().any(|l| l.trim_start().starts_with("```!")) {
-        o.err(
+    // byte offset of the first line opening a ```! block
+    let block = (c.body.split_inclusive('\n'))
+        .scan(0, |off, l| {
+            let start = *off + l.len() - l.trim_start().len();
+            *off += l.len();
+            Some(start)
+        })
+        .find(|&i| c.body[i..].starts_with("```!"));
+    if let Some(i) = block {
+        let pos = o.body_pos(at, &c.body, i);
+        o.emit_pos(
             at,
+            Severity::Error,
             "command-shell-expansion",
-            Some(("```!", false)),
+            pos,
             "a line starting with ```! runs a shell block when the command is typed".into(),
             shell_hint(),
         );
