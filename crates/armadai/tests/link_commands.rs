@@ -11,6 +11,8 @@ const BRIEF: &str =
     "---\ndescription: Refine an idea\nargument_hint: <idea>\n---\nRefine: $ARGUMENTS\n";
 const BRIEF_CLAUDE: &str =
     "---\ndescription: Refine an idea\nargument-hint: <idea>\n---\nRefine: $ARGUMENTS\n";
+const DEV_CLAUDE: &str =
+    "---\nname: dev\ndescription: Writes code\nskills:\n- a-std\n---\nYou write code.\n";
 
 const PROJECT: &[(&str, &str)] = &[
     (".armadai/project.yaml", "schema_version: 1\n"),
@@ -111,10 +113,7 @@ fn link_then_unlink_brings_the_tree_back() {
     let before = tree(&env.root());
     env.ok(&["link", "--target", "claude"]);
     assert_eq!(env.read(".claude/commands/brief.md"), BRIEF_CLAUDE);
-    assert_eq!(
-        env.read(".claude/agents/dev.md"),
-        "---\nname: dev\ndescription: Writes code\nskills:\n- a-std\n---\nYou write code.\n"
-    );
+    assert_eq!(env.read(".claude/agents/dev.md"), DEV_CLAUDE);
     env.ok(&["unlink", "--target", "claude"]);
     let mut after = tree(&env.root());
     // the one file link leaves on purpose: it keeps the manifest out of git
@@ -149,6 +148,7 @@ fn link_agents_still_writes_the_commands() {
     let env = Env::new(PROJECT);
     env.ok(&["link", "--target", "claude", "--agents", "dev"]);
     assert_eq!(env.read(".claude/commands/brief.md"), BRIEF_CLAUDE);
+    assert_eq!(env.read(".claude/agents/dev.md"), DEV_CLAUDE);
     assert!(!env.root().join(".claude/agents/qa.md").exists());
 }
 
