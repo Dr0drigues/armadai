@@ -78,6 +78,29 @@ pub fn merge_native(
     Ok(true)
 }
 
+/// One line per slot of agent `id` on target `t`: a filled slot is `compiled` with
+/// its skills, or `approximated` with the given reason; an empty one `not-compiled`.
+pub(crate) fn slot_lines(
+    r: &mut Report,
+    t: &str,
+    project: &Project,
+    id: &str,
+    f: &armadai_model::AgentFront,
+    approximated: Option<&str>,
+) {
+    for s in &f.slots {
+        let fills = armadai_model::slot_fills(project, s);
+        let element = format!("agent {id} slot {s}");
+        if fills.is_empty() {
+            r.push(t, element, Status::NotCompiled, Some("no skill fills it"));
+        } else if let Some(why) = approximated {
+            r.push(t, element, Status::Approximated, Some(why));
+        } else {
+            r.push(t, element, Status::Compiled, Some(&fills.join(", ")));
+        }
+    }
+}
+
 /// Markers around the ArmadAI block of a markdown file the user may also edit.
 pub const BLOCK_BEGIN: &str = "<!-- armadai:begin -->";
 pub const BLOCK_END: &str = "<!-- armadai:end -->";

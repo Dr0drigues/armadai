@@ -505,7 +505,7 @@ fn agent_file(
             Some("allowed through permission.skill, loading prescribed in the prompt"),
         );
     }
-    super::claude::slot_lines(r, T, project, id, f, true);
+    super::slot_lines(r, T, project, id, f, None);
     if !permission.is_empty() {
         m.insert("permission".into(), Value::Object(permission));
     }

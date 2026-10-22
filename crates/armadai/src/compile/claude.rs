@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use armadai_model::{
     Agent, AgentFront, Cap, Command, Delegation, Flow, NativeValue, Project, Tier, agent_skills,
-    slot_fills,
 };
 use serde_json::{Map, Value};
 
@@ -298,29 +297,6 @@ fn informational(r: &mut Report, project: &Project) {
     }
 }
 
-/// One line per slot of `f`: `preloaded` is the line of a filled slot, else the
-/// slot is `not-compiled`.
-pub(super) fn slot_lines(
-    r: &mut Report,
-    t: &str,
-    project: &Project,
-    id: &str,
-    f: &AgentFront,
-    preloaded: bool,
-) {
-    for s in &f.slots {
-        let fills = slot_fills(project, s);
-        let element = format!("agent {id} slot {s}");
-        if fills.is_empty() {
-            r.push(t, element, Status::NotCompiled, Some("no skill fills it"));
-        } else if preloaded {
-            r.push(t, element, Status::Compiled, Some(&fills.join(", ")));
-        } else {
-            r.push(t, element, Status::Approximated, Some(NO_PRELOAD));
-        }
-    }
-}
-
 fn coordinator_lines(r: &mut Report, project: &Project, id: &str, f: &AgentFront) {
     let mut fields = Vec::new();
     if caps(f).iter().any(|(_, c)| c.is_some()) {
@@ -340,7 +316,7 @@ fn coordinator_lines(r: &mut Report, project: &Project, id: &str, f: &AgentFront
             Some(NO_PRELOAD),
         );
     }
-    slot_lines(r, T, project, id, f, false);
+    super::slot_lines(r, T, project, id, f, Some(NO_PRELOAD));
     for field in fields {
         r.push(
             T,
@@ -395,7 +371,7 @@ fn agent_file(
             Some("preloaded through the subagent `skills` field"),
         );
     }
-    slot_lines(r, T, project, id, f, true);
+    super::slot_lines(r, T, project, id, f, None);
     if super::merge_native(&mut m, &f.native, T, &format!("agent `{id}`"), &["model"])? {
         r.push(
             T,
