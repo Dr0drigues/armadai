@@ -316,6 +316,11 @@ pub enum Command {
     /// delegation topology. Hidden from help.
     #[command(hide = true, name = "__claude-policy-gate")]
     ClaudePolicyGate,
+    /// Internal: called by the Claude Code sub-agent hooks. Reads the hook
+    /// JSON from stdin and appends the event to the session log under
+    /// `.armadai/state/claude/`. Hidden from help.
+    #[command(hide = true, name = "__record-flow-event")]
+    RecordFlowEvent,
 }
 
 /// Names of the subcommands marked `hide = true`, taken from clap itself
@@ -432,6 +437,7 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::ClaudePolicyGate => crate::claude_adapter::policy_gate::gate_from_stdin(),
+        Command::RecordFlowEvent => crate::flow_status::record::record_from_stdin(),
     }
 }
 
@@ -450,10 +456,12 @@ mod tests {
     fn there_are_hidden_subcommands_to_strip() {
         // If this ever empties, the filter below stops proving anything.
         let hidden = hidden_subcommand_names();
-        assert!(
-            hidden.iter().any(|n| n == "__claude-policy-gate"),
-            "expected the policy gate among hidden subcommands: {hidden:?}"
-        );
+        for name in ["__claude-policy-gate", "__record-flow-event"] {
+            assert!(
+                hidden.iter().any(|n| n == name),
+                "expected {name} among hidden subcommands: {hidden:?}"
+            );
+        }
     }
 
     /// `hide = true` keeps a subcommand out of `--help`, but clap_complete

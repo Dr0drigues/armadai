@@ -65,7 +65,7 @@ fn legacy_root(cwd: &Path) -> Option<PathBuf> {
 
 /// The project for `cwd`, reaching into the main checkout when `cwd` sits in a git
 /// worktree that has no `.armadai/` of its own (an untracked or older checkout).
-fn resolve_project(cwd: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve_project(cwd: &Path) -> Option<PathBuf> {
     find_root(cwd).or_else(|| find_root(&main_checkout_of(cwd)?))
 }
 
