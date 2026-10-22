@@ -24,7 +24,7 @@ pub enum FlowCommand {
             the recording hooks wrote under .armadai/state/claude/ (installed by `armadai link` \
             for the claude target when the project has a flow).\n\n\
             Each run of a flow lists its steps (✓ done with its state, ● running, ○ pending, \
-            ? unsure with the reason, ✗ a state no link expects), the links taken more than \
+            ? unsure with the reason, ✗ a state the step does not declare), the links taken more than \
             once, and the timed transitions (UTC). Without --session, the latest session.",
         after_help = "Examples:\n  \
             armadai flow status\n  \

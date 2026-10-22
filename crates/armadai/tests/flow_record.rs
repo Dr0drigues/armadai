@@ -174,4 +174,5 @@ fn a_missing_cwd_session_or_directory_records_nothing_and_succeeds() {
 
     assert!(!dir.path().join(".armadai/state").exists());
     assert!(!outside.path().join("gone").exists());
+    assert!(!outside.path().join(".armadai").exists());
 }
