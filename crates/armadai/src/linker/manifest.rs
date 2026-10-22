@@ -641,7 +641,8 @@ fn read(root: &Path) -> Option<Manifest> {
 
 /// Create `<root>/.armadai/.gitignore` when it is missing: `.armadai/` is versioned,
 /// but the link manifest, migration backups and flow records (`state/`) describe
-/// this machine only.
+/// this machine only. An existing file without a `state/` line gets it appended,
+/// nothing else changed (projects created before the flow records existed).
 pub fn ensure_gitignore(root: &Path) -> std::io::Result<()> {
     let path = root.join(".armadai/.gitignore");
     match std::fs::symlink_metadata(&path) {
@@ -651,7 +652,22 @@ pub fn ensure_gitignore(root: &Path) -> std::io::Result<()> {
                 path.display()
             )));
         }
-        Ok(_) => return Ok(()),
+        Ok(_) => {
+            let text = std::fs::read_to_string(&path)?;
+            if text.lines().any(|l| l.trim() == "state/") {
+                return Ok(());
+            }
+            let sep = if text.is_empty() || text.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            use std::io::Write;
+            return std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)?
+                .write_all(format!("{sep}state/\n").as_bytes());
+        }
         Err(_) => {}
     }
     std::fs::create_dir_all(root.join(".armadai"))?;
@@ -990,6 +1006,30 @@ mod tests {
         std::fs::write(&outside, "mine\n").unwrap();
         assert!(super::ensure_gitignore(&root).is_err());
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "mine\n");
+    }
+
+    /// An existing `.gitignore` without `state/` gets the line appended once,
+    /// nothing else changed; one that has it stays byte for byte.
+    #[test]
+    fn ensure_gitignore_adds_the_state_line_to_an_existing_file_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".armadai/.gitignore");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for (before, after) in [
+            (
+                "link-manifest.yaml\n.migrated/\n",
+                "link-manifest.yaml\n.migrated/\nstate/\n",
+            ),
+            ("mine", "mine\nstate/\n"),
+            ("", "state/\n"),
+            ("state/\nmine", "state/\nmine"),
+            ("a\n  state/  \nb\n", "a\n  state/  \nb\n"),
+        ] {
+            std::fs::write(&path, before).unwrap();
+            super::ensure_gitignore(dir.path()).unwrap();
+            super::ensure_gitignore(dir.path()).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), after, "{before:?}");
+        }
     }
 
     /// Published SHA-256 vectors (FIPS 180-4 / RFC 6234). They are properties

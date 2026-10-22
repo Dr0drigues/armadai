@@ -54,7 +54,7 @@ CI (`.github/workflows/ci.yml`) runs fmt, clippy, test, build (`cargo build --re
 
 **Agent definition** lives in `.armadai/agents/<id>.md` (no user library any more); an agent with `from:`/`vars:` is an instance of a project template `.armadai/templates/<id>.md`, rendered at load time in `armadai-model` (`agent_templates.rs`), so the adapters only see rendered agents and the writer keeps the instance form. Templates in `crates/armadai/templates/*.md` are canonical agents (frontmatter with a default description); `new agent` sets description/tier/skills on the parsed frontmatter and renders `{{name}}`, `{{stack}}`, `{{description}}` in the body only. Flow templates (`pipeline`, `review-loop`, `plan-build-verify`, `fan-out`) and the Mermaid export are pure functions of `armadai-model` (`templates.rs`, `mermaid.rs`); `entry_steps` there is the one definition of an entry step (validator and gate).
 
-**Config** lives in `~/.config/armadai/` (user: templates, registries) and, per project, `.armadai/project.yaml`. `.armadai/` is versioned except `link-manifest.yaml` and `.migrated/` (`.armadai/.gitignore`).
+**Config** lives in `~/.config/armadai/` (user: templates, registries) and, per project, `.armadai/project.yaml`. `.armadai/` is versioned except `link-manifest.yaml`, `.migrated/` and `state/` (`.armadai/.gitignore`; `link` adds `state/` to an existing one).
 
 ## Git Conventions
 

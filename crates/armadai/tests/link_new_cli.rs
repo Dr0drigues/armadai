@@ -1020,3 +1020,21 @@ fn the_dry_run_lists_up_to_date_files_as_unchanged() {
     assert!(unchanged.contains("skills/notes/SKILL.md"), "{out}");
     assert!(!unchanged.contains("agents/dev.md"), "{out}");
 }
+
+/// `link` adds `state/` (the flow records) to an existing `.armadai/.gitignore`
+/// once, and leaves one that has it byte for byte.
+#[test]
+fn link_adds_the_state_line_to_an_existing_gitignore_once() {
+    let env = Env::new(PROJECT);
+    let path = env.root().join(".armadai/.gitignore");
+    std::fs::write(&path, "link-manifest.yaml\n.migrated/\n# mine\n").unwrap();
+    env.ok(&["link"]);
+    env.ok(&["link"]);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "link-manifest.yaml\n.migrated/\n# mine\nstate/\n"
+    );
+    std::fs::write(&path, "state/\n# mine").unwrap();
+    env.ok(&["link"]);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "state/\n# mine");
+}
