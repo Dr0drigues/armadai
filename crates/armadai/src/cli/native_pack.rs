@@ -1,7 +1,7 @@
 //! Native starter packs: a `pack.yaml` with `format: 1` next to a canonical tree.
 //!
-//! A pack is copied by a white list (`project.yaml`, `agents/*.md`, `skills/**`,
-//! `flows/*.yaml`, `automations/*.yaml`); anything else (`pack.yaml`,
+//! A pack is copied by a white list (`project.yaml`, `agents/*.md`, `templates/*.md`,
+//! `skills/**`, `flows/*.yaml`, `automations/*.yaml`); anything else (`pack.yaml`,
 //! `.armadai-version`, `link-manifest.yaml`, `.migrated/`, `.gitignore`, ...) stays
 //! behind. A pack holding any symbolic link is refused. The pack is validated in a
 //! scratch project before anything is written, and the install is undone if it
@@ -20,7 +20,7 @@ fn listed(rel: &Path) -> bool {
     let c: Vec<&str> = rel.iter().filter_map(|s| s.to_str()).collect();
     match c.as_slice() {
         ["project.yaml"] => true,
-        ["agents", f] => f.ends_with(".md"),
+        ["agents", f] | ["templates", f] => f.ends_with(".md"),
         ["flows", f] | ["automations", f] => f.ends_with(".yaml"),
         ["skills", _, _, ..] => true,
         _ => false,
@@ -270,9 +270,13 @@ pub fn install(root: &Path, pack_dir: &Path, name: &str) -> anyhow::Result<()> {
     let o = crate::cli::style::ok();
     let a = crate::cli::style::accent();
     let m = crate::cli::style::muted();
+    let templates = match count("templates") {
+        0 => String::new(),
+        n => format!(", {n} template(s)"),
+    };
     anstream::println!(
         "{o}Created .armadai/ from pack{o:#} {a}'{name}'{a:#}: {m}{} agent(s), {} skill(s), \
-         {} flow(s), {} automation(s){m:#}",
+         {} flow(s), {} automation(s){templates}{m:#}",
         count("agents"),
         count("skills"),
         count("flows"),
@@ -293,6 +297,7 @@ mod tests {
         for ok in [
             "project.yaml",
             "agents/a.md",
+            "templates/t.md",
             "flows/f.yaml",
             "automations/x.yaml",
             "skills/s/SKILL.md",
@@ -308,6 +313,8 @@ mod tests {
             ".migrated/x/a.md",
             "agents/a.txt",
             "agents/sub/a.md",
+            "templates/t.txt",
+            "templates/sub/t.md",
             "flows/f.yml",
             "skills/SKILL.md",
             "prompts/p.md",
