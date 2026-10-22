@@ -46,10 +46,6 @@ tempfile = { workspace = true }
 anstyle = "1.0.14"
 anstream = "1.0.0"
 
-[target.'cfg(unix)'.dependencies]
-# O_NOFOLLOW when appending to .armadai/.gitignore
-libc = "0.2"
-
 [dev-dependencies]
 armadai-core = { path = "../armadai-core", features = ["test-support"] }
 assert_cmd = "2.2.2"

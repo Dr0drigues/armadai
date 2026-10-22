@@ -681,17 +681,25 @@ pub fn ensure_gitignore(root: &Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// Append to an existing file, never through a link posed since the check.
+/// Append to an existing file, never through a link posed since the check:
+/// the file opened must be the one the path names, not what a link reaches.
 fn append(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.append(true);
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        use std::os::unix::fs::MetadataExt;
+        let (opened, named) = (file.metadata()?, std::fs::symlink_metadata(path)?);
+        if named.file_type().is_symlink()
+            || (opened.dev(), opened.ino()) != (named.dev(), named.ino())
+        {
+            return Err(std::io::Error::other(format!(
+                "{} is a symbolic link: refusing to write through it",
+                path.display()
+            )));
+        }
     }
-    options.open(path)?.write_all(text.as_bytes())
+    file.write_all(text.as_bytes())
 }
 
 /// Replace `target`'s data with `root`/`created_dirs`/`entries`, leaving

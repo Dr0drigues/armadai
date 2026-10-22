@@ -102,7 +102,6 @@ dependencies = [
  "clap_complete",
  "dialoguer",
  "include_dir",
- "libc",
  "pulldown-cmark",
  "serde",
  "serde_json",
