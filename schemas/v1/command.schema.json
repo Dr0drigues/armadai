@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Frontmatter of `commands/<id>.md`: a prompt the user runs as `/<id>` in the main thread.",
+  "properties": {
+    "argument_hint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "description": {
+      "type": "string"
+    },
+    "native": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "required": [
+    "description"
+  ],
+  "title": "CommandFront",
+  "type": "object"
+}

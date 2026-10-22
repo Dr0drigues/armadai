@@ -11,7 +11,7 @@ fn parsed(name: &str) -> serde_json::Value {
 fn committed_schemas_are_up_to_date() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/v1");
     let all = schemas();
-    assert_eq!(all.len(), 6);
+    assert_eq!(all.len(), 7);
     for (name, json) in all {
         let committed = std::fs::read_to_string(dir.join(name)).unwrap_or_default();
         assert!(
@@ -32,7 +32,14 @@ fn targets_description_is_generated_from_the_constant() {
 
 #[test]
 fn schemas_reject_unknown_properties() {
-    for n in ["project", "agent", "template", "flow", "automation"] {
+    for n in [
+        "project",
+        "agent",
+        "template",
+        "flow",
+        "automation",
+        "command",
+    ] {
         let s = parsed(&format!("{n}.schema.json"));
         assert_eq!(s["additionalProperties"], false, "{n}");
     }
@@ -81,6 +88,7 @@ fn template_schema_has_the_agent_keys_all_optional_without_from_nor_vars() {
             "description",
             "native",
             "skills",
+            "slots",
             "tags",
             "temperature",
             "tier",

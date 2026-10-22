@@ -460,3 +460,97 @@ fn sequence_exclusivity_is_about_key_presence() {
         assert_eq!(ds.len(), 1, "{body}");
     }
 }
+
+#[test]
+fn commands_are_loaded() {
+    let dir = project(&[
+        M,
+        (
+            ".armadai/commands/brief.md",
+            "---\ndescription: Refine an idea\nargument_hint: <idea>\n---\nRefine: $ARGUMENTS\n",
+        ),
+    ]);
+    let l = load_project(dir.path());
+    assert!(l.diagnostics.is_empty(), "{:?}", l.diagnostics);
+    let p = l.project.unwrap();
+    assert_eq!(p.commands.keys().collect::<Vec<_>>(), ["brief"]);
+    let c = &p.commands["brief"];
+    assert_eq!(c.front.description, "Refine an idea");
+    assert_eq!(c.front.argument_hint.as_deref(), Some("<idea>"));
+    assert_eq!(c.front.native, Native::new());
+    assert_eq!(c.body, "Refine: $ARGUMENTS\n");
+    assert!(
+        l.origins
+            .files
+            .contains_key(&(Kind::Command, "brief".into()))
+    );
+}
+
+#[test]
+fn unknown_command_key_is_an_error() {
+    let dir = project(&[
+        M,
+        (
+            ".armadai/commands/brief.md",
+            "---\ndescription: d\nagent: x\n---\nB\n",
+        ),
+    ]);
+    let l = load_project(dir.path());
+    let got: Vec<_> = (l.diagnostics.iter())
+        .map(|d| (d.severity, d.code, d.line, d.message.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [(
+            Severity::Error,
+            "invalid-yaml",
+            Some(3),
+            "unknown field `agent`, expected one of description, argument_hint, native"
+        )]
+    );
+    assert!(
+        l.diagnostics[0]
+            .file
+            .ends_with(".armadai/commands/brief.md")
+    );
+    assert!(l.project.unwrap().commands.is_empty());
+}
+
+#[test]
+fn nested_command_folder_is_ignored() {
+    let dir = project(&[
+        M,
+        (".armadai/commands/a/b.md", "---\ndescription: d\n---\nB\n"),
+        (".armadai/commands/notes.txt", "not a command"),
+    ]);
+    let l = load_project(dir.path());
+    let got: Vec<_> = (l.diagnostics.iter())
+        .map(|d| (d.severity, d.code, d.file.clone()))
+        .collect();
+    assert_eq!(
+        got,
+        [(
+            Severity::Warning,
+            "ignored-file",
+            dir.path().join(".armadai/commands/a")
+        )]
+    );
+    assert!(l.project.unwrap().commands.is_empty());
+}
+
+#[test]
+fn agent_slots_are_loaded() {
+    let dir = project(&[
+        M,
+        (
+            ".armadai/agents/dev.md",
+            "---\ndescription: d\nslots: [code-standards]\n---\nB\n",
+        ),
+    ]);
+    let l = load_project(dir.path());
+    assert!(l.diagnostics.is_empty(), "{:?}", l.diagnostics);
+    assert_eq!(
+        l.project.unwrap().agents["dev"].front.slots,
+        ["code-standards"]
+    );
+}

@@ -5,6 +5,7 @@ tier: pro
 temperature: 0.4
 tags: [dev, rust]
 skills: [conventions-rust]
+slots: [code-standards]
 capabilities:
   read: allow
   write: ask

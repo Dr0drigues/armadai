@@ -355,7 +355,7 @@ fn unknown_key_of_the_instance_is_reported_on_the_instance() {
             "invalid-yaml",
             "guardian.md".into(),
             Some(4),
-            "agent rendered from template `checker`: unknown field `bogus`, expected one of `description`, `title`, `tier`, `temperature`, `tags`, `skills`, `capabilities`, `native`".into(),
+            "agent rendered from template `checker`: unknown field `bogus`, expected one of `description`, `title`, `tier`, `temperature`, `tags`, `skills`, `slots`, `capabilities`, `native`".into(),
             None,
         )]
     );
@@ -378,7 +378,7 @@ fn unknown_key_of_the_template_is_reported_on_the_template() {
             "invalid-yaml",
             "checker.md".into(),
             Some(3),
-            "unknown field `bogus`, expected one of description, title, tier, temperature, tags, skills, capabilities, native".into(),
+            "unknown field `bogus`, expected one of description, title, tier, temperature, tags, skills, slots, capabilities, native".into(),
             None,
         )]
     );
@@ -722,4 +722,43 @@ fn a_template_error_shared_by_instances_is_reported_once() {
         )
     };
     assert_eq!(ds, vec![unknown(10, "nope"), unknown(16, "nada")]);
+}
+
+#[test]
+fn template_slots_reach_the_agent_and_the_instance_keeps_its_form() {
+    let inst = "---\nfrom: checker\nvars: { subject: x }\n---\n";
+    let l = load(&[
+        M,
+        (
+            ".armadai/templates/checker.md",
+            "---\ndescription: \"Checks {{subject}}\"\nslots: [code-standards]\n---\n",
+        ),
+        (".armadai/agents/guardian.md", inst),
+    ]);
+    assert_eq!(short(&l), vec![]);
+    let a = agent(&l, "guardian");
+    assert_eq!(a.front.slots, ["code-standards"]);
+    assert_eq!(
+        render_agent("guardian", a),
+        "---\nfrom: checker\nvars:\n  subject: x\n---\n"
+    );
+}
+
+#[test]
+fn instance_slots_are_written_after_skills() {
+    let l = load(&[
+        M,
+        CHECKER,
+        (
+            ".armadai/agents/guardian.md",
+            "---\nfrom: checker\nvars: { subject: x }\ncapabilities: { read: allow }\nslots: [security]\nskills: [cadre]\n---\n",
+        ),
+    ]);
+    assert_eq!(short(&l), vec![]);
+    let a = agent(&l, "guardian");
+    assert_eq!(a.front.slots, ["security"]);
+    assert_eq!(
+        render_agent("guardian", a),
+        "---\nfrom: checker\nvars:\n  subject: x\nskills:\n- cadre\nslots:\n- security\ncapabilities:\n  read: allow\n---\n"
+    );
 }

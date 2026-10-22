@@ -148,6 +148,7 @@ pub fn convert(old: &OldProject) -> (Project, Vec<SkillCopy>, Report) {
         skills,
         flows,
         automations: BTreeMap::new(),
+        commands: BTreeMap::new(),
     };
     (project, copies, r)
 }
@@ -261,6 +262,7 @@ fn convert_agent(id: &str, a: &OldAgent, old: &OldProject, r: &mut Report) -> (A
         temperature,
         tags: m.tags.clone(),
         skills: Vec::new(),
+        slots: Vec::new(),
         capabilities: Default::default(),
         native: Default::default(),
         from: None,

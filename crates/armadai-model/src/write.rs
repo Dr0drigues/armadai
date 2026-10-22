@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::load::{Agent, Flow, Instance, Project, Skill, Template};
+use crate::load::{Agent, Command, Flow, Instance, Project, Skill, Template};
 use crate::types::{Automation, FlowFile, Manifest, NativeValue, TemplateFront};
 
 fn yaml<T: Serialize>(v: &T) -> String {
@@ -48,13 +48,14 @@ pub fn render_template(t: &Template) -> String {
 }
 
 /// Top-level keys of an agent frontmatter, in the order the writer puts them.
-const AGENT_KEYS: [&str; 8] = [
+const AGENT_KEYS: [&str; 9] = [
     "description",
     "title",
     "tier",
     "temperature",
     "tags",
     "skills",
+    "slots",
     "capabilities",
     "native",
 ];
@@ -102,6 +103,10 @@ pub fn render_flow(f: &Flow) -> String {
     })
 }
 
+pub fn render_command(c: &Command) -> String {
+    with_frontmatter(&c.front, &c.body)
+}
+
 pub fn render_automation(a: &Automation) -> String {
     yaml(a)
 }
@@ -113,7 +118,8 @@ pub fn write_project(project: &Project, root: &Path) -> std::io::Result<Vec<Path
         .chain(project.templates.keys())
         .chain(project.skills.keys())
         .chain(project.flows.keys())
-        .chain(project.automations.keys());
+        .chain(project.automations.keys())
+        .chain(project.commands.keys());
     if let Some(bad) = ids.into_iter().find(|id| !crate::is_valid_id(id)) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -142,6 +148,9 @@ pub fn write_project(project: &Project, root: &Path) -> std::io::Result<Vec<Path
             base.join(format!("automations/{id}.yaml")),
             render_automation(a),
         ));
+    }
+    for (id, c) in &project.commands {
+        files.push((base.join(format!("commands/{id}.md")), render_command(c)));
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
     for (path, text) in &files {
