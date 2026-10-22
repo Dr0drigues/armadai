@@ -2,7 +2,7 @@
 
 use schemars::{JsonSchema, schema_for};
 
-use crate::types::{AgentFront, Automation, FlowFile, Manifest, SkillFront};
+use crate::types::{AgentFront, Automation, FlowFile, Manifest, SkillFront, TemplateFront};
 
 /// Keys sorted at every level: the bytes must not depend on whether another crate of
 /// the build enables serde_json's `preserve_order` (feature unification).
@@ -30,6 +30,7 @@ pub fn schemas() -> Vec<(&'static str, String)> {
     vec![
         ("project.schema.json", render::<Manifest>()),
         ("agent.schema.json", render::<AgentFront>()),
+        ("template.schema.json", render::<TemplateFront>()),
         ("skill.schema.json", render::<SkillFront>()),
         ("flow.schema.json", render::<FlowFile>()),
         ("automation.schema.json", render::<Automation>()),

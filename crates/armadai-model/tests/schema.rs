@@ -11,7 +11,7 @@ fn parsed(name: &str) -> serde_json::Value {
 fn committed_schemas_are_up_to_date() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/v1");
     let all = schemas();
-    assert_eq!(all.len(), 5);
+    assert_eq!(all.len(), 6);
     for (name, json) in all {
         let committed = std::fs::read_to_string(dir.join(name)).unwrap_or_default();
         assert!(
@@ -32,7 +32,7 @@ fn targets_description_is_generated_from_the_constant() {
 
 #[test]
 fn schemas_reject_unknown_properties() {
-    for n in ["project", "agent", "flow", "automation"] {
+    for n in ["project", "agent", "template", "flow", "automation"] {
         let s = parsed(&format!("{n}.schema.json"));
         assert_eq!(s["additionalProperties"], false, "{n}");
     }
@@ -45,4 +45,43 @@ fn files_end_with_a_newline() {
     for (name, json) in schemas() {
         assert!(json.ends_with("}\n"), "{name}");
     }
+}
+
+#[test]
+fn agent_description_is_required_unless_from_is_set() {
+    let s = parsed("agent.schema.json");
+    assert_eq!(s.get("required"), None);
+    assert_eq!(
+        s["anyOf"],
+        serde_json::json!([{ "required": ["description"] }, { "required": ["from"] }])
+    );
+    for k in ["from", "vars"] {
+        assert!(s["properties"].get(k).is_some(), "{k}");
+    }
+}
+
+#[test]
+fn template_schema_has_the_agent_keys_all_optional_without_from_nor_vars() {
+    let s = parsed("template.schema.json");
+    assert_eq!(s.get("required"), None);
+    assert_eq!(s.get("anyOf"), None);
+    let keys: Vec<&str> = s["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "capabilities",
+            "description",
+            "native",
+            "skills",
+            "tags",
+            "temperature",
+            "tier",
+            "title"
+        ]
+    );
 }

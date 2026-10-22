@@ -481,3 +481,219 @@ fn missing_variables_are_reported_sorted() {
     };
     assert_eq!(short(&l), vec![missing("alpha"), missing("zeta")]);
 }
+
+/// (severity, code, file under `.armadai/`, line, column, message, hint) of every
+/// diagnostic of `validate` (loader and semantic layer).
+type Full = (
+    Severity,
+    &'static str,
+    String,
+    Option<usize>,
+    Option<usize>,
+    String,
+    Option<String>,
+);
+
+fn validated(files: &[(&str, &str)]) -> Vec<Full> {
+    let dir = project(files);
+    let base = dir.path().join(".armadai");
+    validate(dir.path())
+        .into_iter()
+        .map(|d| {
+            (
+                d.severity,
+                d.code,
+                d.file
+                    .strip_prefix(&base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                d.line,
+                d.column,
+                d.message,
+                d.hint,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_template_and_an_agent_cannot_share_an_id() {
+    let ds = validated(&[
+        M,
+        (
+            ".armadai/templates/guardian.md",
+            "---\ndescription: d\n---\n",
+        ),
+        (".armadai/agents/guardian.md", "---\ndescription: d\n---\n"),
+    ]);
+    assert_eq!(
+        ds,
+        vec![(
+            Severity::Error,
+            "template-agent-collision",
+            "templates/guardian.md".into(),
+            None,
+            None,
+            "template `guardian` has the same id as agent `guardian`".into(),
+            Some("rename the template or the agent".into()),
+        )]
+    );
+}
+
+#[test]
+fn a_template_is_not_an_agent_of_a_flow_nor_the_coordinator() {
+    let ds = validated(&[
+        (
+            ".armadai/project.yaml",
+            "schema_version: 1\ncoordinator: checker\n",
+        ),
+        CHECKER,
+        (
+            ".armadai/flows/f.yaml",
+            "steps:\n  a:\n    agent: checker\n",
+        ),
+    ]);
+    let unknown = |file: &str, line| {
+        (
+            Severity::Error,
+            "unknown-agent",
+            file.to_string(),
+            Some(line),
+            Some(if line == 2 { 14 } else { 12 }),
+            "unknown agent `checker`".to_string(),
+            None,
+        )
+    };
+    assert_eq!(
+        ds,
+        vec![unknown("project.yaml", 2), unknown("flows/f.yaml", 3)]
+    );
+}
+
+#[test]
+fn a_semantic_error_from_the_template_points_at_the_template() {
+    let ds = validated(&[
+        M,
+        (
+            ".armadai/templates/checker.md",
+            "---\ndescription: \"\"\nskills: [nope]\nnative:\n  bogus: {}\n---\n",
+        ),
+        (".armadai/agents/guardian.md", "---\nfrom: checker\n---\n"),
+    ]);
+    let at = |code, line, column, message: &str, hint: Option<&str>| {
+        (
+            Severity::Error,
+            code,
+            "templates/checker.md".to_string(),
+            Some(line),
+            Some(column),
+            message.to_string(),
+            hint.map(String::from),
+        )
+    };
+    assert_eq!(
+        ds,
+        vec![
+            at(
+                "empty-description",
+                2,
+                1,
+                "agent description is empty",
+                None
+            ),
+            at("unknown-skill", 3, 10, "unknown skill `nope`", None),
+            at(
+                "unknown-target",
+                5,
+                3,
+                "unknown target `bogus`",
+                Some("supported: claude, codex, copilot, opencode"),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_semantic_error_from_the_instance_points_at_the_instance() {
+    let ds = validated(&[
+        M,
+        (
+            ".armadai/templates/checker.md",
+            "---\ndescription: d\nskills: [cadre]\nnative:\n  claude: {}\n---\n",
+        ),
+        (
+            ".armadai/agents/guardian.md",
+            "---\nfrom: checker\ndescription: \"\"\nskills: [nope]\nnative:\n  bogus: {}\n---\n",
+        ),
+    ]);
+    let at = |code, line, column, message: &str, hint: Option<&str>| {
+        (
+            Severity::Error,
+            code,
+            "agents/guardian.md".to_string(),
+            Some(line),
+            Some(column),
+            message.to_string(),
+            hint.map(String::from),
+        )
+    };
+    assert_eq!(
+        ds,
+        vec![
+            at(
+                "empty-description",
+                3,
+                1,
+                "agent description is empty",
+                None
+            ),
+            at("unknown-skill", 4, 10, "unknown skill `nope`", None),
+            at(
+                "unknown-target",
+                6,
+                3,
+                "unknown target `bogus`",
+                Some("supported: claude, codex, copilot, opencode"),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_non_finite_temperature_from_the_template_points_at_the_template() {
+    // unreachable from files (the loader refuses `.nan`): set on the loaded project
+    let dir = project(&[
+        M,
+        (
+            ".armadai/templates/checker.md",
+            "---\ndescription: d\ntemperature: 0.2\n---\n",
+        ),
+        (".armadai/agents/guardian.md", "---\nfrom: checker\n---\n"),
+    ]);
+    let l = load_project(dir.path());
+    let mut p = l.project.unwrap();
+    p.agents.get_mut("guardian").unwrap().front.temperature = Some(f32::NAN);
+    let ds: Vec<_> = check(&p, &l.origins)
+        .into_iter()
+        .map(|d| {
+            (
+                d.code,
+                d.file.strip_prefix(dir.path()).unwrap().to_path_buf(),
+                d.line,
+                d.column,
+                d.message,
+            )
+        })
+        .collect();
+    assert_eq!(
+        ds,
+        vec![(
+            "invalid-temperature",
+            ".armadai/templates/checker.md".into(),
+            Some(3),
+            Some(1),
+            "temperature must be a finite number, got NaN".to_string(),
+        )]
+    );
+}

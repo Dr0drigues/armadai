@@ -166,6 +166,7 @@ impl Capabilities {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = description_unless_from)]
 pub struct AgentFront {
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -189,6 +190,21 @@ pub struct AgentFront {
     /// Values of the template's `{{var}}` (always empty once rendered).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vars: BTreeMap<String, String>,
+}
+
+/// Schema only: an instance (`from`) may take its `description` from the template
+/// (the semantic layer still requires one once rendered).
+fn description_unless_from(s: &mut schemars::Schema) {
+    if let Some(serde_json::Value::Array(r)) = s.get_mut("required") {
+        r.retain(|k| k != "description");
+        if r.is_empty() {
+            s.remove("required");
+        }
+    }
+    s.insert(
+        "anyOf".into(),
+        serde_json::json!([{ "required": ["description"] }, { "required": ["from"] }]),
+    );
 }
 
 /// Frontmatter of `templates/<id>.md`: the keys of an agent, all optional, without

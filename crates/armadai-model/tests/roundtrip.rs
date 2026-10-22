@@ -31,6 +31,8 @@ fn normalized(mut p: Project) -> Project {
     };
     p.agents.values_mut().for_each(|a| fix(&mut a.body));
     p.skills.values_mut().for_each(|s| fix(&mut s.body));
+    p.templates.values_mut().for_each(|t| fix(&mut t.body));
+    (p.agents.values_mut().filter_map(|a| a.instance.as_mut())).for_each(|i| fix(&mut i.body));
     p
 }
 
@@ -180,8 +182,98 @@ fn write_refuses_ids_that_are_not_safe_file_names() {
             "{bad}: wrote before refusing"
         );
     }
+    let template = load_ok(&fixture("templates")).templates["checker"].clone();
+    for bad in ["../evil", "Dev"] {
+        let mut q = p.clone();
+        q.templates.insert(bad.to_string(), template.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let e = write_project(&q, dir.path()).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "template {bad}");
+        assert!(!dir.path().join(".armadai").exists(), "template {bad}");
+    }
     p.agents.clear();
     p.flows.clear();
     let dir = tempfile::tempdir().unwrap();
     write_project(&p, dir.path()).unwrap();
+}
+
+#[test]
+fn instances_and_templates_are_written_back_byte_for_byte() {
+    let fx = fixture("templates");
+    let p = load_ok(&fx);
+    assert_eq!(p.templates.keys().collect::<Vec<_>>(), ["checker"]);
+    let instances: Vec<_> = (p.agents.iter())
+        .filter(|(_, a)| a.instance.is_some())
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert_eq!(instances, ["guardian", "validator"]);
+    let dir = tempfile::tempdir().unwrap();
+    write_project(&p, dir.path()).unwrap();
+    // as text: a failure shows the files, not their bytes
+    let text = |root: &Path| -> Vec<(PathBuf, String)> {
+        (snapshot(root).into_iter())
+            .map(|(p, b)| (p, String::from_utf8(b).unwrap()))
+            .collect()
+    };
+    assert_eq!(text(dir.path()), text(&fx));
+}
+
+#[test]
+fn an_instance_is_written_in_its_instance_form() {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, text) in [
+        (".armadai/project.yaml", "schema_version: 1\n"),
+        (
+            ".armadai/templates/checker.md",
+            "---\ndescription: Checks {{subject}}\n---\nYou check {{subject}}.\n",
+        ),
+        // own keys out of the canonical order, a value and a body still unrendered
+        (
+            ".armadai/agents/guardian.md",
+            "---\nskills: [cadre]\nvars: { subject: the frame }\nfrom: checker\ndescription: \"Own {{subject}}\"\n---\nExtra {{subject}}.\n",
+        ),
+    ] {
+        let p = dir.path().join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    let p = load_ok(dir.path());
+    assert_eq!(p.agents["guardian"].front.description, "Own the frame");
+    assert_eq!(
+        render_agent("guardian", &p.agents["guardian"]),
+        "---\nfrom: checker\nvars:\n  subject: the frame\ndescription: Own {{subject}}\nskills:\n- cadre\n---\nExtra {{subject}}.\n"
+    );
+    assert_eq!(
+        render_template(&p.templates["checker"]),
+        "---\ndescription: Checks {{subject}}\n---\nYou check {{subject}}.\n"
+    );
+}
+
+#[test]
+fn an_instance_without_vars_writes_none() {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, text) in [
+        (".armadai/project.yaml", "schema_version: 1\n"),
+        (
+            ".armadai/templates/checker.md",
+            "---\ndescription: d\n---\n",
+        ),
+        (".armadai/agents/guardian.md", "---\nfrom: checker\n---\n"),
+    ] {
+        let p = dir.path().join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    let p = load_ok(dir.path());
+    assert_eq!(
+        render_agent("guardian", &p.agents["guardian"]),
+        "---\nfrom: checker\n---\n"
+    );
+    assert_eq!(
+        render_template(&Template {
+            front: TemplateFront::default(),
+            body: String::new(),
+        }),
+        "---\n---\n"
+    );
 }

@@ -75,6 +75,18 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "anyOf": [
+    {
+      "required": [
+        "description"
+      ]
+    },
+    {
+      "required": [
+        "from"
+      ]
+    }
+  ],
   "properties": {
     "capabilities": {
       "$ref": "#/$defs/Capabilities"
@@ -136,9 +148,6 @@
       "type": "object"
     }
   },
-  "required": [
-    "description"
-  ],
   "title": "AgentFront",
   "type": "object"
 }

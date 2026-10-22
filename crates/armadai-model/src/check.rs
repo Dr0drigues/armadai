@@ -313,12 +313,30 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         );
     }
 
+    for id in project
+        .templates
+        .keys()
+        .filter(|id| agents.contains(id.as_str()))
+    {
+        o.err(
+            (Kind::Template, id),
+            "template-agent-collision",
+            None,
+            format!("template `{id}` has the same id as agent `{id}`"),
+            Some("rename the template or the agent".into()),
+        );
+    }
+
     // agents
     for (id, a) in &project.agents {
-        let at = (Kind::Agent, id.as_str());
+        // an instance's key it does not set itself comes from (and is reported on) its template
+        let at = |key: &str| match &a.instance {
+            Some(i) if !i.front.contains_key(key) => (Kind::Template, i.from.as_str()),
+            _ => (Kind::Agent, id.as_str()),
+        };
         if a.front.description.trim().is_empty() {
             o.err(
-                at,
+                at("description"),
                 "empty-description",
                 Some(("description", true)),
                 "agent description is empty".into(),
@@ -327,7 +345,7 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
         }
         if let Some(t) = a.front.temperature.filter(|t| !t.is_finite()) {
             o.err(
-                at,
+                at("temperature"),
                 "invalid-temperature",
                 Some(("temperature", true)),
                 format!("temperature must be a finite number, got {t}"),
@@ -340,9 +358,9 @@ pub fn check(project: &Project, origins: &Origins) -> Vec<Diagnostic> {
             .iter()
             .filter(|s| !skills.contains(s.as_str()))
         {
-            o.unknown_ref(at, "unknown-skill", "skill", s, &skills);
+            o.unknown_ref(at("skills"), "unknown-skill", "skill", s, &skills);
         }
-        o.native_keys(at, a.front.native.keys());
+        o.native_keys(at("native"), a.front.native.keys());
     }
 
     // skills

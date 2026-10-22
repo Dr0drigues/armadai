@@ -1,0 +1,131 @@
+{
+  "$defs": {
+    "Cap": {
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "Capabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "delegate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cap"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "read": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cap"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shell": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cap"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "web": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cap"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "write": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cap"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Tier": {
+      "enum": [
+        "fast",
+        "pro",
+        "max"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Frontmatter of `templates/<id>.md`: the keys of an agent, all optional, without\n`from` nor `vars` (a template does not inherit).",
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/Capabilities"
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "native": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "skills": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "temperature": {
+      "format": "float",
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "tier": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Tier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "TemplateFront",
+  "type": "object"
+}
