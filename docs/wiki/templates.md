@@ -13,6 +13,11 @@ one kind (agent: template, description, stack, tier, skills of the project, capa
 template, agents of the project and their order, with a Mermaid preview before writing). Both
 need a terminal; in a script, pass the options.
 
+These starting points are copied once: an agent created from one is an ordinary agent. A team
+whose agents should stay linked to one shared prompt uses a project template instead
+(`.armadai/templates/<id>.md` and `armadai new agent <id> --from <template> --var k=v`, see
+[Project format](project-format.md#templatesidmd)).
+
 ## Agent templates
 
 ```bash

@@ -27,8 +27,8 @@ What `init --pack` does with a native pack (`format: 1`):
 2. Refuses a pack holding any symbolic link.
 3. Validates the pack in a scratch project: an error stops it, nothing is written (diagnostics
    point into the pack).
-4. Copies, by a white list: `project.yaml`, `agents/*.md`, `skills/**`, `flows/*.yaml`,
-   `automations/*.yaml`. `pack.yaml`, a README, `.armadai-version`, `link-manifest.yaml`,
+4. Copies, by a white list: `project.yaml`, `agents/*.md`, `templates/*.md`, `skills/**`,
+   `flows/*.yaml`, `automations/*.yaml`. `pack.yaml`, a README, `.armadai-version`, `link-manifest.yaml`,
    `.migrated/` and `.gitignore` stay behind.
 5. Keeps an existing file (one warning each). Under `--force`, an existing `project.yaml` wins
    over the pack's, and the warning says its targets, coordinator and policy are not applied.
@@ -75,6 +75,7 @@ give it to the agents.
 ├── pack.yaml              # format: 1, name, description
 ├── project.yaml           # optional: targets, coordinator, policy
 ├── agents/<id>.md
+├── templates/<id>.md     # agent templates (see Project format)
 ├── skills/<id>/SKILL.md   # and the rest of each skill folder
 ├── flows/<id>.yaml
 └── automations/<id>.yaml
@@ -120,8 +121,8 @@ above. The marker is never copied into a project.
 
 1. Build the team in a scratch project: `armadai init --project`, `armadai new agent ...`,
    `armadai new flow ...`, `armadai validate`, `armadai link`.
-2. Copy its `.armadai/` content (`project.yaml`, `agents/`, `skills/`, `flows/`,
-   `automations/`) into a pack folder and add `pack.yaml` with `format: 1`.
+2. Copy its `.armadai/` content (`project.yaml`, `agents/`, `templates/`, `skills/`,
+   `flows/`, `automations/`) into a pack folder and add `pack.yaml` with `format: 1`.
 3. Check it: `armadai validate <pack-dir>`, then `armadai init --pack <pack-dir>` in a scratch
    folder.
 4. Put it in one of the starter directories below, or share its folder.

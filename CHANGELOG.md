@@ -2,6 +2,18 @@
 
 ### Added
 
+- Agent templates (MVP): `.armadai/templates/<id>.md` holds an agent written once with
+  `{{var}}` variables, and an agent of `agents/` declares `from: <template>` and `vars:` to
+  become an instance of it. The template is rendered at load time, so every target links an
+  instance exactly like the same agent written by hand, and a changed template is relinked
+  without `--force`. An instance key replaces the whole template key; the instance's prompt
+  follows the template's; `\{{` writes a literal `{{`. New diagnostics: `unknown-template`,
+  `missing-template-var`, `unused-template-var` (warning), `vars-without-template`,
+  `nested-template`, `template-agent-collision`. `armadai new agent <id> --from <template>
+  --var k=v` writes an instance, `list` and `inspect` show the template, `init --pack`
+  installs a pack's `templates/`, and `schemas/v1/template.schema.json` describes the file.
+  Deferred: template inheritance, logic, templates of flows, skills or commands, agents
+  generated from a list (see [Project format](docs/wiki/project-format.md#templatesidmd)).
 - `armadai init --pack` offers to run `armadai link` once the pack is installed: `--link` runs
   it without asking, `--no-link` skips it, and with neither a terminal is asked (default yes)
   while a script is not linked. A failing link keeps the created project and exits non-zero
