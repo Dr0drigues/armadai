@@ -102,12 +102,26 @@ pub(crate) fn slot_lines(
 }
 
 /// The `## Verdict` section appended to the prompt of an agent holding at least one
-/// flow step with `states`: the union of those states, sorted. `None` otherwise.
+/// flow step with `states` or a failure path (`on_failure`, a `when: failed` link):
+/// the union of those states, plus `failed` for a failure path (and `done` when the
+/// step declares no state), sorted. `None` otherwise.
 pub fn verdict_instruction(project: &Project, agent: &str) -> Option<String> {
     let states: std::collections::BTreeSet<&str> = (project.flows.values())
-        .flat_map(|f| f.steps.values())
-        .filter(|s| s.agent == agent)
-        .flat_map(|s| s.states.iter().map(String::as_str))
+        .flat_map(|f| f.steps.iter().map(move |(id, s)| (f, id, s)))
+        .filter(|(_, _, s)| s.agent == agent)
+        .flat_map(|(f, id, s)| {
+            let fails = s.on_failure.is_some()
+                || (f.links.iter()).any(|l| &l.from == id && l.when.as_deref() == Some("failed"));
+            let implied = match (fails, s.states.is_empty()) {
+                (false, _) => &[][..],
+                (true, true) => &["done", "failed"][..],
+                (true, false) => &["failed"][..],
+            };
+            s.states
+                .iter()
+                .map(String::as_str)
+                .chain(implied.iter().copied())
+        })
         .collect();
     (!states.is_empty()).then(|| {
         format!(

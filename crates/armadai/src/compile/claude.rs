@@ -637,6 +637,34 @@ mod tests {
     }
 
     #[test]
+    fn a_step_with_a_failure_path_is_asked_for_failed_too() {
+        let flow: (&str, &[u8]) = (
+            ".armadai/flows/repair.yaml",
+            b"steps:\n  build: { agent: dev, on_failure: fix }\n  fix: { agent: dev }\n  guard: { agent: rev, states: [approved] }\n  ship: { agent: dev }\nlinks:\n  - { from: build, to: guard }\n  - { from: fix, to: guard }\n  - { from: guard, to: fix, when: failed }\n  - { from: guard, to: ship, when: approved }\n",
+        );
+        let plan = compile(&[M, DEV, REV, flow]).unwrap();
+        let verdict = |states: &str| {
+            format!(
+                "\n\n## Verdict\n\nEnd your reply with exactly one line `STATE: <state>`, \
+                 where <state> is one of: {states}.\n"
+            )
+        };
+        assert_eq!(
+            (text(&plan, "agents/dev.md"), text(&plan, "agents/rev.md")),
+            (
+                format!(
+                    "---\nname: dev\ndescription: d\n---\nYou build.{}",
+                    verdict("done, failed")
+                ),
+                format!(
+                    "---\nname: rev\ndescription: d\n---\nYou review.{}",
+                    verdict("approved, failed")
+                ),
+            )
+        );
+    }
+
+    #[test]
     fn deny_becomes_disallowed_tools_and_ask_is_reported_as_approximated() {
         let plan = compile(&[
             M,
