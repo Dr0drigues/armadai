@@ -114,7 +114,9 @@ are UTC. A finished run stays listed, finished runs first.
   left at `build` after `guard` rejected, then `implementer` (in `deliver` only) builds: the
   next `guardian` follows `deliver`. A link older than one another run already took to that
   step leads nowhere: a later `guardian` is not shown in `guide`. A link exactly as recent
-  (same second) as the one already taken elsewhere is still taken.
+  (same second) as the one already taken elsewhere is still taken. Flows still shown together
+  (`deliver | guide`) are never split by this rule: their candidates keep moving together until
+  a step only one of them holds.
 - The project root is resolved as the hooks resolve it, so the command works from a
   subdirectory and from a git worktree. A worktree without its own `.armadai/` writes and reads
   the logs of the main checkout; a worktree with its own `.armadai/` writes and reads its own
