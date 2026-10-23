@@ -54,7 +54,10 @@ never asserted done or pending. The run goes through it: a link into it leads on
 run, to the steps after it (all of them, since it records no state), so `dev → lead → qa` or a
 review loop `qa → lead → dev` is one run, with its loop counted. The transitions list each hop
 (`qa → lead`, then `lead → dev`). A flow that starts with the coordinator opens on the steps
-after it, and a loop that comes back to the same step through it does not hold the run open.
+after it (also through several coordinator's steps in a row); a step after a coordinator's step
+in the middle of a flow never opens a run by itself. A loop that comes back to the same step
+through the coordinator does not hold the run open. A fan-out through the coordinator lists the
+hop into it once (`f → hub`), then one hop per step reached (`hub → x`, `hub → y`).
 
 ## Reading the output
 
@@ -87,7 +90,7 @@ deliver  in progress
 | `●` | running |
 | `○` | pending |
 | `?` | unsure, with the reason in parentheses (for example no `STATE:` line). It leads nowhere: started again, the step is retried in place and its new state replaces the `?` |
-| `✗` | a state the step does not declare; it leads nowhere. A state the step declares but no link follows ends the flow normally: it is not a `✗` |
+| `✗` | a state the step does not declare. It leads nowhere: started again, the step is retried in place and its new state replaces the `✗`. A state the step declares but no link follows ends the flow normally: it is not a `✗` |
 | `~` | held by the coordinator, which is not recorded (`coordinator, not recorded`) |
 
 Other lines: `a → b : n` is a link taken `n` times (shown from twice on); the timed transitions
@@ -112,3 +115,11 @@ are UTC. A finished run stays listed, finished runs first.
   the reply that started it.
 - The coordinator is not recorded (see above) and `SubagentHandback` exists in auto mode only:
   outside it the stop event carries the `STATE:` word read from `SubagentStop` alone.
+- A step that ends with `STATE: failed` and has no failure path (`on_failure`, `when: failed`)
+  leads nowhere: the run shows `finished`, with the steps after it still pending.
+- A coordinator's step records no state, so it is crossed to every step after it, whatever the
+  `when:` of its links.
+- A flow that is only a loop through the coordinator (`build → lead → build`) cannot tell a new
+  run from one more round: both show in the same run.
+- A step started while its run cannot be told (the run already closed, or a step after a
+  coordinator's step in mid-flow with no run open) is not shown.
