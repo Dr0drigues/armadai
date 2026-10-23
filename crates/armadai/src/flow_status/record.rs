@@ -107,7 +107,14 @@ fn record(raw: &str) -> anyhow::Result<()> {
     let root = crate::claude_adapter::policy_gate::resolve_project(&cwd)
         .ok_or_else(|| anyhow::anyhow!("no project above {}", cwd.display()))?;
     let path = log_path(&root, &session).ok_or_else(|| anyhow::anyhow!("unsafe session id"))?;
-    std::fs::create_dir_all(path.parent().expect("a log has a directory"))?;
+    let claude = path.parent().expect("a log has a directory");
+    // never write through a linked `state/` or `state/claude/`
+    for dir in [claude.parent().expect("state/ holds claude/"), claude] {
+        if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
+            anyhow::bail!("{} is a symbolic link", dir.display());
+        }
+    }
+    std::fs::create_dir_all(claude)?;
     // One write per line, in append mode: parallel sub-agents do not interleave.
     let line = serde_json::to_string(&event)? + "\n";
     std::fs::OpenOptions::new()

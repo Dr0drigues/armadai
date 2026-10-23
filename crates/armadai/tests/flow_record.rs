@@ -176,3 +176,22 @@ fn a_missing_cwd_session_or_directory_records_nothing_and_succeeds() {
     assert!(!outside.path().join("gone").exists());
     assert!(!outside.path().join(".armadai").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_linked_state_directory_records_nothing_and_succeeds() {
+    for linked in [".armadai/state", ".armadai/state/claude"] {
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        project(dir.path());
+        let outside = tempfile::tempdir().unwrap();
+        let link = dir.path().join(linked);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        assert_silent_success(&record(&stop("s1", dir.path()), home.path()));
+
+        let left: Vec<_> = std::fs::read_dir(outside.path()).unwrap().collect();
+        assert!(left.is_empty(), "{linked}: {left:?}");
+    }
+}
