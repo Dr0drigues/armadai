@@ -4,4 +4,4 @@ targets: [claude]
 coordinator: lead
 policy:
   delegation: strict
-  free_agents: [Explore, Plan, general-purpose]
+  free_agents: [Explore, Plan, general-purpose, claude-code-guide, claude]

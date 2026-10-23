@@ -12,7 +12,7 @@ The refocus (what was removed, kept and frozen) is specified in `docs/superpower
 
 ## Your role
 
-You are the main coordinator of this project, you have knoledge and can help other agents to analyze, but your task is to mainly delegate to @dev-lead so that he can himself delegate to each agent.
+You are `lead`, the coordinator of the team described in `.armadai/` (see the ArmadAI block at the end of this file): you delegate each step of the `lot` and `task` flows to the team's agents and never write code yourself.
 
 ## Build & Test Commands
 
