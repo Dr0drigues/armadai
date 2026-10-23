@@ -377,6 +377,8 @@ impl<'p> Builder<'p> {
         // stopped last) wins, a tie stays ambiguous; none wins against a more
         // recent link another run already took to a step the agent holds.
         // Candidates of one group are never told apart this way.
+        // The guard needs no group filter: an event extends every candidate
+        // left, so a link still open in a group stopped after any it took.
         let link_ts = |(i, _, from): &(usize, &str, Option<Via>)| {
             from.as_ref()
                 .map_or(0, |(f, _)| self.open[*i].stopped_ts[f])
@@ -2105,6 +2107,62 @@ mod tests {
                 .map(|r| (r.flow.as_str(), r.steps.last().unwrap().clone()))
                 .collect::<Vec<_>>(),
             vec![("a | b", view("q", Mark::Running, None, None))]
+        );
+    }
+
+    /// `a` and `b` (shared entry `e`) and `c` share `qa`.
+    fn group_and_distinct_run() -> Project {
+        let flow = |src: &str| {
+            format!(
+                "steps:\n  e: {{ agent: ax }}\n  p: {{ agent: ay }}\n  r: {{ agent: az }}\n  q: {{ agent: qa, states: [ok, ko] }}\n  s: {{ agent: qa }}\nlinks:\n  - {{ from: e, to: p }}\n  - {{ from: e, to: r }}\n  - {{ from: {src}, to: q }}\n  - {{ from: q, to: s, when: ko }}\n"
+            )
+        };
+        let c = "steps:\n  g: { agent: b1 }\n  q: { agent: qa }\nlinks:\n  - { from: g, to: q }\n";
+        project(&[("a", &flow("p")), ("b", &flow("r")), ("c", c)])
+    }
+
+    /// The group `a | b` takes `q` from `p` (99) in `a` and `r` (104) in
+    /// `b`; `c`'s link from `g` (100) loses. The next `qa` does not take it:
+    /// `b` already took a more recent one.
+    #[test]
+    fn a_link_older_than_the_latest_a_group_took_is_not_taken() {
+        let events = seq(&[
+            &step(90, "x1", "ax", None),
+            &step(98, "y1", "ay", None),
+            &step(99, "g1", "b1", None),
+            &step(103, "z1", "az", None),
+            &step(110, "q1", "qa", Some("ok")),
+            &[start(120, "q2", "qa")],
+        ]);
+        let got = runs(&group_and_distinct_run(), &events);
+        assert_eq!(
+            got.iter()
+                .map(|r| (
+                    r.flow.as_str(),
+                    (r.steps.iter()).find(|v| v.step == "q").unwrap().clone()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("a | b", done("q", "ok")), ("c", pending("q")),]
+        );
+    }
+
+    /// `b` took `q` from `r` (104), `a` from `p` (99); `q` stops in that
+    /// second: its link to `s`, as recent as the one `b` took, is taken.
+    #[test]
+    fn a_group_takes_a_link_as_recent_as_the_latest_it_took() {
+        let events = seq(&[
+            &step(90, "x1", "ax", None),
+            &step(98, "y1", "ay", None),
+            &step(103, "z1", "az", None),
+            &[start(104, "q1", "qa"), stop(104, "q1", "qa", Some("ko"))],
+            &[start(120, "s1", "qa")],
+        ]);
+        let got = runs(&group_and_distinct_run(), &events);
+        assert_eq!(
+            got.iter()
+                .map(|r| (r.flow.as_str(), r.steps.last().unwrap().clone()))
+                .collect::<Vec<_>>(),
+            vec![("a | b", view("s", Mark::Running, None, None))]
         );
     }
 
