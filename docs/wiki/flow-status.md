@@ -33,20 +33,25 @@ rm -r .armadai/state/
 
 ## The `STATE:` line
 
-Where a step declares `states:` (for example `approved`, `rejected`), the agent holding it gets
-this at the end of its generated file:
+Where a step declares `states:` (for example `approved`, `rejected`), or has a failure path
+(`on_failure`, or a link `when: failed`), the agent holding it gets this at the end of its
+generated file, for Claude Code and for OpenCode alike:
 
 ```
 End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.
 ```
 
+A failure path adds `failed` to the list, and `done` too when the step declares no other state.
+
 The recorded state is the last line of the reply that reads exactly `STATE: <word>`. The state
 picks the link taken next (`when:`), so a review loop is followed: `build`, `guard` rejected,
-`build` again.
+`build` again. A link without `when:` is taken on any state but `failed`; `STATE: failed`
+follows the failure path, even on a step without `states:`.
 
 Under Claude Code the coordinator (the main thread, which lives in `CLAUDE.md`) does not get
-this instruction and is not recorded: only sub-agents are. A flow is therefore seen from its
-first delegated step on.
+this instruction and is not recorded: only sub-agents are. A step it holds is shown `~` and
+never asserted done or pending; the steps right after it open a run, and a link into it counts
+as taken, so it never holds a run open.
 
 ## Reading the output
 
@@ -66,11 +71,11 @@ deliver  in progress
   ✓ build     done
   ● guard     running
   ○ validate  pending
-  build ⇄ guard : 2
+  build → guard : 2
   09:15:20  design → build  (done)
   09:15:30  build → guard  (done)
   09:15:40  guard → build  (rejected)
-  09:15:50  build → guard
+  09:15:50  build → guard  (done)
 ```
 
 | Mark | Meaning |
@@ -78,16 +83,23 @@ deliver  in progress
 | `✓` | done, with its state |
 | `●` | running |
 | `○` | pending |
-| `?` | unsure, with the reason in parentheses (for example no `STATE:` line) |
+| `?` | unsure, with the reason in parentheses (for example no `STATE:` line). It leads nowhere: started again, the step is retried in place and its new state replaces the `?` |
 | `✗` | a state the step does not declare. A state the step declares but no link follows ends the flow normally: it is not a `✗` |
+| `~` | held by the coordinator, which is not recorded (`coordinator, not recorded`) |
 
-Other lines: `a ⇄ b : n` is a link taken more than once; the timed transitions follow. All times
+Other lines: `a → b : n` is a link taken `n` times (shown from twice on); the timed transitions
+follow. All times
 are UTC. A finished run stays listed, finished runs first.
 
 - Two flows whose entry step is shared are shown as `a | b` until their steps diverge.
-- A run left blocked (`?`) is closed when the entry step starts again.
+- An entry step that nothing leads back to, started again, closes the open run of its flow
+  (kept, unfinished) and opens a new one. An entry step a loop leads back to does so only when
+  the open run is stuck (nothing running, its last step `?` or `✗`).
+- A `?` or `✗` step never ends a run.
 - The project root is resolved as the hooks resolve it, so the command works from a
-  subdirectory and from a git worktree (the logs of the main checkout are read).
+  subdirectory and from a git worktree. A worktree without its own `.armadai/` writes and reads
+  the logs of the main checkout; a worktree with its own `.armadai/` writes and reads its own
+  `state/`.
 
 ## Limits
 
