@@ -1,4 +1,4 @@
-//! Golden snapshots of `armadai init --pack <name>` then `armadai link` for the 7 embedded
+//! Golden snapshots of `armadai init --pack <name>` then `armadai link` for the 8 embedded
 //! packs. The `.armadai/` tree is checked against the pack itself (a native pack is copied,
 //! byte for byte, by a white list); the snapshot holds what the user sees and what Claude
 //! Code receives: the init and link outputs, and every file link writes.
@@ -10,11 +10,12 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 
-const PACKS: [&str; 7] = [
+const PACKS: [&str; 8] = [
     "armadai-authoring",
     "armadai-dev",
     "code-analysis-rust",
     "code-analysis-web",
+    "concept-to-code",
     "fullstack",
     "pirate-crew",
     "rust-dev",
