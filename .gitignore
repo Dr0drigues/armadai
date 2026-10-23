@@ -24,6 +24,7 @@ Thumbs.db
 !.claude/CLAUDE.md
 !.claude/agents/
 !.claude/settings.json
+!.claude/skills/
 
 # ArmadAI project: .armadai/ is versioned (link state is ignored by .armadai/.gitignore)
 

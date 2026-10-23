@@ -1,0 +1,15 @@
+description: "Un lot entier : spec, cadre, plan, puis les tâches du plan (une exécution du flow task chacune), revue de la branche et validation ; un rejet retourne au plan"
+start: spec
+steps:
+  frame: { agent: framer }
+  plan: { agent: architect }
+  review: { agent: guardian, states: [approved, rejected] }
+  spec: { agent: analyst }
+  validate: { agent: validator, states: [approved, rejected] }
+links:
+  - { from: spec, to: frame }
+  - { from: frame, to: plan }
+  - { from: plan, to: review }
+  - { from: review, to: validate, when: approved }
+  - { from: review, to: plan, when: rejected }
+  - { from: validate, to: plan, when: rejected }

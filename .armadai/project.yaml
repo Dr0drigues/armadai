@@ -1,6 +1,7 @@
 schema_version: 1
 name: armadai
 targets: [claude]
+coordinator: lead
 policy:
   delegation: strict
   free_agents: [Explore, Plan, general-purpose]
