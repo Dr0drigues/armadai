@@ -43,7 +43,7 @@ A pack without `format` in its `pack.yaml` is the **legacy format** (an `agents:
 
 ## Available Packs
 
-The seven packs below ship embedded in the binary, all native.
+The eight packs below ship embedded in the binary, all native.
 
 | Pack | Agents | Flows | Skills |
 |---|---|---|---|
@@ -54,6 +54,7 @@ The seven packs below ship embedded in the binary, all native.
 | `armadai-dev` | `dev-lead` (coordinator), `schema-specialist`, `adapter-specialist`, `cli-specialist`, `qa-specialist`, `release-manager` | `delivery` (fan-out), `release` (QA approves, then the release manager) | `rust-conventions` |
 | `armadai-authoring` | `authoring-lead` (coordinator), `authoring-architect`, `agent-builder`, `skill-builder`, `starter-builder`, `authoring-reviewer`, `authoring-tester` | `authoring` (fan-out), `pack` (plan, build, review loop, test) | `armadai-conventions` |
 | `pirate-crew` | `capitaine` (coordinator), `vigie`, `charpentier`, `cartographe` | `mission` (fan-out) | `code-nautique` |
+| `concept-to-code` | `lead` (coordinator), `analyst`, `framer`, `designer`, `architect`, `implementer`, `coach`, `guardian`, `validator` | `deliver`, `guide` | `briefing`, `cadre`, `standards-setup`, `mockups`, `diagrams`, `previewing` |
 
 `fullstack` has no coordinator, on purpose: a coordinator becomes the main session itself
 (`CLAUDE.md` for Claude Code), and making `code-reviewer` that would turn every conversation in
@@ -67,6 +68,90 @@ answer with that state on a last line: `code-reviewer` (fullstack), `qa-speciali
 (`armadai-agent-authoring`, ...) are not in `armadai-authoring`: they are built into ArmadAI and
 installed in `~/.config/armadai/skills/` by `armadai init`; copy one into `.armadai/skills/` to
 give it to the agents.
+
+## The `concept-to-code` pack
+
+From a vague idea to clean code, with you at every decision. Targets: Claude Code and OpenCode
+(`policy.delegation: strict`, so the flows are enforced). `lead` is the only agent that talks
+with you: the others return their questions to it.
+
+**Team.** `analyst` writes the brief (problem, users, success criteria, non-goals); `framer`
+finds the stack, conventions, security rules and infrastructure in place and records what is
+decided and what you must still decide (it is called `framer`, not `scout`, because OpenCode
+already has a built-in agent named `scout`); `designer` proposes three mockup variants;
+`architect` designs components, interfaces and data, with diagrams; `implementer` writes the
+code; `coach` guides you while you write it; `guardian` checks each change against the frame;
+`validator` runs the tests and checks every success criterion.
+
+**Two flows**, same steps except the build:
+
+- `deliver`: the team writes the code (`implementer`).
+- `guide`: you write the code, `coach` explains, proposes and reviews, and never writes a file.
+
+Both run `refine` (brief), `frame`, `mockup`, `design`, `build`, `guard`, `validate`. `guard`
+(`approved` / `rejected`) and `validate` (`approved` / `rejected` / `scope_changed`) end with a
+state: a rejection goes back to `build`, a changed scope back to `refine`. `lead` asks you which
+flow you want. Follow a run with `armadai flow status --watch` (Claude Code).
+
+**Commands** (typed in the tool, `/<name> text`; each loads a skill):
+
+| Command | Skill | Does |
+|---|---|---|
+| `/brief <idea>` | `briefing` | refines an idea into the brief, one question at a time |
+| `/mockup <screen>` | `mockups` | three variants in one HTML file, you choose |
+| `/iterate <feedback>` | `mockups` | three new variants built on the one you chose |
+| `/init-standards` | `standards-setup` | analyses the repository, settles conventions with you, writes the project standards skill, then links |
+| `/preview [file \| stop]` | `previewing` | serves `mockups/` and `docs/` on `127.0.0.1` and gives the link to a mockup or a diagram (the latest `.html` under `mockups/` or `docs/` with no argument), offers to open the browser; `stop` stops that server |
+
+`/preview` always goes through a local server (`python3 -m http.server`, started in the
+background on the first free port from 8765, bound to `127.0.0.1` only, reused if one already
+serves the project), so every file gets the same kind of link,
+`http://127.0.0.1:<port>/mockups/…` or `/docs/…`, which Claude Code opens on Cmd/Ctrl+click.
+It never serves the project root: `http.server` does not check the `Host` header, so a web page
+could read what it serves by DNS rebinding (a `.env`, `.armadai/`, the code). It serves
+`.armadai/preview/` instead, a folder holding only the links `docs -> ../../docs` and
+`mockups -> ../../mockups` and a marker `.project` (a random token written once, used to find
+a running server); the skill adds `preview/` to `.armadai/.gitignore`. A file outside `docs/`
+and `mockups/` is refused, with its `file://` path. While it runs, any program of the machine
+can read those two folders: stop it with `/preview stop` once done. Without `python3` (or on
+Windows), `/preview` gives the `file://` path. `lead` offers `/preview <file>` whenever
+`designer` or `architect` produces an `.html` file, and the `mockups` and `diagrams` skills
+offer it after writing one.
+
+**Shortcuts.** Claude Code reads key bindings from `~/.claude/keybindings.json`, a user file
+(not per project), so the pack does not install one. To bind `/preview` to Ctrl+X then P, add
+to it:
+
+```json
+{
+  "bindings": [
+    { "context": "Chat", "bindings": { "ctrl+x p": "command:preview" } }
+  ]
+}
+```
+
+`command:<name>` is the documented action for a slash command; that it runs a project command
+(one in `.claude/commands/`) and not only a built-in one is not verified yet. OpenCode has no
+binding to a custom command: `ctrl+p` opens the command palette, where `preview` is listed.
+
+**Slots.** The agents declare slots that your project fills: `code-standards` and `security`
+(`framer`, `implementer`, `coach`, `guardian`; `validator` takes `code-standards` alone, for
+the test command), `infra-docs` (`framer`, `architect`),
+`ux-guidelines` (`designer`). An empty slot is not an error (`link` reports it `not-compiled`).
+Fill them with `/init-standards`, which writes `.armadai/skills/project-standards/SKILL.md`, or
+with a skill of your own whose frontmatter has `metadata: { armadai-slot: code-standards }`
+(several slots: `"code-standards, security"`), then run `armadai link`.
+
+**Where documents go.** The decisions live in `.armadai/docs/` (`brief.md`, `cadre.md`,
+`design-decisions.md`); mockups in `mockups/<subject>/v<n>.html` (no dependency, open them in a
+browser); lasting documentation in `docs/functional/` and `docs/technical/`. Diagrams rendered
+as HTML load Mermaid from a CDN, so they need the network.
+
+**Limits.** A write permission cannot be restricted to a folder: `write: allow` lets an agent
+write anywhere, so the folders above are instructions, not enforcement. `coach`, `validator`
+and the guardian have no write (`deny`). `lead` has `write: ask`; under OpenCode it also
+executes commands. The shell is denied to `framer`, `architect` and `guardian`, and asked for
+`implementer`, `coach` and `validator`.
 
 ## Pack Format
 

@@ -118,6 +118,7 @@ Start a project from a curated bundle of agents and skills:
 ```bash
 armadai init --pack rust-dev              # Rust essentials (3 agents + conventions skill)
 armadai init --pack fullstack             # tests, review and docs chained by a review loop (3 agents)
+armadai init --pack concept-to-code       # idea to code with you at each decision (brief, mockups, build, guard)
 armadai init --pack ./my-pack             # your own pack (a folder with pack.yaml, format: 1)
 ```
 

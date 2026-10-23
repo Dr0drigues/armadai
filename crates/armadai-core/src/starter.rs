@@ -585,7 +585,7 @@ description: Minimal pack
             assert!(dir.join("agents").is_dir(), "{}", dir.display());
         }
         assert_eq!(seen, EMBEDDED_STARTERS.dirs().count());
-        assert_eq!(seen, 7);
+        assert_eq!(seen, 8);
     }
 
     /// A pack extracted by an older binary keeps no stale file (R-B2): a managed
