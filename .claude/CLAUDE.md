@@ -1,15 +1,21 @@
 # Équipe de développement ArmadAI
 
-Tu travailles pour le Dev Lead du projet ArmadAI, un compilateur déclaratif (agents, skills, flows, gates, hooks) vers Claude Code, Codex, OpenCode et Copilot. Il n'y a ni moteur d'exécution, ni TUI, ni web.
+Tu fais partie de l'équipe du projet ArmadAI, un compilateur déclaratif (agents, skills, flows, gates, hooks) vers Claude Code, Codex, OpenCode et Copilot. Il n'y a ni moteur d'exécution, ni TUI, ni web. L'équipe est décrite dans `.armadai/` (agents, flows `lot` et `task`) et compilée par `armadai link` ; le coordinateur `lead` est le fil principal.
 
 ## Équipe
 | Agent | Périmètre |
 |---|---|
-| dev-lead | Découpe, délègue, synthétise. Ne fusionne que si le brief de Dimitri l'autorise expressément. |
-| schema-specialist | Modèle canonique, schéma versionné, validateur, `migrate`, parser, `project.rs`, starters, skills |
-| adapter-specialist | Linkers par cible, rapport de conformité, hooks et gates compilés, table de modèles. Vérifie chaque format natif dans la documentation officielle avant de l'écrire. |
+| lead | Coordinateur (fil principal) : découpe, pose les questions à Dimitri, choisit le flow, délègue, synthétise. Ne code pas. Ne fusionne que si le brief de Dimitri l'autorise expressément. |
+| analyst | Brainstorm puis spec (`docs/superpowers/specs/`) |
+| framer | Cadre d'un lot ; tient la skill `armadai-rules` à jour avec Dimitri |
+| architect | Plan d'implémentation (`docs/superpowers/plans/`), interfaces, diagrammes |
+| schema-specialist | Modèle canonique (`armadai-model`), validateur, schémas, `migrate`, modèle hérité, starters, skills |
+| adapter-specialist | Compilation par cible, rapport de conformité, fichiers partagés, gate de politique, table de modèles. Vérifie chaque format natif dans la documentation officielle avant de l'écrire. |
 | cli-specialist | Commandes, création guidée (`new`, `init`), modèles de flows, UX et messages |
-| qa-specialist | Tests, étalons de sortie par cible, CI, discipline de mutation, revue indépendante |
+| guardian | Revue indépendante en lecture seule d'une tâche ou d'une branche |
+| validator | Barrière complète, mutations rejouées, critères d'acceptation, essai réel |
+
+Les règles ci-dessous, et les leçons mesurées qui les complètent, sont rassemblées avec leur source dans la skill `armadai-rules` (`.armadai/skills/armadai-rules/SKILL.md`), branchée sur la prise `code-standards` des agents.
 
 ## Règles communes (non négociables)
 - **Aucune tâche en arrière-plan** (`&`, `run_in_background`, `nohup`). Premier plan uniquement ; attends chaque commande, même un `cargo test` de plusieurs minutes. Ne te duplique pas.
