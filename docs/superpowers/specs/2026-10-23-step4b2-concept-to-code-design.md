@@ -28,7 +28,7 @@ Anti-objectifs :
 - Sous Claude, un sous-agent n'a jamais l'outil de question (doc officielle) : toute question passe par le fil principal (`lead` ou une commande). Sous OpenCode, même règle par cohérence.
 - Les capacités ne savent pas limiter l'écriture à un dossier : un agent qui doit écrire `.armadai/docs/` a l'écriture autorisée ; la règle de rangement est dans son prompt.
 - `/design` est une skill intégrée de Claude Code : aucune commande ni skill du pack ne s'appelle `design`, `init`, `review` ou un autre nom de `BUILTIN_COMMANDS`.
-- Une commande ne peut pas porter le nom d'une skill (B1) : les commandes chargent des skills de noms différents.
+- Une commande ne peut pas porter le nom d'une skill (B1) : `/brief` charge `briefing`, `/mockup` et `/iterate` chargent `mockups`, `/init-standards` charge `standards-setup`.
 - Les étapes à états reçoivent la consigne `STATE:` générée ; les prompts du pack n'en ajoutent pas d'autre.
 
 ## 4. Équipe et flows
@@ -36,9 +36,9 @@ Anti-objectifs :
 | Agent | Origine | Rôle | Capacités, skills, prises |
 |---|---|---|---|
 | `lead` | écrit | coordinateur : parle avec l'utilisateur, choisit `deliver` ou `guide`, pose les questions que les autres lui rendent, synthétise ; ne code jamais | `write: deny` |
-| `analyst` | écrit | brief : problème, utilisateurs, critères de réussite, non-objectifs ; rend ses questions à `lead` une par une | skill `brief` |
-| `scout` | écrit | cadre : stack, conventions en place, outils, normes, sécurité, infra ; sépare décidé / à décider ; rend les décisions ouvertes à `lead` | skills `cadre`, `init-standards` ; prises `code-standards`, `security`, `infra-docs` ; `shell: deny` |
-| `designer` | écrit | maquettes (3 variantes) et itérations ; rend les variantes à `lead` qui fait choisir | skill `mockup` ; prise `ux-guidelines` |
+| `analyst` | écrit | brief : problème, utilisateurs, critères de réussite, non-objectifs ; rend ses questions à `lead` une par une | skill `briefing` |
+| `scout` | écrit | cadre : stack, conventions en place, outils, normes, sécurité, infra ; sépare décidé / à décider ; rend les décisions ouvertes à `lead` | skills `cadre`, `standards-setup` ; prises `code-standards`, `security`, `infra-docs` ; `shell: deny` |
+| `designer` | écrit | maquettes (3 variantes) et itérations ; rend les variantes à `lead` qui fait choisir | skill `mockups` ; prise `ux-guidelines` |
 | `architect` | écrit | architecture, interfaces, compromis ; diagrammes systématiques quand une validation visuelle est utile (Mermaid dans la doc, rendu HTML autonome) | skill `diagrams` ; prise `infra-docs` ; `shell: deny` |
 | `implementer` | écrit | code par petites étapes testées ; demande (via `lead`) avant toute convention non fixée, puis l'inscrit dans le cadre | skill `cadre` ; prises `code-standards`, `security` ; `shell: ask` |
 | `coach` | écrit | flow `guide` : explique, propose le code à taper, relit ce que l'utilisateur a écrit ; n'écrit jamais | skill `cadre` ; prises `code-standards`, `security` ; `write: deny` |
@@ -56,20 +56,20 @@ Les deux flows partagent leur entrée : `flow status` les affiche `deliver | gui
 
 | Commande | Corps (charge une skill, tourne dans le fil principal) |
 |---|---|
-| `/brief <idée>` | affiner l'idée avec la skill `brief`, en posant les questions une par une |
-| `/mockup <écran ou fonctionnalité>` | skill `mockup` : 3 variantes, choix par l'outil de question, décision notée |
-| `/iterate <retour>` | skill `mockup` : repartir de la variante choisie, 3 nouvelles variantes `v<n+1>` ; la même skill se déclenche aussi sur un retour en langage naturel (« refais la B plus aérée ») |
-| `/init-standards` | skill `init-standards` : équivalent de `/init` pour les normes et la doc (§6) |
+| `/brief <idée>` | affiner l'idée avec la skill `briefing`, en posant les questions une par une |
+| `/mockup <écran ou fonctionnalité>` | skill `mockups` : 3 variantes, choix par l'outil de question, décision notée |
+| `/iterate <retour>` | skill `mockups` : repartir de la variante choisie, 3 nouvelles variantes `v<n+1>` ; la même skill se déclenche aussi sur un retour en langage naturel (« refais la B plus aérée ») |
+| `/init-standards` | skill `standards-setup` : équivalent de `/init` pour les normes et la doc (§6) |
 
 Toutes avec `argument_hint` sauf `/init-standards`.
 
 ## 6. Skills et prises
 
-- `brief` : forme du brief (`.armadai/docs/brief.md`) et des critères de réussite.
+- `briefing` : forme du brief (`.armadai/docs/brief.md`) et des critères de réussite.
 - `cadre` : lire et compléter `.armadai/docs/cadre.md` (décidé / à décider / décisions de l'utilisateur datées) ; règle « demander avant d'adopter une convention non fixée ».
-- `mockup` : écrire `mockups/<sujet>/v<n>.html` (3 variantes A, B, C en onglets, aucune dépendance, s'ouvre dans un navigateur), faire choisir (choix multiples permis : « l'en-tête de A + la liste de C »), noter le choix et sa raison dans `.armadai/docs/design-decisions.md` ; itérer à partir de la variante retenue.
+- `mockups` : écrire `mockups/<sujet>/v<n>.html` (3 variantes A, B, C en onglets, aucune dépendance, s'ouvre dans un navigateur), faire choisir (choix multiples permis : « l'en-tête de A + la liste de C »), noter le choix et sa raison dans `.armadai/docs/design-decisions.md` ; itérer à partir de la variante retenue.
 - `diagrams` : quand et comment produire un diagramme (Mermaid dans `docs/technical/…`, rendu HTML autonome pour validation).
-- `init-standards` : analyser le dépôt (langages, manifestes, linters et formateurs configurés, CI, docs existantes, infra), proposer les conventions détectées, faire trancher celles que le dépôt ne fixe pas (questions à choix), écrire `.armadai/skills/project-standards/SKILL.md` avec `metadata: { armadai-slot: "code-standards, security" }` (plus `infra-docs` si l'infra est décrite), créer l'arborescence `docs/functional/` et `docs/technical/`, puis lancer `armadai link` (demande d'accord pour le shell).
+- `standards-setup` : analyser le dépôt (langages, manifestes, linters et formateurs configurés, CI, docs existantes, infra), proposer les conventions détectées, faire trancher celles que le dépôt ne fixe pas (questions à choix), écrire `.armadai/skills/project-standards/SKILL.md` avec `metadata: { armadai-slot: "code-standards, security" }` (plus `infra-docs` si l'infra est décrite), créer l'arborescence `docs/functional/` et `docs/technical/`, puis lancer `armadai link` (demande d'accord pour le shell).
 - Prises déclarées par les agents : `code-standards`, `security`, `infra-docs`, `ux-guidelines`. Vides à l'installation ; remplies par `/init-standards` ou par un pack de normes branché (lot C), ou par des skills de l'utilisateur portant `armadai-slot`.
 
 ## 7. Rangement des documents (décision de Dimitri)
