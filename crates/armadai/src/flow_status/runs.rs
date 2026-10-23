@@ -48,9 +48,10 @@ pub struct Run {
 ///   recorded and shown `~`, is crossed to the steps after it); else a `?` step
 ///   of an open run, retried in place; else a step where a run opens (an entry
 ///   step, or one right after a step of the coordinator) of a flow without an
-///   open run; else, in a flow without an open run (none, or finished), the
-///   step itself, the steps before it shown `-` (not run in this session), but
-///   never a step right after a step of the coordinator in mid-flow. An entry
+///   open run; else, when no flow holding the agent has an open run (none, or
+///   finished), the step itself, the steps before it shown `-` (not run in
+///   this session; two steps of one flow: one run, both `?`), but never a step
+///   right after a step of the coordinator in mid-flow. An entry
 ///   starting again first closes the open run of its flow (kept, unfinished)
 ///   when nothing leads back to it, when that run is stuck (nothing running
 ///   and its last step `?`/`✗`), or when the entry was not run in it.
@@ -412,30 +413,40 @@ impl<'p> Builder<'p> {
             }
         }
         if linked.is_empty() {
-            // a step of a flow without an open run (none, or finished): the
-            // run opens where it starts, the steps before it not run in this
-            // session; not right after a step of the coordinator in mid-flow,
-            // whose handing over cannot be told from a new run
+            // no flow holding the agent has a run open (none, or finished): a
+            // run opens where the step starts, the steps before it not run in
+            // this session; not right after a step of the coordinator in
+            // mid-flow, whose handing over cannot be told from a new run
+            let none_open = held.iter().all(|(fid, _, _)| self.open_run(fid).is_none());
             let group = self.open.len();
-            for (fid, flow, sid) in &held {
+            for (fid, flow, sid) in held.iter().filter(|_| none_open) {
                 let after_relay = (flow.steps.keys())
                     .any(|r| self.relay(flow, r) && next_steps(flow, r, None).contains(sid));
-                if self.open_run(fid).is_some() || after_relay {
+                if after_relay {
                     continue;
                 }
+                // two steps of one flow share the run they open (ambiguous)
                 let i = self.open_run(fid).unwrap_or_else(|| {
                     let coordinator = self.project.manifest.coordinator.as_deref();
                     self.open.push(Building::new(fid, flow, group, coordinator));
                     self.open.len() - 1
                 });
-                for before in upstream(flow, sid) {
-                    let v = self.open[i].view(before);
-                    if v.mark == Mark::Pending {
+                linked.push((i, sid, None));
+            }
+            // the steps before every step the run may have opened at
+            for (i, _, _) in &linked {
+                let flow = self.open[*i].flow;
+                let firsts: Vec<&str> =
+                    (linked.iter()).filter(|l| l.0 == *i).map(|l| l.1).collect();
+                for before in upstream(flow, firsts[0]) {
+                    let v = self.open[*i].view(before);
+                    if v.mark == Mark::Pending
+                        && firsts.iter().all(|f| upstream(flow, f).contains(&before))
+                    {
                         v.mark = Mark::NotRun;
                         v.note = Some("not run in this session".to_string());
                     }
                 }
-                linked.push((i, sid, None));
             }
         }
         let targets: Vec<(usize, String)> = (linked.iter())
@@ -1939,5 +1950,60 @@ mod tests {
                 view("y", Mark::Running, None, None)
             ]
         );
+    }
+
+    /// One agent holding two steps of a flow with no run open: one run, both
+    /// steps `?`, only the steps before both marked `-` (`mid` is before `c1`
+    /// only).
+    #[test]
+    fn an_agent_holding_two_steps_of_a_flow_opens_one_run_ambiguous() {
+        let p = project(&[(
+            "twin",
+            "steps:\n  a: { agent: architect }\n  c2: { agent: qa }\n  mid: { agent: dev }\n  c1: { agent: qa }\nlinks:\n  - { from: a, to: c2 }\n  - { from: c2, to: mid }\n  - { from: mid, to: c1 }\n",
+        )]);
+        let ambiguous = |s: &str| view(s, Mark::Unsure, None, Some("ambiguous step"));
+        assert_eq!(
+            runs(&p, &[start(10, "a1", "qa")]),
+            vec![run(
+                "twin",
+                vec![
+                    not_run("a"),
+                    ambiguous("c2"),
+                    pending("mid"),
+                    ambiguous("c1")
+                ],
+                vec![],
+                false,
+            )]
+        );
+    }
+
+    /// A step one flow's open run does not take opens no run of another flow.
+    #[test]
+    fn a_step_another_flow_ignored_opens_no_mid_flow_run() {
+        let release = (
+            "release",
+            "steps:\n  prep: { agent: lead }\n  ship: { agent: ops }\nlinks:\n  - { from: prep, to: ship }\n",
+        );
+        let events = seq(&[&second_guard(), &[start(60, "a6", "ops")]]);
+        let got = runs(&project(&[("deliver", DELIVER), release]), &events);
+        assert_eq!(
+            got.iter().map(|r| r.flow.as_str()).collect::<Vec<_>>(),
+            ["deliver"]
+        );
+    }
+
+    #[test]
+    fn upstream_is_what_leads_to_the_step_from_the_entry() {
+        let p = concept_to_code();
+        let flow = &p.flows["deliver"];
+        // `validate` leads back to `refine` but comes after `build`
+        assert_eq!(
+            upstream(flow, "build"),
+            ["design", "frame", "mockup", "refine"]
+        );
+        // the loop `validate -> refine` does not put the steps after `frame` before it
+        assert_eq!(upstream(flow, "frame"), ["refine"]);
+        assert_eq!(upstream(flow, "refine"), Vec::<&str>::new());
     }
 }
