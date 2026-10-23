@@ -143,6 +143,8 @@ struct Building<'p> {
     /// Step -> tick of its last start / stop.
     started: HashMap<String, usize>,
     stopped: HashMap<String, usize>,
+    /// Hop -> tick it was last recorded at.
+    crossed: HashMap<(String, String), usize>,
     taken: BTreeMap<(String, String), u32>,
 }
 
@@ -171,6 +173,7 @@ impl<'p> Building<'p> {
             },
             started: HashMap::new(),
             stopped: HashMap::new(),
+            crossed: HashMap::new(),
             taken: BTreeMap::new(),
         }
     }
@@ -285,17 +288,45 @@ impl<'p> Builder<'p> {
         self.project.manifest.coordinator.as_deref() == Some(flow.steps[step].agent.as_str())
     }
 
-    /// Where a run can open: an entry step, or a step right after one the
-    /// coordinator holds (its handing over is not recorded).
-    fn opens_at(&self, flow: &Flow, step: &str) -> bool {
-        armadai_model::entry_steps(flow).iter().any(|s| s == step)
-            || (flow.steps.keys())
-                .any(|r| self.relay(flow, r) && next_steps(flow, r, None).contains(&step))
+    /// The coordinator's steps a flow starts with: entry steps, or steps
+    /// only such steps lead to.
+    fn leading_relays<'f>(&self, flow: &'f Flow) -> BTreeSet<&'f str> {
+        let entries = armadai_model::entry_steps(flow);
+        let relays: Vec<&str> = (flow.steps.keys().map(String::as_str))
+            .filter(|r| self.relay(flow, r))
+            .collect();
+        let mut lead: BTreeSet<&str> = (relays.iter().copied())
+            .filter(|r| entries.iter().any(|e| e == r))
+            .collect();
+        loop {
+            let more: Vec<&str> = (relays.iter().copied())
+                .filter(|r| !lead.contains(r))
+                .filter(|r| {
+                    (flow.steps.keys())
+                        .filter(|s| next_steps(flow, s, None).contains(r))
+                        .all(|s| lead.contains(s.as_str()))
+                })
+                .collect();
+            if more.is_empty() {
+                return lead;
+            }
+            lead.extend(more);
+        }
     }
 
-    /// A step leads to `step` (a link or an `on_failure`).
-    fn has_incoming(flow: &Flow, step: &str) -> bool {
-        (flow.steps.keys()).any(|s| next_steps(flow, s, None).contains(&step))
+    /// Where a run can open: an entry step, or a step right after a step of the
+    /// coordinator the flow starts with (its handing over is not recorded).
+    fn opens_at(&self, flow: &Flow, step: &str) -> bool {
+        armadai_model::entry_steps(flow).iter().any(|s| s == step)
+            || (self.leading_relays(flow).iter()).any(|r| next_steps(flow, r, None).contains(&step))
+    }
+
+    /// A step leads to `step` (a link or an `on_failure`), the coordinator's
+    /// steps the flow starts with aside: they are no way back.
+    fn has_incoming(&self, flow: &Flow, step: &str) -> bool {
+        let lead = self.leading_relays(flow);
+        (flow.steps.keys())
+            .any(|s| !lead.contains(s.as_str()) && next_steps(flow, s, None).contains(&step))
     }
 
     /// Steps of two distinct runs, or two steps of one candidate.
@@ -329,15 +360,13 @@ impl<'p> Builder<'p> {
             }
         }
         if linked.is_empty() {
-            // a `?` step started again: retried in place, no transition
+            // a `?` or `✗` step started again: retried in place, no transition
             for (fid, _, sid) in &held {
                 if let Some(i) = self.open_run(fid)
                     && self.open[i].stopped.contains_key(*sid)
-                    && self.open[i]
-                        .run
-                        .steps
-                        .iter()
-                        .any(|v| v.step == *sid && v.mark == Mark::Unsure)
+                    && self.open[i].run.steps.iter().any(|v| {
+                        v.step == *sid && matches!(v.mark, Mark::Unsure | Mark::Unexpected)
+                    })
                 {
                     linked.push((i, sid, None));
                 }
@@ -349,7 +378,7 @@ impl<'p> Builder<'p> {
             for (fid, flow, sid) in &held {
                 if let Some(i) = self.open_run(fid)
                     && self.opens_at(flow, sid)
-                    && (!Self::has_incoming(flow, sid) || self.open[i].stuck())
+                    && (!self.has_incoming(flow, sid) || self.open[i].stuck())
                 {
                     let group = self.open[i].group;
                     (self.open.iter_mut())
@@ -395,9 +424,22 @@ impl<'p> Builder<'p> {
                 // before the view below: `from` may be this very step
                 let mut state = run.leads_with(from).map(str::to_string);
                 let mut prev = from.clone();
-                for to in crossed.iter().copied().chain([*sid]) {
-                    (run.run.transitions).push((e.ts, prev.clone(), to.to_string(), state.take()));
-                    *run.taken.entry((prev, to.to_string())).or_default() += 1;
+                let left = run.stopped[from];
+                for (k, to) in crossed.iter().copied().chain([*sid]).enumerate() {
+                    let hop = (prev.clone(), to.to_string());
+                    // a hop into the coordinator counts once per stop of `from`,
+                    // however many steps it then reaches (a fan-out)
+                    if k == crossed.len() || run.crossed.get(&hop).is_none_or(|at| *at < left) {
+                        run.crossed.insert(hop.clone(), self.tick);
+                        (run.run.transitions).push((
+                            e.ts,
+                            prev.clone(),
+                            to.to_string(),
+                            state.clone(),
+                        ));
+                        *run.taken.entry(hop).or_default() += 1;
+                    }
+                    state = None;
                     prev = to.to_string();
                 }
             }
@@ -1099,6 +1141,36 @@ mod tests {
         );
     }
 
+    /// Review N7: a `✗` step started again is retried in place, like a `?` one.
+    #[test]
+    fn an_unexpected_step_can_be_retried() {
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", Some("bogus")),
+            &step(40, "a4", "qa", Some("approved")),
+            &step(50, "a5", "ops", None),
+        ]);
+        assert_eq!(
+            runs(&deliver(), &events),
+            vec![run(
+                "deliver",
+                vec![
+                    done("design", "done"),
+                    done("build", "done"),
+                    done("guard", "approved"),
+                    done("validate", "done"),
+                ],
+                vec![
+                    t(20, "design", "build", Some("done")),
+                    t(30, "build", "guard", Some("done")),
+                    t(50, "guard", "validate", Some("approved")),
+                ],
+                true,
+            )]
+        );
+    }
+
     /// Review E8: an entry step without incoming links that starts again closes
     /// the open run, even with a step still running, and opens a new one.
     #[test]
@@ -1341,7 +1413,8 @@ mod tests {
             COORDINATED,
             &[(
                 "again",
-                "steps:\n  build: { agent: dev }\n  check: { agent: lead }\nlinks:\n  - { from: build, to: check }\n  - { from: check, to: build }\n",
+                // a cycle has no entry step of its own: `start` gives it one
+                "start: build\nsteps:\n  build: { agent: dev }\n  check: { agent: lead }\nlinks:\n  - { from: build, to: check }\n  - { from: check, to: build }\n",
             )],
         );
         let once = step(10, "a1", "dev", None);
@@ -1368,6 +1441,169 @@ mod tests {
                     finished: true,
                 }],
             )
+        );
+    }
+
+    const PLAN: &str = "steps:\n  frame: { agent: lead }\n  build: { agent: dev }\n  check: { agent: qa }\nlinks:\n  - { from: frame, to: build }\n  - { from: build, to: check }\n";
+    const PASS: &str = "steps:\n  build: { agent: dev }\n  hand: { agent: lead }\n  check: { agent: qa }\nlinks:\n  - { from: build, to: hand }\n  - { from: hand, to: check }\n";
+
+    fn plan_second_run() -> Run {
+        run(
+            "plan",
+            vec![relay("frame"), done("build", "done"), done("check", "done")],
+            vec![t(110, "build", "check", Some("done"))],
+            true,
+        )
+    }
+
+    /// Review N1: a flow led by the coordinator, left after `build`, starts
+    /// again: the link from the leading coordinator's step is no way back.
+    #[test]
+    fn a_coordinator_led_flow_left_halfway_starts_again() {
+        let p = project_with(COORDINATED, &[("plan", PLAN)]);
+        let events = seq(&[
+            &step(10, "a1", "dev", None),
+            &step(100, "b1", "dev", None),
+            &step(110, "b2", "qa", None),
+        ]);
+        assert_eq!(
+            runs(&p, &events),
+            vec![
+                run(
+                    "plan",
+                    vec![relay("frame"), done("build", "done"), pending("check")],
+                    vec![],
+                    false,
+                ),
+                plan_second_run(),
+            ]
+        );
+    }
+
+    /// Review N1b: the same with the stop of `check` lost.
+    #[test]
+    fn a_coordinator_led_flow_with_a_lost_stop_starts_again() {
+        let p = project_with(COORDINATED, &[("plan", PLAN)]);
+        let events = seq(&[
+            &step(10, "a1", "dev", None),
+            &[start(20, "a2", "qa")],
+            &step(100, "b1", "dev", None),
+            &step(110, "b2", "qa", None),
+        ]);
+        assert_eq!(
+            runs(&p, &events),
+            vec![
+                run(
+                    "plan",
+                    vec![
+                        relay("frame"),
+                        done("build", "done"),
+                        view("check", Mark::Running, None, None),
+                    ],
+                    vec![t(20, "build", "check", Some("done"))],
+                    false,
+                ),
+                plan_second_run(),
+            ]
+        );
+    }
+
+    /// Two coordinator's steps in a row at the head: the run opens after both.
+    #[test]
+    fn a_flow_led_by_two_coordinator_steps_opens_after_them() {
+        let p = project_with(
+            COORDINATED,
+            &[(
+                "plan",
+                "steps:\n  frame: { agent: lead }\n  note: { agent: lead }\n  build: { agent: dev }\n  check: { agent: qa }\nlinks:\n  - { from: frame, to: note }\n  - { from: note, to: build }\n  - { from: build, to: check }\n",
+            )],
+        );
+        let events = seq(&[&step(10, "a1", "dev", None), &step(20, "a2", "qa", None)]);
+        assert_eq!(
+            runs(&p, &events),
+            vec![run(
+                "plan",
+                vec![
+                    relay("frame"),
+                    relay("note"),
+                    done("build", "done"),
+                    done("check", "done"),
+                ],
+                vec![t(20, "build", "check", Some("done"))],
+                true,
+            )]
+        );
+    }
+
+    /// Review N2c: a step after a coordinator's step in mid-flow opens no run.
+    #[test]
+    fn a_step_after_a_mid_flow_coordinator_step_opens_no_run() {
+        let p = project_with(COORDINATED, &[("pass", PASS)]);
+        assert_eq!(runs(&p, &step(30, "a3", "qa", None)), vec![]);
+    }
+
+    /// Review N2b: nor after a finished run.
+    #[test]
+    fn a_step_after_a_mid_flow_coordinator_step_adds_no_run_after_the_end() {
+        let p = project_with(COORDINATED, &[("pass", PASS)]);
+        let events = seq(&[
+            &step(10, "a1", "dev", None),
+            &step(20, "a2", "qa", None),
+            &step(30, "a3", "qa", None),
+        ]);
+        assert_eq!(
+            runs(&p, &events),
+            vec![run(
+                "pass",
+                vec![done("build", "done"), relay("hand"), done("check", "done")],
+                vec![
+                    t(20, "build", "hand", Some("done")),
+                    t(20, "hand", "check", None),
+                ],
+                true,
+            )]
+        );
+    }
+
+    /// Review N5: a fan-out through the coordinator crosses `f -> hub` once.
+    #[test]
+    fn a_fan_out_through_the_coordinator_crosses_it_once() {
+        let p = project_with(
+            COORDINATED,
+            &[(
+                "fan",
+                "steps:\n  f: { agent: fan }\n  hub: { agent: lead }\n  x: { agent: b1 }\n  y: { agent: b2 }\n  join: { agent: docs }\nlinks:\n  - { from: f, to: hub }\n  - { from: hub, to: x }\n  - { from: hub, to: y }\n  - { from: x, to: join }\n  - { from: y, to: join }\n",
+            )],
+        );
+        let events = seq(&[
+            &step(10, "a1", "fan", None),
+            &[
+                start(20, "x1", "b1"),
+                start(21, "y1", "b2"),
+                stop(30, "y1", "b2", None),
+                stop(31, "x1", "b1", None),
+            ],
+            &step(40, "j1", "docs", None),
+        ]);
+        assert_eq!(
+            runs(&p, &events),
+            vec![run(
+                "fan",
+                vec![
+                    done("f", "done"),
+                    relay("hub"),
+                    done("x", "done"),
+                    done("y", "done"),
+                    done("join", "done"),
+                ],
+                vec![
+                    t(20, "f", "hub", Some("done")),
+                    t(20, "hub", "x", None),
+                    t(21, "hub", "y", None),
+                    t(40, "x", "join", Some("done")),
+                ],
+                true,
+            )]
         );
     }
 
