@@ -32,6 +32,7 @@ pub fn render(runs: &[Run], session: &str) -> String {
                 Mark::Unsure => ("?", None),
                 Mark::Unexpected => ("✗", None),
                 Mark::Relay => ("~", None),
+                Mark::NotRun => ("-", None),
             };
             let what = (v.state.as_deref().or(word).map(str::to_string))
                 .into_iter()
@@ -206,6 +207,35 @@ mod tests {
              \x20 ~ frame   (coordinator, not recorded)\n\
              \x20 ? check   (no STATE line)\n\
              \x20 ✗ verify  scope_changed (undeclared state)\n"
+        );
+    }
+
+    #[test]
+    fn a_step_not_run_in_this_session_says_so() {
+        let run = Run {
+            flow: "deliver | guide".into(),
+            steps: vec![
+                view(
+                    "refine",
+                    Mark::NotRun,
+                    None,
+                    Some("not run in this session"),
+                ),
+                view("frame", Mark::Running, None, None),
+                view("mockup", Mark::Pending, None, None),
+            ],
+            loops: vec![],
+            transitions: vec![],
+            finished: false,
+        };
+        assert_eq!(
+            render(&[run], "s"),
+            "session s (UTC)\n\
+             \n\
+             deliver | guide  in progress\n\
+             \x20 - refine  (not run in this session)\n\
+             \x20 ● frame   running\n\
+             \x20 ○ mockup  pending\n"
         );
     }
 

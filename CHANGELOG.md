@@ -68,6 +68,16 @@
     `unlink`; `AGENTS.md` and `CLAUDE.md` are never touched. Automations stay
     `not-compiled` (they need an OpenCode plugin).
 
+### Fixed
+
+- `armadai flow status` no longer reports "no run of a declared flow" when a session starts a
+  flow mid-way (for example at `frame` once `/brief` was done before): with no run of the flow
+  open (or the last one finished), a step of the flow opens a run where it starts. The steps
+  before it show `-` (`not run in this session`), never done nor pending, and never hold the
+  run open; the entry step started later opens a new run. Flows sharing that step show as one
+  run `a | b` until they diverge. A step right after a coordinator's step in mid-flow still
+  opens no run.
+
 ## v1.0.0-rc.6 (2026-10-21)
 
 Sixth release candidate, and the first of the declarative refocus: ArmadAI no longer runs

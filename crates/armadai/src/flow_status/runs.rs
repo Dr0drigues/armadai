@@ -16,6 +16,8 @@ pub enum Mark {
     Unexpected,
     /// A step the coordinator holds: the main thread, never recorded.
     Relay,
+    /// A step before the one a run opened at: not seen in this session.
+    NotRun,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,9 +48,12 @@ pub struct Run {
 ///   recorded and shown `~`, is crossed to the steps after it); else a `?` step
 ///   of an open run, retried in place; else a step where a run opens (an entry
 ///   step, or one right after a step of the coordinator) of a flow without an
-///   open run. An entry starting again first closes the open
-///   run of its flow (kept, unfinished) when nothing leads back to it, or when
-///   that run is stuck: nothing running and its last step `?`/`✗`.
+///   open run; else, in a flow without an open run (none, or finished), the
+///   step itself, the steps before it shown `-` (not run in this session), but
+///   never a step right after a step of the coordinator in mid-flow. An entry
+///   starting again first closes the open run of its flow (kept, unfinished)
+///   when nothing leads back to it, when that run is stuck (nothing running
+///   and its last step `?`/`✗`), or when the entry was not run in it.
 ///   Flows sharing that entry step open one candidate run each, grouped: each
 ///   later event keeps the candidates it extends and drops the others; while
 ///   more than one remains they show as one run named `a | b`. Steps of two
@@ -378,7 +383,13 @@ impl<'p> Builder<'p> {
             for (fid, flow, sid) in &held {
                 if let Some(i) = self.open_run(fid)
                     && self.opens_at(flow, sid)
-                    && (!self.has_incoming(flow, sid) || self.open[i].stuck())
+                    && (!self.has_incoming(flow, sid)
+                        || self.open[i].stuck()
+                        || self.open[i]
+                            .run
+                            .steps
+                            .iter()
+                            .any(|v| v.step == *sid && v.mark == Mark::NotRun))
                 {
                     let group = self.open[i].group;
                     (self.open.iter_mut())
@@ -397,6 +408,33 @@ impl<'p> Builder<'p> {
                     self.open.push(Building::new(fid, flow, group, coordinator));
                     self.open.len() - 1
                 });
+                linked.push((i, sid, None));
+            }
+        }
+        if linked.is_empty() {
+            // a step of a flow without an open run (none, or finished): the
+            // run opens where it starts, the steps before it not run in this
+            // session; not right after a step of the coordinator in mid-flow,
+            // whose handing over cannot be told from a new run
+            let group = self.open.len();
+            for (fid, flow, sid) in &held {
+                let after_relay = (flow.steps.keys())
+                    .any(|r| self.relay(flow, r) && next_steps(flow, r, None).contains(sid));
+                if self.open_run(fid).is_some() || after_relay {
+                    continue;
+                }
+                let i = self.open_run(fid).unwrap_or_else(|| {
+                    let coordinator = self.project.manifest.coordinator.as_deref();
+                    self.open.push(Building::new(fid, flow, group, coordinator));
+                    self.open.len() - 1
+                });
+                for before in upstream(flow, sid) {
+                    let v = self.open[i].view(before);
+                    if v.mark == Mark::Pending {
+                        v.mark = Mark::NotRun;
+                        v.note = Some("not run in this session".to_string());
+                    }
+                }
                 linked.push((i, sid, None));
             }
         }
@@ -506,6 +544,36 @@ fn next_steps<'f>(flow: &'f Flow, from: &str, state: Option<&str>) -> Vec<&'f st
     links.chain(failure).collect()
 }
 
+/// The steps before `step`: reached from an entry step without crossing it,
+/// and leading to it.
+fn upstream<'f>(flow: &'f Flow, step: &str) -> Vec<&'f str> {
+    let entries = armadai_model::entry_steps(flow);
+    let from = (flow.steps.keys().map(String::as_str)).filter(|s| entries.iter().any(|e| e == s));
+    (reachable(flow, from, Some(step)).into_iter())
+        .filter(|s| reachable(flow, [*s], None).contains(step))
+        .collect()
+}
+
+/// The steps `from` and the links lead to, never through `avoid`.
+fn reachable<'f>(
+    flow: &'f Flow,
+    from: impl IntoIterator<Item = &'f str>,
+    avoid: Option<&str>,
+) -> BTreeSet<&'f str> {
+    let mut todo: Vec<&str> = from.into_iter().filter(|s| Some(*s) != avoid).collect();
+    let mut seen = BTreeSet::new();
+    while let Some(s) = todo.pop() {
+        if seen.insert(s) {
+            todo.extend(
+                next_steps(flow, s, None)
+                    .into_iter()
+                    .filter(|t| Some(*t) != avoid),
+            );
+        }
+    }
+    seen
+}
+
 /// Entry steps first, then breadth-first along the links, then any other step.
 fn step_order(flow: &Flow) -> Vec<&str> {
     let mut order: Vec<&str> = Vec::new();
@@ -562,6 +630,10 @@ mod tests {
             "b1",
             "b2",
             "docs",
+            "framer",
+            "designer",
+            "guardian",
+            "validator",
         ] {
             std::fs::write(
                 a.join(format!("agents/{agent}.md")),
@@ -1755,5 +1827,117 @@ mod tests {
             ]
         );
         assert!(got.iter().all(|r| r.transitions.is_empty() && !r.finished));
+    }
+
+    /// The `concept-to-code` flows: `deliver` and `guide` differ at `build` only.
+    fn concept_to_code() -> Project {
+        let flow = |builder: &str| {
+            format!(
+                "start: refine\nsteps:\n  refine: {{ agent: analyst }}\n  frame: {{ agent: framer }}\n  mockup: {{ agent: designer }}\n  design: {{ agent: architect }}\n  build: {{ agent: {builder} }}\n  guard: {{ agent: guardian, states: [approved, rejected] }}\n  validate: {{ agent: validator, states: [approved, rejected, scope_changed] }}\nlinks:\n  - {{ from: refine, to: frame }}\n  - {{ from: frame, to: mockup }}\n  - {{ from: mockup, to: design }}\n  - {{ from: design, to: build }}\n  - {{ from: build, to: guard }}\n  - {{ from: guard, to: build, when: rejected }}\n  - {{ from: guard, to: validate, when: approved }}\n  - {{ from: validate, to: build, when: rejected }}\n  - {{ from: validate, to: refine, when: scope_changed }}\n"
+            )
+        };
+        project_with(
+            COORDINATED,
+            &[("deliver", &flow("implementer")), ("guide", &flow("coach"))],
+        )
+    }
+
+    fn not_run(step: &str) -> StepView {
+        view(step, Mark::NotRun, None, Some("not run in this session"))
+    }
+
+    /// A real session (2026-10-23): `/brief` done before, so the coordinator
+    /// started at `frame`; framer ran 3 times and designer twice under one
+    /// `agent_id` each, among internal agents with an empty type.
+    fn real_session() -> Vec<FlowEvent> {
+        include_str!("../../tests/fixtures/flow-status/mid-entry-session.jsonl")
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_step_mid_flow_with_no_run_open_opens_one_there() {
+        let mut events = real_session();
+        assert_eq!(events.len(), 27);
+        let tail = events.split_off(25); // the architect's two stop lines
+        let mid = run(
+            "deliver | guide",
+            vec![
+                not_run("refine"),
+                done("frame", "done"),
+                done("mockup", "done"),
+                view("design", Mark::Running, None, None),
+                pending("build"),
+                pending("guard"),
+                pending("validate"),
+            ],
+            vec![
+                t(1792747780, "frame", "mockup", Some("done")),
+                t(1792748113, "mockup", "design", Some("done")),
+            ],
+            false,
+        );
+        assert_eq!(runs(&concept_to_code(), &events), vec![mid.clone()]);
+        // the whole log: `design` done, `build` still to take
+        events.extend(tail);
+        let mut whole = mid;
+        whole.steps[3] = done("design", "done");
+        assert_eq!(runs(&concept_to_code(), &events), vec![whole]);
+    }
+
+    #[test]
+    fn an_entry_started_after_a_mid_flow_run_opens_a_new_one() {
+        let events = seq(&[
+            &step(10, "a1", "framer", None),
+            &step(20, "a2", "designer", None),
+            &[start(30, "a3", "analyst")],
+        ]);
+        let first = run(
+            "deliver | guide",
+            vec![
+                not_run("refine"),
+                done("frame", "done"),
+                done("mockup", "done"),
+                pending("design"),
+                pending("build"),
+                pending("guard"),
+                pending("validate"),
+            ],
+            vec![t(20, "frame", "mockup", Some("done"))],
+            false,
+        );
+        let second = run(
+            "deliver | guide",
+            vec![
+                view("refine", Mark::Running, None, None),
+                pending("frame"),
+                pending("mockup"),
+                pending("design"),
+                pending("build"),
+                pending("guard"),
+                pending("validate"),
+            ],
+            vec![],
+            false,
+        );
+        assert_eq!(runs(&concept_to_code(), &events), vec![first, second]);
+    }
+
+    /// A sibling branch of a fan-out is not before the step: it stays pending.
+    #[test]
+    fn a_mid_flow_run_marks_only_the_steps_leading_to_its_first_step() {
+        let p = project(&[(
+            "spread",
+            "steps:\n  f: { agent: fan }\n  x: { agent: b1 }\n  y: { agent: b2 }\nlinks:\n  - { from: f, to: x }\n  - { from: f, to: y }\n",
+        )]);
+        assert_eq!(
+            runs(&p, &[start(10, "a1", "b2")])[0].steps,
+            vec![
+                not_run("f"),
+                pending("x"),
+                view("y", Mark::Running, None, None)
+            ]
+        );
     }
 }
