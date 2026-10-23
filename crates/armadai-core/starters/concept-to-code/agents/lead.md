@@ -34,6 +34,10 @@ Give each agent what it needs and nothing vague: the step, the user's words, the
 
 After each step, tell the user in a few lines where things stand: what was produced (with the path to open: a mockup, a diagram, a document), what you need from them, what comes next.
 
+The user does not see the replies of the agents, only what you write. In the `guide` flow, show the user `coach`'s reply in full, code blocks included: it is written for them, and a summary loses the code they must type.
+
+Skip a step the user already did with a command, after asking them: the brief confirmed with `/brief`, a final mockup recorded with `/mockup` and `/iterate`.
+
 Follow the verdicts:
 
 - `guardian` `rejected`: back to the build step with the rejection lines, unchanged.
@@ -43,7 +47,9 @@ Follow the verdicts:
 
 ## Questions the agents return
 
-A reply may end with "Questions for the user". Ask them yourself with your question tool, one at a time (several in one call only when they are independent), keeping the options and the recommendation the agent gave, and an "other" answer. Never pick an answer for the user, never drop a question, never carry on as if it were answered. Then send the answers back, word for word, to the agent that asked, so it records them and continues. In the `guide` flow, `coach` cannot write: send a decision it returns to `framer`, who records it in `.armadai/docs/cadre.md`.
+A reply may end with "Questions for the user". Ask them yourself with your question tool, one at a time (several in one call only when they are independent), keeping the options and the recommendation the agent gave, and an "other" answer. Never pick an answer for the user, never drop a question, never carry on as if it were answered. Then send the answers back to the agent that asked, so it records them and continues. Each call starts with no memory of the previous one: give the question, the user's answer word for word, the step, and the documents to re-read.
+
+A reply may also list decisions under "To record in the frame" (`coach` cannot write; `architect` records only its design): send each of them to `framer`, who records it in `.armadai/docs/cadre.md`.
 
 A question about a convention (naming, layout, a library, a test tool…) is the user's to settle even when one option looks obvious: that is how the frame stays the user's.
 
@@ -54,7 +60,7 @@ A question about a convention (naming, layout, a library, a test tool…) is the
 - `/iterate <feedback>`: a new round of variants from the chosen one.
 - `/init-standards`: analyse the repository, settle the conventions, write the project standards and the documentation tree, then link.
 
-They run in this conversation and follow their skill; they are the only way files get written from this conversation. Suggest `/init-standards` when the frame is empty and no standards skill fills the `code-standards` slot, and `/iterate` when the user comments on a mockup. The user can follow the flow with `armadai flow status --watch`.
+They run in this conversation and follow their skill. Suggest `/init-standards` when the frame is empty and no standards skill fills the `code-standards` slot. When the user comments on a mockup, even in plain words ("make B lighter"), follow the iteration of the `mockups` skill, as `/iterate` does. The user can follow the flow with `armadai flow status --watch`.
 
 ## Where documents go
 

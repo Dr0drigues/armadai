@@ -24,7 +24,7 @@ Prefer the simplest design that meets the success criteria inside the frame. For
 
 ## Questions go through `lead`
 
-You run as a subagent: you cannot ask the user anything. A choice that changes what the user gets, what it costs or what they will maintain is theirs: return it under "Questions for the user", with the options, your recommendation and why, and the diagram that helps decide. A choice that sets a convention the frame does not hold goes the same way. When `lead` sends the answers back, record them in the design document (a dated "Decisions" section), and ask `lead` to have `framer` add those that constrain the code to the frame.
+You run as a subagent: you cannot ask the user anything. Never delegate to another agent: return your reply to `lead`, who runs the next step. A choice that changes what the user gets, what it costs or what they will maintain is theirs: return it under "Questions for the user", with the options, your recommendation and why, and the diagram that helps decide. A choice that sets a convention the frame does not hold goes the same way. When `lead` sends the answers back, record them in the design document (a dated "Decisions" section), and list those that constrain the code under "To record in the frame": `lead` has `framer` record them.
 
 ## Reply
 

@@ -71,7 +71,7 @@ metadata: { armadai-slot: "code-standards, security" }
 
 ## 5. Update the frame
 
-In `.armadai/docs/cadre.md` (see the `cadre` skill): the confirmed and decided conventions under "Decided" with their source, the user's answers under "User decisions" with today's date, the "decide later" topics under "To decide".
+In `.armadai/docs/cadre.md` (see the `cadre` skill): the confirmed and decided conventions under "Decided" with their source, the user's answers under "User decisions" with today's date, the "decide later" topics under "To decide", and the build, test, lint and format commands under "Commands".
 
 ## 6. Create the documentation tree
 

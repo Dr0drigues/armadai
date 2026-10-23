@@ -20,6 +20,12 @@ Updated: YYYY-MM-DD
 ## Decided
 - <topic>: <the rule, imperative and checkable>. Source: <file path | standards skill <id> | user, YYYY-MM-DD>
 
+## Commands
+- build: <command>
+- test: <command>
+- lint: <command>
+- format: <command>
+
 ## To decide
 - <topic>: <options seen>. Needed by: <step or agent>
 
@@ -47,5 +53,7 @@ Before writing code that depends on a convention absent from "Decided" (a layout
 4. Only then write the code.
 
 An obvious option is still the user's to choose: a short question costs less than a convention nobody agreed to.
+
+Keep "Commands" to the commands the project really uses (from the manifest, the CI or the user): the implementer runs them, the validator runs the tests with them.
 
 Never invent a source, never record as decided what the user did not say.

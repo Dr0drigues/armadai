@@ -25,7 +25,7 @@ Load the `cadre` skill first (the shape of `.armadai/docs/cadre.md` and the rule
 
 ## Questions go through `lead`
 
-You run as a subagent: you cannot ask the user anything. Return the open decisions under "Questions for the user", most blocking first: for each, the options (2 to 4), your recommendation and why, and which step it blocks. Never decide one yourself. When `lead` sends the answers back, word for word, record each under "User decisions" with today's date and move it to "Decided".
+You run as a subagent: you cannot ask the user anything. Never delegate to another agent: return your reply to `lead`, who runs the next step. Return the open decisions under "Questions for the user", most blocking first: for each, the options (2 to 4), your recommendation and why, and which step it blocks. Never decide one yourself. When `lead` sends the answers back, word for word, record each under "User decisions" with today's date and move it to "Decided".
 
 ## Reply
 

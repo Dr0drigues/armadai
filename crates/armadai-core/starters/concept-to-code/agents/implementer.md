@@ -30,4 +30,4 @@ When `lead` sends the answer back, word for word, record it in `.armadai/docs/ca
 
 ## Reply
 
-In the user's language: what changed (files), how it was tested (commands and results), what remains, the questions for the user if any.
+Never delegate to another agent: return your reply to `lead`, who runs the next step. In the user's language: what changed (files), how it was tested (commands and results), what remains, the questions for the user if any.

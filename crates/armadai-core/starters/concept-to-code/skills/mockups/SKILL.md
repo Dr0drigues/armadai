@@ -27,7 +27,7 @@ Skeleton:
 
 ```html
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="<user's language>"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>project-board v1</title>
 <!-- subject: project-board, round 1, YYYY-MM-DD, from: the brief -->

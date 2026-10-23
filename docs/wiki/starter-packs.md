@@ -103,7 +103,8 @@ flow you want. Follow a run with `armadai flow status --watch` (Claude Code).
 | `/init-standards` | `standards-setup` | analyses the repository, settles conventions with you, writes the project standards skill, then links |
 
 **Slots.** The agents declare slots that your project fills: `code-standards` and `security`
-(`framer`, `implementer`, `coach`, `guardian`), `infra-docs` (`framer`, `architect`),
+(`framer`, `implementer`, `coach`, `guardian`; `validator` takes `code-standards` alone, for
+the test command), `infra-docs` (`framer`, `architect`),
 `ux-guidelines` (`designer`). An empty slot is not an error (`link` reports it `not-compiled`).
 Fill them with `/init-standards`, which writes `.armadai/skills/project-standards/SKILL.md`, or
 with a skill of your own whose frontmatter has `metadata: { armadai-slot: code-standards }`
@@ -117,7 +118,8 @@ as HTML load Mermaid from a CDN, so they need the network.
 **Limits.** A write permission cannot be restricted to a folder: `write: allow` lets an agent
 write anywhere, so the folders above are instructions, not enforcement. `coach`, `validator`
 and the guardian have no write (`deny`). `lead` has `write: ask`; under OpenCode it also
-executes commands.
+executes commands. The shell is denied to `framer`, `architect` and `guardian`, and asked for
+`implementer`, `coach` and `validator`.
 
 ## Pack Format
 
