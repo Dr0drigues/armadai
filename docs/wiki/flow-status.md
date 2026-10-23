@@ -100,9 +100,10 @@ are UTC. A finished run stays listed, finished runs first.
 
 - Two flows whose entry step is shared are shown as `a | b` until their steps diverge.
 - A session can start a flow mid-way (for example at `frame`, its `refine` done in an earlier
-  session): with no run of the flow open (or the last one finished), a step of the flow opens a
-  run where it starts, the steps before it shown `-`. Flows sharing that step are shown as
-  `a | b` as above. Its entry step started later opens a new run. A step right after a
+  session): when no flow holding the agent has a run open (or its last one finished), a step
+  of the flow opens a run where it starts, the steps before it shown `-`. Flows sharing that
+  step are shown as `a | b` as above; an agent holding two steps of one flow opens one run with
+  both steps `?` (ambiguous step) and only the steps before both shown `-`. Its entry step started later opens a new run. A step right after a
   coordinator's step in mid-flow is the exception (see the limits).
 - An entry step that nothing leads back to, started again, closes the open run of its flow
   (kept, unfinished) and opens a new one. An entry step a loop leads back to does so only when
