@@ -10,6 +10,7 @@ $ armadai link --target claude
   wrote <root>/.claude/agents/schema-specialist.md
   wrote <root>/.claude/skills/rust-conventions/SKILL.md
   patched <root>/CLAUDE.md
+  patched <root>/.claude/settings.json
 
 Conformance report:
 claude: agent adapter-specialist: compiled
@@ -28,6 +29,7 @@ claude: agent schema-specialist skills: compiled (preloaded through the subagent
 claude: agents tags: not-compiled (informational, no Claude Code field; 6 agents: adapter-specialist, cli-specialist, dev-lead, qa-specialist, release-manager, schema-specialist)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: adapter-specialist, cli-specialist, qa-specialist, release-manager, schema-specialist)
 claude: flow delivery: approximated (rendered as guidance in CLAUDE.md, not enforced)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
 claude: flow release: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: flow release step qa: approximated (states and on_failure rendered as guidance)
 claude: skill rust-conventions: compiled
@@ -101,12 +103,16 @@ You are the QA Specialist for a Rust project. You own testing strategy, code qua
 
 Test implementation, clippy/fmt validation commands, CI configuration snippets, and coverage analysis. Highlight edge cases and error scenarios.
 
+## Verdict criteria
+
+When you are asked whether a branch is ready for release, the verdict is `approved` (CI green,
+tests cover the change, no open blocker) or `rejected` (with the blockers listed above it).
+The `release` flow hands an `approved` branch to the release manager and a `rejected` one back
+to the dev lead.
+
 ## Verdict
 
-When you are asked whether a branch is ready for release, end with a last line holding only
-the verdict: `approved` (CI green, tests cover the change, no open blocker) or `rejected` (with
-the blockers listed above it). The `release` flow hands an `approved` branch to the release
-manager and a `rejected` one back to the dev lead.
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.
 
 === .claude/agents/release-manager.md
 ---
@@ -153,6 +159,46 @@ You are the Schema Specialist for a Rust project that compiles declarative defin
 ## Output Format
 
 Implementation with type definitions, parsing and validation logic, and integration points with other layers. Include error handling strategy and testing approach.
+
+=== .claude/settings.json
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
 
 === .claude/skills/rust-conventions/SKILL.md
 ---

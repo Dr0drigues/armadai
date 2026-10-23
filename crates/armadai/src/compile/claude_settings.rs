@@ -101,7 +101,35 @@ pub fn hook_entries(project: &Project) -> anyhow::Result<Vec<HookEntry>> {
     if project.manifest.policy.delegation == Delegation::Strict {
         out.push(gate_entry());
     }
+    if !project.flows.is_empty() {
+        for e in flow_status_entries() {
+            if !out.contains(&e) {
+                out.push(e);
+            }
+        }
+    }
     Ok(out)
+}
+
+/// The flow recording hooks (`armadai __record-flow-event`), asynchronous so they never
+/// slow a subagent down. No matcher on `SubagentStart`/`SubagentStop`: an omitted
+/// matcher fires on every agent type (hooks doc, code.claude.com/docs/en/hooks,
+/// 2026-10-22); `SubagentHandback` is the tool a subagent hands its report back with
+/// (tools reference, code.claude.com/docs/en/tools-reference, 2026-10-22).
+pub fn flow_status_entries() -> Vec<HookEntry> {
+    [
+        ("SubagentStart", None),
+        ("SubagentStop", None),
+        ("PreToolUse", Some("SubagentHandback")),
+    ]
+    .into_iter()
+    .map(|(event, matcher)| HookEntry {
+        event: event.into(),
+        matcher: matcher.map(Into::into),
+        command: "armadai __record-flow-event".into(),
+        native: BTreeMap::from([("async".to_string(), Value::Bool(true))]),
+    })
+    .collect()
 }
 
 /// The delegation gate: `Agent` and its former name `Task` (an exact-name list
@@ -457,7 +485,52 @@ mod tests {
         );
         assert!(
             manifest_only("schema_version: 1\n").is_empty(),
-            "off: no gate"
+            "off: no gate; no flow: no recording hook"
+        );
+    }
+
+    fn recording(event: &str, matcher: Option<&str>) -> HookEntry {
+        HookEntry {
+            event: event.into(),
+            matcher: matcher.map(Into::into),
+            command: "armadai __record-flow-event".into(),
+            native: BTreeMap::from([("async".to_string(), json!(true))]),
+        }
+    }
+
+    #[test]
+    fn a_project_with_a_flow_records_subagents_after_the_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai/agents")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".armadai/flows")).unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/project.yaml"),
+            "schema_version: 1\npolicy:\n  delegation: strict\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/agents/dev.md"),
+            "---\ndescription: d\n---\nB\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".armadai/flows/f.yaml"),
+            "steps:\n  build: { agent: dev }\n",
+        )
+        .unwrap();
+        let (p, _) = armadai_model::load_checked(dir.path()).unwrap();
+        assert_eq!(
+            hook_entries(&p).unwrap(),
+            vec![
+                gate_entry(),
+                recording("SubagentStart", None),
+                recording("SubagentStop", None),
+                recording("PreToolUse", Some("SubagentHandback")),
+            ]
+        );
+        assert_eq!(
+            recording("SubagentStop", None).handler(),
+            json!({"type": "command", "command": "armadai __record-flow-event", "async": true})
         );
     }
 

@@ -20,8 +20,7 @@ et violations des conventions du projet.
 Revue structuree en sections : bugs, securite, performance, style.
 Chaque point inclut : severite, localisation, suggestion de fix.
 
-## Verdict
+## Criteres du verdict
 
-Termine toujours ta revue par une derniere ligne qui ne contient que le verdict, en anglais :
-`approved` (aucun point bloquant) ou `rejected` (au moins un point bloquant, a corriger par le
-redacteur des tests). Ce verdict est l'etat que le flow `review` attend.
+`approved` : aucun point bloquant. `rejected` : au moins un point bloquant, a corriger par le
+redacteur des tests. Ce verdict est l'etat que le flow `review` attend.

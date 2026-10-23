@@ -101,6 +101,37 @@ pub(crate) fn slot_lines(
     }
 }
 
+/// The `## Verdict` section appended to the prompt of an agent holding at least one
+/// flow step with `states` or a failure path (`on_failure`, a `when: failed` link):
+/// the union of those states, plus `failed` for a failure path (and `done` when the
+/// step declares no state), sorted. `None` otherwise.
+pub fn verdict_instruction(project: &Project, agent: &str) -> Option<String> {
+    let states: std::collections::BTreeSet<&str> = (project.flows.values())
+        .flat_map(|f| f.steps.iter().map(move |(id, s)| (f, id, s)))
+        .filter(|(_, _, s)| s.agent == agent)
+        .flat_map(|(f, id, s)| {
+            let fails = s.on_failure.is_some()
+                || (f.links.iter()).any(|l| &l.from == id && l.when.as_deref() == Some("failed"));
+            let implied = match (fails, s.states.is_empty()) {
+                (false, _) => &[][..],
+                (true, true) => &["done", "failed"][..],
+                (true, false) => &["failed"][..],
+            };
+            s.states
+                .iter()
+                .map(String::as_str)
+                .chain(implied.iter().copied())
+        })
+        .collect();
+    (!states.is_empty()).then(|| {
+        format!(
+            "\n\n## Verdict\n\nEnd your reply with exactly one line `STATE: <state>`, \
+             where <state> is one of: {}.\n",
+            states.into_iter().collect::<Vec<_>>().join(", ")
+        )
+    })
+}
+
 /// Markers around the ArmadAI block of a markdown file the user may also edit.
 pub const BLOCK_BEGIN: &str = "<!-- armadai:begin -->";
 pub const BLOCK_END: &str = "<!-- armadai:end -->";

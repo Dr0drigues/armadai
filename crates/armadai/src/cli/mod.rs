@@ -1,4 +1,5 @@
 mod config;
+mod flow;
 mod graph;
 pub mod init;
 mod inspect;
@@ -38,7 +39,8 @@ use clap::{CommandFactory, Parser, Subcommand};
         armadai init --pack rust-dev\n  \
         armadai new flow review --template review-loop --agents dev,reviewer\n  \
         armadai graph review\n  \
-        armadai link --target claude\n\n\
+        armadai link --target claude\n  \
+        armadai flow status --watch\n\n\
         Documentation: https://github.com/Dr0drigues/armadai"
 )]
 pub struct Cli {
@@ -107,6 +109,15 @@ pub enum Command {
         /// Output format
         #[arg(long, value_enum, default_value_t = graph::GraphFormat::Mermaid)]
         format: graph::GraphFormat,
+    },
+    /// Show where each flow of a Claude Code session stands
+    #[command(after_help = "Examples:\n  \
+        armadai flow status\n  \
+        armadai flow status deliver --watch\n  \
+        armadai flow status --list")]
+    Flow {
+        #[command(subcommand)]
+        what: flow::FlowCommand,
     },
     /// Validate the project (.armadai/) or a starter pack
     #[command(
@@ -316,6 +327,11 @@ pub enum Command {
     /// delegation topology. Hidden from help.
     #[command(hide = true, name = "__claude-policy-gate")]
     ClaudePolicyGate,
+    /// Internal: called by the Claude Code sub-agent hooks. Reads the hook
+    /// JSON from stdin and appends the event to the session log under
+    /// `.armadai/state/claude/`. Hidden from help.
+    #[command(hide = true, name = "__record-flow-event")]
+    RecordFlowEvent,
 }
 
 /// Names of the subcommands marked `hide = true`, taken from clap itself
@@ -390,6 +406,7 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
         Command::List { tags } => list::execute(tags),
         Command::Inspect { agent } => inspect::execute(agent),
         Command::Graph { flow, format } => graph::execute(flow, format),
+        Command::Flow { what } => flow::execute(what),
         Command::Validate { path, json } => validate::execute(path, json),
         Command::Migrate {
             path,
@@ -432,6 +449,7 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::ClaudePolicyGate => crate::claude_adapter::policy_gate::gate_from_stdin(),
+        Command::RecordFlowEvent => crate::flow_status::record::record_from_stdin(),
     }
 }
 
@@ -450,10 +468,12 @@ mod tests {
     fn there_are_hidden_subcommands_to_strip() {
         // If this ever empties, the filter below stops proving anything.
         let hidden = hidden_subcommand_names();
-        assert!(
-            hidden.iter().any(|n| n == "__claude-policy-gate"),
-            "expected the policy gate among hidden subcommands: {hidden:?}"
-        );
+        for name in ["__claude-policy-gate", "__record-flow-event"] {
+            assert!(
+                hidden.iter().any(|n| n == name),
+                "expected {name} among hidden subcommands: {hidden:?}"
+            );
+        }
     }
 
     /// `hide = true` keeps a subcommand out of `--help`, but clap_complete
@@ -520,6 +540,7 @@ mod tests {
             "list",
             "inspect",
             "graph",
+            "flow",
             "validate",
             "config",
             "models",

@@ -9,6 +9,7 @@
 - [Link](link.md)
 - [Starter packs](starter-packs.md)
 - [Policy gate](policy-gate.md)
+- [Flow status](flow-status.md)
 
 # Legacy (migrate)
 

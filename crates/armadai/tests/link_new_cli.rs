@@ -202,20 +202,29 @@ fn link_then_unlink_gives_the_user_tree_back_and_relinking_is_idempotent() {
     )
     .unwrap();
     assert_eq!(settings["zeta"], 1, "user keys kept");
+    let rec = serde_json::json!([{"type": "command", "command": "armadai __record-flow-event", "async": true}]);
     assert_eq!(
-        settings["hooks"]["PreToolUse"].as_array().unwrap().len(),
-        2,
-        "user hook + gate"
+        settings["hooks"],
+        serde_json::json!({
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "./mine.sh"}]},
+                {"matcher": "Agent|Task", "hooks": [{"type": "command", "command": "armadai __claude-policy-gate"}]},
+                {"matcher": "SubagentHandback", "hooks": rec},
+            ],
+            "PostToolUse": [{"hooks": [{"type": "command", "command": "cargo fmt"}]}],
+            "SubagentStart": [{"hooks": rec}],
+            "SubagentStop": [{"hooks": rec}],
+        }),
+        "user hook, automation, gate, then the flow recording hooks (the project has a flow)"
     );
     let md = std::fs::read_to_string(env.root().join("CLAUDE.md")).unwrap();
     assert!(
         md.starts_with(USER_CLAUDE_MD) && md.contains("You lead."),
         "{md}"
     );
-    assert!(
-        std::fs::read_to_string(env.root().join(".armadai/.gitignore"))
-            .unwrap()
-            .contains("link-manifest.yaml")
+    assert_eq!(
+        std::fs::read_to_string(env.root().join(".armadai/.gitignore")).unwrap(),
+        "link-manifest.yaml\n.migrated/\nstate/\n"
     );
 
     let again = env.ok(&["link"]);
@@ -483,6 +492,8 @@ fn relinking_without_hooks_removes_the_settings_file_link_created() {
     let settings = env.root().join(".claude/settings.json");
     assert!(settings.is_file());
     std::fs::remove_file(env.root().join(".armadai/automations/fmt.yaml")).unwrap();
+    // a flow installs the recording hooks
+    std::fs::remove_file(env.root().join(".armadai/flows/ship.yaml")).unwrap();
     std::fs::write(
         env.root().join(".armadai/project.yaml"),
         "schema_version: 1\ncoordinator: lead\n",
@@ -935,6 +946,8 @@ fn the_dry_run_reports_the_settings_removal() {
     let env = Env::new(PROJECT);
     env.ok(&["link"]);
     std::fs::remove_file(env.root().join(".armadai/automations/fmt.yaml")).unwrap();
+    // a flow installs the recording hooks
+    std::fs::remove_file(env.root().join(".armadai/flows/ship.yaml")).unwrap();
     std::fs::write(
         env.root().join(".armadai/project.yaml"),
         "schema_version: 1\ncoordinator: lead\n",
@@ -1006,4 +1019,22 @@ fn the_dry_run_lists_up_to_date_files_as_unchanged() {
     let unchanged = unchanged.split("Conformance report").next().unwrap();
     assert!(unchanged.contains("skills/notes/SKILL.md"), "{out}");
     assert!(!unchanged.contains("agents/dev.md"), "{out}");
+}
+
+/// `link` adds `state/` (the flow records) to an existing `.armadai/.gitignore`
+/// once, and leaves one that has it byte for byte.
+#[test]
+fn link_adds_the_state_line_to_an_existing_gitignore_once() {
+    let env = Env::new(PROJECT);
+    let path = env.root().join(".armadai/.gitignore");
+    std::fs::write(&path, "link-manifest.yaml\n.migrated/\n# mine\n").unwrap();
+    env.ok(&["link"]);
+    env.ok(&["link"]);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "link-manifest.yaml\n.migrated/\n# mine\nstate/\n"
+    );
+    std::fs::write(&path, "state/\n# mine").unwrap();
+    env.ok(&["link"]);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "state/\n# mine");
 }

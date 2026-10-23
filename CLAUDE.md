@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ArmadAI is a declarative compiler written in Rust (edition 2024). A team of agents (agents, skills, flows, gates, hooks) is described once, then compiled by `armadai link` into the native files of Claude Code, Codex, OpenCode and Copilot. ArmadAI does not run agents: there is no execution engine, no TUI, no web UI. The binary is named `armadai`; without arguments it prints the help.
 
-Commands: `link`, `unlink`, `list`, `inspect`, `graph`, `validate`, `migrate`, `new` (`agent|flow|automation|skill|command`, or a guided menu), `init`, `skills`, `models`, `config`, `update`, `completion`.
+Commands: `link`, `unlink`, `list`, `inspect`, `graph`, `flow` (`status`), `validate`, `migrate`, `new` (`agent|flow|automation|skill|command`, or a guided menu), `init`, `skills`, `models`, `config`, `update`, `completion`.
 
 The refocus (what was removed, kept and frozen) is specified in `docs/superpowers/specs/2026-10-09-step0-retrait-surfaces-design.md`.
 
@@ -54,7 +54,7 @@ CI (`.github/workflows/ci.yml`) runs fmt, clippy, test, build (`cargo build --re
 
 **Agent definition** lives in `.armadai/agents/<id>.md` (no user library any more); an agent with `from:`/`vars:` is an instance of a project template `.armadai/templates/<id>.md`, rendered at load time in `armadai-model` (`agent_templates.rs`), so the adapters only see rendered agents and the writer keeps the instance form. Templates in `crates/armadai/templates/*.md` are canonical agents (frontmatter with a default description); `new agent` sets description/tier/skills on the parsed frontmatter and renders `{{name}}`, `{{stack}}`, `{{description}}` in the body only. Flow templates (`pipeline`, `review-loop`, `plan-build-verify`, `fan-out`) and the Mermaid export are pure functions of `armadai-model` (`templates.rs`, `mermaid.rs`); `entry_steps` there is the one definition of an entry step (validator and gate).
 
-**Config** lives in `~/.config/armadai/` (user: templates, registries) and, per project, `.armadai/project.yaml`. `.armadai/` is versioned except `link-manifest.yaml` and `.migrated/` (`.armadai/.gitignore`).
+**Config** lives in `~/.config/armadai/` (user: templates, registries) and, per project, `.armadai/project.yaml`. `.armadai/` is versioned except `link-manifest.yaml`, `.migrated/` and `state/` (`.armadai/.gitignore`; `link` adds `state/` to an existing one).
 
 ## Git Conventions
 

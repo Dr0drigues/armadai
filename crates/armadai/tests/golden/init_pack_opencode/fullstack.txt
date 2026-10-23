@@ -13,6 +13,7 @@ opencode: agent doc-generator model: approximated (inherited from the OpenCode s
 opencode: agent test-writer: compiled
 opencode: agent test-writer model: approximated (inherited from the OpenCode session)
 opencode: agents tags: not-compiled (informational, no OpenCode field; 3 agents: code-reviewer, doc-generator, test-writer)
+opencode: flow recording: not-compiled (Claude Code only for now)
 opencode: flow review: approximated (guidance only)
 opencode: team file: compiled (guidance in .opencode/armadai-team.md, listed in opencode.json instructions)
 
@@ -38,11 +39,14 @@ et violations des conventions du projet.
 Revue structuree en sections : bugs, securite, performance, style.
 Chaque point inclut : severite, localisation, suggestion de fix.
 
+## Criteres du verdict
+
+`approved` : aucun point bloquant. `rejected` : au moins un point bloquant, a corriger par le
+redacteur des tests. Ce verdict est l'etat que le flow `review` attend.
+
 ## Verdict
 
-Termine toujours ta revue par une derniere ligne qui ne contient que le verdict, en anglais :
-`approved` (aucun point bloquant) ou `rejected` (au moins un point bloquant, a corriger par le
-redacteur des tests). Ce verdict est l'etat que le flow `review` attend.
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: approved, rejected.
 
 === .opencode/agents/doc-generator.md
 ---

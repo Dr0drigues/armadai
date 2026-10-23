@@ -54,6 +54,7 @@ Every target is planned and checked before the first write.
 | coordinator | the root `CLAUDE.md`: the coordinator's prompt and a generated `## Delegation` section (agents, flows, steps, states, transitions), between `<!-- armadai:begin -->` and `<!-- armadai:end -->`. An existing `CLAUDE.md` keeps its content; the block is appended or replaced in place |
 | automation | `.claude/settings.json` hooks: `session-start` -> `SessionStart`, `session-end` -> `SessionEnd`, `before-tool` -> `PreToolUse`, `after-tool` -> `PostToolUse`, `on-prompt` -> `UserPromptSubmit`, `on-stop` -> `Stop`; `native.claude.matcher` is the group matcher, other `native.claude` keys go into the handler |
 | `policy.delegation: strict` | a `PreToolUse` hook on `Agent|Task` running `armadai __claude-policy-gate` (see [Policy gate](policy-gate.md)) |
+| a flow | with the flows, three async hooks running `armadai __record-flow-event` (`SubagentStart`, `SubagentStop`, `PreToolUse` on `SubagentHandback`) and, for an agent holding a step with `states:` or a failure path, a closing `STATE: <state>` instruction in its file (OpenCode agents get it too); report `flow recording: compiled`. `.armadai/.gitignore` gets `state/`. See [Flow status](flow-status.md) |
 | `native.claude` of project.yaml | top-level keys of `settings.json` |
 
 **Commands use `.claude/commands/`**, the format Claude Code documents as merged into skills
@@ -88,7 +89,7 @@ version, is no longer produced (a previous one is removed as a stale file while 
 
 | Declared | Produced | Report |
 |---|---|---|
-| agent `<id>` | `.opencode/agents/<id>.md`: `description`, `mode: subagent`, `model` (see below), `temperature`, `permission`; the body is the prompt. No other key: OpenCode sends an unknown frontmatter key to the provider as a model option | `compiled` |
+| agent `<id>` | `.opencode/agents/<id>.md`: `description`, `mode: subagent`, `model` (see below), `temperature`, `permission`; the body is the prompt, ending with the `STATE: <state>` instruction when the agent holds a step with `states:` or a failure path (see [Flow status](flow-status.md)). No other key: OpenCode sends an unknown frontmatter key to the provider as a model option | `compiled` |
 | coordinator | its agent in `mode: primary`, its prompt followed by a `## Delegation` section; `opencode.json`: `default_agent: <id>` (left out when `--agents` skips the coordinator and no previous link wrote its file) | `compiled` |
 | team and flows | `.opencode/armadai-team.md` (in the output folder), listed under `instructions` in `opencode.json`: the agents by id and the flows (steps, states, transitions), described neutrally since every agent reads it. Written when there is a coordinator or a flow | `team file: compiled` |
 | skill `<id>` | `.opencode/skills/<id>/`, every file byte for byte | `compiled` |

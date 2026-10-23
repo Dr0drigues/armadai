@@ -37,6 +37,7 @@ copilot: agent dev tier: not-compiled (Copilot agent files carry no model)
 copilot: agent lead: compiled (coordinator, rendered into the instructions file)
 copilot: agent lead tier: not-compiled (Copilot agent files carry no model)
 copilot: automation fmt: not-compiled (not supported by this target yet (step 4))
+copilot: flow recording: not-compiled (Claude Code only for now)
 copilot: flow ship: not-compiled (not supported by this target yet (step 4))
 copilot: policy delegation=strict: not-compiled (no delegation gate for this target (step 4))
 copilot: skill review: compiled

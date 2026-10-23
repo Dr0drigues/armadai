@@ -147,7 +147,7 @@ armadai skills list
 ├── flows/<id>.yaml     # who hands work to whom
 ├── automations/<id>.yaml  # hooks
 ├── native/<target>/    # files copied as is by link
-├── .gitignore          # link-manifest.yaml, .migrated/ (machine-local)
+├── .gitignore          # link-manifest.yaml, .migrated/, state/ (machine-local)
 └── link-manifest.yaml  # written by `armadai link`: what it wrote, for `unlink`
 ```
 

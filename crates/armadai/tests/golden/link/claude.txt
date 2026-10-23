@@ -42,6 +42,10 @@ DEV_SYSTEM_MARKER — you write the code.
 
 DEV_SUBSECTION_MARKER — small functions.
 
+## Verdict
+
+End your reply with exactly one line `STATE: <state>`, where <state> is one of: blocked.
+
 === .claude/settings.json ===
 {
   "hooks": {
@@ -63,6 +67,38 @@ DEV_SUBSECTION_MARKER — small functions.
           {
             "type": "command",
             "command": "armadai __claude-policy-gate"
+          }
+        ]
+      },
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
           }
         ]
       }
@@ -87,6 +123,7 @@ claude: agent lead tier: not-compiled (the coordinator runs as the main session 
 claude: agents tags: not-compiled (informational, no Claude Code field; 1 agent: dev)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 1 agent: dev)
 claude: automation fmt: compiled (hook PostToolUse in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
 claude: flow ship: approximated (rendered as guidance in CLAUDE.md; delegation topology enforced by the gate)
 claude: flow ship step build: approximated (states and on_failure rendered as guidance)
 claude: policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)

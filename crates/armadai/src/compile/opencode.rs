@@ -250,6 +250,14 @@ fn compile_with(
         };
         plan.report.push(T, format!("flow {id}"), status, Some(why));
     }
+    if !project.flows.is_empty() {
+        plan.report.push(
+            T,
+            "flow recording",
+            Status::NotCompiled,
+            Some(super::report::RECORDING_CLAUDE_ONLY),
+        );
+    }
     if strict {
         plan.report.push(
             T,
@@ -507,6 +515,9 @@ fn agent_file(
         r.push(T, format!("agent {id} skills"), Status::Compiled, Some(why));
     }
     super::slot_lines(r, T, project, id, f, None);
+    if let Some(v) = super::verdict_instruction(project, id) {
+        body = format!("{}{v}", body.trim_end());
+    }
     if !permission.is_empty() {
         m.insert("permission".into(), Value::Object(permission));
     }
@@ -635,6 +646,28 @@ mod tests {
     }
 
     #[test]
+    fn a_project_with_a_flow_says_recording_is_claude_only() {
+        let agents: [(&str, &[u8]); 1] =
+            [(".armadai/agents/dev.md", b"---\ndescription: d\n---\nB\n")];
+        let flow: (&str, &[u8]) = (
+            ".armadai/flows/ship.yaml",
+            b"steps:\n  build: { agent: dev }\n",
+        );
+        let plan = compile(&[M, agents[0], flow]).unwrap();
+        assert_eq!(
+            line(&plan, "flow recording"),
+            (Status::NotCompiled, Some("Claude Code only for now".into()))
+        );
+        let plan = compile(&[M, agents[0]]).unwrap();
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| l.element != "flow recording")
+        );
+    }
+
+    #[test]
     fn a_minimal_agent_is_a_subagent_file() {
         let plan = compile(&[
             M,
@@ -650,6 +683,30 @@ mod tests {
         );
         assert_eq!(line(&plan, "agent dev"), (Status::Compiled, None));
         assert_eq!(plan.json, None);
+    }
+
+    #[test]
+    fn the_agent_holding_a_step_with_states_is_asked_for_a_state_line() {
+        let plan = compile(&[
+            M,
+            (".armadai/agents/dev.md", b"---\ndescription: d\n---\nYou build.\n"),
+            (".armadai/agents/rev.md", b"---\ndescription: d\n---\nYou review.\n"),
+            (
+                ".armadai/flows/deliver.yaml",
+                b"steps:\n  build: { agent: dev }\n  guard: { agent: rev, states: [rejected, approved] }\nlinks:\n  - { from: build, to: guard }\n  - { from: guard, to: build, when: rejected }\n",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            text(&plan, "agents/rev.md"),
+            "---\ndescription: d\nmode: subagent\n---\nYou review.\n\n## Verdict\n\n\
+             End your reply with exactly one line `STATE: <state>`, where <state> is one of: \
+             approved, rejected.\n"
+        );
+        assert_eq!(
+            text(&plan, "agents/dev.md"),
+            "---\ndescription: d\nmode: subagent\n---\nYou build.\n"
+        );
     }
 
     #[test]

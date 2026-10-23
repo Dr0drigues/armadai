@@ -192,6 +192,46 @@ Respond in French.
 Risk level: CRITICAL / HIGH / MEDIUM / LOW / CLEAN
 Recommendations summary.
 
+=== .claude/settings.json ===
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+
 === report ===
 claude: agent doc-writer: compiled
 claude: agent refactor-advisor: compiled
@@ -202,3 +242,4 @@ claude: agents tags: not-compiled (informational, no Claude Code field; 5 agents
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: doc-writer, refactor-advisor, rust-reviewer, rust-test-writer, security-auditor)
 claude: agents title: not-compiled (Claude Code names a subagent by its id; 5 agents: doc-writer, refactor-advisor, rust-reviewer, rust-test-writer, security-auditor)
 claude: flow orchestration: not-compiled (no coordinator: no CLAUDE.md to render the flow into)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)

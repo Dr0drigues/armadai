@@ -640,8 +640,11 @@ fn read(root: &Path) -> Option<Manifest> {
 }
 
 /// Create `<root>/.armadai/.gitignore` when it is missing: `.armadai/` is versioned,
-/// but the link manifest and migration backups describe this machine only.
-pub fn ensure_gitignore(root: &Path) -> std::io::Result<()> {
+/// but the link manifest, migration backups and flow records (`state/`) describe
+/// this machine only. An existing file without a `state/` line gets it appended,
+/// nothing else changed (projects created before the flow records existed).
+/// Returns whether the file was created or changed.
+pub fn ensure_gitignore(root: &Path) -> std::io::Result<bool> {
     let path = root.join(".armadai/.gitignore");
     match std::fs::symlink_metadata(&path) {
         Ok(m) if m.file_type().is_symlink() => {
@@ -650,7 +653,21 @@ pub fn ensure_gitignore(root: &Path) -> std::io::Result<()> {
                 path.display()
             )));
         }
-        Ok(_) => return Ok(()),
+        // not ours to touch, as before the `state/` line existed
+        Ok(m) if m.is_dir() => return Ok(false),
+        Ok(_) => {
+            let text = std::fs::read_to_string(&path)?;
+            if text.lines().any(|l| l.trim() == "state/") {
+                return Ok(false);
+            }
+            let sep = if text.is_empty() || text.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            append(&path, &format!("{sep}state/\n"))?;
+            return Ok(true);
+        }
         Err(_) => {}
     }
     std::fs::create_dir_all(root.join(".armadai"))?;
@@ -660,7 +677,33 @@ pub fn ensure_gitignore(root: &Path) -> std::io::Result<()> {
         .write(true)
         .create_new(true)
         .open(&path)?
-        .write_all(b"link-manifest.yaml\n.migrated/\n")
+        .write_all(b"link-manifest.yaml\n.migrated/\nstate/\n")?;
+    Ok(true)
+}
+
+/// Append to an existing file, never through a link posed since the check:
+/// the file opened must be the one the path names, not what a link reaches.
+fn append(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    #[cfg(unix)]
+    {
+        let (opened, named) = (file.metadata()?, std::fs::symlink_metadata(path)?);
+        if named.file_type().is_symlink() || !same_file(&opened, &named) {
+            return Err(std::io::Error::other(format!(
+                "{} is a symbolic link: refusing to write through it",
+                path.display()
+            )));
+        }
+    }
+    file.write_all(text.as_bytes())
+}
+
+/// One file, whatever its names: same device and inode.
+#[cfg(unix)]
+fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (a.dev(), a.ino()) == (b.dev(), b.ino())
 }
 
 /// Replace `target`'s data with `root`/`created_dirs`/`entries`, leaving
@@ -989,6 +1032,85 @@ mod tests {
         std::fs::write(&outside, "mine\n").unwrap();
         assert!(super::ensure_gitignore(&root).is_err());
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "mine\n");
+    }
+
+    /// The append itself refuses a link posed after the check (the window the
+    /// check in `ensure_gitignore` cannot close).
+    #[cfg(unix)]
+    #[test]
+    fn append_never_follows_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::write(&outside, "mine\n").unwrap();
+        let link = dir.path().join(".gitignore");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert!(super::append(&link, "state/\n").is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "mine\n");
+        std::fs::write(dir.path().join("plain"), "a\n").unwrap();
+        super::append(&dir.path().join("plain"), "b\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("plain")).unwrap(),
+            "a\nb\n"
+        );
+    }
+
+    /// The identity check of `append`: one file under two names is the same
+    /// file, two files are not.
+    #[cfg(unix)]
+    #[test]
+    fn same_file_compares_device_and_inode() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, hard) = (
+            dir.path().join("a"),
+            dir.path().join("b"),
+            dir.path().join("h"),
+        );
+        std::fs::write(&a, "x").unwrap();
+        std::fs::write(&b, "x").unwrap();
+        std::fs::hard_link(&a, &hard).unwrap();
+        let meta = |p: &Path| std::fs::metadata(p).unwrap();
+        assert_eq!(
+            (
+                super::same_file(&meta(&a), &meta(&hard)),
+                super::same_file(&meta(&a), &meta(&b)),
+            ),
+            (true, false)
+        );
+    }
+
+    /// A `.gitignore` that is a directory is left alone and is not an error.
+    #[test]
+    fn ensure_gitignore_leaves_a_directory_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".armadai/.gitignore");
+        std::fs::create_dir_all(&path).unwrap();
+        assert!(!super::ensure_gitignore(dir.path()).unwrap());
+        assert!(path.is_dir());
+    }
+
+    /// An existing `.gitignore` without `state/` gets the line appended once,
+    /// nothing else changed; one that has it stays byte for byte.
+    #[test]
+    fn ensure_gitignore_adds_the_state_line_to_an_existing_file_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".armadai/.gitignore");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for (before, after) in [
+            (
+                "link-manifest.yaml\n.migrated/\n",
+                "link-manifest.yaml\n.migrated/\nstate/\n",
+            ),
+            ("mine", "mine\nstate/\n"),
+            ("", "state/\n"),
+            ("state/\nmine", "state/\nmine"),
+            ("a\n  state/  \nb\n", "a\n  state/  \nb\n"),
+        ] {
+            std::fs::write(&path, before).unwrap();
+            let first = super::ensure_gitignore(dir.path()).unwrap();
+            assert!(!super::ensure_gitignore(dir.path()).unwrap());
+            assert_eq!(first, before != after, "{before:?}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), after, "{before:?}");
+        }
     }
 
     /// Published SHA-256 vectors (FIPS 180-4 / RFC 6234). They are properties

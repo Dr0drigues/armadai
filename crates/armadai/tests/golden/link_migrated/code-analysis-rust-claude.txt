@@ -184,6 +184,46 @@ For each finding, provide:
 - Suggest property-based tests for functions with wide input ranges
 - Flag flaky test patterns (time-dependent, order-dependent, network-dependent)
 
+=== .claude/settings.json ===
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+
 === .claude/skills/analysis-standards/SKILL.md ===
 ---
 name: analysis-standards
@@ -254,4 +294,5 @@ claude: agents tags: not-compiled (informational, no Claude Code field; 5 agents
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: lead-analyst, rust-doc-writer, rust-reviewer, rust-security, rust-test-analyzer)
 claude: agents title: not-compiled (Claude Code names a subagent by its id; 5 agents: lead-analyst, rust-doc-writer, rust-reviewer, rust-security, rust-test-analyzer)
 claude: flow orchestration: not-compiled (no coordinator: no CLAUDE.md to render the flow into)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
 claude: skill analysis-standards: compiled

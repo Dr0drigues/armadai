@@ -117,6 +117,17 @@ impl Compiler for ClaudeCompiler {
                 );
             }
         }
+        if !project.flows.is_empty() {
+            plan.report.push(
+                T,
+                "flow recording",
+                Status::Compiled,
+                Some(
+                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) \
+                     in .claude/settings.json",
+                ),
+            );
+        }
         if !claude_settings::native_settings(project)?.is_empty() {
             plan.report.push(
                 T,
@@ -383,6 +394,9 @@ fn agent_file(
     let yaml = armadai_model::yaml::to_string(&NativeValue(Value::Object(m)))
         .context("subagent frontmatter")?;
     let mut out = format!("---\n{yaml}---\n{}", agent.body);
+    if let Some(v) = super::verdict_instruction(project, id) {
+        out = format!("{}{v}", out.trim_end());
+    }
     if !out.ends_with('\n') {
         out.push('\n');
     }
@@ -553,6 +567,101 @@ mod tests {
         );
         assert_eq!(line(&plan, "agent dev").status, Status::Compiled);
         assert!(plan.blocks.is_empty(), "no coordinator, no CLAUDE.md");
+        assert!(
+            plan.report
+                .lines
+                .iter()
+                .all(|l| l.element != "flow recording"),
+            "no flow, no recording hook"
+        );
+    }
+
+    const DEV: (&str, &[u8]) = (
+        ".armadai/agents/dev.md",
+        b"---\ndescription: d\n---\nYou build.\n",
+    );
+    const REV: (&str, &[u8]) = (
+        ".armadai/agents/rev.md",
+        b"---\ndescription: d\n---\nYou review.\n",
+    );
+    const DELIVER: (&str, &[u8]) = (
+        ".armadai/flows/deliver.yaml",
+        b"steps:\n  build: { agent: dev }\n  guard: { agent: rev, states: [rejected, approved] }\n  ship: { agent: dev }\nlinks:\n  - { from: build, to: guard }\n  - { from: guard, to: build, when: rejected }\n  - { from: guard, to: ship, when: approved }\n",
+    );
+
+    #[test]
+    fn the_agent_holding_a_step_with_states_is_asked_for_a_state_line() {
+        let plan = compile(&[M, DEV, REV, DELIVER]).unwrap();
+        assert_eq!(
+            text(&plan, "agents/rev.md"),
+            "---\nname: rev\ndescription: d\n---\nYou review.\n\n## Verdict\n\n\
+             End your reply with exactly one line `STATE: <state>`, where <state> is one of: \
+             approved, rejected.\n"
+        );
+        assert_eq!(
+            text(&plan, "agents/dev.md"),
+            "---\nname: dev\ndescription: d\n---\nYou build.\n",
+            "no step with states: no instruction"
+        );
+    }
+
+    #[test]
+    fn a_project_with_a_flow_reports_its_recording_hooks() {
+        let plan = compile(&[M, DEV, REV, DELIVER]).unwrap();
+        let l = line(&plan, "flow recording");
+        assert_eq!(
+            (l.status, l.reason.as_deref()),
+            (
+                Status::Compiled,
+                Some(
+                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) \
+                     in .claude/settings.json"
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn an_agent_in_two_flows_is_asked_for_the_union_of_their_states() {
+        let other: (&str, &[u8]) = (
+            ".armadai/flows/other.yaml",
+            b"steps:\n  review: { agent: rev, states: [changes, approved] }\n  fix: { agent: dev }\nlinks:\n  - { from: review, to: fix, when: changes }\n",
+        );
+        let plan = compile(&[M, DEV, REV, DELIVER, other]).unwrap();
+        assert_eq!(
+            text(&plan, "agents/rev.md"),
+            "---\nname: rev\ndescription: d\n---\nYou review.\n\n## Verdict\n\n\
+             End your reply with exactly one line `STATE: <state>`, where <state> is one of: \
+             approved, changes, rejected.\n"
+        );
+    }
+
+    #[test]
+    fn a_step_with_a_failure_path_is_asked_for_failed_too() {
+        let flow: (&str, &[u8]) = (
+            ".armadai/flows/repair.yaml",
+            b"steps:\n  build: { agent: dev, on_failure: fix }\n  fix: { agent: dev }\n  guard: { agent: rev, states: [approved] }\n  ship: { agent: dev }\nlinks:\n  - { from: build, to: guard }\n  - { from: fix, to: guard }\n  - { from: guard, to: fix, when: failed }\n  - { from: guard, to: ship, when: approved }\n",
+        );
+        let plan = compile(&[M, DEV, REV, flow]).unwrap();
+        let verdict = |states: &str| {
+            format!(
+                "\n\n## Verdict\n\nEnd your reply with exactly one line `STATE: <state>`, \
+                 where <state> is one of: {states}.\n"
+            )
+        };
+        assert_eq!(
+            (text(&plan, "agents/dev.md"), text(&plan, "agents/rev.md")),
+            (
+                format!(
+                    "---\nname: dev\ndescription: d\n---\nYou build.{}",
+                    verdict("done, failed")
+                ),
+                format!(
+                    "---\nname: rev\ndescription: d\n---\nYou review.{}",
+                    verdict("approved, failed")
+                ),
+            )
+        );
     }
 
     #[test]
