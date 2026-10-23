@@ -373,9 +373,10 @@ impl<'p> Builder<'p> {
                 linked.push((i, sid, Some(from)));
             }
         }
-        // links of several runs: the most recent (its source stopped last)
-        // wins, a tie stays ambiguous; none wins against a more recent link
-        // another run already took to a step the agent holds
+        // links of several groups of runs: the most recent (its source
+        // stopped last) wins, a tie stays ambiguous; none wins against a more
+        // recent link another run already took to a step the agent holds.
+        // Candidates of one group are never told apart this way.
         let link_ts = |(i, _, from): &(usize, &str, Option<Via>)| {
             from.as_ref()
                 .map_or(0, |(f, _)| self.open[*i].stopped_ts[f])
@@ -392,11 +393,11 @@ impl<'p> Builder<'p> {
             return Vec::new();
         }
         if let Some(n) = newest {
-            let runs: BTreeSet<usize> = (linked.iter())
+            let groups: BTreeSet<usize> = (linked.iter())
                 .filter(|l| link_ts(l) == n)
-                .map(|l| l.0)
+                .map(|l| self.open[l.0].group)
                 .collect();
-            linked.retain(|l| runs.contains(&l.0));
+            linked.retain(|l| groups.contains(&self.open[l.0].group));
         }
         if linked.is_empty() {
             // a `?` or `✗` step started again: retried in place, no transition
@@ -2077,6 +2078,58 @@ mod tests {
             vec![
                 ("hotfix", done("patch", "done")),
                 ("deliver", view("build", Mark::Running, None, None)),
+            ]
+        );
+    }
+
+    /// Two candidates of one group (shared entry `e`) link to `q` from
+    /// sources stopped at different times (`p` in `a`, `r` in `b`): the log
+    /// does not tell which flow runs, both stay.
+    #[test]
+    fn candidates_of_one_group_are_not_split_by_their_link_times() {
+        let flow = |src: &str| {
+            format!(
+                "steps:\n  e: {{ agent: ax }}\n  p: {{ agent: ay }}\n  r: {{ agent: az }}\n  q: {{ agent: qa }}\nlinks:\n  - {{ from: e, to: p }}\n  - {{ from: e, to: r }}\n  - {{ from: {src}, to: q }}\n"
+            )
+        };
+        let p = project(&[("a", &flow("p")), ("b", &flow("r"))]);
+        let events = seq(&[
+            &step(90, "x1", "ax", None),
+            &step(99, "y1", "ay", None),
+            &step(104, "z1", "az", None),
+            &[start(110, "q1", "qa")],
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(
+            got.iter()
+                .map(|r| (r.flow.as_str(), r.steps.last().unwrap().clone()))
+                .collect::<Vec<_>>(),
+            vec![("a | b", view("q", Mark::Running, None, None))]
+        );
+    }
+
+    /// A `?` step retried stops again later: its latest stop dates its link.
+    #[test]
+    fn a_retried_step_dates_its_link_by_its_latest_stop() {
+        let check = (
+            "check",
+            "steps:\n  a: { agent: architect, states: [ok] }\n  b: { agent: dev }\nlinks:\n  - { from: a, to: b }\n",
+        );
+        let p = project(&[check, ("hotfix", HOTFIX)]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(12, "l1", "lead", None),
+            &step(14, "a2", "architect", Some("ok")),
+            &[start(20, "d1", "dev")],
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(
+            got.iter()
+                .map(|r| (r.flow.as_str(), r.steps[1].clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("check", view("b", Mark::Running, None, None)),
+                ("hotfix", pending("patch")),
             ]
         );
     }
