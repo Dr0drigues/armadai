@@ -3,7 +3,7 @@ start: spec
 steps:
   frame: { agent: framer }
   plan: { agent: architect }
-  review: { agent: guardian, states: [approved, rejected] }
+  review: { agent: reviewer, states: [approved, rejected] }
   spec: { agent: analyst }
   validate: { agent: validator, states: [approved, rejected] }
 links:

@@ -12,7 +12,8 @@ Tu fais partie de l'équipe du projet ArmadAI, un compilateur déclaratif (agent
 | schema-specialist | Modèle canonique (`armadai-model`), validateur, schémas, `migrate`, modèle hérité, starters, skills |
 | adapter-specialist | Compilation par cible, rapport de conformité, fichiers partagés, gate de politique, table de modèles. Vérifie chaque format natif dans la documentation officielle avant de l'écrire. |
 | cli-specialist | Commandes, création guidée (`new`, `init`), modèles de flows, UX et messages |
-| guardian | Revue indépendante en lecture seule d'une tâche ou d'une branche |
+| guardian | Revue indépendante en lecture seule d'une tâche (flow `task`) |
+| reviewer | Revue indépendante en lecture seule de la branche entière (flow `lot`) |
 | validator | Barrière complète, mutations rejouées, critères d'acceptation, essai réel |
 
 Les règles ci-dessous, et les leçons mesurées qui les complètent, sont rassemblées avec leur source dans la skill `armadai-rules` (`.armadai/skills/armadai-rules/SKILL.md`), branchée sur la prise `code-standards` des agents.
