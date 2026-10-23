@@ -270,8 +270,16 @@ fn prepare(
         compile::check_destination(root, Path::new("."), rel)?;
     }
 
-    // the root file of the former Claude linker, which Claude Code still reads
-    if target == "claude" && root.join(".claude/CLAUDE.md").is_file() {
+    // the root file of the former Claude linker, which Claude Code still reads: flagged
+    // only when it carries that linker's response-protocol markers (`<!--ARMADAI_`, written
+    // from v0.12.0 on until the markers were removed). Known gap: the files it wrote
+    // without markers (every release before v0.12.0, v0.1.0 to v0.11.0, and master from
+    // #459 to #468) are no longer flagged, nor is a hand-written team file at that path
+    // (never ours to flag).
+    if target == "claude"
+        && std::fs::read_to_string(root.join(".claude/CLAUDE.md"))
+            .is_ok_and(|c| c.contains("<!--ARMADAI_"))
+    {
         let recorded = (p.previous.iter().flat_map(|t| &t.entries))
             .any(|e| e.path == Path::new(".claude/CLAUDE.md"));
         if !recorded {
