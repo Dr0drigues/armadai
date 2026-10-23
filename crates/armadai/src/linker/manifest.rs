@@ -688,11 +688,8 @@ fn append(path: &Path, text: &str) -> std::io::Result<()> {
     let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
         let (opened, named) = (file.metadata()?, std::fs::symlink_metadata(path)?);
-        if named.file_type().is_symlink()
-            || (opened.dev(), opened.ino()) != (named.dev(), named.ino())
-        {
+        if named.file_type().is_symlink() || !same_file(&opened, &named) {
             return Err(std::io::Error::other(format!(
                 "{} is a symbolic link: refusing to write through it",
                 path.display()
@@ -700,6 +697,13 @@ fn append(path: &Path, text: &str) -> std::io::Result<()> {
         }
     }
     file.write_all(text.as_bytes())
+}
+
+/// One file, whatever its names: same device and inode.
+#[cfg(unix)]
+fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (a.dev(), a.ino()) == (b.dev(), b.ino())
 }
 
 /// Replace `target`'s data with `root`/`created_dirs`/`entries`, leaving
@@ -1047,6 +1051,30 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.path().join("plain")).unwrap(),
             "a\nb\n"
+        );
+    }
+
+    /// The identity check of `append`: one file under two names is the same
+    /// file, two files are not.
+    #[cfg(unix)]
+    #[test]
+    fn same_file_compares_device_and_inode() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, hard) = (
+            dir.path().join("a"),
+            dir.path().join("b"),
+            dir.path().join("h"),
+        );
+        std::fs::write(&a, "x").unwrap();
+        std::fs::write(&b, "x").unwrap();
+        std::fs::hard_link(&a, &hard).unwrap();
+        let meta = |p: &Path| std::fs::metadata(p).unwrap();
+        assert_eq!(
+            (
+                super::same_file(&meta(&a), &meta(&hard)),
+                super::same_file(&meta(&a), &meta(&b)),
+            ),
+            (true, false)
         );
     }
 
