@@ -1,5 +1,5 @@
 $ armadai init --pack concept-to-code
-Created .armadai/ from pack 'concept-to-code': 9 agent(s), 5 skill(s), 2 flow(s), 0 automation(s), 1 template(s), 4 command(s)
+Created .armadai/ from pack 'concept-to-code': 9 agent(s), 6 skill(s), 2 flow(s), 0 automation(s), 1 template(s), 5 command(s)
   Run `armadai link` to generate the target files.
 
 $ armadai link --target claude
@@ -15,10 +15,12 @@ $ armadai link --target claude
   wrote <root>/.claude/commands/init-standards.md
   wrote <root>/.claude/commands/iterate.md
   wrote <root>/.claude/commands/mockup.md
+  wrote <root>/.claude/commands/preview.md
   wrote <root>/.claude/skills/briefing/SKILL.md
   wrote <root>/.claude/skills/cadre/SKILL.md
   wrote <root>/.claude/skills/diagrams/SKILL.md
   wrote <root>/.claude/skills/mockups/SKILL.md
+  wrote <root>/.claude/skills/previewing/SKILL.md
   wrote <root>/.claude/skills/standards-setup/SKILL.md
   patched <root>/CLAUDE.md
   patched <root>/.claude/settings.json
@@ -71,6 +73,7 @@ claude: command brief: compiled
 claude: command init-standards: compiled
 claude: command iterate: compiled
 claude: command mockup: compiled
+claude: command preview: compiled
 claude: flow deliver: approximated (rendered as guidance in CLAUDE.md; delegation topology enforced by the gate)
 claude: flow deliver start: approximated (Start: `refine`, rendered as guidance in CLAUDE.md)
 claude: flow deliver step guard: approximated (states and on_failure rendered as guidance)
@@ -85,6 +88,7 @@ claude: skill briefing: compiled
 claude: skill cadre: compiled
 claude: skill diagrams: compiled
 claude: skill mockups: compiled
+claude: skill previewing: compiled
 claude: skill standards-setup: compiled
 
 === .claude/agents/analyst.md
@@ -136,7 +140,7 @@ You are the architect of the concept-to-code team. You turn the brief, the frame
 
 ## Diagrams, systematically
 
-Whenever the user should validate a structure (components, a sequence across parts, a data model, a lifecycle, a deployment), draw it: Mermaid in the document, and the standalone HTML rendering beside it, as the `diagrams` skill says. Return the path of the HTML file so `lead` can have the user open it. A design with more than two components and no diagram is not finished.
+Whenever the user should validate a structure (components, a sequence across parts, a data model, a lifecycle, a deployment), draw it: Mermaid in the document, and the standalone HTML rendering beside it, as the `diagrams` skill says. Return the path of each new `.html` file, saying it is one, so `lead` can offer `/preview <file>`. A design with more than two components and no diagram is not finished.
 
 ## Trade-offs and decisions
 
@@ -200,7 +204,7 @@ You are the designer of the concept-to-code team. You make the user see the prod
 
 You run as a subagent: you cannot ask the user anything, and the choice between variants is always theirs. Never delegate to another agent: return your reply to `lead`, who runs the next step. Return to `lead`:
 
-- the path of the file to open;
+- the path of the file to open, saying it is a new `.html` file so `lead` can offer `/preview <file>`;
 - one line per variant: its idea and its trade-off;
 - under "Questions for the user", the choice: A, B, C, or a mix ("the header of A with the list of C"), with your recommendation and why.
 
@@ -400,6 +404,15 @@ description: Propose three mockup variants of a screen or feature in one HTML fi
 argument-hint: <screen or feature>
 ---
 Load the `mockups` skill and follow it for this screen or feature: write the next round `mockups/<subject>/v<n>.html` with three variants in tabs, give me the path to open, have me choose with your question tool, and record my choice and its reason in `.armadai/docs/design-decisions.md`:
+
+$ARGUMENTS
+
+=== .claude/commands/preview.md
+---
+description: "Open a mockup or a diagram in the browser: serve the project on 127.0.0.1 and give me the link, or stop that server"
+argument-hint: "[file | stop]"
+---
+Load the `previewing` skill and follow it here, in this conversation: with no argument, preview the most recently modified `.html` under `mockups/` or `docs/`; with a path, preview that file; with `stop`, stop the preview server of this project. Argument:
 
 $ARGUMENTS
 
@@ -733,6 +746,81 @@ A round starts from the last choice recorded for the subject, plus the user's fe
 
 Stop iterating when the user says the mockup is good: record it as final ("Chosen: v3 B, final"). Speak the user's language in the captions, the questions and the record.
 
+=== .claude/skills/previewing/SKILL.md
+---
+name: previewing
+description: "Open a mockup or a diagram (an .html file of the project) in the browser through a local preview server bound to 127.0.0.1, or stop that server. Use when the user types /preview, asks to see, open or preview a mockup or a diagram, or asks to stop the preview server."
+---
+# Previewing
+
+The user judges a mockup or a diagram by seeing it. This procedure serves the project on the user's machine only and gives a link to open. Run it in the main conversation, never in a subagent: it asks the user a question and starts a process that must outlive the step.
+
+## The choice made here
+
+Always go through the server, even for a standalone mockup that would open with a double click: one kind of link (`http://127.0.0.1:…`) for every file, clickable in the terminal, and relative links between files keep working. The `file://` path is only the fallback when `python3` is missing.
+
+## 1. The file
+
+The project root is the folder that holds `.armadai/`; run every command below from it.
+
+- No argument: the most recently modified `.html` file under `mockups/` or `docs/` (for example `find mockups docs -type f -name '*.html' -exec ls -t {} + 2>/dev/null | head -n 1`). None found: say so, suggest `/mockup`, and stop.
+- `stop`: go to step 5.
+- A path: that file, relative to the project root or absolute. It must exist, end in `.html` and resolve inside the project root (no `..` leaving it, no symbolic link pointing out of it): otherwise say why and stop. The server never shows anything outside the root.
+
+Keep the path relative to the root, with `/` separators: it is the end of the URL (encode spaces as `%20`).
+
+## 2. `python3`
+
+Run `python3 --version`. If it fails, say that the preview server needs Python 3, give the link `file://<absolute path of the file>` to open by hand (a standalone mockup works that way; a diagram also needs the network for Mermaid), and stop.
+
+## 3. The server: reuse it, or start one
+
+A preview server of this project answers on `127.0.0.1` with the project's own files. For each port from 8765 to 8784, in order:
+
+1. Is it ours? `curl -fsS --max-time 2 http://127.0.0.1:<port>/.armadai/project.yaml | cmp -s - .armadai/project.yaml` succeeds: a server already serves this project. Reuse it, do not start a second one, and go to step 4.
+2. Is it free? `python3 -c "import socket; s = socket.socket(); s.bind(('127.0.0.1', <port>))"` succeeds: start the server there, then go to step 4.
+3. Otherwise (taken by something else), try the next port.
+
+All twenty ports taken: say so and give the `file://` link instead.
+
+Start the server from the project root, **in the background**, so the conversation goes on while it runs:
+
+```sh
+python3 -m http.server <port> --bind 127.0.0.1 --directory <absolute path of the project root>
+```
+
+- Claude Code: the Bash tool with `run_in_background: true`.
+- OpenCode, or a tool with no background option: `nohup python3 -m http.server <port> --bind 127.0.0.1 --directory <root> >/dev/null 2>&1 &`.
+
+Never bind another address (`0.0.0.0`, the machine's IP, `--bind` left out): the project would be readable from the network. Never serve another folder than the project root. Check that it answers (the `curl` test of step 3.1, retried a few times over a second or two) before giving the link.
+
+## 4. The link, then the browser
+
+Give the link on a line of its own, nothing around it:
+
+```
+http://127.0.0.1:<port>/<path of the file>
+```
+
+In Claude Code, Cmd+click (macOS) or Ctrl+click opens it. Then ask with your question tool whether to open it in the browser now (yes / no). On yes:
+
+- macOS: `open <url>`
+- Linux: `xdg-open <url>`
+- Windows: say to open the link by hand.
+
+Say that `/preview stop` stops the server, which otherwise runs until the tool or the machine stops it.
+
+## 5. `stop`
+
+Find the server of this project with the test of step 3.1 on ports 8765 to 8784. None answers: say no preview server is running for this project. One answers:
+
+- if you started it in this conversation as a background task, stop that task with your tool;
+- otherwise find its process (`lsof -nP -tiTCP:<port> -sTCP:LISTEN`, or `ps` and the `http.server <port>` command line) and `kill` it, after checking it is the `python3 -m http.server` of this project.
+
+Check that the port no longer answers, and say so. Never stop a server that does not serve this project.
+
+Speak the user's language.
+
 === .claude/skills/standards-setup/SKILL.md
 ---
 name: standards-setup
@@ -856,6 +944,8 @@ Give each agent what it needs and nothing vague: the step, the user's words, the
 
 After each step, tell the user in a few lines where things stand: what was produced (with the path to open: a mockup, a diagram, a document), what you need from them, what comes next.
 
+When `designer` or `architect` returns a new `.html` file (a mockup, a diagram), offer the user to open it with `/preview <file>`.
+
 The user does not see the replies of the agents, only what you write. In the `guide` flow, show the user `coach`'s reply in full, code blocks included: it is written for them, and a summary loses the code they must type.
 
 Skip a step the user already did with a command, after asking them: the brief confirmed with `/brief`, a final mockup recorded with `/mockup` and `/iterate`.
@@ -881,6 +971,7 @@ A question about a convention (naming, layout, a library, a test tool…) is the
 - `/mockup <screen or feature>`: three mockup variants and a choice.
 - `/iterate <feedback>`: a new round of variants from the chosen one.
 - `/init-standards`: analyse the repository, settle the conventions, write the project standards and the documentation tree, then link.
+- `/preview [file | stop]`: serve the project on 127.0.0.1 and give the link to a mockup or a diagram (the latest one with no argument), or stop that server.
 
 They run in this conversation and follow their skill. Suggest `/init-standards` when the frame is empty and no standards skill fills the `code-standards` slot. When the user comments on a mockup, even in plain words ("make B lighter"), follow the iteration of the `mockups` skill, as `/iterate` does. The user can follow the flow with `armadai flow status --watch`.
 

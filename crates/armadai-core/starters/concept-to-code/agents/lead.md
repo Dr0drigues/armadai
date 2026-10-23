@@ -34,6 +34,8 @@ Give each agent what it needs and nothing vague: the step, the user's words, the
 
 After each step, tell the user in a few lines where things stand: what was produced (with the path to open: a mockup, a diagram, a document), what you need from them, what comes next.
 
+When `designer` or `architect` returns a new `.html` file (a mockup, a diagram), offer the user to open it with `/preview <file>`.
+
 The user does not see the replies of the agents, only what you write. In the `guide` flow, show the user `coach`'s reply in full, code blocks included: it is written for them, and a summary loses the code they must type.
 
 Skip a step the user already did with a command, after asking them: the brief confirmed with `/brief`, a final mockup recorded with `/mockup` and `/iterate`.
@@ -59,6 +61,7 @@ A question about a convention (naming, layout, a library, a test tool…) is the
 - `/mockup <screen or feature>`: three mockup variants and a choice.
 - `/iterate <feedback>`: a new round of variants from the chosen one.
 - `/init-standards`: analyse the repository, settle the conventions, write the project standards and the documentation tree, then link.
+- `/preview [file | stop]`: serve the project on 127.0.0.1 and give the link to a mockup or a diagram (the latest one with no argument), or stop that server.
 
 They run in this conversation and follow their skill. Suggest `/init-standards` when the frame is empty and no standards skill fills the `code-standards` slot. When the user comments on a mockup, even in plain words ("make B lighter"), follow the iteration of the `mockups` skill, as `/iterate` does. The user can follow the flow with `armadai flow status --watch`.
 

@@ -765,8 +765,8 @@ fn the_concept_to_code_pack_installs_validates_and_links() {
     assert_eq!(
         out.lines().next(),
         Some(
-            "Created .armadai/ from pack 'concept-to-code': 9 agent(s), 5 skill(s), 2 flow(s), \
-             0 automation(s), 1 template(s), 4 command(s)"
+            "Created .armadai/ from pack 'concept-to-code': 9 agent(s), 6 skill(s), 2 flow(s), \
+             0 automation(s), 1 template(s), 5 command(s)"
         )
     );
     let installed: Vec<String> = tree(&env.root().join(".armadai"))
@@ -785,12 +785,13 @@ fn the_concept_to_code_pack_installs_validates_and_links() {
         "lead",
         "validator",
     ];
-    let commands = ["brief", "init-standards", "iterate", "mockup"];
+    let commands = ["brief", "init-standards", "iterate", "mockup", "preview"];
     let skills = [
         "briefing",
         "cadre",
         "diagrams",
         "mockups",
+        "previewing",
         "standards-setup",
     ];
     let mut expected: Vec<String> = [
