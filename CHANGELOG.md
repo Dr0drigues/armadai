@@ -2,6 +2,12 @@
 
 ### Added
 
+- Native starter pack `concept-to-code` (Claude Code and OpenCode): from a vague idea to clean
+  code, with the user at every decision. Nine agents (`lead` coordinates), two flows (`deliver`:
+  the team writes the code; `guide`: the user writes it with a `coach`), four commands
+  (`/brief`, `/mockup`, `/iterate`, `/init-standards`) and slots (`code-standards`, `security`,
+  `infra-docs`, `ux-guidelines`) filled by `/init-standards` or by your own skills. See
+  [Starter packs](docs/wiki/starter-packs.md).
 - Flow status (MVP, Claude Code only). `link` installs async hooks (`SubagentStart`,
   `SubagentStop`, `PreToolUse` on `SubagentHandback`) that append each sub-agent event to
   `.armadai/state/claude/<session>.jsonl` (ids and the `STATE:` word only), asks the agent
