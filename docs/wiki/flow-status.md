@@ -50,8 +50,11 @@ follows the failure path, even on a step without `states:`.
 
 Under Claude Code the coordinator (the main thread, which lives in `CLAUDE.md`) does not get
 this instruction and is not recorded: only sub-agents are. A step it holds is shown `~` and
-never asserted done or pending; the steps right after it open a run, and a link into it counts
-as taken, so it never holds a run open.
+never asserted done or pending. The run goes through it: a link into it leads on, in the same
+run, to the steps after it (all of them, since it records no state), so `dev → lead → qa` or a
+review loop `qa → lead → dev` is one run, with its loop counted. The transitions list each hop
+(`qa → lead`, then `lead → dev`). A flow that starts with the coordinator opens on the steps
+after it, and a loop that comes back to the same step through it does not hold the run open.
 
 ## Reading the output
 
@@ -84,7 +87,7 @@ deliver  in progress
 | `●` | running |
 | `○` | pending |
 | `?` | unsure, with the reason in parentheses (for example no `STATE:` line). It leads nowhere: started again, the step is retried in place and its new state replaces the `?` |
-| `✗` | a state the step does not declare. A state the step declares but no link follows ends the flow normally: it is not a `✗` |
+| `✗` | a state the step does not declare; it leads nowhere. A state the step declares but no link follows ends the flow normally: it is not a `✗` |
 | `~` | held by the coordinator, which is not recorded (`coordinator, not recorded`) |
 
 Other lines: `a → b : n` is a link taken `n` times (shown from twice on); the timed transitions
