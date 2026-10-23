@@ -1,3 +1,9 @@
+## Unreleased
+
+### Fixed
+
+- `link --target claude` no longer reports a hand-written `.claude/CLAUDE.md` as a stale file to remove by hand (#518): the line now appears only when the file carries the response-protocol markers (`<!--ARMADAI_`) that the former Claude linker always injected.
+
 ## v1.0.0-rc.7 (2026-10-23)
 
 Seventh release candidate. Teams get reusable building blocks and visibility: agent templates (`from:`/`vars:`), commands (`.armadai/commands/`) and slots that let a pack be completed by another, a faithful OpenCode 2.x adapter, `armadai flow status` to see where each flow stands (Claude Code), `init --pack --link`, and the native `concept-to-code` pack that brings them together.

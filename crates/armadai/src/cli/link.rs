@@ -270,8 +270,12 @@ fn prepare(
         compile::check_destination(root, Path::new("."), rel)?;
     }
 
-    // the root file of the former Claude linker, which Claude Code still reads
-    if target == "claude" && root.join(".claude/CLAUDE.md").is_file() {
+    // the root file of the former Claude linker, which Claude Code still reads: only
+    // when it carries that linker's response-protocol markers (it always injected them);
+    // a hand-written team file at the same path was never ours to flag
+    let legacy_claude_md = std::fs::read_to_string(root.join(".claude/CLAUDE.md"))
+        .is_ok_and(|c| c.contains("<!--ARMADAI_"));
+    if target == "claude" && legacy_claude_md {
         let recorded = (p.previous.iter().flat_map(|t| &t.entries))
             .any(|e| e.path == Path::new(".claude/CLAUDE.md"));
         if !recorded {

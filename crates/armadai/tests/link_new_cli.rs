@@ -387,13 +387,28 @@ fn an_edited_stale_file_is_left_in_place_and_reported() {
 #[test]
 fn the_former_claude_md_under_dot_claude_is_reported() {
     let mut files = PROJECT.to_vec();
-    files.push((".claude/CLAUDE.md", "old coordinator file\n"));
+    files.push((
+        ".claude/CLAUDE.md",
+        "old coordinator file\n<!--ARMADAI_END-->\n",
+    ));
     let env = Env::new(&files);
     let out = env.ok(&["link"]);
     assert!(
-        out.contains(".claude/CLAUDE.md: approximated (stale file left in place"),
+        out.contains(
+            "claude: .claude/CLAUDE.md: approximated (stale file left in place: not recorded by link, remove it by hand)\n"
+        ),
         "{out}"
     );
+    assert!(env.root().join(".claude/CLAUDE.md").is_file());
+}
+
+#[test]
+fn a_hand_written_claude_md_under_dot_claude_is_not_reported() {
+    let mut files = PROJECT.to_vec();
+    files.push((".claude/CLAUDE.md", "# Team rules\nWritten by hand.\n"));
+    let env = Env::new(&files);
+    let out = env.ok(&["link"]);
+    assert!(!out.contains(".claude/CLAUDE.md"), "{out}");
     assert!(env.root().join(".claude/CLAUDE.md").is_file());
 }
 
