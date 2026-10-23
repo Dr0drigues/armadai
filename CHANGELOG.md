@@ -4,8 +4,9 @@
 
 - Native starter pack `concept-to-code` (Claude Code and OpenCode): from a vague idea to clean
   code, with the user at every decision. Nine agents (`lead` coordinates), two flows (`deliver`:
-  the team writes the code; `guide`: the user writes it with a `coach`), four commands
-  (`/brief`, `/mockup`, `/iterate`, `/init-standards`) and slots (`code-standards`, `security`,
+  the team writes the code; `guide`: the user writes it with a `coach`), five commands
+  (`/brief`, `/mockup`, `/iterate`, `/init-standards`, `/preview`: opens a mockup or a diagram
+  through a local server bound to `127.0.0.1`) and slots (`code-standards`, `security`,
   `infra-docs`, `ux-guidelines`) filled by `/init-standards` or by your own skills. See
   [Starter packs](docs/wiki/starter-packs.md).
 - Flow status (MVP, Claude Code only). `link` installs async hooks (`SubagentStart`,

@@ -54,7 +54,7 @@ The eight packs below ship embedded in the binary, all native.
 | `armadai-dev` | `dev-lead` (coordinator), `schema-specialist`, `adapter-specialist`, `cli-specialist`, `qa-specialist`, `release-manager` | `delivery` (fan-out), `release` (QA approves, then the release manager) | `rust-conventions` |
 | `armadai-authoring` | `authoring-lead` (coordinator), `authoring-architect`, `agent-builder`, `skill-builder`, `starter-builder`, `authoring-reviewer`, `authoring-tester` | `authoring` (fan-out), `pack` (plan, build, review loop, test) | `armadai-conventions` |
 | `pirate-crew` | `capitaine` (coordinator), `vigie`, `charpentier`, `cartographe` | `mission` (fan-out) | `code-nautique` |
-| `concept-to-code` | `lead` (coordinator), `analyst`, `framer`, `designer`, `architect`, `implementer`, `coach`, `guardian`, `validator` | `deliver`, `guide` | `briefing`, `cadre`, `standards-setup`, `mockups`, `diagrams` |
+| `concept-to-code` | `lead` (coordinator), `analyst`, `framer`, `designer`, `architect`, `implementer`, `coach`, `guardian`, `validator` | `deliver`, `guide` | `briefing`, `cadre`, `standards-setup`, `mockups`, `diagrams`, `previewing` |
 
 `fullstack` has no coordinator, on purpose: a coordinator becomes the main session itself
 (`CLAUDE.md` for Claude Code), and making `code-reviewer` that would turn every conversation in
@@ -101,6 +101,30 @@ flow you want. Follow a run with `armadai flow status --watch` (Claude Code).
 | `/mockup <screen>` | `mockups` | three variants in one HTML file, you choose |
 | `/iterate <feedback>` | `mockups` | three new variants built on the one you chose |
 | `/init-standards` | `standards-setup` | analyses the repository, settles conventions with you, writes the project standards skill, then links |
+| `/preview [file \| stop]` | `previewing` | serves the project on `127.0.0.1` and gives the link to a mockup or a diagram (the latest `.html` under `mockups/` or `docs/` with no argument), offers to open the browser; `stop` stops that server |
+
+`/preview` always goes through a local server (`python3 -m http.server`, started in the
+background on the first free port from 8765, bound to `127.0.0.1` only, serving the project
+root only, reused if one already serves the project), so every file gets the same kind of
+link, `http://127.0.0.1:<port>/<path>`, which Claude Code opens on Cmd/Ctrl+click. Without
+`python3`, it gives the `file://` path instead. `lead` offers `/preview <file>` whenever
+`designer` or `architect` produces an `.html` file.
+
+**Shortcuts.** Claude Code reads key bindings from `~/.claude/keybindings.json`, a user file
+(not per project), so the pack does not install one. To bind `/preview` to Ctrl+X then P, add
+to it:
+
+```json
+{
+  "bindings": [
+    { "context": "Chat", "bindings": { "ctrl+x p": "command:preview" } }
+  ]
+}
+```
+
+`command:<name>` is the documented action for a slash command; that it runs a project command
+(one in `.claude/commands/`) and not only a built-in one is not verified yet. OpenCode has no
+binding to a custom command: `ctrl+p` opens the command palette, where `preview` is listed.
 
 **Slots.** The agents declare slots that your project fills: `code-standards` and `security`
 (`framer`, `implementer`, `coach`, `guardian`; `validator` takes `code-standards` alone, for
