@@ -42,10 +42,11 @@ pub struct Run {
 /// - The step of an event: the steps its `agent_type` holds (an agent no step
 ///   holds, internal ones with an empty type included, is ignored); among
 ///   them, the one a link not yet taken allows from a finished step of an open
-///   run (a `?` step leads nowhere); else a `?` step of an open run, retried in
-///   place; else a step where a run opens (an entry step, or one right after
-///   a step of the coordinator, which is never recorded and shows as `~`) of a
-///   flow without an open run. An entry starting again first closes the open
+///   run (a `?`/`✗` step leads nowhere; a step of the coordinator, never
+///   recorded and shown `~`, is crossed to the steps after it); else a `?` step
+///   of an open run, retried in place; else a step where a run opens (an entry
+///   step, or one right after a step of the coordinator) of a flow without an
+///   open run. An entry starting again first closes the open
 ///   run of its flow (kept, unfinished) when nothing leads back to it, or when
 ///   that run is stuck: nothing running and its last step `?`/`✗`.
 ///   Flows sharing that entry step open one candidate run each, grouped: each
@@ -55,7 +56,8 @@ pub struct Run {
 ///   and no run moves.
 /// - A run finishes when no step is running or `?`/`✗`, and no finished step
 ///   has a link still to take (taken once its target starts after it stopped;
-///   a link to the coordinator counts as taken).
+///   a loop back to the same step through the coordinator does not count, and
+///   goes on in the same run when that step starts again).
 pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
     let mut b = Builder {
         project,
@@ -127,6 +129,9 @@ fn merge_stops(events: &[FlowEvent]) -> Vec<FlowEvent> {
     out
 }
 
+/// A finished step and the coordinator's steps crossed from it.
+type Via<'p> = (String, Vec<&'p str>);
+
 struct Building<'p> {
     flow: &'p Flow,
     /// Candidate runs opened by one event share it; a dropped one extended nothing.
@@ -186,8 +191,10 @@ impl<'p> Building<'p> {
     /// The finished step (the latest) with a link to `to` still to take: `to`
     /// has not started since that step stopped, nor has the step itself (a
     /// restarted step's old stop opens nothing).
-    /// A `?` step leads nowhere; a link to the coordinator counts as taken.
-    fn linked_from(&self, to: &str) -> Option<String> {
+    /// A `?` or `✗` step leads nowhere; a step of the coordinator is crossed
+    /// (all its links: it records no state). Returns the step and the
+    /// coordinator's steps crossed on the way.
+    fn linked_from(&self, to: &str) -> Option<Via<'p>> {
         let mark = |step: &str| {
             (self.run.steps.iter())
                 .find(|v| v.step == step)
@@ -198,13 +205,41 @@ impl<'p> Building<'p> {
         }
         (self.stopped.iter())
             .filter(|(s, at)| {
-                mark(s) != Some(&Mark::Unsure)
+                !matches!(mark(s), Some(Mark::Unsure | Mark::Unexpected))
                     && self.started.get(to).is_none_or(|t| t < *at)
                     && self.started.get(*s).is_none_or(|t| t < *at)
-                    && next_steps(self.flow, s, self.leads_with(s)).contains(&to)
             })
-            .max_by_key(|(_, at)| **at)
-            .map(|(s, _)| s.clone())
+            .filter_map(|(s, at)| {
+                let path = self.reach(s).into_iter().find(|(t, _)| *t == to)?.1;
+                Some((at, s.clone(), path))
+            })
+            .max_by_key(|(at, _, _)| **at)
+            .map(|(_, s, path)| (s, path))
+    }
+
+    /// The recorded steps `from` leads to, each with the coordinator's steps
+    /// crossed to reach it.
+    fn reach(&self, from: &str) -> Vec<(&'p str, Vec<&'p str>)> {
+        let relay = |s: &str| (self.run.steps.iter()).any(|v| v.step == s && v.mark == Mark::Relay);
+        let mut todo: Vec<(&'p str, Vec<&'p str>)> =
+            (next_steps(self.flow, from, self.leads_with(from)))
+                .into_iter()
+                .map(|t| (t, Vec::new()))
+                .collect();
+        let (mut out, mut crossed) = (Vec::new(), BTreeSet::new());
+        while let Some((t, path)) = todo.pop() {
+            if !relay(t) {
+                out.push((t, path));
+            } else if crossed.insert(t) {
+                let path = [path, vec![t]].concat();
+                todo.extend(
+                    next_steps(self.flow, t, None)
+                        .into_iter()
+                        .map(|n| (n, path.clone())),
+                );
+            }
+        }
+        out
     }
 
     fn running(&self) -> bool {
@@ -281,9 +316,13 @@ impl<'p> Builder<'p> {
             })
             .collect();
         // (run, step, the finished step it is linked from)
-        let mut linked: Vec<(usize, &str, Option<String>)> = Vec::new();
+        let mut linked: Vec<(usize, &str, Option<Via>)> = Vec::new();
         for (fid, _, sid) in &held {
-            if let Some(i) = self.open_run(fid)
+            // a finished run has no link left but a loop back through the
+            // coordinator to the same step (see `stop`): that one goes on
+            let last =
+                (self.open.iter()).rposition(|r| r.run.flow == *fid && !r.dropped && !r.closed);
+            if let Some(i) = last
                 && let Some(from) = self.open[i].linked_from(sid)
             {
                 linked.push((i, sid, Some(from)));
@@ -349,6 +388,18 @@ impl<'p> Builder<'p> {
             let run = &mut self.open[*i];
             if !ambiguous {
                 run.started.insert(sid.to_string(), self.tick);
+                run.run.finished = false;
+            }
+            if let (false, Some((from, crossed))) = (ambiguous, from) {
+                // one transition per hop, through the coordinator's steps; read
+                // before the view below: `from` may be this very step
+                let mut state = run.leads_with(from).map(str::to_string);
+                let mut prev = from.clone();
+                for to in crossed.iter().copied().chain([*sid]) {
+                    (run.run.transitions).push((e.ts, prev.clone(), to.to_string(), state.take()));
+                    *run.taken.entry((prev, to.to_string())).or_default() += 1;
+                    prev = to.to_string();
+                }
             }
             *run.view(sid) = StepView {
                 step: sid.to_string(),
@@ -360,13 +411,6 @@ impl<'p> Builder<'p> {
                 state: None,
                 note: ambiguous.then(|| "ambiguous step".to_string()),
             };
-            if let (false, Some(from)) = (ambiguous, from) {
-                let state = run.leads_with(from).map(str::to_string);
-                (run.run.transitions).push((e.ts, from.clone(), sid.to_string(), state));
-                *run.taken
-                    .entry((from.clone(), sid.to_string()))
-                    .or_default() += 1;
-            }
         }
         self.assigned.insert(e.agent_id.clone(), targets.clone());
         targets
@@ -393,7 +437,9 @@ impl<'p> Builder<'p> {
             note: note.map(str::to_string),
         };
         run.stopped.insert(step.to_string(), self.tick);
-        let to_take = (run.flow.steps.keys()).any(|t| run.linked_from(t).is_some());
+        // a loop back to the same step through the coordinator holds nothing open
+        let to_take =
+            (run.flow.steps.keys()).any(|t| run.linked_from(t).is_some_and(|(s, _)| &s != t));
         // a `?` or `✗` step never ends a run
         let unknown =
             (run.run.steps.iter()).any(|v| matches!(v.mark, Mark::Unsure | Mark::Unexpected));
@@ -985,6 +1031,43 @@ mod tests {
         );
     }
 
+    /// Review E12 with an undeclared state: a `✗` step leads nowhere either.
+    #[test]
+    fn an_unexpected_step_leads_nowhere() {
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", Some("scope_changed")),
+            &step(40, "a4", "ops", None),
+            &approved_run(100, "b"),
+        ]);
+        assert_eq!(
+            runs(&deliver(), &events),
+            vec![
+                run(
+                    "deliver",
+                    vec![
+                        done("design", "done"),
+                        done("build", "done"),
+                        view(
+                            "guard",
+                            Mark::Unexpected,
+                            Some("scope_changed"),
+                            Some("undeclared state")
+                        ),
+                        pending("validate"),
+                    ],
+                    vec![
+                        t(20, "design", "build", Some("done")),
+                        t(30, "build", "guard", Some("done")),
+                    ],
+                    false,
+                ),
+                approved_view(100, true),
+            ]
+        );
+    }
+
     /// Review E7: a `?` step started again is retried, without a transition,
     /// and its new state replaces the `?`.
     #[test]
@@ -1176,6 +1259,115 @@ mod tests {
                 vec![t(20, "build", "check", Some("done"))],
                 true,
             )]
+        );
+    }
+
+    /// The coordinator's step is crossed: the run goes on to the step after it.
+    #[test]
+    fn a_coordinator_step_is_crossed_within_one_run() {
+        let p = project_with(
+            COORDINATED,
+            &[(
+                "pass",
+                "steps:\n  build: { agent: dev }\n  hand: { agent: lead }\n  check: { agent: qa }\nlinks:\n  - { from: build, to: hand }\n  - { from: hand, to: check }\n",
+            )],
+        );
+        let half = step(10, "a1", "dev", None);
+        let all = seq(&[&half, &step(20, "a2", "qa", None)]);
+        let steps = |check: StepView| vec![done("build", "done"), relay("hand"), check];
+        assert_eq!(
+            (runs(&p, &half), runs(&p, &all)),
+            (
+                vec![run("pass", steps(pending("check")), vec![], false)],
+                vec![run(
+                    "pass",
+                    steps(done("check", "done")),
+                    vec![
+                        t(20, "build", "hand", Some("done")),
+                        t(20, "hand", "check", None),
+                    ],
+                    true,
+                )],
+            )
+        );
+    }
+
+    /// A review loop through the coordinator, twice: one run, counted.
+    #[test]
+    fn a_review_loop_through_the_coordinator_is_one_run() {
+        let p = project_with(
+            COORDINATED,
+            &[(
+                "rev",
+                "steps:\n  triage: { agent: lead }\n  write: { agent: dev }\n  review: { agent: qa, states: [approved, rejected] }\n  ship: { agent: ops }\nlinks:\n  - { from: triage, to: write }\n  - { from: write, to: review }\n  - { from: review, to: triage, when: rejected }\n  - { from: review, to: ship, when: approved }\n",
+            )],
+        );
+        let events = seq(&[
+            &step(10, "a1", "dev", None),
+            &step(20, "a2", "qa", Some("rejected")),
+            &step(30, "a3", "dev", None),
+            &step(40, "a4", "qa", Some("rejected")),
+            &step(50, "a5", "dev", None),
+            &step(60, "a6", "qa", Some("approved")),
+            &step(70, "a7", "ops", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(
+            got.iter()
+                .map(|r| (r.steps.clone(), r.loops.clone(), r.finished))
+                .collect::<Vec<_>>(),
+            vec![(
+                vec![
+                    relay("triage"),
+                    done("write", "done"),
+                    done("review", "approved"),
+                    done("ship", "done"),
+                ],
+                vec![
+                    ("review".into(), "triage".into(), 2),
+                    ("triage".into(), "write".into(), 2),
+                    ("write".into(), "review".into(), 3),
+                ],
+                true,
+            )]
+        );
+    }
+
+    /// A loop back to the same step through the coordinator: the step may run
+    /// again in the same run, and the loop never holds the run open.
+    #[test]
+    fn a_loop_through_the_coordinator_to_the_same_step_ends_the_run() {
+        let p = project_with(
+            COORDINATED,
+            &[(
+                "again",
+                "steps:\n  build: { agent: dev }\n  check: { agent: lead }\nlinks:\n  - { from: build, to: check }\n  - { from: check, to: build }\n",
+            )],
+        );
+        let once = step(10, "a1", "dev", None);
+        let again = seq(&[&once, &[start(20, "a2", "dev")]]);
+        assert!(!runs(&p, &again)[0].finished, "running again");
+        let twice = seq(&[&once, &step(20, "a2", "dev", None)]);
+        assert_eq!(
+            (runs(&p, &once), runs(&p, &twice)),
+            (
+                vec![run(
+                    "again",
+                    vec![done("build", "done"), relay("check")],
+                    vec![],
+                    true
+                )],
+                vec![Run {
+                    flow: "again".into(),
+                    steps: vec![done("build", "done"), relay("check")],
+                    loops: vec![],
+                    transitions: vec![
+                        t(20, "build", "check", Some("done")),
+                        t(20, "check", "build", None),
+                    ],
+                    finished: true,
+                }],
+            )
         );
     }
 
