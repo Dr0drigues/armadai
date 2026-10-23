@@ -92,12 +92,19 @@ deliver  in progress
 | `?` | unsure, with the reason in parentheses (for example no `STATE:` line). It leads nowhere: started again, the step is retried in place and its new state replaces the `?` |
 | `✗` | a state the step does not declare. It leads nowhere: started again, the step is retried in place and its new state replaces the `✗`. A state the step declares but no link follows ends the flow normally: it is not a `✗` |
 | `~` | held by the coordinator, which is not recorded (`coordinator, not recorded`) |
+| `-` | not run in this session (`not run in this session`): a step before the one a run opened at, when the session started the flow mid-way. Neither done nor pending, it never holds the run open |
 
 Other lines: `a → b : n` is a link taken `n` times (shown from twice on); the timed transitions
 follow. All times
 are UTC. A finished run stays listed, finished runs first.
 
 - Two flows whose entry step is shared are shown as `a | b` until their steps diverge.
+- A session can start a flow mid-way (for example at `frame`, its `refine` done in an earlier
+  session): when no flow holding the agent has a run open (or its last one finished), a step
+  of the flow opens a run where it starts, the steps before it shown `-`. Flows sharing that
+  step are shown as `a | b` as above; an agent holding two steps of one flow opens one run with
+  both steps `?` (ambiguous step) and only the steps before both shown `-`. Its entry step started later opens a new run. A step right after a
+  coordinator's step in mid-flow is the exception (see the limits).
 - An entry step that nothing leads back to, started again, closes the open run of its flow
   (kept, unfinished) and opens a new one. An entry step a loop leads back to does so only when
   the open run is stuck (nothing running, its last step `?` or `✗`).
@@ -121,5 +128,7 @@ are UTC. A finished run stays listed, finished runs first.
   `when:` of its links.
 - A flow that is only a loop through the coordinator (`build → lead → build`) cannot tell a new
   run from one more round: both show in the same run.
-- A step started while its run cannot be told (the run already closed, or a step after a
-  coordinator's step in mid-flow with no run open) is not shown.
+- A step started while its run cannot be told is not shown: a step after a coordinator's step
+  in mid-flow with no run open, or a step that no link allows while a run of its flow is open
+  (stuck included: a `?`/`✗` step leads nowhere, only that step or the entry step starts
+  again).

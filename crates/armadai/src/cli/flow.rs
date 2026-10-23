@@ -25,7 +25,8 @@ pub enum FlowCommand {
             for the claude target when the project has a flow).\n\n\
             Each run of a flow lists its steps (✓ done with its state, ● running, ○ pending, \
             ? unsure with the reason, ✗ a state the step does not declare, ~ held by the \
-            coordinator, which is not recorded), the links taken more than once, and the timed \
+            coordinator, which is not recorded, - not run in this session: before the step a \
+            run opened at, when the session started mid-flow), the links taken more than once, and the timed \
             transitions (UTC). Without --session, the latest session.",
         after_help = "Examples:\n  \
             armadai flow status\n  \
