@@ -326,7 +326,7 @@ fn every_embedded_pack_installs_validates_and_links() {
         .filter(|p| p.join("pack.yaml").is_file())
         .collect();
     packs.sort();
-    assert_eq!(packs.len(), 7);
+    assert_eq!(packs.len(), 8);
     for pack in packs {
         let name = pack.file_name().unwrap().to_string_lossy().into_owned();
         let env = Env::new();
@@ -742,4 +742,100 @@ fn a_native_pack_installs_its_templates() {
          1 template(s)\n  Run `armadai link` to generate the target files.\n"
     );
     assert_eq!(armadai_model::validate(&env.root()), Vec::new());
+}
+
+/// The concept-to-code pack (step 4, lot B2): listed among the embedded packs,
+/// installed whole and linked to both targets by `--link`, valid with no diagnostic
+/// (no command shadowing a built-in, no unreachable step), `guardian` rendered from
+/// `checker`, and two flows identical but for the agent of `build`.
+#[test]
+fn the_concept_to_code_pack_installs_validates_and_links() {
+    let env = Env::new();
+    let (ok, _, err) = env.run(&["init", "--pack", "no-such-pack"]);
+    assert!(!ok);
+    assert_eq!(
+        err,
+        "Error: Starter pack 'no-such-pack' not found. Available packs: armadai-authoring, \
+         armadai-dev, code-analysis-rust, code-analysis-web, concept-to-code, fullstack, \
+         pirate-crew, rust-dev\n"
+    );
+
+    let (ok, out, err) = env.run(&["init", "--pack", "concept-to-code", "--link"]);
+    assert!(ok, "{out}\n{err}");
+    assert_eq!(
+        out.lines().next(),
+        Some(
+            "Created .armadai/ from pack 'concept-to-code': 9 agent(s), 5 skill(s), 2 flow(s), \
+             0 automation(s), 1 template(s), 4 command(s)"
+        )
+    );
+    let installed: Vec<String> = tree(&env.root().join(".armadai"))
+        .into_iter()
+        .filter(|(_, c)| c.is_some())
+        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .collect();
+    let agents = [
+        "analyst",
+        "architect",
+        "coach",
+        "designer",
+        "framer",
+        "guardian",
+        "implementer",
+        "lead",
+        "validator",
+    ];
+    let commands = ["brief", "init-standards", "iterate", "mockup"];
+    let skills = [
+        "briefing",
+        "cadre",
+        "diagrams",
+        "mockups",
+        "standards-setup",
+    ];
+    let mut expected: Vec<String> = [
+        ".gitignore",
+        "link-manifest.yaml",
+        "project.yaml",
+        "flows/deliver.yaml",
+        "flows/guide.yaml",
+        "templates/checker.md",
+    ]
+    .map(String::from)
+    .to_vec();
+    expected.extend(agents.map(|a| format!("agents/{a}.md")));
+    expected.extend(commands.map(|c| format!("commands/{c}.md")));
+    expected.extend(skills.map(|s| format!("skills/{s}/SKILL.md")));
+    expected.sort();
+    assert_eq!(installed, expected);
+
+    for target in [".claude", ".opencode"] {
+        for c in commands {
+            let f = env.root().join(format!("{target}/commands/{c}.md"));
+            assert!(f.is_file(), "{}", f.display());
+        }
+    }
+    assert_eq!(armadai_model::validate(&env.root()), Vec::new());
+
+    let (ok, out, err) = env.run(&["inspect", "guardian"]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        out.lines().nth(1),
+        Some("Source: .armadai/agents/guardian.md, from: checker (.armadai/templates/checker.md)")
+    );
+
+    let (ok, deliver, err) = env.run(&["graph", "deliver"]);
+    assert!(ok, "{err}");
+    let (ok, guide, err) = env.run(&["graph", "guide"]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        guide,
+        deliver
+            .replace("%% flow: deliver", "%% flow: guide")
+            .replace("build (implementer)", "build (coach)")
+    );
+    assert!(
+        deliver.contains("  n_build[\"build (implementer)\"]\n"),
+        "{deliver}"
+    );
 }

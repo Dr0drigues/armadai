@@ -1,0 +1,20 @@
+description: "The user writes the code with a coach: brief, frame, mockups, architecture, guided build, then guard and validate; a rejection goes back to the guided build, a changed scope back to the brief"
+start: refine
+steps:
+  build: { agent: coach }
+  design: { agent: architect }
+  frame: { agent: framer }
+  guard: { agent: guardian, states: [approved, rejected] }
+  mockup: { agent: designer }
+  refine: { agent: analyst }
+  validate: { agent: validator, states: [approved, rejected, scope_changed] }
+links:
+  - { from: refine, to: frame }
+  - { from: frame, to: mockup }
+  - { from: mockup, to: design }
+  - { from: design, to: build }
+  - { from: build, to: guard }
+  - { from: guard, to: build, when: rejected }
+  - { from: guard, to: validate, when: approved }
+  - { from: validate, to: build, when: rejected }
+  - { from: validate, to: refine, when: scope_changed }
