@@ -31,10 +31,10 @@ Set up `.armadai/preview/`, or check it, so that it holds exactly:
 mkdir -p .armadai/preview
 ln -sfn ../../docs .armadai/preview/docs
 ln -sfn ../../mockups .armadai/preview/mockups
-pwd > .armadai/preview/.project
+[ -s .armadai/preview/.project ] || python3 -c "import secrets; print(secrets.token_hex(16))" > .armadai/preview/.project
 ```
 
-Nothing else goes in this folder. `.project` holds the absolute path of the project: it tells this project's server apart from another one. If `.armadai/.gitignore` has no `preview/` line, add one: the folder is local to the machine.
+Nothing else goes in this folder. `.project` holds a random token, written once and kept: it tells this project's server apart from another one without revealing anything about the machine. If `.armadai/.gitignore` has no `preview/` line, add one: the folder is local to the machine.
 
 ## 3. The server: reuse it, or start one
 

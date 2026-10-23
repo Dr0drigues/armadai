@@ -110,7 +110,7 @@ serves the project), so every file gets the same kind of link,
 It never serves the project root: `http.server` does not check the `Host` header, so a web page
 could read what it serves by DNS rebinding (a `.env`, `.armadai/`, the code). It serves
 `.armadai/preview/` instead, a folder holding only the links `docs -> ../../docs` and
-`mockups -> ../../mockups` and a marker `.project` (the project's absolute path, used to find
+`mockups -> ../../mockups` and a marker `.project` (a random token written once, used to find
 a running server); the skill adds `preview/` to `.armadai/.gitignore`. A file outside `docs/`
 and `mockups/` is refused, with its `file://` path. While it runs, any program of the machine
 can read those two folders: stop it with `/preview stop` once done. Without `python3` (or on
