@@ -2,7 +2,7 @@
 
 ### Fixed
 
-- `link --target claude` no longer reports a hand-written `.claude/CLAUDE.md` as a stale file to remove by hand (#518): the line now appears only when the file carries the response-protocol markers (`<!--ARMADAI_`) of the former Claude linker. Known gap: files that linker wrote without markers (v0.6.0 to v0.11.0, and master from #459 to #468) are no longer flagged; a project migrated from those versions must delete `.claude/CLAUDE.md` by hand if it came from the old linker.
+- `link --target claude` no longer reports a hand-written `.claude/CLAUDE.md` as a stale file to remove by hand (#518): the line now appears only when the file carries the response-protocol markers (`<!--ARMADAI_`) of the former Claude linker. Known gap: files that linker wrote without markers (every release before v0.12.0, v0.1.0 to v0.11.0, and master from #459 to #468) are no longer flagged; a project migrated from those versions must delete `.claude/CLAUDE.md` by hand if it came from the old linker.
 
 ## v1.0.0-rc.7 (2026-10-23)
 
