@@ -57,9 +57,11 @@ pub struct Run {
 ///   and its last step `?`/`✗`), or when the entry was not run in it.
 ///   Flows sharing that entry step open one candidate run each, grouped: each
 ///   later event keeps the candidates it extends and drops the others; while
-///   more than one remains they show as one run named `a | b`. Steps of two
-///   distinct runs (or two steps of one): each is marked `?` "ambiguous step"
-///   and no run moves.
+///   more than one remains they show as one run named `a | b`. Links of
+///   several runs to the step: the most recent (its source stopped last, by
+///   `ts`) wins, none when another run already took a more recent link to a
+///   step the agent holds. Steps of two distinct runs left (a tie), or two
+///   steps of one: each is marked `?` "ambiguous step" and no run moves.
 /// - A run finishes when no step is running or `?`/`✗`, and no finished step
 ///   has a link still to take (taken once its target starts after it stopped;
 ///   a loop back to the same step through the coordinator does not count, and
@@ -81,7 +83,7 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
         };
         if e.event == EventKind::Stop && !b.ambiguous(&targets) {
             for (i, step) in &targets {
-                b.stop(*i, step, e.state.as_deref());
+                b.stop(*i, step, e.ts, e.state.as_deref());
             }
         }
     }
@@ -149,6 +151,10 @@ struct Building<'p> {
     /// Step -> tick of its last start / stop.
     started: HashMap<String, usize>,
     stopped: HashMap<String, usize>,
+    /// Step -> `ts` of its last stop.
+    stopped_ts: HashMap<String, u64>,
+    /// Step -> `ts` of the stop of the step whose link it last started on.
+    linked_at: HashMap<String, u64>,
     /// Hop -> tick it was last recorded at.
     crossed: HashMap<(String, String), usize>,
     taken: BTreeMap<(String, String), u32>,
@@ -179,6 +185,8 @@ impl<'p> Building<'p> {
             },
             started: HashMap::new(),
             stopped: HashMap::new(),
+            stopped_ts: HashMap::new(),
+            linked_at: HashMap::new(),
             crossed: HashMap::new(),
             taken: BTreeMap::new(),
         }
@@ -365,6 +373,31 @@ impl<'p> Builder<'p> {
                 linked.push((i, sid, Some(from)));
             }
         }
+        // links of several runs: the most recent (its source stopped last)
+        // wins, a tie stays ambiguous; none wins against a more recent link
+        // another run already took to a step the agent holds
+        let link_ts = |(i, _, from): &(usize, &str, Option<Via>)| {
+            from.as_ref()
+                .map_or(0, |(f, _)| self.open[*i].stopped_ts[f])
+        };
+        let newest = linked.iter().map(link_ts).max();
+        let taken = (held.iter())
+            .filter_map(|(fid, _, sid)| {
+                let i = (self.open.iter())
+                    .rposition(|r| r.run.flow == *fid && !r.dropped && !r.closed)?;
+                self.open[i].linked_at.get(*sid).copied()
+            })
+            .max();
+        if newest.is_some_and(|n| taken.is_some_and(|t| t > n)) {
+            return Vec::new();
+        }
+        if let Some(n) = newest {
+            let runs: BTreeSet<usize> = (linked.iter())
+                .filter(|l| link_ts(l) == n)
+                .map(|l| l.0)
+                .collect();
+            linked.retain(|l| runs.contains(&l.0));
+        }
         if linked.is_empty() {
             // a `?` or `✗` step started again: retried in place, no transition
             for (fid, _, sid) in &held {
@@ -474,6 +507,7 @@ impl<'p> Builder<'p> {
                 let mut state = run.leads_with(from).map(str::to_string);
                 let mut prev = from.clone();
                 let left = run.stopped[from];
+                run.linked_at.insert(sid.to_string(), run.stopped_ts[from]);
                 for (k, to) in crossed.iter().copied().chain([*sid]).enumerate() {
                     let hop = (prev.clone(), to.to_string());
                     // a hop into the coordinator counts once per stop of `from`,
@@ -507,7 +541,7 @@ impl<'p> Builder<'p> {
         targets
     }
 
-    fn stop(&mut self, i: usize, step: &str, state: Option<&str>) {
+    fn stop(&mut self, i: usize, step: &str, ts: u64, state: Option<&str>) {
         self.tick += 1;
         let run = &mut self.open[i];
         let declared = &run.flow.steps[step].states;
@@ -528,6 +562,7 @@ impl<'p> Builder<'p> {
             note: note.map(str::to_string),
         };
         run.stopped.insert(step.to_string(), self.tick);
+        run.stopped_ts.insert(step.to_string(), ts);
         // a loop back to the same step through the coordinator holds nothing open
         let to_take =
             (run.flow.steps.keys()).any(|t| run.linked_from(t).is_some_and(|(s, _)| &s != t));
@@ -1818,28 +1853,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_shared_agent_two_links_allow_is_unsure_in_both() {
-        let p = project(&[("deliver", DELIVER), ("hotfix", HOTFIX)]);
-        let events = seq(&[
-            &step(10, "a1", "architect", None),
-            &step(12, "l1", "lead", None),
-            &step(20, "a2", "dev", None),
-        ]);
-        let got = runs(&p, &events);
-        let ambiguous = |s: &str| view(s, Mark::Unsure, None, Some("ambiguous step"));
-        assert_eq!(
-            got.iter()
-                .map(|r| (r.flow.as_str(), r.steps[1].clone()))
-                .collect::<Vec<_>>(),
-            vec![
-                ("deliver", ambiguous("build")),
-                ("hotfix", ambiguous("patch"))
-            ]
-        );
-        assert!(got.iter().all(|r| r.transitions.is_empty() && !r.finished));
-    }
-
     /// The `concept-to-code` flows: `deliver` and `guide` differ at `build` only.
     fn concept_to_code() -> Project {
         let flow = |builder: &str| {
@@ -1991,6 +2004,135 @@ mod tests {
             got.iter().map(|r| r.flow.as_str()).collect::<Vec<_>>(),
             ["deliver"]
         );
+    }
+
+    /// `triage` (hotfix) stops, then `design` (deliver): both lead to `dev`,
+    /// the most recent link wins.
+    #[test]
+    fn a_shared_agent_two_links_allow_takes_the_most_recent() {
+        let p = project(&[("deliver", DELIVER), ("hotfix", HOTFIX)]);
+        let events = seq(&[
+            &step(10, "l1", "lead", None),
+            &step(12, "a1", "architect", None),
+            &step(20, "d1", "dev", None),
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(
+            got.iter()
+                .map(|r| (r.flow.as_str(), r.steps[1].clone(), r.transitions.len()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("hotfix", view("patch", Mark::Pending, None, None), 0),
+                ("deliver", done("build", "done"), 1),
+            ]
+        );
+    }
+
+    /// Both links' sources stopped in the same second: a tie, `?` in both.
+    #[test]
+    fn a_shared_agent_two_links_of_the_same_second_is_unsure_in_both() {
+        let p = project(&[("deliver", DELIVER), ("hotfix", HOTFIX)]);
+        let events = seq(&[
+            &[start(10, "a1", "architect"), start(10, "l1", "lead")],
+            &[
+                stop(11, "a1", "architect", None),
+                stop(11, "l1", "lead", None),
+            ],
+            &[start(20, "d1", "dev")],
+        ]);
+        let got = runs(&p, &events);
+        let ambiguous = |s: &str| view(s, Mark::Unsure, None, Some("ambiguous step"));
+        assert_eq!(
+            got.iter()
+                .map(|r| (r.flow.as_str(), r.steps[1].clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("deliver", ambiguous("build")),
+                ("hotfix", ambiguous("patch"))
+            ]
+        );
+        assert!(got.iter().all(|r| r.transitions.is_empty() && !r.finished));
+    }
+
+    /// `patch` (hotfix) took its link from `triage` stopped at 11; `design`
+    /// (deliver) stopped in that same second, after `patch` started: a tie
+    /// with a link already taken elsewhere leaves the available link to win.
+    #[test]
+    fn a_link_as_recent_as_one_taken_elsewhere_is_still_taken() {
+        let p = project(&[("deliver", DELIVER), ("hotfix", HOTFIX)]);
+        let events = seq(&[
+            &[start(10, "l1", "lead"), start(10, "a1", "architect")],
+            &[stop(11, "l1", "lead", None), start(11, "d1", "dev")],
+            &[
+                stop(11, "a1", "architect", None),
+                stop(12, "d1", "dev", None),
+            ],
+            &[start(20, "d2", "dev")],
+        ]);
+        let got = runs(&p, &events);
+        assert_eq!(
+            got.iter()
+                .map(|r| (r.flow.as_str(), r.steps[1].clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("hotfix", done("patch", "done")),
+                ("deliver", view("build", Mark::Running, None, None)),
+            ]
+        );
+    }
+
+    /// A real session (2026-10-23, 164 lines): `guide` up to `guard`
+    /// rejected and `build` again, then the user hands the rest to
+    /// `implementer` (`deliver` only), whose `build` the next `guardian`
+    /// follows: its link is the most recent. The last `guardian`, after
+    /// `deliver` ended, follows `guide`'s link older than the one `deliver`
+    /// already took: it is not shown.
+    #[test]
+    fn a_step_two_open_runs_link_to_goes_to_the_most_recent_link() {
+        let events: Vec<FlowEvent> =
+            include_str!("../../tests/fixtures/flow-status/recent-link-session.jsonl")
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+        assert_eq!(events.len(), 164);
+        let guide = run(
+            "guide",
+            vec![
+                not_run("refine"),
+                done("frame", "done"),
+                done("mockup", "done"),
+                done("design", "done"),
+                done("build", "done"),
+                done("guard", "rejected"),
+                pending("validate"),
+            ],
+            vec![
+                t(1792747780, "frame", "mockup", Some("done")),
+                t(1792748113, "mockup", "design", Some("done")),
+                t(1792749634, "design", "build", Some("done")),
+                t(1792751453, "build", "guard", Some("done")),
+                t(1792751563, "guard", "build", Some("rejected")),
+            ],
+            false,
+        );
+        let deliver = run(
+            "deliver",
+            vec![
+                not_run("refine"),
+                not_run("frame"),
+                not_run("mockup"),
+                not_run("design"),
+                done("build", "done"),
+                done("guard", "approved"),
+                done("validate", "approved"),
+            ],
+            vec![
+                t(1792763656, "build", "guard", Some("done")),
+                t(1792763710, "guard", "validate", Some("approved")),
+            ],
+            true,
+        );
+        assert_eq!(runs(&concept_to_code(), &events), vec![guide, deliver]);
     }
 
     #[test]

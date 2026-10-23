@@ -85,6 +85,10 @@
   run open; the entry step started later opens a new run. Flows sharing that step show as one
   run `a | b` until they diverge. A step right after a coordinator's step in mid-flow still
   opens no run.
+- `armadai flow status` no longer marks a step `?` (ambiguous step) when links of two open runs
+  lead to it, for example `guard` after `build` in `guide` then in `deliver`: the run whose
+  link is the most recent (its source stopped last) takes it, and a link older than one another
+  run already took leads nowhere. Sources stopped in the same second still give `?`.
 
 ## v1.0.0-rc.6 (2026-10-21)
 
