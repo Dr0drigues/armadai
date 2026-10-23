@@ -14,6 +14,8 @@ pub enum Mark {
     Pending,
     Unsure,
     Unexpected,
+    /// A step the coordinator holds: the main thread, never recorded.
+    Relay,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,16 +42,20 @@ pub struct Run {
 /// - The step of an event: the steps its `agent_type` holds (an agent no step
 ///   holds, internal ones with an empty type included, is ignored); among
 ///   them, the one a link not yet taken allows from a finished step of an open
-///   run, else an entry step of a flow without an open run (which opens one;
-///   an open run that is stuck, nothing running and its last step `?`/`✗`, is
-///   closed first and stays visible, unfinished).
+///   run (a `?` step leads nowhere); else a `?` step of an open run, retried in
+///   place; else a step where a run opens (an entry step, or one right after
+///   a step of the coordinator, which is never recorded and shows as `~`) of a
+///   flow without an open run. An entry starting again first closes the open
+///   run of its flow (kept, unfinished) when nothing leads back to it, or when
+///   that run is stuck: nothing running and its last step `?`/`✗`.
 ///   Flows sharing that entry step open one candidate run each, grouped: each
 ///   later event keeps the candidates it extends and drops the others; while
 ///   more than one remains they show as one run named `a | b`. Steps of two
 ///   distinct runs (or two steps of one): each is marked `?` "ambiguous step"
 ///   and no run moves.
-/// - A run finishes when no step is running and no finished step has a link
-///   still to take (a link is taken once its target starts after it stopped).
+/// - A run finishes when no step is running or `?`/`✗`, and no finished step
+///   has a link still to take (taken once its target starts after it stopped;
+///   a link to the coordinator counts as taken).
 pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
     let mut b = Builder {
         project,
@@ -136,12 +142,15 @@ struct Building<'p> {
 }
 
 impl<'p> Building<'p> {
-    fn new(flow_id: &str, flow: &'p Flow, group: usize) -> Self {
-        let pending = |s: &str| StepView {
-            step: s.to_string(),
-            mark: Mark::Pending,
-            state: None,
-            note: None,
+    fn new(flow_id: &str, flow: &'p Flow, group: usize, coordinator: Option<&str>) -> Self {
+        let pending = |s: &str| {
+            let relay = coordinator == Some(flow.steps[s].agent.as_str());
+            StepView {
+                step: s.to_string(),
+                mark: if relay { Mark::Relay } else { Mark::Pending },
+                state: None,
+                note: relay.then(|| "coordinator, not recorded".to_string()),
+            }
         };
         Building {
             flow,
@@ -177,10 +186,20 @@ impl<'p> Building<'p> {
     /// The finished step (the latest) with a link to `to` still to take: `to`
     /// has not started since that step stopped, nor has the step itself (a
     /// restarted step's old stop opens nothing).
+    /// A `?` step leads nowhere; a link to the coordinator counts as taken.
     fn linked_from(&self, to: &str) -> Option<String> {
+        let mark = |step: &str| {
+            (self.run.steps.iter())
+                .find(|v| v.step == step)
+                .map(|v| &v.mark)
+        };
+        if mark(to) == Some(&Mark::Relay) {
+            return None;
+        }
         (self.stopped.iter())
             .filter(|(s, at)| {
-                self.started.get(to).is_none_or(|t| t < *at)
+                mark(s) != Some(&Mark::Unsure)
+                    && self.started.get(to).is_none_or(|t| t < *at)
                     && self.started.get(*s).is_none_or(|t| t < *at)
                     && next_steps(self.flow, s, self.leads_with(s)).contains(&to)
             })
@@ -227,6 +246,23 @@ impl<'p> Builder<'p> {
             .filter(|i| !self.open[*i].run.finished)
     }
 
+    fn relay(&self, flow: &Flow, step: &str) -> bool {
+        self.project.manifest.coordinator.as_deref() == Some(flow.steps[step].agent.as_str())
+    }
+
+    /// Where a run can open: an entry step, or a step right after one the
+    /// coordinator holds (its handing over is not recorded).
+    fn opens_at(&self, flow: &Flow, step: &str) -> bool {
+        armadai_model::entry_steps(flow).iter().any(|s| s == step)
+            || (flow.steps.keys())
+                .any(|r| self.relay(flow, r) && next_steps(flow, r, None).contains(&step))
+    }
+
+    /// A step leads to `step` (a link or an `on_failure`).
+    fn has_incoming(flow: &Flow, step: &str) -> bool {
+        (flow.steps.keys()).any(|s| next_steps(flow, s, None).contains(&step))
+    }
+
     /// Steps of two distinct runs, or two steps of one candidate.
     fn ambiguous(&self, targets: &[(usize, String)]) -> bool {
         let runs: BTreeSet<usize> = targets.iter().map(|(i, _)| *i).collect();
@@ -254,10 +290,27 @@ impl<'p> Builder<'p> {
             }
         }
         if linked.is_empty() {
+            // a `?` step started again: retried in place, no transition
+            for (fid, _, sid) in &held {
+                if let Some(i) = self.open_run(fid)
+                    && self.open[i].stopped.contains_key(*sid)
+                    && self.open[i]
+                        .run
+                        .steps
+                        .iter()
+                        .any(|v| v.step == *sid && v.mark == Mark::Unsure)
+                {
+                    linked.push((i, sid, None));
+                }
+            }
+        }
+        if linked.is_empty() {
+            // an entry starting again closes the open run when nothing leads
+            // back to it, or when that run is stuck
             for (fid, flow, sid) in &held {
                 if let Some(i) = self.open_run(fid)
-                    && self.open[i].stuck()
-                    && armadai_model::entry_steps(flow).iter().any(|s| s == sid)
+                    && self.opens_at(flow, sid)
+                    && (!Self::has_incoming(flow, sid) || self.open[i].stuck())
                 {
                     let group = self.open[i].group;
                     (self.open.iter_mut())
@@ -266,16 +319,14 @@ impl<'p> Builder<'p> {
                 }
             }
             let entries: Vec<_> = (held.iter())
-                .filter(|(fid, flow, sid)| {
-                    self.open_run(fid).is_none()
-                        && armadai_model::entry_steps(flow).iter().any(|s| s == sid)
-                })
+                .filter(|(fid, flow, sid)| self.open_run(fid).is_none() && self.opens_at(flow, sid))
                 .collect();
             let group = self.open.len();
             for (fid, flow, sid) in entries {
                 // two entry steps of one flow share the run they open
                 let i = self.open_run(fid).unwrap_or_else(|| {
-                    self.open.push(Building::new(fid, flow, group));
+                    let coordinator = self.project.manifest.coordinator.as_deref();
+                    self.open.push(Building::new(fid, flow, group, coordinator));
                     self.open.len() - 1
                 });
                 linked.push((i, sid, None));
@@ -326,6 +377,7 @@ impl<'p> Builder<'p> {
         let run = &mut self.open[i];
         let declared = &run.flow.steps[step].states;
         let (mark, state, note) = match state {
+            Some("failed") => (Mark::Done, Some("failed"), None),
             _ if declared.is_empty() => (Mark::Done, Some("done"), None),
             None => (Mark::Unsure, None, Some("no STATE line")),
             // every step also has `done` and `failed` (project format)
@@ -397,11 +449,15 @@ mod tests {
     const HOTFIX: &str = "steps:\n  triage: { agent: lead }\n  patch: { agent: dev }\n  verify: { agent: lead }\nlinks:\n  - { from: triage, to: patch }\n  - { from: patch, to: verify }\n";
 
     fn project(flows: &[(&str, &str)]) -> Project {
+        project_with("schema_version: 1\n", flows)
+    }
+
+    fn project_with(manifest: &str, flows: &[(&str, &str)]) -> Project {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join(".armadai");
         std::fs::create_dir_all(a.join("agents")).unwrap();
         std::fs::create_dir_all(a.join("flows")).unwrap();
-        std::fs::write(a.join("project.yaml"), "schema_version: 1\n").unwrap();
+        std::fs::write(a.join("project.yaml"), manifest).unwrap();
         for agent in [
             "architect",
             "dev",
@@ -845,14 +901,303 @@ mod tests {
         );
     }
 
+    fn run(
+        flow: &str,
+        steps: Vec<StepView>,
+        transitions: Vec<(u64, String, String, Option<String>)>,
+        finished: bool,
+    ) -> Run {
+        Run {
+            flow: flow.into(),
+            steps,
+            loops: vec![],
+            transitions,
+            finished,
+        }
+    }
+
+    fn done(step: &str, state: &str) -> StepView {
+        view(step, Mark::Done, Some(state), None)
+    }
+
+    fn pending(step: &str) -> StepView {
+        view(step, Mark::Pending, None, None)
+    }
+
+    /// A whole `deliver` run, approved at once, from `base` on.
+    fn approved_run(base: u64, id: &str) -> Vec<FlowEvent> {
+        seq(&[
+            &step(base, &format!("{id}1"), "architect", None),
+            &step(base + 10, &format!("{id}2"), "dev", None),
+            &step(base + 20, &format!("{id}3"), "qa", Some("approved")),
+            &step(base + 30, &format!("{id}4"), "ops", None),
+        ])
+    }
+
+    fn approved_view(base: u64, finished: bool) -> Run {
+        run(
+            "deliver",
+            vec![
+                done("design", "done"),
+                done("build", "done"),
+                done("guard", "approved"),
+                done("validate", "done"),
+            ],
+            vec![
+                t(base + 10, "design", "build", Some("done")),
+                t(base + 20, "build", "guard", Some("done")),
+                t(base + 30, "guard", "validate", Some("approved")),
+            ],
+            finished,
+        )
+    }
+
+    /// Review E12: a `?` step leads nowhere, so `ops` is not taken for
+    /// `validate`, and the second run is not merged into the first.
     #[test]
-    fn an_entry_restarted_in_a_run_that_moves_on_is_ignored() {
-        let healthy = seq(&[
+    fn an_unsure_step_leads_nowhere() {
+        let events = seq(&[
             &step(10, "a1", "architect", None),
             &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", None),
+            &step(40, "a4", "ops", None),
+            &approved_run(100, "b"),
         ]);
-        let restarted = seq(&[&healthy, &[start(30, "a3", "architect")]]);
-        assert_eq!(runs(&deliver(), &restarted), runs(&deliver(), &healthy));
+        assert_eq!(
+            runs(&deliver(), &events),
+            vec![
+                run(
+                    "deliver",
+                    vec![
+                        done("design", "done"),
+                        done("build", "done"),
+                        view("guard", Mark::Unsure, None, Some("no STATE line")),
+                        pending("validate"),
+                    ],
+                    vec![
+                        t(20, "design", "build", Some("done")),
+                        t(30, "build", "guard", Some("done")),
+                    ],
+                    false,
+                ),
+                approved_view(100, true),
+            ]
+        );
+    }
+
+    /// Review E7: a `?` step started again is retried, without a transition,
+    /// and its new state replaces the `?`.
+    #[test]
+    fn an_unsure_step_can_be_retried() {
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", None),
+            &step(35, "a3b", "qa", Some("approved")),
+            &step(40, "a4", "ops", None),
+        ]);
+        assert_eq!(
+            runs(&deliver(), &events),
+            vec![run(
+                "deliver",
+                vec![
+                    done("design", "done"),
+                    done("build", "done"),
+                    done("guard", "approved"),
+                    done("validate", "done"),
+                ],
+                vec![
+                    t(20, "design", "build", Some("done")),
+                    t(30, "build", "guard", Some("done")),
+                    t(40, "guard", "validate", Some("approved")),
+                ],
+                true,
+            )]
+        );
+    }
+
+    /// Review E8: an entry step without incoming links that starts again closes
+    /// the open run, even with a step still running, and opens a new one.
+    #[test]
+    fn an_entry_restarted_closes_the_open_run_even_with_a_step_running() {
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", Some("approved")),
+            &[start(40, "a4", "ops")],
+            &approved_run(100, "b"),
+        ]);
+        let mut first = approved_view(0, false);
+        first.steps[3] = view("validate", Mark::Running, None, None);
+        first.transitions = vec![
+            t(20, "design", "build", Some("done")),
+            t(30, "build", "guard", Some("done")),
+            t(40, "guard", "validate", Some("approved")),
+        ];
+        assert_eq!(
+            runs(&deliver(), &events),
+            vec![first, approved_view(100, true)]
+        );
+    }
+
+    /// Review E8b: the restart from `design` is a new run, not the loop
+    /// `guard -> build` of the first one.
+    #[test]
+    fn an_entry_restarted_after_a_rejection_is_a_new_run_not_the_loop() {
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", None),
+            &step(30, "a3", "qa", Some("rejected")),
+            &step(100, "b1", "architect", None),
+            &step(110, "b2", "dev", None),
+        ]);
+        assert_eq!(
+            runs(&deliver(), &events),
+            vec![
+                run(
+                    "deliver",
+                    vec![
+                        done("design", "done"),
+                        done("build", "done"),
+                        done("guard", "rejected"),
+                        pending("validate"),
+                    ],
+                    vec![
+                        t(20, "design", "build", Some("done")),
+                        t(30, "build", "guard", Some("done")),
+                    ],
+                    false,
+                ),
+                run(
+                    "deliver",
+                    vec![
+                        done("design", "done"),
+                        view("build", Mark::Done, Some("done"), None),
+                        pending("guard"),
+                        pending("validate"),
+                    ],
+                    vec![t(110, "design", "build", Some("done"))],
+                    false,
+                ),
+            ]
+        );
+    }
+
+    /// Review E2: `STATE: failed` on a step without states follows `on_failure`.
+    #[test]
+    fn a_failed_stateless_step_follows_its_failure_path() {
+        let p = project(&[(
+            "f",
+            "steps:\n  design: { agent: architect }\n  build: { agent: dev, on_failure: fix }\n  fix: { agent: implementer }\n  test: { agent: qa }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: test }\n  - { from: fix, to: test }\n",
+        )]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "dev", Some("failed")),
+            &step(30, "a3", "implementer", None),
+            &step(40, "a4", "qa", None),
+        ]);
+        assert_eq!(
+            runs(&p, &events),
+            vec![run(
+                "f",
+                vec![
+                    done("design", "done"),
+                    done("build", "failed"),
+                    done("test", "done"),
+                    done("fix", "done"),
+                ],
+                vec![
+                    t(20, "design", "build", Some("done")),
+                    t(30, "build", "fix", Some("failed")),
+                    t(40, "fix", "test", Some("done")),
+                ],
+                true,
+            )]
+        );
+    }
+
+    /// Review E11b: an entry a loop leads back to closes a run only when it is stuck.
+    #[test]
+    fn an_entry_with_a_loop_back_reopens_only_a_stuck_run() {
+        let p = project(&[(
+            "check",
+            "steps:\n  a: { agent: architect }\n  r: { agent: qa, states: [ok, ko] }\nlinks:\n  - { from: a, to: r }\n  - { from: r, to: a, when: ko }\n",
+        )]);
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &step(20, "a2", "qa", None),
+            &step(30, "a3", "architect", None),
+            &step(40, "a4", "qa", Some("ok")),
+        ]);
+        assert_eq!(
+            runs(&p, &events),
+            vec![
+                run(
+                    "check",
+                    vec![
+                        done("a", "done"),
+                        view("r", Mark::Unsure, None, Some("no STATE line")),
+                    ],
+                    vec![t(20, "a", "r", Some("done"))],
+                    false,
+                ),
+                run(
+                    "check",
+                    vec![done("a", "done"), done("r", "ok")],
+                    vec![t(40, "a", "r", Some("done"))],
+                    true,
+                ),
+            ]
+        );
+    }
+
+    const COORDINATED: &str = "schema_version: 1\ncoordinator: lead\n";
+
+    fn relay(step: &str) -> StepView {
+        view(step, Mark::Relay, None, Some("coordinator, not recorded"))
+    }
+
+    /// A flow that starts with the coordinator opens on the step after it.
+    #[test]
+    fn a_flow_led_by_the_coordinator_opens_on_its_first_delegated_step() {
+        let p = project_with(
+            COORDINATED,
+            &[(
+                "plan",
+                "steps:\n  frame: { agent: lead }\n  build: { agent: dev }\n  check: { agent: qa }\nlinks:\n  - { from: frame, to: build }\n  - { from: build, to: check }\n",
+            )],
+        );
+        let events = seq(&[&step(10, "a1", "dev", None), &step(20, "a2", "qa", None)]);
+        assert_eq!(
+            runs(&p, &events),
+            vec![run(
+                "plan",
+                vec![relay("frame"), done("build", "done"), done("check", "done")],
+                vec![t(20, "build", "check", Some("done"))],
+                true,
+            )]
+        );
+    }
+
+    /// A link to the coordinator counts as taken: it does not hold the run open.
+    #[test]
+    fn a_link_to_the_coordinator_does_not_block_the_end() {
+        let p = project_with(
+            COORDINATED,
+            &[(
+                "ask",
+                "steps:\n  build: { agent: dev }\n  review: { agent: lead }\nlinks:\n  - { from: build, to: review }\n",
+            )],
+        );
+        assert_eq!(
+            runs(&p, &step(10, "a1", "dev", None)),
+            vec![run(
+                "ask",
+                vec![done("build", "done"), relay("review")],
+                vec![],
+                true,
+            )]
+        );
     }
 
     /// design, build, guard `rejected`, build, then guard starts again.

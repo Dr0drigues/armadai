@@ -31,6 +31,7 @@ pub fn render(runs: &[Run], session: &str) -> String {
                 Mark::Pending => ("○", Some("pending")),
                 Mark::Unsure => ("?", None),
                 Mark::Unexpected => ("✗", None),
+                Mark::Relay => ("~", None),
             };
             let what = (v.state.as_deref().or(word).map(str::to_string))
                 .into_iter()
@@ -41,7 +42,7 @@ pub fn render(runs: &[Run], session: &str) -> String {
             out.push('\n');
         }
         for (from, to, n) in &run.loops {
-            out += &format!("  {from} ⇄ {to} : {n}\n");
+            out += &format!("  {from} → {to} : {n}\n");
         }
         for (ts, from, to, state) in &run.transitions {
             let state = state
@@ -151,7 +152,7 @@ mod tests {
                 t(T0 + 20, "design", "build", Some("done")),
                 t(T0 + 30, "build", "guard", Some("done")),
                 t(T0 + 40, "guard", "build", Some("rejected")),
-                t(T0 + 50, "build", "guard", None),
+                t(T0 + 50, "build", "guard", Some("done")),
             ],
             finished: false,
         }
@@ -162,6 +163,25 @@ mod tests {
             flow: "hotfix".into(),
             steps: vec![
                 view("triage", Mark::Done, Some("done"), None),
+                view("check", Mark::Done, Some("approved"), None),
+            ],
+            loops: vec![],
+            transitions: vec![t(T0 + 5, "triage", "check", Some("done"))],
+            finished: true,
+        }
+    }
+
+    /// What `runs` gives for `?`, `✗` and a coordinator's step: never finished.
+    fn uncertain() -> Run {
+        Run {
+            flow: "review".into(),
+            steps: vec![
+                view(
+                    "frame",
+                    Mark::Relay,
+                    None,
+                    Some("coordinator, not recorded"),
+                ),
                 view("check", Mark::Unsure, None, Some("no STATE line")),
                 view(
                     "verify",
@@ -171,9 +191,22 @@ mod tests {
                 ),
             ],
             loops: vec![],
-            transitions: vec![t(T0 + 5, "triage", "check", Some("done"))],
-            finished: true,
+            transitions: vec![],
+            finished: false,
         }
+    }
+
+    #[test]
+    fn uncertain_and_coordinator_steps_say_why() {
+        assert_eq!(
+            render(&[uncertain()], "s"),
+            "session s (UTC)\n\
+             \n\
+             review  in progress\n\
+             \x20 ~ frame   (coordinator, not recorded)\n\
+             \x20 ? check   (no STATE line)\n\
+             \x20 ✗ verify  scope_changed (undeclared state)\n"
+        );
     }
 
     #[test]
@@ -187,11 +220,11 @@ mod tests {
              \x20 ✓ build     done\n\
              \x20 ● guard     running\n\
              \x20 ○ validate  pending\n\
-             \x20 build ⇄ guard : 2\n\
+             \x20 build → guard : 2\n\
              \x20 09:15:20  design → build  (done)\n\
              \x20 09:15:30  build → guard  (done)\n\
              \x20 09:15:40  guard → build  (rejected)\n\
-             \x20 09:15:50  build → guard\n"
+             \x20 09:15:50  build → guard  (done)\n"
         );
     }
 
@@ -203,8 +236,7 @@ mod tests {
              \n\
              hotfix  finished\n\
              \x20 ✓ triage  done\n\
-             \x20 ? check   (no STATE line)\n\
-             \x20 ✗ verify  scope_changed (undeclared state)\n\
+             \x20 ✓ check   approved\n\
              \x20 09:15:05  triage → check  (done)\n\
              \n\
              deliver  in progress\n\
@@ -212,11 +244,11 @@ mod tests {
              \x20 ✓ build     done\n\
              \x20 ● guard     running\n\
              \x20 ○ validate  pending\n\
-             \x20 build ⇄ guard : 2\n\
+             \x20 build → guard : 2\n\
              \x20 09:15:20  design → build  (done)\n\
              \x20 09:15:30  build → guard  (done)\n\
              \x20 09:15:40  guard → build  (rejected)\n\
-             \x20 09:15:50  build → guard\n"
+             \x20 09:15:50  build → guard  (done)\n"
         );
     }
 
@@ -226,15 +258,15 @@ mod tests {
             flow: "f".into(),
             steps: vec![
                 view("a", Mark::Done, None, None),
-                view("long-step", Mark::Unsure, None, None),
+                view("long-step", Mark::Pending, None, None),
             ],
             loops: vec![],
             transitions: vec![],
-            finished: true,
+            finished: false,
         };
         assert_eq!(
             render(&[run], "s"),
-            "session s (UTC)\n\nf  finished\n  ✓ a\n  ? long-step\n"
+            "session s (UTC)\n\nf  in progress\n  ✓ a\n  ○ long-step  pending\n"
         );
     }
 

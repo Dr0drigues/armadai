@@ -115,7 +115,7 @@ deliver  in progress\n\
 \x20 ✓ build     done\n\
 \x20 ● guard     running\n\
 \x20 ○ validate  pending\n\
-\x20 build ⇄ guard : 2\n\
+\x20 build → guard : 2\n\
 \x20 09:15:20  design → build  (done)\n\
 \x20 09:15:30  build → guard  (done)\n\
 \x20 09:15:40  guard → build  (rejected)\n\

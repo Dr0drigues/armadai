@@ -24,8 +24,9 @@ pub enum FlowCommand {
             the recording hooks wrote under .armadai/state/claude/ (installed by `armadai link` \
             for the claude target when the project has a flow).\n\n\
             Each run of a flow lists its steps (✓ done with its state, ● running, ○ pending, \
-            ? unsure with the reason, ✗ a state the step does not declare), the links taken more than \
-            once, and the timed transitions (UTC). Without --session, the latest session.",
+            ? unsure with the reason, ✗ a state the step does not declare, ~ held by the \
+            coordinator, which is not recorded), the links taken more than once, and the timed \
+            transitions (UTC). Without --session, the latest session.",
         after_help = "Examples:\n  \
             armadai flow status\n  \
             armadai flow status deliver --watch\n  \
@@ -183,7 +184,7 @@ fn print_painted(text: &str) {
             _ if line.starts_with("session ") || line.starts_with("SESSION ") => style::header(),
             Some('✓') => style::ok(),
             Some('●') => style::running(),
-            Some('○') => style::muted(),
+            Some('○' | '~') => style::muted(),
             Some('?') => style::warn(),
             Some('✗') => style::err(),
             // a run's heading: `<flow>  in progress|finished`
