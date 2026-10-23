@@ -61,7 +61,7 @@ A question about a convention (naming, layout, a library, a test tool…) is the
 - `/mockup <screen or feature>`: three mockup variants and a choice.
 - `/iterate <feedback>`: a new round of variants from the chosen one.
 - `/init-standards`: analyse the repository, settle the conventions, write the project standards and the documentation tree, then link.
-- `/preview [file | stop]`: serve the project on 127.0.0.1 and give the link to a mockup or a diagram (the latest one with no argument), or stop that server.
+- `/preview [file | stop]`: serve `mockups/` and `docs/` on 127.0.0.1 and give the link to a mockup or a diagram (the latest one with no argument), or stop that server.
 
 They run in this conversation and follow their skill. Suggest `/init-standards` when the frame is empty and no standards skill fills the `code-standards` slot. When the user comments on a mockup, even in plain words ("make B lighter"), follow the iteration of the `mockups` skill, as `/iterate` does. The user can follow the flow with `armadai flow status --watch`.
 

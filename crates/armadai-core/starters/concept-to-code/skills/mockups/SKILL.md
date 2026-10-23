@@ -59,7 +59,7 @@ Skeleton:
 
 ## The choice
 
-Give the path of the file to open and one line per variant, then have the user choose:
+Give the path of the file to open and one line per variant, then have the user choose. In the main conversation, after writing the file, offer `/preview <file>` to open it in the browser.
 
 - In the main conversation (`/mockup`, `/iterate`), ask with your question tool: A, B, C, and a mix; several answers are allowed ("the header of A with the list of C"). Ask also, in one short question, why: the reason guides the next round.
 - As a subagent (`designer`), you cannot ask: return the file, the variants and the question to `lead` under "Questions for the user"; `lead` asks and sends the answer back.

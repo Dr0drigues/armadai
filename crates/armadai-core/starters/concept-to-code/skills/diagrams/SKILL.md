@@ -53,6 +53,6 @@ The rendering loads Mermaid from a pinned CDN version, so it needs a network con
 
 ## Getting it validated
 
-Return, or give the user, the path of the HTML file, what to look at ("the API never reaches the database of the billing service"), and the question to settle, with options when there are several designs. A subagent cannot ask the user: it returns the question to `lead`, who asks. Record the answer in the document, in a dated "Decisions" section.
+After writing an `.html` file, offer the user `/preview <file>` to open it (in the main conversation; a subagent returns the path to `lead`, who offers it). Return, or give the user, the path of the HTML file, what to look at ("the API never reaches the database of the billing service"), and the question to settle, with options when there are several designs. A subagent cannot ask the user: it returns the question to `lead`, who asks. Record the answer in the document, in a dated "Decisions" section.
 
 Write the explanations in the user's language; identifiers stay as in the code.

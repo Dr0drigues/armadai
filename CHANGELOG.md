@@ -6,7 +6,7 @@
   code, with the user at every decision. Nine agents (`lead` coordinates), two flows (`deliver`:
   the team writes the code; `guide`: the user writes it with a `coach`), five commands
   (`/brief`, `/mockup`, `/iterate`, `/init-standards`, `/preview`: opens a mockup or a diagram
-  through a local server bound to `127.0.0.1`) and slots (`code-standards`, `security`,
+  through a local server bound to `127.0.0.1` that serves only `mockups/` and `docs/`) and slots (`code-standards`, `security`,
   `infra-docs`, `ux-guidelines`) filled by `/init-standards` or by your own skills. See
   [Starter packs](docs/wiki/starter-packs.md).
 - Flow status (MVP, Claude Code only). `link` installs async hooks (`SubagentStart`,

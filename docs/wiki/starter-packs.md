@@ -101,14 +101,22 @@ flow you want. Follow a run with `armadai flow status --watch` (Claude Code).
 | `/mockup <screen>` | `mockups` | three variants in one HTML file, you choose |
 | `/iterate <feedback>` | `mockups` | three new variants built on the one you chose |
 | `/init-standards` | `standards-setup` | analyses the repository, settles conventions with you, writes the project standards skill, then links |
-| `/preview [file \| stop]` | `previewing` | serves the project on `127.0.0.1` and gives the link to a mockup or a diagram (the latest `.html` under `mockups/` or `docs/` with no argument), offers to open the browser; `stop` stops that server |
+| `/preview [file \| stop]` | `previewing` | serves `mockups/` and `docs/` on `127.0.0.1` and gives the link to a mockup or a diagram (the latest `.html` under `mockups/` or `docs/` with no argument), offers to open the browser; `stop` stops that server |
 
 `/preview` always goes through a local server (`python3 -m http.server`, started in the
-background on the first free port from 8765, bound to `127.0.0.1` only, serving the project
-root only, reused if one already serves the project), so every file gets the same kind of
-link, `http://127.0.0.1:<port>/<path>`, which Claude Code opens on Cmd/Ctrl+click. Without
-`python3`, it gives the `file://` path instead. `lead` offers `/preview <file>` whenever
-`designer` or `architect` produces an `.html` file.
+background on the first free port from 8765, bound to `127.0.0.1` only, reused if one already
+serves the project), so every file gets the same kind of link,
+`http://127.0.0.1:<port>/mockups/…` or `/docs/…`, which Claude Code opens on Cmd/Ctrl+click.
+It never serves the project root: `http.server` does not check the `Host` header, so a web page
+could read what it serves by DNS rebinding (a `.env`, `.armadai/`, the code). It serves
+`.armadai/preview/` instead, a folder holding only the links `docs -> ../../docs` and
+`mockups -> ../../mockups` and a marker `.project` (the project's absolute path, used to find
+a running server); the skill adds `preview/` to `.armadai/.gitignore`. A file outside `docs/`
+and `mockups/` is refused, with its `file://` path. While it runs, any program of the machine
+can read those two folders: stop it with `/preview stop` once done. Without `python3` (or on
+Windows), `/preview` gives the `file://` path. `lead` offers `/preview <file>` whenever
+`designer` or `architect` produces an `.html` file, and the `mockups` and `diagrams` skills
+offer it after writing one.
 
 **Shortcuts.** Claude Code reads key bindings from `~/.claude/keybindings.json`, a user file
 (not per project), so the pack does not install one. To bind `/preview` to Ctrl+X then P, add
