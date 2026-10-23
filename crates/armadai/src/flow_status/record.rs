@@ -108,10 +108,14 @@ fn record(raw: &str) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("no project above {}", cwd.display()))?;
     let path = log_path(&root, &session).ok_or_else(|| anyhow::anyhow!("unsafe session id"))?;
     let claude = path.parent().expect("a log has a directory");
-    // never write through a linked `state/` or `state/claude/`
-    for dir in [claude.parent().expect("state/ holds claude/"), claude] {
-        if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
-            anyhow::bail!("{} is a symbolic link", dir.display());
+    // never write through a linked `state/`, `state/claude/` or log
+    for at in [
+        claude.parent().expect("state/ holds claude/"),
+        claude,
+        &path,
+    ] {
+        if std::fs::symlink_metadata(at).is_ok_and(|m| m.file_type().is_symlink()) {
+            anyhow::bail!("{} is a symbolic link", at.display());
         }
     }
     std::fs::create_dir_all(claude)?;

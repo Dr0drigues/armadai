@@ -195,3 +195,21 @@ fn a_linked_state_directory_records_nothing_and_succeeds() {
         assert!(left.is_empty(), "{linked}: {left:?}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn a_linked_log_file_records_nothing_and_succeeds() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    project(dir.path());
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("mine");
+    std::fs::write(&target, "mine\n").unwrap();
+    let logs = dir.path().join(".armadai/state/claude");
+    std::fs::create_dir_all(&logs).unwrap();
+    std::os::unix::fs::symlink(&target, logs.join("s1.jsonl")).unwrap();
+
+    assert_silent_success(&record(&stop("s1", dir.path()), home.path()));
+
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "mine\n");
+}
