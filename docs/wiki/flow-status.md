@@ -109,6 +109,12 @@ are UTC. A finished run stays listed, finished runs first.
   (kept, unfinished) and opens a new one. An entry step a loop leads back to does so only when
   the open run is stuck (nothing running, its last step `?` or `✗`).
 - A `?` or `✗` step never ends a run.
+- A step that links of several open runs lead to (an agent shared by two flows) goes to the run
+  whose link is the most recent: the one whose source step stopped last. For example, `guide`
+  left at `build` after `guard` rejected, then `implementer` (in `deliver` only) builds: the
+  next `guardian` follows `deliver`. A link older than one another run already took to that
+  step leads nowhere: a later `guardian` is not shown in `guide`. A link exactly as recent
+  (same second) as the one already taken elsewhere is still taken.
 - The project root is resolved as the hooks resolve it, so the command works from a
   subdirectory and from a git worktree. A worktree without its own `.armadai/` writes and reads
   the logs of the main checkout; a worktree with its own `.armadai/` writes and reads its own
@@ -118,6 +124,9 @@ are UTC. A finished run stays listed, finished runs first.
 
 - Claude Code only.
 - When the log does not say, the answer is `?`, never a guess.
+- Two links to a shared agent's step whose sources stopped in the same second cannot be told
+  apart: the step is `?` (ambiguous step) in both runs, and neither moves. The most recent link
+  is a choice, not a certainty: the user may have meant the older run.
 - A sub-agent running in the background is not guaranteed to be seen: its stop may come after
   the reply that started it.
 - The coordinator is not recorded (see above) and `SubagentHandback` exists in auto mode only:
