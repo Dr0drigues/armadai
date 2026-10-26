@@ -117,9 +117,10 @@ pub fn hook_entries(project: &Project) -> anyhow::Result<Vec<HookEntry>> {
 /// 2026-10-22); `SubagentHandback` is the tool a subagent hands its report back with
 /// (tools reference, code.claude.com/docs/en/tools-reference, 2026-10-22).
 /// `UserPromptExpansion` records the command a user types: it matches on `command_name`
-/// and "leave the matcher empty to fire on every prompt-type command"; `async` is a
-/// plain command-hook field, so the hook never adds stdout to the model's context
-/// (code.claude.com/docs/en/hooks.md, `UserPromptExpansion`, 2026-10-26).
+/// and "leave the matcher empty to fire on every prompt-type command"
+/// (code.claude.com/docs/en/hooks.md, `UserPromptExpansion`, 2026-10-26). The stdout of
+/// a `UserPromptExpansion` hook enters the model's context (same page), and `async`
+/// does not guarantee otherwise: the recorder itself writes no byte.
 pub fn flow_status_entries() -> Vec<HookEntry> {
     [
         ("SubagentStart", None),
