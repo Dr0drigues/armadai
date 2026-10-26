@@ -214,6 +214,7 @@ fn link_then_unlink_gives_the_user_tree_back_and_relinking_is_idempotent() {
             "PostToolUse": [{"hooks": [{"type": "command", "command": "cargo fmt"}]}],
             "SubagentStart": [{"hooks": rec}],
             "SubagentStop": [{"hooks": rec}],
+            "UserPromptExpansion": [{"hooks": rec}],
         }),
         "user hook, automation, gate, then the flow recording hooks (the project has a flow)"
     );

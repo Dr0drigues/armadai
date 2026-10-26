@@ -132,6 +132,17 @@ Code de test pret a etre enregistre. Inclut :
           }
         ]
       }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
     ]
   }
 }

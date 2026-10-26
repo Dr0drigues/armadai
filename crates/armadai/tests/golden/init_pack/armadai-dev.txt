@@ -196,6 +196,17 @@ Implementation with type definitions, parsing and validation logic, and integrat
           }
         ]
       }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
     ]
   }
 }

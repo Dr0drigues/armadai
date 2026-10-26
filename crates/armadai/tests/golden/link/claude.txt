@@ -102,6 +102,17 @@ End your reply with exactly one line `STATE: <state>`, where <state> is one of: 
           }
         ]
       }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
     ]
   }
 }

@@ -169,6 +169,17 @@ Termine par un resume avec le nombre de trouvailles par severite.
           }
         ]
       }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
     ]
   }
 }
