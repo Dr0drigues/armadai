@@ -3032,4 +3032,35 @@ mod tests {
             ])
         );
     }
+
+    #[test]
+    fn a_late_stop_of_an_unfinished_interrupted_run_keeps_both_states() {
+        let events = [
+            cmd(T, "bugfix"),
+            start(T + 1, "i1", "an"),
+            cmd(T + 2, "evolution"),
+            start(T + 3, "i2", "an"),
+            stop(T + 4, "i1", "an", None),
+        ];
+        assert_eq!(
+            text(&issue(), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "bugfix  interrupted",
+                "  ✓ analyse   done",
+                "  ○ test      pending",
+                "  ○ fix-ui    pending",
+                "  ○ review    pending",
+                "  ○ validate  pending",
+                "",
+                "evolution  in progress",
+                "  ● analyse   running",
+                "  ○ ui        pending",
+                "  ○ test      pending",
+                "  ○ review    pending",
+                "  ○ validate  pending",
+            ])
+        );
+    }
 }
