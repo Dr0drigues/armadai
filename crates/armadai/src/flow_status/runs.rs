@@ -676,9 +676,11 @@ impl<'p> Builder<'p> {
         run.stopped.insert(step.to_string(), self.tick);
         run.stopped_ts.insert(step.to_string(), ts);
         // the late links: a step that started before this one stopped follows it
-        if run.attributed {
+        // a `?` or `✗` step leads nowhere, and a step does not follow itself
+        let leads = !matches!(run.view(step).mark, Mark::Unsure | Mark::Unexpected);
+        if run.attributed && leads {
             let late: Vec<_> = (run.reach(step).into_iter())
-                .filter(|(t, _)| run.awaiting.contains(*t))
+                .filter(|(t, _)| *t != step && run.awaiting.contains(*t))
                 .collect();
             for (t, crossed) in late {
                 run.take_link(step, &crossed, t, ts, self.tick);
@@ -2772,6 +2774,68 @@ mod tests {
                 "  ○ build     pending",
                 "  ○ guard     pending",
                 "  ○ validate  pending",
+            ])
+        );
+    }
+
+    /// `guard` stops without a `STATE:` line (or with an undeclared one) while
+    /// `validate` is already running: it leads nowhere, as when they run in turn.
+    fn unsure_guard_events(state: Option<&str>) -> Vec<FlowEvent> {
+        seq(&[
+            &[cmd(T, "deliver")],
+            &span(1, 10, "d1", "architect"),
+            &span(20, 30, "b1", "dev"),
+            &[start(T + 40, "g1", "qa"), start(T + 45, "v1", "ops")],
+            &[
+                stop(T + 50, "g1", "qa", state),
+                stop(T + 60, "v1", "ops", None),
+            ],
+        ])
+    }
+
+    #[test]
+    fn an_unsure_or_unexpected_step_leads_no_late_link() {
+        let head = [
+            "session s1 (UTC)",
+            "",
+            "deliver  in progress",
+            "  ✓ design    done",
+            "  ✓ build     done",
+        ];
+        let tail = [
+            "  ✓ validate  done",
+            "  09:15:20  design → build  (done)",
+            "  09:15:40  build → guard  (done)",
+        ];
+        let with = |guard: &str| lines(&[&head[..], &[guard], &tail[..]].concat());
+        assert_eq!(
+            text(&deliver(), &unsure_guard_events(None)),
+            with("  ? guard     (no STATE line)")
+        );
+        assert_eq!(
+            text(&deliver(), &unsure_guard_events(Some("weird"))),
+            with("  ✗ guard     weird (undeclared state)")
+        );
+    }
+
+    #[test]
+    fn a_step_does_not_follow_itself_through_the_coordinator() {
+        let flow = "steps:\n  design: { agent: architect }\n  build: { agent: dev }\n  check: { agent: lead }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: check }\n  - { from: check, to: build }\n";
+        let p = project_with("schema_version: 1\ncoordinator: lead\n", &[("again", flow)]);
+        let events = [
+            cmd(T, "again"),
+            start(T + 1, "b1", "dev"),
+            stop(T + 10, "b1", "dev", None),
+        ];
+        assert_eq!(
+            text(&p, &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "again  finished",
+                "  ○ design  pending",
+                "  ✓ build   done",
+                "  ~ check   (coordinator, not recorded)",
             ])
         );
     }
