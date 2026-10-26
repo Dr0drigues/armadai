@@ -86,6 +86,7 @@ impl Env {
             .current_dir(self.root())
             .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
             .env("HOME", self.dir.path())
+            .env_remove("RUST_LOG")
             .write_stdin(payload)
             .arg("__record-flow-event")
             .timeout(std::time::Duration::from_secs(20))
