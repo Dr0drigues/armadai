@@ -464,3 +464,43 @@ fn list_does_not_count_a_session_with_only_a_command() {
         )
     );
 }
+
+/// Scenario 2 of issue #527 fits both flows: without a command it is shown as
+/// `evolution`, and the command `/bugfix`, through the hook, makes it `bugfix`.
+#[test]
+fn the_hook_command_decides_between_two_flows_the_events_fit() {
+    let env = Env::new();
+    env.issue_project();
+    let events: Vec<Ev> = vec![
+        (T0, true, "i1", "an", None),
+        (T0 + 10, false, "i1", "an", None),
+        (T0 + 20, true, "i2", "u", None),
+        (T0 + 21, true, "i3", "t", None),
+        (T0 + 30, false, "i2", "u", None),
+        (T0 + 40, false, "i3", "t", None),
+        (T0 + 60, true, "i4", "r", None),
+        (T0 + 70, false, "i4", "r", None),
+        (T0 + 80, true, "i5", "v", None),
+        (T0 + 90, false, "i5", "v", None),
+    ];
+    env.raw_log("s2", &event_lines(&events), T0 + 10);
+    let (code, out, _) = env.run(&env.root(), &["flow", "status", "--session", "s2"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out,
+        "session s2 (UTC)\n\nevolution  in progress\n  ✓ analyse   done\n  ✓ ui        done\n  ○ test      pending\n  ○ review    pending\n  ○ validate  pending\n  09:15:20  analyse → ui  (done)\n"
+    );
+    let payload = HOOK_PAYLOAD
+        .replace("PROJECT", &env.root().to_string_lossy())
+        .replace("\"s1\"", "\"s3\"");
+    assert_eq!(env.hook(&payload), (Some(0), String::new(), String::new()));
+    let path = env.root().join(".armadai/state/claude/s3.jsonl");
+    let recorded = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, recorded + &event_lines(&events)).unwrap();
+    let (code, out, _) = env.run(&env.root(), &["flow", "status", "--session", "s3"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out,
+        "session s3 (UTC)\n\nbugfix  finished\n  ✓ analyse   done\n  ✓ test      done\n  ✓ fix-ui    done\n  ✓ review    done\n  ✓ validate  done\n  09:15:21  analyse → test  (done)\n  09:15:40  test → fix-ui  (done)\n  09:16:00  fix-ui → review  (done)\n  09:16:20  review → validate  (done)\n"
+    );
+}
