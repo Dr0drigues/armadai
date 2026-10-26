@@ -23,8 +23,8 @@ When the project has a flow, `armadai link` installs four **asynchronous** hooks
 Each event is one JSON line appended to `.armadai/state/claude/<session>.jsonl`: a timestamp,
 start or stop, the sub-agent id, its agent name and the `STATE:` word it ended with; for a typed
 command, a timestamp and its name (`{"ts":...,"event":"command","command":"bugfix"}`). Nothing
-else: no prompt, no reply text, no command arguments. The hooks never fail and never print: bad input, no project or an
-unwritable log record nothing.
+else: no prompt, no reply text, no command arguments. The hooks never fail and never print: bad
+input, no project or an unwritable log record nothing.
 
 `link` also adds `state/` to `.armadai/.gitignore` (and says `patched .../.gitignore` when it
 changed an existing file): the logs describe this machine only. To purge them:
@@ -39,20 +39,24 @@ Without more, the flow of a run is inferred from the sub-agents seen. When you s
 a command whose name is exactly the id of a flow (`/bugfix` for the flow `bugfix`, case
 included), the run is attributed to that flow instead:
 
-- the command opens a run of that flow alone (never `a | b`) and closes the runs still open: a
-  run the next flow command cut short is shown `interrupted` instead of `in progress`;
+- the command opens a run of that flow alone (never `a | b`), attributed until that run is
+  `finished` or the next flow command comes; after that the sub-agents are inferred again. It
+  closes the runs still open: a run the next flow command cut short is shown `interrupted`
+  instead of `in progress`;
 - each sub-agent goes to the one step of the flow its agent holds, even before the step that
   leads to it has finished (the step is `running`, and the transition is noted when its source
   stops), so sub-agents running in the background that overlap lose no step;
-- an agent that no step of the flow holds is ignored: it opens no run of its own;
+- while the run is open, an agent that no step of the flow holds is ignored: it opens no run of
+  its own (once the run has `finished`, it is inferred, and may open the run of another flow);
 - a step that never started while a step after it has finished is shown `- ... (not run in
   this session)`; a step after the last one that ran stays `○ pending`. A step shows `not run` as
   soon as a step placed after it has finished, and stays so until it starts itself, when it turns
   `running`: while sub-agents overlap, that is what was true when drawn.
 
-A command that does not name a flow (another name, a plugin namespace such as `/plugin:bugfix`),
-a flow started in natural language, or a Claude Code that does not fire `UserPromptExpansion`
-records no boundary: the inference above applies unchanged. A project linked before this hook
+A command that does not name a flow (another name, a plugin command such as `/plugin:bugfix`:
+not verified how Claude Code names it), a flow started in natural language, a Claude Code that
+does not fire `UserPromptExpansion`, or the sub-agents after an attributed run has finished,
+record no boundary: the inference above applies unchanged. A project linked before this hook
 existed gets it by running `armadai link --target claude` again.
 
 ## The `STATE:` line
