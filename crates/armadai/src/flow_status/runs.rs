@@ -37,6 +37,8 @@ pub struct Run {
     /// Links taken, as `(ts, from, to, state of from)`.
     pub transitions: Vec<(u64, String, String, Option<String>)>,
     pub finished: bool,
+    /// Closed by the next flow command before it finished; never with `finished`.
+    pub interrupted: bool,
 }
 
 /// The runs of every flow in the session, in the order they started.
@@ -66,16 +68,34 @@ pub struct Run {
 ///   has a link still to take (taken once its target starts after it stopped;
 ///   a loop back to the same step through the coordinator does not count, and
 ///   goes on in the same run when that step starts again).
+/// - A `command` line naming a flow of the project (exact id) is a boundary:
+///   every run still open is closed and shown interrupted, and a run of that
+///   flow alone opens, attributed. While it is the latest, a sub-agent goes to
+///   the one step of that flow its agent holds, whether or not the source of
+///   that step has finished (the link is noted when the source stops); an agent
+///   no step of the flow holds is ignored. A command naming no flow changes
+///   nothing; without any `command` line the rules above are the only ones.
 pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
     let mut b = Builder {
         project,
         open: Vec::new(),
         assigned: HashMap::new(),
         tick: 0,
+        attributed: None,
     };
     for e in merge_stops(events) {
         let targets = match e.event {
-            EventKind::Command => continue, // used for attribution (task 3)
+            EventKind::Command => {
+                // a line without a name, or naming no flow, is no boundary
+                if let Some(id) = e
+                    .command
+                    .as_deref()
+                    .filter(|c| project.flows.contains_key(*c))
+                {
+                    b.boundary(id);
+                }
+                continue;
+            }
             EventKind::Start => b.start(&e),
             EventKind::Stop => match b.assigned.remove(&e.agent_id) {
                 Some(t) => t,
@@ -89,7 +109,13 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
         }
     }
     let mut groups: BTreeMap<usize, Vec<Building>> = BTreeMap::new();
-    for r in b.open.into_iter().filter(|r| !r.dropped) {
+    // a run attributed by a command that no sub-agent has started in is not shown
+    let shown = |r: &Building| {
+        !r.dropped
+            && !(r.attributed
+                && (r.run.steps.iter()).all(|v| matches!(v.mark, Mark::Pending | Mark::Relay)))
+    };
+    for r in b.open.into_iter().filter(shown) {
         groups.entry(r.group).or_default().push(r);
     }
     groups.into_values().map(merge_candidates).collect()
@@ -103,12 +129,14 @@ fn merge_candidates(mut members: Vec<Building>) -> Run {
         .collect::<Vec<_>>()
         .join(GROUP_SEP);
     let finished = members.iter().all(|m| m.run.finished);
+    let interrupted = !finished && members.iter().all(|m| m.interrupted);
     let others: Vec<&'_ Flow> = members[1..].iter().map(|m| m.flow).collect();
     let mut run = members.swap_remove(0).finish();
     run.steps
         .retain(|v| others.iter().all(|f| f.steps.contains_key(&v.step)));
     run.flow = flow;
     run.finished = finished;
+    run.interrupted = interrupted;
     run
 }
 
@@ -149,6 +177,14 @@ struct Building<'p> {
     dropped: bool,
     /// Left stuck when its entry step started again.
     closed: bool,
+    /// Opened by a command naming its flow: no inference, no `a | b` group.
+    attributed: bool,
+    /// Closed by a later command before it finished.
+    interrupted: bool,
+    /// Steps placed with no link taken to them, whose source may still stop.
+    awaiting: BTreeSet<String>,
+    /// Step -> tick of the stop of the source that noted its late link.
+    entered: HashMap<String, usize>,
     run: Run,
     /// Step -> tick of its last start / stop.
     started: HashMap<String, usize>,
@@ -178,12 +214,17 @@ impl<'p> Building<'p> {
             group,
             dropped: false,
             closed: false,
+            attributed: false,
+            interrupted: false,
+            awaiting: BTreeSet::new(),
+            entered: HashMap::new(),
             run: Run {
                 flow: flow_id.to_string(),
                 steps: step_order(flow).into_iter().map(pending).collect(),
                 loops: Vec::new(),
                 transitions: Vec::new(),
                 finished: false,
+                interrupted: false,
             },
             started: HashMap::new(),
             stopped: HashMap::new(),
@@ -225,7 +266,7 @@ impl<'p> Building<'p> {
         (self.stopped.iter())
             .filter(|(s, at)| {
                 !matches!(mark(s), Some(Mark::Unsure | Mark::Unexpected))
-                    && self.started.get(to).is_none_or(|t| t < *at)
+                    && (self.started.get(to).max(self.entered.get(to))).is_none_or(|t| t < *at)
                     && self.started.get(*s).is_none_or(|t| t < *at)
             })
             .filter_map(|(s, at)| {
@@ -275,6 +316,43 @@ impl<'p> Building<'p> {
             })
     }
 
+    /// Notes the link `from` -> `to` (through the coordinator's steps
+    /// `crossed`): one transition per hop, stamped `ts`, the first one with the
+    /// state `from` leads with. Read before `from`'s view changes: `from` may be
+    /// the step that starts.
+    fn take_link(&mut self, from: &str, crossed: &[&str], to: &str, ts: u64, tick: usize) {
+        let mut state = self.leads_with(from).map(str::to_string);
+        let mut prev = from.to_string();
+        let left = self.stopped[from];
+        self.linked_at.insert(to.to_string(), self.stopped_ts[from]);
+        for (k, hop_to) in crossed.iter().copied().chain([to]).enumerate() {
+            let hop = (prev.clone(), hop_to.to_string());
+            // a hop into the coordinator counts once per stop of `from`,
+            // however many steps it then reaches (a fan-out)
+            if k == crossed.len() || self.crossed.get(&hop).is_none_or(|at| *at < left) {
+                self.crossed.insert(hop.clone(), tick);
+                (self.run.transitions).push((ts, prev.clone(), hop_to.to_string(), state.clone()));
+                *self.taken.entry(hop).or_default() += 1;
+            }
+            state = None;
+            prev = hop_to.to_string();
+        }
+    }
+
+    /// The view of a step that starts.
+    fn show_started(&mut self, step: &str, ambiguous: bool) {
+        *self.view(step) = StepView {
+            step: step.to_string(),
+            mark: if ambiguous {
+                Mark::Unsure
+            } else {
+                Mark::Running
+            },
+            state: None,
+            note: ambiguous.then(|| "ambiguous step".to_string()),
+        };
+    }
+
     fn finish(mut self) -> Run {
         self.run.loops = (self.taken.into_iter())
             .filter(|(_, n)| *n > 1)
@@ -291,6 +369,8 @@ struct Builder<'p> {
     assigned: HashMap<String, Vec<(usize, String)>>,
     /// Orders starts and stops (several events can share a second).
     tick: usize,
+    /// The run of the latest command naming a flow.
+    attributed: Option<usize>,
 }
 
 impl<'p> Builder<'p> {
@@ -352,8 +432,66 @@ impl<'p> Builder<'p> {
         groups.len() > 1 || runs.len() < targets.len()
     }
 
+    /// A command named `flow_id`: whatever is open is left interrupted, and a
+    /// run of that flow alone opens, where the sub-agents that follow go.
+    fn boundary(&mut self, flow_id: &str) {
+        // (a run closed before, left stuck by its entry starting again, stays as it is)
+        for r in (self.open.iter_mut()).filter(|r| !r.dropped && !r.closed && !r.run.finished) {
+            r.interrupted = true;
+        }
+        let (id, flow) = self
+            .project
+            .flows
+            .get_key_value(flow_id)
+            .expect("a flow id");
+        let coordinator = self.project.manifest.coordinator.as_deref();
+        let mut run = Building::new(id, flow, self.open.len(), coordinator);
+        run.attributed = true;
+        self.open.push(run);
+        self.attributed = Some(self.open.len() - 1);
+    }
+
+    /// A start in the run a command attributed: the steps of its flow the agent
+    /// holds, none (ignored), one (placed, linked from a finished step or
+    /// awaiting its source) or several (ambiguous).
+    fn start_attributed(&mut self, i: usize, e: &FlowEvent) -> Vec<(usize, String)> {
+        let flow = self.open[i].flow;
+        let held: Vec<&'p str> = (flow.steps.iter())
+            .filter(|(_, s)| s.agent == e.agent_type)
+            .map(|(sid, _)| sid.as_str())
+            .collect();
+        let ambiguous = held.len() > 1;
+        // an entry step has no source to wait for (a review loop goes back to it)
+        let waits: Vec<bool> = held.iter().map(|s| !self.opens_at(flow, s)).collect();
+        let tick = self.tick;
+        let run = &mut self.open[i];
+        for (sid, waits) in held.iter().zip(waits) {
+            if !ambiguous {
+                match run.linked_from(sid) {
+                    Some((from, crossed)) => {
+                        run.take_link(&from, &crossed, sid, e.ts, tick);
+                        run.awaiting.remove(*sid);
+                    }
+                    None if waits => {
+                        run.awaiting.insert(sid.to_string());
+                    }
+                    None => {}
+                }
+                run.started.insert(sid.to_string(), tick);
+                run.run.finished = false;
+            }
+            run.show_started(sid, ambiguous);
+        }
+        let targets: Vec<(usize, String)> = held.iter().map(|s| (i, s.to_string())).collect();
+        self.assigned.insert(e.agent_id.clone(), targets.clone());
+        targets
+    }
+
     fn start(&mut self, e: &FlowEvent) -> Vec<(usize, String)> {
         self.tick += 1;
+        if let Some(i) = self.attributed {
+            return self.start_attributed(i, e);
+        }
         // (flow id, flow, step) for every step the agent holds
         let held: Vec<(&'p str, &'p Flow, &'p str)> = (self.project.flows.iter())
             .flat_map(|(fid, f)| {
@@ -507,40 +645,9 @@ impl<'p> Builder<'p> {
                 run.run.finished = false;
             }
             if let (false, Some((from, crossed))) = (ambiguous, from) {
-                // one transition per hop, through the coordinator's steps; read
-                // before the view below: `from` may be this very step
-                let mut state = run.leads_with(from).map(str::to_string);
-                let mut prev = from.clone();
-                let left = run.stopped[from];
-                run.linked_at.insert(sid.to_string(), run.stopped_ts[from]);
-                for (k, to) in crossed.iter().copied().chain([*sid]).enumerate() {
-                    let hop = (prev.clone(), to.to_string());
-                    // a hop into the coordinator counts once per stop of `from`,
-                    // however many steps it then reaches (a fan-out)
-                    if k == crossed.len() || run.crossed.get(&hop).is_none_or(|at| *at < left) {
-                        run.crossed.insert(hop.clone(), self.tick);
-                        (run.run.transitions).push((
-                            e.ts,
-                            prev.clone(),
-                            to.to_string(),
-                            state.clone(),
-                        ));
-                        *run.taken.entry(hop).or_default() += 1;
-                    }
-                    state = None;
-                    prev = to.to_string();
-                }
+                run.take_link(from, crossed, sid, e.ts, self.tick);
             }
-            *run.view(sid) = StepView {
-                step: sid.to_string(),
-                mark: if ambiguous {
-                    Mark::Unsure
-                } else {
-                    Mark::Running
-                },
-                state: None,
-                note: ambiguous.then(|| "ambiguous step".to_string()),
-            };
+            run.show_started(sid, ambiguous);
         }
         self.assigned.insert(e.agent_id.clone(), targets.clone());
         targets
@@ -568,6 +675,17 @@ impl<'p> Builder<'p> {
         };
         run.stopped.insert(step.to_string(), self.tick);
         run.stopped_ts.insert(step.to_string(), ts);
+        // the late links: a step that started before this one stopped follows it
+        if run.attributed {
+            let late: Vec<_> = (run.reach(step).into_iter())
+                .filter(|(t, _)| run.awaiting.contains(*t))
+                .collect();
+            for (t, crossed) in late {
+                run.take_link(step, &crossed, t, ts, self.tick);
+                run.entered.insert(t.to_string(), self.tick);
+                run.awaiting.remove(t);
+            }
+        }
         // a loop back to the same step through the coordinator holds nothing open
         let to_take =
             (run.flow.steps.keys()).any(|t| run.linked_from(t).is_some_and(|(s, _)| &s != t));
@@ -776,6 +894,7 @@ mod tests {
                     t(40, "guard", "validate", Some("approved")),
                 ],
                 finished: true,
+                interrupted: false,
             }]
         );
     }
@@ -808,6 +927,7 @@ mod tests {
                     t(50, "build", "guard", Some("done")),
                 ],
                 finished: false,
+                interrupted: false,
             }]
         );
     }
@@ -956,6 +1076,7 @@ mod tests {
                 loops: vec![],
                 transitions: vec![t(20, "refine", "build", Some("done"))],
                 finished: false,
+                interrupted: false,
             }]
         );
     }
@@ -974,6 +1095,7 @@ mod tests {
                 loops: vec![],
                 transitions: vec![],
                 finished: false,
+                interrupted: false,
             }]
         );
     }
@@ -1001,6 +1123,7 @@ mod tests {
                 loops: vec![],
                 transitions: vec![t(20, "x", "y", Some("done"))],
                 finished: false,
+                interrupted: false,
             }]
         );
     }
@@ -1037,6 +1160,7 @@ mod tests {
                 loops: vec![],
                 transitions: vec![t(20, "x", "y", Some("done")), t(30, "y", "z", Some("done"))],
                 finished: false,
+                interrupted: false,
             }]
         );
     }
@@ -1126,6 +1250,7 @@ mod tests {
             loops: vec![],
             transitions,
             finished,
+            interrupted: false,
         }
     }
 
@@ -1564,6 +1689,7 @@ mod tests {
                         t(20, "check", "build", None),
                     ],
                     finished: true,
+                    interrupted: false,
                 }],
             )
         );
@@ -2262,5 +2388,391 @@ mod tests {
         // the loop `validate -> refine` does not put the steps after `frame` before it
         assert_eq!(upstream(flow, "frame"), ["refine"]);
         assert_eq!(upstream(flow, "refine"), Vec::<&str>::new());
+    }
+
+    // --- runs attributed by the command a user typed (issue #527) ---
+
+    /// 2026-10-22 09:15:00 UTC
+    const T: u64 = 1_792_660_500;
+
+    fn project_agents(agents: &[&str], flows: &[(&str, &str)]) -> Project {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join(".armadai");
+        std::fs::create_dir_all(a.join("agents")).unwrap();
+        std::fs::create_dir_all(a.join("flows")).unwrap();
+        std::fs::write(a.join("project.yaml"), "schema_version: 1\n").unwrap();
+        for agent in agents {
+            let body = "---\ndescription: d\n---\nB\n";
+            std::fs::write(a.join(format!("agents/{agent}.md")), body).unwrap();
+        }
+        for (id, body) in flows {
+            std::fs::write(a.join(format!("flows/{id}.yaml")), body).unwrap();
+        }
+        armadai_model::load_checked(dir.path()).unwrap().0
+    }
+
+    const EVOLUTION: &str = "steps:\n  analyse: { agent: an }\n  ui: { agent: u }\n  test: { agent: t }\n  review: { agent: r }\n  validate: { agent: v }\nlinks:\n  - { from: analyse, to: ui }\n  - { from: ui, to: test }\n  - { from: test, to: review }\n  - { from: review, to: validate }\n";
+    const BUGFIX: &str = "steps:\n  analyse: { agent: an }\n  test: { agent: t }\n  fix-ui: { agent: u }\n  review: { agent: r }\n  validate: { agent: v }\nlinks:\n  - { from: analyse, to: test }\n  - { from: test, to: fix-ui }\n  - { from: fix-ui, to: review }\n  - { from: review, to: validate }\n";
+    const BUGFIX_SHORT: &str = "steps:\n  analyse: { agent: an }\n  test: { agent: t }\n  fix-ui: { agent: u }\n  review: { agent: r }\nlinks:\n  - { from: analyse, to: test }\n  - { from: test, to: fix-ui }\n  - { from: fix-ui, to: review }\n";
+
+    /// The project of issue #527: two flows sharing their entry step, `u`
+    /// holding `ui` in one and `fix-ui` in the other.
+    fn issue() -> Project {
+        let agents = ["an", "u", "t", "r", "v"];
+        project_agents(&agents, &[("evolution", EVOLUTION), ("bugfix", BUGFIX)])
+    }
+
+    fn issue_with_docs() -> Project {
+        let agents = ["an", "u", "t", "r", "v", "x"];
+        let docs = "steps:\n  write: { agent: x }\n";
+        let flows = [("evolution", EVOLUTION), ("bugfix", BUGFIX), ("docs", docs)];
+        project_agents(&agents, &flows)
+    }
+
+    fn bugfix_only() -> Project {
+        project_agents(&["an", "t", "u", "r"], &[("bugfix", BUGFIX_SHORT)])
+    }
+
+    fn cmd(ts: u64, name: &str) -> FlowEvent {
+        FlowEvent {
+            ts,
+            event: EventKind::Command,
+            agent_id: String::new(),
+            agent_type: String::new(),
+            state: None,
+            command: Some(name.into()),
+        }
+    }
+
+    /// `agent` of `id` runs from `T + from` to `T + to`.
+    fn span(from: u64, to: u64, id: &str, agent: &str) -> [FlowEvent; 2] {
+        [start(T + from, id, agent), stop(T + to, id, agent, None)]
+    }
+
+    fn text(p: &Project, events: &[FlowEvent]) -> String {
+        super::super::render::render(&runs(p, events), "s1")
+    }
+
+    fn lines(l: &[&str]) -> String {
+        l.join("\n") + "\n"
+    }
+
+    /// Scenario 1 of the issue: `t` starts, `u` starts before `t` stops.
+    fn s1() -> Vec<FlowEvent> {
+        seq(&[
+            &span(0, 10, "i1", "an"),
+            &[start(T + 20, "i3", "t"), start(T + 30, "i2", "u")],
+            &[stop(T + 40, "i3", "t", None), stop(T + 50, "i2", "u", None)],
+            &span(60, 70, "i4", "r"),
+            &span(80, 90, "i5", "v"),
+        ])
+    }
+
+    /// Scenario 2: `u` starts, then `t`, and `u` stops first.
+    fn s2() -> Vec<FlowEvent> {
+        seq(&[
+            &span(0, 10, "i1", "an"),
+            &[start(T + 20, "i2", "u"), start(T + 21, "i3", "t")],
+            &[stop(T + 30, "i2", "u", None), stop(T + 40, "i3", "t", None)],
+            &span(60, 70, "i4", "r"),
+            &span(80, 90, "i5", "v"),
+        ])
+    }
+
+    /// One flow: `t` and `u` overlap.
+    fn s4() -> Vec<FlowEvent> {
+        seq(&[
+            &span(0, 10, "i1", "an"),
+            &[start(T + 20, "i2", "t"), start(T + 30, "i3", "u")],
+            &[stop(T + 40, "i2", "t", None), stop(T + 50, "i3", "u", None)],
+            &span(60, 70, "i4", "r"),
+        ])
+    }
+
+    /// A whole run of `bugfix` (or the first steps of `evolution`), `o` later.
+    fn run_at(o: u64) -> Vec<FlowEvent> {
+        seq(&[
+            &span(o + 10, o + 20, "i2", "an"),
+            &span(o + 30, o + 40, "i3", "t"),
+            &span(o + 50, o + 60, "i4", "u"),
+            &span(o + 70, o + 80, "i5", "r"),
+            &span(o + 90, o + 100, "i6", "v"),
+        ])
+    }
+
+    fn interrupted_events() -> Vec<FlowEvent> {
+        seq(&[
+            &span(0, 10, "i1", "t"),
+            &[cmd(T + 3600, "bugfix")],
+            &run_at(3600),
+        ])
+    }
+
+    /// `bugfix  finished` of scenarios 1 and 2; only the first transition differs.
+    fn bugfix_finished(first_transition: &str) -> String {
+        lines(&[
+            "session s1 (UTC)",
+            "",
+            "bugfix  finished",
+            "  ✓ analyse   done",
+            "  ✓ test      done",
+            "  ✓ fix-ui    done",
+            "  ✓ review    done",
+            "  ✓ validate  done",
+            first_transition,
+            "  09:15:40  test → fix-ui  (done)",
+            "  09:16:00  fix-ui → review  (done)",
+            "  09:16:20  review → validate  (done)",
+        ])
+    }
+
+    fn issue_s1() -> String {
+        "session s1 (UTC)\n\nbugfix  in progress\n  ✓ analyse   done\n  ✓ test      done\n  ○ fix-ui    pending\n  ○ review    pending\n  ○ validate  pending\n  09:15:20  analyse → test  (done)\n".into()
+    }
+
+    #[test]
+    fn a_command_attributes_the_run_and_an_overlap_loses_no_step() {
+        let events = seq(&[&[cmd(T, "bugfix")], &s1()]);
+        assert_eq!(
+            text(&issue(), &events),
+            bugfix_finished("  09:15:20  analyse → test  (done)")
+        );
+    }
+
+    #[test]
+    fn a_step_stopped_before_its_source_still_leads_on() {
+        let events = seq(&[&[cmd(T, "bugfix")], &s2()]);
+        assert_eq!(
+            text(&issue(), &events),
+            bugfix_finished("  09:15:21  analyse → test  (done)")
+        );
+    }
+
+    #[test]
+    fn the_same_events_follow_the_flow_the_command_names() {
+        let events = seq(&[&[cmd(T, "evolution")], &s2()]);
+        assert_eq!(
+            text(&issue(), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "evolution  finished",
+                "  ✓ analyse   done",
+                "  ✓ ui        done",
+                "  ✓ test      done",
+                "  ✓ review    done",
+                "  ✓ validate  done",
+                "  09:15:20  analyse → ui  (done)",
+                "  09:15:30  ui → test  (done)",
+                "  09:16:00  test → review  (done)",
+                "  09:16:20  review → validate  (done)",
+            ])
+        );
+    }
+
+    #[test]
+    fn one_flow_with_an_overlap_finishes() {
+        let events = seq(&[&[cmd(T, "bugfix")], &s4()]);
+        assert_eq!(
+            text(&bugfix_only(), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "bugfix  finished",
+                "  ✓ analyse  done",
+                "  ✓ test     done",
+                "  ✓ fix-ui   done",
+                "  ✓ review   done",
+                "  09:15:20  analyse → test  (done)",
+                "  09:15:40  test → fix-ui  (done)",
+                "  09:16:00  fix-ui → review  (done)",
+            ])
+        );
+    }
+
+    fn interrupted_text() -> String {
+        lines(&[
+            "session s1 (UTC)",
+            "",
+            "bugfix | evolution  interrupted",
+            "  - analyse   (not run in this session)",
+            "  ✓ test      done",
+            "  ○ review    pending",
+            "  ○ validate  pending",
+            "",
+            "bugfix  finished",
+            "  ✓ analyse   done",
+            "  ✓ test      done",
+            "  ✓ fix-ui    done",
+            "  ✓ review    done",
+            "  ✓ validate  done",
+            "  10:15:30  analyse → test  (done)",
+            "  10:15:50  test → fix-ui  (done)",
+            "  10:16:10  fix-ui → review  (done)",
+            "  10:16:30  review → validate  (done)",
+        ])
+    }
+
+    #[test]
+    fn a_command_interrupts_the_open_run() {
+        assert_eq!(text(&issue(), &interrupted_events()), interrupted_text());
+    }
+
+    #[test]
+    fn an_agent_no_step_of_the_attributed_flow_holds_is_ignored() {
+        let mut with_x = interrupted_events();
+        // between the `an` and the `t` of the run: `x` holds only `docs`
+        with_x.splice(4..4, span(3625, 3626, "x1", "x"));
+        assert_eq!(text(&issue_with_docs(), &with_x), interrupted_text());
+        assert_eq!(
+            text(&issue_with_docs(), &interrupted_events()),
+            interrupted_text()
+        );
+    }
+
+    #[test]
+    fn a_second_command_closes_the_first_run() {
+        let events = seq(&[
+            &[cmd(T, "bugfix")],
+            &run_at(0),
+            &[cmd(T + 200, "evolution"), start(T + 210, "i7", "an")],
+        ]);
+        assert_eq!(
+            text(&issue(), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "bugfix  finished",
+                "  ✓ analyse   done",
+                "  ✓ test      done",
+                "  ✓ fix-ui    done",
+                "  ✓ review    done",
+                "  ✓ validate  done",
+                "  09:15:30  analyse → test  (done)",
+                "  09:15:50  test → fix-ui  (done)",
+                "  09:16:10  fix-ui → review  (done)",
+                "  09:16:30  review → validate  (done)",
+                "",
+                "evolution  in progress",
+                "  ● analyse   running",
+                "  ○ ui        pending",
+                "  ○ test      pending",
+                "  ○ review    pending",
+                "  ○ validate  pending",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_command_naming_no_flow_changes_nothing() {
+        let p = issue();
+        let events = |name: &str| seq(&[&[cmd(T, name)], &s1()]);
+        assert_eq!(text(&p, &events("deploy")), issue_s1());
+        assert_eq!(text(&p, &events("Bugfix")), issue_s1());
+        let mut nameless = cmd(T, "bugfix");
+        nameless.command = None;
+        assert_eq!(text(&p, &seq(&[&[nameless], &s1()])), issue_s1());
+    }
+
+    #[test]
+    fn a_command_alone_opens_no_run() {
+        let p = issue();
+        assert_eq!(runs(&p, &[cmd(T, "bugfix")]), vec![]);
+        assert_eq!(
+            runs(&p, &[cmd(T, "bugfix"), cmd(T + 1, "evolution")]),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn without_a_command_the_issue_scenarios_are_unchanged() {
+        assert_eq!(text(&issue(), &s1()), issue_s1());
+        assert_eq!(
+            text(&issue(), &s2()),
+            "session s1 (UTC)\n\nevolution  in progress\n  ✓ analyse   done\n  ✓ ui        done\n  ○ test      pending\n  ○ review    pending\n  ○ validate  pending\n  09:15:20  analyse → ui  (done)\n"
+        );
+        assert_eq!(
+            text(&issue(), &span(0, 10, "i1", "t")),
+            "session s1 (UTC)\n\nbugfix | evolution  in progress\n  - analyse   (not run in this session)\n  ✓ test      done\n  ○ review    pending\n  ○ validate  pending\n"
+        );
+        assert_eq!(
+            text(&bugfix_only(), &s4()),
+            "session s1 (UTC)\n\nbugfix  in progress\n  ✓ analyse  done\n  ✓ test     done\n  ○ fix-ui   pending\n  ○ review   pending\n  09:15:20  analyse → test  (done)\n"
+        );
+    }
+
+    #[test]
+    fn a_review_loop_entry_is_not_awaited_and_the_loop_goes_on() {
+        let agents = ["dev", "qa"];
+        let flow = "steps:\n  write: { agent: dev }\n  review: { agent: qa, states: [approved, rejected] }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: write, when: rejected }\n";
+        let p = project_agents(&agents, &[("loop", flow)]);
+        let events = seq(&[
+            &[cmd(T, "loop")],
+            &span(0, 10, "w1", "dev"),
+            &[
+                start(T + 20, "r1", "qa"),
+                stop(T + 30, "r1", "qa", Some("rejected")),
+            ],
+        ]);
+        assert_eq!(
+            text(&p, &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "loop  in progress",
+                "  ✓ write   done",
+                "  ✓ review  rejected",
+                "  09:15:20  write → review  (done)",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_late_stop_that_finishes_an_interrupted_run_leaves_it_finished() {
+        let p = issue_with_docs();
+        let events = [
+            cmd(T, "docs"),
+            start(T + 1, "x1", "x"),
+            cmd(T + 5, "docs"),
+            stop(T + 10, "x1", "x", None),
+        ];
+        let write = view("write", Mark::Done, Some("done"), None);
+        assert_eq!(
+            runs(&p, &events),
+            vec![Run {
+                flow: "docs".into(),
+                steps: vec![write],
+                loops: vec![],
+                transitions: vec![],
+                finished: true,
+                interrupted: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_run_left_stuck_before_the_command_is_not_called_interrupted() {
+        let events = seq(&[
+            &step(10, "a1", "architect", None),
+            &[start(T, "a2", "architect"), cmd(T + 5, "deliver")],
+        ]);
+        assert_eq!(
+            text(&deliver(), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "deliver  interrupted",
+                "  ● design    running",
+                "  ○ build     pending",
+                "  ○ guard     pending",
+                "  ○ validate  pending",
+                "",
+                "deliver  in progress",
+                "  ✓ design    done",
+                "  ○ build     pending",
+                "  ○ guard     pending",
+                "  ○ validate  pending",
+            ])
+        );
     }
 }
