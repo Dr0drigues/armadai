@@ -108,6 +108,7 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
             }
         }
     }
+    (b.open.iter_mut().filter(|r| r.attributed)).for_each(Building::mark_skipped);
     let mut groups: BTreeMap<usize, Vec<Building>> = BTreeMap::new();
     // a run attributed by a command that no sub-agent has started in is not shown
     let shown = |r: &Building| {
@@ -336,6 +337,23 @@ impl<'p> Building<'p> {
             }
             state = None;
             prev = hop_to.to_string();
+        }
+    }
+
+    /// In an attributed run, a step that never started while a step after it
+    /// stopped was skipped: shown as the inferred runs
+    /// show the steps before where they opened. One after the last step that
+    /// ran stays pending.
+    fn mark_skipped(&mut self) {
+        let flow = self.flow;
+        let skipped: BTreeSet<&str> = (self.stopped.keys())
+            .flat_map(|s| upstream(flow, s))
+            .collect();
+        for v in &mut self.run.steps {
+            if v.mark == Mark::Pending && skipped.contains(v.step.as_str()) {
+                v.mark = Mark::NotRun;
+                v.note = Some("not run in this session".to_string());
+            }
         }
     }
 
@@ -2833,10 +2851,63 @@ mod tests {
                 "session s1 (UTC)",
                 "",
                 "again  finished",
-                "  ○ design  pending",
+                "  - design  (not run in this session)",
                 "  ✓ build   done",
                 "  ~ check   (coordinator, not recorded)",
             ])
+        );
+    }
+
+    /// `design` never ran, `build`, `guard` and `validate` did.
+    fn skipped_design_events() -> Vec<FlowEvent> {
+        seq(&[
+            &span(20, 30, "b1", "dev"),
+            &[
+                start(T + 40, "g1", "qa"),
+                stop(T + 50, "g1", "qa", Some("approved")),
+            ],
+            &span(60, 70, "v1", "ops"),
+        ])
+    }
+
+    #[test]
+    fn a_skipped_upstream_step_is_not_run_in_an_attributed_run() {
+        let events = seq(&[&[cmd(T, "deliver")], &skipped_design_events()]);
+        assert_eq!(
+            text(&deliver(), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "deliver  finished",
+                "  - design    (not run in this session)",
+                "  ✓ build     done",
+                "  ✓ guard     approved",
+                "  ✓ validate  done",
+                "  09:15:40  build → guard  (done)",
+                "  09:16:00  guard → validate  (approved)",
+            ])
+        );
+        // a step after the last one that ran stays pending
+        let early = seq(&[&[cmd(T, "deliver")], &span(20, 30, "b1", "dev")]);
+        assert_eq!(
+            text(&deliver(), &early),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "deliver  in progress",
+                "  - design    (not run in this session)",
+                "  ✓ build     done",
+                "  ○ guard     pending",
+                "  ○ validate  pending",
+            ])
+        );
+    }
+
+    #[test]
+    fn without_a_command_a_skipped_step_is_shown_as_before() {
+        assert_eq!(
+            text(&deliver(), &skipped_design_events()),
+            "session s1 (UTC)\n\ndeliver  finished\n  - design    (not run in this session)\n  ✓ build     done\n  ✓ guard     approved\n  ✓ validate  done\n  09:15:40  build → guard  (done)\n  09:16:00  guard → validate  (approved)\n"
         );
     }
 }
