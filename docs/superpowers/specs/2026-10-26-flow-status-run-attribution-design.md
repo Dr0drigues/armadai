@@ -38,7 +38,7 @@ Issue publique : #527. Spec précédente du sujet : `docs/superpowers/specs/2026
 ## 4. Conception
 
 ### 4.1 Enregistrement (`flow_status/record.rs`, `compile/claude_settings.rs`)
-- `link` installe un 4e hook asynchrone, `UserPromptExpansion` (sans matcher), commande `armadai __record-flow-event`, avec le même propriétaire, la même fusion et le même retrait par `unlink` que les trois autres. Le rapport de conformité de `link` le liste.
+- `link` installe un 4e hook asynchrone, `UserPromptExpansion` (sans matcher), commande `armadai __record-flow-event`, avec le même propriétaire, la même fusion et le même retrait par `unlink` que les trois autres. Le rapport de conformité de `link` garde une seule ligne `flow recording: compiled (...)`, dont le texte nomme les quatre hooks : `SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion` (décision 4, §Cadre).
 - `event_from_hook` accepte `UserPromptExpansion` avec `expansion_type == slash_command` et écrit `{"ts":N,"event":"command","command":"<command_name>"}`. Aucun autre champ : ni `command_args`, ni `prompt`. Un nouveau variant `EventKind::Command` ; `agent_id` et `agent_type` ne sont pas requis pour cette ligne (`FlowEvent` les met par défaut vides ou devient une énumération ; au choix de l'architecte, les anciennes lignes doivent se lire telles quelles).
 
 ### 4.2 Lecture (`flow_status/runs.rs`)
@@ -46,6 +46,8 @@ Issue publique : #527. Spec précédente du sujet : `docs/superpowers/specs/2026
   1. toute exécution attribuée encore ouverte est fermée et marquée interrompue (nouvelle marque d'exécution, par exemple `interrupted`, affichée à la place de `in progress` ; les exécutions non attribuées encore ouvertes sont fermées de même) ;
   2. une exécution de ce flow seul s'ouvre, attribuée (pas de groupe `a | b`) ;
   3. tant qu'elle est ouverte, un sous-agent est placé dans cette exécution seule : si l'agent tient une étape unique du flow, il s'y place, **même si aucune étape source n'a fini** (étape `running`, la transition est notée à la fin de la source quand elle finit ; une étape démarrée avant la fin de sa source n'est jamais abandonnée) ; un agent qu'aucune étape du flow ne tient est ignoré (plus d'exécution fantôme pour lui). Les étapes ambiguës (un agent tenant deux étapes) gardent la règle actuelle (`?`).
+  4. Une étape où une exécution peut s'ouvrir (une étape d'entrée, ou une étape juste après un relais du coordinateur) n'est pas mise en attente de sa source : sinon le flow `review-loop` (`review → write when rejected`) prendrait un faux lien et se déclarerait fini trop tôt. Une étape `?` ou `✗` ne mène à aucune autre étape, même par un lien tardif : une étape ne se suit pas elle-même par le coordinateur.
+  5. Dans une exécution ouverte par une commande, une étape amont qui n'a jamais tourné prend la marque `- … (not run in this session)`, la même que pour l'inférence (décision 6) ; une étape aval qui n'a pas encore tourné reste `○ pending`. Pendant un chevauchement, une étape pas encore lancée peut s'afficher un instant ainsi, puis `running` : c'est vrai au moment du rendu (risque du même ordre que celui déjà accepté au §6). Les exécutions sans commande ne changent pas.
 - Une commande qui ne désigne aucun flow n'est pas une frontière et ne change rien.
 - Sans événement `command` dans le journal, le code actuel s'applique sans changement.
 
@@ -54,9 +56,10 @@ Issue publique : #527. Spec précédente du sujet : `docs/superpowers/specs/2026
 - L'appel isolé d'un agent qui est aussi une étape du flow attribué (ex. test manuel de `t` pendant `/bugfix`) : indiscernable sans frontière de fin ; piste : fermer l'exécution après un `Stop` de l'agent principal (événement `Stop`, documenté) ou un délai.
 - Le chevauchement sans commande enregistrée : afficher `?` pour une étape démarrée sans source finie au lieu de la perdre ; apparier un `SubagentStop` tardif par `agent_id`.
 - Un message d'aide quand le hook `UserPromptExpansion` manque (projet à relier).
+- Limite connue, non corrigée (décision 5) : un `start`/`stop` forgé avec `agent_id` vide fait perdre l'attribution, comme deux identifiants identiques. Le défaut existait avant le lot et le hook n'écrit pas de telle ligne en usage normal ; elle est documentée dans `docs/wiki/flow-status.md` (tâche 4).
 
 ### 4.4 Sortie visible
-Une exécution interrompue s'affiche `bugfix  interrupted` ; l'exécution attribuée ne porte jamais `a | b`. Le reste du format (marques, transitions, UTC) ne change pas. `docs/wiki/flow-status.md` (tableau des hooks, lignes 101, 132 et 142 des limites) et `docs/wiki/link.md` (ligne 57, liste des hooks) sont mis à jour.
+Une exécution interrompue s'affiche `bugfix  interrupted` ; l'exécution attribuée ne porte jamais `a | b`. Dans une exécution ouverte par une commande, une étape amont jamais jouée s'affiche `- … (not run in this session)` et non `○ pending` (une étape aval pas encore jouée reste `○ pending`). Le reste du format (marques, transitions, UTC) ne change pas. `docs/wiki/flow-status.md` (tableau des hooks, lignes 101, 132 et 142 des limites) et `docs/wiki/link.md` (ligne 57, liste des hooks) sont mis à jour.
 
 ## 5. Critères d'acceptation
 
@@ -69,8 +72,9 @@ Environnement : celui de l'issue #527 (projet à deux flows `evolution` et `bugf
 5. (c) `ev` d'un appel isolé de `t`, puis `cmd 3600 bugfix`, puis une exécution `an -> t -> u -> r -> v` : exactement deux blocs, le premier non attribué marqué `interrupted` (pas `in progress`), le second `bugfix  finished`. Un appel de `x`, agent qu'aucune étape de `bugfix` ne tient, après `cmd bugfix` : sortie identique à celle sans cet appel.
 6. Deux commandes dans une session (`cmd bugfix`, exécution complète, `cmd evolution`, `an` démarre) : deux blocs, `bugfix  finished` puis `evolution  in progress` ; les événements après la 2e commande n'apparaissent pas dans le premier bloc.
 7. Compatibilité : les scénarios de l'issue sans aucune ligne `command` donnent exactement la sortie de la version courante (`evolution  in progress` pour le second scénario, etc.).
-8. `armadai link --target claude` écrit le hook `UserPromptExpansion` dans `.claude/settings.json` en plus des trois autres, le liste dans son rapport ; `armadai unlink` le retire seul sans toucher un hook de l'utilisateur ; les golden de `tests/golden/init_pack/` et `link_new_cli.rs` sont mis à jour.
+8. `armadai link --target claude` écrit le hook `UserPromptExpansion` dans `.claude/settings.json` en plus des trois autres, le liste dans son rapport, en une seule ligne `flow recording: compiled (...)` dont le texte nomme `SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion` ; `armadai unlink` le retire seul sans toucher un hook de l'utilisateur ; les golden de `tests/golden/init_pack/` et `link_new_cli.rs` sont mis à jour : ceux de `settings.json` (le 4e hook) et ceux qui contiennent le rapport (la ligne `flow recording` change de texte ; le nombre de lignes du rapport ne change pas).
 9. Les pages `docs/wiki/flow-status.md` et `docs/wiki/link.md` décrivent le hook, la frontière et ce qui reste limité (§4.3).
+11. Étape amont sautée (décision 6) : `cmd 0 bugfix`, puis `an`, `u`, `r`, `v` joués en entier sans que `t` (`test`) ait jamais tourné : `bugfix  finished`, `test` affiché `- … (not run in this session)` (ni `○ pending`, ni `done`), les quatre autres `done`. Avec `cmd 0 bugfix` et seul `an` joué : `bugfix  in progress`, `test`, `fix-ui`, `review`, `validate` en `○ pending`. Dans `review-loop` (`review → write when rejected`), `cmd 0 review-loop` puis `review` rejeté et `write` démarré : l'exécution n'affiche pas `finished` avant la fin de `write`. Une exécution sans commande garde la sortie actuelle (critère 7).
 10. Essai réel avec Dimitri : sur une vraie session Claude Code, il tape la commande du second flow (celle de l'essai du 2026-10-26, deux flows à étape d'entrée partagée) avec des sous-agents en arrière-plan, et `flow status --watch` affiche ce flow, les étapes `done` au fur et à mesure et `finished` à la fin. La barrière complète est verte et chaque test ajouté a sa mutation vue rouge.
 
 ## 6. Risques
@@ -80,6 +84,7 @@ Environnement : celui de l'issue #527 (projet à deux flows `evolution` et `bugf
 - Le hook d'enregistrement imprime sur sa sortie standard : son texte entrerait dans le contexte du modèle. Couvert par le critère 1 (zéro octet), y compris sur entrée invalide ou sans projet.
 - Placer une étape dont la source n'a pas fini peut afficher un état plus généreux que la réalité (`done` pour un agent qui a tourné hors ordre) : le flow est une guidance, pas un moteur ; l'ordre réel reste lisible dans la liste des transitions.
 - Un hook de plus par projet lié : à relier (`link`) pour en bénéficier ; sans cela, comportement actuel.
+- Pendant un chevauchement, une étape pas encore lancée peut s'afficher un instant `- … (not run in this session)` puis `running` : vrai au moment du rendu, même ordre de risque que la ligne précédente.
 - Les exécutions `interrupted` changent le vocabulaire de la sortie : les tests d'égalité exacte existants doivent rester verts pour les journaux sans commande.
 
 ## Questions ouvertes
@@ -120,9 +125,14 @@ Aucune pour le MVP. Tranché par Dimitri le 2026-10-26 : le nom de la commande e
 
 ### Décisions de Dimitri (2026-10-26)
 
-1. **Ligne de rapport de `link` pour le 4e hook** : « Garder la ligne (Recommandé) ». Une seule ligne `flow recording: compiled` couvre les quatre hooks ; seuls les goldens de `settings.json` changent. Source : Dimitri, 2026-10-26.
+1. **Ligne de rapport de `link` pour le 4e hook** : « Garder la ligne (Recommandé) ». Une seule ligne `flow recording: compiled` couvre les quatre hooks ; seuls les goldens de `settings.json` changent. Source : Dimitri, 2026-10-26. **Dépassée sur le texte de la ligne par la décision 4** : le nombre de lignes reste 1, le texte change, donc les goldens qui contiennent le rapport changent aussi.
 2. **Commit et CHANGELOG** : « fix / Fixed (Recommandé) ». Commit `fix(flow): …`, entrée sous `### Fixed` de `## Unreleased`. Source : Dimitri, 2026-10-26.
 3. **Nom de commande** : « Égalité stricte (Recommandé) ». Le `command_name` est égal à l'identifiant du flow, sensible à la casse ; toute autre forme (espace de noms de plugin compris) n'est pas une frontière et retombe sur l'inférence. Source : Dimitri, 2026-10-26.
+4. **Tâche 2, ligne de rapport de `link`** : la ligne `flow recording: compiled (...)` ne nommait que 3 hooks alors que `link` en installe 4. Réponse : « Nommer les 4 (Recommandé) ». La ligne nomme `SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion` ; il n'y a toujours qu'une ligne, mais les golden qui contiennent le rapport changent d'une ligne de texte. Source : Dimitri, 2026-10-26.
+5. **Tâche 3, `agent_id` vide** : un `start`/`stop` forgé avec `agent_id` vide fait perdre l'attribution, comme deux identifiants identiques ; le défaut existait avant le lot et le hook n'écrit pas de telle ligne en usage normal. Réponse : « Ne rien faire (Recommandé) ». C'est une limite connue, à documenter dans `docs/wiki/flow-status.md` à la tâche 4. Source : Dimitri, 2026-10-26.
+6. **Tâche 3, étape amont sautée** : dans une exécution ouverte par une commande, une étape amont qui n'avait jamais tourné s'affichait `○ pending` alors que l'exécution pouvait être `finished`. Réponse : « not run in this session (Recommandé) ». Elle prend la marque `- … (not run in this session)`, la même que pour l'inférence ; une étape aval qui n'a pas encore tourné reste `○ pending` ; les exécutions sans commande ne changent pas. Source : Dimitri, 2026-10-26.
+
+Choix de construction approuvés par `guardian` (pas des décisions de Dimitri) : une étape où une exécution peut s'ouvrir n'est pas mise en attente de sa source ; une étape pas encore lancée peut s'afficher un instant `- … (not run in this session)` pendant un chevauchement ; une étape `?` ou `✗` ne mène à aucune autre étape. Voir §4.2, points 4 et 5.
 
 ### Questions pour Dimitri
 
