@@ -75,6 +75,7 @@ pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
     };
     for e in merge_stops(events) {
         let targets = match e.event {
+            EventKind::Command => continue, // used for attribution (task 3)
             EventKind::Start => b.start(&e),
             EventKind::Stop => match b.assigned.remove(&e.agent_id) {
                 Some(t) => t,
@@ -119,6 +120,7 @@ fn merge_stops(events: &[FlowEvent]) -> Vec<FlowEvent> {
     let mut last_stop: HashMap<&str, usize> = HashMap::new();
     for e in events {
         match e.event {
+            EventKind::Command => {}
             EventKind::Start => {
                 last_stop.remove(e.agent_id.as_str());
             }
@@ -707,6 +709,7 @@ mod tests {
             agent_id: id.into(),
             agent_type: agent.into(),
             state: None,
+            command: None,
         }
     }
 
@@ -717,6 +720,7 @@ mod tests {
             agent_id: id.into(),
             agent_type: agent.into(),
             state: state.map(str::to_string),
+            command: None,
         }
     }
 
