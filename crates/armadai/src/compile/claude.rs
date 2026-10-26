@@ -123,8 +123,8 @@ impl Compiler for ClaudeCompiler {
                 "flow recording",
                 Status::Compiled,
                 Some(
-                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) \
-                     in .claude/settings.json",
+                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), \
+                     UserPromptExpansion in .claude/settings.json",
                 ),
             );
         }
@@ -614,8 +614,8 @@ mod tests {
             (
                 Status::Compiled,
                 Some(
-                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) \
-                     in .claude/settings.json"
+                    "hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), \
+                     UserPromptExpansion in .claude/settings.json"
                 )
             )
         );

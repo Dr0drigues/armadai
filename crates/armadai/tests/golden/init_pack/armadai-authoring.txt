@@ -34,7 +34,7 @@ claude: agents temperature: not-compiled (no equivalent in Claude Code subagents
 claude: flow authoring: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: flow pack: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: flow pack step review: approximated (states and on_failure rendered as guidance)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
 claude: skill armadai-conventions: compiled
 
 === .claude/agents/agent-builder.md

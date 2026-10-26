@@ -134,7 +134,7 @@ claude: agent lead tier: not-compiled (the coordinator runs as the main session 
 claude: agents tags: not-compiled (informational, no Claude Code field; 1 agent: dev)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 1 agent: dev)
 claude: automation fmt: compiled (hook PostToolUse in .claude/settings.json)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
 claude: flow ship: approximated (rendered as guidance in CLAUDE.md; delegation topology enforced by the gate)
 claude: flow ship step build: approximated (states and on_failure rendered as guidance)
 claude: policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)

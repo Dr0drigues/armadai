@@ -23,7 +23,7 @@ claude: agent vigie skills: compiled (preloaded through the subagent `skills` fi
 claude: agents tags: not-compiled (informational, no Claude Code field; 4 agents: capitaine, cartographe, charpentier, vigie)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 4 agents: capitaine, cartographe, charpentier, vigie)
 claude: flow mission: approximated (rendered as guidance in CLAUDE.md, not enforced)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
 claude: skill code-nautique: compiled
 
 === .claude/agents/cartographe.md

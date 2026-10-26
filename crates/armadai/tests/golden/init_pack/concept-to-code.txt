@@ -82,7 +82,7 @@ claude: flow guide: approximated (rendered as guidance in CLAUDE.md; delegation 
 claude: flow guide start: approximated (Start: `refine`, rendered as guidance in CLAUDE.md)
 claude: flow guide step guard: approximated (states and on_failure rendered as guidance)
 claude: flow guide step validate: approximated (states and on_failure rendered as guidance)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
 claude: policy delegation=strict: compiled (enforced: delegation topology, by the PreToolUse gate)
 claude: skill briefing: compiled
 claude: skill cadre: compiled

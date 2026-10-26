@@ -26,7 +26,7 @@ claude: agent rust-test-analyzer skills: compiled (preloaded through the subagen
 claude: agents tags: not-compiled (informational, no Claude Code field; 5 agents: lead-analyst, rust-doc-writer, rust-reviewer, rust-security, rust-test-analyzer)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: lead-analyst, rust-doc-writer, rust-reviewer, rust-security, rust-test-analyzer)
 claude: flow analysis: approximated (rendered as guidance in CLAUDE.md, not enforced)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
 claude: skill analysis-standards: compiled
 
 === .claude/agents/rust-doc-writer.md

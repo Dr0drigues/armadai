@@ -253,4 +253,4 @@ claude: agents tags: not-compiled (informational, no Claude Code field; 5 agents
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: doc-writer, refactor-advisor, rust-reviewer, rust-test-writer, security-auditor)
 claude: agents title: not-compiled (Claude Code names a subagent by its id; 5 agents: doc-writer, refactor-advisor, rust-reviewer, rust-test-writer, security-auditor)
 claude: flow orchestration: not-compiled (no coordinator: no CLAUDE.md to render the flow into)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
