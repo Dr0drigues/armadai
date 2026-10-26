@@ -10,7 +10,7 @@ for OpenCode, Codex and Copilot).
 
 ## What is recorded
 
-When the project has a flow, `armadai link` installs three **asynchronous** hooks in
+When the project has a flow, `armadai link` installs four **asynchronous** hooks in
 `.claude/settings.json`, each running `armadai __record-flow-event`:
 
 | Hook | When |
@@ -18,10 +18,12 @@ When the project has a flow, `armadai link` installs three **asynchronous** hook
 | `SubagentStart` | a sub-agent starts |
 | `SubagentStop` | a sub-agent ends |
 | `PreToolUse`, matcher `SubagentHandback` | a sub-agent hands back, with its reply (this tool exists in auto mode only) |
+| `UserPromptExpansion` | a command typed in Claude Code (`/name`, skill or custom command): its name only |
 
 Each event is one JSON line appended to `.armadai/state/claude/<session>.jsonl`: a timestamp,
-start or stop, the sub-agent id, its agent name and the `STATE:` word it ended with. Nothing
-else: no prompt, no reply text. The hooks never fail and never print: bad input, no project or an
+start or stop, the sub-agent id, its agent name and the `STATE:` word it ended with; for a typed
+command, a timestamp and its name (`{"ts":...,"event":"command","command":"bugfix"}`). Nothing
+else: no prompt, no reply text, no command arguments. The hooks never fail and never print: bad input, no project or an
 unwritable log record nothing.
 
 `link` also adds `state/` to `.armadai/.gitignore` (and says `patched .../.gitignore` when it
@@ -30,6 +32,28 @@ changed an existing file): the logs describe this machine only. To purge them:
 ```bash
 rm -r .armadai/state/
 ```
+
+## The command you type
+
+Without more, the flow of a run is inferred from the sub-agents seen. When you start a flow with
+a command whose name is exactly the id of a flow (`/bugfix` for the flow `bugfix`, case
+included), the run is attributed to that flow instead:
+
+- the command opens a run of that flow alone (never `a | b`) and closes the runs still open: a
+  run the next flow command cut short is shown `interrupted` instead of `in progress`;
+- each sub-agent goes to the one step of the flow its agent holds, even before the step that
+  leads to it has finished (the step is `running`, and the transition is noted when its source
+  stops), so sub-agents running in the background that overlap lose no step;
+- an agent that no step of the flow holds is ignored: it opens no run of its own;
+- a step that never started while a step after it has finished is shown `- ... (not run in
+  this session)`; a step after the last one that ran stays `○ pending`. While sub-agents overlap, a
+  step not started yet can be shown `not run` for a moment (a step after it has stopped), then
+  `running` once it starts: it was true when drawn.
+
+A command that does not name a flow (another name, a plugin namespace such as `/plugin:bugfix`),
+a flow started in natural language, or a Claude Code that does not fire `UserPromptExpansion`
+records no boundary: the inference above applies unchanged. A project linked before this hook
+existed gets it by running `armadai link --target claude` again.
 
 ## The `STATE:` line
 
@@ -92,13 +116,17 @@ deliver  in progress
 | `?` | unsure, with the reason in parentheses (for example no `STATE:` line). It leads nowhere: started again, the step is retried in place and its new state replaces the `?` |
 | `✗` | a state the step does not declare. It leads nowhere: started again, the step is retried in place and its new state replaces the `✗`. A state the step declares but no link follows ends the flow normally: it is not a `✗` |
 | `~` | held by the coordinator, which is not recorded (`coordinator, not recorded`) |
-| `-` | not run in this session (`not run in this session`): a step before the one a run opened at, when the session started the flow mid-way. Neither done nor pending, it never holds the run open |
+| `-` | not run in this session (`not run in this session`): a step before the one a run opened at, when the session started the flow mid-way, or, in a run attributed by a command, a step that never started while a step after it has finished. Neither done nor pending, it never holds the run open |
+
+A run heading reads `in progress`, `finished`, or `interrupted` (a later flow command closed the
+run before it finished).
 
 Other lines: `a → b : n` is a link taken `n` times (shown from twice on); the timed transitions
 follow. All times
 are UTC. A finished run stays listed, finished runs first.
 
-- Two flows whose entry step is shared are shown as `a | b` until their steps diverge.
+- Without a recorded command, two flows whose entry step is shared are shown as `a | b` until
+  their steps diverge. With one, the run is the flow the command names.
 - A session can start a flow mid-way (for example at `frame`, its `refine` done in an earlier
   session): when no flow holding the agent has a run open (or its last one finished), a step
   of the flow opens a run where it starts, the steps before it shown `-`. Flows sharing that
@@ -130,7 +158,20 @@ are UTC. A finished run stays listed, finished runs first.
   apart: the step is `?` (ambiguous step) in both runs, and neither moves. The most recent link
   is a choice, not a certainty: the user may have meant the older run.
 - A sub-agent running in the background is not guaranteed to be seen: its stop may come after
-  the reply that started it.
+  the reply that started it. When the command was recorded, overlapping sub-agents are placed
+  in the attributed run and no step is lost; without it, a step started before its source has
+  finished can still be left out.
+- The version of Claude Code that introduced `UserPromptExpansion` is not verified. Where it
+  does not fire, or for a command it does not cover, nothing says so: `flow status` falls back
+  to the inference, with no message asking to link again.
+- `/clear` is not a boundary: the run goes on.
+- A sub-agent called on its own that is also a step of the flow you launched (for example a
+  manual `test` during `/bugfix`) is placed in that run: nothing tells it apart.
+- A late transition is stamped when its source step stops. When a step ran and ended before its
+  source did (overlapping sub-agents), the transition can carry a time after the end of the step
+  it leads to: the list of transitions shows the order the log gave, not a strict timeline.
+- A `start` or `stop` line with an empty `agent_id` loses the attribution, as two lines sharing
+  the same id do. The hook never writes such a line in normal use; a log written by hand can.
 - The coordinator is not recorded (see above) and `SubagentHandback` exists in auto mode only:
   outside it the stop event carries the `STATE:` word read from `SubagentStop` alone.
 - A step that ends with `STATE: failed` and has no failure path (`on_failure`, `when: failed`)
