@@ -123,7 +123,8 @@ run before it finished).
 
 Other lines: `a → b : n` is a link taken `n` times (shown from twice on); the timed transitions
 follow. All times
-are UTC. A finished run stays listed, finished runs first.
+are UTC. A finished run stays listed, finished and interrupted runs first, each group in the order
+they started.
 
 - Without a recorded command, two flows whose entry step is shared are shown as `a | b` until
   their steps diverge. With one, the run is the flow the command names.
@@ -164,7 +165,7 @@ are UTC. A finished run stays listed, finished runs first.
 - The version of Claude Code that introduced `UserPromptExpansion` is not verified. Where it
   does not fire, or for a command it does not cover, nothing says so: `flow status` falls back
   to the inference, with no message asking to link again.
-- `/clear` is not a boundary: the run goes on.
+- `/clear` is not a boundary. Whether it starts a new session, and so a new log, is not verified.
 - A sub-agent called on its own that is also a step of the flow you launched (for example a
   manual `test` during `/bugfix`) is placed in that run: nothing tells it apart.
 - A late transition is stamped when its source step stops. When a step ran and ended before its
