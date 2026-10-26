@@ -70,11 +70,13 @@ pub struct Run {
 ///   goes on in the same run when that step starts again).
 /// - A `command` line naming a flow of the project (exact id) is a boundary:
 ///   every run still open is closed and shown interrupted, and a run of that
-///   flow alone opens, attributed. While it is the latest, a sub-agent goes to
-///   the one step of that flow its agent holds, whether or not the source of
-///   that step has finished (the link is noted when the source stops); an agent
-///   no step of the flow holds is ignored. A command naming no flow changes
-///   nothing; without any `command` line the rules above are the only ones.
+///   flow alone opens, attributed. Until that run finishes (or the next flow
+///   command), a sub-agent goes to the one step of that flow its agent holds,
+///   whether or not the source of that step has finished (the link is noted
+///   when the source stops); an agent no step of the flow holds is ignored.
+///   Once it has finished, the rules above apply again. A command naming no
+///   flow changes nothing; without any `command` line the rules above are the
+///   only ones.
 pub fn runs(project: &Project, events: &[FlowEvent]) -> Vec<Run> {
     let mut b = Builder {
         project,
@@ -387,7 +389,7 @@ struct Builder<'p> {
     assigned: HashMap<String, Vec<(usize, String)>>,
     /// Orders starts and stops (several events can share a second).
     tick: usize,
-    /// The run of the latest command naming a flow.
+    /// The run of the latest command naming a flow, until it finishes.
     attributed: Option<usize>,
 }
 
@@ -455,6 +457,7 @@ impl<'p> Builder<'p> {
     fn boundary(&mut self, flow_id: &str) {
         // (a run closed before, left stuck by its entry starting again, stays as it is)
         for r in (self.open.iter_mut()).filter(|r| !r.dropped && !r.closed && !r.run.finished) {
+            r.closed = true; // the inference that resumes must not extend it
             r.interrupted = true;
         }
         let (id, flow) = self
@@ -713,6 +716,10 @@ impl<'p> Builder<'p> {
         let unknown =
             (run.run.steps.iter()).any(|v| matches!(v.mark, Mark::Unsure | Mark::Unexpected));
         run.run.finished = !run.running() && !to_take && !unknown;
+        // the run a command opened ends the attribution; later sub-agents are inferred
+        if self.attributed == Some(i) && self.open[i].run.finished {
+            self.attributed = None;
+        }
     }
 }
 
@@ -2732,6 +2739,7 @@ mod tests {
             &[
                 start(T + 20, "r1", "qa"),
                 stop(T + 30, "r1", "qa", Some("rejected")),
+                start(T + 40, "w2", "dev"),
             ],
         ]);
         assert_eq!(
@@ -2740,9 +2748,10 @@ mod tests {
                 "session s1 (UTC)",
                 "",
                 "loop  in progress",
-                "  ✓ write   done",
+                "  ● write   running",
                 "  ✓ review  rejected",
                 "  09:15:20  write → review  (done)",
+                "  09:15:40  review → write  (rejected)",
             ])
         );
     }
@@ -2924,6 +2933,102 @@ mod tests {
                 "  ○ check  pending",
                 "  ✓ ship   done",
                 "  09:15:20  prep → ship  (failed)",
+            ])
+        );
+    }
+
+    #[test]
+    fn after_the_attributed_run_finishes_the_inference_takes_over() {
+        let events = seq(&[
+            &[cmd(T, "bugfix")],
+            &run_at(0),
+            &span(3600, 3610, "x1", "x"),
+            &span(3700, 3710, "i7", "an"),
+            &span(3720, 3730, "i8", "u"),
+        ]);
+        assert_eq!(
+            text(&issue_with_docs(), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "bugfix  finished",
+                "  ✓ analyse   done",
+                "  ✓ test      done",
+                "  ✓ fix-ui    done",
+                "  ✓ review    done",
+                "  ✓ validate  done",
+                "  09:15:30  analyse → test  (done)",
+                "  09:15:50  test → fix-ui  (done)",
+                "  09:16:10  fix-ui → review  (done)",
+                "  09:16:30  review → validate  (done)",
+                "",
+                "docs  finished",
+                "  ✓ write  done",
+                "",
+                "evolution  in progress",
+                "  ✓ analyse   done",
+                "  ✓ ui        done",
+                "  ○ test      pending",
+                "  ○ review    pending",
+                "  ○ validate  pending",
+                "  10:17:00  analyse → ui  (done)",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_late_stop_of_an_interrupted_run_keeps_the_attribution() {
+        let events = [
+            cmd(T, "docs"),
+            start(T + 1, "x1", "x"),
+            cmd(T + 5, "docs"),
+            stop(T + 10, "x1", "x", None),
+            start(T + 20, "i9", "an"),
+            stop(T + 30, "i9", "an", None),
+        ];
+        let write = view("write", Mark::Done, Some("done"), None);
+        assert_eq!(
+            runs(&issue_with_docs(), &events),
+            vec![Run {
+                flow: "docs".into(),
+                steps: vec![write],
+                loops: vec![],
+                transitions: vec![],
+                finished: true,
+                interrupted: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn an_interrupted_run_is_closed_to_the_inference() {
+        let events = seq(&[
+            &[cmd(T, "bugfix")],
+            &span(0, 10, "i1", "an"),
+            &[cmd(T + 100, "docs")],
+            &span(110, 120, "x1", "x"),
+            &span(130, 140, "i2", "t"),
+        ]);
+        assert_eq!(
+            text(&issue_with_docs(), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "bugfix  interrupted",
+                "  ✓ analyse   done",
+                "  ○ test      pending",
+                "  ○ fix-ui    pending",
+                "  ○ review    pending",
+                "  ○ validate  pending",
+                "",
+                "docs  finished",
+                "  ✓ write  done",
+                "",
+                "bugfix | evolution  in progress",
+                "  - analyse   (not run in this session)",
+                "  ✓ test      done",
+                "  ○ review    pending",
+                "  ○ validate  pending",
             ])
         );
     }
