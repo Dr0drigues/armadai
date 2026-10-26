@@ -2904,10 +2904,27 @@ mod tests {
     }
 
     #[test]
-    fn without_a_command_a_skipped_step_is_shown_as_before() {
+    fn without_a_command_a_step_skipped_by_a_failure_stays_pending() {
+        let flow = "steps:\n  prep: { agent: p, on_failure: ship }\n  check: { agent: q }\n  ship: { agent: s }\nlinks:\n  - { from: prep, to: check }\n  - { from: check, to: ship }\n";
+        let p = project_agents(&["p", "q", "s"], &[("skip", flow)]);
+        let events = seq(&[
+            &[
+                start(T + 1, "a1", "p"),
+                stop(T + 10, "a1", "p", Some("failed")),
+            ],
+            &span(20, 30, "a2", "s"),
+        ]);
         assert_eq!(
-            text(&deliver(), &skipped_design_events()),
-            "session s1 (UTC)\n\ndeliver  finished\n  - design    (not run in this session)\n  ✓ build     done\n  ✓ guard     approved\n  ✓ validate  done\n  09:15:40  build → guard  (done)\n  09:16:00  guard → validate  (approved)\n"
+            text(&p, &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "skip  finished",
+                "  ✓ prep   failed",
+                "  ○ check  pending",
+                "  ✓ ship   done",
+                "  09:15:20  prep → ship  (failed)",
+            ])
         );
     }
 }
