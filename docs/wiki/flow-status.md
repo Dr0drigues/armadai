@@ -46,9 +46,9 @@ included), the run is attributed to that flow instead:
   stops), so sub-agents running in the background that overlap lose no step;
 - an agent that no step of the flow holds is ignored: it opens no run of its own;
 - a step that never started while a step after it has finished is shown `- ... (not run in
-  this session)`; a step after the last one that ran stays `○ pending`. While sub-agents overlap, a
-  step not started yet can be shown `not run` for a moment (a step after it has stopped), then
-  `running` once it starts: it was true when drawn.
+  this session)`; a step after the last one that ran stays `○ pending`. A step shows `not run` as
+  soon as a step placed after it has finished, and stays so until it starts itself, when it turns
+  `running`: while sub-agents overlap, that is what was true when drawn.
 
 A command that does not name a flow (another name, a plugin namespace such as `/plugin:bugfix`),
 a flow started in natural language, or a Claude Code that does not fire `UserPromptExpansion`
