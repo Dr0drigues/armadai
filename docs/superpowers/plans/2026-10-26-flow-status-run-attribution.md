@@ -46,7 +46,7 @@ Le hook n'écrit que le nom ; `command_args` et `prompt` ne quittent jamais le p
 ```mermaid
 stateDiagram-v2
     [*] --> ouverte: command <flow> (attribuée) ou inférence (non attribuée)
-    ouverte --> finished: plus rien en cours ni lien à prendre
+    ouverte --> finished: plus rien en cours ni lien à prendre (attribuée : fin de l'attribution, la suite est inférée)
     ouverte --> interrupted: command <flow> suivante
     interrupted --> finished: un stop tardif d'un agent qui y était placé la termine
     ouverte --> masquee: attribuée et aucune étape démarrée à la fin du journal
@@ -147,16 +147,16 @@ Dépend de la tâche 1 (`EventKind::Command`, `FlowEvent.command`).
 
 **Interfaces :**
 - `Run` gagne `pub interrupted: bool` : fermée par une commande de flow suivante avant d'avoir fini ; jamais vrai quand `finished`. Les littéraux `Run` des tests existants gagnent `interrupted: false` et rien d'autre (tout autre changement d'un test existant est un signal d'alarme pour la revue).
-- `Builder` gagne `attributed: Option<usize>` (l'exécution de la dernière commande de flow). `Building` gagne `attributed: bool`, `interrupted: bool`, `awaiting: BTreeSet<String>` (étapes placées sans lien), `entered: HashMap<String, usize>` (tick de la fin de la source qui a noté un lien tardif).
+- `Builder` gagne `attributed: Option<usize>` (l'exécution de la dernière commande de flow, tant qu'elle n'a pas fini : la tâche 5 le remet à `None`). `Building` gagne `attributed: bool`, `interrupted: bool`, `awaiting: BTreeSet<String>` (étapes placées sans lien), `entered: HashMap<String, usize>` (tick de la fin de la source qui a noté un lien tardif).
 - Fonction factorisée (pas de copie) : l'enregistrement des sauts d'un lien (`from`, étapes du coordinateur traversées, `to`, ts, état) aujourd'hui dans `start`, appelée aussi par `stop`.
 
 **Règles (spec §4.2) :**
 1. `runs()` : `EventKind::Command` → si `project.flows.contains_key(name)`, `boundary(name)`, sinon rien ; `merge_stops` laisse passer la ligne sans toucher `last_stop`.
-2. `boundary(flow)` : chaque exécution non `dropped`, non `finished` devient `interrupted` (candidates groupées comprises) ; `boundary` ne pose pas `closed` (écart de la tâche 3, approuvé par `guardian` : une fois `attributed` posé, il reste `Some` jusqu'à la fin de la session, l'écriture de `closed` serait morte) ; une `Building` neuve du flow s'ouvre dans son propre groupe, `attributed = true` ; `Builder.attributed = Some(index)`.
-3. `start(e)` quand `Builder.attributed == Some(i)` : seules les étapes du flow de `i` tenues par `e.agent_type` comptent. Aucune → l'événement est ignoré (pas d'exécution fantôme). Deux ou plus → la règle actuelle (`?` « ambiguous step »). Une seule `sid` → `linked_from(sid)` s'il existe (transition comme aujourd'hui), sinon placée `running` sans transition et ajoutée à `awaiting`, sauf si `sid` est une étape où une exécution peut s'ouvrir, c'est-à-dire une étape d'entrée ou une étape juste après un relais : celle-ci n'entre jamais dans `awaiting` (écart de la tâche 3, approuvé par `guardian` : sinon `review-loop` prendrait un faux lien). Les branches d'inférence (entrée qui ferme, ouverture à mi-flow, groupes `a | b`) ne s'appliquent pas. Une étape en amont d'une étape placée qui n'a pas tourné dans l'exécution attribuée prend la marque `- … (not run in this session)` ; une étape en aval qui n'a pas encore tourné reste `○ pending` (décision de Dimitri du 2026-10-26, « not run in this session (Recommandé) »). Pas de condition « rien en cours » pour ce marquage : une étape pas encore lancée s'affiche `not run` dès qu'une étape après elle a fini, et jusqu'à son propre démarrage, où elle passe `running` ; cet affichage transitoire est accepté et le wiki l'explique (tâche 4).
+2. `boundary(flow)` : chaque exécution non `dropped`, non `closed`, non `finished` devient `interrupted` et `closed` (candidates groupées comprises ; une exécution déjà fermée par l'inférence, laissée bloquée par le redémarrage de son entrée, reste telle quelle, test `a_run_left_stuck_before_the_command_is_not_called_interrupted`) ; une `Building` neuve du flow s'ouvre dans son propre groupe, `attributed = true` ; `Builder.attributed = Some(index)`. Historique : la tâche 3 a livré `boundary` sans poser `closed` (écart approuvé par `guardian` : `attributed` restait `Some` jusqu'à la fin de la session, l'écriture était morte). Depuis la décision de Dimitri du 2026-10-26 (« Oui, à `finished` (Recommandé) »), l'inférence reprend après la fin de l'exécution attribuée, et `closed` redevient nécessaire : sans lui, l'inférence prolongerait une exécution interrompue, puisque `open_run` et la recherche de lien de `start` ne filtrent que `dropped` et `closed` (`runs.rs:395-399`, `:526-527`, lus par l'architecte). La tâche 5 le rétablit. Un `stop` tardif d'un agent placé dans l'exécution interrompue passe par `assigned`, et `closed` ne le touche pas.
+3. L'attribution court de la commande jusqu'à ce que son exécution soit `finished`, ou jusqu'à la commande de flow suivante. Au `stop` qui termine l'exécution `i`, et seulement si `Builder.attributed == Some(i)`, `Builder.attributed` revient à `None` ; les sous-agents suivants reviennent à l'inférence, comme sur `master` (décision de Dimitri du 2026-10-26, portée par la tâche 5 ; la tâche 3 a livré une attribution qui durait jusqu'à la commande suivante, rejetée par `reviewer`). `start(e)` quand `Builder.attributed == Some(i)` : seules les étapes du flow de `i` tenues par `e.agent_type` comptent. Aucune → l'événement est ignoré (pas d'exécution fantôme). Deux ou plus → la règle actuelle (`?` « ambiguous step »). Une seule `sid` → `linked_from(sid)` s'il existe (transition comme aujourd'hui), sinon placée `running` sans transition et ajoutée à `awaiting`, sauf si `sid` est une étape où une exécution peut s'ouvrir, c'est-à-dire une étape d'entrée ou une étape juste après un relais : celle-ci n'entre jamais dans `awaiting` (écart de la tâche 3, approuvé par `guardian` : sinon `review-loop` prendrait un faux lien). Les branches d'inférence (entrée qui ferme, ouverture à mi-flow, groupes `a | b`) ne s'appliquent pas. Une étape en amont d'une étape placée qui n'a pas tourné dans l'exécution attribuée prend la marque `- … (not run in this session)` ; une étape en aval qui n'a pas encore tourné reste `○ pending` (décision de Dimitri du 2026-10-26, « not run in this session (Recommandé) »). Pas de condition « rien en cours » pour ce marquage : une étape pas encore lancée s'affiche `not run` dès qu'une étape après elle a fini, et jusqu'à son propre démarrage, où elle passe `running` ; cet affichage transitoire est accepté et le wiki l'explique (tâche 4).
 4. `stop` d'une étape `s` d'une exécution attribuée, après la mise à jour de sa vue et avant le calcul de `finished` : pour chaque `t` de `awaiting` que `reach(s)` atteint, la transition `s → t` est notée (ts de ce stop, état `leads_with(s)`, sauts du coordinateur compris), `taken` compté, `entered[t] = tick`, `linked_at[t] = ts`, `t` retiré d'`awaiting`. Deux gardes, conservées et testées : aucun lien tardif depuis une étape `?` ou `✗`, et aucun lien d'une étape vers elle-même (`s == t`).
 5. `linked_from(to)` compare `max(started[to], entered[to])` au lieu de `started[to]` ; sans `entered` (toute exécution non attribuée), comportement identique.
-6. Fin de `runs()` : une exécution `attributed` sans aucune étape démarrée n'est pas rendue ; `merge_candidates` calcule `interrupted` (interrompue si toutes ses candidates le sont, et jamais quand elle a fini) ; `finish()` n'a pas de ligne `interrupted && !finished` (écart de la tâche 3, approuvé par `guardian` : `merge_candidates` la calcule déjà).
+6. Fin de `runs()` : une exécution `attributed` sans aucune étape démarrée n'est pas rendue ; `merge_candidates` calcule `interrupted` (interrompue si toutes ses candidates le sont, et jamais quand elle a fini) ; `finish()` n'a pas de ligne `interrupted && !finished` (écart de la tâche 3, approuvé par `guardian` : `merge_candidates` la calcule déjà). Lu au code par l'architecte, sans exécution : `merge_candidates` fait `interrupted = !finished && members.iter().all(|m| m.interrupted)` (`runs.rs:133`), et `a_late_stop_that_finishes_an_interrupted_run_leaves_it_finished` (`runs.rs:2751`) fige une exécution interrompue puis terminée par un `stop` tardif (`finished: true, interrupted: false`). La fin d'attribution de la tâche 5 ne change pas ce cas, puisque l'exécution qui finit n'est plus celle de `Builder.attributed` ; la tâche 5 le prolonge pour le vérifier.
 7. `render` : statut `finished`, sinon `interrupted`, sinon `in progress` ; tri stable par « en cours » en dernier (`sort_by_key(|r| !(r.finished || r.interrupted))`). `print_painted` reconnaît déjà l'en-tête (`<flow>  ...`).
 
 Vérification à la main faite par l'architecte (règle 4 et 5) sur les scénarios 1 et 2 de l'issue, en ticks : scénario 2 avec `bugfix`, `fix-ui` démarre (tick 3) avant `test` (tick 4) et finit (5) avant lui (6) ; au stop de `test`, `entered[fix-ui] = 6` ferme `test → fix-ui`, et `fix-ui` (départ 3 < arrêt 5) mène encore à `review`. À rejouer par les tests, pas à croire.
@@ -309,9 +309,51 @@ Dépend des tâches 1 à 3.
 
 Critères couverts : 9, 10 (préparation), et 1/2/7 de bout en bout.
 
+### Tâche 5 [cli-specialist] : l'attribution s'arrête à `finished`
+
+Reprise du plan après le rejet de `reviewer` sur la branche entière (tête `355ff9c`). Dépend des tâches 3 et 4 (mêmes fichiers). Décision de Dimitri du 2026-10-26 : « Oui, à `finished` (Recommandé) ». L'attribution s'arrête quand l'exécution attribuée est `finished`, et les sous-agents suivants reviennent à l'inférence, comme sur `master`. Un agent du flow appelé seul pendant le flow arrive avant `finished` : son cas ne change pas (spec §4.3).
+
+Le rejet, relu au code par l'architecte (lecture, pas d'exécution) : `start` fait `if let Some(i) = self.attributed { return self.start_attributed(i, e); }` (`runs.rs:510-511`), et rien ne remet `Builder.attributed` à `None`. Sur le projet de l'issue augmenté du flow `docs`, avec le journal `command bugfix`, une exécution complète, `x` de 3600 à 3610, puis `an` de 3700 à 3710 et `u` de 3720 à 3730, `reviewer` mesure un seul bloc, `bugfix  in progress` avec ses cinq étapes `✓ done` (son rapport, à rejouer).
+
+**Fichiers :**
+- Modifier : `crates/armadai/src/flow_status/runs.rs` (`Builder::stop`, `Builder::boundary`, le commentaire de `runs()` l. 71-77, qui dit « While it is the latest », et celui de `Builder.attributed` l. 390) ; `crates/armadai/tests/flow_status_cli.rs` (`Env::hook`) ; `docs/wiki/flow-status.md` (l. 26, l. 42-47, l. 53-55) ; `crates/armadai/src/cli/flow.rs`, seulement si son `long_about` dit que l'attribution court jusqu'à la commande suivante (le lire, et le dire dans le rapport).
+- Ne pas toucher : `render.rs`, `record.rs`, `claude_settings.rs`.
+
+**Interfaces :** aucune nouvelle. Le sens de `Builder.attributed` devient « l'exécution de la dernière commande de flow, tant qu'elle n'a pas fini ».
+
+**Règles (tâche 3, règles 2 et 3 corrigées) :**
+1. Dans `Builder::stop(i, …)`, après le calcul de `run.run.finished` : si `self.attributed == Some(i)` et que `self.open[i].run.finished`, alors `self.attributed = None`. Seule la fin de l'exécution attribuée lève l'attribution. Un `stop` tardif qui termine une exécution interrompue plus ancienne la laisse en place.
+2. `boundary` pose `closed = true` sur chaque exécution qu'il marque `interrupted`, avec le même filtre (non `dropped`, non `closed`, non `finished`). Sans cela, l'inférence qui reprend après `finished` prolongerait une exécution interrompue.
+
+Choix de construction : lever l'attribution dans `stop` (option retenue), ou dans la boucle de `runs()` après chaque `stop`. Le coût est le même, une condition. `stop` est retenu parce que c'est là que `finished` se calcule, et qu'un seul endroit le lit.
+
+**Tests** (`runs.rs`, helpers de la tâche 3 : `issue_with_docs()`, `cmd`, `span`, `run_at`, `text`, `lines`), à égalité exacte. Les textes attendus sont **mesurés par le constructeur** : d'abord le test écrit avec l'attendu prévu ci-dessous, puis la sortie lue. Si elle diffère de la prévision, le constructeur s'arrête et cite les deux sorties dans son rapport, avant de figer quoi que ce soit, puisque c'est l'inférence de `master` qui les produit.
+
+| Test | Journal et assertion | Mutation qui doit le faire rougir |
+|---|---|---|
+| `after_the_attributed_run_finishes_the_inference_takes_over` | journal du `reviewer` : `cmd(T,"bugfix")`, `run_at(0)`, `span(3600,3610,"x1","x")`, `span(3700,3710,"i7","an")`, `span(3720,3730,"i8","u")` ; `text(&issue_with_docs(), …)` égal au texte entier, trois blocs dans cet ordre : `bugfix  finished` (le premier bloc de `TWO_COMMANDS`, transitions comprises), `docs  finished` (`✓ write  done`), `evolution  in progress` (`✓ analyse`, `✓ ui`, `○ test`, `○ review`, `○ validate`, transition `10:17:00  analyse → ui  (done)`, prévue, à mesurer) | retirer la remise à `None` → un seul bloc `bugfix  in progress` (la mesure du `reviewer`) |
+| `a_late_stop_of_an_interrupted_run_keeps_the_attribution` | `cmd(T,"docs")`, `start(T+1,"x1","x")`, `cmd(T+5,"docs")`, `stop(T+10,"x1","x",None)`, `span(20,30,"i9","an")` ; `runs(&issue_with_docs(), …)` égal au `vec![Run { flow: "docs", … finished: true, interrupted: false }]` de `a_late_stop_that_finishes_an_interrupted_run_leaves_it_finished` : `an` est ignoré, car la seconde exécution `docs` reste attribuée | lever l'attribution à n'importe quelle fin (sans `== Some(i)`) → un bloc `bugfix | evolution` en plus |
+| `an_interrupted_run_is_closed_to_the_inference` | `cmd(T,"bugfix")`, `span(0,10,"i1","an")`, `cmd(T+100,"docs")`, `span(110,120,"x1","x")`, `span(130,140,"i2","t")` ; texte entier : `bugfix  interrupted` (`✓ analyse`, le reste `○ pending`), `docs  finished`, puis le bloc que l'inférence ouvre pour `t` (prévu : `bugfix | evolution  in progress`, `- analyse (not run in this session)`, `✓ test`, comme `ISSUE_LONE`, à mesurer) | `boundary` sans `closed` → `t` prolonge le bloc `bugfix  interrupted` (`✓ test`, transition `analyse → test`), et le troisième bloc disparaît |
+| `a_review_loop_entry_is_not_awaited_and_the_loop_goes_on` (étendu, suggestion du `reviewer`, critère 11) | le journal actuel plus `start(T+40,"w2","dev")` : `loop  in progress`, `● write  running`, `✓ review  rejected`, transitions `09:15:20  write → review  (done)` puis `09:15:40  review → write  (rejected)` (prévues, à mesurer) | `waits` forcé à vrai dans `start_attributed` (l'entrée mise en attente) → faux lien `review → write` au stop de `review`, exécution `finished`, et un second bloc `loop` ouvert par l'inférence |
+
+Hors `runs.rs` :
+- `flow_status_cli.rs`, `Env::hook` : ajouter `env_remove("RUST_LOG")`, comme `flow_record.rs` (suggestion du `reviewer`, à vérifier au fichier). Vérification : lancer `RUST_LOG=debug cargo test --no-fail-fast --test flow_status_cli` avant et après le changement, et citer les deux sorties. Si la suite est verte dans les deux cas, le dire : le changement est alors une hygiène, sans mutation qui morde.
+- `docs/wiki/flow-status.md` :
+  - l. 26 : couper la ligne trop longue (au plus la largeur des autres lignes de la page), sans changer le texte ;
+  - l. 42-43 : la commande ouvre une exécution attribuée « until that run is `finished` or the next flow command »; ensuite, les sous-agents sont de nouveau inférés ;
+  - l. 47 : un agent qu'aucune étape du flow ne tient est ignoré « while the run is open » ; après `finished`, il relève de l'inférence (il peut ouvrir l'exécution d'un autre flow) ;
+  - l. 53-55 : `/plugin:bugfix` devient « (not verified: how Claude Code names a plugin command) », puisque la forme de `command_name` pour une commande de plugin n'est pas vérifiée (plan l. 22) ; ajouter à la liste de ce qui relève de l'inférence « the sub-agents after an attributed run has finished ».
+
+- [ ] **Étape 1 :** rejouer le journal du `reviewer` sur le binaire de la branche (projet temporaire, `HOME`/`ARMADAI_CONFIG_DIR` isolés), citer la sortie (un bloc `bugfix  in progress` attendu).
+- [ ] **Étape 2 :** écrire ou étendre les quatre tests, les voir rouges ; implémenter les règles 1 et 2 ; vert ; mesurer les textes attendus (voir plus haut) ; mettre à jour les deux commentaires de `runs.rs`.
+- [ ] **Étape 3 :** mutations du tableau, chacune vue rouge puis restaurée (`touch`), sortie citée ; 5 passes de `cargo test --no-fail-fast --bin armadai flow_status` ; la suite `flow_status_cli` et les tests existants de `runs.rs` restent verts, sans changement.
+- [ ] **Étape 4 :** `Env::hook` et wiki ; barrière ; commits `fix(flow): end the attribution of a run when it finishes`, `test(flow): clear RUST_LOG for the flow status hook tests`, puis `docs(flow): say how long a typed command attributes a run`.
+
+Critères couverts : 11 (boucle de relecture), et la portée de l'attribution de §4.2.3 (« tant qu'elle est ouverte »).
+
 ## Ordre
 
-1 → 2 → 3 → 4. La tâche 2 ne dépend pas de la tâche 1 et pourrait tourner en parallèle de la 3 dans un autre worktree ; recommandé : en série (même branche, revues `guardian` plus simples).
+1 → 2 → 3 → 4 → 5. La tâche 5 vient du rejet de `reviewer` et se fait après la 4, sur la même branche. La tâche 2 ne dépend pas de la tâche 1 et pourrait tourner en parallèle de la 3 dans un autre worktree ; recommandé : en série (même branche, revues `guardian` plus simples).
 
 ## Couverture
 
@@ -327,6 +369,8 @@ Critères couverts : 9, 10 (préparation), et 1/2/7 de bout en bout.
 | 8 `link`/`unlink`, golden | 2 |
 | 9 pages wiki | 2 (`link.md`), 4 (`flow-status.md`) |
 | 10 essai réel, barrière, mutations | 4 (étape 5), chaque tâche (barrière, mutations), validator |
+| 11 étape amont sautée ; `review-loop` pas `finished` avant la fin de `write` | 3 (`a_skipped_upstream_step_is_not_run_in_an_attributed_run`, `a_review_loop_entry_is_not_awaited...`), 5 (`a_review_loop...` étendu jusqu'à `start(write)`) |
+| §4.2.3 attribution « tant qu'elle est ouverte » (fin à `finished`) | 5 (`after_the_attributed_run_finishes...`, `a_late_stop_of_an_interrupted_run...`, `an_interrupted_run_is_closed...`) |
 
 ## Review Focus
 
@@ -336,6 +380,7 @@ Critères couverts : 9, 10 (préparation), et 1/2/7 de bout en bout.
 4. **Lien tardif** : il ne laisse aucun lien « à prendre » (l'exécution finit) et n'empêche pas l'étape tardive de mener plus loin (scénario 2).
 5. **Ordre et statut des blocs** : `interrupted` avant `finished` selon l'ordre de départ, `in progress` en dernier ; une exécution attribuée vide n'apparaît ni dans `flow status` ni dans `--list`.
 6. **`settings.json`** : le 4e hook passe par la même fusion ; `unlink` avec manifeste le retire seul, sans manifeste ne touche pas le fichier ; un projet lié avant le reçoit au relink.
+7. **Fin d'attribution** (tâche 5) : seule la fin de l'exécution attribuée lève l'attribution ; une exécution interrompue est fermée à l'inférence qui reprend ensuite.
 
 ## Décisions de Dimitri
 
@@ -343,6 +388,7 @@ Critères couverts : 9, 10 (préparation), et 1/2/7 de bout en bout.
 - **Ligne de rapport de `link`** (2026-10-26) : « Nommer les 4 (Recommandé) ». La ligne unique nomme `SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion` ; les 11 golden qui contiennent le rapport changent chacun d'une ligne (tâche 2).
 - **`agent_id` vide** (2026-10-26) : « Ne rien faire (Recommandé) ». Limite connue, écrite dans `docs/wiki/flow-status.md` (tâche 4, étape 2).
 - **Étape amont sautée dans une exécution attribuée** (2026-10-26) : « not run in this session (Recommandé) ». Marque `- … (not run in this session)` ; une étape aval pas encore lancée reste `○ pending` (règle 3 de la tâche 3).
+- **Fin de l'attribution** (2026-10-26, après le rejet de `reviewer`) : « Oui, à `finished` (Recommandé) ». L'attribution s'arrête quand l'exécution attribuée est `finished` ; les sous-agents suivants reviennent à l'inférence, comme sur `master` ; un agent du flow appelé seul pendant le flow ne change pas, puisqu'il arrive avant `finished` (tâche 5 ; règles 2 et 3 de la tâche 3).
 
 ## Questions pour Dimitri
 
