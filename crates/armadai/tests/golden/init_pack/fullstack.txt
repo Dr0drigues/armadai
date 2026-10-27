@@ -14,7 +14,7 @@ claude: agent doc-generator: compiled
 claude: agent test-writer: compiled
 claude: agents tags: not-compiled (informational, no Claude Code field; 3 agents: code-reviewer, doc-generator, test-writer)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 3 agents: code-reviewer, doc-generator, test-writer)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
 claude: flow review: not-compiled (no coordinator: no CLAUDE.md to render the flow into)
 
 === .claude/agents/code-reviewer.md
@@ -124,6 +124,17 @@ Code de test pret a etre enregistre. Inclut :
     "PreToolUse": [
       {
         "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
         "hooks": [
           {
             "type": "command",

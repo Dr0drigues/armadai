@@ -213,3 +213,86 @@ fn a_linked_log_file_records_nothing_and_succeeds() {
 
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "mine\n");
 }
+
+/// The doc's `UserPromptExpansion` example (a project command with arguments).
+fn expansion(kind: &str, cwd: &Path) -> String {
+    serde_json::json!({
+        "session_id": "s1",
+        "transcript_path": "/x.jsonl",
+        "cwd": cwd.to_string_lossy(),
+        "permission_mode": "default",
+        "hook_event_name": "UserPromptExpansion",
+        "expansion_type": kind,
+        "command_name": "bugfix",
+        "command_args": "secret arg",
+        "command_source": "project",
+        "prompt": "/bugfix secret arg",
+    })
+    .to_string()
+}
+
+/// A hook's stdout is added to the model's context for this event: both
+/// streams must stay empty, with the tracing filter unset.
+fn record_quietly(input: &str, home: &Path) -> (Option<i32>, Vec<u8>, Vec<u8>) {
+    let out = Command::cargo_bin("armadai")
+        .unwrap()
+        .current_dir(home)
+        .arg("__record-flow-event")
+        .env("HOME", home)
+        .env("ARMADAI_CONFIG_DIR", home.join("cfg"))
+        .env_remove("RUST_LOG")
+        .write_stdin(input.to_string())
+        .output()
+        .unwrap();
+    (out.status.code(), out.stdout, out.stderr)
+}
+
+#[test]
+fn a_typed_command_is_recorded_silently() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+    project(dir.path());
+    let silent = (Some(0), Vec::new(), Vec::new());
+    let log_path = dir.path().join(".armadai/state/claude/s1.jsonl");
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    };
+
+    // the doc's payload: the line is the name and nothing else
+    let before = now();
+    assert_eq!(
+        record_quietly(&expansion("slash_command", dir.path()), home.path()),
+        silent
+    );
+    let after = now();
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    let ts = serde_json::from_str::<serde_json::Value>(log.trim_end()).unwrap()["ts"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        (before..=after).contains(&ts),
+        "{ts} not in {before}..={after}"
+    );
+    assert_eq!(
+        log,
+        format!("{{\"ts\":{ts},\"event\":\"command\",\"command\":\"bugfix\"}}\n")
+    );
+    assert!(!log.contains("secret") && !log.contains("/bugfix"));
+
+    // an MCP prompt, invalid JSON and a payload outside any project: silent, nothing recorded
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(outside.path().join(".git")).unwrap();
+    for input in [
+        expansion("mcp_prompt", dir.path()),
+        "{not json".to_string(),
+        expansion("slash_command", outside.path()),
+    ] {
+        assert_eq!(record_quietly(&input, home.path()), silent, "{input}");
+    }
+    assert_eq!(std::fs::read_to_string(&log_path).unwrap(), log);
+    assert!(!outside.path().join(".armadai").exists());
+}

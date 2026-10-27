@@ -116,11 +116,17 @@ pub fn hook_entries(project: &Project) -> anyhow::Result<Vec<HookEntry>> {
 /// matcher fires on every agent type (hooks doc, code.claude.com/docs/en/hooks,
 /// 2026-10-22); `SubagentHandback` is the tool a subagent hands its report back with
 /// (tools reference, code.claude.com/docs/en/tools-reference, 2026-10-22).
+/// `UserPromptExpansion` records the command a user types: it matches on `command_name`
+/// and "leave the matcher empty to fire on every prompt-type command"
+/// (code.claude.com/docs/en/hooks.md, `UserPromptExpansion`, 2026-10-26). The stdout of
+/// a `UserPromptExpansion` hook enters the model's context (same page), and `async`
+/// does not guarantee otherwise: the recorder itself writes no byte.
 pub fn flow_status_entries() -> Vec<HookEntry> {
     [
         ("SubagentStart", None),
         ("SubagentStop", None),
         ("PreToolUse", Some("SubagentHandback")),
+        ("UserPromptExpansion", None),
     ]
     .into_iter()
     .map(|(event, matcher)| HookEntry {
@@ -499,6 +505,23 @@ mod tests {
     }
 
     #[test]
+    fn a_project_linked_with_three_recording_hooks_gets_the_fourth_on_relink() {
+        let old = flow_status_entries()[..3].to_vec();
+        let (first, owned1) = merge_settings(Some(USER), &old, &none(), &Owned::default()).unwrap();
+        let (second, owned2) =
+            merge_settings(Some(&first), &flow_status_entries(), &none(), &owned1).unwrap();
+        assert_eq!(
+            value(&second)["hooks"]["UserPromptExpansion"],
+            json!([{"hooks": [{"type": "command", "command": "armadai __record-flow-event", "async": true}]}])
+        );
+        assert_eq!(owned2.entries, flow_status_entries());
+        assert_eq!(
+            value(&remove_entries(&second, &owned2).unwrap()),
+            value(USER)
+        );
+    }
+
+    #[test]
     fn a_project_with_a_flow_records_subagents_after_the_gate() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".armadai/agents")).unwrap();
@@ -526,6 +549,7 @@ mod tests {
                 recording("SubagentStart", None),
                 recording("SubagentStop", None),
                 recording("PreToolUse", Some("SubagentHandback")),
+                recording("UserPromptExpansion", None),
             ]
         );
         assert_eq!(

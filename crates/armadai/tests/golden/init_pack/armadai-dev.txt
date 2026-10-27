@@ -29,7 +29,7 @@ claude: agent schema-specialist skills: compiled (preloaded through the subagent
 claude: agents tags: not-compiled (informational, no Claude Code field; 6 agents: adapter-specialist, cli-specialist, dev-lead, qa-specialist, release-manager, schema-specialist)
 claude: agents temperature: not-compiled (no equivalent in Claude Code subagents; 5 agents: adapter-specialist, cli-specialist, qa-specialist, release-manager, schema-specialist)
 claude: flow delivery: approximated (rendered as guidance in CLAUDE.md, not enforced)
-claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback) in .claude/settings.json)
+claude: flow recording: compiled (hooks SubagentStart, SubagentStop, PreToolUse (SubagentHandback), UserPromptExpansion in .claude/settings.json)
 claude: flow release: approximated (rendered as guidance in CLAUDE.md, not enforced)
 claude: flow release step qa: approximated (states and on_failure rendered as guidance)
 claude: skill rust-conventions: compiled
@@ -188,6 +188,17 @@ Implementation with type definitions, parsing and validation logic, and integrat
     "PreToolUse": [
       {
         "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
         "hooks": [
           {
             "type": "command",

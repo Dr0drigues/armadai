@@ -7,7 +7,7 @@ use super::record::{LOGS_DIR, log_path};
 use super::runs::{Mark, Run};
 
 /// The runs of one session: a `session <id>` heading, then each run (finished
-/// ones first, each group in start order) with one line per step, its loops
+/// and interrupted ones first, each group in start order) with one line per step, its loops
 /// and its timed transitions.
 pub fn render(runs: &[Run], session: &str) -> String {
     let mut out = format!("session {session} (UTC)\n");
@@ -15,10 +15,12 @@ pub fn render(runs: &[Run], session: &str) -> String {
         out += "\nno run of a declared flow in this session yet\n";
     }
     let mut ordered: Vec<&Run> = runs.iter().collect();
-    ordered.sort_by_key(|r| !r.finished); // stable: start order kept
+    ordered.sort_by_key(|r| !(r.finished || r.interrupted)); // stable: start order kept
     for run in ordered {
         let status = if run.finished {
             "finished"
+        } else if run.interrupted {
+            "interrupted"
         } else {
             "in progress"
         };
@@ -156,6 +158,7 @@ mod tests {
                 t(T0 + 50, "build", "guard", Some("done")),
             ],
             finished: false,
+            interrupted: false,
         }
     }
 
@@ -169,6 +172,7 @@ mod tests {
             loops: vec![],
             transitions: vec![t(T0 + 5, "triage", "check", Some("done"))],
             finished: true,
+            interrupted: false,
         }
     }
 
@@ -194,6 +198,7 @@ mod tests {
             loops: vec![],
             transitions: vec![],
             finished: false,
+            interrupted: false,
         }
     }
 
@@ -227,6 +232,7 @@ mod tests {
             loops: vec![],
             transitions: vec![],
             finished: false,
+            interrupted: false,
         };
         assert_eq!(
             render(&[run], "s"),
@@ -293,6 +299,7 @@ mod tests {
             loops: vec![],
             transitions: vec![],
             finished: false,
+            interrupted: false,
         };
         assert_eq!(
             render(&[run], "s"),
@@ -356,5 +363,46 @@ mod tests {
         assert!(!should_redraw(Some(10), Some(10)));
         assert!(should_redraw(Some(10), Some(42)));
         assert!(should_redraw(Some(42), None)); // purged
+    }
+
+    #[test]
+    fn an_interrupted_run_says_so_and_comes_before_the_running_one() {
+        let interrupted = Run {
+            flow: "bugfix".into(),
+            steps: vec![
+                view("analyse", Mark::Done, Some("done"), None),
+                view("test", Mark::Running, None, None),
+            ],
+            loops: vec![],
+            transitions: vec![t(T0 + 20, "analyse", "test", Some("done"))],
+            finished: false,
+            interrupted: true,
+        };
+        // started in this order: running, interrupted, finished
+        assert_eq!(
+            render(&[looping(), interrupted, finished()], "s"),
+            "session s (UTC)\n\
+             \n\
+             bugfix  interrupted\n\
+             \x20 ✓ analyse  done\n\
+             \x20 ● test     running\n\
+             \x20 09:15:20  analyse → test  (done)\n\
+             \n\
+             hotfix  finished\n\
+             \x20 ✓ triage  done\n\
+             \x20 ✓ check   approved\n\
+             \x20 09:15:05  triage → check  (done)\n\
+             \n\
+             deliver  in progress\n\
+             \x20 ✓ design    done\n\
+             \x20 ✓ build     done\n\
+             \x20 ● guard     running\n\
+             \x20 ○ validate  pending\n\
+             \x20 build → guard : 2\n\
+             \x20 09:15:20  design → build  (done)\n\
+             \x20 09:15:30  build → guard  (done)\n\
+             \x20 09:15:40  guard → build  (rejected)\n\
+             \x20 09:15:50  build → guard  (done)\n"
+        );
     }
 }

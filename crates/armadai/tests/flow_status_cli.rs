@@ -46,20 +46,13 @@ impl Env {
     /// Write a session log, one event per `(ts, start?, agent_id, agent_type,
     /// state)`, last modified at `mtime`.
     fn log(&self, session: &str, events: &[Ev], mtime: u64) {
+        self.raw_log(session, &event_lines(events), mtime);
+    }
+
+    /// Write a session log made of the given JSON lines, last modified at `mtime`.
+    fn raw_log(&self, session: &str, text: &str, mtime: u64) {
         let dir = self.root().join(".armadai/state/claude");
         std::fs::create_dir_all(&dir).unwrap();
-        let text: String = (events.iter())
-            .map(|(ts, start, id, agent, state)| {
-                let line = serde_json::json!({
-                    "ts": ts,
-                    "event": if *start { "start" } else { "stop" },
-                    "agent_id": id,
-                    "agent_type": agent,
-                    "state": state,
-                });
-                format!("{line}\n")
-            })
-            .collect();
         let path = dir.join(format!("{session}.jsonl"));
         std::fs::write(&path, text).unwrap();
         std::fs::File::options()
@@ -68,6 +61,42 @@ impl Env {
             .unwrap()
             .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(mtime))
             .unwrap();
+    }
+
+    /// The two flows of issue #527 (`evolution` and `bugfix`, sharing their
+    /// entry step, `u` holding `ui` in one and `fix-ui` in the other).
+    fn issue_project(&self) {
+        let a = self.root().join(".armadai");
+        for agent in ["an", "u", "t", "r", "v"] {
+            std::fs::write(
+                a.join(format!("agents/{agent}.md")),
+                "---\ndescription: d\n---\nB\n",
+            )
+            .unwrap();
+        }
+        std::fs::write(a.join("flows/evolution.yaml"), EVOLUTION).unwrap();
+        std::fs::write(a.join("flows/bugfix.yaml"), BUGFIX).unwrap();
+    }
+
+    /// Run `armadai __record-flow-event` the way the hook does:
+    /// `(exit code, stdout, stderr)`.
+    fn hook(&self, payload: &str) -> (Option<i32>, String, String) {
+        let out = Command::cargo_bin("armadai")
+            .unwrap()
+            .current_dir(self.root())
+            .env("ARMADAI_CONFIG_DIR", self.dir.path().join("config"))
+            .env("HOME", self.dir.path())
+            .env_remove("RUST_LOG")
+            .write_stdin(payload)
+            .arg("__record-flow-event")
+            .timeout(std::time::Duration::from_secs(20))
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
     }
 
     /// `(exit code, stdout, stderr)`
@@ -91,6 +120,41 @@ impl Env {
 }
 
 type Ev = (u64, bool, &'static str, &'static str, Option<&'static str>);
+
+const EVOLUTION: &str = "steps:\n  analyse: { agent: an }\n  ui: { agent: u }\n  test: { agent: t }\n  review: { agent: r }\n  validate: { agent: v }\nlinks:\n  - { from: analyse, to: ui }\n  - { from: ui, to: test }\n  - { from: test, to: review }\n  - { from: review, to: validate }\n";
+const BUGFIX: &str = "steps:\n  analyse: { agent: an }\n  test: { agent: t }\n  fix-ui: { agent: u }\n  review: { agent: r }\n  validate: { agent: v }\nlinks:\n  - { from: analyse, to: test }\n  - { from: test, to: fix-ui }\n  - { from: fix-ui, to: review }\n  - { from: review, to: validate }\n";
+
+/// The journal lines of `events`, one JSON object each.
+fn event_lines(events: &[Ev]) -> String {
+    (events.iter())
+        .map(|(ts, start, id, agent, state)| {
+            let line = serde_json::json!({
+                "ts": ts,
+                "event": if *start { "start" } else { "stop" },
+                "agent_id": id,
+                "agent_type": agent,
+                "state": state,
+            });
+            format!("{line}\n")
+        })
+        .collect()
+}
+
+/// Scenario 1 of issue #527: `t` starts, `u` starts before `t` stops.
+fn issue_s1() -> Vec<Ev> {
+    vec![
+        (T0, true, "i1", "an", None),
+        (T0 + 10, false, "i1", "an", None),
+        (T0 + 20, true, "i3", "t", None),
+        (T0 + 30, true, "i2", "u", None),
+        (T0 + 40, false, "i3", "t", None),
+        (T0 + 50, false, "i2", "u", None),
+        (T0 + 60, true, "i4", "r", None),
+        (T0 + 70, false, "i4", "r", None),
+        (T0 + 80, true, "i5", "v", None),
+        (T0 + 90, false, "i5", "v", None),
+    ]
+}
 
 /// design, build, guard (rejected), build, then guard running.
 fn looping(env: &Env, session: &str, mtime: u64) {
@@ -324,4 +388,120 @@ fn link_reports_the_gitignore_it_patched() {
     assert_eq!(std::fs::read_to_string(&ignore).unwrap(), "mine\nstate/\n");
     let (_, out, _) = env.run(&env.root(), &["link", "--target", "claude"]);
     assert!(!out.contains(&line), "{out}");
+}
+
+const HOOK_PAYLOAD: &str = r#"{"session_id":"s1","cwd":"PROJECT","hook_event_name":"UserPromptExpansion","expansion_type":"slash_command","command_name":"bugfix","command_args":"secret arg","prompt":"/bugfix secret arg"}"#;
+
+/// The command a user types goes through the real hook, into the journal, and
+/// decides the flow `flow status` shows (criteria 1, 2 and 7).
+#[test]
+fn a_typed_command_through_the_hook_attributes_the_run() {
+    let env = Env::new();
+    env.issue_project();
+    let payload = HOOK_PAYLOAD.replace("PROJECT", &env.root().to_string_lossy());
+    let (code, out, err) = env.hook(&payload);
+    assert_eq!((code, out.as_str(), err.as_str()), (Some(0), "", ""));
+    // the hook stamped the real time, later than every event below: the order
+    // of the file is what counts
+    let path = env.root().join(".armadai/state/claude/s1.jsonl");
+    let recorded = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(recorded.lines().count(), 1, "{recorded}");
+    let (ts, line) = (recorded.strip_prefix("{\"ts\":"))
+        .and_then(|r| r.split_once(','))
+        .unwrap();
+    assert!(ts.bytes().all(|b| b.is_ascii_digit()), "{recorded}");
+    assert_eq!(line, "\"event\":\"command\",\"command\":\"bugfix\"}\n");
+    std::fs::write(&path, recorded + &event_lines(&issue_s1())).unwrap();
+    let (code, out, err) = env.run(&env.root(), &["flow", "status"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (
+            Some(0),
+            "session s1 (UTC)\n\
+             \n\
+             bugfix  finished\n\
+             \x20 ✓ analyse   done\n\
+             \x20 ✓ test      done\n\
+             \x20 ✓ fix-ui    done\n\
+             \x20 ✓ review    done\n\
+             \x20 ✓ validate  done\n\
+             \x20 09:15:20  analyse → test  (done)\n\
+             \x20 09:15:40  test → fix-ui  (done)\n\
+             \x20 09:16:00  fix-ui → review  (done)\n\
+             \x20 09:16:20  review → validate  (done)\n",
+            ""
+        )
+    );
+    // the same events without the command line: the flow is still inferred
+    env.raw_log("s2", &event_lines(&issue_s1()), T0 + 10);
+    let (code, out, _) = env.run(&env.root(), &["flow", "status", "--session", "s2"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out,
+        "session s2 (UTC)\n\nbugfix  in progress\n  ✓ analyse   done\n  ✓ test      done\n  ○ fix-ui    pending\n  ○ review    pending\n  ○ validate  pending\n  09:15:20  analyse → test  (done)\n"
+    );
+}
+
+/// A session made of a typed command only is not a run (`--list`).
+#[test]
+fn list_does_not_count_a_session_with_only_a_command() {
+    let env = Env::new();
+    env.issue_project(); // `bugfix` must be a flow, or the line is no boundary at all
+    looping(&env, "s1", T0 + 3600);
+    env.raw_log(
+        "c",
+        "{\"ts\":1792660500,\"event\":\"command\",\"command\":\"bugfix\"}\n",
+        T0,
+    );
+    let (code, out, err) = env.run(&env.root(), &["flow", "status", "--list"]);
+    assert_eq!(
+        (code, out.as_str(), err.as_str()),
+        (
+            Some(0),
+            "SESSION  LAST EVENT (UTC)     RUNS\n\
+             s1       2026-10-22 10:15:00  1\n\
+             c        2026-10-22 09:15:00  0\n",
+            ""
+        )
+    );
+}
+
+/// Scenario 2 of issue #527 fits both flows: without a command it is shown as
+/// `evolution`, and the command `/bugfix`, through the hook, makes it `bugfix`.
+#[test]
+fn the_hook_command_decides_between_two_flows_the_events_fit() {
+    let env = Env::new();
+    env.issue_project();
+    let events: Vec<Ev> = vec![
+        (T0, true, "i1", "an", None),
+        (T0 + 10, false, "i1", "an", None),
+        (T0 + 20, true, "i2", "u", None),
+        (T0 + 21, true, "i3", "t", None),
+        (T0 + 30, false, "i2", "u", None),
+        (T0 + 40, false, "i3", "t", None),
+        (T0 + 60, true, "i4", "r", None),
+        (T0 + 70, false, "i4", "r", None),
+        (T0 + 80, true, "i5", "v", None),
+        (T0 + 90, false, "i5", "v", None),
+    ];
+    env.raw_log("s2", &event_lines(&events), T0 + 10);
+    let (code, out, _) = env.run(&env.root(), &["flow", "status", "--session", "s2"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out,
+        "session s2 (UTC)\n\nevolution  in progress\n  ✓ analyse   done\n  ✓ ui        done\n  ○ test      pending\n  ○ review    pending\n  ○ validate  pending\n  09:15:20  analyse → ui  (done)\n"
+    );
+    let payload = HOOK_PAYLOAD
+        .replace("PROJECT", &env.root().to_string_lossy())
+        .replace("\"s1\"", "\"s3\"");
+    assert_eq!(env.hook(&payload), (Some(0), String::new(), String::new()));
+    let path = env.root().join(".armadai/state/claude/s3.jsonl");
+    let recorded = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, recorded + &event_lines(&events)).unwrap();
+    let (code, out, _) = env.run(&env.root(), &["flow", "status", "--session", "s3"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        out,
+        "session s3 (UTC)\n\nbugfix  finished\n  ✓ analyse   done\n  ✓ test      done\n  ✓ fix-ui    done\n  ✓ review    done\n  ✓ validate  done\n  09:15:21  analyse → test  (done)\n  09:15:40  test → fix-ui  (done)\n  09:16:00  fix-ui → review  (done)\n  09:16:20  review → validate  (done)\n"
+    );
 }

@@ -2,11 +2,13 @@
 //! `.armadai/state/claude/<session_id>.jsonl`.
 //!
 //! Wired by `link` as `async` Claude Code hooks on `SubagentStart`,
-//! `SubagentStop` and `PreToolUse` (matcher `SubagentHandback`); input shapes
-//! from https://code.claude.com/docs/en/hooks. Like the policy gate, it never
-//! fails the hook and never prints on stdout: bad input, no project or an
-//! unwritable log simply records nothing. Only ids and the `STATE:` word are
-//! kept, never prompt or reply text.
+//! `SubagentStop`, `PreToolUse` (matcher `SubagentHandback`) and
+//! `UserPromptExpansion`; input shapes from https://code.claude.com/docs/en/hooks.
+//! Like the policy gate, it never fails the hook and never prints (the stdout
+//! of a `UserPromptExpansion` hook is added to the model's context): bad
+//! input, no project or an unwritable log simply records nothing. Only ids,
+//! the `STATE:` word and the name of a typed command are kept, never prompt,
+//! reply text or command arguments.
 
 use std::path::{Path, PathBuf};
 
@@ -17,6 +19,7 @@ use serde::{Deserialize, Serialize};
 pub enum EventKind {
     Start,
     Stop,
+    Command,
 }
 
 /// One line of the session log.
@@ -24,9 +27,33 @@ pub enum EventKind {
 pub struct FlowEvent {
     pub ts: u64,
     pub event: EventKind,
+    #[serde(default)]
     pub agent_id: String,
+    #[serde(default)]
     pub agent_type: String,
     pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+/// The log line of an event, final `\n` included. A `command` line carries
+/// the name and nothing else.
+pub fn log_line(e: &FlowEvent) -> String {
+    #[derive(Serialize)]
+    struct CommandLine<'a> {
+        ts: u64,
+        event: &'a EventKind,
+        command: &'a str,
+    }
+    let json = match (&e.event, &e.command) {
+        (EventKind::Command, Some(command)) => serde_json::to_string(&CommandLine {
+            ts: e.ts,
+            event: &e.event,
+            command,
+        }),
+        _ => serde_json::to_string(e),
+    };
+    json.expect("an event serializes") + "\n"
 }
 
 /// The word of the last line that reads exactly `STATE: <word>` (`word` an id).
@@ -38,10 +65,32 @@ pub fn state_of(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `(session_id, cwd, event)` for a sub-agent start or stop, `None` otherwise.
+/// `(session_id, cwd, event)` for a sub-agent start or stop or a typed slash
+/// command, `None` otherwise.
 pub fn event_from_hook(raw: &str, now: u64) -> Option<(String, PathBuf, FlowEvent)> {
     let v: serde_json::Value = serde_json::from_str(raw).ok()?;
     let text = |k: &str| v.get(k).and_then(serde_json::Value::as_str);
+    if text("hook_event_name")? == "UserPromptExpansion" {
+        // https://code.claude.com/docs/en/hooks: `expansion_type` is
+        // `slash_command` for skills and custom commands, `mcp_prompt` otherwise.
+        let name = text("command_name").filter(|n| !n.is_empty())?;
+        if text("expansion_type")? != "slash_command" {
+            return None;
+        }
+        let event = FlowEvent {
+            ts: now,
+            event: EventKind::Command,
+            agent_id: String::new(),
+            agent_type: String::new(),
+            state: None,
+            command: Some(name.to_string()),
+        };
+        return Some((
+            text("session_id")?.to_string(),
+            PathBuf::from(text("cwd")?),
+            event,
+        ));
+    }
     let (event, state) = match text("hook_event_name")? {
         "SubagentStart" => (EventKind::Start, None),
         "SubagentStop" => (
@@ -62,6 +111,7 @@ pub fn event_from_hook(raw: &str, now: u64) -> Option<(String, PathBuf, FlowEven
         agent_id: text("agent_id")?.to_string(),
         agent_type: text("agent_type").unwrap_or_default().to_string(),
         state,
+        command: None,
     };
     Some((
         text("session_id")?.to_string(),
@@ -120,7 +170,7 @@ fn record(raw: &str) -> anyhow::Result<()> {
     }
     std::fs::create_dir_all(claude)?;
     // One write per line, in append mode: parallel sub-agents do not interleave.
-    let line = serde_json::to_string(&event)? + "\n";
+    let line = log_line(&event);
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -139,9 +189,17 @@ mod tests {
     const STOP: &str = r#"{"session_id":"abc123","transcript_path":"/x.jsonl","cwd":"/p","permission_mode":"default","hook_event_name":"SubagentStop","stop_hook_active":false,"agent_id":"def456","agent_type":"Explore","agent_transcript_path":"/y.jsonl","last_assistant_message":"Analysis complete.\nSTATE: approved","background_tasks":[],"session_crons":[]}"#;
     const HANDBACK: &str = r#"{"session_id":"abc123","transcript_path":"/x.jsonl","cwd":"/p","permission_mode":"default","hook_event_name":"PreToolUse","agent_id":"def456","agent_type":"Explore","tool_name":"SubagentHandback","tool_input":{"message":"Report.\nSTATE: rejected"},"tool_use_id":"toolu_01"}"#;
 
+    /// The doc's `UserPromptExpansion` example for a project command.
+    const EXPANSION: &str = r#"{"session_id":"abc123","transcript_path":"/x.jsonl","cwd":"/p","permission_mode":"default","hook_event_name":"UserPromptExpansion","expansion_type":"slash_command","command_name":"bugfix","command_args":"secret arg","command_source":"project","prompt":"/bugfix secret arg"}"#;
+
+    /// The log line without its final `\n`.
     fn line(raw: &str) -> (String, PathBuf, String) {
         let (s, cwd, ev) = event_from_hook(raw, 100).expect("an event");
-        (s, cwd, serde_json::to_string(&ev).unwrap())
+        (
+            s,
+            cwd,
+            log_line(&ev).strip_suffix('\n').unwrap().to_string(),
+        )
     }
 
     #[test]
@@ -204,6 +262,46 @@ mod tests {
     }
 
     #[test]
+    fn a_typed_command_records_its_name_only() {
+        assert_eq!(
+            line(EXPANSION),
+            (
+                "abc123".into(),
+                PathBuf::from("/p"),
+                r#"{"ts":100,"event":"command","command":"bugfix"}"#.into()
+            )
+        );
+    }
+
+    #[test]
+    fn old_and_command_lines_read_back() {
+        let old = r#"{"ts":1,"event":"start","agent_id":"i1","agent_type":"an","state":null}"#;
+        assert_eq!(
+            serde_json::from_str::<FlowEvent>(old).unwrap(),
+            FlowEvent {
+                ts: 1,
+                event: EventKind::Start,
+                agent_id: "i1".into(),
+                agent_type: "an".into(),
+                state: None,
+                command: None,
+            }
+        );
+        let command = r#"{"ts":2,"event":"command","command":"bugfix"}"#;
+        assert_eq!(
+            serde_json::from_str::<FlowEvent>(command).unwrap(),
+            FlowEvent {
+                ts: 2,
+                event: EventKind::Command,
+                agent_id: String::new(),
+                agent_type: String::new(),
+                state: None,
+                command: Some("bugfix".into()),
+            }
+        );
+    }
+
+    #[test]
     fn other_events_record_nothing() {
         let stop = STOP.replace(r#""SubagentStop""#, r#""Stop""#);
         let session = START.replace(r#""SubagentStart""#, r#""SessionStart""#);
@@ -212,7 +310,15 @@ mod tests {
         // `--agent` sets `agent_type` on the main thread too: `agent_id` decides.
         let typed_main_thread = HANDBACK.replace(r#""agent_id":"def456","#, "");
         let other_tool = HANDBACK.replace("SubagentHandback", "Bash");
+        let mcp = EXPANSION.replace("slash_command", "mcp_prompt");
+        let no_type = EXPANSION.replace(r#""expansion_type":"slash_command","#, "");
+        let empty_name = EXPANSION.replace(r#""command_name":"bugfix""#, r#""command_name":"""#);
+        let no_name = EXPANSION.replace(r#""command_name":"bugfix","#, "");
         for raw in [
+            &mcp,
+            &no_type,
+            &empty_name,
+            &no_name,
             &stop,
             &session,
             &main_thread,

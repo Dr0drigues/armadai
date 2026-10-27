@@ -26,8 +26,11 @@ pub enum FlowCommand {
             Each run of a flow lists its steps (✓ done with its state, ● running, ○ pending, \
             ? unsure with the reason, ✗ a state the step does not declare, ~ held by the \
             coordinator, which is not recorded, - not run in this session: before the step a \
-            run opened at, when the session started mid-flow), the links taken more than once, and the timed \
-            transitions (UTC). Without --session, the latest session.",
+            run opened at, when the session started mid-flow), the links taken more than once, \
+            and the timed transitions (UTC). A run is attributed to the flow whose id is the command you typed (when the recording hook saw it) until \
+            it finishes, then the sub-agents are inferred again; it is shown `interrupted` when a \
+            later flow command closed it before it finished. Without --session, the latest \
+            session.",
         after_help = "Examples:\n  \
             armadai flow status\n  \
             armadai flow status deliver --watch\n  \
@@ -188,7 +191,7 @@ fn print_painted(text: &str) {
             Some('○' | '~') => style::muted(),
             Some('?') => style::warn(),
             Some('✗') => style::err(),
-            // a run's heading: `<flow>  in progress|finished`
+            // a run's heading: `<flow>  in progress|interrupted|finished`
             _ if !line.starts_with(' ') && line.contains("  ") => style::accent(),
             _ => anstyle::Style::new(),
         };
