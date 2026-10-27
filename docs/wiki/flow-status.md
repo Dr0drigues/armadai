@@ -48,16 +48,8 @@ included), the run is attributed to that flow instead:
   stops), so sub-agents running in the background that overlap lose no step;
 - while the run is open, an agent that no step of the flow holds is ignored: it opens no run of
   its own (once the run has `finished`, it is inferred, and may open the run of another flow);
-- a step that never started while a step after it has finished is shown `- ... (not run in
-  this session)` (unless a finished step leads back to it by its real state, a rejection: it
-  stays `○ pending`, see below); a step after the last one that ran stays `○ pending`. A step shows `not run` as
-  soon as a step placed after it has finished, and stays so until it starts itself, when it turns
-  `running`: while sub-agents overlap, that is what was true when drawn.
-  A skipped step does not hold the run open: the run is `finished` when the steps that ran have
-  nothing left to take. If that step starts after the end, it joins the same run through the link
-  left open, which goes back to `in progress`, then `finished`. A step that a finished step leads
-  back to by its real state is not skipped: after `guard` ends `rejected`, `build` stays
-  `○ pending` and holds the run open until it starts, even if it never ran before.
+- a step that never started stays `○ pending`, and the run stays `in progress` while a link to
+  that step is still to take: flow status cannot tell whether the step will come.
 
 A command that does not name a flow (another name, a plugin command such as `/plugin:bugfix`:
 not verified how Claude Code names it), a flow started in natural language, a Claude Code that
@@ -126,7 +118,7 @@ deliver  in progress
 | `?` | unsure, with the reason in parentheses (for example no `STATE:` line). It leads nowhere: started again, the step is retried in place and its new state replaces the `?` |
 | `✗` | a state the step does not declare. It leads nowhere: started again, the step is retried in place and its new state replaces the `✗`. A state the step declares but no link follows ends the flow normally: it is not a `✗` |
 | `~` | held by the coordinator, which is not recorded (`coordinator, not recorded`) |
-| `-` | not run in this session (`not run in this session`): a step before the one a run opened at, when the session started the flow mid-way, or, in a run attributed by a command, a step that never started while a step after it has finished, unless a finished step leads back to it by its real state (a rejection), which keeps it `○ pending`. Neither done nor pending, it never holds the run open |
+| `-` | not run in this session (`not run in this session`): a step before the one a run opened at, when the session started the flow mid-way (inferred runs only: in a run a command opened, a step that never started stays `○ pending`). Neither done nor pending, it never holds the run open |
 
 A run heading reads `in progress`, `finished`, or `interrupted` (a later flow command closed the
 run before it finished).

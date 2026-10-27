@@ -26,11 +26,8 @@ pub enum FlowCommand {
             Each run of a flow lists its steps (✓ done with its state, ● running, ○ pending, \
             ? unsure with the reason, ✗ a state the step does not declare, ~ held by the \
             coordinator, which is not recorded, - not run in this session: before the step a \
-            run opened at, when the session started mid-flow, or, in an attributed run, a step \
-            never started though a step after it finished, which does not hold the run open, \
-            unless a finished step leads back to it by its state, a rejection, which keeps it \
-            pending), the links taken more than once, and the timed transitions (UTC). A run is attributed \
-            to the flow whose id is the command you typed (when the recording hook saw it) until \
+            run opened at, when the session started mid-flow), the links taken more than once, \
+            and the timed transitions (UTC). A run is attributed to the flow whose id is the command you typed (when the recording hook saw it) until \
             it finishes, then the sub-agents are inferred again; it is shown `interrupted` when a \
             later flow command closed it before it finished. Without --session, the latest \
             session.",
