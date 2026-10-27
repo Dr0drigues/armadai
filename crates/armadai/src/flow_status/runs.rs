@@ -3221,4 +3221,73 @@ mod tests {
             ])
         );
     }
+
+    #[test]
+    fn a_step_a_rejection_leads_back_to_is_not_skipped() {
+        let events = seq(&[
+            &[cmd(T, "deliver")],
+            &span(1, 2, "d1", "architect"),
+            &[
+                start(T + 3, "g1", "qa"),
+                stop(T + 4, "g1", "qa", Some("rejected")),
+            ],
+        ]);
+        assert_eq!(
+            text(&deliver(), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "deliver  in progress",
+                "  ✓ design    done",
+                "  ○ build     pending",
+                "  ✓ guard     rejected",
+                "  ○ validate  pending",
+            ])
+        );
+        // approved: the link goes to `validate`, `build` was skipped
+        let approved = seq(&[
+            &[cmd(T, "deliver")],
+            &span(1, 2, "d1", "architect"),
+            &[
+                start(T + 3, "g1", "qa"),
+                stop(T + 4, "g1", "qa", Some("approved")),
+            ],
+        ]);
+        assert_eq!(
+            text(&deliver(), &approved),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "deliver  in progress",
+                "  ✓ design    done",
+                "  - build     (not run in this session)",
+                "  ✓ guard     approved",
+                "  ○ validate  pending",
+            ])
+        );
+    }
+
+    #[test]
+    fn without_a_command_the_skipped_filter_does_not_apply() {
+        let coord = "steps:\n  design: { agent: architect }\n  build: { agent: dev, on_failure: check }\n  check: { agent: lead }\n  guard: { agent: qa, states: [approved, rejected] }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: guard }\n  - { from: guard, to: build, when: rejected }\n  - { from: check, to: guard }\n";
+        let p = project(&[("coord", coord), ("deliver", DELIVER)]);
+        let events = [
+            start(T + 1, "g1", "qa"),
+            stop(T + 2, "g1", "qa", Some("rejected")),
+            start(T + 3, "b1", "dev"),
+            stop(T + 4, "b1", "dev", Some("failed")),
+        ];
+        assert_eq!(
+            text(&p, &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "coord | deliver  in progress",
+                "  - design  (not run in this session)",
+                "  ✓ build   failed",
+                "  ✓ guard   rejected",
+                "  09:15:03  guard → build  (rejected)",
+            ])
+        );
+    }
 }
