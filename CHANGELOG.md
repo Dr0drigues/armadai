@@ -1,4 +1,6 @@
-## Unreleased
+## v1.0.0-rc.8 (2026-10-27)
+
+Eighth release candidate. `armadai flow status` now follows the flow you launched: the command you type (`/bugfix`, `/evolution`…) is recorded and decides the flow a run belongs to, so a team whose flows share an entry step is no longer shown under the wrong flow. Relink with `armadai link --target claude` to get the new recording hook.
 
 ### Fixed
 

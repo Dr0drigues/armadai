@@ -89,7 +89,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "armadai"
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.8"
 dependencies = [
  "anstream",
  "anstyle",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "armadai-core"
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.8"
 dependencies = [
  "anyhow",
  "armadai-model",
