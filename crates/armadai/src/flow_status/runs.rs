@@ -67,7 +67,9 @@ pub struct Run {
 /// - A run finishes when no step is running or `?`/`✗`, and no finished step
 ///   has a link still to take (taken once its target starts after it stopped;
 ///   a loop back to the same step through the coordinator does not count, and
-///   goes on in the same run when that step starts again).
+///   goes on in the same run when that step starts again). In an attributed
+///   run, a link to a step skipped (never started, before a step that
+///   stopped) is not one to take.
 /// - A `command` line naming a flow of the project (exact id) is a boundary:
 ///   every run still open is closed and shown interrupted, and a run of that
 ///   flow alone opens, attributed. Until that run finishes (or the next flow
@@ -342,15 +344,20 @@ impl<'p> Building<'p> {
         }
     }
 
-    /// In an attributed run, a step that never started while a step after it
-    /// stopped was skipped: shown as the inferred runs
-    /// show the steps before where they opened. One after the last step that
-    /// ran stays pending.
-    fn mark_skipped(&mut self) {
+    /// The steps skipped: never started, though a step after them stopped.
+    fn skipped(&self) -> BTreeSet<&'p str> {
         let flow = self.flow;
-        let skipped: BTreeSet<&str> = (self.stopped.keys())
+        (self.stopped.keys())
             .flat_map(|s| upstream(flow, s))
-            .collect();
+            .filter(|s| !self.started.contains_key(*s))
+            .collect()
+    }
+
+    /// In an attributed run, a skipped step is shown as the inferred runs show
+    /// the steps before where they opened. One after the last step that ran
+    /// stays pending.
+    fn mark_skipped(&mut self) {
+        let skipped = self.skipped();
         for v in &mut self.run.steps {
             if v.mark == Mark::Pending && skipped.contains(v.step.as_str()) {
                 v.mark = Mark::NotRun;
@@ -710,8 +717,15 @@ impl<'p> Builder<'p> {
             }
         }
         // a loop back to the same step through the coordinator holds nothing open
-        let to_take =
-            (run.flow.steps.keys()).any(|t| run.linked_from(t).is_some_and(|(s, _)| &s != t));
+        // in an attributed run, a link to a skipped step is not one to take
+        let skipped = if run.attributed {
+            run.skipped()
+        } else {
+            BTreeSet::new()
+        };
+        let to_take = (run.flow.steps.keys()).any(|t| {
+            !skipped.contains(t.as_str()) && run.linked_from(t).is_some_and(|(s, _)| &s != t)
+        });
         // a `?` or `✗` step never ends a run
         let unknown =
             (run.run.steps.iter()).any(|v| matches!(v.mark, Mark::Unsure | Mark::Unexpected));
@@ -3061,6 +3075,140 @@ mod tests {
                 "  ○ test      pending",
                 "  ○ review    pending",
                 "  ○ validate  pending",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_step_skipped_mid_flow_does_not_hold_the_run_open() {
+        let events = seq(&[
+            &[cmd(T, "bugfix")],
+            &span(10, 20, "i2", "an"),
+            &span(50, 60, "i4", "u"),
+            &span(70, 80, "i5", "r"),
+            &span(90, 100, "i6", "v"),
+        ]);
+        assert_eq!(
+            text(&issue(), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "bugfix  finished",
+                "  ✓ analyse   done",
+                "  - test      (not run in this session)",
+                "  ✓ fix-ui    done",
+                "  ✓ review    done",
+                "  ✓ validate  done",
+                "  09:16:10  fix-ui → review  (done)",
+                "  09:16:30  review → validate  (done)",
+            ])
+        );
+    }
+
+    #[test]
+    fn an_upstream_step_starting_late_keeps_the_run_open() {
+        let early = seq(&[
+            &[cmd(T, "bugfix")],
+            &span(10, 20, "i2", "an"),
+            &span(50, 60, "i4", "u"),
+        ]);
+        assert_eq!(
+            text(&issue(), &early),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "bugfix  in progress",
+                "  ✓ analyse   done",
+                "  - test      (not run in this session)",
+                "  ✓ fix-ui    done",
+                "  ○ review    pending",
+                "  ○ validate  pending",
+            ])
+        );
+        // `test` starts after `fix-ui` ended: it still leads to `fix-ui` and the run ends
+        let late = seq(&[
+            &early,
+            &span(65, 75, "i3", "t"),
+            &span(80, 90, "i5", "r"),
+            &span(100, 110, "i6", "v"),
+        ]);
+        assert_eq!(
+            text(&issue(), &late),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "bugfix  finished",
+                "  ✓ analyse   done",
+                "  ✓ test      done",
+                "  ✓ fix-ui    done",
+                "  ✓ review    done",
+                "  ✓ validate  done",
+                "  09:16:05  analyse → test  (done)",
+                "  09:16:15  test → fix-ui  (done)",
+                "  09:16:20  fix-ui → review  (done)",
+                "  09:16:40  review → validate  (done)",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_skipped_step_starting_after_the_end_rejoins_its_run() {
+        let flow = "steps:\n  a: { agent: ax }\n  b: { agent: ay }\n  c: { agent: az }\nlinks:\n  - { from: a, to: b }\n  - { from: b, to: c }\n";
+        let p = project(&[("chain", flow)]);
+        let ended = seq(&[
+            &[cmd(T, "chain")],
+            &span(0, 10, "a1", "ax"),
+            &span(20, 30, "c1", "az"),
+        ]);
+        assert_eq!(
+            text(&p, &ended),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "chain  finished",
+                "  ✓ a  done",
+                "  - b  (not run in this session)",
+                "  ✓ c  done",
+            ])
+        );
+        let rejoined = seq(&[&ended, &span(40, 50, "b1", "ay")]);
+        assert_eq!(
+            text(&p, &rejoined),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "chain  finished",
+                "  ✓ a  done",
+                "  ✓ b  done",
+                "  ✓ c  done",
+                "  09:15:40  a → b  (done)",
+                "  09:15:50  b → c  (done)",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_step_that_started_is_never_skipped_so_a_rejection_keeps_the_run_open() {
+        let agents = ["dev", "qa"];
+        let flow = "steps:\n  write: { agent: dev }\n  review: { agent: qa, states: [approved, rejected] }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: write, when: rejected }\n";
+        let p = project_agents(&agents, &[("loop", flow)]);
+        let events = seq(&[
+            &[cmd(T, "loop")],
+            &span(0, 10, "w1", "dev"),
+            &[
+                start(T + 20, "r1", "qa"),
+                stop(T + 30, "r1", "qa", Some("rejected")),
+            ],
+        ]);
+        assert_eq!(
+            text(&p, &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "loop  in progress",
+                "  ✓ write   done",
+                "  ✓ review  rejected",
+                "  09:15:20  write → review  (done)",
             ])
         );
     }
