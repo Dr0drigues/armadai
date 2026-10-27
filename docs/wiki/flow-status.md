@@ -52,6 +52,9 @@ included), the run is attributed to that flow instead:
   this session)`; a step after the last one that ran stays `○ pending`. A step shows `not run` as
   soon as a step placed after it has finished, and stays so until it starts itself, when it turns
   `running`: while sub-agents overlap, that is what was true when drawn.
+  A skipped step does not hold the run open: the run is `finished` when the steps that ran have
+  nothing left to take. If that step starts after the end, it joins the same run through the link
+  left open, which goes back to `in progress`, then `finished`.
 
 A command that does not name a flow (another name, a plugin command such as `/plugin:bugfix`:
 not verified how Claude Code names it), a flow started in natural language, a Claude Code that
