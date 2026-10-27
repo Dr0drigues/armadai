@@ -67,9 +67,9 @@ pub struct Run {
 /// - A run finishes when no step is running or `?`/`✗`, and no finished step
 ///   has a link still to take (taken once its target starts after it stopped;
 ///   a loop back to the same step through the coordinator does not count, and
-///   goes on in the same run when that step starts again). In an attributed
-///   run, a link to a step skipped (never started, before a step that stopped,
-///   and not led back to by a rejection) is not one to take.
+///   goes on in the same run when that step starts again). A link to a step
+///   skipped (never started, before a step that stopped, and not named next
+///   by a later stop: a rejection, a failure path, a cycle) is not one to take.
 /// - A `command` line naming a flow of the project (exact id) is a boundary:
 ///   every run still open is closed and shown interrupted, and a run of that
 ///   flow alone opens, attributed. Until that run finishes (or the next flow
@@ -735,12 +735,8 @@ impl<'p> Builder<'p> {
             }
         }
         // a loop back to the same step through the coordinator holds nothing open
-        // in an attributed run, a link to a skipped step is not one to take
-        let skipped = if run.attributed {
-            run.skipped()
-        } else {
-            BTreeSet::new()
-        };
+        // a link to a skipped step is not one to take
+        let skipped = run.skipped();
         let to_take = (run.flow.steps.keys()).any(|t| {
             !skipped.contains(t.as_str()) && run.linked_from(t).is_some_and(|(s, _)| &s != t)
         });
@@ -3251,7 +3247,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_command_the_skipped_filter_does_not_apply() {
+    fn without_a_command_a_skipped_step_follows_the_same_rule() {
         let coord = "steps:\n  design: { agent: architect }\n  build: { agent: dev, on_failure: check }\n  check: { agent: lead }\n  guard: { agent: qa, states: [approved, rejected] }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: guard }\n  - { from: guard, to: build, when: rejected }\n  - { from: check, to: guard }\n";
         let p = project(&[("coord", coord), ("deliver", DELIVER)]);
         let events = [
