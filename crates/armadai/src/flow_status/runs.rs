@@ -344,21 +344,30 @@ impl<'p> Building<'p> {
         }
     }
 
-    /// The steps skipped: never started, though a step after them stopped. A
-    /// step such a step leads back to by its real state (a rejection) is not
-    /// skipped: it is the next one.
+    /// The steps skipped: (a) never started, (b) followed by a step that
+    /// stopped, and (c) whose latest news is that step stopping, not a stopped
+    /// step leading to them: the latest stop of a step after them is more
+    /// recent than the latest stop of a step whose real next steps (`reach`: the
+    /// state it ended with, the coordinator's steps crossed) include them. A
+    /// rejection, a failure path or a cycle back to a step name it by the same
+    /// stop that follows it, so it is the next step, not a skipped one.
     fn skipped(&self) -> BTreeSet<&'p str> {
         let flow = self.flow;
-        let back: BTreeSet<&str> = (self.stopped.keys())
-            .flat_map(|s| {
-                let before = upstream(flow, s);
-                (next_steps(flow, s, self.leads_with(s)).into_iter())
-                    .filter(move |t| before.contains(t))
-            })
+        let after: Vec<(usize, Vec<&'p str>)> = (self.stopped.iter())
+            .map(|(s, at)| (*at, upstream(flow, s)))
             .collect();
-        (self.stopped.keys())
-            .flat_map(|s| upstream(flow, s))
-            .filter(|s| !self.started.contains_key(*s) && !back.contains(*s))
+        let leading: Vec<(usize, Vec<&'p str>)> = (self.stopped.iter())
+            .map(|(s, at)| (*at, self.reach(s).into_iter().map(|(t, _)| t).collect()))
+            .collect();
+        let latest = |l: &[(usize, Vec<&str>)], t: &str| {
+            (l.iter())
+                .filter(|(_, ts)| ts.contains(&t))
+                .map(|(at, _)| *at)
+                .max()
+        };
+        (after.iter().flat_map(|(_, ts)| ts.iter().copied()))
+            .filter(|t| !self.started.contains_key(*t))
+            .filter(|t| latest(&leading, t) < latest(&after, t))
             .collect()
     }
 
