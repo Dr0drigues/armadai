@@ -3206,32 +3206,6 @@ mod tests {
     }
 
     #[test]
-    fn a_step_that_started_is_never_skipped_so_a_rejection_keeps_the_run_open() {
-        let agents = ["dev", "qa"];
-        let flow = "steps:\n  write: { agent: dev }\n  review: { agent: qa, states: [approved, rejected] }\nlinks:\n  - { from: write, to: review }\n  - { from: review, to: write, when: rejected }\n";
-        let p = project_agents(&agents, &[("loop", flow)]);
-        let events = seq(&[
-            &[cmd(T, "loop")],
-            &span(0, 10, "w1", "dev"),
-            &[
-                start(T + 20, "r1", "qa"),
-                stop(T + 30, "r1", "qa", Some("rejected")),
-            ],
-        ]);
-        assert_eq!(
-            text(&p, &events),
-            lines(&[
-                "session s1 (UTC)",
-                "",
-                "loop  in progress",
-                "  ✓ write   done",
-                "  ✓ review  rejected",
-                "  09:15:20  write → review  (done)",
-            ])
-        );
-    }
-
-    #[test]
     fn a_step_a_rejection_leads_back_to_is_not_skipped() {
         let events = seq(&[
             &[cmd(T, "deliver")],
@@ -3298,5 +3272,240 @@ mod tests {
                 "  09:15:03  guard → build  (rejected)",
             ])
         );
+    }
+
+    /// A project of agents `p q r s`, one flow `id`, a command `cmd id`.
+    fn pqrs(id: &str, flow: &str) -> Project {
+        project_agents(&["p", "q", "r", "s"], &[(id, flow)])
+    }
+
+    fn lead_project(flow: &str) -> Project {
+        project_with("schema_version: 1\ncoordinator: lead\n", &[("guide", flow)])
+    }
+
+    const GUIDE: &str = "steps:\n  plan: { agent: architect }\n  hub: { agent: lead }\n  build: { agent: dev }\n  check: { agent: qa, states: [approved, rejected] }\nlinks:\n  - { from: plan, to: hub }\n  - { from: hub, to: build }\n  - { from: build, to: check }\n  - { from: check, to: hub, when: rejected }\n";
+
+    #[test]
+    fn an_unconditional_loop_leads_back_so_the_step_is_not_skipped() {
+        let flow = "start: a\nsteps:\n  a: { agent: p }\n  b: { agent: q }\nlinks:\n  - { from: a, to: b }\n  - { from: b, to: a }\n";
+        let events = seq(&[&[cmd(T, "cyc")], &span(10, 20, "b1", "q")]);
+        assert_eq!(
+            text(&pqrs("cyc", flow), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "cyc  in progress",
+                "  ○ a  pending",
+                "  ✓ b  done",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_failure_path_back_is_not_skipped() {
+        let flow = "steps:\n  design: { agent: p }\n  build: { agent: q, on_failure: design }\n  test: { agent: r }\nlinks:\n  - { from: design, to: build }\n  - { from: build, to: test }\n";
+        let events = seq(&[
+            &[cmd(T, "fail")],
+            &[
+                start(T + 10, "b1", "q"),
+                stop(T + 20, "b1", "q", Some("failed")),
+            ],
+        ]);
+        assert_eq!(
+            text(&pqrs("fail", flow), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "fail  in progress",
+                "  ○ design  pending",
+                "  ✓ build   failed",
+                "  ○ test    pending",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_rejection_through_the_coordinator_is_not_skipped() {
+        let events = seq(&[
+            &[cmd(T, "guide")],
+            &span(0, 10, "p1", "architect"),
+            &[
+                start(T + 40, "c1", "qa"),
+                stop(T + 50, "c1", "qa", Some("rejected")),
+            ],
+        ]);
+        assert_eq!(
+            text(&lead_project(GUIDE), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "guide  in progress",
+                "  ✓ plan   done",
+                "  ~ hub    (coordinator, not recorded)",
+                "  ○ build  pending",
+                "  ✓ check  rejected",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_rejection_through_two_coordinator_steps_is_not_skipped() {
+        let flow = "steps:\n  plan: { agent: architect }\n  hub: { agent: lead }\n  build: { agent: dev }\n  check: { agent: qa, states: [approved, rejected] }\n  h1: { agent: lead }\n  h2: { agent: lead }\nlinks:\n  - { from: plan, to: hub }\n  - { from: hub, to: build }\n  - { from: build, to: check }\n  - { from: check, to: h1, when: rejected }\n  - { from: h1, to: h2 }\n  - { from: h2, to: build }\n";
+        let events = seq(&[
+            &[cmd(T, "guide")],
+            &span(0, 10, "p1", "architect"),
+            &[
+                start(T + 40, "c1", "qa"),
+                stop(T + 50, "c1", "qa", Some("rejected")),
+            ],
+        ]);
+        assert_eq!(
+            text(&lead_project(flow), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "guide  in progress",
+                "  ✓ plan   done",
+                "  ~ hub    (coordinator, not recorded)",
+                "  ○ build  pending",
+                "  ✓ check  rejected",
+                "  ~ h1     (coordinator, not recorded)",
+                "  ~ h2     (coordinator, not recorded)",
+            ])
+        );
+    }
+
+    #[test]
+    fn an_unknown_state_may_lead_back() {
+        let events = seq(&[&[cmd(T, "deliver")], &span(10, 20, "g1", "qa")]);
+        assert_eq!(
+            text(&deliver(), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "deliver  in progress",
+                "  - design    (not run in this session)",
+                "  ○ build     pending",
+                "  ? guard     (no STATE line)",
+                "  ○ validate  pending",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_step_skipped_then_next_again_after_a_rejection_is_pending() {
+        let flow = "steps:\n  a: { agent: p }\n  b: { agent: q }\n  c: { agent: r }\n  d: { agent: s, states: [approved, rejected] }\nlinks:\n  - { from: a, to: b }\n  - { from: b, to: c }\n  - { from: c, to: d }\n  - { from: d, to: b, when: rejected }\n";
+        let p = pqrs("loop4", flow);
+        let first = seq(&[
+            &[cmd(T, "loop4")],
+            &span(0, 10, "a1", "p"),
+            &span(20, 30, "b1", "q"),
+            &[
+                start(T + 40, "d1", "s"),
+                stop(T + 50, "d1", "s", Some("rejected")),
+            ],
+        ]);
+        assert_eq!(
+            text(&p, &first),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "loop4  in progress",
+                "  ✓ a  done",
+                "  ✓ b  done",
+                "  - c  (not run in this session)",
+                "  ✓ d  rejected",
+                "  09:15:20  a → b  (done)",
+            ])
+        );
+        let again = seq(&[&first, &span(60, 70, "b2", "q")]);
+        assert_eq!(
+            text(&p, &again),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "loop4  in progress",
+                "  ✓ a  done",
+                "  ✓ b  done",
+                "  ○ c  pending",
+                "  ✓ d  rejected",
+                "  09:15:20  a → b  (done)",
+                "  09:16:00  d → b  (rejected)",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_second_entry_never_run_is_skipped() {
+        let flow = "steps:\n  e1: { agent: p }\n  e2: { agent: q }\n  m: { agent: r }\nlinks:\n  - { from: e1, to: m }\n  - { from: e2, to: m }\n";
+        let events = seq(&[
+            &[cmd(T, "two")],
+            &span(0, 10, "e1", "p"),
+            &span(20, 30, "m1", "r"),
+        ]);
+        assert_eq!(
+            text(&pqrs("two", flow), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "two  finished",
+                "  ✓ e1  done",
+                "  - e2  (not run in this session)",
+                "  ✓ m   done",
+                "  09:15:20  e1 → m  (done)",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_sibling_branch_is_not_skipped() {
+        let flow = "steps:\n  a: { agent: p }\n  b: { agent: q }\n  c: { agent: r }\nlinks:\n  - { from: a, to: b }\n  - { from: a, to: c }\n";
+        let events = seq(&[
+            &[cmd(T, "fork")],
+            &span(0, 10, "a1", "p"),
+            &span(20, 30, "c1", "r"),
+        ]);
+        assert_eq!(
+            text(&pqrs("fork", flow), &events),
+            lines(&[
+                "session s1 (UTC)",
+                "",
+                "fork  in progress",
+                "  ✓ a  done",
+                "  ○ b  pending",
+                "  ✓ c  done",
+                "  09:15:20  a → c  (done)",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_step_that_started_is_never_skipped() {
+        let flow = "steps:\n  a: { agent: ax }\n  b: { agent: ay }\n  c: { agent: az }\nlinks:\n  - { from: a, to: b }\n  - { from: b, to: c }\n";
+        let p = project(&[("chain", flow)]);
+        let seq_for = |a_again: (u64, u64)| {
+            seq(&[
+                &[cmd(T, "chain")],
+                &span(0, 10, "a1", "ax"),
+                &span(20, 30, "b1", "ay"),
+                &[start(T + 40, "c1", "az")],
+                &span(a_again.0, a_again.1, "a2", "ax"),
+                &[stop(T + 50, "c1", "az", None)],
+            ])
+        };
+        // `a` starts again and stops before `c`: `b` is the step `a` leads to again
+        let chain = lines(&[
+            "session s1 (UTC)",
+            "",
+            "chain  in progress",
+            "  ✓ a  done",
+            "  ✓ b  done",
+            "  ✓ c  done",
+            "  09:15:20  a → b  (done)",
+            "  09:15:40  b → c  (done)",
+        ]);
+        assert_eq!(text(&p, &seq_for((42, 45))), chain);
+        // after `c`: the latest news about `b` is `a` leading to it anyway
+        assert_eq!(text(&p, &seq_for((45, 55))), chain);
     }
 }
