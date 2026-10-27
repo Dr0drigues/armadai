@@ -42,6 +42,17 @@
           }
         ]
       }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "armadai __record-flow-event",
+            "async": true
+          }
+        ]
+      }
     ]
   }
 }
