@@ -3041,6 +3041,7 @@ mod tests {
             cmd(T + 2, "evolution"),
             start(T + 3, "i2", "an"),
             stop(T + 4, "i1", "an", None),
+            start(T + 5, "i3", "u"),
         ];
         assert_eq!(
             text(&issue(), &events),
@@ -3056,7 +3057,7 @@ mod tests {
                 "",
                 "evolution  in progress",
                 "  ● analyse   running",
-                "  ○ ui        pending",
+                "  ● ui        running",
                 "  ○ test      pending",
                 "  ○ review    pending",
                 "  ○ validate  pending",
