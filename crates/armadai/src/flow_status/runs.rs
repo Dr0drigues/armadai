@@ -68,8 +68,8 @@ pub struct Run {
 ///   has a link still to take (taken once its target starts after it stopped;
 ///   a loop back to the same step through the coordinator does not count, and
 ///   goes on in the same run when that step starts again). In an attributed
-///   run, a link to a step skipped (never started, before a step that
-///   stopped) is not one to take.
+///   run, a link to a step skipped (never started, before a step that stopped,
+///   and not led back to by a rejection) is not one to take.
 /// - A `command` line naming a flow of the project (exact id) is a boundary:
 ///   every run still open is closed and shown interrupted, and a run of that
 ///   flow alone opens, attributed. Until that run finishes (or the next flow
@@ -344,12 +344,21 @@ impl<'p> Building<'p> {
         }
     }
 
-    /// The steps skipped: never started, though a step after them stopped.
+    /// The steps skipped: never started, though a step after them stopped. A
+    /// step such a step leads back to by its real state (a rejection) is not
+    /// skipped: it is the next one.
     fn skipped(&self) -> BTreeSet<&'p str> {
         let flow = self.flow;
+        let back: BTreeSet<&str> = (self.stopped.keys())
+            .flat_map(|s| {
+                let before = upstream(flow, s);
+                (next_steps(flow, s, self.leads_with(s)).into_iter())
+                    .filter(move |t| before.contains(t))
+            })
+            .collect();
         (self.stopped.keys())
             .flat_map(|s| upstream(flow, s))
-            .filter(|s| !self.started.contains_key(*s))
+            .filter(|s| !self.started.contains_key(*s) && !back.contains(*s))
             .collect()
     }
 
