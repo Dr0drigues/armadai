@@ -49,7 +49,8 @@ included), the run is attributed to that flow instead:
 - while the run is open, an agent that no step of the flow holds is ignored: it opens no run of
   its own (once the run has `finished`, it is inferred, and may open the run of another flow);
 - a step that never started while a step after it has finished is shown `- ... (not run in
-  this session)`; a step after the last one that ran stays `○ pending`. A step shows `not run` as
+  this session)` (unless a finished step leads back to it by its real state, a rejection: it
+  stays `○ pending`, see below); a step after the last one that ran stays `○ pending`. A step shows `not run` as
   soon as a step placed after it has finished, and stays so until it starts itself, when it turns
   `running`: while sub-agents overlap, that is what was true when drawn.
   A skipped step does not hold the run open: the run is `finished` when the steps that ran have
