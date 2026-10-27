@@ -54,7 +54,9 @@ included), the run is attributed to that flow instead:
   `running`: while sub-agents overlap, that is what was true when drawn.
   A skipped step does not hold the run open: the run is `finished` when the steps that ran have
   nothing left to take. If that step starts after the end, it joins the same run through the link
-  left open, which goes back to `in progress`, then `finished`.
+  left open, which goes back to `in progress`, then `finished`. A step that a finished step leads
+  back to by its real state is not skipped: after `guard` ends `rejected`, `build` stays
+  `○ pending` and holds the run open until it starts, even if it never ran before.
 
 A command that does not name a flow (another name, a plugin command such as `/plugin:bugfix`:
 not verified how Claude Code names it), a flow started in natural language, a Claude Code that
@@ -123,7 +125,7 @@ deliver  in progress
 | `?` | unsure, with the reason in parentheses (for example no `STATE:` line). It leads nowhere: started again, the step is retried in place and its new state replaces the `?` |
 | `✗` | a state the step does not declare. It leads nowhere: started again, the step is retried in place and its new state replaces the `✗`. A state the step declares but no link follows ends the flow normally: it is not a `✗` |
 | `~` | held by the coordinator, which is not recorded (`coordinator, not recorded`) |
-| `-` | not run in this session (`not run in this session`): a step before the one a run opened at, when the session started the flow mid-way, or, in a run attributed by a command, a step that never started while a step after it has finished. Neither done nor pending, it never holds the run open |
+| `-` | not run in this session (`not run in this session`): a step before the one a run opened at, when the session started the flow mid-way, or, in a run attributed by a command, a step that never started while a step after it has finished, unless a finished step leads back to it by its real state (a rejection), which keeps it `○ pending`. Neither done nor pending, it never holds the run open |
 
 A run heading reads `in progress`, `finished`, or `interrupted` (a later flow command closed the
 run before it finished).
