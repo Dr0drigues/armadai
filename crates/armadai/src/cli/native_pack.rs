@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 
-/// `project.yaml` of a pack that ships none.
 const IGNORED: &str = "ignored-pack-file";
 
+/// `project.yaml` of a pack that ships none.
 pub const DEFAULT_PROJECT: &str = "schema_version: 1\ntargets: [claude]\n";
 
 fn listed(rel: &Path) -> bool {
