@@ -32,6 +32,12 @@ Sources abrégées : `CLAUDE.md` (racine du dépôt), `.claude/CLAUDE.md` (règl
 - Une borne de temps se choisit par rapport au seuil du défaut, pas au temps nominal, et la stabilité se vérifie par répétition (5 passes). Raison : 3 flakes sous charge parallèle. Source : `mémoire:feedback_bornes_temporelles_dans_les_tests.md`.
 - Un correctif proposé par une revue est une hypothèse : le muter avant de l'adopter ; quand auteur et relecteur se contredisent, la mesure tranche. Source : `.claude/CLAUDE.md`, Mesure, ne raisonne pas ; `mémoire:feedback_le_remede_d_une_revue_est_une_hypothese.md`.
 
+## Diagnostics, sorties et manifeste
+
+- Un code de diagnostic se nomme en kebab-case, avec le préfixe de sa famille quand elle existe (`skill-*`, `command-*`, `unknown-*`, `duplicate-*`), sans verbe d'action ; un code publié n'est jamais renommé (les codes sont stables) ; chaque code ajouté entre dans la table de `docs/wiki/project-format.md`. Source : Dimitri, 2026-10-27 (« skill-missing-path, ignored-pack-file (Recommandé) ») ; `CLAUDE.md`, Where things live (stable codes).
+- Le texte d'une ligne nouvelle de sortie (rapport de `link`, diagnostic, message d'erreur) est proposé par le plan et validé par Dimitri à sa relecture du plan ; ensuite les golden se mettent à jour mécaniquement, relus ligne à ligne contre la spec. Source : Dimitri, 2026-10-27 (« Toi, au plan (Recommandé) »).
+- Le manifeste `.armadai/link-manifest.yaml` reste en `version: 1` : un changement de format ajoute des champs optionnels (`#[serde(default, skip_serializing_if)]`), jamais une version qui rendrait les manifestes existants illisibles ; un test lit un manifeste écrit par la version précédente. Source : Dimitri, 2026-10-27 (« Champ optionnel, v1 (Recommandé) »).
+
 ## Git et PR
 
 - Conventional Commits (`feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`, `perf`, `style`, `build`, `revert`), un seul type par sujet. Source : `CLAUDE.md`, Git Conventions ; `.claude/CLAUDE.md`, Commits.
