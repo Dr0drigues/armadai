@@ -1224,6 +1224,41 @@ fn an_unknown_step_in_a_link_points_at_its_key() {
 }
 
 #[test]
+fn an_unknown_step_in_a_link_from_points_at_its_key() {
+    let flow = "description: zz\nsteps:\n  a: { agent: a }\nlinks:\n  - { from: zz, to: a }\n";
+    assert_eq!(
+        rendered(&with_flow(flow), "unknown-step"),
+        [
+            "<root>/.armadai/flows/y.yaml:5:7: error[unknown-step]: unknown step `zz`\n  hint: known: a"
+        ]
+    );
+}
+
+#[test]
+fn the_second_link_with_the_same_unknown_to_is_found() {
+    let flow = "description: y\nsteps:\n  a: { agent: a }\n  b: { agent: b }\nlinks:\n  - { from: a, to: zz }\n  - { from: b, to: zz }\n";
+    assert_eq!(
+        rendered(&with_flow(flow), "unknown-step"),
+        [
+            "<root>/.armadai/flows/y.yaml:6:16: error[unknown-step]: unknown step `zz`\n  hint: known: a, b",
+            "<root>/.armadai/flows/y.yaml:7:16: error[unknown-step]: unknown step `zz`\n  hint: known: a, b"
+        ]
+    );
+}
+
+#[test]
+fn the_second_link_with_the_same_unknown_from_is_found() {
+    let flow = "description: y\nsteps:\n  a: { agent: a }\n  b: { agent: b }\nlinks:\n  - { from: zz, to: a }\n  - { from: zz, to: b }\n";
+    assert_eq!(
+        rendered(&with_flow(flow), "unknown-step"),
+        [
+            "<root>/.armadai/flows/y.yaml:6:7: error[unknown-step]: unknown step `zz`\n  hint: known: a, b",
+            "<root>/.armadai/flows/y.yaml:7:7: error[unknown-step]: unknown step `zz`\n  hint: known: a, b"
+        ]
+    );
+}
+
+#[test]
 fn an_unknown_on_failure_points_at_its_key() {
     let flow = "description: zz\nsteps:\n  a: { agent: a }\n  b: { agent: b, on_failure: zz }\n";
     assert_eq!(
