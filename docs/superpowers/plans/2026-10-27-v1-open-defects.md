@@ -425,6 +425,11 @@ warning: <config>/config.yaml: model_tiers.opencode.medium is not a tier (fast, 
 ```
 Autres formes, même gabarit : `model_tiers.opencode.fast must be a model id (a string)` ; `model_tiers.opencode must map tiers to model ids` ; `model_tiers must map targets to tiers`.
 
+Cette fin (« ignored here, but `armadai link --target opencode` refuses it ») ne vaut que pour un problème sous `model_tiers.opencode` ou sur `model_tiers` entier. Sous une autre cible, la ligne finit par `; ignored` (décision de Dimitri du 2026-10-28), par exemple :
+```
+warning: <config>/config.yaml: model_tiers.codex.medium is not a tier (fast, pro, max); ignored
+```
+
 **T11 — erreur `model_tiers` (#506)** (stderr de `link --target opencode`, code 1, rien d'écrit) :
 ```
 Error: <config>/config.yaml: model_tiers.opencode.medium is not a tier (fast, pro, max); fix it or remove it
@@ -473,6 +478,7 @@ Celles de la spec et du cadre (2026-10-27), non rejouées. Puis, le 2026-10-28, 
 - **Q1, `deny` contre `allow`** : « Même règle exacte (Recommandé) ». La contradiction est la même règle au caractère près (tâche 1, règle 6) ; la limite des motifs recouvrants est écrite dans `link.md`.
 - **Q2, #517** : « La doc seule (Recommandé) ». Consigne de la tâche 2 : la liste des agents intégrés suit la documentation officielle seule ; si `claude` ou `claude-code-guide` n'y figure pas, il reste signalé (avertissement), le constructeur le dit dans son rapport avec la page citée, et `lead` demande à `analyst` d'amender le critère 8 de la spec.
 - **Q3, `--adopt-hooks`** : « Non, hooks seuls (Recommandé) ». L'option n'adopte que des hooks ; une règle `permissions` identique déjà présente n'est pas revendiquée, limite écrite dans `link.md`.
+- **T10 sous une autre cible qu'`opencode`** (2026-10-28) : « Finir par « ; ignored » (Recommandé) ». T10 reste tel quel pour `model_tiers.opencode` et pour `model_tiers` entier ; sous toute autre cible, la ligne finit par `; ignored` (tâche 4, règle 3 ; un test de la tâche 4 fige chacune des deux fins).
 
 ## Questions pour Dimitri
 
