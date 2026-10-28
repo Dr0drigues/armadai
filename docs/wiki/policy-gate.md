@@ -28,7 +28,8 @@ Under `strict`, a delegation is allowed when:
   as the main session;
 - from an **agent X**: the agents of the steps a step of X leads to, by a link or `on_failure`;
 - the target is in `free_agents`, from anywhere — project agents, or agents Claude Code provides
-  itself (`Explore`, `Plan`, `general-purpose`: the validator only warns, `unknown-free-agent`);
+  itself (`Explore`, `Plan`, `general-purpose`…: the validator knows the built-in agents of the
+  declared targets and warns, `unknown-free-agent`, only for any other name);
 - the coordinator itself is never a target, even when it runs a flow step: it lives in
   `CLAUDE.md`, it is no sub-agent, so a refusal never lists it;
 - **anything else is refused.**

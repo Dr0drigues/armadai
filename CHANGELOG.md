@@ -7,6 +7,8 @@
 ### Fixed
 
 - `native.claude.permissions` is merged list by list into an existing `permissions` of `.claude/settings.json` (`allow`, `ask`, `deny`, `additionalDirectories` and any other list): your rules are kept, `unlink` removes only the rules link added, a `deny` link adds that your `allow` lists is reported, and a conflicting value names both values (#522).
+- `validate` positions `unknown-state`, `unknown-step` and `unknown-free-agent` on the faulty link, key or list entry instead of the first occurrence of the word (#523).
+- `validate` no longer reports as `unknown-free-agent` an agent that a declared target provides (Claude Code, OpenCode), and its hint lists them (#517).
 - `unlink` and a relink no longer reorder the keys of `.claude/settings.json`; numbers of hooks and keys recorded in the link manifest are plain YAML numbers (#505).
 
 ## v1.0.0-rc.8 (2026-10-27)
