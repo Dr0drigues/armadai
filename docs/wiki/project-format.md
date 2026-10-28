@@ -336,6 +336,7 @@ warning on stderr.
 | `skill-missing-description` | error | A skill has no or an empty `description` | Add one |
 | `skill-description-too-long` | error | A skill's `description` exceeds 1024 characters | Shorten it |
 | `skill-missing-path` | warning | A `SKILL.md` names a path under `scripts/` or `references/` (prose or code, not a pattern such as `scripts/<name>.sh`) that its folder does not contain | Add the file to the skill folder, or correct the path |
+| `ignored-pack-file` | warning | A file of a pack folder that `init --pack` does not install (outside the white list: `project.yaml`, `agents/*.md`, `templates/*.md`, `commands/*.md`, `skills/**`, `flows/*.yaml`, `automations/*.yaml`); reported by `validate <pack>` and `init --pack` | Move it into one of the listed folders, or remove it from the pack |
 | `unknown-skill-key` | warning | A skill's frontmatter has a key outside the standard | None needed if another tool uses it |
 | `empty-flow` | error | A flow has no step | Add steps or delete the file |
 | `duplicate-step-state` | error | `states` repeats a state or redeclares `done`/`failed` | Remove the duplicate |
