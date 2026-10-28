@@ -76,7 +76,7 @@ order (`link` and `unlink` never reorder them); a hook identical to one link wou
 you and reported, with the way to adopt it: `armadai link --adopt-hooks` takes over the hooks
 identical to the ones link adds (on a clone or a worktree, where `.armadai/link-manifest.yaml`,
 git-ignored, is missing), and `unlink` then removes them. The option adopts hooks only: a
-`permissions` rule identical to one of yours is never claimed. The file is rewritten
+`permissions` rule identical to one of yours is never claimed. An event array, or a `hooks` object, that was empty in your file and held only adopted hooks is removed by `unlink` with them. The file is rewritten
 only when its value changes, and the JSON layout is then normalised (reported). Flows are
 guidance in `CLAUDE.md`; under `strict`, the delegation topology is enforced by the gate.
 
