@@ -136,7 +136,7 @@ not linked: they are not project templates.
 Frontmatter: `name` (equal to the folder name), `description` (required, at most 1024
 characters), `license`, `compatibility`, `metadata`. Other keys are kept and reported as
 warnings. The folder's other files (scripts, references) are copied as is; a path under `scripts/`
-or `references/` named by `SKILL.md` and absent gives the warning `skill-missing-path`.
+or `references/` named by `SKILL.md` and absent gives the warning `skill-missing-path`. The check reads prose too, so a path given as an example (a guide on writing skills) and `scripts/references` written to mean "either folder" are reported as well: the warning does not block `link`.
 
 `metadata: { armadai-slot: code-standards }` makes the skill fill a slot (see
 [Slots](#slots)); several slots are separated by commas (`armadai-slot: "code-standards, security"`).
