@@ -1,0 +1,5 @@
+steps:
+  s: { agent: a }
+  t: { agent: b }
+links:
+  - { from: s, to: t }

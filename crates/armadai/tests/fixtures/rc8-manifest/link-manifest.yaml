@@ -1,0 +1,58 @@
+version: 1
+targets:
+  claude:
+    linked_at: "2026-10-28T09:08:46Z"
+    root: .claude
+    created_dirs:
+    - .claude/agents
+    entries:
+    - path: .claude/agents/a.md
+      produced_by:
+        kind: agent
+        name: a
+      outcome: created
+      digest: sha256:84390247e2bd0c59a3fdf3c8e2f8b5e1d3fe0d02d0a2ab79fdf8cb13b6140b8e
+    - path: .claude/agents/b.md
+      produced_by:
+        kind: agent
+        name: b
+      outcome: created
+      digest: sha256:a5b93ddf625792cedd6c908e50c9d0d2e5f458079ddd54238f908677a055131f
+    patched:
+    - path: .claude/settings.json
+      kind:
+        type: settings-hooks
+        entries:
+        - event: PreToolUse
+          command: ./check.sh
+          native:
+            timeout:
+              "$serde_json::private::Number": "5"
+        - event: SubagentStart
+          command: armadai __record-flow-event
+          native:
+            async: true
+        - event: SubagentStop
+          command: armadai __record-flow-event
+          native:
+            async: true
+        - event: PreToolUse
+          matcher: SubagentHandback
+          command: armadai __record-flow-event
+          native:
+            async: true
+        - event: UserPromptExpansion
+          command: armadai __record-flow-event
+          native:
+            async: true
+        keys:
+          permissions:
+            ask:
+            - Bash(git push:*)
+        containers:
+        - hooks
+        - hooks.PreToolUse
+        - hooks.SubagentStart
+        - hooks.SubagentStop
+        - hooks.UserPromptExpansion
+      created: true

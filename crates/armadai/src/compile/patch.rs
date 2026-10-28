@@ -14,7 +14,7 @@ use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::claude_settings::{HookEntry, Owned, merge_settings, remove_entries};
+use super::claude_settings::{HookEntry, MergeNotes, Owned, merge_settings, remove_entries};
 use super::json_keys::{JsonKeys, OwnedJson, merge_json_keys, remove_json_keys};
 use super::{BLOCK_BEGIN, BLOCK_END};
 
@@ -145,7 +145,8 @@ pub fn preflight_settings(
         Some(PatchKind::SettingsHooks(o)) => o.clone(),
         _ => Owned::default(),
     };
-    merge_settings(read(&path)?.as_deref(), entries, keys, &prev)
+    // adopting a hook changes no error: the check runs without it
+    merge_settings(read(&path)?.as_deref(), entries, keys, &prev, false)
         .map(|_| ())
         .with_context(|| path.display().to_string())
 }
@@ -162,6 +163,7 @@ pub fn preflight_markdown(root: &Path, rel: &Path) -> anyhow::Result<()> {
 /// Merge hook `entries` and native `keys` into `root/rel` (a settings.json). Also
 /// says whether an existing file was reformatted: values and key order are kept,
 /// the JSON layout is normalised. A file whose value does not change is not written.
+/// `adopt` takes over the identical hooks already there ([`merge_settings`]).
 pub fn apply_settings(
     root: &Path,
     rel: &Path,
@@ -169,7 +171,8 @@ pub fn apply_settings(
     entries: &[HookEntry],
     keys: &BTreeMap<String, Value>,
     previous: Option<&PatchedFile>,
-) -> anyhow::Result<(PatchedFile, bool)> {
+    adopt: bool,
+) -> anyhow::Result<(PatchedFile, bool, MergeNotes)> {
     let path = checked(root, trust, rel)?;
     let existing = read(&path)?;
     let prev_owned = match previous.map(|p| &p.kind) {
@@ -177,15 +180,16 @@ pub fn apply_settings(
         _ => Owned::default(),
     };
     let created = previous.is_some_and(|p| p.created) || existing.is_none();
-    let (text, owned) = merge_settings(existing.as_deref(), entries, keys, &prev_owned)
-        .with_context(|| path.display().to_string())?;
+    let (text, owned, notes) =
+        merge_settings(existing.as_deref(), entries, keys, &prev_owned, adopt)
+            .with_context(|| path.display().to_string())?;
     let reformatted = write_json(&path, existing.as_deref(), &text, owned == Owned::default())?;
     let patched = PatchedFile {
         path: rel.to_path_buf(),
         kind: PatchKind::SettingsHooks(owned),
         created,
     };
-    Ok((patched, reformatted))
+    Ok((patched, reformatted, notes))
 }
 
 /// Write merged JSON `text` over `existing` unless its value is unchanged (or, for a
@@ -437,6 +441,19 @@ mod tests {
 
     fn value(p: &Path) -> Value {
         serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    }
+
+    /// `super::apply_settings` without adoption, as these tests use it.
+    fn apply_settings(
+        root: &Path,
+        rel: &Path,
+        trust: &Path,
+        entries: &[HookEntry],
+        keys: &BTreeMap<String, Value>,
+        previous: Option<&PatchedFile>,
+    ) -> anyhow::Result<(PatchedFile, bool)> {
+        super::apply_settings(root, rel, trust, entries, keys, previous, false)
+            .map(|(p, r, _)| (p, r))
     }
 
     fn leftovers(dir: &Path) -> Vec<String> {

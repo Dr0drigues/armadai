@@ -31,7 +31,7 @@ pub fn execute(
         };
         if should_link(link, no_link, interactive, ask)? {
             // the project is created and stays so: a failed link undoes nothing
-            super::link::execute(vec![], false, false, None, None, false)
+            super::link::execute(vec![], false, false, None, None, false, false)
                 .map_err(|e| anyhow::anyhow!("the project was created, but link failed: {e:#}"))?;
         } else {
             let m = crate::cli::style::muted();

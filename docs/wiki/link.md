@@ -72,9 +72,27 @@ Capabilities never produce `tools` (Claude Code's inheritance is kept): `deny` a
 `approximated` (Claude Code asks per project or session, not per agent).
 
 `settings.json` is merged, never overwritten: your keys, hooks and permissions are kept, in their
-order; a hook identical to one link would add is left to you and reported. The file is rewritten
+order (`link` and `unlink` never reorder them); a hook identical to one link would add is left to
+you and reported, with the way to adopt it: `armadai link --adopt-hooks` takes over the hooks
+identical to the ones link adds (on a clone or a worktree, where `.armadai/link-manifest.yaml`,
+git-ignored, is missing), and `unlink` then removes them. The option adopts hooks only: a
+`permissions` rule identical to one of yours is never claimed. The file is rewritten
 only when its value changes, and the JSON layout is then normalised (reported). Flows are
 guidance in `CLAUDE.md`; under `strict`, the delegation topology is enforced by the gate.
+
+`native.claude.permissions` is merged list by list into the `permissions` of the file (every key
+holding a list: `allow`, `ask`, `deny`, `additionalDirectories`, …): your rules are kept, the
+project's rules are added after them without duplicates, and `unlink` removes only the rules
+link added. Another value (for instance `defaultMode`) keeps the whole-value rule: a different
+value of yours is an error that names both values (``key `permissions.defaultMode` is already set
+to another value: "plan" (link writes "acceptEdits")``) and nothing is written. Claude Code
+evaluates `deny` first, whatever the file ([permissions](https://code.claude.com/docs/en/permissions.md),
+checked 2026-10-28): a `deny` rule link adds that your `allow` lists too, character for
+character, is reported (`permissions.deny <rule>: compiled (also in your permissions.allow:
+Claude Code applies deny)`). A rule whose pattern merely overlaps one of yours
+(`Bash(git *)` against `Bash(git push:*)`) is not seen. A binary older than this version
+(1.0.0-rc.8 and before) ignores the `permissions` record of the manifest: its `unlink` leaves the
+rules link added.
 
 ## OpenCode
 
@@ -132,7 +150,7 @@ and array entries it adds (`default_agent`, its `instructions` entry, `agent.bui
 in the manifest; your keys and your `instructions` entries are kept, in their order (OpenCode
 permission rules are ordered: the last match wins). A key you already set to another value than
 the one link wants (for instance `default_agent` or `experimental.subagent_depth`) makes the link
-fail before any write (``key `default_agent` is already set to another value``), as does an owned
+fail before any write (``key `default_agent` is already set to another value: "mine" (link writes "lead")``), as does an owned
 value you changed by hand since the last link (``key `…` was changed by hand since the last link``):
 remove or restore it, then link again. A key no longer wanted is
 removed on the next link, and a file link created is removed once it owns nothing in it

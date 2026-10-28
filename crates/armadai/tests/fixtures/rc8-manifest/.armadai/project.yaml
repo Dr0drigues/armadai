@@ -1,0 +1,6 @@
+schema_version: 1
+targets: [claude]
+native:
+  claude:
+    permissions:
+      ask: ["Bash(git push:*)"]

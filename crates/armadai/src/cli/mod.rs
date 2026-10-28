@@ -222,6 +222,9 @@ pub enum Command {
         /// Print the conformance report as JSON on stdout, and nothing else
         #[arg(long)]
         json: bool,
+        /// Take over the hooks already in .claude/settings.json that are identical to the ones link adds (a clone or a worktree without .armadai/link-manifest.yaml), so unlink removes them
+        #[arg(long)]
+        adopt_hooks: bool,
     },
     /// Remove what `link` wrote (reverse of link)
     #[command(
@@ -423,7 +426,8 @@ pub fn handle(cli: Cli) -> anyhow::Result<()> {
             output,
             agents,
             json,
-        } => link::execute(target, dry_run, force, output, agents, json),
+            adopt_hooks,
+        } => link::execute(target, dry_run, force, output, agents, json, adopt_hooks),
         Command::Unlink {
             target,
             dry_run,
@@ -462,6 +466,21 @@ mod tests {
         let mut buf = Vec::new();
         clap_complete::generate(shell, &mut Cli::command(), "armadai", &mut buf);
         strip_hidden_subcommands(&String::from_utf8_lossy(&buf), &hidden_subcommand_names())
+    }
+
+    /// The help line of `link --adopt-hooks` (text validated by Dimitri, 2026-10-28).
+    #[test]
+    fn link_help_names_adopt_hooks() {
+        let cmd = Cli::command();
+        let link = cmd.find_subcommand("link").unwrap();
+        let arg = link
+            .get_arguments()
+            .find(|a| a.get_long() == Some("adopt-hooks"))
+            .expect("link has --adopt-hooks");
+        assert_eq!(
+            arg.get_help().unwrap().to_string(),
+            "Take over the hooks already in .claude/settings.json that are identical to the ones link adds (a clone or a worktree without .armadai/link-manifest.yaml), so unlink removes them"
+        );
     }
 
     #[test]

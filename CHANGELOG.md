@@ -1,3 +1,14 @@
+## Unreleased
+
+### Added
+
+- `armadai link --adopt-hooks` takes over the hooks of `.claude/settings.json` that are identical to the ones link adds (a clone or a worktree without `.armadai/link-manifest.yaml`), so `unlink` removes them; the report says so where it said `not owned` (#534).
+
+### Fixed
+
+- `native.claude.permissions` is merged list by list into an existing `permissions` of `.claude/settings.json` (`allow`, `ask`, `deny`, `additionalDirectories` and any other list): your rules are kept, `unlink` removes only the rules link added, a `deny` link adds that your `allow` lists is reported, and a conflicting value names both values (#522).
+- `unlink` and a relink no longer reorder the keys of `.claude/settings.json`; numbers of hooks and keys recorded in the link manifest are plain YAML numbers (#505).
+
 ## v1.0.0-rc.8 (2026-10-27)
 
 Eighth release candidate. `armadai flow status` now follows the flow you launched: the command you type (`/bugfix`, `/evolution`…) is recorded and decides the flow a run belongs to, so a team whose flows share an entry step is no longer shown under the wrong flow. Relink with `armadai link --target claude` to get the new recording hook.
