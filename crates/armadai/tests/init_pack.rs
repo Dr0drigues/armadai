@@ -927,3 +927,32 @@ fn validate_counts_an_ignored_pack_file() {
     }]);
     assert_eq!(got, want);
 }
+
+/// Only `ignored-pack-file` is printed by `init`: another warning of the validator
+/// (here `skill-missing-path`) stays silent.
+#[test]
+fn init_prints_no_validator_warning_but_the_ignored_file() {
+    let env = Env::new();
+    let pack = env.pack(
+        "demo",
+        &[
+            ("pack.yaml", "format: 1\nname: demo\ndescription: d\n"),
+            ("project.yaml", "schema_version: 1\ntargets: [claude]\n"),
+            ("agents/a.md", "---\ndescription: A\n---\nB\n"),
+            (
+                "skills/s/SKILL.md",
+                "---\nname: s\ndescription: A skill\n---\nRun scripts/missing.sh\n",
+            ),
+            ("tests/x", "t\n"),
+        ],
+    );
+    let p = pack.to_str().unwrap();
+    let (_, out, _) = env.run(&["validate", p]);
+    assert!(
+        out.contains("skill-missing-path"),
+        "the fixture must warn: {out}"
+    );
+    let (ok, out, err) = env.init(&pack, &["--no-link"]);
+    assert!(ok, "{out}\n{err}");
+    assert_eq!(err, format!("{}\n", t8(&pack.join("tests/x"))));
+}
