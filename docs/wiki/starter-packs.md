@@ -27,8 +27,8 @@ What `init --pack` does with a native pack (`format: 1`):
 2. Refuses a pack holding any symbolic link.
 3. Validates the pack in a scratch project: an error stops it, nothing is written (diagnostics
    point into the pack).
-4. Copies, by a white list: `project.yaml`, `agents/*.md`, `templates/*.md`, `skills/**`,
-   `flows/*.yaml`, `automations/*.yaml`. `pack.yaml`, a README, `.armadai-version`, `link-manifest.yaml`,
+4. Copies, by a white list: `project.yaml`, `agents/*.md`, `templates/*.md`, `commands/*.md`,
+   `skills/**`, `flows/*.yaml`, `automations/*.yaml`. `pack.yaml`, a README, `.armadai-version`, `link-manifest.yaml`,
    `.migrated/` and `.gitignore` stay behind.
 5. Keeps an existing file (one warning each). Under `--force`, an existing `project.yaml` wins
    over the pack's, and the warning says its targets, coordinator and policy are not applied.

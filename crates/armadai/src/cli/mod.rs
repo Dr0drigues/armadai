@@ -261,9 +261,11 @@ pub enum Command {
             Use --project to create an empty project: .armadai/project.yaml, agents/, \
             skills/, flows/, automations/ and .armadai/.gitignore.\n\n\
             Use --pack to create the project from a starter pack instead. A native pack \
-            (`format: 1` in its pack.yaml) is validated, then copied: project.yaml, agents/, \
-            skills/, flows/ and automations/; its automations are listed (they become \
-            hooks). A pack without `format` is the legacy format, converted like \
+            (`format: 1` in its pack.yaml) is validated, then copied by a white list: \
+            project.yaml, agents/*.md, templates/*.md, commands/*.md, skills/** (each skill \
+            folder whole), flows/*.yaml and automations/*.yaml; any other file is left out \
+            and reported (warning ignored-pack-file); its automations are listed (they \
+            become hooks). A pack without `format` is the legacy format, converted like \
             `armadai migrate`. With --force, a pack is merged into an existing project: an \
             existing file is kept, and so is the existing project.yaml.\n\n\
             After --pack, `armadai link` can run at once: --link runs it without asking, \
@@ -481,6 +483,16 @@ mod tests {
             arg.get_help().unwrap().to_string(),
             "Take over the hooks already in .claude/settings.json that are identical to the ones link adds (a clone or a worktree without .armadai/link-manifest.yaml), so unlink removes them"
         );
+    }
+
+    /// The white list sentence of `init --pack` (text validated by Dimitri, 2026-10-28).
+    #[test]
+    fn init_help_lists_the_whole_pack_white_list() {
+        let cmd = Cli::command();
+        let init = cmd.find_subcommand("init").unwrap();
+        let long = init.get_long_about().unwrap().to_string();
+        let want = "A native pack (`format: 1` in its pack.yaml) is validated, then copied by a white list: project.yaml, agents/*.md, templates/*.md, commands/*.md, skills/** (each skill folder whole), flows/*.yaml and automations/*.yaml; any other file is left out and reported (warning ignored-pack-file); its automations are listed (they become hooks).";
+        assert!(long.contains(want), "{long}");
     }
 
     #[test]
