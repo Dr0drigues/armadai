@@ -68,7 +68,7 @@ impl Compiler for OpencodeCompiler {
         compile_with(
             project,
             root,
-            &armadai_core::config::try_load_user_config()?,
+            &armadai_core::config::try_load_user_config_for(T)?,
             &self.team,
         )
     }
@@ -608,10 +608,7 @@ mod tests {
 
     fn tiers(max: &str) -> UserConfig {
         UserConfig {
-            model_tiers: BTreeMap::from([(
-                "opencode".to_string(),
-                BTreeMap::from([(armadai_model::Tier::Max, max.to_string())]),
-            )]),
+            model_tiers: serde_json::json!({ "opencode": { "max": max } }).into(),
             ..Default::default()
         }
     }

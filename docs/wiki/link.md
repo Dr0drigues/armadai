@@ -136,6 +136,8 @@ model_tiers:
 
 A tier left out keeps the session's model.
 
+A mistake under `model_tiers` (an unknown tier such as `medium`, a value that is not a string) only blocks `link --target opencode`, which names the key; every other command reads the file anyway and prints a warning.
+
 The link output then depends on that file for this key only, and the report says where the model
 comes from. A model without a provider (no `/`) is not written and reported. `link` stays
 offline: nothing is looked up.

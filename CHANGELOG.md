@@ -14,6 +14,7 @@
 - `validate` positions `unknown-state`, `unknown-step` and `unknown-free-agent` on the faulty link, key or list entry instead of the first occurrence of the word (#523).
 - `validate` no longer reports as `unknown-free-agent` an agent that a declared target provides (Claude Code, OpenCode), and its hint lists them (#517).
 - `unlink` and a relink no longer reorder the keys of `.claude/settings.json`; numbers of hooks and keys recorded in the link manifest are plain YAML numbers (#505).
+- A mistake under `model_tiers` of `config.yaml` (an unknown tier such as `medium`) no longer breaks `config starters-dir` nor hides your `starters_dirs` from the pack search: it is a warning there, and an error naming the key only for `link --target opencode`, which uses it (#506).
 
 ## v1.0.0-rc.8 (2026-10-27)
 
