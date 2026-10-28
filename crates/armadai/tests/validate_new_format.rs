@@ -153,3 +153,22 @@ fn the_help_example_pack_validates() {
             .success();
     }
 }
+
+#[test]
+fn a_skill_path_missing_from_its_folder_is_one_warning() {
+    let dir = project(&[
+        M,
+        DEV,
+        (
+            ".armadai/skills/s/SKILL.md",
+            "---\nname: s\ndescription: A skill\n---\nRun scripts/run.sh then scripts/missing.sh\n",
+        ),
+        (".armadai/skills/s/scripts/run.sh", "#!/bin/sh\n"),
+    ]);
+    let out = validate(&dir, &[]).success().get_output().stdout.clone();
+    let out = String::from_utf8_lossy(&out).replace(&dir.path().display().to_string(), "<root>");
+    assert_eq!(
+        out,
+        "<root>/.armadai/skills/s/SKILL.md:5:25: warning[skill-missing-path]: `scripts/missing.sh` is named here but is not in the skill folder\n  hint: add it to .armadai/skills/s/, or correct the path\n0 error(s), 1 warning(s)\n"
+    );
+}

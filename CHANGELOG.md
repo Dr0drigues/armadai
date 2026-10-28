@@ -2,6 +2,7 @@
 
 ### Added
 
+- New diagnostic: `skill-missing-path` (warning), a path under `scripts/` or `references/` that a `SKILL.md` names and its folder lacks (#524).
 - `armadai link --adopt-hooks` takes over the hooks of `.claude/settings.json` that are identical to the ones link adds (a clone or a worktree without `.armadai/link-manifest.yaml`), so `unlink` removes them; the report says so where it said `not owned` (#534).
 
 ### Fixed

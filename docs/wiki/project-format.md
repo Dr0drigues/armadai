@@ -135,7 +135,8 @@ not linked: they are not project templates.
 
 Frontmatter: `name` (equal to the folder name), `description` (required, at most 1024
 characters), `license`, `compatibility`, `metadata`. Other keys are kept and reported as
-warnings. The folder's other files (scripts, references) are untouched.
+warnings. The folder's other files (scripts, references) are copied as is; a path under `scripts/`
+or `references/` named by `SKILL.md` and absent gives the warning `skill-missing-path`.
 
 `metadata: { armadai-slot: code-standards }` makes the skill fill a slot (see
 [Slots](#slots)); several slots are separated by commas (`armadai-slot: "code-standards, security"`).
@@ -334,6 +335,7 @@ warning on stderr.
 | `skill-name-mismatch` | error | A skill's `name` differs from its folder | Set `name` to the folder name |
 | `skill-missing-description` | error | A skill has no or an empty `description` | Add one |
 | `skill-description-too-long` | error | A skill's `description` exceeds 1024 characters | Shorten it |
+| `skill-missing-path` | warning | A `SKILL.md` names a path under `scripts/` or `references/` (prose or code, not a pattern such as `scripts/<name>.sh`) that its folder does not contain | Add the file to the skill folder, or correct the path |
 | `unknown-skill-key` | warning | A skill's frontmatter has a key outside the standard | None needed if another tool uses it |
 | `empty-flow` | error | A flow has no step | Add steps or delete the file |
 | `duplicate-step-state` | error | `states` repeats a state or redeclares `done`/`failed` | Remove the duplicate |
