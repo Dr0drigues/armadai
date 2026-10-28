@@ -1184,7 +1184,7 @@ const AB: [(&str, &str); 3] = [
     (".armadai/agents/b.md", "---\ndescription: b\n---\nB\n"),
 ];
 
-fn with_flow<'a>(flow: &'a str) -> Vec<(&'a str, &'a str)> {
+fn with_flow(flow: &str) -> Vec<(&str, &str)> {
     let mut v = AB.to_vec();
     v.push((".armadai/flows/y.yaml", flow));
     v
